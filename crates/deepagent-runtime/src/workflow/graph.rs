@@ -366,27 +366,7 @@ pub fn output_names(node: &WorkflowNodeSpec) -> Result<BTreeSet<String>> {
 pub fn source_handles(node: &WorkflowNodeSpec) -> Result<BTreeSet<String>> {
     output_contract(&node.kind)?;
     match node.kind.as_str() {
-        "if-else" => {
-            let conditions = config_array(node, "conditions")?;
-            let mut groups = BTreeSet::new();
-            for group in conditions {
-                let id = group.get("id").and_then(Value::as_str).ok_or_else(|| {
-                    CoreError::invalid(format!("node {} condition group requires an ID", node.id))
-                })?;
-                validate_id(id, "condition group ID")?;
-                if !groups.insert(id.to_owned()) {
-                    return Err(CoreError::invalid(format!(
-                        "node {} has duplicate condition group IDs",
-                        node.id
-                    )));
-                }
-            }
-            if conditions.len() <= 1 {
-                Ok(string_set(&["true", "false"]))
-            } else {
-                Ok(groups)
-            }
-        }
+        "if-else" => Ok(super::branches::BranchContract::compile(&node.config)?.handles()),
         "human-input" => {
             let fields = config_array(node, "humanInputFields")?;
             let mut handles: BTreeSet<_> = (0..fields.len())
@@ -511,7 +491,7 @@ fn config_array<'a>(node: &'a WorkflowNodeSpec, key: &str) -> Result<&'a [Value]
     }
 }
 
-fn validate_id(id: &str, location: &str) -> Result<()> {
+pub(super) fn validate_id(id: &str, location: &str) -> Result<()> {
     if id.is_empty()
         || id.len() > MAX_ID_BYTES
         || !id
@@ -964,7 +944,6 @@ mod tests {
     #[test]
     fn source_handles_match_all_ui_branch_shapes() {
         let cases = [
-            ("if-else", json!({}), vec!["false", "true"]),
             (
                 "if-else",
                 json!({"conditions": [{"id": "if"}]}),
@@ -973,7 +952,7 @@ mod tests {
             (
                 "if-else",
                 json!({"conditions": [{"id": "if"}, {"id": "else"}]}),
-                vec!["else", "if"],
+                vec!["else", "false", "if"],
             ),
             ("human-input", json!({}), vec!["timeout"]),
             (
@@ -1009,6 +988,7 @@ mod tests {
         ))
         .is_err());
         assert!(source_handles(&node("n", "if-else", json!({"conditions": [{}]}))).is_err());
+        assert!(source_handles(&node("n", "if-else", json!({}))).is_err());
         assert!(source_handles(&node(
             "n",
             "question-classifier",

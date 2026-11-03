@@ -76,7 +76,6 @@ impl PendingNodeToolKind {
 
 struct PendingMediaNode {
     node_id: String,
-    node_kind: String,
     call_id: String,
     started: Instant,
     output: PendingMediaOutput,
@@ -1793,17 +1792,15 @@ impl WorkflowAgent {
     fn finish_node(
         &mut self,
         node_id: String,
-        node_kind: String,
         result: Result<Value>,
         elapsed_ms: u64,
     ) -> Result<AgentDecision> {
-        self.finish_node_with_updates(node_id, node_kind, result, elapsed_ms, BTreeMap::new())
+        self.finish_node_with_updates(node_id, result, elapsed_ms, BTreeMap::new())
     }
 
     fn finish_node_with_updates(
         &mut self,
         node_id: String,
-        node_kind: String,
         result: Result<Value>,
         elapsed_ms: u64,
         updates: BTreeMap<String, Value>,
@@ -1825,15 +1822,9 @@ impl WorkflowAgent {
                     self.active_node_id = None;
                     return Err(error);
                 }
-                let output_value = Self::node_output_value_inline(&node_kind, &output);
+                let output_value = output;
                 if let Err(error) = self.admit_item_output(&node_id, &output_value) {
-                    return self.finish_node_with_updates(
-                        node_id,
-                        node_kind,
-                        Err(error),
-                        elapsed_ms,
-                        updates,
-                    );
+                    return self.finish_node_with_updates(node_id, Err(error), elapsed_ms, updates);
                 }
                 self.outputs.insert(node_id.clone(), output_value.clone());
                 self.node_statuses
@@ -1893,19 +1884,6 @@ impl WorkflowAgent {
             .as_ref()
             .unwrap_or(&observation.output)
             .clone())
-    }
-
-    fn node_output_value_inline(kind: &str, result: &Value) -> Value {
-        match kind {
-            "if-else" => {
-                let branch = result
-                    .get("__branch")
-                    .cloned()
-                    .unwrap_or(Value::String("false".into()));
-                serde_json::json!({ "branch": branch })
-            }
-            _ => result.clone(),
-        }
     }
 }
 
@@ -1987,7 +1965,6 @@ impl Agent for WorkflowAgent {
             };
             return self.finish_node(
                 pending.node_id,
-                pending.node_kind,
                 result,
                 pending.started.elapsed().as_millis() as u64,
             );
@@ -2028,7 +2005,6 @@ impl Agent for WorkflowAgent {
             };
             return self.finish_node_with_updates(
                 pending.node_id,
-                node_kind.into(),
                 result,
                 pending.started.elapsed().as_millis() as u64,
                 updates,
@@ -2100,7 +2076,6 @@ impl Agent for WorkflowAgent {
                 });
             return self.finish_node_with_updates(
                 node_id,
-                node_kind,
                 result,
                 node_start.elapsed().as_millis() as u64,
                 updates,
@@ -2110,7 +2085,7 @@ impl Agent for WorkflowAgent {
         if node_kind == "iteration" {
             let preparation = self.begin_iteration(&node_id);
             if let Err(error) = preparation {
-                return self.finish_node(node_id, node_kind, Err(error), 0);
+                return self.finish_node(node_id, Err(error), 0);
             }
             return self.advance_iteration(last).await;
         }
@@ -2118,7 +2093,7 @@ impl Agent for WorkflowAgent {
         if node_kind == "http-request" {
             let arguments = match self.http_tool_arguments(&node_config) {
                 Ok(arguments) => arguments,
-                Err(error) => return self.finish_node(node_id, node_kind, Err(error), 0),
+                Err(error) => return self.finish_node(node_id, Err(error), 0),
             };
             let call_id = format!("workflow_http_{}", deepagent_core::id::EventId::new());
             self.pending_tool = Some(PendingNodeTool {
@@ -2143,7 +2118,7 @@ impl Agent for WorkflowAgent {
             })();
             let (invocation, outputs) = match preparation {
                 Ok(prepared) => prepared,
-                Err(error) => return self.finish_node(node_id, node_kind, Err(error), 0),
+                Err(error) => return self.finish_node(node_id, Err(error), 0),
             };
             let arguments = serde_json::to_value(&invocation)?;
             let call_id = format!("workflow_code_{}", deepagent_core::id::EventId::new());
@@ -2179,7 +2154,7 @@ impl Agent for WorkflowAgent {
             })();
             let (mut config, preparation) = match preparation {
                 Ok(prepared) => prepared,
-                Err(error) => return self.finish_node(node_id, node_kind, Err(error), 0),
+                Err(error) => return self.finish_node(node_id, Err(error), 0),
             };
             match preparation {
                 Some(CanvasAudioInputPreparation::Deferred { request_id, origin }) => {
@@ -2189,7 +2164,6 @@ impl Agent for WorkflowAgent {
                     let call_id = format!("workflow_audio_{}", deepagent_core::id::EventId::new());
                     self.pending_media = Some(PendingMediaNode {
                         node_id,
-                        node_kind,
                         call_id: call_id.clone(),
                         started: node_start,
                         output: PendingMediaOutput::AudioInput(config),
@@ -2209,12 +2183,7 @@ impl Agent for WorkflowAgent {
                 None => {}
             }
             let result = self.execute_audio(&config).await;
-            return self.finish_node(
-                node_id,
-                node_kind,
-                result,
-                node_start.elapsed().as_millis() as u64,
-            );
+            return self.finish_node(node_id, result, node_start.elapsed().as_millis() as u64);
         }
 
         if node_kind == "video-gen" {
@@ -2222,7 +2191,6 @@ impl Agent for WorkflowAgent {
                 Ok(CanvasVideoPreparation::Ready(response)) => {
                     return self.finish_node(
                         node_id,
-                        node_kind,
                         Ok(serde_json::json!({
                             "videoUrl": response.artifact_uri,
                             "videoTaskId": response.task_id,
@@ -2239,7 +2207,6 @@ impl Agent for WorkflowAgent {
                     let call_id = format!("workflow_video_{}", deepagent_core::id::EventId::new());
                     self.pending_media = Some(PendingMediaNode {
                         node_id,
-                        node_kind,
                         output: PendingMediaOutput::Video,
                         call_id: call_id.clone(),
                         started: node_start,
@@ -2256,7 +2223,7 @@ impl Agent for WorkflowAgent {
                     ));
                 }
                 Err(error) => {
-                    return self.finish_node(node_id, node_kind, Err(error), 0);
+                    return self.finish_node(node_id, Err(error), 0);
                 }
             }
         }
@@ -2267,7 +2234,6 @@ impl Agent for WorkflowAgent {
                 Ok(CanvasImagePreparation::Ready(response)) => {
                     return self.finish_node(
                         node_id,
-                        node_kind,
                         Ok(Self::image_response_value(response)),
                         node_start.elapsed().as_millis() as u64,
                     );
@@ -2276,7 +2242,6 @@ impl Agent for WorkflowAgent {
                     let call_id = format!("workflow_image_{}", deepagent_core::id::EventId::new());
                     self.pending_media = Some(PendingMediaNode {
                         node_id,
-                        node_kind,
                         output: PendingMediaOutput::Image,
                         call_id: call_id.clone(),
                         started: node_start,
@@ -2293,7 +2258,7 @@ impl Agent for WorkflowAgent {
                     ));
                 }
                 Err(error) => {
-                    return self.finish_node(node_id, node_kind, Err(error), 0);
+                    return self.finish_node(node_id, Err(error), 0);
                 }
             }
         }
@@ -2306,7 +2271,7 @@ impl Agent for WorkflowAgent {
         } else {
             BTreeMap::new()
         };
-        self.finish_node_with_updates(node_id, node_kind, result, elapsed_ms, updates)
+        self.finish_node_with_updates(node_id, result, elapsed_ms, updates)
     }
 
     async fn finish_background_tasks(&mut self) {
@@ -2320,15 +2285,13 @@ impl Agent for WorkflowAgent {
                 }
             }
             let _ = self.finish_node(
-                pending.node_id, pending.kind.node_kind().into(),
-                Err(CoreError::other(format!("{}: run stopped before node result delivery; reconcile the durable action before retrying", pending.kind.tool_name()))),
+                pending.node_id, Err(CoreError::other(format!("{}: run stopped before node result delivery; reconcile the durable action before retrying", pending.kind.tool_name()))),
                 pending.started.elapsed().as_millis() as u64);
         }
         if let Some(pending) = self.pending_media.take() {
             let tool = pending.output.tool_name();
             let _ = self.finish_node(
                 pending.node_id,
-                pending.node_kind,
                 Err(CoreError::other(format!(
                     "{tool}: run stopped before node result delivery; reconcile the durable action before retrying",
                 ))),

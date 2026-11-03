@@ -16,6 +16,8 @@ use tokio::net::TcpListener;
 mod aggregator;
 #[path = "workflow_audit/answer.rs"]
 mod answer;
+#[path = "workflow_audit/branches.rs"]
+mod branches;
 #[path = "workflow_audit/code.rs"]
 mod code;
 #[path = "workflow_audit/conditions.rs"]
@@ -1865,7 +1867,6 @@ async fn audit_workflow_or_condition_does_not_start_from_true() {
 }
 
 #[tokio::test]
-#[ignore = "audit: multi-case conditions must retain the executor's false fallback handle"]
 async fn audit_workflow_multi_case_condition_keeps_else_handle() {
     let (_root, db, chat, session) = workflow_fixture().await;
     let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({

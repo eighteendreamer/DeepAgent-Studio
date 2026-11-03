@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "single_case": { "id": "true", "label": "是" },
+  "fallback": { "id": "false", "label": "ELSE" },
+  "reserved": ["true", "false"]
+}

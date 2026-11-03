@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use deepagent_core::error::{CoreError, Result};
 use serde_json::{json, Map, Value};
 
-use super::values;
+use super::{branches::BranchContract, values};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Logic {
@@ -24,13 +24,13 @@ impl Logic {
 
 #[derive(Debug, Clone, PartialEq)]
 struct ConditionGroup {
-    id: String,
     logic: Logic,
     operators: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct ConditionPlan {
+    branches: BranchContract,
     groups: Vec<ConditionGroup>,
     // Parallel arrays are constructed together only by compile(). Resolving the
     // entire operand namespace once preserves the shared byte/depth budget and
@@ -55,6 +55,7 @@ fn aliased<'a>(
 
 impl ConditionPlan {
     pub(super) fn compile(config: &Map<String, Value>) -> Result<Self> {
+        let branches = BranchContract::compile(config)?;
         let declarations = config
             .get("conditions")
             .and_then(Value::as_array)
@@ -66,12 +67,6 @@ impl ConditionPlan {
             let group = declaration
                 .as_object()
                 .ok_or_else(|| invalid("group must be an object"))?;
-            // ID validity/uniqueness and the existing port set remain owned by
-            // graph::source_handles. This issue does not change port contracts.
-            let id = group
-                .get("id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| invalid("group requires an ID"))?;
             let logic = match aliased(group, "logic", "logicalOperator")? {
                 None => Logic::And,
                 Some(Value::String(value)) if value == "and" => Logic::And,
@@ -101,14 +96,11 @@ impl ConditionPlan {
                 operators.push(operator.to_owned());
                 bindings.push(json!([left, right]));
             }
-            groups.push(ConditionGroup {
-                id: id.to_owned(),
-                logic,
-                operators,
-            });
+            groups.push(ConditionGroup { logic, operators });
             operands.push(Value::Array(bindings));
         }
         Ok(Self {
+            branches,
             groups,
             operands: Value::Array(operands),
         })
@@ -132,10 +124,10 @@ impl ConditionPlan {
                 })
                 .collect::<Result<Vec<_>>>()?;
             if group.logic.matches(&comparisons) {
-                return Ok(json!({"__branch":group.id}));
+                return Ok(json!({"branch":self.branches.cases[index]}));
             }
         }
-        Ok(json!({"__branch":"false"}))
+        Ok(json!({"branch":self.branches.fallback}))
     }
 }
 
@@ -169,7 +161,7 @@ mod tests {
                     let expected = if logic == "and" { a && b } else { a || b };
                     assert_eq!(
                         p.evaluate(&BTreeMap::new()).unwrap(),
-                        json!({"__branch":if expected {"selected"} else {"false"}})
+                        json!({"branch":if expected {"true"} else {"false"}})
                     );
                 }
             }
@@ -197,7 +189,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             p.evaluate(&BTreeMap::new()).unwrap(),
-            json!({"__branch":"x"})
+            json!({"branch":"true"})
         );
     }
 
@@ -219,7 +211,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             p.evaluate(&BTreeMap::new()).unwrap(),
-            json!({"__branch":"first"})
+            json!({"branch":"first"})
         );
     }
 
@@ -234,7 +226,7 @@ mod tests {
         let text = json!("{{#missing.secret#}}");
         assert_eq!(
             p.evaluate(&previous(text.clone(), text)).unwrap(),
-            json!({"__branch":"x"})
+            json!({"branch":"true"})
         );
         let error = p
             .evaluate(&previous(

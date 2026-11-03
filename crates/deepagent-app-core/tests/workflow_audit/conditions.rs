@@ -29,7 +29,7 @@ fn request(logic: &str, left: bool, right: bool, legacy: bool) -> WorkflowReques
     .unwrap()
 }
 
-async fn run(
+pub(super) async fn run(
     chat: &ChatService,
     session: &str,
     workflow: WorkflowRequest,
@@ -54,7 +54,7 @@ async fn run(
     (result, captured)
 }
 
-fn terminal(db: &Database, id: &str, kind: &str) {
+pub(super) fn terminal(db: &Database, id: &str, kind: &str) {
     let store = RunStore::new(db);
     assert_eq!(
         store.get(id).unwrap().unwrap().terminal_kind.as_deref(),
@@ -351,8 +351,8 @@ async fn h198_first_match_and_iteration_items_keep_the_existing_scope_and_branch
         assert!(nodes
             .iter()
             .any(|n| n.node_id == "decide" && n.outputs == Some(json!({"branch":branch}))));
-        // H-199 still prevents a multi-case false edge. Correct truth must not
-        // invent a matching case, or turn the unselected end into a success.
+        // This graph intentionally omits its fallback edge. Correct truth must
+        // not invent a matching case or turn an unselected end into success.
         terminal(&db, &id, if matched { "succeeded" } else { "failed" });
     }
     let w=serde_json::from_value(json!({"definition":{"version":1,"nodes":[
@@ -430,125 +430,148 @@ impl deepagent_builtins::http_request::HttpRequestClient for ChoiceBroker {
 #[tokio::test]
 async fn h198_only_the_chosen_effect_is_approved_and_reopen_never_redispatches_it() {
     for case in ["false", "true", "denied", "cancelled", "failed"] {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("conditions.db");
-        let db = Arc::new(Database::open(&path).unwrap());
-        let (_root, db, chat, session) = workflow_fixture_with_database(root, db).await;
-        let broker = Arc::new(ChoiceBroker {
-            cancel: case == "cancelled",
-            fail: case == "failed",
-            ..Default::default()
-        });
-        let chat = chat.with_workflow_http_client(broker.clone());
-        let mut w = request("or", case == "true", false, false);
-        for (index, branch) in [(2, "yes"), (3, "no")] {
-            w.definition.nodes[index].kind = "http-request".into();
-            w.definition.nodes[index].config=serde_json::from_value(json!({"httpUrl":format!("https://synthetic.fixture.invalid/{branch}"),"httpMethod":"POST","httpBody":"SYNTHETIC_ONLY","httpTimeout":7,"httpRetryCount":0})).unwrap();
-        }
-        let worker_chat = chat.clone();
-        let responder = chat.clone();
-        let approvals = Arc::new(AtomicUsize::new(0));
-        let approved = approvals.clone();
-        let nodes = Arc::new(Mutex::new(Vec::new()));
-        let capture = nodes.clone();
-        let id = format!("h198-effect-{case}");
-        let worker_id = id.clone();
-        let worker = tokio::spawn(async move {
-            worker_chat
-                .run_workflow(
-                    w,
-                    worker_id,
-                    session,
-                    move |e| {
-                        if let RuntimeEvent::WorkflowNode { event } = e {
-                            capture.lock().unwrap().push(event);
-                        }
-                    },
-                    move |approval| {
-                        approved.fetch_add(1, Ordering::SeqCst);
-                        responder
-                            .resolve_approval(
-                                &approval.call_id,
-                                case != "denied",
-                                "synthetic chosen effect",
-                            )
-                            .unwrap();
-                    },
-                )
-                .await
-        });
-        if case == "cancelled" {
-            tokio::time::timeout(Duration::from_secs(5), async {
-                while broker.waiting.load(Ordering::SeqCst) == 0 {
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .unwrap();
-            assert!(chat.cancel_session(&id));
-        }
-        let result = tokio::time::timeout(Duration::from_secs(5), worker)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            result.is_ok(),
-            matches!(case, "false" | "true" | "cancelled"),
-            "{case}: {result:?}"
-        );
-        assert_eq!(approvals.load(Ordering::SeqCst), 1);
-        let expected_calls = if case == "denied" {
-            vec![]
-        } else {
-            vec![format!(
-                "https://synthetic.fixture.invalid/{}",
-                if case == "true" { "yes" } else { "no" }
-            )]
-        };
-        assert_eq!(*broker.calls.lock().unwrap(), expected_calls);
-        assert_eq!(broker.waiting.load(Ordering::SeqCst), 0);
-        let nodes = nodes.lock().unwrap().clone();
-        assert!(nodes.iter().any(|n| n.node_id == "decide"
-            && n.outputs == Some(json!({"branch":(case=="true").to_string()}))));
-        let excluded = if case == "true" { "no" } else { "yes" };
-        assert!(nodes
-            .iter()
-            .filter(|n| n.node_id == excluded)
-            .all(|n| n.status == NodeExecutionStatus::Skipped));
-        let kind = match case {
-            "false" | "true" => "succeeded",
-            "cancelled" => "cancelled",
-            _ => "failed",
-        };
-        terminal(&db, &id, kind);
-        let before = RunStore::new(&db).events_after(&id, None).unwrap();
-        let persisted: Vec<NodeExecutionEvent> = before
-            .iter()
-            .filter(|e| e.event_type == "workflow_node")
-            .map(|e| serde_json::from_value(e.data["event"].clone()).unwrap())
-            .collect();
-        assert_eq!(persisted, nodes);
-        let cursor = before[before.len() / 2].sequence;
-        drop(chat);
-        drop(db);
-        let reopened = Database::open(&path).unwrap();
-        let store = RunStore::new(&reopened);
-        assert_eq!(store.events_after(&id, None).unwrap(), before);
-        assert_eq!(
-            store.events_after(&id, Some(cursor)).unwrap(),
-            before
-                .iter()
-                .filter(|e| e.sequence > cursor)
-                .cloned()
-                .collect::<Vec<_>>()
-        );
-        terminal(&reopened, &id, kind);
-        assert_eq!(
-            *broker.calls.lock().unwrap(),
-            expected_calls,
-            "replay is not redispatch or rollback"
-        );
+        check_chosen_effect(
+            request("or", case == "true", false, false),
+            case,
+            if case == "true" { "true" } else { "false" },
+            if case == "true" { "yes" } else { "no" },
+        )
+        .await;
     }
+}
+
+pub(super) async fn check_chosen_effect(
+    mut w: WorkflowRequest,
+    case: &'static str,
+    branch: &str,
+    chosen: &str,
+) {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("conditions.db");
+    let db = Arc::new(Database::open(&path).unwrap());
+    let (_root, db, chat, session) = workflow_fixture_with_database(root, db).await;
+    let broker = Arc::new(ChoiceBroker {
+        cancel: case == "cancelled",
+        fail: case == "failed",
+        ..Default::default()
+    });
+    let chat = chat.with_workflow_http_client(broker.clone());
+    let paths: Vec<_> = w
+        .definition
+        .nodes
+        .iter()
+        .filter(|n| n.kind == "template-transform")
+        .map(|n| n.id.clone())
+        .collect();
+    for node in w
+        .definition
+        .nodes
+        .iter_mut()
+        .filter(|n| paths.contains(&n.id))
+    {
+        node.kind = "http-request".into();
+        node.config=serde_json::from_value(json!({"httpUrl":format!("https://synthetic.fixture.invalid/{}", node.id),"httpMethod":"POST","httpBody":"SYNTHETIC_ONLY","httpTimeout":7,"httpRetryCount":0})).unwrap();
+    }
+    let worker_chat = chat.clone();
+    let responder = chat.clone();
+    let approvals = Arc::new(AtomicUsize::new(0));
+    let approved = approvals.clone();
+    let nodes = Arc::new(Mutex::new(Vec::new()));
+    let capture = nodes.clone();
+    let id = format!("h198-effect-{case}");
+    let worker_id = id.clone();
+    let worker = tokio::spawn(async move {
+        worker_chat
+            .run_workflow(
+                w,
+                worker_id,
+                session,
+                move |e| {
+                    if let RuntimeEvent::WorkflowNode { event } = e {
+                        capture.lock().unwrap().push(event);
+                    }
+                },
+                move |approval| {
+                    approved.fetch_add(1, Ordering::SeqCst);
+                    responder
+                        .resolve_approval(
+                            &approval.call_id,
+                            case != "denied",
+                            "synthetic chosen effect",
+                        )
+                        .unwrap();
+                },
+            )
+            .await
+    });
+    if case == "cancelled" {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while broker.waiting.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(chat.cancel_session(&id));
+    }
+    let result = tokio::time::timeout(Duration::from_secs(5), worker)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        result.is_ok(),
+        matches!(case, "false" | "true" | "cancelled"),
+        "{case}: {result:?}"
+    );
+    assert_eq!(approvals.load(Ordering::SeqCst), 1);
+    let expected_calls = if case == "denied" {
+        vec![]
+    } else {
+        vec![format!("https://synthetic.fixture.invalid/{chosen}")]
+    };
+    assert_eq!(*broker.calls.lock().unwrap(), expected_calls);
+    assert_eq!(broker.waiting.load(Ordering::SeqCst), 0);
+    let nodes = nodes.lock().unwrap().clone();
+    assert!(nodes
+        .iter()
+        .any(|n| n.node_id == "decide" && n.outputs == Some(json!({"branch":branch}))));
+    assert!(nodes
+        .iter()
+        .filter(|n| paths.contains(&n.node_id) && n.node_id != chosen)
+        .all(|n| n.status == NodeExecutionStatus::Skipped));
+    let kind = match case {
+        "false" | "true" => "succeeded",
+        "cancelled" => "cancelled",
+        _ => "failed",
+    };
+    terminal(&db, &id, kind);
+    let before = RunStore::new(&db).events_after(&id, None).unwrap();
+    let persisted: Vec<NodeExecutionEvent> = before
+        .iter()
+        .filter(|e| e.event_type == "workflow_node")
+        .map(|e| serde_json::from_value(e.data["event"].clone()).unwrap())
+        .collect();
+    assert_eq!(persisted, nodes);
+    let cursor = before[before.len() / 2].sequence;
+    drop(chat);
+    drop(db);
+    let reopened = Database::open(&path).unwrap();
+    let store = RunStore::new(&reopened);
+    assert_eq!(store.events_after(&id, None).unwrap(), before);
+    assert_eq!(
+        store.events_after(&id, Some(cursor)).unwrap(),
+        before
+            .iter()
+            .filter(|e| e.sequence > cursor)
+            .cloned()
+            .collect::<Vec<_>>()
+    );
+    terminal(&reopened, &id, kind);
+    assert_eq!(
+        *broker.calls.lock().unwrap(),
+        expected_calls,
+        "replay is not redispatch or rollback"
+    );
 }
 
 #[tokio::test]

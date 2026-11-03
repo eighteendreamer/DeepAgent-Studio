@@ -1,6 +1,6 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { continuousCornerStyle } from "../../../theme/continuousCorners";
-import { Handle, NodeToolbar, Position, type NodeProps } from "@xyflow/react";
+import { Handle, NodeToolbar, Position, useUpdateNodeInternals, type NodeProps } from "@xyflow/react";
 import { Plus } from "lucide-react";
 import type {
   WorkflowNodeData,
@@ -64,6 +64,7 @@ import { loadCanvasMediaPixels } from "../utils/canvasMedia";
 import { prependCreativeItem } from "../utils/creativeLibrary";
 import { NodeTextOutput } from "./NodeTextOutput";
 import { nodeOutputMarkdown, nodeResultText } from "../utils/nodeOutput";
+import { conditionBranchView } from "../utils/conditionBranches";
 
 const STATUS_BORDER: Record<NodeStatus, string> = {
   idle: "1px solid rgba(255,255,255,0.1)",
@@ -109,9 +110,7 @@ function getNodeSourceHandles(kind: string, data: Record<string, unknown>): Sour
       return handles;
     }
     case "if-else": {
-      const conditions = (data.conditions as Array<{ id: string }>) ?? [];
-      if (conditions.length <= 1) return [{ id: "true", label: "是" }, { id: "false", label: "否" }];
-      return conditions.map((c) => ({ id: c.id, label: c.id.toUpperCase() }));
+      return conditionBranchView(data.conditions).handles;
     }
     case "question-classifier": {
       const classes = (data.classifierClasses as Array<{ name: string }>) ?? [];
@@ -292,6 +291,11 @@ function WorkflowNodeShellInner({ id, data, type, selected }: NodeProps) {
   const mediaFirst = MEDIA_FIRST_KINDS.includes(nodeData.kind as CreativeNodeKind);
   const nodeLabel = nodeData.label ?? "节点";
   const mode = useCanvasStore((s) => s.mode);
+  const sourceHandles = getNodeSourceHandles(nodeData.kind ?? "", nodeData as Record<string, unknown>);
+  const sourceHandleKey = JSON.stringify(sourceHandles.map((handle) => handle.id));
+  const branchError = nodeData.kind === "if-else" ? conditionBranchView((nodeData as ProfessionalNodeData).conditions).error : null;
+  const updateNodeInternals = useUpdateNodeInternals();
+  useEffect(() => { updateNodeInternals(id); }, [id, sourceHandleKey, updateNodeInternals]);
 
   // 行内重命名态（Penguin _renameMode 语义：Enter/失焦提交、Esc 取消、空值回落默认名）
   const [renaming, setRenaming] = useState(false);
@@ -499,10 +503,7 @@ function WorkflowNodeShellInner({ id, data, type, selected }: NodeProps) {
       className="relative select-none"
       style={{
         width: nodeData.kind === "category-picker" ? 336 : nodeData.kind === "text-gen" ? 300 : 240,
-        minHeight: (() => {
-          const handles = getNodeSourceHandles(nodeData.kind ?? "", nodeData as Record<string, unknown>);
-          return Math.max(64, handles.length * 28 + 16);
-        })(),
+        minHeight: Math.max(64, sourceHandles.length * 28 + 16),
         ...continuousCornerStyle(16),
         background: "#101010",
         border: STATUS_BORDER[nodeStatus],
@@ -593,6 +594,7 @@ function WorkflowNodeShellInner({ id, data, type, selected }: NodeProps) {
       <div className={mediaFirst ? "" : "px-3 py-2.5"}>
         {/* Node content by kind */}
         {renderContent(nodeData, id)}
+        {branchError && <div className="mt-1 text-[10px] text-red-400" role="alert">{branchError}</div>}
 
         {/* Status line：就绪与已完成由主内容表达，只有运行中和失败需要额外说明 */}
         {(nodeStatus === "error" || (nodeStatus === "running" && !mediaFirst)) && (
@@ -643,7 +645,7 @@ function WorkflowNodeShellInner({ id, data, type, selected }: NodeProps) {
         </div>
       </Handle>
       {(() => {
-        const handles = getNodeSourceHandles(nodeData.kind ?? "", nodeData as Record<string, unknown>);
+        const handles = sourceHandles;
         const n = handles.length;
         return handles.map((h, i) => {
           const pct = n === 1 ? 50 : ((i + 1) / (n + 1)) * 100;

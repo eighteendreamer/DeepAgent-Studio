@@ -4,6 +4,7 @@ import { useProfessionalStore } from "../store/professionalStore";
 import { useCanvasStore } from "../store/canvasStore";
 import type { CreativeNodeData, ProfessionalNodeData } from "../types";
 import type { ApprovalRequest } from "../../../types";
+import { conditionBranchContract } from "./conditionBranches";
 
 /**
  * Workflow execution for both canvas modes.
@@ -210,6 +211,13 @@ function serializeDefinition(nodes: WorkflowNode[], edges: WorkflowEdge[], mode:
     nodes: serializeNodes(nodes, edges, mode),
     edges: serializeEdges(edges),
   };
+  for (const node of definition.nodes.filter(node => node.kind === "if-else")) {
+    const contract = conditionBranchContract(node.config.conditions);
+    const handles = new Set([...contract.cases, contract.fallback].map(port => port.id));
+    if (definition.edges.some(edge => edge.source === node.id && (!edge.source_handle || !handles.has(edge.source_handle)))) {
+      throw new Error("ConditionConfigInvalid: 条件分支连线端口已失效，请重新连接");
+    }
+  }
   // Creative canvas roots/leaves have no visible boundary nodes. Project that
   // intent into the same explicit v1 contract; never repair professional or
   // empty requests or let the kernel infer boundaries from arbitrary topology.

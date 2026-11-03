@@ -290,7 +290,6 @@ impl WorkflowAgent {
             let result = values::check_value(&result, "iteration output").map(|()| result);
             return self.finish_node(
                 state.plan.node_id,
-                "iteration".into(),
                 result,
                 state.started.elapsed().as_millis() as u64,
             );
@@ -371,7 +370,6 @@ impl WorkflowAgent {
         let state = self.pending_iteration.take().expect("active iteration");
         self.finish_node(
             state.plan.node_id,
-            "iteration".into(),
             Err(error),
             state.started.elapsed().as_millis() as u64,
         )

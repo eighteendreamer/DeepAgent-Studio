@@ -15,7 +15,8 @@ function loadTypeScript(relativePath, imports = {}) {
   loaded.filename = filename;
   loaded.paths = Module._nodeModulePaths(path.dirname(filename));
   const requireModule = loaded.require.bind(loaded);
-  loaded.require = (specifier) => Object.hasOwn(imports, specifier) ? imports[specifier] : requireModule(specifier);
+  loaded.require = (specifier) => Object.hasOwn(imports, specifier) ? imports[specifier]
+    : specifier === "./conditionBranches" ? loadTypeScript("../src/canvas/workflow/utils/conditionBranches.ts") : requireModule(specifier);
   loaded._compile(compiled.outputText, filename);
   return loaded.exports;
 }
@@ -31,6 +32,55 @@ const {
   normalizeProfessionalData,
   normalizeProfessionalNode,
 } = registry;
+
+test("H-199 shared v1 branch catalog preserves singleton true/false and every multi-case fallback", () => {
+  const { conditionBranchContract, conditionBranchView } = loadTypeScript("../src/canvas/workflow/utils/conditionBranches.ts");
+  for (const ids of [["if"], ["true"], ["stable-uuid"], ["red", "blue"], ["red", "blue", "yellow"]]) {
+    const data = ids.map(id => ({ id }));
+    const before = JSON.stringify(data);
+    const c = conditionBranchContract(data);
+    assert.equal(c.version, 1);
+    assert.deepEqual(c.cases.map(port => port.id), ids.length === 1 ? ["true"] : ids);
+    assert.deepEqual(c.fallback, { id: "false", label: "ELSE" });
+    assert.equal(new Set([...c.cases, c.fallback].map(port => port.id)).size, ids.length + 1);
+    assert.deepEqual(conditionBranchView(data), { handles: [...c.cases, c.fallback], error: null });
+    assert.equal(JSON.stringify(data), before, "rendering must never migrate stored conditions");
+  }
+  for (const conditions of [undefined, null, [], [{}], [{id:false}], [{id:"false"}], [{id:"a"},{id:"false"}],
+    [{id:"true"},{id:"b"}], [{id:"a"},{id:"true"}], [{id:"a"},{id:"a"}], [{id:""}], [{id:"bad/id"}], [{id:"x".repeat(101)}]]) {
+    assert.throws(() => conditionBranchContract(conditions), /ConditionConfigInvalid/);
+    const view = conditionBranchView(conditions);
+    assert.deepEqual(view.handles, []);
+    assert.match(view.error, /ConditionConfigInvalid/);
+  }
+});
+
+test("H-199 production serializer rejects ambiguous catalogs and stale handles before subscribing or IPC", async () => {
+  const previous = globalThis.window;
+  globalThis.window = { __TAURI_INTERNALS__: {} };
+  try {
+    for (const [ids, handle] of [[[], "false"], [["false"], "false"], [["true","b"], "true"],
+      [["a","a"], "a"], [["a","b"], "true"], [["if"], "if"], [["if"], null]]) {
+      let calls = 0;
+      const state = { nodes: [{ id: "decide", data: { kind: "if-else", status: "idle", conditions: ids.map(id=>({id})) } }],
+        edges: [{id:"edge",source:"decide",sourceHandle:handle,target:"end"}],
+        updateNodeData(id, patch) { this.nodes = this.nodes.map(n=>n.id === id ? {...n,data:{...n.data,...patch}} : n); } };
+      const executor = loadTypeScript("../src/canvas/workflow/utils/workflowExecutor.ts", {
+        "../store/canvasStore": { useCanvasStore: { getState: () => ({ mode: "professional" }) } },
+        "../store/professionalStore": { useProfessionalStore: { getState: () => state } },
+        "../store/creativeStore": { useCreativeStore: { getState: () => state } },
+        "@tauri-apps/api/core": { invoke: async () => { calls += 1; throw Error("must not invoke"); } },
+        "@tauri-apps/api/event": { listen: async () => { calls += 1; throw Error("must not subscribe"); } },
+      });
+      await executor.runWorkflow();
+      assert.equal(calls, 0);
+      assert.equal(state.nodes[0].data.status, "error");
+      assert.match(state.nodes[0].data.errorMessage, /ConditionConfigInvalid/);
+      assert.deepEqual(state.nodes[0].data.conditions.map(group=>group.id), ids, "never silently migrate case IDs");
+      assert.equal(state.edges[0].sourceHandle, handle, "never silently repair authored edges");
+    }
+  } finally { globalThis.window = previous; }
+});
 
 test("H-191 creative serialization projects one collision-free entry without repairing invalid professional graphs", () => {
   const { execFileSync } = require("node:child_process");

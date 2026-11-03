@@ -143,7 +143,7 @@ const CONDITION_GROUP: NodeConfigSchema = {
       title: "分支标识",
       format: "uuid",
       readOnly: true,
-      description: "新增分支使用稳定 UUID，保留已有分支标识。",
+      description: "新增分支使用稳定 UUID，保留已有标识；false 为 ELSE 保留端口，true 仅兼容旧单分支标识。",
     },
     logic: choice("条件关系", { and: "全部满足", or: "任一满足" }, "and"),
     items: list("条件列表", CONDITION_ITEM, [{ variable: "", operator: "is", value: "" }]),

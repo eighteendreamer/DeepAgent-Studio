@@ -17,7 +17,8 @@ function loadTypeScript(relativePath, imports = {}) {
   loaded.filename = filename;
   loaded.paths = Module._nodeModulePaths(path.dirname(filename));
   const requireModule = loaded.require.bind(loaded);
-  loaded.require = (specifier) => Object.hasOwn(imports, specifier) ? imports[specifier] : requireModule(specifier);
+  loaded.require = (specifier) => Object.hasOwn(imports, specifier) ? imports[specifier]
+    : specifier === "./conditionBranches" ? loadTypeScript("../src/canvas/workflow/utils/conditionBranches.ts") : requireModule(specifier);
   loaded._compile(compiled.outputText, filename);
   return loaded.exports;
 }
@@ -28,8 +29,10 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
   const registry = loadTypeScript("../src/canvas/workflow/utils/nodeRegistry.ts", {
     "./nodeSchemas": schemas, "./configSchema": configSchema,
   });
+  const { conditionBranchContract } = loadTypeScript("../src/canvas/workflow/utils/conditionBranches.ts");
   const fixtures = [];
   for (const name of names) {
+    let branchCatalog;
     const creative = name.startsWith("creative-");
     const node = (id, kind, patch = {}) => ({ id, type: `professional-${kind}`, position: { x: 0, y: 0 }, data: { ...registry.createDefaultNodeData(kind), ...patch } });
     let nodes = [node("start", "start"), node("end", "end")];
@@ -69,6 +72,29 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
       nodes.unshift(node("orphan", "variable-assigner", { assignments: [] }));
     } else if (name === "professional-rooted-reordered") {
       nodes.reverse();
+    } else if (name.startsWith("branch-")) {
+      const single = name.startsWith("branch-single-");
+      const ids = single ? [name.includes("-legacy-") ? "true" : name.includes("-uuid-") ? "d5b4fd30-7b79-4d25-9ff3-aba124fd73ae" : "if"] : ["red", "blue", "yellow"];
+      const chosen = single ? (name.endsWith("-true") ? 0 : 1) : Number(name.slice("branch-multi-".length));
+      const conditions = ids.map((id, index) => ({ id, logic: "and", items: [{ variable: index >= chosen && chosen < ids.length ? "ON" : "OFF", operator: "is", value: "ON" }] }));
+      const contract = conditionBranchContract(conditions);
+      const ports = [...contract.cases, contract.fallback];
+      branchCatalog = { ...contract, expectedBranch: ports[chosen].id, expectedPath: `path${chosen}` };
+      nodes = [node("start", "start"), node("decide", "if-else", { conditions }),
+        ...ports.map((port, index) => node(`path${index}`, "template-transform", { templateScript: port.id, templateInputVariables: [] })),
+        node("end", "end", { outputVariables: [{ name: "report", type: "string", value: "BRANCH_SETTLED" }] })];
+      edges = [{ id: "entry", source: "start", target: "decide" }, ...ports.flatMap((port, index) => [
+        { id: `choice${index}`, source: "decide", sourceHandle: port.id, target: `path${index}` },
+        { id: `exit${index}`, source: `path${index}`, target: "end" },
+      ])];
+      // Old v1 files round-trip through the actual import/export path without
+      // rewriting stored IDs, source handles or condition fields.
+      const io = loadTypeScript("../src/canvas/workflow/utils/workflowImportExport.ts");
+      const imported = io.parseWorkflowImport(JSON.stringify(io.exportWorkflow("professional", nodes, edges)));
+      assert.equal(imported.ok, true);
+      assert.deepEqual(imported.data.edges, edges);
+      assert.deepEqual(imported.data.nodes.map(n => n.data), nodes.map(n => n.data));
+      nodes = imported.data.nodes; edges = imported.data.edges;
     } else if (name.startsWith("condition-truth-")) {
       const [, , logic, left, right] = name.split("-");
       nodes = [node("start", "start", { inputVariables: [{ name: "payload", type: "object", default: { a: left === "true" ? "ON" : "OFF", b: right === "true" ? "ON" : "OFF" } }] }),
@@ -258,23 +284,25 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
     } else if (name === "template") {
       assert.equal(serializedNodes.find((node) => node.id === "inspect").config.templateScript, "EXPECTED_TEMPLATE");
     }
-    fixtures.push({ name, workflow });
+    fixtures.push({ name, workflow, ...(branchCatalog ? { branchCatalog } : {}) });
   }
   process.stdout.write(JSON.stringify(fixtures));
 }
 
 // Replay actual Kernel events through the production consumer, not a shadow mapper.
 async function consumeKernelEvents(filename) {
-  const { name, events, terminal, expected } = JSON.parse(readFileSync(filename, "utf8"));
+  const { name, events, terminal, expected, workflow, branchCatalog } = JSON.parse(readFileSync(filename, "utf8"));
+  const branchPorts = name.startsWith("branch-");
   const outputContract = name.startsWith("end-contract-");
   const conditionTruth = name.startsWith("condition-truth-");
-  const target = outputContract || conditionTruth ? undefined : name.slice("target-".length);
+  const target = outputContract || conditionTruth || branchPorts ? undefined : name.slice("target-".length);
   const handlers = new Map();
   const state = { nodes: (outputContract ? ["start", "end"] : conditionTruth ? ["start", "decide", "yes", "no", "end"] : ["start", "source", "answer", "end", "unrelated"]).map((id) => ({
     id, data: { kind: id === "start" || id === "end" ? id : "answer", status: "idle" }, position: { x: 0, y: 0 },
   })), edges: [], updateNodeData(id, patch) {
     this.nodes = this.nodes.map((node) => node.id === id ? { ...node, data: { ...node.data, ...patch } } : node);
   } };
+  if (branchPorts) state.nodes = workflow.definition.nodes.map(node => ({ id: node.id, data: { ...node.config, kind: node.kind, status: "idle" }, position: { x: 0, y: 0 } }));
   const executor = loadTypeScript("../src/canvas/workflow/utils/workflowExecutor.ts", {
     "../store/canvasStore": { useCanvasStore: { getState: () => ({ mode: "professional" }) } },
     "../store/professionalStore": { useProfessionalStore: { getState: () => state } },
@@ -292,7 +320,17 @@ async function consumeKernelEvents(filename) {
   for (const event of events) handlers.get("chat://event")({ payload: {
     run_id: "target-replay", payload: { type: "workflow_node", event },
   } });
-  if (conditionTruth) {
+  if (branchPorts) {
+    const data = id => state.nodes.find(node => node.id === id).data;
+    assert.equal(data("decide").status, "completed");
+    assert.deepEqual(data("decide").result, { success: true, outputs: { branch: branchCatalog.expectedBranch } });
+    for (let i = 0; i <= branchCatalog.cases.length; i += 1) {
+      assert.equal(data(`path${i}`).status, `path${i}` === branchCatalog.expectedPath ? "completed" : "idle");
+    }
+    assert.equal(data("end").status, "completed");
+    assert.deepEqual(data("end").result.outputs, { report: "BRANCH_SETTLED" });
+    handlers.get("session://completed")({ payload: { run_id: "target-replay", status: "succeeded" } });
+  } else if (conditionTruth) {
     const data = (id) => state.nodes.find((node) => node.id === id).data;
     assert.equal(data("decide").status, "completed");
     assert.deepEqual(data("decide").result, { success: true, outputs: { branch: String(expected) } });
@@ -331,8 +369,10 @@ async function consumeKernelEvents(filename) {
 
 module.exports = { loadTypeScript };
 if (require.main === module) {
-  if (["--consume-target-events", "--consume-output-events", "--consume-condition-events"].includes(process.argv[2]) && process.argv[3]) {
+  if (["--consume-target-events", "--consume-output-events", "--consume-condition-events", "--consume-branch-events"].includes(process.argv[2]) && process.argv[3]) {
     consumeKernelEvents(process.argv[3]).catch((error) => { console.error(error); process.exitCode = 1; });
+  } else if (process.argv[2] === "--emit-branch-fixtures") {
+    emitFixtures(["branch-single-if-true", "branch-single-if-false", "branch-single-legacy-true", "branch-single-uuid-true", ...[0, 1, 2, 3].map(index => `branch-multi-${index}`)]).catch((error) => { console.error(error); process.exitCode = 1; });
   } else if (process.argv[2] === "--emit-condition-truth-fixtures") {
     emitFixtures(["and", "or"].flatMap((logic) => [false, true].flatMap((a) => [false, true].map((b) => `condition-truth-${logic}-${a}-${b}`)))).catch((error) => { console.error(error); process.exitCode = 1; });
   } else if (process.argv[2] === "--emit-output-contract-fixtures") {
