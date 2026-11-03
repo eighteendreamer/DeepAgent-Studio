@@ -329,14 +329,14 @@ async fn h194_late_failure_settles_unvisited_nodes_and_never_publishes_success()
 }
 
 #[tokio::test]
-async fn h194_target_scope_is_accounted_for_without_claiming_to_repair_ancestor_closure() {
+async fn h194_target_walk_settles_only_the_h196_recompute_scope() {
     for target in ["start", "end"] {
         let (_root, db, chat, session) = workflow_fixture().await;
         let mut workflow = early_end_graph(false);
         workflow.target_node_id = Some(target.into());
         let (result, nodes) = run(&chat, &session, workflow, "h194-target").await;
         assert!(result.is_ok(), "{result:?}");
-        let tail = if target == "start" {
+        let end = if target == "end" {
             NodeExecutionStatus::Completed
         } else {
             NodeExecutionStatus::Skipped
@@ -345,9 +345,9 @@ async fn h194_target_scope_is_accounted_for_without_claiming_to_repair_ancestor_
             &nodes,
             &[
                 ("start", NodeExecutionStatus::Completed),
-                ("end", NodeExecutionStatus::Completed),
-                ("tail", tail),
-                ("after", tail),
+                ("end", end),
+                ("tail", NodeExecutionStatus::Skipped),
+                ("after", NodeExecutionStatus::Skipped),
             ],
         );
         if target == "end" {

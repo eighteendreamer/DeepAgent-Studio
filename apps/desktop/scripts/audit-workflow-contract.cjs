@@ -69,6 +69,14 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
       nodes.unshift(node("orphan", "variable-assigner", { assignments: [] }));
     } else if (name === "professional-rooted-reordered") {
       nodes.reverse();
+    } else if (name.startsWith("target-")) {
+      nodes = [node("start", "start", { inputVariables: [{ name: "value", type: "string", default: "DESKTOP_FRESH" }] }),
+        node("source", "template-transform", { templateScript: "{{#start.value#}}", templateInputVariables: [] }),
+        node("answer", "answer", { answerTemplate: "{{#source.output#}}" }), node("end", "end"),
+        node("unrelated", "variable-assigner", { assignments: [] })];
+      edges = [{ id: "a", source: "start", target: "source" }, { id: "b", source: "source", target: "answer" },
+        { id: "c", source: "answer", target: "end" }, { id: "d", source: "start", target: "unrelated" }];
+      nodes.reverse();
     } else if (name.startsWith("settlement-")) {
       nodes = [node("start", "start"), node("left-end", "end", {
         outputVariables: [{ name: "report", type: "string", value: "LEFT" }],
@@ -187,13 +195,14 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
     });
     globalThis.window = { __TAURI_INTERNALS__: {} };
     const before = JSON.stringify({ nodes, edges });
-    const running = executor.runWorkflow();
+    const running = executor.runWorkflow(name.startsWith("target-") ? name.slice("target-".length) : undefined);
     await ready;
     finish({ payload: { run_id: "audit-serialized-workflow" } });
     await running;
     assert.ok(workflow);
     assert.equal(JSON.stringify({ nodes, edges }), before, "projection must not mutate persisted canvas data");
     const serializedNodes = workflow.definition.nodes;
+    if (name.startsWith("target-")) assert.equal(workflow.target_node_id, name.slice("target-".length));
     if (name.startsWith("input-contract")) {
       assert.deepEqual(workflow.inputs, {}, "the backend alone resolves defaults");
       const declarations = serializedNodes.find((node) => node.id === "start").config.inputVariables;
@@ -236,9 +245,52 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
   process.stdout.write(JSON.stringify(fixtures));
 }
 
+// Replay actual Kernel events through the production consumer, not a shadow mapper.
+async function consumeTargetEvents(filename) {
+  const { name, events } = JSON.parse(readFileSync(filename, "utf8"));
+  const target = name.slice("target-".length);
+  const handlers = new Map();
+  const state = { nodes: ["start", "source", "answer", "end", "unrelated"].map((id) => ({
+    id, data: { kind: id === "start" || id === "end" ? id : "answer", status: "idle" }, position: { x: 0, y: 0 },
+  })), edges: [], updateNodeData(id, patch) {
+    this.nodes = this.nodes.map((node) => node.id === id ? { ...node, data: { ...node.data, ...patch } } : node);
+  } };
+  const executor = loadTypeScript("../src/canvas/workflow/utils/workflowExecutor.ts", {
+    "../store/canvasStore": { useCanvasStore: { getState: () => ({ mode: "professional" }) } },
+    "../store/professionalStore": { useProfessionalStore: { getState: () => state } },
+    "../store/creativeStore": { useCreativeStore: { getState: () => state } },
+    "@tauri-apps/api/core": { invoke: async (command) => {
+      assert.equal(command, "start_workflow"); return { run_id: "target-replay", accepted: true };
+    } },
+    "@tauri-apps/api/event": { listen: async (name, callback) => { handlers.set(name, callback); return () => handlers.delete(name); } },
+  });
+  globalThis.window = { __TAURI_INTERNALS__: {} };
+  const running = executor.runWorkflow(target);
+  // Bound asynchronous listener registration and ACK without host resources.
+  for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(handlers.has("chat://event") && handlers.has("session://completed"));
+  for (const event of events) handlers.get("chat://event")({ payload: {
+    run_id: "target-replay", payload: { type: "workflow_node", event },
+  } });
+  const completed = target === "start" ? ["start"] : target === "answer" ? ["start", "source", "answer"] : ["start", "source", "answer", "end"];
+  for (const node of state.nodes) {
+    // Existing UI contract maps backend Skipped to idle, retaining its reason.
+    assert.equal(node.data.status, completed.includes(node.id) ? "completed" : "idle", node.id);
+    if (!completed.includes(node.id)) assert.equal(node.data.errorMessage, "outside target recompute scope");
+  }
+  if (target !== "start") assert.equal(state.nodes.find((node) => node.id === "answer").data.result, "DESKTOP_FRESH");
+  handlers.get("session://completed")({ payload: { run_id: "target-replay", status: "succeeded" } });
+  await running;
+  assert.equal(handlers.size, 0);
+}
+
 module.exports = { loadTypeScript };
 if (require.main === module) {
-  if (process.argv[2] === "--emit-settlement-fixtures") {
+  if (process.argv[2] === "--consume-target-events" && process.argv[3]) {
+    consumeTargetEvents(process.argv[3]).catch((error) => { console.error(error); process.exitCode = 1; });
+  } else if (process.argv[2] === "--emit-target-fixtures") {
+    emitFixtures(["target-start", "target-answer", "target-end"]).catch((error) => { console.error(error); process.exitCode = 1; });
+  } else if (process.argv[2] === "--emit-settlement-fixtures") {
     emitFixtures(["settlement-tail", "settlement-parallel", "settlement-choice-left", "settlement-choice-right"]).catch((error) => { console.error(error); process.exitCode = 1; });
   } else if (process.argv[2] === "--emit-reachability-fixtures") {
     emitFixtures(["creative-multiple-roots", "professional-unreachable-end", "professional-orphan", "professional-rooted-reordered", "iteration"]).catch((error) => { console.error(error); process.exitCode = 1; });

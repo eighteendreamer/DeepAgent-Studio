@@ -29,6 +29,20 @@ impl WorkflowAgent {
         if self.item.is_some() {
             return Ok(AgentDecision::Complete("iteration item completed".into()));
         }
+        if let Some(target) = &self.target_node_id {
+            if self.node_statuses.get(target) != Some(&NodeExecutionStatus::Completed) {
+                return Err(CoreError::invalid(
+                    "InvalidWorkflowTarget: target was not selected by control flow",
+                ));
+            }
+            if !ends.contains_key(target.as_str()) {
+                let output = self.outputs.get(target).ok_or_else(|| {
+                    CoreError::invalid("InvalidWorkflowTarget: completed target has no output")
+                })?;
+                values::check_value(output, "target result")?;
+                return Ok(AgentDecision::Complete(serde_json::to_string(output)?));
+            }
+        }
         let summary = match ends.len() {
             0 => {
                 return Err(CoreError::invalid(

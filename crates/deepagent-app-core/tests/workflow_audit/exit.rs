@@ -133,8 +133,24 @@ async fn h192_exhausted_branch_without_completed_exit_fails_but_normal_end_succe
     for (index, target) in [Value::Null, json!("choose")].into_iter().enumerate() {
         let (_root, db, chat, session) = workflow_fixture().await;
         let id = format!("h192-skipped-exit-{index}");
+        let partial = !target.is_null();
         let (result, nodes) = run(&chat, &session, branch_workflow(false, target), &id).await;
-        assert_failed(&db, &result, &id, NO_COMPLETED_END);
+        if partial {
+            // H-196: a selected non-end target may settle locally. This does
+            // not relax the full-walk requirement to actually complete an end.
+            assert_eq!(result.unwrap(), session);
+            assert_eq!(
+                RunStore::new(&db)
+                    .get(&id)
+                    .unwrap()
+                    .unwrap()
+                    .terminal_kind
+                    .as_deref(),
+                Some("succeeded")
+            );
+        } else {
+            assert_failed(&db, &result, &id, NO_COMPLETED_END);
+        }
         assert!(nodes
             .iter()
             .any(|n| n.node_id == "finish" && n.status == NodeExecutionStatus::Skipped));

@@ -32,6 +32,8 @@ mod iteration;
 mod reachability;
 #[path = "workflow_audit/settlement.rs"]
 mod settlement;
+#[path = "workflow_audit/target.rs"]
+mod target;
 #[path = "workflow_audit/usage.rs"]
 mod usage;
 
@@ -1620,7 +1622,6 @@ async fn audit_workflow_does_not_succeed_with_a_reachable_branch_unsettled() {
 }
 
 #[tokio::test]
-#[ignore = "audit: running a valid target node must preserve its declared ancestor inputs"]
 async fn audit_workflow_target_node_keeps_required_ancestor_outputs() {
     fn workflow(target_node_id: Option<&str>) -> WorkflowRequest {
         serde_json::from_value(serde_json::json!({

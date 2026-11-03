@@ -55,6 +55,9 @@ pub struct WorkflowRequest {
     pub workspace_id: Option<String>,
     #[serde(default)]
     pub inputs: Map<String, Value>,
+    /// v1 fresh recomputation of a top-level node and its control ancestors.
+    /// Descendants do not execute; item-local nodes require a scoped context
+    /// that this request does not currently carry. This is not resume.
     #[serde(default)]
     pub target_node_id: Option<String>,
 }

@@ -40,6 +40,7 @@ mod item_scheduler;
 #[cfg(test)]
 mod iteration_tests;
 mod settlement;
+mod target;
 use item_scheduler::{IterationExecution, OutputLease};
 
 struct PendingNodeTool {
@@ -152,6 +153,7 @@ impl WorkflowAgent {
         target_node_id: Option<String>,
         publisher: NodeEventPublisher,
     ) -> Result<Self> {
+        target::admit(&compiled, target_node_id.as_deref())?;
         let inputs = compiled.input_plan.admit(inputs, &compiled.revision)?;
         Ok(Self::from_shared(
             Arc::new(compiled),
@@ -2105,6 +2107,21 @@ impl Agent for WorkflowAgent {
         let node_kind = node.kind.clone();
         let node_config = node.config.clone();
 
+        if !self.includes_target_node(&node_id) {
+            self.node_statuses
+                .insert(node_id.clone(), NodeExecutionStatus::Skipped);
+            self.emit_status(
+                &node_id,
+                NodeExecutionStatus::Skipped,
+                1,
+                0,
+                None,
+                Some("outside target recompute scope".into()),
+            );
+            self.step += 1;
+            return self.settle_walk();
+        }
+
         if !self.has_active_predecessor(&node_id) {
             self.node_statuses
                 .insert(node_id.clone(), NodeExecutionStatus::Skipped);
@@ -2114,35 +2131,10 @@ impl Agent for WorkflowAgent {
                 1,
                 0,
                 None,
-                Some("conditional branch not selected".to_string()),
+                Some("conditional branch not selected".into()),
             );
             self.step += 1;
             return self.settle_walk();
-        }
-
-        if let Some(target) = &self.target_node_id {
-            if &node_id != target && node_kind != "start" {
-                let ancestors = self
-                    .compiled
-                    .ancestors
-                    .get(&node_id)
-                    .cloned()
-                    .unwrap_or_default();
-                if !ancestors.contains(target) {
-                    self.node_statuses
-                        .insert(node_id.clone(), NodeExecutionStatus::Skipped);
-                    self.emit_status(
-                        &node_id,
-                        NodeExecutionStatus::Skipped,
-                        1,
-                        0,
-                        None,
-                        Some("outside target execution scope".into()),
-                    );
-                    self.step += 1;
-                    return self.settle_walk();
-                }
-            }
         }
 
         self.active_node_id = Some(node_id.clone());
