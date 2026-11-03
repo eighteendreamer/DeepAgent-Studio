@@ -7943,6 +7943,29 @@ H-82原探针显式0/1仍以content_filter触发3次请求/预算升级/续写�
 
 ### H-211：Harness SDK 将字符串 JSON-RPC response ID 强制折叠为整数，导致请求无法关联
 
+**2026-11-03撤销误报**：原探针把客户端发出的数字ID改成字符串，不能证明合法字符串请求/响应互操作缺陷。复核、正常对照、未关闭边界和原始失败以E-H211-01～03为准；以下原报告及失败原样保留。
+
+**E-H211-01（2026-11-03，原探针与协议契约复核）**：基线`08d45bdc13e557652ce8e087373bc404f0daa96d`，tracked干净，五项用户未跟踪内容保持不读/不改/不提交。原`cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_string_response_id_does_not_leave_request_pending --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- --ignored --exact --nocapture --test-threads=1`实际exit101、28.69秒（含编译）、0过1败0忽略，completed=false/pending=1；未把它当作通过。随后只增强同一夹具的实际请求ID捕获，仍0过1败，明确打印`actual request id=Number(1), fixture response id=String(1)`。原始日志和增强日志分别保留`target/h211-review-20261103/original-probe.log`与`original-with-wire-capture.log`，不删除/改写原始失败。
+
+[JSON-RPC 2.0规范§4/§5](https://www.jsonrpc.org/specification#response_object)允许客户端选择字符串或数字请求ID，但响应必须回传请求中同一ID值；数字1和字符串"1"不是同一JSON值。当前`HarnessClient::call_unchecked`自行从AtomicI64(1)生成数字ID，`request_line(i64, ...)`序列化为数字，pending键与生成器一致，没有公开的字符串ID请求入口。原探针不是“已发送字符串请求却无法关联合法字符串响应”，而是夹具在收到数字请求后擅自改变了ID类型并永远不发送匹配响应；300ms是测试观察窗，不是已承诺的产品响应期限。原报告所谓`HarnessClient::request()`在当前代码也不存在。不能通过将字符串parse为整数、分配给任意pending或为了使旧oracle转绿而新增字符串请求API来修复这一误报。
+
+**E-H211-02（默认对照与范围，未修改生产行为）**：本地Codex RequestId union与DeepSeek Harness Map<JsonRpcId,...>都区分数字/字符串键；参考的union类型不代表允许服务端改变请求ID类型。本轮新增Windows正式SDK真实管道对照：先通过公开initialize，发出thread/list数字ID2；夹具先发送字符串"2"及未知数字999，再以同一stdout上的合法通知作已处理屏障；未用sleep假定到达。错误类型不能成功完成数字请求，随后公开tool/list数字ID3触发逆序匹配，分别覆盖成功和RPC错误，重复ID2响应不串到ID3；只有一次thread/list，匹配结束pending=0。该对照1过0败0忽略，不宣称无有效响应时能自动超时。正式CLI ServerState另用合成临时workspace/内存数据库验证数字1、字符串"1"、普通字符串、零、负数、u64::MAX六类ID的成功/错误响应均保留类型和值，1过0败0忽略。第一版CLI测试误写不存在的Database::in_memory导致编译失败，按现有new_for_test的open_in_memory修正后再真实执行；编译错误日志保留，不当行为红测或生产缺陷。
+
+只新增cfg(test)对照、标注原探针撤销原因并捕获其实际wire ID。app_server.rs与SDK client.rs进入测试区之前的生产前缀逐字与基线相同，证明保留`scope-proof.json`；新模块只在test/windows编译。不改protocol DTO、API、模型、权限、SDK生产路由、数据库schema或配置，无数据迁移、无兼容影响。`as_i64().unwrap_or_default()`本身仍在，未声称已治理其泛化健壮性；本次证据只支持撤销原“合法字符串响应关联失败”结论。无有效响应时的deadline/abandonment仍属H-204，写失败清理属H-90，不可解码frame属H-101，都仍未验收关闭；未来如增加字符串请求API，应先设计保真ID类型和对应新回归，而不是将错配响应当合法输入。
+**E-H211-03（撤销结论与最终验收，2026-11-03）**：撤销原“合法字符串响应无法关联”误报；不计新增修复、历史跳过或归并。保留原标题、原失败和本轮增强复现，不把原探针的错误断言改成通过；ignored原因明确标记withdrawn，不作为今后独立修复目标。采用当前SDK自发数字ID、不将服务端错配ID转成其他请求身份的真实契约，不能把“JSON-RPC允许字符串ID”推导成“响应可以改变客户端已选ID类型”。真正无有效响应的期限/abandonment缺口仍由H-204排队，本次未修。
+
+三份本项测试输入前后SHA256一致。`cargo build -p deepagent-cli --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target --message-format=json` exit0（26.10秒），从compiler-artifact取得CLI入口，验收前后SHA256均为`B4050BE84EAFF5EBCB24F841F81746A9E7250315EB24D2BA9C64E15F346E21BA`，未与Tauri并发写同一目录。实际最终命令/结果：
+
+- `cargo fmt --all -- --check` exit0（6.06秒）。
+- `cargo test -p deepagent-harness-sdk --all-targets --all-features --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- --nocapture --test-threads=1` exit101（142.95秒），**27过1败11忽略**：lib20/0/11，本项真实管道对照通过；e2e_stdio7/1/0，唯一失败为既有`process_exits_when_stdin_closes`在10秒原上限内未退出。原测试/上限未修改，不盲目重跑使其变绿，不归因于H-211或旧旁车；采集时根CLI已无存活进程，不能据后来的空快照推断它曾在10秒内退出。具体根因尚未确定，下一轮优先核对H-92与这个空闲EOF反例的边界，不预先合并；两条H-214失败/重开测试本轮通过。日志和原失败保留，不宣称SDK全组通过。
+- `cargo test -p deepagent-cli --all-targets --all-features --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- --test-threads=1` exit0（32.67秒），**123过0败20忽略**；本项ID对照显式执行，不靠ignored。
+- `cargo test -p deepagent-harness-protocol --all-targets --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- --test-threads=1` exit0（10.60秒），**12过0败0忽略**。
+- `cargo clippy -p deepagent-harness-sdk --all-targets --all-features --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target --no-deps -- -D warnings` exit0（12.10秒）。同范围`-p deepagent-cli` exit101（59.33秒），止于app_server.rs:587原`unnecessary_map_or`，处于已核对与基线逐字相同的生产前缀；不添加allow、不混修旧lint，不称CLI全target严格lint成功。
+
+本轮仅测试和撤销证据，无跨crate生产行为变更；未重跑完整workspace/Tauri/前端构建、真实GUI/供应商/其他OS/MSRV或压力测试，不能把旧结果当作本轮执行。真实管道对照限Windows，CLI对照为正式ServerState及临时合成数据库，不冒充任意外部SDK字符串请求API或端到端模型执行。所有实际stdout、独立result、Cargo artifact JSONL、scope-proof、冻结哈希和终态进程快照保留`target/h211-review-20261103/`，不提交构建/日志产物。忽略项不是验收，原bad-ID无有效响应的挂起现象仍真实，不因撤销而抹去；本项撤销依据是原声称的合法请求/响应契约不成立，而不是让测试更容易通过。
+
+306唯一台账核对后为143验收/22历史跳过/7归并/**3撤销**/131待修/0修复中，有效未关闭131含H-180授权跳过，实际排队130；本轮新增修复0、历史跳过0、归并0、撤销1。不动五项既有用户未跟踪内容，不推送/建PR/amend，不合入H-180。仅本项三份测试文件及当时双文档独立test提交，取得hash后另做docs回填；本项无生产fix提交，不能冒称修复成果。下一项先核对H-92及本轮空闲EOF退出超时，根因未明不合并；H-212等保持原队列。本项契约复核/撤销验收剩余0，整体goal仍未完成；全部剩余修复/验收200–400有效小时仍为历史未逐项校准粗估，依据130排队项的执行/状态/权限/数据与跨层门禁复杂性，构建、设备、依赖和环境等待另计，无可靠日历上界，不承诺精确日期。
+
 **级别：中高（P1，协议互操作与请求生命周期）；触发条件：** JSON-RPC server 对合法请求返回字符串形式的 response `id`（例如请求 ID 为字符串 `"1"`）。当前 SDK reader 使用 `as_i64().unwrap_or_default()`，把该 ID 转成整数 `0`，因此找不到原 pending 请求；调用不会在响应到达时完成或失败，而是一直占用 pending，直到对端 EOF/关闭。
 
 #### JSON-RPC 契约、生产路径与正式复现

@@ -706,7 +706,7 @@ mod audit_tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: a decoded JSON-RPC response with a non-integer id must not strand the matching request"]
+    #[ignore = "withdrawn H-211: this fixture changes the numeric request ID to a string; it is not a matching response (JSON-RPC 2.0 section 5)"]
     async fn audit_string_response_id_does_not_leave_request_pending() {
         let marker = std::env::temp_dir().join(format!(
             "deepagent-harness-sdk-audit-string-id-{}-{}.marker",
@@ -721,7 +721,7 @@ mod audit_tests {
             .replace('\\', "\\\\")
             .replace('\'', "''");
         let script = format!(
-            "$null = [Console]::In.ReadLine(); [Console]::Out.WriteLine('{{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{{}}}}'); [System.IO.File]::WriteAllText('{marker_literal}', 'response-sent'); Start-Sleep -Seconds 30"
+            "$request = [Console]::In.ReadLine(); [Console]::Out.WriteLine('{{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{{}}}}'); [System.IO.File]::WriteAllText('{marker_literal}', $request); Start-Sleep -Seconds 30"
         );
         let mut child = tokio::process::Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", &script])
@@ -753,6 +753,13 @@ mod audit_tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         assert!(marker.exists(), "fixture must emit its string-id response");
+        let wire: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&marker).unwrap()).unwrap();
+        eprintln!(
+            "withdrawn H-211 oracle: actual request id={:?}, fixture response id=String(1)",
+            wire["id"]
+        );
+        assert_eq!(wire["id"], serde_json::json!(1));
 
         let completed_before_eof =
             tokio::time::timeout(std::time::Duration::from_millis(300), &mut request)
@@ -1082,3 +1089,7 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
 #[cfg(all(test, windows))]
 #[path = "client_stream_tests.rs"]
 mod stream_tests;
+
+#[cfg(all(test, windows))]
+#[path = "client_id_contract_tests.rs"]
+mod id_contract_tests;

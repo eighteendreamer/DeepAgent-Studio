@@ -2204,6 +2204,42 @@ mod tests {
         assert_eq!(response.error_code(), Some(-32004));
     }
 
+    #[test]
+    fn h211_server_preserves_the_received_request_id_type() {
+        let workspace = tempfile::tempdir().unwrap();
+        for id in [
+            serde_json::json!(1),
+            serde_json::json!("1"),
+            serde_json::json!("request-local"),
+            serde_json::json!(0),
+            serde_json::json!(-1),
+            serde_json::json!(u64::MAX),
+        ] {
+            let database = Arc::new(Database::open_in_memory().unwrap());
+            let mut state =
+                ServerState::new_for_test_with_database(database, workspace.path().to_owned());
+            let request: RpcRequest = serde_json::from_str(
+                &serde_json::json!({
+                    "jsonrpc": "2.0", "id": id, "method": "initialize",
+                    "params": {"clientName":"h211", "clientVersion":"1", "protocolVersion":PROTOCOL_VERSION}
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let response = state.handle_request_for_test(request);
+            assert!(response.is_success());
+            assert_eq!(response.id, id);
+            let error = state.handle_request_for_test(RpcRequest {
+                jsonrpc: "2.0".into(),
+                id: id.clone(),
+                method: "h211/unknown".into(),
+                params: serde_json::json!({}),
+            });
+            assert!(!error.is_success());
+            assert_eq!(error.id, id, "error responses preserve identity too");
+        }
+    }
+
     fn initialize(state: &mut ServerState) {
         let response = state.handle_request_for_test(rpc_request(
             0,
