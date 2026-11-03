@@ -125,6 +125,22 @@ impl<'db> SubagentRunStore<'db> {
     /// Reopen a terminal child under a later parent run. The caller is
     /// responsible for verifying both parent runs belong to the same session.
     pub fn resume(&self, id: &str, parent_run_id: &str, at: i64) -> Result<()> {
+        let record = self
+            .get(id)?
+            .ok_or_else(|| CoreError::not_found("sub-agent not found"))?;
+        self.resume_from_attempt(id, parent_run_id, record.resume_count, at)
+    }
+
+    /// Claim exactly the terminal attempt whose context the caller loaded.
+    /// A different resume can finish between file read and claim; never accept
+    /// that stale snapshot just because the row is terminal again.
+    pub fn resume_from_attempt(
+        &self,
+        id: &str,
+        parent_run_id: &str,
+        expected_attempt: u32,
+        at: i64,
+    ) -> Result<()> {
         self.db.with_conn(|connection| {
             let changed = connection
                 .execute(
@@ -134,8 +150,8 @@ impl<'db> SubagentRunStore<'db> {
                          state='running', summary=NULL, updated_at=?3,
                          finished_at=NULL, resume_count=resume_count+1
                      WHERE id=?1 AND state IN ('succeeded', 'failed', 'cancelled')
-                       AND finished_at IS NOT NULL",
-                    params![id, parent_run_id, at],
+                       AND finished_at IS NOT NULL AND resume_count=?4",
+                    params![id, parent_run_id, at, expected_attempt],
                 )
                 .map_err(map_sqlite)?;
             if changed != 1 {
@@ -186,6 +202,76 @@ fn map_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<SubagentRunRecord> {
 mod tests {
     use super::*;
     use crate::run_store::RunStore;
+
+    #[test]
+    fn h242_context_claim_is_exclusive_and_rejects_stale_attempt_after_reopen() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("claim.sqlite");
+        {
+            let db = std::sync::Arc::new(Database::open(&path).unwrap());
+            db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO sessions (id, created_at, updated_at) VALUES ('s', 1, 1)",
+                    [],
+                )
+                .map_err(map_sqlite)?;
+                Ok(())
+            })
+            .unwrap();
+            RunStore::new(&db).create("parent", "s", None, 1).unwrap();
+            let store = SubagentRunStore::new(&db);
+            store
+                .create(&SubagentRunRecord {
+                    id: "child".into(),
+                    parent_run_id: "parent".into(),
+                    origin_parent_run_id: "parent".into(),
+                    state: "running".into(),
+                    agent_type: "general".into(),
+                    transcript_path: Some("synthetic.json".into()),
+                    worktree_path: None,
+                    summary: None,
+                    created_at: 1,
+                    updated_at: 1,
+                    finished_at: None,
+                    resume_count: 0,
+                })
+                .unwrap();
+            store
+                .finish("child", "succeeded", Some("attempt zero"), 2)
+                .unwrap();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
+            let workers: Vec<_> = (0..16)
+                .map(|_| {
+                    let db = db.clone();
+                    let barrier = barrier.clone();
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        SubagentRunStore::new(&db)
+                            .resume_from_attempt("child", "parent", 0, 3)
+                            .is_ok()
+                    })
+                })
+                .collect();
+            assert_eq!(
+                workers
+                    .into_iter()
+                    .map(|w| usize::from(w.join().unwrap()))
+                    .sum::<usize>(),
+                1
+            );
+            store
+                .finish("child", "succeeded", Some("attempt one"), 4)
+                .unwrap();
+        }
+        let db = Database::open(&path).unwrap();
+        let store = SubagentRunStore::new(&db);
+        let before = store.get("child").unwrap().unwrap();
+        // Another resume already completed, so state=terminal alone is not a safe claim.
+        assert!(store.resume_from_attempt("child", "parent", 0, 5).is_err());
+        assert_eq!(store.get("child").unwrap().unwrap(), before);
+        store.resume_from_attempt("child", "parent", 1, 5).unwrap();
+        assert_eq!(store.get("child").unwrap().unwrap().resume_count, 2);
+    }
 
     #[test]
     fn creates_lists_and_finishes_subagent() {

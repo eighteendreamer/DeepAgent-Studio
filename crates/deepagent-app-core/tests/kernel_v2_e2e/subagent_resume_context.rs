@@ -362,19 +362,16 @@ async fn verify_long_report(rebuild: bool) {
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: child resume reads a truncated status preview instead of the saved result"]
 async fn subagent_resume_context_long_result_must_survive() {
     verify_long_report(false).await;
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: service reconstruction must not lose a completed child's full result"]
 async fn subagent_resume_context_long_result_must_survive_rebuilt_service() {
     verify_long_report(true).await;
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: a resumed child has no recoverable record of its prior tool observation"]
 async fn subagent_resume_context_prior_observation_must_survive() {
     let mut observations = Vec::new();
     for rebuild in [false, true] {

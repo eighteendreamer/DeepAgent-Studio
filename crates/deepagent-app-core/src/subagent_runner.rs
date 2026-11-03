@@ -16,7 +16,7 @@ use std::sync::Arc;
 use deepagent_core::clock::SystemClock;
 use deepagent_core::error::{CoreError, Result};
 use deepagent_hooks::{HookContext, HookData, HookOutcome, HookPoint, HookRegistry};
-use deepagent_models::{ModelClient, ReasoningEffort, ToolSchema};
+use deepagent_models::{ModelClient, ReasoningEffort, ResponseInputItem, ToolSchema};
 use deepagent_persistence::Database;
 use deepagent_runtime::{RuntimeEvent, RuntimeEventSink};
 use deepagent_session::Session;
@@ -37,6 +37,10 @@ mod deadline_tests;
 #[cfg(test)]
 #[path = "subagent_control_scope_tests.rs"]
 mod control_scope_tests;
+
+#[cfg(test)]
+#[path = "subagent_resume_tests.rs"]
+mod resume_tests;
 
 /// Runs a sub-agent for the `task` tool: a nested agent loop over a sub-registry
 /// (the built-ins minus `task`, so no recursion), on an ephemeral in-memory
@@ -85,6 +89,23 @@ pub(crate) struct ChatSubagentRunner {
     pub(crate) parent_approvals: Arc<std::sync::OnceLock<Arc<dyn deepagent_runtime::ApprovalGate>>>,
 }
 
+/// Internal execution input: public task arguments remain unchanged. Restored
+/// context is data, not a new prompt or a second execution path.
+#[derive(Debug)]
+struct SubagentInput {
+    request: deepagent_builtins::SubagentRequest,
+    history: Vec<ResponseInputItem>,
+}
+
+impl From<deepagent_builtins::SubagentRequest> for SubagentInput {
+    fn from(request: deepagent_builtins::SubagentRequest) -> Self {
+        Self {
+            request,
+            history: Vec::new(),
+        }
+    }
+}
+
 /// One owner for the existing child transcript, durable record and terminal
 /// event. Normal completion and forced future destruction share this boundary;
 /// Drop does not spawn detached asynchronous cleanup or run arbitrary hooks.
@@ -96,71 +117,31 @@ struct TrackedSubagent<'a> {
     persist: bool,
     background: bool,
     armed: bool,
+    surface: Option<crate::context_runtime::SessionSurfaceStore>,
+    /// Last complete Surface also survives a drop during pre-session hooks.
+    seed_history: Vec<ResponseInputItem>,
 }
 
 impl TrackedSubagent<'_> {
     fn finish(&mut self, state: &str, summary: &str) -> Result<()> {
         self.armed = false;
         let subagent_id = &self.id;
-        let request = &self.request;
         let created_at = self.created_at;
         let persist = self.persist;
         let background = self.background;
-        let transcript_path = self
-            .runner
-            .transcript_root
-            .join(format!("{subagent_id}.json"));
-        let bounded_summary = subagent_summary(summary, 2_000);
+        let mut bounded_summary = subagent_summary(summary, 2_000);
+        let mut terminal_state = state;
         let mut persistence_result = Ok(());
         if persist {
-            // Optional versioned metadata in the existing transcript, not a
-            // second workspace store. It prevents resume-after-cleanup from
-            // silently running this DAG child in the parent workspace.
-            let workspace = if request.isolation == "shared" {
-                deepagent_persistence::subagent_store::SubagentRunStore::new(&self.runner.db)
-                    .get(subagent_id)?
-                    .and_then(|record| record.worktree_path)
-                    .map(|path| serde_json::json!({"version": 1, "kind": "dag", "path": path}))
-            } else {
-                None
-            };
-            // Serialize the complete request type once at the persistence
-            // boundary. Keeping the writer on the same serde contract as the
-            // reader prevents newly added request fields from silently being
-            // dropped from resumable child runs.
-            let current_attempt = serde_json::json!({
-                "request": serde_json::to_value(request)?,
-                "state": state,
-                "summary": summary,
-                "started_at": created_at,
-                "finished_at": subagent_now_ms(),
-            });
-            let mut attempts = std::fs::read(&transcript_path)
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-                .and_then(|previous| previous.get("attempts").and_then(|v| v.as_array()).cloned())
-                .unwrap_or_default();
-            attempts.push(current_attempt.clone());
-            let transcript = serde_json::json!({
-                "subagent_id": subagent_id,
-                "parent_run_id": self.runner.parent_run_id,
-                "request": current_attempt["request"].clone(),
-                "workspace": workspace,
-                "state": state,
-                "summary": summary,
-                "created_at": created_at,
-                "finished_at": subagent_now_ms(),
-                "attempts": attempts,
-            });
-            let transcript_result =
-                std::fs::write(&transcript_path, serde_json::to_vec_pretty(&transcript)?).map_err(
-                    |error| {
-                        CoreError::Persistence(format!(
-                            "failed to write subagent transcript {}: {error}",
-                            transcript_path.display()
-                        ))
-                    },
-                );
+            let transcript_result = self.persist_transcript(state, summary);
+            if transcript_result.is_err() {
+                if state != "cancelled" {
+                    terminal_state = "failed";
+                }
+                bounded_summary =
+                    "sub-agent context could not be persisted; continuous resume is unavailable"
+                        .into();
+            }
             // Still attempt the durable terminal even when the transcript
             // filesystem is unavailable; return the failure instead of
             // claiming that the whole lifecycle was persisted successfully.
@@ -168,14 +149,14 @@ impl TrackedSubagent<'_> {
                 deepagent_persistence::subagent_store::SubagentRunStore::new(&self.runner.db)
                     .finish(
                         subagent_id,
-                        state,
+                        terminal_state,
                         Some(&bounded_summary),
                         subagent_now_ms(),
                     );
             persistence_result = transcript_result.and(record_result);
         }
         let duration_ms = subagent_now_ms().saturating_sub(created_at) as u64;
-        if state == "cancelled" {
+        if terminal_state == "cancelled" {
             self.runner
                 .emit_subagent_event(RuntimeEvent::SubagentCancelled {
                     id: subagent_id.clone(),
@@ -188,13 +169,88 @@ impl TrackedSubagent<'_> {
                 .emit_subagent_event(RuntimeEvent::SubagentCompleted {
                     id: subagent_id.clone(),
                     parent_run_id: self.runner.parent_run_id.clone(),
-                    state: state.to_string(),
+                    state: terminal_state.to_string(),
                     summary: bounded_summary.clone(),
                     duration_ms,
                     background,
                 });
         }
         persistence_result
+    }
+    fn persist_transcript(&self, state: &str, summary: &str) -> Result<()> {
+        let subagent_id = &self.id;
+        let request = &self.request;
+        let created_at = self.created_at;
+        let transcript_path = self
+            .runner
+            .transcript_root
+            .join(format!("{subagent_id}.json"));
+        let record = deepagent_persistence::subagent_store::SubagentRunStore::new(&self.runner.db)
+            .get(subagent_id)?
+            .ok_or_else(|| CoreError::not_found("sub-agent record missing"))?;
+        // Optional versioned metadata in the existing transcript, not a
+        // second workspace store. It prevents resume-after-cleanup from
+        // silently running this DAG child in the parent workspace.
+        let workspace = if request.isolation == "shared" {
+            record
+                .worktree_path
+                .map(|path| serde_json::json!({"version": 1, "kind": "dag", "path": path}))
+        } else {
+            None
+        };
+        // Serialize the complete request type once at the persistence
+        // boundary. Keeping the writer on the same serde contract as the
+        // reader prevents newly added request fields from silently being
+        // dropped from resumable child runs.
+        let current_attempt = serde_json::json!({
+            "request": serde_json::to_value(request)?,
+            "state": state,
+            "summary": summary,
+            "started_at": created_at,
+            "finished_at": subagent_now_ms(),
+        });
+        let mut attempts = match std::fs::read(&transcript_path) {
+            Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)?
+                .get("attempts")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .ok_or_else(|| {
+                    CoreError::Persistence("sub-agent transcript has no attempts".into())
+                })?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => {
+                return Err(CoreError::Persistence(format!(
+                    "read sub-agent attempts: {error}"
+                )))
+            }
+        };
+        attempts.push(current_attempt.clone());
+        let items = if let Some(surface) = &self.surface {
+            let events = deepagent_persistence::event_store::EventStore::new(&surface.db)
+                .load_session(surface.session_id)?;
+            crate::input_runtime::response_items_from_events(&events)
+        } else {
+            self.seed_history.clone()
+        };
+        let context = (!items.is_empty()).then(
+            || serde_json::json!({"version": 1, "attempt": record.resume_count, "items": items}),
+        );
+        let transcript = serde_json::json!({
+            "subagent_id": subagent_id,
+            "parent_run_id": self.runner.parent_run_id,
+            "request": current_attempt["request"].clone(),
+            "workspace": workspace,
+            "state": state,
+            "summary": summary,
+            "created_at": created_at,
+            "finished_at": subagent_now_ms(),
+            "attempts": attempts,
+            "context": context,
+        });
+        crate::atomic_file::write_file_atomically(
+            &transcript_path,
+            &serde_json::to_vec_pretty(&transcript)?,
+        )
     }
 }
 
@@ -236,8 +292,15 @@ impl ChatSubagentRunner {
     ) -> Result<deepagent_builtins::SubagentOutcome> {
         let subagent_id = format!("sub_{}", deepagent_core::id::EventId::new());
         let persist = self.begin_tracking(&subagent_id, &request, false, None)?;
-        self.run_tracked(subagent_id, request, cancel, cancel_token, persist, false)
-            .await
+        self.run_tracked(
+            subagent_id,
+            request.into(),
+            cancel,
+            cancel_token,
+            persist,
+            false,
+        )
+        .await
     }
 
     fn begin_tracking(
@@ -474,12 +537,13 @@ impl ChatSubagentRunner {
     async fn run_tracked(
         &self,
         subagent_id: String,
-        request: deepagent_builtins::SubagentRequest,
+        input: SubagentInput,
         cancel: Option<Arc<AtomicBool>>,
         cancel_token: Option<CancellationToken>,
         persist: bool,
         background: bool,
     ) -> Result<deepagent_builtins::SubagentOutcome> {
+        let SubagentInput { request, history } = input;
         let mut lifecycle = TrackedSubagent {
             runner: self,
             id: subagent_id.clone(),
@@ -488,6 +552,8 @@ impl ChatSubagentRunner {
             persist,
             background,
             armed: true,
+            surface: None,
+            seed_history: history,
         };
         let _ = self
             .dispatch_child_hook(
@@ -530,6 +596,8 @@ impl ChatSubagentRunner {
                 cancel.clone(),
                 cancel_token.clone(),
                 &execution_root,
+                &lifecycle.seed_history,
+                &mut lifecycle.surface,
             )
             .await
         };
@@ -608,6 +676,8 @@ impl ChatSubagentRunner {
         cancel: Option<Arc<AtomicBool>>,
         cancel_token: Option<CancellationToken>,
         execution_root: &Path,
+        history: &[ResponseInputItem],
+        surface: &mut Option<crate::context_runtime::SessionSurfaceStore>,
     ) -> Result<deepagent_builtins::SubagentOutcome> {
         use deepagent_runtime::{ModelAgent, RunOutcome, RuntimeConfig, RuntimeEngine};
 
@@ -702,7 +772,7 @@ impl ChatSubagentRunner {
         let fork_response_history = if request.fork {
             self.parent_response_history()
         } else {
-            Vec::new()
+            history.to_vec()
         };
         // Skills: agent-file defaults unioned with the per-call `skills` override.
         let mut skills = agent_profile
@@ -725,6 +795,13 @@ impl ChatSubagentRunner {
         session.append(deepagent_core::event::EventPayload::MessageAppended {
             message: deepagent_core::message::Message::user(&request.prompt),
         })?;
+        // Publish the fully initialized event source before awaited execution.
+        // A failed history import retains the complete seed instead of a partial
+        // copy; the owner also retains this source if the engine is dropped.
+        *surface = Some(crate::context_runtime::SessionSurfaceStore {
+            db: db.clone(),
+            session_id: session.id(),
+        });
         let task = session.create_task(&request.prompt)?;
         let sub_model = request.model.clone().unwrap_or_else(|| self.model.clone());
         let sub_reasoning_effort = subagent_reasoning_effort(
@@ -897,19 +974,23 @@ impl ChatSubagentRunner {
         &self,
         record: &deepagent_persistence::subagent_store::SubagentRunRecord,
         continuation: &str,
-    ) -> Result<deepagent_builtins::SubagentRequest> {
+    ) -> Result<SubagentInput> {
         let transcript_path = record.transcript_path.as_deref().ok_or_else(|| {
             CoreError::not_found(format!(
-                "sub-agent transcript is unavailable: {}",
+                "NOT_RESUMABLE: sub-agent transcript is unavailable: {}",
                 record.id
             ))
         })?;
         let transcript: serde_json::Value =
             serde_json::from_slice(&std::fs::read(transcript_path).map_err(|error| {
-                CoreError::Persistence(format!("failed to read sub-agent transcript: {error}"))
+                CoreError::Persistence(format!(
+                    "NOT_RESUMABLE: failed to read sub-agent transcript: {error}"
+                ))
             })?)
             .map_err(|error| {
-                CoreError::Persistence(format!("invalid sub-agent transcript: {error}"))
+                CoreError::Persistence(format!(
+                    "NOT_RESUMABLE: invalid sub-agent transcript: {error}"
+                ))
             })?;
         if transcript["workspace"]["kind"].as_str() == Some("dag") && record.worktree_path.is_none()
         {
@@ -921,27 +1002,47 @@ impl ChatSubagentRunner {
             .get("request")
             .and_then(serde_json::Value::as_object)
             .ok_or_else(|| CoreError::Persistence("sub-agent transcript has no request".into()))?;
-        let previous_summary = record.summary.as_deref().unwrap_or_default();
+        let context = &transcript["context"];
+        if transcript["subagent_id"].as_str() != Some(record.id.as_str())
+            || context["version"].as_u64() != Some(1)
+            || context["attempt"].as_u64() != Some(u64::from(record.resume_count))
+        {
+            return Err(CoreError::invalid(
+                "NOT_RESUMABLE: missing, unsupported or stale sub-agent context; start a new task",
+            ));
+        }
+        let items: Vec<ResponseInputItem> = serde_json::from_value(context["items"].clone())
+            .map_err(|_| CoreError::invalid("NOT_RESUMABLE: invalid sub-agent context items"))?;
+        if items.is_empty() {
+            return Err(CoreError::invalid("NOT_RESUMABLE: empty sub-agent context"));
+        }
+        // Reuse the provider-neutral repair/identity boundary. An interrupted
+        // call gets the existing explicit 'result missing' error, never replayed execution.
+        let restored =
+            deepagent_models::ResponseRequest::from_response_items(&self.model, None, items);
+        restored
+            .validate()
+            .map_err(|_| CoreError::invalid("NOT_RESUMABLE: ambiguous sub-agent tool history"))?;
         let mut request: deepagent_builtins::SubagentRequest =
             serde_json::from_value(serde_json::Value::Object(saved.clone())).map_err(|error| {
                 CoreError::Persistence(format!("invalid sub-agent request: {error}"))
             })?;
-        let saved_prompt = request.prompt.clone();
         if request.description.trim().is_empty() {
             request.description = "Resume sub-agent".to_string();
         }
         if request.isolation.trim().is_empty() {
             request.isolation = "shared".to_string();
         }
-        request.prompt = format!(
-            "Resume the prior delegated task using the preserved result below.\n\nOriginal task:\n{saved_prompt}\n\nPrevious result:\n{previous_summary}\n\nContinuation request:\n{continuation}"
-        );
+        request.prompt = continuation.to_string();
         request.subagent_type = request
             .subagent_type
             .or_else(|| (record.agent_type != "general").then(|| record.agent_type.clone()));
         // A resumed child continues its own line; it is not a fresh fork.
         request.fork = false;
-        Ok(request)
+        Ok(SubagentInput {
+            request,
+            history: restored.input,
+        })
     }
 
     /// All model-side controls use the persisted origin conversation, not the
@@ -1051,7 +1152,7 @@ impl deepagent_builtins::SubagentRunner for ChatSubagentRunner {
             let _ = runner
                 .run_tracked(
                     task_id.clone(),
-                    request,
+                    request.into(),
                     Some(child_cancel.clone()),
                     None,
                     true,
@@ -1119,18 +1220,23 @@ impl deepagent_builtins::SubagentRunner for ChatSubagentRunner {
             .get(id)?
             .ok_or_else(|| CoreError::not_found(format!("sub-agent not found: {id}")))?;
         self.ensure_control_lineage(&record)?;
-        let request = self.resume_request(&record, prompt)?;
-        store.resume(id, &self.parent_run_id, subagent_now_ms())?;
+        let input = self.resume_request(&record, prompt)?;
+        store.resume_from_attempt(
+            id,
+            &self.parent_run_id,
+            record.resume_count,
+            subagent_now_ms(),
+        )?;
         self.emit_subagent_event(RuntimeEvent::SubagentStarted {
             id: id.to_string(),
             parent_run_id: self.parent_run_id.clone(),
             agent_type: record.agent_type,
-            description: request.description.clone(),
+            description: input.request.description.clone(),
             background: false,
         });
         self.run_tracked(
             id.to_string(),
-            request,
+            input,
             Some(context.cancel_flag()),
             Some(context.cancellation_token()),
             true,
@@ -1223,7 +1329,7 @@ impl deepagent_subagents::SubAgentExecutor for DagSubagentExecutor {
             .clone()
             .with_assigned_worktree(PathBuf::from(context.worktree.path.clone()));
         match runner
-            .run_tracked(id, request, None, None, persist, false)
+            .run_tracked(id, request.into(), None, None, persist, false)
             .await
         {
             Ok(outcome) => Ok(deepagent_subagents::SubAgentResult::success(
@@ -1642,7 +1748,7 @@ mod tests {
         runner
             .run_tracked(
                 subagent_id.to_string(),
-                request,
+                request.into(),
                 Some(Arc::new(AtomicBool::new(false))),
                 None,
                 true,
@@ -2016,7 +2122,7 @@ mod tests {
                     && event.data["subagent_id"].as_str() == Some(output.worktree.name.as_str())
                     && event.data["path"].as_str() == Some(output.worktree.path.as_str())));
         }
-        let request = runner.resume_request(&record, "Continue").unwrap();
+        let request = runner.resume_request(&record, "Continue").unwrap().request;
         let held = temp.path().join("temporarily_unavailable_worktree");
         std::fs::rename(&first.worktree.path, &held).unwrap();
         assert!(runner
@@ -2121,7 +2227,8 @@ mod tests {
         assert_eq!(record.state, "succeeded");
         let restored = runner
             .resume_request(&record, "Continue with the same contract")
-            .unwrap();
+            .unwrap()
+            .request;
         runner
             .resume(
                 &record.id,
@@ -2173,7 +2280,7 @@ mod tests {
     }
 
     #[test]
-    fn resume_request_accepts_legacy_transcript_without_new_fields() {
+    fn resume_request_rejects_legacy_transcript_without_context() {
         use deepagent_persistence::subagent_store::SubagentRunRecord;
 
         let dir = tempfile::tempdir().unwrap();
@@ -2211,9 +2318,26 @@ mod tests {
             resume_count: 0,
         };
 
-        let restored = runner.resume_request(&record, "continue safely").unwrap();
+        assert!(runner
+            .resume_request(&record, "continue safely")
+            .unwrap_err()
+            .to_string()
+            .contains("NOT_RESUMABLE"));
+        // Older request fields/defaults remain readable when accompanied by
+        // an explicit complete context, rather than a summary-only transcript.
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&transcript_path).unwrap()).unwrap();
+        value["subagent_id"] = serde_json::json!(record.id);
+        value["context"] = serde_json::json!({"version": 1, "attempt": 0,
+            "items": [{"type":"message","role":"user","content":"keep the original task"},
+                {"type":"message","role":"assistant","content":"legacy result"}]});
+        std::fs::write(&transcript_path, serde_json::to_vec(&value).unwrap()).unwrap();
+        let restored = runner
+            .resume_request(&record, "continue safely")
+            .unwrap()
+            .request;
         assert_eq!(restored.description, "legacy child");
-        assert!(restored.prompt.contains("keep the original task"));
+        assert_eq!(restored.prompt, "continue safely");
         assert_eq!(restored.subagent_type.as_deref(), Some("explore"));
         assert_eq!(restored.allowed_tools, ["Read"]);
         assert_eq!(restored.model.as_deref(), Some("deepseek-audit"));

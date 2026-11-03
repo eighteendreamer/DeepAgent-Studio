@@ -12,6 +12,7 @@ use std::sync::Mutex;
 type Calls = Vec<(&'static str, Value)>;
 
 struct WorkspaceTransport {
+    namespace: &'static str,
     calls: Calls,
     consumer_calls: Option<Calls>,
     requests: Mutex<Vec<Value>>,
@@ -19,7 +20,12 @@ struct WorkspaceTransport {
 
 impl WorkspaceTransport {
     fn new(calls: Calls) -> Arc<Self> {
+        Self::named(calls, "workspace")
+    }
+
+    fn named(calls: Calls, namespace: &'static str) -> Arc<Self> {
         Arc::new(Self {
+            namespace,
             calls,
             consumer_calls: None,
             requests: Default::default(),
@@ -27,7 +33,7 @@ impl WorkspaceTransport {
     }
 
     fn output(&self, step: usize) -> Value {
-        let id = format!("workspace-call-{step}");
+        let id = format!("{}-call-{step}", self.namespace);
         self.requests
             .lock()
             .unwrap()
@@ -49,11 +55,18 @@ impl deepagent_models::transport::HttpTransport for WorkspaceTransport {
     ) -> Result<()> {
         let body: Value = serde_json::from_str(&request.body)?;
         let input = body["input"].as_array().unwrap();
-        // Count this session's settled outputs, not a shared global step: two
-        // concurrent children must each execute their complete tool sequence.
+        // Count this attempt's settled outputs. A resumed context also contains
+        // prior attempts; their outputs must not advance this scripted sequence
+        // or cause the fixture to reuse a previously persisted call identity.
+        let prefix = format!("{}-call-", self.namespace);
         let step = input
             .iter()
-            .filter(|item| item["type"] == "function_call_output")
+            .filter(|item| {
+                item["type"] == "function_call_output"
+                    && item["call_id"]
+                        .as_str()
+                        .is_some_and(|id| id.starts_with(&prefix))
+            })
             .count();
         let calls = if input.iter().any(|item| {
             item["role"] == "user" && item["content"].to_string().contains("consumer-fixture")
@@ -65,8 +78,8 @@ impl deepagent_models::transport::HttpTransport for WorkspaceTransport {
         self.requests.lock().unwrap().push(body.clone());
         let mut output = Vec::new();
         if let Some((name, arguments)) = calls.get(step) {
-            let item = json!({"type":"function_call", "id":format!("workspace-item-{step}"),
-                "call_id":format!("workspace-call-{step}"), "name":name,
+            let item = json!({"type":"function_call", "id":format!("{}-item-{step}", self.namespace),
+                "call_id":format!("{}-call-{step}", self.namespace), "name":name,
                 "arguments":arguments.to_string()});
             output.push(item.clone());
             for kind in ["response.output_item.added", "response.output_item.done"] {
@@ -527,6 +540,7 @@ async fn git_dag_model_tools_deliver_bytes_and_resume_in_reopened_workspace() {
     let index = std::fs::read(root.join(".git/index")).unwrap();
     let db_path = temp.path().join("state.sqlite");
     let transport = Arc::new(WorkspaceTransport {
+        namespace: "workspace",
         calls: vec![(
             "write_file",
             json!({"path":"delivered.txt","content":"actual producer bytes"}),
@@ -572,13 +586,16 @@ async fn git_dag_model_tools_deliver_bytes_and_resume_in_reopened_workspace() {
     assert!(read_output.to_string().contains("actual producer bytes"));
     assert!(!root.join("delivered.txt").exists() && !root.join("consumed.txt").exists());
     let db = Arc::new(Database::open(&db_path).unwrap());
-    let resume_transport = WorkspaceTransport::new(vec![
-        ("read_file", json!({"path":"consumed.txt"})),
-        (
-            "write_file",
-            json!({"path":"resumed.txt","content":"resumed in child"}),
-        ),
-    ]);
+    let resume_transport = WorkspaceTransport::named(
+        vec![
+            ("read_file", json!({"path":"consumed.txt"})),
+            (
+                "write_file",
+                json!({"path":"resumed.txt","content":"resumed in child"}),
+            ),
+        ],
+        "resumed-workspace",
+    );
     let mut runner = audit_child_runner_with_db(&root, resume_transport.clone(), db.clone());
     runner.transcript_root = temp.path().join("transcripts");
     runner
@@ -590,6 +607,15 @@ async fn git_dag_model_tools_deliver_bytes_and_resume_in_reopened_workspace() {
         .output(0)
         .to_string()
         .contains("consumer bytes"));
+    let first_resume_input = resume_transport.requests.lock().unwrap()[0]["input"].to_string();
+    assert!(
+        first_resume_input.contains("actual producer bytes"),
+        "prior tool observation must survive the database reopen"
+    );
+    assert!(
+        !first_resume_input.contains("resumed-workspace-call-0"),
+        "new read must still execute, not be fabricated from old history"
+    );
     assert_eq!(
         std::fs::read_to_string(Path::new(&next.worktree.path).join("resumed.txt")).unwrap(),
         "resumed in child"

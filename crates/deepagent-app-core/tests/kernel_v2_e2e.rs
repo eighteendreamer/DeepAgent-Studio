@@ -352,17 +352,19 @@ impl HttpTransport for ResumeRoutingTransport {
             4 => {
                 let body: serde_json::Value = serde_json::from_str(&request.body)
                     .map_err(|error| CoreError::other(error.to_string()))?;
-                let prompt = body["input"]
-                    .as_array()
-                    .and_then(|messages| messages.last())
-                    .and_then(|message| message["content"].as_str())
-                    .unwrap_or_default();
-                if !prompt.contains("Previous result:\ninitial-result")
-                    || !prompt.contains("Continuation request:\nadd-more")
-                {
-                    return Err(CoreError::other(format!(
-                        "resume context was not reconstructed: {prompt}"
-                    )));
+                let items = body["input"].as_array().expect("native resume input");
+                assert_eq!(
+                    items.len(),
+                    3,
+                    "history and new user input, not a summary prompt"
+                );
+                for (item, role, content) in [
+                    (&items[0], "user", "produce-initial-result"),
+                    (&items[1], "assistant", "initial-result"),
+                    (&items[2], "user", "add-more"),
+                ] {
+                    assert_eq!(item["role"], role);
+                    assert!(item["content"].as_str().unwrap().contains(content));
                 }
                 response_text("resumed-result")
             }

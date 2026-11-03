@@ -9656,7 +9656,50 @@ AppCore的1900/0/151为30个结果块汇总，workspace的4336/1/251为136个结
 
 ### H-242：子 Agent 的 resume 用状态摘要重启空会话，完整已保存结果及工具观察未恢复
 
-**级别：中（P2）；范围：普通 task(operation=resume) 的上下文恢复。状态：正式 SettingsService/ChatService/Kernel、文件 SQLite 和真实 read_file 已复现，未修复。** H-21 已证明请求契约字段丢失，本项验证的是此前明确未验证的子上下文/结果恢复：即使不设置 schema、phase、label，也会发生，不以旧字段问题重复编号。
+**级别：中（P2）；范围：普通 task(operation=resume) 的上下文恢复。状态：已修复并验收（2026-11-04，仅E-H242-03所列Windows本机范围），修复提交待独立提交后回填；正式 SettingsService/ChatService/Kernel、文件 SQLite 和真实 read_file 原失败证据保留。** H-21 已证明请求契约字段丢失，本项验证的是此前明确未验证的子上下文/结果恢复：即使不设置 schema、phase、label，也会发生，不以旧字段问题重复编号。
+
+#### 2026-11-04 修复与验收（E-H242-01～03）
+
+**E-H242-01（2026-11-04，原复现与修复范围）**：基线e222ffbcd29620d333bdfb8d344c700d855c276f，tracked干净，五项用户未跟踪内容不读/不改/不提交。原 cargo test -p deepagent-app-core --test kernel_v2_e2e subagent_resume_context --offline -j 2 -- --include-ignored --nocapture --test-threads=1 实际exit101，2过3败/0忽略，12.01秒；target/h242-repair-20261103/original-resume-context.log及result.json保留。短128/恰好2000字符对照通过；2001/2400字符报告尾部及真实read_file观察在resume wire缺失，同服务及重建服务均复现。原rebuild只重建服务并复用打开SQLite，不冒充数据库重开或进程重启。根因已沿正式Runner→临时Session/EventStore→SurfacePersistence/compactor→ModelAgent→transcript→resume消费者核对；只改读取完整summary不能修复工具观察。
+
+本地设计范围：在既有transcript保存版本化原生Surface快照，复用response_items_from_events处理压缩/替换/snip、复用既有配对修复与验证；继续由原RuntimeEngine执行，SQLite summary仍仅作预览。正常、失败、取消和future Drop同一生命周期收尾采集；旧/损坏/未知版本或过期快照明确NOT_RESUMABLE，先验证后claim，不隐式重复执行旧工具。尚未实施完成或验收，不计新增修复；公共SubagentRequest/DTO、权限、供应商、数据库schema和前端不在修改范围。原报告已有本地成熟参考与官方约束，本轮复用当前内核API证据，不访问真实供应商、内网、凭据或用户数据。下一步完成TDD与跨层回归、独立提交；H-180授权跳过及H-178已通过门禁保持不变。当前146验收/22历史跳过/7归并/3撤销/127待修/1修复中，有效未关闭128含H-180，实际127项；总200–400有效小时仍是未逐项校准历史粗估，机器/设备/依赖等待另计。
+
+**E-H242-02（2026-11-04，TDD、根因候选与冻结验收启动）**：生产修改前新增默认回归首次因EventSink返回bool的测试编译错误未执行（regression-red.log，0结果块），修正测试签名后regression-red-valid.log实际0过3败，87.39秒；三个失败分别为没有native context、数据库重开缺少版本上下文、旧transcript被错误接纳，编译错误不算缺陷红测。保留原2过3败证据。候选沿原临时Session的EventStore调用统一response_items_from_events，将压缩、tool-result replacement、snip后的原生Surface写入既有transcript.context（version=1、attempt、typed items），仍保存完整请求/结果与attempts，不另建runtime/store/协议或迁移；SQLite summary/通知继续2000字符预览。resume仅追加新的user continuation，将保存的native history同时导入Session和ModelAgent，继续使用原schema/权限/审批/取消/checkpoint/worktree边界。
+
+TrackedSubagent持有现有SessionSurfaceStore事件源，正常/失败/取消/强制Drop均在同一finish保存已观察状态；加载的seed由生命周期owner持有。扩展过程中prestart-red.log实际0过1败（124.59秒），证明在SubagentStart等待处强制丢弃、尚未建立新Session时，候选会把已加载历史覆盖成null；本轮在同一上下文所有权根因内补强，未引入第二条恢复链：尚未建立新Session则保留原seed，只有完整导入历史和本次输入后才发布新事件源。未执行的尝试请求仍保存在attempts，不伪造模型结果。首次运行连Session也未建立时没有完整seed，仍明确不可连续恢复。
+
+旧/损坏/未知版本、空/歧义items、不同child identity或不同attempt明确NOT_RESUMABLE，验证发生在durable claim之前；保留旧文件，不以短摘要静默降级。复用ResponseRequest原配对修复和身份校验：未闭合调用得到既有明确result-missing错误，不重新派发历史工具。SubagentRunStore增加基于已读取resume_count的原子条件claim，避免另一个resume已完成后旧快照又被终态接纳；旧resume方法签名保留并委托同一SQL边界。transcript整文件替换复用既有atomic_file helper；文件失败仍尝试落durable终态、返回错误并标失败（取消仍为取消），旧快照因attempt不符不能复用，不宣称文件+SQLite跨介质原子事务或断电安全。
+
+候选实际：原5项探针全部通过（candidate-original，含显式include-ignored，106.18秒）；extended-unit为7/0/0（102.79秒），含真实read_file后故障/取消/drop、数据库全部owners释放后重开并两次resume、并发owner、坏格式、写失败/过期snapshot、native function/custom/reasoning/附件引用和压缩/replacement投影。配对claim专项1/0/0（9.99秒），16个并发读取者仅一个成功，完成后数据库重开拒绝旧代次。进一步8项候选默认回归通过（final-candidate-h242，含pre-session Drop）；最终结果仍以冻结流水线为准。
+
+消费者核对发现两个旧测试夹具依赖摘要重启假设：ResumeRoutingTransport要求包装提示；WorkspaceTransport把所有历史output计为本次脚本步数，恢复后直接跳过新read/write。runner-group首次40过1败/3忽略的失败保留，未改生产行为去迎合夹具；前者改成分别断言原user/真实assistant/新user三项，后者使用每次attempt唯一call namespace并只计本次outputs，保留真实新read/write、原项目隔离、SQLite重开和Git/index不变断言，新增恢复wire旧观察存在检查。修正后runner-group-v2为41/0/3忽略（113.52秒），resume-e2e-default为8/0/0，原三个缺陷探针已移除ignore；历史请求可缺新可选字段但无完整context的旧transcript现在显式拒绝，H-21请求字段正常恢复和DAG限制继续验。
+
+冻结6份本项源码/测试SHA256保存target/h242-final-20261104/frozen-before.json；已启动默认H-242、resume E2E、persistence/AppCore all-targets、完整workspace、CLI build/双SDK消费者、Tauri check与严格lint/fmt流水线；未完成前不计验收、不提交。附件引用的typed保留不是附件字节重新物化或图片供应商验收；压缩/replacement/snip复用现有投影并比较快照，未宣称真实供应商压缩质量。进程强杀/断电无Drop、其他OS、真实provider/真实UI不在本轮已验证范围。当前146验收/22历史跳过/7归并/3撤销/127待修/1修复中，有效未关闭128含授权跳过H-180、实际127项；后续仍需本项冻结验收和交付，暂估1–3有效小时，约30–50分钟机器执行是以近两轮同机流水线为参考的预估，不承诺准时完成；全部剩余200–400有效小时仍是历史未逐项校准粗估，设备/依赖/构建等待另计。
+
+**E-H242-03（2026-11-04，最终冻结验收与兼容边界）**：本项仅在下列Windows本机离线范围已修复并验收。最终流水线target/h242-final-20261104/completed.txt确认2026-11-04T01:13:31+08:00结束，原生退出码、时间、测试结果块和日志逐项保留；6份本项Rust源码/测试frozen-before.json与frozen-after.json的SHA256完全相同。CLI构建产物target/debug/deepagent.exe实际SHA256为7BF51ABBB238379476AA48B3966E156CDE406CE31C87E8BBE4021A0A7DD61D3E，TS真实stdio测试复制并校验相同字节后启动。原失败、候选夹具失败和prestart红测不覆盖、不删去；后续通过不冒领早期候选尚未覆盖的验证。
+
+| 实际执行命令 | 原生结果与限制 |
+| --- | --- |
+| cargo test -p deepagent-app-core --lib h242_ --offline -j 2 -- --nocapture --test-threads=1 | exit0，8过/0败/0忽略，89.85秒；包含取消/drop、pre-session drop、数据库关闭重开及两次恢复、并发owner、坏/旧/未知/空/歧义快照、写失败和原生Surface投影 |
+| cargo test -p deepagent-app-core --test kernel_v2_e2e resume --offline -j 2 -- --nocapture --test-threads=1 | exit0，8/0/0，111.40秒；原H-242全部5项已转默认执行，短/2000/2001/2400字符与中文边界、真实read_file观察、唯一父终态及字段契约不变量保持；另包含正式同会话恢复、外会话拒绝和project memory对照 |
+| cargo test -p deepagent-persistence --all-targets --offline -j 2 -- --test-threads=1 | exit0，136/0/0，2结果块，18.20秒；含16并发代次claim及数据库重开后的旧snapshot拒绝 |
+| cargo test -p deepagent-app-core --all-targets --offline -j 2 -- --test-threads=1 | exit0，1911/0/148忽略，30结果块，749.85秒；Runner、H-21请求字段、H-22真实DAG工作树读写/重开、H-45 deadline/drop收尾、H-241控制作用域及正常对照通过；既有ignore不计通过 |
+| cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=1 | exit101，4348/1/248忽略，136结果块，1293.75秒；唯一失败为未改动H-306 canvas_prompt::tests::every_node_kind_owns_exactly_one_profile，creative.video-edit.v1的defaultUserPrompt为空。此聚合含子进程结果，不表示4348个唯一测试或全仓通过；CLI145/0/18忽略、Runtime lib403/0/9忽略、Session lib21/0/0、Models lib152/0/17忽略、Rust SDK lib20/0/11忽略及doc-test1/0/0均实际执行 |
+| cargo build -p deepagent-cli --offline -j 2 --message-format=json | exit0，62.56秒，正式CLI字节身份见本段 |
+| cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --offline -j 2 --target-dir G:/Code_Warehouse/DeepAgent-Studio/target/h272-tauri-build | exit0，32.12秒；验证Desktop Rust消费者，非WebView/UI实际运行 |
+| pnpm --dir packages/sdk typecheck；pnpm --dir packages/sdk test；pnpm --dir packages/sdk test:stdio | 三项均exit0；typecheck通过、TS30/0/0及正式CLI stdio1/0/0，分别1.83/2.83/9.85秒；含SDK build，无默认跳过替代真实stdio |
+| cargo fmt --all -- --check（最终前后各一次） | 均exit0，3.82/4.12秒；git diff --check通过 |
+| cargo clippy -p deepagent-persistence --all-targets --no-deps --offline -j 2 -- -D warnings | exit0，2.88秒 |
+| cargo clippy --all-targets --all-features --offline -j 2 -- -D warnings | exit101，4.38秒；既有models/client.rs:355 clone_on_copy先阻断，文件未改，不称根lint通过 |
+| cargo clippy -p deepagent-app-core --all-targets --all-features --no-deps --offline -j 2 -- -D warnings | exit101，36.17秒；与H-241严格诊断逐条比对相同，lib12/含lib-test14项，均在未改context_runtime/http_runtime/plugin_preparation/run_assembler/session_title及workflow_audit/media文件；未发现本项文件新增诊断，但既有门禁仍失败 |
+
+baseline-and-freeze-proof.json保留源码hash、严格lint诊断/文件未变与唯一workspace失败核对。没有通过放宽-D warnings、跳过H-242探针、修改H-306或移除生产门禁取得结果。台账306唯一主行核对只有H-242变化，E01～03同步原审计报告，原有五项用户内容不读/不改/不提交。修复代码、测试、当时两文档一并独立提交，取得真实hash后再单独docs回填，不amend；当前尚待提交。
+
+兼容性：公共task参数/返回DTO、Harness协议、权限审批和SQL schema不变，无依赖新增/迁移。SubagentRunStore新增向后兼容方法，旧resume签名仍可用；resume模型输入由单条摘要包装改为原生上下文+新user请求。旧summary-only transcript不可证明连续性，明确NOT_RESUMABLE并要求新任务，原记录不改写，不自动迁移/重跑。快照保留的是当前有效Surface，持久化压缩/替换后的结果为恢复依据，不保证永远重发被压缩原文；既有Surface投影负责snip/compaction/replacement，当前测试含typed附件引用，未验证图片/文件字节实际物化或真实供应商多模态。文件保存失败会返回错误且durable状态不再伪报succeeded；已发生工具副作用不能由本修复回滚。
+
+残余限制：沿用既有atomic_file整文件替换helper，不承诺Windows异常替换、断电/跨介质事务或进程强杀无Drop恢复；仍只在尝试正常/异常/Drop收尾落快照，进程突然终止可能没有最新子上下文，本项不宣称crash exactly-once。外部副作用停止/回滚、无限历史存储预算、真实provider和费用、其他OS、真实Desktop UI/截图以及前端pnpm build均未执行；本轮未改Tauri契约/前端类型，已执行其Rust消费者check，不冒充UI验收。无真实网络/内网/凭据/用户数据测试、push、PR或数据库迁移。
+
+本轮新增修复1，历史跳过/归并/撤销新增均0；累计147验收/22历史跳过/7归并/3撤销/127待修/0修复中，有效未关闭127含H-180授权跳过，实际待处理126。下一准备复核P1 H-219（tool/list静态能力目录与执行权限不一致），先核对原探针/调用方再决定实现，不将H-243或其他编号顺手合并。H-178八项外部门禁及H-180既有提交/授权跳过保持原样。全部剩余暂沿用200–400有效工作小时历史风险分组粗估：126项还需逐项复现、根因/TDD、生产消费方验收、文档和独立提交，尚未逐项校准，不承诺日期。当前冻结门禁累计2423.60秒（约40.39分钟）为机器编译/执行耗时，不混作人工有效工时；未来设备/依赖/冷构建等待缺乏可量化总区间，另计。整体goal继续active，未宣称整系统完成或全库全绿。
 
 #### 首次即时 Evidence（2026-10-24）
 
