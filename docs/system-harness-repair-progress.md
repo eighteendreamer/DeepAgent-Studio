@@ -76,6 +76,10 @@ H-82原探针显式0/1仍以content_filter触发3次请求/预算升级/续写�
 
 本项限上述本机范围已修复并验收，新增验收1、历史跳过/归并/撤销新增均0；306唯一台账行核对后累计141验收/22历史跳过/7归并/2撤销/134待修/0修复中，有效未关闭134含H-180授权跳过、实际排队133。代码/测试及当时双文档待独立fix提交，取得hash后另做docs回填，不amend、不推送、不建PR。本项有效修复与验收剩余0；下一候选H-214（P1，合法通知先于response到达导致订阅永久丢失，优先运行状态完整性而非P2输出role/元数据），先复核原探针与当前代码。整体goal active；全部剩余200–400有效修复与验收小时仍为历史未逐项校准粗估，依据133排队项及跨层数据/权限/状态/持久化风险和既往轮次，设备/构建/依赖/环境等待另计，无可靠等待总上界、不承诺日期。
 
+**E-H208-04（2026-11-03，独立提交与hash回填）**：修复提交 `d3dff9f55666b8337f635b667869763303eb157d`（【fix】修复H-208 Responses终态契约校验），父提交cd9e41a5，恰含验收冻结的51份源码/测试和当时两份文档，共53文件；未提交target/构建产物/日志或原五项用户未跟踪内容，未推送、未建PR、未迁移数据库。交付核对通过：306唯一台账行，除H-208外305行相对基线逐字未变，原H-208失败段落保留，E-H208-01/02/02a/03双文档逐字一致，51份源码SHA256和测试证据未变，git diff --check及暂存文件清单通过。
+
+本次只回填真实fix hash并同步双文档，另做docs提交、不amend修复提交。H-208本机范围已修复并验收；累计141验收/22历史跳过/7归并/2撤销/134待修，有效未关闭134含H-180授权跳过、实际排队133；下一候选H-214先复核原探针，不把H-82/200/209/210或全仓H-306/旧lint当作本项成果。整体goal仍active、未完成；剩余200–400有效修复与验收小时仍未逐项校准粗估，设备/构建/依赖/环境等待另计、无可靠总上界。
+
 ## H-199 条件分支端口契约（2026-11-03，本机验收通过）
 
 **E-H199-01（2026-11-03，范围、原探针与TDD红）**：基线ba3c68c5，tracked干净，原五项用户未跟踪内容只核对名称、不读/不改/不提交。原命令`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_multi_case_condition_keeps_else_handle --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- --ignored --exact --nocapture --test-threads=1`实际exit101、0过1败，false边被requires a valid source handle拒绝，run failed。先补两项默认真实Kernel回归，再动生产：`cargo test -p deepagent-app-core --test workflow_audit branches:: --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- --nocapture --test-threads=1`实际0过2败：多case即使首组命中仍因false接线准入失败；单case默认ID if求值返回if而可见端口只有true/false，run exhausted without completing an end node。两条均为生产/消费有限集合不闭合的同一根因，合在H-199内修复，不新增编号或混入其他条目。原日志/result、基线及TDD失败证据保留在target/h199-repair-20261103。
@@ -4412,7 +4416,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-205：Rust Harness SDK 丢弃通知外层 `eventSequence`，无法可靠做 ACK 或缺口恢复](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-206：Harness SDK 接受协议版本不兼容的 initialize 结果并进入已初始化状态](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-207：Harness SDK 对 `thread/start` 成功结果缺少必填 `threadId` 校验](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-208：Responses `response.completed` 缺少必填 response 字段仍被当作成功](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 无跳过/归并；原探针/TDD真实红绿，E-H208-01～03 | 三终态统一私有envelope校验，坏输入先拒绝再状态/usage/工具提交；合法fixture同步 | 原探针1/0、矩阵5/0、Kernel2/0、models157/0+HTTP170/0；19项最终门禁与基线限制见E03 | 待本项独立fix提交，后另做docs回填真实hash | 本项本机余0；H-82/200/209/210、H-306/旧lint独立待修；真实provider/其他平台未验收 |
+| [H-208：Responses `response.completed` 缺少必填 response 字段仍被当作成功](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 无跳过/归并；原探针/TDD真实红绿，E-H208-01～03 | 三终态统一私有envelope校验，坏输入先拒绝再状态/usage/工具提交；合法fixture同步 | 原探针1/0、矩阵5/0、Kernel2/0、models157/0+HTTP170/0；19项最终门禁与基线限制见E03 | `d3dff9f55666b8337f635b667869763303eb157d`；E-H208-04 | 本项本机余0；H-82/200/209/210、H-306/旧lint独立待修；真实provider/其他平台未验收 |
 | [H-209：Responses 输出 `message` item 缺少 `role` 仍被静默补成 assistant](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-210：Responses 流非单调 `sequence_number` 被静默接受](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-211：Harness SDK 将字符串 JSON-RPC response ID 强制折叠为整数，导致请求无法关联](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
