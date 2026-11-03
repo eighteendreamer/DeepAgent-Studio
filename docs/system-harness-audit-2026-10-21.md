@@ -8008,6 +8008,14 @@ H-82原探针显式0/1仍以content_filter触发3次请求/预算升级/续写�
 - **影响与本地治理补充，未实施：** TS 增量已经直接观测合法 content delta 与完成通知同时丢失，且在后置观察点 stream 仍未结束，比原 Rust ThreadStarted 样本多覆盖了高层终态等待；没有无限期放任挂起或运行真实 DeepSeek，因此只称“若无额外后续终态/错误收束，可一直等待”，不声称真实付费 run 已发生。应在现有 owned stream seam 内暂存身份确认前的候选事件，response 返回后按 thread/turn 过滤并按序排入同一队列，同时定义有界暂存、并发请求关联、RPC 失败、断线和取消的统一收尾；不能建立永久全局无界历史，也不能在每个调用方增加定时 sleep。SDK 传输生命周期不由 DeepSeek Responses/tool/cache 参数修复。
 - **验证收尾：** `pnpm test`（含 build）**5 passed**、`pnpm typecheck` 通过；新探针默认 **1 passed / 2 skipped**，显式故障组 **1 passed / 2 failed（预期）**。`cargo fmt --all -- --check`、`git diff --check` 通过。未运行 workspace、Clippy、桌面构建或真实 provider，本轮只有 test-only JavaScript 与 Markdown；code-audit 用 raw/owned 双观察和后置 RPC barrier 排除“服务端没发送/未解码”的误判，全系统审计目标仍未完成。
 
+**E-H214-01（2026-11-03，范围与原探针复现，尚未生产修复）**：基线4d83d4c3，H-208修复与hash回填已交付，tracked干净；原五项用户未跟踪内容仅核对名称、不读/不改/不提交。本轮只处理原H-214及其原有TypeScript补充：请求启动、订阅就绪与返回身份关联不属于单个owned生命周期，Rust零receiver丢弃与TS身份未知时先过滤后排队分别违反同一不变量。必须同时覆盖这两个现有SDK入口才能关闭本条台账，不增加第二编号、不把H-205 sequence、H-90/91/92请求/断线生命周期、H-206/207响应校验或其他独立审计问题合并计数。
+
+先按当前Cargo/package/CI配置读取Rust SDK client/transport/error/lib及真实stdio消费者、TS runStreamed/transport/队列/README和原探针，再复核原报告与本地DeepSeek Harness subscribe-before-prompt/owned subscription参考；未运行参考工程。实际执行：`cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_subscribe_after_request_preserves_pre_response_event --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- --ignored --exact --nocapture --test-threads=1`，exit101、0过1败0忽略，late_event=None、early_event=Some("t-early")；两组正式thread_start response均成功，故并非编译/解码或未收到response。`pnpm -C packages/sdk build` exit0后，`RUN_HARNESS_AUDIT=1 node --test packages/sdk/tests/early-events-audit.test.mjs`实际exit1、1过2败0跳过；controlled正常，event-first/response-first两组raw均收到原item.updated/turn.completed，而高层streamed=[]、finished=false，只由测试后续cleanup terminal收束。原探针源码/断言未改，完整日志、结果、基线和4份源码hash保留target/h214-repair-20261103。
+
+范围与候选方案：在既有SDK/协议/RunStore上建立请求前订阅、身份未定时有界保留候选通知、response后按thread/turn精确关联的owned operation，保持底层subscribe从现在开始的显式语义；不能靠扩大broadcast、全局无界历史、sleep或自动重发有副作用的turn掩盖问题。Rust新增owned API的具体签名与兼容性需沿当前公开DTO/调用方定稿，TS复用现有runStreamed seam；不得为本项复制执行链或事件库。后续默认回归须覆盖原两类顺序/同批、并发隔离/审批/唯一终态、有界溢出、错误/取消/drop/EOF及reconnect后使用既有thread/read核对，明确与尚未修复H-205及其他低层问题的边界；尚无实现或验收结论。
+
+本条状态修复中，本次新增验收/历史跳过/归并/撤销均0；306行核对后累计141验收/22历史跳过/7归并/2撤销/133待修/1修复中，有效未关闭134含H-180授权跳过，实际待处理133（H-214修复中1、排队待修132）。本次只记录准备证据，不是fix提交，不声称已修复；生产代码/测试均未变。H-214暂估8–20有效设计/修复/验收小时，依据双SDK有界关联、生命周期与真实stdio跨层测试，签名/失败策略尚需验证；全部剩余200–400有效小时仍为历史未逐项校准粗估，设备/构建/依赖/环境等待另计，无可靠等待总上界，不承诺日期，整体goal仍active。
+
 ### H-215：Harness 归档状态未进入活动列表与运行接纳，已归档 thread 仍可创建 turn
 
 **级别：中（P2，Harness 控制面与运行接纳）；触发条件：** 客户端对已加载 thread 成功调用 `thread/archive`，随后在同一 app-server 生命周期中执行 `thread/list` 或 `turn/start`。归档 marker 已持久化，但 server 内存中的 thread 与运行入口没有观察该状态。

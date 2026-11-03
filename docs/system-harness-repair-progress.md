@@ -12,11 +12,21 @@
 | 历史已修复跳过 | 22 | 17项原审计历史修复，另H-77/H-83/H-238/H-246/H-301分别随H-78/H-143/H-260/H-245/H-164共享边界消除；历史因果对照与默认回归另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | H-208本机验收完成，独立提交与hash回填见E-H208-03/04 |
-| 待修复 | 134 | 含H-180授权跳过，实际排队133；下一候选H-214 |
+| 修复中 | 1 | H-214，Rust/TS原探针均真实复现，尚未生产修复，见E-H214-01 |
+| 待修复 | 133 | 含H-180授权跳过；另H-214修复中，实际待处理133（含修复中1） |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **134（134待修复、0修复中；其中H-180按用户要求跳过，实际待处理133项）**；不提供完成率。141项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计22项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。
+有效未关闭条目当前为 **134（133待修复、1修复中；其中H-180按用户要求跳过，实际待处理133项）**；不提供完成率。141项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计22项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。
+
+## H-214 SDK请求与事件关联生命周期（2026-11-03，修复中）
+
+**E-H214-01（2026-11-03，范围与原探针复现，尚未生产修复）**：基线4d83d4c3，H-208修复与hash回填已交付，tracked干净；原五项用户未跟踪内容仅核对名称、不读/不改/不提交。本轮只处理原H-214及其原有TypeScript补充：请求启动、订阅就绪与返回身份关联不属于单个owned生命周期，Rust零receiver丢弃与TS身份未知时先过滤后排队分别违反同一不变量。必须同时覆盖这两个现有SDK入口才能关闭本条台账，不增加第二编号、不把H-205 sequence、H-90/91/92请求/断线生命周期、H-206/207响应校验或其他独立审计问题合并计数。
+
+先按当前Cargo/package/CI配置读取Rust SDK client/transport/error/lib及真实stdio消费者、TS runStreamed/transport/队列/README和原探针，再复核原报告与本地DeepSeek Harness subscribe-before-prompt/owned subscription参考；未运行参考工程。实际执行：`cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_subscribe_after_request_preserves_pre_response_event --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- --ignored --exact --nocapture --test-threads=1`，exit101、0过1败0忽略，late_event=None、early_event=Some("t-early")；两组正式thread_start response均成功，故并非编译/解码或未收到response。`pnpm -C packages/sdk build` exit0后，`RUN_HARNESS_AUDIT=1 node --test packages/sdk/tests/early-events-audit.test.mjs`实际exit1、1过2败0跳过；controlled正常，event-first/response-first两组raw均收到原item.updated/turn.completed，而高层streamed=[]、finished=false，只由测试后续cleanup terminal收束。原探针源码/断言未改，完整日志、结果、基线和4份源码hash保留target/h214-repair-20261103。
+
+范围与候选方案：在既有SDK/协议/RunStore上建立请求前订阅、身份未定时有界保留候选通知、response后按thread/turn精确关联的owned operation，保持底层subscribe从现在开始的显式语义；不能靠扩大broadcast、全局无界历史、sleep或自动重发有副作用的turn掩盖问题。Rust新增owned API的具体签名与兼容性需沿当前公开DTO/调用方定稿，TS复用现有runStreamed seam；不得为本项复制执行链或事件库。后续默认回归须覆盖原两类顺序/同批、并发隔离/审批/唯一终态、有界溢出、错误/取消/drop/EOF及reconnect后使用既有thread/read核对，明确与尚未修复H-205及其他低层问题的边界；尚无实现或验收结论。
+
+本条状态修复中，本次新增验收/历史跳过/归并/撤销均0；306行核对后累计141验收/22历史跳过/7归并/2撤销/133待修/1修复中，有效未关闭134含H-180授权跳过，实际待处理133（H-214修复中1、排队待修132）。本次只记录准备证据，不是fix提交，不声称已修复；生产代码/测试均未变。H-214暂估8–20有效设计/修复/验收小时，依据双SDK有界关联、生命周期与真实stdio跨层测试，签名/失败策略尚需验证；全部剩余200–400有效小时仍为历史未逐项校准粗估，设备/构建/依赖/环境等待另计，无可靠等待总上界，不承诺日期，整体goal仍active。
 
 ## H-208 Responses终态envelope校验（2026-11-03，本机验收通过）
 
@@ -4422,7 +4432,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-211：Harness SDK 将字符串 JSON-RPC response ID 强制折叠为整数，导致请求无法关联](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-212：Harness SDK 未校验 JSON-RPC response 的协议版本](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-213：Harness SDK 忽略 notification method，任意通知可伪装成 Harness 事件](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-214：Harness SDK 请求返回后才订阅会永久丢失先于 response 到达的合法通知](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-214：Harness SDK 请求返回后才订阅会永久丢失先于 response 到达的合法通知](system-harness-audit-2026-10-21.md) | P1 | 修复中 | 原Rust/TS探针均真实复现；无跳过/归并，E-H214-01 | 双SDK缺少完整owned订阅/身份关联生命周期；只完成预检，未改生产 | Rust原探针0/1，TS build过、原探针1/2；尚未修复或完整验收 | 无fix提交；本轮只记录准备证据 | 本项暂估8–20有效小时；有界关联/生命周期策略待验证，等待另计 |
 | [H-215：Harness 归档状态未进入活动列表与运行接纳，已归档 thread 仍可创建 turn](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-216：Harness 冷分叉返回成功但新 thread 未加载，首个 `turn/start` 被拒绝](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-217：未知 namespaced JSON-RPC method 被误报为 Invalid params](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
