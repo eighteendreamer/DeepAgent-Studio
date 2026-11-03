@@ -63,17 +63,19 @@ impl deepagent_models::transport::HttpTransport for WorkspaceTransport {
             &self.calls
         };
         self.requests.lock().unwrap().push(body.clone());
+        let mut output = Vec::new();
         if let Some((name, arguments)) = calls.get(step) {
             let item = json!({"type":"function_call", "id":format!("workspace-item-{step}"),
                 "call_id":format!("workspace-call-{step}"), "name":name,
                 "arguments":arguments.to_string()});
+            output.push(item.clone());
             for kind in ["response.output_item.added", "response.output_item.done"] {
                 sink.on_event(&json!({"type":kind,"item":item}).to_string())?;
             }
         } else {
             sink.on_event(r#"{"type":"response.output_text.delta","delta":"workspace done"}"#)?;
         }
-        sink.on_event(r#"{"type":"response.completed","response":{"status":"completed"}}"#)?;
+        sink.on_event(&serde_json::json!({"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":output,"status":"completed"}}).to_string())?;
         Ok(())
     }
 }

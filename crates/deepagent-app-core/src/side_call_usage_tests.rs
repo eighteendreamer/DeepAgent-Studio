@@ -35,7 +35,7 @@ impl HttpTransport for Transport {
         assert_eq!(body["model"], "side-model");
         if self.reply == Reply::FailedTerminal {
             sink.on_event(
-                &json!({"type":"response.failed","response":{"status":"failed",
+                &json!({"type":"response.failed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"failed",
                 "error":{"code":"offline_failed","message":"controlled side provider failure"},
                 "usage":{"input_tokens":1000,"output_tokens":100,"total_tokens":1100,
                     "input_tokens_details":{"cached_tokens":800}}}})

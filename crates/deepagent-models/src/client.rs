@@ -755,7 +755,7 @@ mod tests {
         }
 
         let normal_events = vec![
-            r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}"#
+            r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}"#
                 .into(),
         ];
         let cases = vec![
@@ -868,7 +868,7 @@ mod tests {
             Arc::new(CountingTransport {
                 calls: calls.clone(),
                 events: vec![
-                    r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}"#
+                    r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}"#
                         .into(),
                 ],
             }),
@@ -939,7 +939,7 @@ mod tests {
                 calls: calls.clone(),
                 body: body.clone(),
                 events: vec![
-                    r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}"#
+                    r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}"#
                         .into(),
                 ],
             }),
@@ -1021,7 +1021,7 @@ mod tests {
                 calls: calls.clone(),
                 body: body.clone(),
                 events: vec![
-                    r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}"#
+                    r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}"#
                         .into(),
                 ],
             }),
@@ -1052,7 +1052,7 @@ mod tests {
         let client = client_with(vec![
             r#"{"type":"response.output_item.done","item":{"type":"function_call","arguments":"{}"}}"#
                 .into(),
-            r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}"#
+            r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[{"type":"function_call","arguments":"{}"}],"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}"#
                 .into(),
         ]);
 
@@ -1075,7 +1075,7 @@ mod tests {
         let client = client_with(vec![
             r#"{"type":"response.output_item.done","item":{"type":"tool_search_call","call_id":"search-1","execution":"client","arguments":{"query":"calendar create","limit":1}}}"#
                 .into(),
-            r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}"#
+            r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}"#
                 .into(),
         ]);
 
@@ -1311,7 +1311,7 @@ mod tests {
             r#"{"type":"response.reasoning_text.delta","delta":"hard"}"#.to_string(),
             r#"{"type":"response.output_text.delta","delta":"Hello"}"#.to_string(),
             r#"{"type":"response.output_text.delta","delta":" there"}"#.to_string(),
-            r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}"#.to_string(),
+            r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}"#.to_string(),
         ];
         let client = client_with(events);
         let resp = client
@@ -1341,7 +1341,7 @@ mod tests {
             ) -> Result<()> {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 sink.on_event(
-                    r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+                    r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#,
                 )?;
                 Ok(())
             }
@@ -1462,7 +1462,7 @@ mod tests {
             r#"{"type":"response.function_call_arguments.delta","item_id":"item1","delta":"{\"q\":"}"#.to_string(),
             r#"{"type":"response.function_call_arguments.delta","item_id":"item1","delta":"\"rust\"}"}"#.to_string(),
             r#"{"type":"response.function_call_arguments.done","item_id":"item1","arguments":"{\"q\":\"rust\"}"}"#.to_string(),
-            r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}"#.to_string(),
+            r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[{"type":"function_call","id":"item1","call_id":"c1","name":"search","arguments":"{\"q\":\"rust\"}"}],"status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}"#.to_string(),
         ];
         let client = client_with(events);
         let resp = client
@@ -1699,7 +1699,7 @@ mod tests {
         }
 
         let client = client_with(vec![
-            r#"{"type":"response.failed","response":{"status":"failed","error":{"code":"audit_failed","message":"controlled failure"},"usage":{"input_tokens":9,"output_tokens":2,"total_tokens":11,"input_tokens_details":{"cached_tokens":4},"output_tokens_details":{"reasoning_tokens":1}}}}"#.to_string(),
+            r#"{"type":"response.failed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"failed","error":{"code":"audit_failed","message":"controlled failure"},"usage":{"input_tokens":9,"output_tokens":2,"total_tokens":11,"input_tokens_details":{"cached_tokens":4},"output_tokens_details":{"reasoning_tokens":1}}}}"#.to_string(),
         ]);
         let mut observer = UsageRecorder::default();
 

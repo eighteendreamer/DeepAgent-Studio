@@ -1447,7 +1447,7 @@ mod tests {
         // separately), so build one that completes immediately.
         Arc::new(MockTransport::new([
             r#"{"type":"response.output_text.delta","delta":"Hello from the agent."}"#.to_string(),
-            r#"{"type":"response.completed","response":{"status":"completed"}}"#.to_string(),
+            r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#.to_string(),
         ]))
     }
 
@@ -1461,7 +1461,7 @@ mod tests {
         async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
             *self.last_body.lock().unwrap() = Some(request.body);
             sink.on_event(r#"{"type":"response.output_text.delta","delta":"dynamic reply"}"#)?;
-            sink.on_event(r#"{"type":"response.completed","response":{"status":"completed"}}"#)?;
+            sink.on_event(r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#)?;
             Ok(())
         }
     }
@@ -1702,7 +1702,7 @@ mod tests {
             .unwrap();
         let transport = Arc::new(MockTransport::new([
             r#"{"type":"response.output_text.delta","delta":"{\"ok\":false,\"reason\":\"destructive request\"}"}"#.to_string(),
-            r#"{"type":"response.completed","response":{"status":"completed"}}"#.to_string(),
+            r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#.to_string(),
         ]));
         let chat = ChatService::new(db, settings, transport, dir.path());
         let events = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1925,7 +1925,7 @@ mod tests {
     async fn agent_hook_runs_isolated_runtime_and_honors_decision() {
         let transport = Arc::new(MockTransport::new([
             r#"{"type":"response.output_text.delta","delta":"{\"ok\":false,\"reason\":\"agent review denied\"}"}"#.to_string(),
-            r#"{"type":"response.completed","response":{"status":"completed"}}"#.to_string(),
+            r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#.to_string(),
         ]));
         let executor = hook_executor_with(transport, None);
         let action = HookAction {
@@ -2470,7 +2470,7 @@ mod tests {
                 self.projects.set_hooks_trusted(&self.root, false)?;
                 sink.on_event(r#"{"type":"response.output_text.delta","delta":"done"}"#)?;
                 sink.on_event(
-                    r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+                    r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#,
                 )?;
                 Ok(())
             }
@@ -2772,7 +2772,7 @@ mod tests {
             let transport: Arc<dyn HttpTransport> = if api_failure {
                 Arc::new(MockTransport::new([serde_json::json!({
                     "type": "response.failed",
-                    "response": {
+                    "response": {"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],
                         "status": "failed",
                         "error": {
                             "code": "invalid_request_error",
@@ -2988,19 +2988,21 @@ mod tests {
     #[async_trait::async_trait]
     impl HttpTransport for PermissionWriteTransport {
         async fn stream(&self, _request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            let mut output = Vec::new();
             if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
                 let item = serde_json::json!({
                     "type": "function_call", "id": "audit-write-item",
                     "call_id": "audit-write-call", "name": "write_file",
                     "arguments": self.arguments
                 });
+                output.push(item.clone());
                 for event in ["response.output_item.added", "response.output_item.done"] {
                     sink.on_event(&serde_json::json!({"type": event, "item": item}).to_string())?;
                 }
             } else {
                 sink.on_event(r#"{"type":"response.output_text.delta","delta":"finished"}"#)?;
             }
-            sink.on_event(r#"{"type":"response.completed","response":{"status":"completed"}}"#)?;
+            sink.on_event(&serde_json::json!({"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":output,"status":"completed"}}).to_string())?;
             Ok(())
         }
     }
@@ -3286,9 +3288,9 @@ mod tests {
         // A transport that can serve two streamed turns back to back.
         let transport = Arc::new(MockTransport::new([
             r#"{"type":"response.output_text.delta","delta":"first reply"}"#.to_string(),
-            r#"{"type":"response.completed","response":{"status":"completed"}}"#.to_string(),
+            r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#.to_string(),
             r#"{"type":"response.output_text.delta","delta":"second reply"}"#.to_string(),
-            r#"{"type":"response.completed","response":{"status":"completed"}}"#.to_string(),
+            r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#.to_string(),
         ]));
         let chat = ChatService::new(db.clone(), settings, transport, dir.path());
 

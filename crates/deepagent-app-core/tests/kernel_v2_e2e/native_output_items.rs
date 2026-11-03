@@ -63,7 +63,7 @@ fn text_item_events_with_deltas(parts: &[&str], include_deltas: bool) -> Vec<Str
         output.push(item);
     }
     events.push(
-        serde_json::json!({"type":"response.completed","response":{
+        serde_json::json!({"type":"response.completed","response":{"object":"response","created_at":1,
             "id":"audit-response","status":"completed","model":"deepseek-flash","output":output,
             "usage":{"input_tokens":12,"output_tokens":6,"total_tokens":18}
         }})
@@ -115,7 +115,9 @@ impl HttpTransport for NativeTextModel {
                             TextCompletion::DeltaOnly | TextCompletion::FirstItemOnly
                         )
                     {
-                        value["response"].as_object_mut().unwrap().remove("output");
+                        // No terminal text snapshot, but the envelope still
+                        // carries the required output array (H-208).
+                        value["response"]["output"] = serde_json::json!([]);
                     }
                     Some(value.to_string())
                 })

@@ -47,7 +47,7 @@ impl HttpTransport for GatedModel {
         }
         for event in [
             serde_json::json!({"type":"response.output_text.delta","delta":format!("audit-{}-answer", self.label)}),
-            serde_json::json!({"type":"response.completed","response":{"status":"completed"}}),
+            serde_json::json!({"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}),
         ] {
             if sink.on_event(&event.to_string())? {
                 break;

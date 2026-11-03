@@ -85,7 +85,7 @@ fn initialize(state: &mut ServerState) {
 fn completed_text(text: &str) -> Vec<String> {
     vec![
         json!({"type":"response.output_text.delta","delta":text}).to_string(),
-        json!({"type":"response.completed","response":{"status":"completed",
+        json!({"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed",
             "usage":{"input_tokens":12,"output_tokens":6,"total_tokens":18}}})
         .to_string(),
     ]
@@ -102,7 +102,7 @@ fn function_call(call_id: &str, name: &str, arguments: Value) -> Vec<String> {
     vec![
         json!({"type":"response.output_item.added","item":item}).to_string(),
         json!({"type":"response.output_item.done","item":item}).to_string(),
-        json!({"type":"response.completed","response":{"status":"completed"}}).to_string(),
+        json!({"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[item],"status":"completed"}}).to_string(),
     ]
 }
 
@@ -312,7 +312,7 @@ impl HttpTransport for ConcurrentTurnTransport {
             tokio::select! {
                 _ = self.release.notified() => {
                     sink.on_event(r#"{"type":"response.output_text.delta","delta":"released"}"#)?;
-                    sink.on_event(r#"{"type":"response.completed","response":{"status":"completed"}}"#)?;
+                    sink.on_event(r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#)?;
                     return Ok(());
                 }
                 _ = tokio::time::sleep(Duration::from_millis(5)) => {}
@@ -734,7 +734,7 @@ async fn successful_final_hook_has_one_matching_live_and_durable_terminal() {
 
 #[tokio::test]
 async fn provider_error_has_one_matching_live_and_durable_terminal() {
-    let fixture = Fixture::new(vec![json!({"type":"response.failed","response":{
+    let fixture = Fixture::new(vec![json!({"type":"response.failed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],
         "status":"failed","error":{"message":"audit invalid request","code":"invalid_request_error"}
     }})
     .to_string()])

@@ -8,7 +8,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 
-const TERMINAL: &[u8] = b"event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":3,\"response\":{\"id\":\"resp_audit\",\"object\":\"response\",\"status\":\"completed\",\"model\":\"deepseek-flash\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n";
+const TERMINAL: &[u8] = b"event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":3,\"response\":{\"id\":\"resp_audit\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"deepseek-flash\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n";
 
 async fn write_chunk(socket: &mut TcpStream, bytes: &[u8]) {
     socket

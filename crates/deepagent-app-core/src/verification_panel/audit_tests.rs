@@ -80,7 +80,7 @@ impl HttpTransport for WaitingTransport {
         )?);
         assert!(
             sink.on_event(
-                r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":101,"output_tokens":7,"total_tokens":108}}}"#,
+                r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed","usage":{"input_tokens":101,"output_tokens":7,"total_tokens":108}}}"#,
             )?
         );
         Ok(())
@@ -138,7 +138,7 @@ fn main_agent() -> ModelAgent {
             Arc::new(MockTransport::new([
                 r#"{"type":"response.output_text.delta","delta":"Created answer.txt."}"#
                     .to_string(),
-                r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":11,"output_tokens":3,"total_tokens":14}}}"#.to_string(),
+                r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed","usage":{"input_tokens":11,"output_tokens":3,"total_tokens":14}}}"#.to_string(),
             ])),
             ModelConfig::deepseek("offline-placeholder"),
         )),

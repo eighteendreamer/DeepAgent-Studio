@@ -63,7 +63,7 @@ impl HttpTransport for Model {
         if !failed {
             events.extend([
                 json!({"type":"response.output_item.done","output_index":0,"item":item}),
-                json!({"type":"response.completed","response":{
+                json!({"type":"response.completed","response":{"object":"response","created_at":1,
                     "id":format!("response_{attempt}"),"status":"completed","model":"deepseek-flash",
                     "output":[item],"usage":{"input_tokens":12,"output_tokens":6,"total_tokens":18}}}),
             ]);

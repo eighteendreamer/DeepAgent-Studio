@@ -125,6 +125,9 @@ mod subagent_resume_context;
 #[path = "kernel_v2_e2e/responses_fixture.rs"]
 mod responses_fixture;
 
+#[path = "kernel_v2_e2e/terminal_contract.rs"]
+mod terminal_contract;
+
 #[path = "kernel_v2_e2e/input_call_identity.rs"]
 mod input_call_identity;
 
@@ -230,25 +233,35 @@ impl ReplayTransport {
 fn response_text(text: &str) -> Vec<String> {
     vec![
         serde_json::json!({"type":"response.output_text.delta","delta":text}).to_string(),
-        serde_json::json!({"type":"response.completed","response":{"status":"completed"}})
+        serde_json::json!({"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}})
             .to_string(),
     ]
 }
 
 fn response_function_call(call_id: &str, name: &str, arguments: serde_json::Value) -> Vec<String> {
-    let item = serde_json::json!({
-        "type":"function_call",
-        "id":format!("item_{call_id}"),
-        "call_id":call_id,
-        "name":name,
-        "arguments":serde_json::to_string(&arguments).unwrap()
-    });
-    vec![
-        serde_json::json!({"type":"response.output_item.added","item":item}).to_string(),
-        serde_json::json!({"type":"response.output_item.done","item":item}).to_string(),
-        serde_json::json!({"type":"response.completed","response":{"status":"completed"}})
-            .to_string(),
-    ]
+    response_function_calls(vec![(call_id, name, arguments)])
+}
+
+fn response_function_calls(calls: Vec<(&str, &str, serde_json::Value)>) -> Vec<String> {
+    let mut events = Vec::new();
+    let mut output = Vec::new();
+    for (call_id, name, arguments) in calls {
+        let item = serde_json::json!({"type":"function_call","id":format!("item_{call_id}"),
+            "call_id":call_id,"name":name,"arguments":arguments.to_string()});
+        events.extend([
+            serde_json::json!({"type":"response.output_item.added","item":item}).to_string(),
+            serde_json::json!({"type":"response.output_item.done","item":item}).to_string(),
+        ]);
+        output.push(item);
+    }
+    events.push(
+        serde_json::json!({"type":"response.completed","response":{
+            "id":"fixture-response","object":"response","created_at":1,
+            "model":"deepseek-flash","status":"completed","output":output
+        }})
+        .to_string(),
+    );
+    events
 }
 
 fn emit_responses_events(sink: &mut dyn EventSink, events: &[String]) -> Result<()> {
@@ -818,16 +831,7 @@ async fn audit_unrelated_read_does_not_move_reads_before_write_barrier() {
                 serde_json::json!({"path":"other.txt"}),
             ));
         }
-        let mut batch = Vec::new();
-        for (id, name, args) in calls {
-            let mut events = response_function_call(id, name, args);
-            events.pop(); // one terminal marker for the whole model response
-            batch.extend(events);
-        }
-        batch.push(
-            serde_json::json!({"type":"response.completed","response":{"status":"completed"}})
-                .to_string(),
-        );
+        let batch = response_function_calls(calls);
         let requests = Arc::new(Mutex::new(Vec::new()));
         let order = Arc::new(Mutex::new(Vec::new()));
         let capture_order = order.clone();
@@ -2120,7 +2124,7 @@ fn answer_with_usage(text: &str, prompt: u32, completion: u32) -> Vec<String> {
         serde_json::json!({"type":"response.output_text.delta","delta":text}).to_string(),
         serde_json::json!({
             "type": "response.completed",
-            "response": {
+            "response": {"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],
                 "status": "completed",
                 "usage": {
                     "input_tokens": prompt,

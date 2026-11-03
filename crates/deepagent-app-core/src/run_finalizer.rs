@@ -661,7 +661,7 @@ mod tests {
                     run_succeeded: false,
                     capture_client: Some(Arc::new(ModelClient::new(
                         Arc::new(deepagent_models::MockTransport::new([
-                            r#"{"type":"response.completed","response":{"status":"completed"}}"#
+                            r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#
                                 .to_string(),
                         ])),
                         deepagent_models::ModelConfig::deepseek("test"),

@@ -42,7 +42,7 @@ impl HttpTransport for IncompleteModel {
             "content":[{"type":"output_text","text":text,"annotations":[]}]
         });
         let mut response = serde_json::json!({
-            "id":id,"object":"response","status":status,"output":[item],
+            "id":id,"object":"response","created_at":1,"model":"deepseek-flash","status":status,"output":[item],
             "usage":{
                 "input_tokens":12 * attempt,
                 "input_tokens_details":{"cached_tokens":4 * attempt},

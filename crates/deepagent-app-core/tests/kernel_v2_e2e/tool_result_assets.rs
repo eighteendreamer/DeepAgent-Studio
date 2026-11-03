@@ -68,13 +68,12 @@ fn write_large(root: &std::path::Path, name: &str, marker: &str) {
 }
 
 fn read_script(calls: &[(&str, serde_json::Value)]) -> Vec<Vec<String>> {
-    let mut batch = Vec::new();
-    for (call_id, arguments) in calls {
-        let mut events = response_function_call(call_id, "read_file", arguments.clone());
-        events.pop();
-        batch.extend(events);
-    }
-    batch.extend(response_text(""));
+    let batch = response_function_calls(
+        calls
+            .iter()
+            .map(|(id, arguments)| (*id, "read_file", arguments.clone()))
+            .collect(),
+    );
     vec![batch, response_text("done")]
 }
 

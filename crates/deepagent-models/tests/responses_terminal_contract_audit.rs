@@ -33,7 +33,6 @@ impl HttpTransport for RecordingTransport {
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: malformed Responses terminal response must be rejected"]
 async fn audit_completed_event_without_required_response_fields_is_rejected() {
     let transport = Arc::new(RecordingTransport::default());
     let client = ModelClient::new(

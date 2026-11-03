@@ -19,7 +19,9 @@ impl HttpTransport for RecordingTransport {
             .unwrap()
             .push(serde_json::from_str(&request.body)?);
         let events = if request.url.ends_with("/responses") {
-            vec![r#"{"type":"response.completed","response":{"status":"completed"}}"#]
+            vec![
+                r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#,
+            ]
         } else {
             vec![
                 r#"{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#,

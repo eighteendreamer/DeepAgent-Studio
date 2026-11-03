@@ -3075,20 +3075,20 @@ mod tests {
         serde_json::json!({"type":"response.reasoning_text.delta","delta":text}).to_string()
     }
 
-    fn response_completed() -> String {
-        serde_json::json!({"type":"response.completed","response":{"status":"completed"}})
+    fn response_completed(output: serde_json::Value) -> String {
+        serde_json::json!({"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":output,"status":"completed"}})
             .to_string()
     }
 
-    fn response_incomplete() -> String {
-        serde_json::json!({"type":"response.incomplete","response":{"status":"incomplete"}})
+    fn response_incomplete(output: serde_json::Value) -> String {
+        serde_json::json!({"type":"response.incomplete","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":output,"status":"incomplete"}})
             .to_string()
     }
 
     fn response_incomplete_with_usage(input: u32, output: u32, reasoning: u32) -> String {
         serde_json::json!({
             "type":"response.incomplete",
-            "response":{
+            "response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],
                 "status":"incomplete",
                 "usage":{
                     "input_tokens": input,
@@ -3103,11 +3103,17 @@ mod tests {
     }
 
     fn response_text_completed(text: &str) -> Vec<String> {
-        vec![response_text_delta(text), response_completed()]
+        vec![
+            response_text_delta(text),
+            response_completed(serde_json::json!([])),
+        ]
     }
 
     fn response_text_incomplete(text: &str) -> Vec<String> {
-        vec![response_text_delta(text), response_incomplete()]
+        vec![
+            response_text_delta(text),
+            response_incomplete(serde_json::json!([])),
+        ]
     }
 
     fn response_text_incomplete_with_usage(
@@ -3134,7 +3140,7 @@ mod tests {
         vec![
             serde_json::json!({"type":"response.output_item.added","item":item}).to_string(),
             serde_json::json!({"type":"response.output_item.done","item":item}).to_string(),
-            response_completed(),
+            response_completed(serde_json::json!([item])),
         ]
     }
 
@@ -3149,7 +3155,7 @@ mod tests {
             serde_json::json!({"type":"response.output_item.added","item":item}).to_string(),
             serde_json::json!({"type":"response.output_item.done","item":item}).to_string(),
             response_text_delta(text),
-            response_completed(),
+            response_completed(serde_json::json!([item])),
         ]
     }
 
@@ -3169,7 +3175,7 @@ mod tests {
         vec![
             serde_json::json!({"type":"response.output_item.added","item":item}).to_string(),
             serde_json::json!({"type":"response.output_item.done","item":item}).to_string(),
-            response_incomplete(),
+            response_incomplete(serde_json::json!([item])),
         ]
     }
 
@@ -3701,7 +3707,7 @@ mod tests {
                     vec![serde_json::json!({
                         "type": "response.failed",
                         "sequence_number": 1,
-                        "response": {
+                        "response": {"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],
                             "status": "failed",
                             "error": {"code": "context_length_exceeded", "message": message}
                         }
@@ -3826,7 +3832,7 @@ mod tests {
             response_text_delta(text),
             serde_json::json!({
                 "type": "response.completed",
-                "response": {
+                "response": {"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],
                     "status": "completed",
                     "usage": {
                         "input_tokens": input,
@@ -3929,7 +3935,7 @@ mod tests {
     }
 
     fn failed_response_with_usage(usage: Option<serde_json::Value>, code: &str) -> String {
-        let mut response = serde_json::json!({"status":"failed",
+        let mut response = serde_json::json!({"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"failed",
             "error":{"code":code,"message":"controlled failure"}});
         if let Some(usage) = usage {
             response["usage"] = usage;
@@ -4074,7 +4080,10 @@ mod tests {
     async fn route_usage_preserves_paid_truncation_before_fallback() {
         let mut truncated = response_text_completed_with_usage("partial", 1000, 20, 800);
         let terminal = truncated.last_mut().unwrap();
-        *terminal = terminal.replace("response.completed", "response.incomplete");
+        let mut event: serde_json::Value = serde_json::from_str(terminal).unwrap();
+        event["type"] = serde_json::json!("response.incomplete");
+        event["response"]["status"] = serde_json::json!("incomplete");
+        *terminal = event.to_string();
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
                 truncated,
@@ -4183,10 +4192,13 @@ mod tests {
     async fn context_projection_tracks_retained_history_output_and_tool_result_on_wire() {
         let arguments = serde_json::json!({"query": "q".repeat(1_200)}).to_string();
         let mut call_events = response_function_call_done("meter-call", "lookup", &arguments);
-        *call_events.last_mut().unwrap() =
-            response_text_completed_with_usage("", 10_000, 350, 8_000)
-                .pop()
-                .unwrap();
+        let terminal = call_events.last_mut().unwrap();
+        let mut event: serde_json::Value = serde_json::from_str(terminal).unwrap();
+        event["response"]["usage"] = serde_json::json!({
+            "input_tokens":10_000,"output_tokens":350,"total_tokens":10_350,
+            "input_tokens_details":{"cached_tokens":8_000}
+        });
+        *terminal = event.to_string();
         let answer = "a".repeat(2_000);
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
@@ -5055,7 +5067,7 @@ mod tests {
                             "type":"function_call","id":"truncated-item","call_id":"truncated-call",
                             "name":"audit_default","arguments":arguments
                         }}).to_string(),
-                        response_incomplete(),
+                        response_incomplete(serde_json::json!([])),
                     ],
                 };
                 let success = match wire_mode {
@@ -5277,7 +5289,7 @@ mod tests {
         let events = vec![
             response_reasoning_delta("I should inspect the image. "),
             response_text_delta("It shows a compile error."),
-            response_completed(),
+            response_completed(serde_json::json!([])),
         ];
         let mut agent = ModelAgent::new(
             client(events),

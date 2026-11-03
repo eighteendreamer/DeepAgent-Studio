@@ -14,6 +14,9 @@ use crate::chat::{FinishReason, Response, Usage};
 #[path = "stream_text.rs"]
 mod text;
 
+#[path = "stream_terminal.rs"]
+mod terminal;
+
 /// Responses API semantic SSE accumulator. DeepSeek sends an event object in
 /// each `data:` payload; the event's `type` selects the semantic delta.
 #[derive(Debug, Default)]
@@ -174,6 +177,7 @@ impl ResponseAccumulator {
                 }
             }
             "response.completed" => {
+                terminal::validate(&value, kind, "completed")?;
                 self.terminal = Some(FinishReason::Stop);
                 self.saw_terminal = true;
                 self.observe_terminal_usage(value.get("response"), observer)?;
@@ -187,6 +191,7 @@ impl ResponseAccumulator {
                 return Ok(true);
             }
             "response.incomplete" => {
+                terminal::validate(&value, kind, "incomplete")?;
                 self.terminal = Some(FinishReason::Length);
                 self.saw_terminal = true;
                 self.observe_terminal_usage(value.get("response"), observer)?;
@@ -204,6 +209,7 @@ impl ResponseAccumulator {
                 return Ok(true);
             }
             "response.failed" => {
+                terminal::validate(&value, kind, "failed")?;
                 self.saw_terminal = true;
                 self.observe_terminal_usage(value.get("response"), observer)?;
                 let error = value
@@ -918,10 +924,14 @@ mod tests {
         acc.push_sse_data_observed(json, &mut NoopObserver).unwrap();
     }
 
-    fn complete(acc: &mut ResponseAccumulator) {
+    fn complete(acc: &mut ResponseAccumulator, output: serde_json::Value) {
         event(
             acc,
-            r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+            &serde_json::json!({"type":"response.completed","response":{
+                "id":"fixture-response","object":"response","created_at":1,
+                "status":"completed","model":"deepseek-flash","output":output
+            }})
+            .to_string(),
         );
     }
 
@@ -990,7 +1000,7 @@ mod tests {
             "completion identity is provisional until terminal"
         );
         acc.push_sse_data_observed(
-            r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+            r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[{"type":"function_call","id":"fc_0","call_id":"c0","name":"search","arguments":"{}"}],"status":"completed"}}"#,
             &mut rec,
         )
         .unwrap();
@@ -1013,7 +1023,7 @@ mod tests {
                 &serde_json::json!({"type":"response.output_text.delta","delta":frag}).to_string(),
             );
         }
-        complete(&mut acc);
+        complete(&mut acc, serde_json::json!([]));
         let resp = acc.finish().unwrap();
         assert_eq!(resp.output_text_projection(), "Hello, world");
         assert!(resp.reasoning_text_projection().is_none());
@@ -1029,7 +1039,7 @@ mod tests {
             &mut acc,
             &serde_json::json!({"type":"response.output_text.delta","delta":delta}).to_string(),
         );
-        complete(&mut acc);
+        complete(&mut acc, serde_json::json!([]));
 
         let resp = acc.finish().unwrap();
         assert_eq!(resp.output_text_projection(), delta);
@@ -1053,7 +1063,7 @@ mod tests {
             &mut acc,
             r#"{"type":"response.output_text.delta","delta":"4"}"#,
         );
-        complete(&mut acc);
+        complete(&mut acc, serde_json::json!([]));
         let resp = acc.finish().unwrap();
         assert_eq!(
             resp.reasoning_text_projection().as_deref(),
@@ -1077,7 +1087,10 @@ mod tests {
             &mut acc,
             r#"{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read_file","arguments":"{\"path\":\"fixture.txt\"}"}}"#,
         );
-        complete(&mut acc);
+        complete(
+            &mut acc,
+            serde_json::json!([{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read_file","arguments":"{\"path\":\"fixture.txt\"}"}]),
+        );
 
         let response = acc.finish().unwrap();
         let reasoning: Vec<_> = response
@@ -1128,7 +1141,7 @@ mod tests {
                 .to_string(),
             );
         }
-        complete(&mut acc);
+        complete(&mut acc, serde_json::json!([]));
 
         let response = acc.finish().unwrap();
         let reasoning: Vec<_> = response
@@ -1169,7 +1182,10 @@ mod tests {
             &mut acc,
             r#"{"type":"response.function_call_arguments.done","item_id":"fc_abc","arguments":"{\"a\": 2, \"b\": 3}"}"#,
         );
-        complete(&mut acc);
+        complete(
+            &mut acc,
+            serde_json::json!([{"type":"function_call","id":"fc_abc","call_id":"call_abc","name":"add","arguments":"{\"a\": 2, \"b\": 3}"}]),
+        );
 
         let resp = acc.finish().unwrap();
         assert_eq!(resp.finish_reason, Some(FinishReason::Stop));
@@ -1199,7 +1215,10 @@ mod tests {
             &mut acc,
             r#"{"type":"response.function_call_arguments.done","item_id":"fc_1","arguments":"{\"x\": 1}"}"#,
         );
-        complete(&mut acc);
+        complete(
+            &mut acc,
+            serde_json::json!([{"type":"function_call","id":"fc_0","call_id":"c0","name":"f0","arguments":"{}"},{"type":"function_call","id":"fc_1","call_id":"c1","name":"f1","arguments":"{\"x\": 1}"}]),
+        );
         let resp = acc.finish().unwrap();
         let calls = resp.tool_invocations_from_items();
         assert_eq!(calls.len(), 2);
@@ -1218,7 +1237,7 @@ mod tests {
             .unwrap());
         assert!(acc
             .push_sse_data_observed(
-                r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+                r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#,
                 &mut NoopObserver,
             )
             .unwrap());
@@ -1242,7 +1261,10 @@ mod tests {
             &mut acc,
             r#"{"type":"response.output_item.done","item":{"type":"function_call","id":"fc","call_id":"c","name":"noargs","arguments":""}}"#,
         );
-        complete(&mut acc);
+        complete(
+            &mut acc,
+            serde_json::json!([{"type":"function_call","id":"fc","call_id":"c","name":"noargs","arguments":""}]),
+        );
         let resp = acc.finish().unwrap();
         assert_eq!(
             resp.tool_invocations_from_items()[0].2,
@@ -1261,7 +1283,10 @@ mod tests {
             &mut acc,
             r#"{"type":"response.output_item.done","item":{"type":"function_call","id":"fc","call_id":"bad-call","name":"bad","arguments":"{not json"}}"#,
         );
-        complete(&mut acc);
+        complete(
+            &mut acc,
+            serde_json::json!([{"type":"function_call","id":"fc","call_id":"bad-call","name":"bad","arguments":"{not json"}]),
+        );
         let resp = acc.finish().unwrap();
         let calls = resp.tool_invocations_from_items();
         let arguments = &calls[0].2;
@@ -1293,7 +1318,7 @@ mod tests {
         );
         event(
             &mut acc,
-            r#"{"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}"#,
+            r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"status":"completed","model":"deepseek-flash","output":[],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}"#,
         );
         let resp = acc.finish().unwrap();
         assert_eq!(resp.usage.unwrap().total_tokens, 15);
@@ -1341,7 +1366,7 @@ mod tests {
             &mut acc,
             r#"{"type":"response.output_text.delta","delta":"found it"}"#,
         );
-        complete(&mut acc);
+        complete(&mut acc, serde_json::json!([]));
 
         let response = acc.finish().unwrap();
 
@@ -1373,7 +1398,7 @@ mod tests {
             &mut NoopObserver,
         ).unwrap();
         acc.push_sse_data_observed(
-            r#"{"type":"response.completed","response":{"usage":{"input_tokens":3,"output_tokens":2,"output_tokens_details":{"reasoning_tokens":1},"total_tokens":5}}}"#,
+            r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"status":"completed","model":"deepseek-flash","output":[{"type":"custom_tool_call","id":"item_1","call_id":"call_1","name":"apply_patch","input":"*** Begin Patch\n*** End Patch"}],"usage":{"input_tokens":3,"output_tokens":2,"output_tokens_details":{"reasoning_tokens":1},"total_tokens":5}}}"#,
             &mut NoopObserver,
         ).unwrap();
         let response = acc.finish().unwrap();
@@ -1397,7 +1422,7 @@ mod tests {
         )
         .unwrap();
         acc.push_sse_data_observed(
-            r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+            r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[{"type":"custom_tool_call","id":"item_1","call_id":"call_1","name":"apply_patch","input":"*** Begin Patch\n*** End Patch"}],"status":"completed"}}"#,
             &mut NoopObserver,
         )
         .unwrap();
@@ -1428,7 +1453,7 @@ mod tests {
         let mut rec = Rec::default();
         assert!(acc
             .push_sse_data_observed(
-                r#"{"type":"response.incomplete","response":{"status":"incomplete","usage":{"input_tokens":4,"output_tokens":5,"input_tokens_details":{"cached_tokens":2},"output_tokens_details":{"reasoning_tokens":3},"total_tokens":9}}}"#,
+                r#"{"type":"response.incomplete","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"incomplete","usage":{"input_tokens":4,"output_tokens":5,"input_tokens_details":{"cached_tokens":2},"output_tokens_details":{"reasoning_tokens":3},"total_tokens":9}}}"#,
                 &mut rec,
             )
             .unwrap());
@@ -1486,7 +1511,7 @@ mod tests {
             let mut acc = ResponseAccumulator::new();
             let mut observer = TerminalUsageRecorder::default();
             let result = acc.push_sse_data_observed(
-                &json!({"type":kind,"response":{"usage":raw,
+                &json!({"type":kind,"response":{"id":"fixture-response","object":"response","created_at":1,"status":kind.strip_prefix("response.").unwrap(),"model":"deepseek-flash","output":[],"usage":raw,
                     "error":{"code":"audit_failed","message":"controlled failure"}}})
                 .to_string(),
                 &mut observer,
@@ -1543,7 +1568,7 @@ mod tests {
             "response.failed",
         ] {
             for present in [false, true] {
-                let mut response = json!({"error":{"code":"audit_failed"}});
+                let mut response = json!({"id":"fixture-response","object":"response","created_at":1,"status":kind.strip_prefix("response.").unwrap(),"model":"deepseek-flash","output":[],"error":{"code":"audit_failed"}});
                 if present {
                     response["usage"] = Value::Null;
                 }
@@ -1583,7 +1608,7 @@ mod tests {
         );
         event(
             &mut acc,
-            r#"{"type":"response.incomplete","response":{"status":"incomplete"}}"#,
+            r#"{"type":"response.incomplete","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"incomplete"}}"#,
         );
 
         let response = acc.finish().unwrap();
@@ -1635,7 +1660,7 @@ mod tests {
         let mut accumulator = ResponseAccumulator::new();
         let error = accumulator
             .push_sse_data_observed(
-                r#"{"type":"response.incomplete","response":{"usage":{"input_tokens":3,"input_tokens_details":{"cached_tokens":4}}}}"#,
+                r#"{"type":"response.incomplete","response":{"id":"fixture-response","object":"response","created_at":1,"status":"incomplete","model":"deepseek-flash","output":[],"usage":{"input_tokens":3,"input_tokens_details":{"cached_tokens":4}}}}"#,
                 &mut NoopObserver,
             )
             .unwrap_err();
@@ -1709,7 +1734,7 @@ mod tests {
         )
         .unwrap();
         acc.push_sse_data_observed(
-            r#"{"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}"#,
+            r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"status":"completed","model":"deepseek-flash","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}"#,
             &mut NoopObserver,
         )
         .unwrap();

@@ -42,12 +42,17 @@ struct ChildTransport {
 #[async_trait::async_trait]
 impl HttpTransport for ChildTransport {
     async fn stream(&self, _request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
-        if self.call_tool {
-            sink.on_event(r#"{"type":"response.output_item.done","item":{"type":"function_call","call_id":"child-probe","name":"deadline_probe","arguments":"{}"}}"#)?;
+        let item = if self.call_tool {
+            serde_json::json!({"type":"function_call","call_id":"child-probe","name":"deadline_probe","arguments":"{}"})
         } else {
-            sink.on_event(r#"{"type":"response.output_item.done","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"child complete"}]}}"#)?;
-        }
-        sink.on_event(r#"{"type":"response.completed","response":{"status":"completed"}}"#)?;
+            serde_json::json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"child complete"}]})
+        };
+        sink.on_event(
+            &serde_json::json!({"type":"response.output_item.done","item":item}).to_string(),
+        )?;
+        sink.on_event(&serde_json::json!({"type":"response.completed","response":{
+            "id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[item],"status":"completed"
+        }}).to_string())?;
         Ok(())
     }
 }

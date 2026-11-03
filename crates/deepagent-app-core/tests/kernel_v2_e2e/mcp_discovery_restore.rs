@@ -91,7 +91,7 @@ impl HttpTransport for DiscoveryModel {
             serde_json::json!({"type":"response.output_item.done", "sequence_number":2,
                 "output_index":0, "item":item}),
             serde_json::json!({"type":"response.completed", "sequence_number":3,
-                "response":{"id":format!("discovery-response-{attempt}"),
+                "response":{"created_at":1,"id":format!("discovery-response-{attempt}"),
                     "object":"response", "model":model, "status":"completed", "output":[item]}}),
         ];
         emit_responses_events(

@@ -60,7 +60,7 @@ impl HttpTransport for ImageReferenceAnswer {
             sink,
             &[
                 serde_json::json!({"type":"response.output_item.done","item":item}).to_string(),
-                serde_json::json!({"type":"response.completed","response":{
+                serde_json::json!({"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash",
                     "status":"completed","output":[item]
                 }})
                 .to_string(),
@@ -91,7 +91,7 @@ impl HttpTransport for ImageUrlAnswer {
             sink,
             &[
                 serde_json::json!({"type":"response.output_item.done","item":item}).to_string(),
-                serde_json::json!({"type":"response.completed","response":{
+                serde_json::json!({"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash",
                     "status":"completed","output":[item]
                 }})
                 .to_string(),
@@ -156,7 +156,7 @@ impl HttpTransport for ImageAnswer {
             sink,
             &[
                 serde_json::json!({"type":"response.output_item.done","item":item}).to_string(),
-                serde_json::json!({"type":"response.completed","response":{
+                serde_json::json!({"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash",
                     "status":"completed","output":[item]
                 }})
                 .to_string(),

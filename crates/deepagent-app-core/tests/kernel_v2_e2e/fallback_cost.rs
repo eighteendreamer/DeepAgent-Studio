@@ -53,11 +53,13 @@ impl HttpTransport for RouteModel {
         } else {
             response_text("AUDIT_FALLBACK_COST_COMPLETE")
         };
-        events.pop();
+        let output = serde_json::from_str::<serde_json::Value>(&events.pop().unwrap())?["response"]
+            ["output"]
+            .clone();
         events.push(
             serde_json::json!({
                 "type":"response.completed",
-                "response":{
+                "response":{"id":"fixture-response","object":"response","created_at":1,"output":output,
                     "status":"completed",
                     "model":body["model"],
                     "usage":{

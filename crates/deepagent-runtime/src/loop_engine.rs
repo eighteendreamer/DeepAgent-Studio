@@ -3279,6 +3279,7 @@ mod tests {
                     requests.push(serde_json::from_str(&request.body)?);
                     requests.len() - 1
                 };
+                let mut output = Vec::new();
                 if index == 0 {
                     let arguments = r#"{"path":"fixture.txt"}"#;
                     let item = serde_json::json!({
@@ -3291,6 +3292,7 @@ mod tests {
                     if self.conflict {
                         completed["arguments"] = serde_json::json!(r#"{"path":"changed.txt"}"#);
                     }
+                    output.push(completed.clone());
                     for event in [
                         serde_json::json!({"type":"response.output_item.added","item":added}),
                         serde_json::json!({"type":"response.function_call_arguments.delta",
@@ -3318,7 +3320,7 @@ mod tests {
                     )?);
                 }
                 assert!(sink.on_event(
-                    r#"{"type":"response.completed","response":{"status":"completed"}}"#
+                    &serde_json::json!({"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":output,"status":"completed"}}).to_string()
                 )?);
                 Ok(())
             }

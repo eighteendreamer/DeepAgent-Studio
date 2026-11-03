@@ -1323,10 +1323,12 @@ mod tests {
                 seen.push(tools);
                 seen.len()
             };
+            let mut output = Vec::new();
             if step == 1 {
                 let item = serde_json::json!({"type":"function_call","id":"write-item",
                     "call_id":"hidden-write","name":"write_file",
                     "arguments":r#"{"path":"audit-child.txt","content":"hidden tool executed"}"#});
+                output.push(item.clone());
                 sink.on_event(
                     &serde_json::json!({"type":"response.output_item.added","item":item})
                         .to_string(),
@@ -1338,7 +1340,7 @@ mod tests {
             } else {
                 sink.on_event(r#"{"type":"response.output_text.delta","delta":"audit finished"}"#)?;
             }
-            sink.on_event(r#"{"type":"response.completed","response":{"status":"completed"}}"#)?;
+            sink.on_event(&serde_json::json!({"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":output,"status":"completed"}}).to_string())?;
             Ok(())
         }
     }
@@ -2066,7 +2068,7 @@ mod tests {
                 "delta":r#"{"audit_resume_value":"kept"}"#})
                 .to_string(),
             )?;
-            sink.on_event(r#"{"type":"response.completed","response":{"status":"completed"}}"#)?;
+            sink.on_event(r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#)?;
             Ok(())
         }
     }

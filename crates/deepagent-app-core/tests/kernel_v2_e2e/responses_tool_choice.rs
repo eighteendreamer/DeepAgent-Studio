@@ -15,7 +15,7 @@ impl HttpTransport for CountingTransport {
             .lock()
             .unwrap()
             .push(serde_json::from_str(&request.body)?);
-        sink.on_event(r#"{"type":"response.completed","response":{"status":"completed"}}"#)?;
+        sink.on_event(r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#)?;
         Ok(())
     }
 }

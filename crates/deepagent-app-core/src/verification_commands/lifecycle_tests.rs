@@ -116,7 +116,7 @@ async fn observe_fixture(
         Arc::new(ModelClient::new(
             Arc::new(MockTransport::new([
                 r#"{"type":"response.output_text.delta","delta":"Created answer.txt."}"#.into(),
-                r#"{"type":"response.completed","response":{"status":"completed"}}"#.into(),
+                r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#.into(),
             ])),
             ModelConfig::deepseek("offline-placeholder"),
         )),

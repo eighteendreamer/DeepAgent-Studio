@@ -1505,7 +1505,7 @@ mod tests {
         .to_string();
         let transport = Arc::new(MockTransport::new([
             payload,
-            r#"{"type":"response.completed","response":{"status":"completed"}}"#.to_string(),
+            r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#.to_string(),
         ]));
         Arc::new(ModelClient::new(
             transport,
@@ -1529,7 +1529,7 @@ mod tests {
                 sink.on_event(&serde_json::json!({"type":"response.output_text.delta", "delta":
                     r#"{"worth_saving":true,"title":"Late shared capture","body":"late deployment evidence"}"#}).to_string())?;
                 sink.on_event(
-                    r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+                    r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#,
                 )?;
                 Ok(())
             }

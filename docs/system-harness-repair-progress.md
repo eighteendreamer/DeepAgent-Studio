@@ -2,21 +2,79 @@
 
 ## 当前状态与计数口径（2026-11-03）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计140项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；本次只纠正汇总，不计为新增修复。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计141项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；本次只纠正汇总，不计为新增修复。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 140 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-125、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-148、H-149、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-178、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-196、H-197、H-198、H-199、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-259、H-260、H-261、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 141 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-125、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-148、H-149、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-178、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-196、H-197、H-198、H-199、H-208、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-259、H-260、H-261、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 22 | 17项原审计历史修复，另H-77/H-83/H-238/H-246/H-301分别随H-78/H-143/H-260/H-245/H-164共享边界消除；历史因果对照与默认回归另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | H-199本机验收与独立fix提交04a205ee已完成，交付见E04 |
-| 待修复 | 135 | 含H-180授权跳过，实际排队134；下一候选H-208 |
+| 修复中 | 0 | H-208本机验收完成，独立提交与hash回填见E-H208-03/04 |
+| 待修复 | 134 | 含H-180授权跳过，实际排队133；下一候选H-214 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **135（135待修复、0修复中；其中H-180按用户要求跳过，实际待处理134项）**；不提供完成率。140项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计22项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。
+有效未关闭条目当前为 **134（134待修复、0修复中；其中H-180按用户要求跳过，实际待处理133项）**；不提供完成率。141项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计22项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。
+
+## H-208 Responses终态envelope校验（2026-11-03，本机验收通过）
+
+**E-H208-01（2026-11-03，范围、复现与TDD红）**：基线cd9e41a5，tracked干净，原五项用户未跟踪内容仅核对名称、不读/不改/不提交。本轮只修Responses终态envelope校验：completed/incomplete/failed共用解析边界，在saw_terminal、usage、Finished和工具提交之前拒绝非法对象；不修H-82原因映射、H-200元数据落盘、H-209 message role或H-210 sequence，不新增运行链/DTO/依赖/迁移。
+
+原命令`cargo test -p deepagent-models --test responses_terminal_contract_audit audit_completed_event_without_required_response_fields_is_rejected --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- --ignored --exact --nocapture --test-threads=1`真实exit101、0过1败，response={}仍Ok/Stop。新增默认models门禁4项先红2过2败：扩展后的372组非法终态/普通与cancel-aware客户端组合均违规，另直接accumulator拒绝后finish断言失败；合法终态18组/Chat正向对照通过。真实ChatService→ModelClient→Kernel→临时文件/SQLite默认测试先红1过1败：完整function_call done之后畸形终态仍提交write_file，正常终态对照恰一次执行并可重开/cursor回放。日志及JSON结果保留target/h208-repair-20261103，不以编译失败作红测。
+
+依据当前stream/usage/provider_error/failure与Runtime prepare/commit/abort边界、本地Codex typed terminal解析，以及[DeepSeek响应schema](https://api-docs.deepseek.com/zh-cn/api/create-response/)和[流式指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)（2026-11-03查证）：六必填id/object/created_at/status/model/output，终态status必须对应事件，output为object[]；usage/error/incomplete_details可缺失/null，若提供须object，reason若提供遵循官方枚举。非空白id/model为本地标识符有效性约束，不限定模型名/请求名或created_at非负，不拒绝未知扩展字段。错误只含固定事件类型/字段路径/预期类型，不回显provider值。旧正向夹具按真实协议补全；工具output须包含对应item，不在MockTransport或生产parser中自动修补。
+
+当前候选统一私有validator已实现，原探针已移出ignore；本项尚未完成全套回归/严格lint/构建，不能标已验收。新增验收0；累计140验收/22历史跳过/7归并/2撤销/134待修/1修复中，有效未关闭135含H-180授权跳过、实际排队134。本项暂估4–12有效修复与验收小时，夹具迁移/跨层回归有不确定性；整体200–400有效小时仍为历史未逐项校准粗估，设备/构建/依赖/环境等待另计，无可靠等待总上界，不承诺日期。
+
+**E-H208-02（2026-11-03，候选绿与旧夹具生产方迁移）**：统一stream_terminal私有validator在三终态写状态/收usage/发Finished之前执行，结构化malformed_response_terminal静态错误不含收到的值，不重试/不fallback。candidate-terminal-v2为6过0败0忽略（原探针已默认化，新增5测试）；372组非法客户端组合及186直接accumulator拒绝/finish均过，另18组合法usage/failed终态、12组缺失/null可选对象×signed/u64 timestamp与provider别名、空详情及两种官方reason/Chat独立分路保持兼容。候选Kernel原18组无副作用与正常一次写入测试2/0已过；后补正常下一请求call/result配对、原生历史唯一call/result及重开审批断言待最终执行。
+
+候选models先97/39/16、逐项补全正向fixture后153/1/31，最后156/0/31（尚未包含最后新增可选字段测试，故不作最终总数）。candidate-consumers-v1真实2465过8败193忽略/39块；8败均定位到旧fixture：text terminal覆盖工具终态导致snapshot丢失（context authority两项/runtime projection一项），多call批次用text terminal收尾导致遗漏calls（result assets四项），native-text测试主动删除必填output（一项）。这不是新生产豁免：复核fixture编排边界后，单call/batch共用一个显式输出构造器，usage改数值而保留原call snapshot，delta-only以合法空output数组表述无文本快照；不在通用transport/sink/parser中自动补字段，不改原业务断言，不放宽H-78/H-81/H-151/H-259身份/工具提交门禁。失败日志原样保留，修后的跨模块/全仓门禁尚待执行。
+
+截至本证据，桌面pnpm build实际exit0、314过0败，TypeScript SDK pnpm test实际exit0、7过0败，未改UI/前端类型，因此本项无新增UI手动验收；产物未提交。当前本项仍修复中，不以候选成功或默认跳过其他审计探针宣布关闭；最终将冻结源码、运行默认/HTTP models、相关真实消费者、workspace、fmt/严格lint、CLI/Tauri/stdio，保留H-82与H-306及旧lint限制。H-208本项暂估余2–6有效修复与验收小时；整体200–400有效小时仍为历史未逐项校准粗估，设备/构建/依赖/环境等待另计，无可靠等待总上界。
+
+**E-H208-02a（2026-11-03，HTTP生产对照补齐并撤回首轮最终验收）**：首轮冻结50份源码后，默认models157/0/31、原探针1/0、终态矩阵5/0、Kernel2/0、Runtime411/0/11、Context56/0/2、fmt通过；HTTP all-targets/all-features真实148过1败18忽略，失败是reqwest_utf8_audit真实自建127.0.0.1 SSE字节夹具的合法UTF-8终态漏created_at，guard按预期拒绝。只补该正向常量时间戳，不改UTF-8 decoder、原H-257负向探针、生产校验或断言。同时补validator内官方契约URL注释；源码变化被冻结hash门禁检测并停止首轮，不把局部门禁或旧源码结果当最终验收。首轮12份结果/日志、脚本和50份hash原样归档acceptance-v1-before-http-fixture；原始HTTP失败证据保留。
+
+首轮严格models与Runtime lint实际exit101；models补充-W warnings诊断跑完all-targets/all-features，仅原client.rs:355 clone_on_copy一类warning，没有新代码诊断；补充诊断不替代或降低-D warnings门禁。H-82显式原探针仍0过1败，真正返回Length后重试，未因字段门禁提前失败，故独立问题仍待修复。后续重新冻结51份源码，同时检查文件集合与内容hash；准备重跑整套最终门禁，当前不标H-208验收。
+
+**E-H208-03（2026-11-03，最终冻结源码验收与独立交付范围）**：51份代码/测试源码在全部19项最终Rust门禁前后校验文件集合与SHA256，源码未再改变。原探针修前0/1→修后1/0且移出ignore成为默认测试；新增models5/0覆盖372组非法终态/普通与cancel-aware客户端组合、186组直接accumulator拒绝后finish仍失败，完整/可选对象/两种官方reason/供应商别名/signed与u64 timestamp/合法failed paid usage/Chat独立分路均保留正常对照。真实ChatService→ModelClient→ModelAgent→Kernel→文件/SQLite门禁2/0，包含18组缺少六必填字段×三终态：完整call done仍只准备，非法终态一次请求、无重试/文件/actions/审批/原生call和output、唯一failed终态且错误/live/durable不回显坏id；正常一次write、下一实际请求恰一call/result、原生历史与action恰一次，正常关闭SQLite后重开/cursor/终态与actions/history一致、零重派。
+
+生产变更只在既有Responses accumulator三终态调用同一私有schema validator，静态malformed_response_terminal错误走现有Provider分类，不新增公共DTO/事件字段/模型路由/权限/依赖/迁移或第二执行链。其他源码改动均为受影响的测试生产方：补全合法envelope、单call/批次共用显式output构造器、调整usage仅改数字保留call snapshot；没有在MockTransport/通用sink/生产parser内自动修补坏输入，也没有改原业务断言迁就失败。合法DeepSeek/Chat/usage行为保持，只有此前畸形终态从假成功变为明确非重试错误；未知扩展/实际模型别名保留，created_at不臆加非负约束。
+
+最终实际命令与结果如下（全部离线合成输入、临时SQLite/文件及自建回环；无真实provider/凭据/内网/用户数据）：
+
+| 门禁 | 实际执行命令 | 结果 |
+|---|---|---|
+| accept-original-h208 | `cargo test -p deepagent-models --test responses_terminal_contract_audit audit_completed_event_without_required_response_fields_is_rejected --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- --exact --nocapture --test-threads=1` | exit0；1过/0败/0忽略（1块） |
+| accept-terminal-matrix | `cargo test -p deepagent-models --test responses_terminal_contract --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- --nocapture --test-threads=1` | exit0；5过/0败/0忽略（1块） |
+| accept-models-default | `cargo test -p deepagent-models --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- --test-threads=1` | exit0；157过/0败/31忽略（14块） |
+| accept-models-http | `cargo test -p deepagent-models --all-targets --all-features --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- --test-threads=1` | exit0；170过/0败/33忽略（13块） |
+| accept-kernel-h208 | `cargo test -p deepagent-app-core --test kernel_v2_e2e terminal_contract:: --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- --nocapture --test-threads=1` | exit0；2过/0败/0忽略（1块） |
+| accept-runtime | `cargo test -p deepagent-runtime --all-targets --all-features --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- --test-threads=1` | exit0；411过/0败/11忽略（4块） |
+| accept-context | `cargo test -p deepagent-context --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- --test-threads=1` | exit0；56过/0败/2忽略（3块） |
+| negative-h82-unfixed | `cargo test -p deepagent-app-core --test kernel_v2_e2e incomplete_reason::audit_content_filter_does_not_retry_as_output_limit --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- --ignored --exact --nocapture --test-threads=1` | exit101；0过/1败/0忽略（1块） |
+| accept-fmt | `cargo fmt --all -- --check` | exit0 |
+| strict-models-clippy | `cargo clippy -p deepagent-models --all-targets --all-features --no-deps --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- -D warnings` | exit101 |
+| diagnostic-models-warnings | `cargo clippy -p deepagent-models --all-targets --all-features --no-deps --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- -W warnings` | exit0 |
+| strict-runtime-clippy | `cargo clippy -p deepagent-runtime --all-targets --all-features --no-deps --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- -D warnings` | exit101 |
+| strict-appcore-clippy | `cargo clippy -p deepagent-app-core --all-targets --all-features --no-deps --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- -D warnings` | exit101 |
+| strict-root-clippy | `cargo clippy --all-targets --all-features --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- -D warnings` | exit101 |
+| accept-cli-build | `cargo build -p deepagent-cli --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target` | exit0 |
+| accept-workspace | `cargo test --workspace --no-fail-fast --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- --test-threads=1` | exit101；4267过/1败/255忽略（135块） |
+| accept-tauri | `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target` | exit0 |
+| republish-cli | `cargo build -p deepagent-cli --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target` | exit0 |
+| accept-sdk-stdio | `cargo test -p deepagent-harness-sdk --test e2e_stdio --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- --test-threads=1` | exit0；6过/0败/0忽略（1块） |
+| negative-h209-unfixed | `cargo test -p deepagent-models --test responses_output_item_contract_audit audit_output_message_without_role_is_rejected --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- --ignored --exact --nocapture --test-threads=1` | exit101；0过/1败/0忽略（1块） |
+| negative-h210-unfixed | `cargo test -p deepagent-models --test responses_sequence_audit audit_non_monotonic_responses_sequence_is_rejected --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- --ignored --exact --nocapture --test-threads=1` | exit101；0过/1败/0忽略（1块） |
+
+全仓实际4267过/1败/255忽略/135块，唯一失败仍H-306 `canvas_prompt::tests::every_node_kind_owns_exactly_one_profile`，`creative.video-edit.v1`空defaultUserPrompt；该crate与基线无diff，不在H-208顺手修复。默认models157/0/31；HTTP全feature为170/0/33（含真实Reqwest字节/UTF-8正向对照）；Runtime411/0/11、Context56/0/2、Kernel全组候选253/0/42并在最终workspace再次执行。H-133失败usage、H-78/81/151/259身份/文本/提交门禁、上下文权限恢复与外置工具结果真实回归均通过；首轮的39项/1项/8项旧fixture错误、HTTP补充失败及各次日志均保留，不将候选或失败结果覆盖成全绿。
+
+四组严格-D warnings lint实际均exit101：models原client.rs:355 clone_on_copy；Runtime/AppCore/root错误消息与H-199基线一致，18处唯一源码上下文均与cd9e41a5相同，无新源码诊断。补充models -W warnings仅为查看all-targets/all-features后续诊断，实际只有同一原clone warning，不代替严格门禁、不宣称lint通过。fmt、CLI build、Tauri check、CLI重发布hash一致及Rust SDK真实stdio6/0通过，串行防止Tauri sidecar替换CLI；桌面pnpm build/314测试和TS SDK pnpm test/7测试实际通过。未执行非本机平台、真实DeepSeek和UI手动验收：当前只有Windows本机环境，真实服务超出本轮授权范围，本项未改UI/前端类型；这些均不被本机验收结论覆盖。
+
+H-82原探针显式0/1仍以content_filter触发3次请求/预算升级/续写；H-209和H-210原探针也各0/1，保持原错误现象、没有被H-208门禁提前拒绝，三项仍独立待修，不归并或假称解决。H-200元数据落盘也未修改。证据位于target/h208-repair-20261103，含51份hash、19项最终门禁与两项独立负对照、原探针/TDD红、HTTP首轮归档、frontend/SDK结果、CLI hash及checks-verification.json；产物/日志不提交。
+
+本项限上述本机范围已修复并验收，新增验收1、历史跳过/归并/撤销新增均0；306唯一台账行核对后累计141验收/22历史跳过/7归并/2撤销/134待修/0修复中，有效未关闭134含H-180授权跳过、实际排队133。代码/测试及当时双文档待独立fix提交，取得hash后另做docs回填，不amend、不推送、不建PR。本项有效修复与验收剩余0；下一候选H-214（P1，合法通知先于response到达导致订阅永久丢失，优先运行状态完整性而非P2输出role/元数据），先复核原探针与当前代码。整体goal active；全部剩余200–400有效修复与验收小时仍为历史未逐项校准粗估，依据133排队项及跨层数据/权限/状态/持久化风险和既往轮次，设备/构建/依赖/环境等待另计，无可靠等待总上界、不承诺日期。
 
 ## H-199 条件分支端口契约（2026-11-03，本机验收通过）
 
@@ -4354,7 +4412,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-205：Rust Harness SDK 丢弃通知外层 `eventSequence`，无法可靠做 ACK 或缺口恢复](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-206：Harness SDK 接受协议版本不兼容的 initialize 结果并进入已初始化状态](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-207：Harness SDK 对 `thread/start` 成功结果缺少必填 `threadId` 校验](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-208：Responses `response.completed` 缺少必填 response 字段仍被当作成功](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-208：Responses `response.completed` 缺少必填 response 字段仍被当作成功](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 无跳过/归并；原探针/TDD真实红绿，E-H208-01～03 | 三终态统一私有envelope校验，坏输入先拒绝再状态/usage/工具提交；合法fixture同步 | 原探针1/0、矩阵5/0、Kernel2/0、models157/0+HTTP170/0；19项最终门禁与基线限制见E03 | 待本项独立fix提交，后另做docs回填真实hash | 本项本机余0；H-82/200/209/210、H-306/旧lint独立待修；真实provider/其他平台未验收 |
 | [H-209：Responses 输出 `message` item 缺少 `role` 仍被静默补成 assistant](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-210：Responses 流非单调 `sequence_number` 被静默接受](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-211：Harness SDK 将字符串 JSON-RPC response ID 强制折叠为整数，导致请求无法关联](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

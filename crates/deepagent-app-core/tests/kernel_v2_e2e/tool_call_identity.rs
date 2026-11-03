@@ -24,7 +24,7 @@ impl IdentityModel {
         if let Some(item) = &self.malformed_call {
             return vec![
                 serde_json::json!({"type":"response.output_item.done","item":item}).to_string(),
-                serde_json::json!({"type":"response.completed","response":{"status":"completed"}})
+                serde_json::json!({"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}})
                     .to_string(),
             ];
         }
@@ -44,7 +44,7 @@ impl IdentityModel {
             serde_json::json!({"type":"response.function_call_arguments.done",
                 "item_id":"audit-identity-item","output_index":0,"arguments":self.early}),
             serde_json::json!({"type":"response.output_item.done","output_index":0,"item":item}),
-            serde_json::json!({"type":"response.completed","response":{
+            serde_json::json!({"type":"response.completed","response":{"object":"response","created_at":1,
                 "id":"audit-identity-response","status":"completed","model":"deepseek-flash",
                 "output":[item],"usage":{"input_tokens":12,"output_tokens":6,"total_tokens":18}
             }}),

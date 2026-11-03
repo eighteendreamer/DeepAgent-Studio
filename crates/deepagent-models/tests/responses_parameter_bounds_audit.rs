@@ -22,7 +22,7 @@ impl HttpTransport for RecordingTransport {
             .push(serde_json::from_str(&request.body)?);
         for event in [
             r#"{"type":"response.output_text.delta","delta":"offline audit"}"#,
-            r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+            r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#,
         ] {
             if sink.on_event(event)? {
                 break;

@@ -1016,10 +1016,10 @@ pub(crate) mod testing {
 
     impl ScriptedTransport {
         /// The terminal event carries usage, so a pass can report what it cost.
-        fn completed() -> String {
+        fn completed(output: serde_json::Value) -> String {
             serde_json::json!({
                 "type": "response.completed",
-                "response": {
+                "response": {"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":output,
                     "status": "completed",
                     "usage": {"input_tokens": 120, "output_tokens": 18, "total_tokens": 138},
                 },
@@ -1030,7 +1030,7 @@ pub(crate) mod testing {
         pub(crate) fn text(delta: &str) -> Vec<String> {
             vec![
                 serde_json::json!({"type":"response.output_text.delta","delta":delta}).to_string(),
-                Self::completed(),
+                Self::completed(serde_json::json!([])),
             ]
         }
 
@@ -1039,7 +1039,7 @@ pub(crate) mod testing {
         pub(crate) fn text_with_context(delta: &str, input_tokens: u64) -> Vec<String> {
             let completed = serde_json::json!({
                 "type": "response.completed",
-                "response": {
+                "response": {"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],
                     "status": "completed",
                     "usage": {
                         "input_tokens": input_tokens,
@@ -1066,7 +1066,7 @@ pub(crate) mod testing {
             vec![
                 serde_json::json!({"type":"response.output_item.added","item":item}).to_string(),
                 serde_json::json!({"type":"response.output_item.done","item":item}).to_string(),
-                Self::completed(),
+                Self::completed(serde_json::json!([item])),
             ]
         }
 

@@ -58,7 +58,7 @@ impl HttpTransport for PricedUsageModel {
                 .to_string(),
                 serde_json::json!({
                     "type": "response.completed",
-                    "response": {
+                    "response": {"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],
                         "status": "completed",
                         "usage": {
                             "input_tokens": 1000,

@@ -474,7 +474,7 @@ mod tests {
     async fn model_summary_parses_response() {
         let events = vec![
             r#"{"type":"response.output_text.delta","delta":"{\"goal\":\"ship feature\",\"completed\":[\"wrote code\"],\"pending\":[\"tests\"],\"decisions\":[\"chose sqlite\"],\"failures\":[\"migration bug\"]}"}"#.to_string(),
-            r#"{"type":"response.completed","response":{"status":"completed"}}"#.to_string(),
+            r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#.to_string(),
         ];
         let compactor = ModelCompactor::new(client(events), "deepseek-v4-flash");
         let summary = compactor
@@ -505,7 +505,7 @@ mod tests {
         // Model returns non-JSON prose → fall back to heuristic extraction.
         let events = vec![
             r#"{"type":"response.output_text.delta","delta":"I cannot do that."}"#.to_string(),
-            r#"{"type":"response.completed","response":{"status":"completed"}}"#.to_string(),
+            r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#.to_string(),
         ];
         let compactor = ModelCompactor::new(client(events), "deepseek-v4-flash");
         let summary = compactor
@@ -526,7 +526,7 @@ mod tests {
     fn usage_events() -> Vec<String> {
         vec![
             r#"{"type":"response.output_text.delta","delta":"{\"goal\":\"ship feature\",\"completed\":[\"wrote code\"]}"}"#.to_string(),
-            r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":900,"output_tokens":60,"total_tokens":960,"input_tokens_details":{"cached_tokens":700},"output_tokens_details":{"reasoning_tokens":20}}}}"#.to_string(),
+            r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed","usage":{"input_tokens":900,"output_tokens":60,"total_tokens":960,"input_tokens_details":{"cached_tokens":700},"output_tokens_details":{"reasoning_tokens":20}}}}"#.to_string(),
         ]
     }
 
@@ -622,7 +622,7 @@ mod tests {
             events: vec![
                 r#"{"type":"response.output_text.delta","delta":"{\"goal\":\"g\",\"completed\":[\"ok\"]}"}"#
                     .to_string(),
-                r#"{"type":"response.completed","response":{"status":"completed"}}"#.to_string(),
+                r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#.to_string(),
             ],
         });
         let client = Arc::new(ModelClient::new(

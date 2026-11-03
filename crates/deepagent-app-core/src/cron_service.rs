@@ -174,7 +174,7 @@ mod audit_tests {
         let transport = MockTransport::new([
             serde_json::json!({"type":"response.output_item.added","item":item}).to_string(),
             serde_json::json!({"type":"response.output_item.done","item":item}).to_string(),
-            serde_json::json!({"type":"response.completed","response":{"status":"completed"}})
+            serde_json::json!({"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[item],"status":"completed"}})
                 .to_string(),
         ]);
         let commands = Arc::new(AtomicUsize::new(0));

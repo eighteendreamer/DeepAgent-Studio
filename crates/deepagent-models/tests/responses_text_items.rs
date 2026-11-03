@@ -38,7 +38,7 @@ fn done(id: &str, index: u64, text: &str) -> Value {
 
 fn terminal(output: Option<Vec<Value>>, incomplete: bool) -> Value {
     let mut event = json!({"type":if incomplete {"response.incomplete"} else {"response.completed"},
-        "response":{"status":if incomplete {"incomplete"} else {"completed"},
+        "response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":if incomplete {"incomplete"} else {"completed"},
         "usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}});
     if let Some(output) = output {
         event["response"]["output"] = output.into();
@@ -220,7 +220,7 @@ fn h81_text_fallback_does_not_duplicate_reasoning_search_or_tool_items() {
         added("b", 3),
         delta("b", 3, 0, "second"),
         json!({"type":"response.reasoning_text.delta","delta":"reasoning"}),
-        terminal(None, false),
+        terminal(Some(vec![message("a", "first"), search, tool]), false),
     ]);
     assert_eq!(texts(&response), ["first", "second"]);
     assert_eq!(response.output_items.len(), 5);

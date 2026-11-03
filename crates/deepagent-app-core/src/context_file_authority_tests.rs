@@ -329,10 +329,12 @@ async fn production_replacement_and_cold_resume(reject_prune: bool) {
             // ScriptedTransport::call normally reports a constant 120 input
             // tokens. That would hide growing history from the calibrated
             // meter. Model a provider reporting the growing synthetic input.
-            *turn.last_mut().unwrap() =
-                ScriptedTransport::text_with_context("", (index + 1) * 4_000)
-                    .pop()
-                    .unwrap();
+            let terminal = turn.last_mut().unwrap();
+            let mut event: Value = serde_json::from_str(terminal).unwrap();
+            let input_tokens = (index + 1) * 4_000;
+            event["response"]["usage"]["input_tokens"] = json!(input_tokens);
+            event["response"]["usage"]["total_tokens"] = json!(input_tokens + 18);
+            *terminal = event.to_string();
             turn
         }));
         turns.extend([

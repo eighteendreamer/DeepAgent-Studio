@@ -41,7 +41,7 @@ impl HttpTransport for TitleModel {
         self.requests.lock().unwrap().push(body.clone());
         let behavior = self.behavior.lock().unwrap().clone();
         if is_title && matches!(behavior, TitleBehavior::FailedTerminal) {
-            sink.on_event(&json!({"type":"response.failed","response":{"status":"failed",
+            sink.on_event(&json!({"type":"response.failed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"failed",
                 "error":{"code":"offline_title_failed","message":"controlled title provider failure"},
                 "usage":{"input_tokens":2000,"output_tokens":7,"total_tokens":2007,
                     "input_tokens_details":{"cached_tokens":1500}}}}).to_string())?;
