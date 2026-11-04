@@ -3674,7 +3674,7 @@ expanded-settings误用include-ignored，实际72过/1败/0忽略（193.723秒�
 
 ### H-97：调度器停止不取消或等待已派发的定时运行
 
-> 2026-11-05 已修复并验收，限[进度 E-H97-01～03](system-harness-repair-progress.md#h-97-调度在途运行生命周期已修复并验收2026-11-05)所列Windows本机范围：本loop跟踪新接纳run，复用RunCoordinator取消并等原Kernel持久终态，10秒超时/终态失败明确报错、不伪造成功；桌面持有token/worker并接入ExitRequested（11秒预算）。默认原probe 1过、全cron22过/4忽略（非本项探针及父测试子入口）、H96专项9过；真实Wry程序退出/最后窗口关闭后SQLite重开均单次调用/单终态，桌面check、strict lint、前端build通过。完整workspace去重4557过/1既有H306败/240忽略；严格workspace/AppCore lint及桌面旧格式仍失败，未降低标准，详E03。公开DTO/schema/依赖不变；协作式预算、drop只发取消、超时重开recovery、全GUI/其他OS/强杀等残余见进度文档。独立fix提交待生成，取得hash后回填；不与H96归并。以下原始失败证据作为历史保留，不是当前状态。
+> 2026-11-05 已修复并验收，限[进度 E-H97-01～03](system-harness-repair-progress.md#h-97-调度在途运行生命周期已修复并验收2026-11-05)所列Windows本机范围：本loop跟踪新接纳run，复用RunCoordinator取消并等原Kernel持久终态，10秒超时/终态失败明确报错、不伪造成功；桌面持有token/worker并接入ExitRequested（11秒预算）。默认原probe 1过、全cron22过/4忽略（非本项探针及父测试子入口）、H96专项9过；真实Wry程序退出/最后窗口关闭后SQLite重开均单次调用/单终态，桌面check、strict lint、前端build通过。完整workspace去重4557过/1既有H306败/240忽略；严格workspace/AppCore lint及桌面旧格式仍失败，未降低标准，详E03。公开DTO/schema/依赖不变；协作式预算、drop只发取消、超时重开recovery、全GUI/其他OS/强杀等残余见进度文档。独立fix提交`09b8f48d3ab0fc2a9dc03bdabf13ee540bd3a7a6`，回填见进度E04；不与H96归并。以下原始失败证据作为历史保留，不是当前状态。
 
 **级别：中（P2，生命周期归属缺口）；范围：CronService 已派发 ChatService run 后，scheduler shutdown 而宿主进程仍在运行的窗口。** 不覆盖宿主进程被操作系统终止后的任务恢复语义，也不说明模型供应商会在本探针中产生副作用。
 
