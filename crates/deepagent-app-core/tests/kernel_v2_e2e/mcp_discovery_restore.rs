@@ -827,7 +827,18 @@ async fn observe_rewind_discovery(case: RewindDiscovery) -> (Vec<String>, Vec<St
             .contains("AUDIT_DISCOVERY_BASE_ANSWER"));
         assert!(!warm["input"].to_string().contains("AUDIT_DISCARDED_TAIL"));
         assert_eq!(warm["input"].to_string().contains(CANARY), keep_discovery);
-        let tools: Vec<String> = advertised(warm).into_iter().map(str::to_owned).collect();
+        let first_tools: Vec<String> = advertised(warm).into_iter().map(str::to_owned).collect();
+        // This request precedes the new branch's tool_search. A rediscovery
+        // cannot retroactively expose its schema on that earlier request.
+        assert_eq!(
+            first_tools,
+            if keep_discovery {
+                vec![INSPECT.to_owned()]
+            } else {
+                vec![]
+            }
+        );
+        let mut tools = first_tools;
         let server = report(&report_path);
         assert_eq!(
             server["calls"].as_array().unwrap().len(),
@@ -835,6 +846,18 @@ async fn observe_rewind_discovery(case: RewindDiscovery) -> (Vec<String>, Vec<St
         );
         assert_eq!(server["calls"][0]["arguments"]["value"], CANARY);
         if rediscover {
+            assert_eq!(warm_discoveries, vec![vec![INSPECT.to_owned()]]);
+            // Compare the completed warm branch to the reopened branch only
+            // after its successful rediscovery has updated the live schema.
+            for request in &requests[4..] {
+                let discovered: Vec<_> =
+                    advertised(request).into_iter().map(str::to_owned).collect();
+                assert_eq!(discovered, [INSPECT]);
+            }
+            tools = advertised(requests.last().unwrap())
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
             let search_outputs: Vec<_> = requests[4]["input"]
                 .as_array()
                 .unwrap()
@@ -900,7 +923,6 @@ async fn rewind_kept_discovery_matches_reopened_tool_snapshot() {
 }
 
 #[tokio::test]
-#[ignore = "audit: discarded discovery must not remain only in a warm host's tools snapshot"]
 async fn audit_rewind_discarded_discovery_matches_reopened_tool_snapshot() {
     let (warm, cold) = observe_rewind_discovery(RewindDiscovery::Discard).await;
     assert_eq!(
@@ -910,7 +932,6 @@ async fn audit_rewind_discarded_discovery_matches_reopened_tool_snapshot() {
 }
 
 #[tokio::test]
-#[ignore = "audit: searching again after rewind must persist discovery for the new branch"]
 async fn audit_rediscovery_after_rewind_survives_reopened_tool_snapshot() {
     let (warm, cold) = observe_rewind_discovery(RewindDiscovery::Rediscover).await;
     assert_eq!(warm, [INSPECT]);

@@ -9202,6 +9202,8 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 
 ### H-232：回退删除发现事件后，原宿主仍公开旧工具，重建宿主则隐藏
 
+**当前状态：历史已修复跳过（2026-11-04，仅E-H232-01～02所列本机范围）。** 本项开始前已随H219生产修复3cabd45f移除只增不减的session发现缓存，本轮不重复修改生产；修正原探针跨阶段比较、加强真实断言并默认执行后7/0/0、完整Kernel280/0/36。严格lint和额外诊断仍有失败，限制详见E02。以下旧触发、失败和未实施说明保留为历史，不覆盖原始证据。
+
 **级别：低（P3）；范围：启用延迟工具发现、已完成发现回合后，通过 AppService 原地 rewind 删除该回合，再复用同一 ChatService 续聊。** 已验证的是工具清单与当前分支发现历史不一致、恢复结果依赖旧宿主内存；不是权限提升或工具执行越权。
 
 #### 首轮 Evidence（复现后立即登记）
@@ -9245,6 +9247,29 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - `cargo fmt --all -- --check`、`git diff --check` 通过；实际执行 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings`，仍被未修改的 `models/src/client.rs:355`（clone_on_copy）及 `persistence/src/run_store.rs:127`（explicit_counter_loop）阻断，未报告 lint 通过。测试路径复用原 MCP fixture/注册/请求记录器，没有另起生产 registry 或 store。
 - H-23、H-73、H-232 已分别证明笔记、检查点、工具发现的派生状态没有共同的当前分支身份；H-75 又有活动提交所有权缺口。治理应先定义既有 Session/EventStore 的有效分支与派生视图生命周期，再小步修各 seam；不建议只在桌面按钮里逐个清 map、按名称打补丁或额外建一套运行存储。以上为架构建议，未实施修复。
 - 本轮没有真实 DeepSeek 请求、缓存命中或模型行为实验。该问题属于宿主恢复一致性，不能声称违反某个 DeepSeek wire 参数；工具 schema 变化对供应商内部前缀及真实 cache hit 的影响也未测。只验证 Windows 本机、完成回合后的顺序 rewind/干净服务重建和静态 MCP 目录；未执行全 workspace、Desktop build/UI、独立进程崩溃、并发回退/子运行、fork、压缩、目录/权限变化。用户排除的 encrypted-content 错误不在本轮范围。
+
+**E-H232-01（原证据复核与共享根因）**：本轮起点06b2b75e，tracked干净、无未完成合并；五项用户未跟踪内容不读/不改/不提交。原报告两项真实失败及H219 E12的显式1过1败日志原样保留。当前生产实现已随H219修复3cabd45f6bc88f3c575cf3df96ac85543b88e86f移除会话共享的只增不减发现缓存，唯一工具准备从当前prior_events新建run-local集合，finalizer以该分支事件作为差量基线。Git核对该提交父版本有discovered_tools: DiscoveredToolsMap，当前已无，且当前直接从prior_events恢复；本轮没有独立生产修复，不能再计新增。
+
+原rediscovery探针返回requests[3]的schema：它是回退后、第二次tool_search发生前的首请求。E12实测此时空schema正确，但发现完成后实际新发现事件1份、第二次inspect成功且cold schema存在，最终却把重搜前warm和重搜后cold混作同一阶段。沿原真实夹具只纠正观测时间并增强断言：首请求仅在保留发现时公开inspect；重搜后requests[4..]全部公开inspect；新分支发现事件恰好1份；完成分支的最后请求再与cold恢复比较。原两次唯一call_id/实际MCP调用与canary、无丢弃尾部、单一终态和重开无重放副作用断言均保留；不是把预期改成接受旧缺陷。两个旧ignored在显式验收通过后移为默认执行，保留原测试名称以追溯原报告。
+
+**E-H232-02（实际执行与验收）**：全部命令沿既有runner显式隔离合成profile/data/temp，使用临时文件SQLite、自建Node stdio MCP与离线模型/MemorySecretStore，不访问真实供应商、内网、凭据或用户数据。日志/JSON/源码冻结保存在target/h232-review-20261104/，不提交本地运行产物。
+
+| 实际命令 | 结果 |
+|---|---|
+| cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_discovery_restore:: --offline -j 2 -- --include-ignored --nocapture --test-threads=1 | oracle修正后exit0，7过/0败/0忽略，125.60秒；保留、删除、不重搜、重搜及冷重开/普通续聊/隔离对照 |
+| cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_discovery_restore:: --offline -j 2 -- --nocapture --test-threads=1 | 去掉两个ignore后的最终版本exit0，7/0/0，103.94秒；不是默认跳过探针得到绿色 |
+| cargo test -p deepagent-app-core --test kernel_v2_e2e --offline -j 2 -- --test-threads=1 | exit0，280/0/36，385.24秒；两个原失败探针均默认执行，剩余36项不计通过 |
+| cargo fmt --all -- --check；git diff --check | 均通过；fmt5.64秒 |
+| cargo clippy -p deepagent-app-core --test kernel_v2_e2e --no-deps --offline -j 2 -- -D warnings | exit101，46.94秒；被既有12项AppCore库诊断阻断，未到达test target，不报严格lint通过 |
+| cargo clippy -p deepagent-app-core --test kernel_v2_e2e --no-deps --offline -j 2 | 额外诊断exit101，40.55秒；进入test target后，原夹具776行if first.is_err后的first.unwrap触发默认deny panicking_unwrap；该行与H219前版本一致，本轮未修改。另有6项test warnings，其中3项await_holding_lock来自H219新增run_capabilities测试，不冒称老仓库基线；后续单独处理H219新增测试诊断，不在本项混改 |
+
+source-check.json确认6份相关生产源码与最终测试文件全部匹配冻结，生产零diff；shared-root-history.diff与root-reconciliation.json记录上述Git因果核对，未重跑旧版本生产二进制，不将静态提交对照冒称独立旧版本动态执行。真实观察：保留发现warm/cold均有inspect及1份发现事件；删除且不重搜warm/cold均无inspect/事件；删除后重搜，首请求隐藏、后续warm/cold均有inspect及1份发现事件，第二次实际inspect恰好发生一次，重开不重复执行。通过的是当前真实链路，不否定原报告的旧缺陷。
+
+本轮只修改原回归夹具和两份文档，没有改生产代码、公共API/协议、权限/沙箱或SQL schema；不需要数据迁移。没有重跑整个workspace、Desktop构建或手动GUI：本轮无生产/前端/桥接变更，最终完整Kernel是本次受影响测试门禁；H219 E12的4408/1/247仅为上一冻结全仓结果，不能冒称本次全仓执行或全绿。未测试其他OS、独立宿主崩溃/强杀、并发回退/子运行、连续回退压力、压缩或MCP目录/权限变化，不外推保证。
+
+**交付与计数**：H232按“本项开始前已随既有共享根因修复并有当前验收”记历史已修复跳过，不重复计新增修复。生产修复归属3cabd45f6bc88f3c575cf3df96ac85543b88e86f；本轮测试/文档提交待取得hash后另做文档回填，不amend、不推送、不建PR。本轮新增修复0、历史跳过1、归并/撤销0；306行/306唯一H核对为148验收、23历史跳过、7归并、3撤销、125待修、0修复中/阻塞。有效未关闭125含授权跳过H180，实际待处理124，不提供完成率。下一项先单独跟进H219新测试的3个持锁跨await警告（不增加修复计数），随后按风险进入H218无界历史问题。H178八项外部验收和H180授权跳过不重跑/不改动。
+
+全部剩余修复与验收暂保留200–400有效小时历史未逐项校准粗估，依据剩余124项及跨层/权限/持久化和未知反例规模，不据跳过1项机械扣减，不承诺日期。本项六命令机器执行合计约707.91秒（11.80分钟，含增量编译），与人工有效工时分开；后续设备/依赖等待另计，暂无可靠总区间。整体goal仍active，未完成全系统修复。
 
 ### H-233：无 hooks 的公共 Runtime 将并发安全等同于可丢弃预执行，失败响应留下未记录的 Todo 状态
 
