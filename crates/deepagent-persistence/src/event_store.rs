@@ -29,6 +29,7 @@ use crate::session_files::{self, SessionFileCursor, SessionFileHeader};
 use crate::{map_sqlite, Database};
 
 mod plan_mode;
+pub use crate::session_files::page::{SessionEventPage, SessionPageBudget, SessionPageCursor};
 pub use plan_mode::SessionPlanMode;
 
 /// Existing repository facade over session metadata and file-backed events.
@@ -637,6 +638,23 @@ impl<'db> EventStore<'db> {
         self.read_from(session_id, 0)
     }
 
+    /// Read one bounded page from the authoritative file under the same I/O and
+    /// cross-process locks as replay. Never repairs or changes historical data.
+    pub fn read_session_page(
+        &self,
+        session_id: SessionId,
+        after_sequence: Option<u64>,
+        cursor: Option<SessionPageCursor>,
+        budget: SessionPageBudget,
+    ) -> Result<SessionEventPage> {
+        let _io = self
+            .db
+            .lock_session_io_for(std::time::Duration::from_secs(5))?;
+        let root = self.db.session_files_root();
+        let _file_lock = session_files::lock_session(&root, session_id)?;
+        session_files::page::read(&root, session_id, after_sequence, cursor, budget)
+    }
+
     /// A replay used for model continuation must not silently omit a torn
     /// legacy source/native group. Raw read_from remains available for diagnosis.
     pub fn load_session_for_model(&self, session_id: SessionId) -> Result<Vec<Event>> {
@@ -700,40 +718,44 @@ impl<'db> EventStore<'db> {
 
     /// Fetch the session record.
     pub fn get_session(&self, session_id: SessionId) -> Result<Option<SessionRecord>> {
-        self.db.with_conn(|c| {
-            c.query_row(
-                "SELECT id, title, mode, project, created_at, updated_at, ended_at
-                 FROM sessions WHERE id = ?1",
-                params![session_id.to_string()],
-                |row| {
-                    let id_str: String = row.get(0)?;
-                    let title: Option<String> = row.get(1)?;
-                    let mode: String = row.get(2)?;
-                    let project: Option<String> = row.get(3)?;
-                    let created: i64 = row.get(4)?;
-                    let updated: i64 = row.get(5)?;
-                    let ended: Option<i64> = row.get(6)?;
-                    Ok((id_str, title, mode, project, created, updated, ended))
-                },
-            )
-            .optional()
-            .map_err(map_sqlite)?
-            .map(|(id_str, title, mode, project, created, updated, ended)| {
-                let id = id_str
-                    .parse::<SessionId>()
-                    .map_err(|e| CoreError::Persistence(e.to_string()))?;
+        self.get_session_with_budget(session_id, None)
+    }
+
+    pub fn get_session_bounded(
+        &self,
+        session_id: SessionId,
+        max_bytes: usize,
+    ) -> Result<Option<SessionRecord>> {
+        self.get_session_with_budget(session_id, Some(max_bytes))
+    }
+
+    fn get_session_with_budget(
+        &self,
+        session_id: SessionId,
+        max_bytes: Option<usize>,
+    ) -> Result<Option<SessionRecord>> {
+        crate::bounded_read::one(
+            self.db,
+            "SELECT id,title,mode,project,created_at,updated_at,ended_at FROM sessions WHERE id=?1",
+            params![session_id.to_string()],
+            max_bytes,
+            |row| {
+                let id: String = row.get(0).map_err(map_sqlite)?;
+                let mode: String = row.get(2).map_err(map_sqlite)?;
+                let ended: Option<i64> = row.get(6).map_err(map_sqlite)?;
                 Ok(SessionRecord {
-                    id,
-                    title,
+                    id: id
+                        .parse::<SessionId>()
+                        .map_err(|error| CoreError::Persistence(error.to_string()))?,
+                    title: row.get(1).map_err(map_sqlite)?,
                     mode: parse_mode(&mode),
-                    project,
-                    created_at: Timestamp::from_millis(created),
-                    updated_at: Timestamp::from_millis(updated),
+                    project: row.get(3).map_err(map_sqlite)?,
+                    created_at: Timestamp::from_millis(row.get(4).map_err(map_sqlite)?),
+                    updated_at: Timestamp::from_millis(row.get(5).map_err(map_sqlite)?),
                     ended_at: ended.map(Timestamp::from_millis),
                 })
-            })
-            .transpose()
-        })
+            },
+        )
     }
 
     /// Update a session's display title.

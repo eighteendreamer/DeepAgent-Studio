@@ -4,6 +4,9 @@ use deepagent_core::error::{CoreError, Result};
 use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 
+use crate::bounded_read::{
+    self, HistoryCursor, HistoryPage, HistoryQuery, HistoryReadBudget, HistorySource,
+};
 use crate::{map_sqlite, Database};
 
 #[cfg(test)]
@@ -730,27 +733,18 @@ impl<'db> RunStore<'db> {
     }
 
     pub fn get(&self, run_id: &str) -> Result<Option<RunRecord>> {
-        self.db.with_conn(|conn| {
-            conn.query_row(
+        self.get_with_budget(run_id, None)
+    }
+
+    pub fn get_bounded(&self, run_id: &str, max_bytes: usize) -> Result<Option<RunRecord>> {
+        self.get_with_budget(run_id, Some(max_bytes))
+    }
+
+    fn get_with_budget(&self, run_id: &str, max_bytes: Option<usize>) -> Result<Option<RunRecord>> {
+        bounded_read::one(self.db,
                 "SELECT id, session_id, task_id, state, terminal_kind, terminal_reason, created_at, updated_at, finished_at FROM runs WHERE id=?1",
                 [run_id],
-                |row| {
-                    Ok(RunRecord {
-                        id: row.get(0)?,
-                        session_id: row.get(1)?,
-                        task_id: row.get(2)?,
-                        state: row.get(3)?,
-                        terminal_kind: row.get(4)?,
-                        terminal_reason: row.get(5)?,
-                        created_at: row.get(6)?,
-                        updated_at: row.get(7)?,
-                        finished_at: row.get(8)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(map_sqlite)
-        })
+                max_bytes,|row| run_from_row(row).map_err(map_sqlite))
     }
 
     /// Read the run-owned capability projection and latest model/wire schema
@@ -889,23 +883,51 @@ impl<'db> RunStore<'db> {
                 )
                 .map_err(map_sqlite)?;
             let rows = stmt
-                .query_map([session_id], |row| {
-                    Ok(RunRecord {
-                        id: row.get(0)?,
-                        session_id: row.get(1)?,
-                        task_id: row.get(2)?,
-                        state: row.get(3)?,
-                        terminal_kind: row.get(4)?,
-                        terminal_reason: row.get(5)?,
-                        created_at: row.get(6)?,
-                        updated_at: row.get(7)?,
-                        finished_at: row.get(8)?,
-                    })
-                })
+                .query_map([session_id], run_from_row)
                 .map_err(map_sqlite)?;
             rows.collect::<std::result::Result<Vec<_>, _>>()
                 .map_err(map_sqlite)
         })
+    }
+
+    /// Bounded membership-stable projection; the existing ledger remains the
+    /// replay source. Equal timestamps have a deterministic identity tie-break.
+    pub fn list_for_session_page(
+        &self,
+        session_id: &str,
+        cursor: Option<&HistoryCursor>,
+        budget: HistoryReadBudget,
+    ) -> Result<HistoryPage<RunRecord>> {
+        bounded_read::read(self.db,&HistoryQuery {
+            source:HistorySource::Runs,columns:"id,session_id,task_id,state,terminal_kind,terminal_reason,created_at,updated_at,finished_at",
+            table:"runs",scope_filter:"session_id=?1",number:"created_at",id:"id",descending:true,
+        },session_id,cursor,budget,|row| run_from_row(row).map_err(map_sqlite))
+    }
+
+    pub fn events_page(
+        &self,
+        run_id: &str,
+        after: Option<u64>,
+        cursor: Option<&HistoryCursor>,
+        budget: HistoryReadBudget,
+    ) -> Result<HistoryPage<StoredRunEvent>> {
+        bounded_read::read_after(
+            self.db,
+            &HistoryQuery {
+                source: HistorySource::Events,
+                columns: "run_id,sequence,timestamp,phase,status,event_type,data",
+                table: "run_events",
+                scope_filter: "run_id=?1",
+                number: "sequence",
+                id: "''",
+                descending: false,
+            },
+            run_id,
+            after.map(|value| value.min(i64::MAX as u64) as i64),
+            cursor,
+            budget,
+            |row| run_event_from_row(row).map_err(map_sqlite),
+        )
     }
 
     pub fn events_after(&self, run_id: &str, after: Option<u64>) -> Result<Vec<StoredRunEvent>> {
@@ -914,23 +936,39 @@ impl<'db> RunStore<'db> {
                 .prepare("SELECT run_id, sequence, timestamp, phase, status, event_type, data FROM run_events WHERE run_id=?1 AND sequence>?2 ORDER BY sequence")
                 .map_err(map_sqlite)?;
             let rows = stmt
-                .query_map(params![run_id, after.map(|v| v as i64).unwrap_or(-1)], |row| {
-                    let data: String = row.get(6)?;
-                    Ok(StoredRunEvent {
-                        run_id: row.get(0)?,
-                        sequence: row.get::<_, i64>(1)? as u64,
-                        timestamp: row.get(2)?,
-                        phase: row.get(3)?,
-                        status: row.get(4)?,
-                        event_type: row.get(5)?,
-                        data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
-                    })
-                })
+                .query_map(params![run_id, after.map(|v| v as i64).unwrap_or(-1)], run_event_from_row)
                 .map_err(map_sqlite)?;
             rows.collect::<std::result::Result<Vec<_>, _>>()
                 .map_err(map_sqlite)
         })
     }
+}
+
+fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunRecord> {
+    Ok(RunRecord {
+        id: row.get(0)?,
+        session_id: row.get(1)?,
+        task_id: row.get(2)?,
+        state: row.get(3)?,
+        terminal_kind: row.get(4)?,
+        terminal_reason: row.get(5)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
+        finished_at: row.get(8)?,
+    })
+}
+
+fn run_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredRunEvent> {
+    let data: String = row.get(6)?;
+    Ok(StoredRunEvent {
+        run_id: row.get(0)?,
+        sequence: row.get::<_, i64>(1)? as u64,
+        timestamp: row.get(2)?,
+        phase: row.get(3)?,
+        status: row.get(4)?,
+        event_type: row.get(5)?,
+        data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
+    })
 }
 
 #[cfg(test)]

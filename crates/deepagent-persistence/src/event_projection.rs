@@ -83,7 +83,49 @@ pub(crate) fn projection_spans(
     Ok(spans)
 }
 
-fn has_native_source(
+/// A bounded reader need not infer a tool's kind from unbounded earlier
+/// history: conservatively keep either exact output mirror with its source.
+/// This does not change the replay/branch ownership validator above.
+pub(crate) fn legacy_projection_matches(
+    source: &EventPayload,
+    expected: &ResponseItem,
+    event: &Event,
+) -> bool {
+    let EventPayload::ResponseItemAppended { item } = &event.payload else {
+        return false;
+    };
+    if item == expected || item.is_legacy_text_projection_of(expected) {
+        return true;
+    }
+
+    let EventPayload::ToolCallCompleted {
+        call_id,
+        ok,
+        output,
+        ..
+    } = source
+    else {
+        return false;
+    };
+    let expected_output = if *ok {
+        serde_json::json!({"status":"ok","result":output}).to_string()
+    } else {
+        serde_json::json!({"status":"error","error":output}).to_string()
+    };
+    match item {
+        ResponseItem::FunctionCallOutput {
+            call_id: actual_call_id,
+            output,
+        }
+        | ResponseItem::CustomToolCallOutput {
+            call_id: actual_call_id,
+            output,
+        } => actual_call_id == call_id && output == &expected_output,
+        _ => false,
+    }
+}
+
+pub(crate) fn has_native_source(
     history: &[Event],
     source: &EventPayload,
     claimed: &std::collections::HashSet<u64>,

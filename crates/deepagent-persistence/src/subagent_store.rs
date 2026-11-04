@@ -4,6 +4,9 @@ use deepagent_core::error::{CoreError, Result};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
+use crate::bounded_read::{
+    self, HistoryCursor, HistoryPage, HistoryQuery, HistoryReadBudget, HistorySource,
+};
 use crate::{map_sqlite, Database};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +104,20 @@ impl<'db> SubagentRunStore<'db> {
                 .map_err(map_sqlite)?;
             rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_sqlite)
         })
+    }
+
+    pub fn list_for_parent_page(
+        &self,
+        parent_run_id: &str,
+        cursor: Option<&HistoryCursor>,
+        budget: HistoryReadBudget,
+    ) -> Result<HistoryPage<SubagentRunRecord>> {
+        bounded_read::read(self.db,&HistoryQuery {
+            source:HistorySource::Children,
+            columns:"id,parent_run_id,origin_parent_run_id,state,agent_type,transcript_path,worktree_path,summary,created_at,updated_at,finished_at,resume_count",
+            table:"subagent_runs",scope_filter:"parent_run_id=?1 OR origin_parent_run_id=?1",
+            number:"created_at",id:"id",descending:false,
+        },parent_run_id,cursor,budget,|row| map_record(row).map_err(map_sqlite))
     }
 
     /// Called only through an idle session's held recovery scope. Scope by the

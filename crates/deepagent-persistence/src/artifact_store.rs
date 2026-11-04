@@ -10,6 +10,9 @@ use deepagent_core::error::{CoreError, Result};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
+use crate::bounded_read::{
+    self, HistoryCursor, HistoryPage, HistoryQuery, HistoryReadBudget, HistorySource,
+};
 use crate::{map_sqlite, Database};
 
 mod deletion;
@@ -165,6 +168,30 @@ impl<'db> ArtifactStore<'db> {
             rows.collect::<std::result::Result<Vec<_>, _>>()
                 .map_err(map_sqlite)
         })
+    }
+
+    pub fn list_for_run_page(
+        &self,
+        run_id: &str,
+        cursor: Option<&HistoryCursor>,
+        budget: HistoryReadBudget,
+    ) -> Result<HistoryPage<ArtifactRecord>> {
+        bounded_read::read(
+            self.db,
+            &HistoryQuery {
+                source: HistorySource::Artifacts,
+                columns: COLUMNS,
+                table: "artifacts",
+                scope_filter: "run_id=?1",
+                number: "created_at",
+                id: "id",
+                descending: false,
+            },
+            run_id,
+            cursor,
+            budget,
+            |row| row_to_record(row).map_err(map_sqlite),
+        )
     }
 
     /// All indexed artifacts, newest first, optionally narrowed to one kind.

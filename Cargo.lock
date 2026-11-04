@@ -1326,7 +1326,9 @@ dependencies = [
 name = "deepagent-cli"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "async-trait",
+ "base64",
  "crossterm",
  "deepagent-app-core",
  "deepagent-builtins",
@@ -1340,6 +1342,7 @@ dependencies = [
  "futures",
  "insta",
  "ratatui",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",

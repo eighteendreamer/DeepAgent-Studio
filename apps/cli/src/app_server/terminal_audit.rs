@@ -18,6 +18,7 @@ mod eof_tests;
 #[path = "steering_tests.rs"]
 mod steering_tests;
 
+use super::history_test_support::{read_history, HistoryCollector};
 use super::*;
 use deepagent_app_core::{ApprovalPolicy, MemorySecretStore, SettingsService};
 use deepagent_core::error::{CoreError, Result as CoreResult};
@@ -232,9 +233,8 @@ impl Fixture {
     }
 
     fn read(&self) -> Value {
-        dispatch(
+        read_history(
             &mut self.state.lock().unwrap(),
-            "thread/read",
             json!({"threadId":self.thread_id}),
         )
     }

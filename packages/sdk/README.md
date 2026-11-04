@@ -19,6 +19,78 @@ await agent.close();
 `cli-jsonl` is available for one-shot automation through `runJsonl(prompt)`.
 Thread lifecycle and turn control require the stdio app-server transport.
 
+## Bounded durable history
+
+`readThreadPage(threadId, options)` fetches **one** `thread/read` page; it does
+not accumulate history or retry. Rust callers use `thread_read(ThreadReadRequest)`
+and inspect the same `hasMore` / `nextCursor` fields. Consume or persist each page
+before requesting the next, and stop at `hasMore: false`:
+
+```ts
+let cursor: string | undefined; // Or restore your saved checkpoint.
+for (let pageNumber = 0; pageNumber < 10; pageNumber++) {
+  const page = await agent.readThreadPage(thread.id, {
+    cursor, pageSize: 100, maxBytes: 262144
+  });
+  // Process only this page. A run's events/controls/graph can span several pages;
+  // merge slices by runId and their row identities instead of replacing the run.
+  console.log(page.events, page.runEvents);
+  cursor = page.nextCursor ?? undefined;
+  if (!page.hasMore) break;
+}
+// Save cursor if present: this window stopped before the complete history.
+```
+
+`pageSize` is 1..500 (default 500), counting session events, run envelopes and
+each event/action/approval/artifact/graph node together. `maxBytes` is 4096..1 MiB
+(default 256 KiB), counting the complete successful JSON-RPC response, not just
+event bodies. A complete source/native group and its envelope must fit; otherwise
+the server returns an explicit error, never a partial group or silent truncation.
+A continued run still needs its envelope, so very small budgets can be insufficient.
+
+The opaque cursor is scoped to the database and canonical thread, survives process
+restart and fixes a session-file generation/byte cut and SQLite insertion high-waters.
+It is not a credential, approval or execution grant. Keep it opaque; tampered,
+foreign, overlong or rewound-session continuations are rejected. Repeating a cursor
+is an allowed read-only retry, not automatic redispatch; token inequality is not
+proof of row progress. The SDK intentionally provides no unbounded pagination loop.
+
+Initial `afterSequence`, `sessionAfterSequence`, `runAfterSequence` and per-run
+filters keep their incremental meaning. On continuation omit them or repeat the
+same filters; changing them is rejected. An explicit sequence filter can start
+inside a historical group; only server-created page cuts are group aligned.
+Control states/leases/metadata are live projections, not an MVCC historical snapshot.
+The session-file cut and SQLite cut are not one cross-store atomic transaction.
+SQLite high-water identity anchors reject deletion/reuse of a cut row with a stale
+cursor error; restart hydration explicitly. Middle deletions may omit deleted
+rows, while replacements inserted beyond the cut are excluded. Relationship
+predicates remain live: a pre-existing resumed subagent can appear under its new
+parent and its original parent. This is not frozen first-page graph membership.
+Maintenance that changes the anchor is rejected, not silently restarted.
+
+Legacy raw Event records do not encode source/native ownership. Plain legacy
+messages can be paged individually. Adjacent exact source/native mirrors are kept
+together using the existing projection mapping; native-first blocks use the
+existing native-source matcher and remain atomic through their source message.
+An indivisible block, unresolved lookahead, or individual JSONL record exceeding
+8 MiB is rejected read-only. Old rewritten generations containing many small
+records in a large frame are decoded incrementally: only a window of at most
+501 records / 8 MiB of encoded record data is retained, with an 8 MiB decoder
+window. The complete frame must pass its checksum before any selected window is
+returned, including corruption after that window. No migration or rewrite occurs.
+Continuations rescan a large old frame in O(frame size) work. The 256-frame /
+32 MiB scan thresholds are checked between windows, not a hard CPU, I/O or elapsed
+time limit; checksum validation may scan a larger complete frame. These allocation
+boundaries are not a measured total-process RSS guarantee. Increasing maxBytes
+cannot raise the individual-record limit.
+
+The wire fields are additive, but a previous single-call reader must now follow
+continuations or explicitly handle the bounded page/error. Existing small histories
+keep their arrays. Rust struct literals need the three new optional fields.
+The TypeScript page API rejects older, unpaged server responses instead of treating
+them as a complete page. Final integration acceptance is tracked under H-218 in
+`docs/system-harness-repair-progress.md`.
+
 `Thread.runStreamed` owns a subscription **before** sending `turn/start` and
 retains candidate events while the response identity is not yet known. It then
 delivers only the returned turn, rejects conflicting explicit thread IDs, and
@@ -93,7 +165,7 @@ runtime for that connection's active/queued turns and waits up to 10 seconds;
 a cleanup timeout is an error, not proof that the turns reached a terminal.
 Never automatically resubmit a turn after a transport failure: its side effects
 may already have happened. Reconnect, then use `thread/read` to reconcile the
-durable run status and history (for example via `requestForTest`). Persist the
+durable run status and history via `readThreadPage`. Persist the
 returned session/run cursors, not the envelope's connection-local
 `eventSequence`. `event/ack` is only a monotonic, in-range connection receipt;
 it neither persists a cursor nor requests replay, and resets on reconnect.

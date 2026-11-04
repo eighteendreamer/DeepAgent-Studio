@@ -16,6 +16,7 @@
 //! changing the repository API.
 
 pub mod artifact_store;
+pub mod bounded_read;
 pub mod checkpoint_store;
 pub mod cost_store;
 pub mod document_store;

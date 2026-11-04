@@ -18,6 +18,8 @@ const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
 const SESSION_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 const SESSION_LOCK_POLL: Duration = Duration::from_millis(10);
 
+pub(crate) mod page;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SessionFileHeader {
     pub(crate) id: SessionId,
@@ -34,7 +36,7 @@ pub(crate) struct SessionFileHeader {
     pub(crate) plan_mode_version: Option<u32>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "record", rename_all = "snake_case")]
 enum StoredRecord {
     Header {
@@ -563,7 +565,30 @@ fn parse_records(
     recovered_tail_bytes: u64,
 ) -> Result<LoadedSessionFile> {
     let mut records = records.into_iter();
-    let header = match records.next() {
+    let header = parse_header(records.next(), generation, expected_session)?;
+    let mut events = Vec::new();
+    let mut projections = Vec::new();
+    for record in records {
+        let (group, projection) = parse_event_group(record, expected_session, events.len() as u64)?;
+        projections.extend(projection);
+        events.extend(group);
+    }
+    Ok(LoadedSessionFile {
+        generation,
+        header,
+        events,
+        projections,
+        byte_len,
+        recovered_tail_bytes,
+    })
+}
+
+fn parse_header(
+    record: Option<StoredRecord>,
+    generation: u64,
+    expected_session: SessionId,
+) -> Result<SessionFileHeader> {
+    let header = match record {
         Some(StoredRecord::Header {
             format,
             generation: stored_generation,
@@ -587,74 +612,71 @@ fn parse_records(
         )));
     }
 
-    let mut events = Vec::new();
-    let mut projections = Vec::new();
-    for record in records {
-        let group = match record {
-            StoredRecord::Event { schema, event } if schema == FORMAT_VERSION => vec![event],
-            StoredRecord::Projection {
-                schema,
-                source,
-                items,
-            } if schema == FORMAT_VERSION => {
-                if items.iter().any(|event| {
-                    !matches!(
-                        event.payload,
-                        deepagent_core::event::EventPayload::ResponseItemAppended { .. }
-                    )
-                }) {
-                    return Err(CoreError::EventLog(
-                        "projection contains a non-native item".into(),
-                    ));
-                }
-                projections.push(ProjectionSpan {
-                    start: source.sequence,
-                    end: source
-                        .sequence
-                        .checked_add(items.len() as u64)
-                        .ok_or_else(|| {
-                            CoreError::EventLog("projection sequence overflow".into())
-                        })?,
-                });
-                std::iter::once(source).chain(items).collect()
-            }
-            StoredRecord::Event { schema, .. } | StoredRecord::Projection { schema, .. } => {
-                return Err(CoreError::EventLog(format!(
-                    "unsupported event schema {schema} in session {expected_session}"
-                )))
-            }
-            StoredRecord::Header { .. } => {
-                return Err(CoreError::EventLog(format!(
-                    "duplicate header in session {expected_session}"
-                )))
-            }
-        };
-        for event in group {
-            if event.session_id != expected_session {
-                return Err(CoreError::EventLog(format!(
-                    "event {} belongs to {} instead of {expected_session}",
-                    event.id, event.session_id
-                )));
-            }
-            let expected_sequence = events.len() as u64;
-            if event.sequence != expected_sequence {
-                return Err(CoreError::EventLog(format!(
-                    "session {expected_session} has sequence {} at position {expected_sequence}",
-                    event.sequence
-                )));
-            }
-            events.push(event);
-        }
-    }
+    Ok(header)
+}
 
-    Ok(LoadedSessionFile {
-        generation,
-        header,
-        events,
-        projections,
-        byte_len,
-        recovered_tail_bytes,
-    })
+/// Both replay and bounded history use this one schema/identity/sequence gate.
+fn parse_event_group(
+    record: StoredRecord,
+    expected_session: SessionId,
+    mut expected_sequence: u64,
+) -> Result<(Vec<Event>, Option<ProjectionSpan>)> {
+    let mut projection = None;
+    let group: Vec<Event> = match record {
+        StoredRecord::Event { schema, event } if schema == FORMAT_VERSION => vec![event],
+        StoredRecord::Projection {
+            schema,
+            source,
+            items,
+        } if schema == FORMAT_VERSION => {
+            if items.iter().any(|event| {
+                !matches!(
+                    event.payload,
+                    deepagent_core::event::EventPayload::ResponseItemAppended { .. }
+                )
+            }) {
+                return Err(CoreError::EventLog(
+                    "projection contains a non-native item".into(),
+                ));
+            }
+            projection = Some(ProjectionSpan {
+                start: source.sequence,
+                end: source
+                    .sequence
+                    .checked_add(items.len() as u64)
+                    .ok_or_else(|| CoreError::EventLog("projection sequence overflow".into()))?,
+            });
+            std::iter::once(source).chain(items).collect()
+        }
+        StoredRecord::Event { schema, .. } | StoredRecord::Projection { schema, .. } => {
+            return Err(CoreError::EventLog(format!(
+                "unsupported event schema {schema} in session {expected_session}"
+            )))
+        }
+        StoredRecord::Header { .. } => {
+            return Err(CoreError::EventLog(format!(
+                "duplicate header in session {expected_session}"
+            )))
+        }
+    };
+    for event in &group {
+        if event.session_id != expected_session {
+            return Err(CoreError::EventLog(format!(
+                "event {} belongs to {} instead of {expected_session}",
+                event.id, event.session_id
+            )));
+        }
+        if event.sequence != expected_sequence {
+            return Err(CoreError::EventLog(format!(
+                "session {expected_session} has sequence {} at position {expected_sequence}",
+                event.sequence
+            )));
+        }
+        expected_sequence = expected_sequence
+            .checked_add(1)
+            .ok_or_else(|| CoreError::EventLog("session sequence overflow".into()))?;
+    }
+    Ok((group, projection))
 }
 
 fn decode_frames(bytes: &[u8]) -> Result<(Vec<StoredRecord>, usize, usize)> {

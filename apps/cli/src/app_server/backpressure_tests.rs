@@ -157,6 +157,17 @@ pub(super) struct PipeClient {
     pub(super) lines: tokio::io::Lines<tokio::io::BufReader<DuplexStream>>,
 }
 impl PipeClient {
+    async fn read_history(&mut self, id: u64, mut params: Value) -> Value {
+        let mut collector = HistoryCollector::default();
+        loop {
+            let page = self.call(id, "thread/read", params.clone()).await;
+            match collector.push(page) {
+                Some(cursor) => params["cursor"] = json!(cursor),
+                None => return collector.finish(),
+            }
+        }
+    }
+
     pub(super) async fn call(&mut self, id: u64, method: &str, params: Value) -> Value {
         self.input
             .write_all(
@@ -249,7 +260,7 @@ async fn backpressure_fault_while_stdin_open_cancels_active_and_queued_then_reco
         .unwrap()
         .to_owned();
     let before = client
-        .call(5, "thread/read", json!({"threadId":fixture.thread_id}))
+        .read_history(5, json!({"threadId":fixture.thread_id}))
         .await;
     let session_cursor = before["events"].as_array().unwrap().last().unwrap()["streamSequence"]
         .as_u64()
@@ -281,11 +292,7 @@ async fn backpressure_fault_while_stdin_open_cancels_active_and_queued_then_reco
         "thread/resume",
         json!({"threadId":fixture.thread_id}),
     );
-    let read = dispatch(
-        &mut recovered,
-        "thread/read",
-        json!({"threadId":fixture.thread_id}),
-    );
+    let read = read_history(&mut recovered, json!({"threadId":fixture.thread_id}));
     for id in [&active, &queued] {
         assert_durable_terminal(&read, id, "cancelled");
     }
@@ -293,9 +300,8 @@ async fn backpressure_fault_while_stdin_open_cancels_active_and_queued_then_reco
     let (mut healthy, healthy_server) = pipe_server(&fixture);
     healthy.call(1, "initialize", json!({"clientName":"h01-recover","clientVersion":"1","protocolVersion":PROTOCOL_VERSION})).await;
     let recovered = healthy
-        .call(
+        .read_history(
             2,
-            "thread/read",
             json!({"threadId":fixture.thread_id,
             "sessionAfterSequence":session_cursor,"runAfterSequences":run_cursors}),
         )
@@ -325,9 +331,8 @@ async fn backpressure_fault_while_stdin_open_cancels_active_and_queued_then_reco
         .map(|event| event["streamSequence"].as_u64().unwrap())
         .unwrap_or(session_cursor);
     let tail = healthy
-        .call(
+        .read_history(
             3,
-            "thread/read",
             json!({"threadId":fixture.thread_id,
         "sessionAfterSequence":session_tail,"runAfterSequences":tails}),
         )
@@ -375,7 +380,7 @@ async fn backpressure_healthy_connection_keeps_normal_completed_run_and_terminal
     .await
     .unwrap();
     let read = client
-        .call(4, "thread/read", json!({"threadId":fixture.thread_id}))
+        .read_history(4, json!({"threadId":fixture.thread_id}))
         .await;
     assert_durable_terminal(&read, &turn, "succeeded");
     drop(client);
@@ -622,7 +627,7 @@ fn backpressure_real_pipe_stalled_stdout_exits_before_reader_or_stdin_closes_and
     let db = Arc::new(Database::open(root.path().join("state.sqlite")).unwrap());
     let mut recovered = ServerState::new_for_test_with_database(db, root.path().join("workspace"));
     initialize(&mut recovered);
-    let read = dispatch(&mut recovered, "thread/read", json!({"threadId":thread}));
+    let read = read_history(&mut recovered, json!({"threadId":thread}));
     assert_durable_terminal(&read, &turn, "cancelled");
     eprintln!("H-01 actual AppCore + OS pipe: failed exit=1, stdin/output kept open, durable cancelled exactly once");
 }

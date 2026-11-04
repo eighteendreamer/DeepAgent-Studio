@@ -86,6 +86,18 @@ pub struct ThreadListRequest {}
 pub struct ThreadReadRequest {
     #[serde(rename = "threadId")]
     pub thread_id: String,
+    /// Total page items (session events, run envelopes and control rows).
+    /// An indivisible source/native group must fit; default 500, range 1..=500.
+    #[serde(rename = "pageSize", default, skip_serializing_if = "Option::is_none")]
+    pub page_size: Option<usize>,
+    /// Complete successful JSON-RPC response bytes; default 256 KiB,
+    /// range 4096..=1048576. An oversized atomic item fails explicitly.
+    #[serde(rename = "maxBytes", default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<usize>,
+    /// Opaque history-only continuation, scoped to the database and thread.
+    /// Retry is read-only; omit the initial sequence filters or repeat them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
     #[serde(
         rename = "afterSequence",
         default,

@@ -8362,6 +8362,8 @@ H-82原探针显式0/1仍以content_filter触发3次请求/预算升级/续写�
 
 ### H-218：`thread/read` 无界全量物化历史，缺少分页与响应预算
 
+**当前状态：已修复并验收（2026-11-04，限E-H218-06所列Windows本机离线范围）；正式有界分页、旧大帧兼容及双SDK真实验收通过，全仓H306与既有lint失败另列，不代表全仓全绿。以下原失败证据保留。**
+
 **级别：中高（P1/P2 之间，长历史与多客户端恢复稳定性）；触发条件：** thread 的 durable session history 超过一个正常对话窗口，客户端调用公开 `thread/read` 获取状态或断线恢复。当前请求没有 page size、字节预算或 continuation 字段；`afterSequence` 只能过滤起点，不能限制本次返回的大小。
 
 #### 生产路径与正式复现
@@ -8386,6 +8388,141 @@ H-82原探针显式0/1仍以content_filter触发3次请求/预算升级/续写�
 - 回归应覆盖：空/小历史、恰好上限、超上限、单个超大 event、多个 run 的独立 cursor、actions/approvals/artifacts/graph 的预算、断线续读、重启后 cursor、历史追加与 cursor 稳定性、重复/篡改 cursor、旧客户端兼容以及 SDK/CLI/Tauri 只渲染当前页的内存上限。
 
 本轮只新增正式失败探针和审计文档，未修改生产 `thread/read` 行为。H-01/H-205 关注通知序号与 ACK/恢复身份，H-73 关注分叉 sequence 边界；它们不覆盖本项“冷历史 response 无界聚合”的内存与分页契约。
+
+**E-H218-01（原探针与范围核对）**：基线12077439，tracked干净且无未完成合并；五项原用户未跟踪内容不读/不改/不提交。实际执行 `cargo test -p deepagent-cli app_server::tests::audit_thread_read_has_bounded_history_page --offline -j 2 -- --ignored --exact --nocapture --test-threads=1`，exit101，0过/1败/0忽略，11.57秒；返回1201条事件、1570115字节、无continuation。原审计1570066字节失败样本和本轮日志均保留，差值不是问题消失。证据在target/h218-repair-20261104/original-thread-read.log及original-thread-read-result.json。
+
+本轮只处理H-218：权威session历史为checksummed多帧Zstd文件，SQLite session_file_state只是可重建投影；不能改为SQLite LIMIT或全量load后truncate。正式thread/read还全量加载所有runs、run_events、actions、approvals、artifacts和graph，必须一起纳入同一响应预算，不归并其他H。参考DeepSeek Harness的message-aligned page与独立follow；具体预算/continuation为本地设计，需复用现有EventStore、RunStore及各投影边界。先补真实生产dispatcher回归，随后实现有界文件读取、完整source/native组、稳定续读与明确超限错误；跨层SDK和旧调用方兼容需实际验证。没有完成生产修复、没有新增验收，尚无本项修复commit。
+
+当前H-218由待修复转为修复中，未关闭总数仍125（含授权跳过H-180，实际待处理124）；累计148验收/23历史跳过/7归并/3撤销不变。全部剩余仍为200–400有效小时历史未逐项校准粗估；H-218暂估12–28有效小时，依据压缩权威历史、六种控制投影及双SDK/重开/全仓验收范围，随真实测试校准，不承诺日期；构建/依赖/设备等待另计，无可靠等待总上界。下一步仍为H-218，不跳去其他问题。
+
+**E-H218-02（TDD与存储层候选，仍修复中，2026-11-04）**：本阶段只推进同一H-218，未宣称正式thread/read已修复，未创建修复commit。先新增五项真实dispatcher测试，经实际编译运行均失败（0过/5败/0忽略）；分别在响应预算、非法pageSize=0、超大session组、超大run event和session分页预算的首个断言失败，后续续读/篡改/跨thread/重开断言尚未完成执行，不把“测试文件已写”说成这些契约已验收。首次编译因测试append_event少传status参数失败，已按当前签名修正；该编译失败不是行为复现证据，原日志也保留。
+
+候选实现只复用既有存储：EventStore增加权威Zstd文件页，replay/page共用header与event-group的schema/identity/contiguous验证；在原session I/O及跨进程锁内固定generation/文件字节cut，不从SQLite投影读取会话正文，不全量load后truncate。压缩/解压单帧各8MiB、decoder window 8MiB、最多256帧和32MiB扫描阈值（计压缩及解压字节，允许最后一个有界帧越过阈值）；读页不修复/截断torn tail，损坏明确报错。多record重写帧保留record-index续读，超大帧明确拒绝，不迁移旧文件。这些均为本地候选策略，不是已有协议承诺或精确RSS上限，尚需正式响应与兼容验收。
+
+同一有界SQL helper用于原RunStore、RunControlStore、ArtifactStore、SubagentRunStore六类页（runs/run_events/actions/approvals/artifacts/children）：先选有限身份键，再逐行检查借用文本/二进制长度后调用既有row decoder，JSON字节用计数writer而非再分配完整payload副本；keyset加入稳定identity tie-break、source/scope绑定和rowid membership cut，在当前调用的只读事务内读取。跨页冻结的是成员集合，不是mutable action/approval/lease状态的MVCC历史快照；持久化run_events仍是replay权威。新增真实仓储对照验证六类全部行不丢/不重、同时间戳排序、u64::MAX初始run过滤、不提前解码limit probe/超大文本、UTF-8/escaping字节计数及追加/重试cut。正式graph loader、root/child active lease和metadata尚未改为有界，不能说整个控制投影已完成。
+
+候选中发现并保留新的真实反例：两帧旧StoredRecord::Event source/native在pageSize=1时被切开，`legacy-group-red`实际0过/1败。修正后旧格式连续segment不推测所有权、不拆组，跨帧完整交付或明确超限错误；小历史兼容及大segment只读拒绝已有回归，但长旧历史无法在低预算下分页是当前候选残余限制，不能静默改文件或宣称该限制已消除。原失败日志与后续green全部保留。
+
+本阶段最后一次源码冻结后的实际命令如下（target/h218-repair-20261104同名log/result.json）；较早8/12/13/14项候选通过、157项中间全量与红绿阶段均保留，不能替代下表结果。16项H218存储回归包含在165项内，不相加重复计数。
+
+| 实际命令 | 实际结果 |
+|---|---|
+| cargo test -p deepagent-persistence --offline -j 2 -- --test-threads=1 | stage-persistence-final，exit0，165过/0败/0忽略，44.05秒 |
+| cargo clippy -p deepagent-persistence --all-targets --no-deps --offline -j 2 -- -D warnings | stage-persistence-lint-final，exit0，3.68秒；不是全仓lint |
+| cargo fmt --all -- --check | stage-fmt，exit0，4.02秒 |
+| cargo test -p deepagent-cli app_server::tests::thread_start_read_and_fork_use_persisted_session_stream --offline -j 2 -- --exact --nocapture --test-threads=1 | stage-cli-small-control，exit0，1过/0败/0忽略，74.48秒（含跨crate重新编译） |
+| cargo test -p deepagent-cli app_server::history_page_tests:: --offline -j 2 -- --nocapture --test-threads=1 | stage-dispatcher-still-red，exit101，0过/5败/0忽略，2.32秒；正式dispatcher仍未接入有界页 |
+
+上述五命令累计执行约128.55秒（包含编译，不等同人工有效工时或全部等待）。尚未执行本项最终全workspace测试/严格lint、正式stdio续读、协议DTO与双SDK验收、Tauri/desktop构建、GUI/其他OS、进程强杀/掉电/长期压力；本阶段未更改它们的协议契约，不以旧轮次结果冒充当前候选验收。所有测试仅合成文件、临时SQLite及隔离profile，无第三方测试、真实内网/凭据/用户数据、数据库迁移或推送/PR。
+
+306唯一编号/8列已核对，仅H218主行改变，其余305行与12077439一致；仍148已验收/23历史跳过/7归并/3撤销/124待修/1修复中，125有效未关闭含H180授权跳过，实际待处理124。本阶段新增修复验收/历史跳过/归并/撤销均0，H178/H180原约定不变。候选代码、测试与同步双文档暂留工作区，待完整H218验收后再独立commit，不提交半成品、不amend。下一步仍为H218：收敛opaque continuation及固定聚合cut、graph/lease/metadata/响应总预算、正式dispatcher、旧长历史兼容与双SDK真实stdio消费。全部剩余200–400有效小时仍为未逐项校准历史粗估，H218暂保留12–28有效小时区间待按剩余跨层工作校准；设备/编译/依赖等待单列，无可靠等待总上界或日期承诺，goal保持active。
+
+**E-H218-03（正式分页接入与跨层阶段验证，仍修复中，2026-11-04）**：本阶段继续同一H-218，不归并其他H，不新增修复完成数，尚无本项commit。E01/E02及原失败日志全部保留；下面是新候选的实际结果，不把前一阶段的165项存储结果、五项dispatcher失败或旧二进制验收替换为当前结果。
+
+已接通正式`thread/read`：请求增加可选`pageSize`（1–500，默认500）、`maxBytes`（4096–1048576，默认262144）和opaque `cursor`；原四种sequence过滤保留。统一状态机沿权威session文件、run列表及单run的events/actions/approvals/artifacts/graph续读，不在cursor保存全部run ID，不全量读取后截断。完整成功RpcResponse的字节计数包含envelope、metadata、stream标签、每页run wrapper及实际编码cursor长度，任一原子组/单行不适配则明确拒绝，不回显合成私密标记。文件页补充完整组checkpoint供传输层停止，run阶段仍验证原session generation/byte cut，rewind拒旧cursor。六种SQLite插入高水位一次捕获并跨所有延迟打开的section/run复用，metadata、graph root/child与active lease同样有界；新graph页与原full loader共用node builder，不另造graph事实或历史存储。
+
+游标为本地设计：复用workspace已有aes-gcm/base64/serde版本，以独立随机pagination-only key、96-bit随机nonce和AES-256-GCM保护只读坐标，AAD绑定canonical thread与协议域/版本；没有调用SecretStore/keychain、读取真实provider凭据或新增SQL schema。key只在既有DocumentStore独立内部namespace持久化，用insert_if_absent仲裁独立连接；有界body-only lookup不加载embedding。明文state先计数、token限4096字节；畸形输入/未知DB不创建key，坏key不覆盖，错误不回显key/body。库API、许可证和版本依据现有secret_store源码、Cargo配置及本地registry；不是自创加密算法。新codec临时未实现接口的红阶段1过/3败，随后4过/0败；正式dispatcher原有五红转绿，扩展到八项实际通过，包含最小4096字节预算、追加后重开、过滤改变/跨thread/篡改、run阶段rewind、超大session/run/metadata和全部投影无丢重。
+
+新增TypeScript正式`readThreadPage`及typed options/result，每次只发一次RPC，不后台累积全部历史、不自动重试；旧无分页server明确拒绝。Rust SDK继续复用原thread_read和协议DTO，补真实stdio分页、全行对照及cursor跨重开；已全局更新仓内struct literals。TypeScript API先实际31过/1败（方法不存在），实现后32过/0败。双SDK真实gate均使用相同CLI可执行字节的空安装副本、合成home/workspace/data，不安装provider设置；TypeScript在首cursor后重连，Rust重开后读取此前保存的cursor，比较真实事件/graph行而非随机token是否变化。小历史数组结构保留；旧单调用方必须处理hasMore/cursor或明确超限错误，Rust结构体新增字段有源码兼容影响，README已注明。
+
+扩大到CLI全套时发现并保留3个真实失败：stage3-cli-all为163过/3败/17忽略，均在原H01压力恢复的terminal-count断言得到0而不是1。查证是测试消费方把首个有界页误作完整ledger，不能据此声称终态丢失或直接忽略失败。保留原4096字节×1024次的4MiB压力、实际OS pipe、取消与“终态恰好一次”断言；增加唯一test-only页收集器，通过同一dispatcher/stdio续读，每页检查既有500项/256KiB预算，重复行立即失败，另有128页/32MiB的合成样本消费上限。没有缩小压力样本、放宽生产预算、筛掉终态或另建replay store。复测7过/0败/1忽略，1项是由真实pipe父测试显式启动的child helper；4MiB结果实际各消费18页，最终全量证明无重复及恰好一次终态。它只是H218协议变更的消费方更新，不另记H01修复或撤销其历史验收。
+
+最后阶段的实际命令与结果如下；同名log/result.json位于target/h218-repair-20261104。CLI全套166项已经包含八项dispatcher及四项codec，不能另行相加当成新增验收数。严格selected-crate lint最初因本项manual_div_ceil失败，按实际诊断改用标准div_ceil后通过，未加allow或降低lint级别。部分无生产源码变化的persistence/graph/protocol结果先于最后CLI-only计数表达式调整；不把它们称为全workspace最终验收。
+
+| 实际命令 | 实际结果 |
+|---|---|
+| `cargo test -p deepagent-persistence --offline -j 2 -- --test-threads=1` | stage3-persistence-current，exit0，168过/0败/0忽略，57.18秒 |
+| `cargo test -p deepagent-app-core --lib run_graph::tests:: --offline -j 2 -- --nocapture --test-threads=1` | stage3-graph-current，exit0，5过/0败/0忽略，130.99秒 |
+| `cargo test -p deepagent-harness-protocol --offline -j 2 -- --test-threads=1` | stage3-protocol，exit0，14过/0败/0忽略，5.30秒 |
+| `cargo test -p deepagent-cli --offline -j 2 -- --test-threads=1` | stage3-final-cli-all，exit0，166过/0败/17忽略，124.87秒 |
+| `cargo test -p deepagent-cli app_server::tests::audit_thread_read_has_bounded_history_page --offline -j 2 -- --ignored --exact --nocapture --test-threads=1` | stage3-original-probe，exit0，1过/0败/0忽略，10.19秒 |
+| `cargo test -p deepagent-harness-sdk --test e2e_stdio h214_owned_real_cli_failure_is_unique_and_durable_after_reopen --offline -j 2 -- --exact --nocapture --test-threads=1` | stage3-final-sdk-real，exit0，1过/0败/0忽略，8.07秒 |
+| `cargo fmt --all -- --check` | stage3-final-format，exit0，4.78秒 |
+| `cargo clippy -p deepagent-persistence --all-targets --no-deps --offline -j 2 -- -D warnings` | stage3-bounded-crate-lint，exit0，5.03秒 |
+| `cargo clippy -p deepagent-cli -p deepagent-harness-sdk -p deepagent-harness-protocol --all-targets --no-deps --offline -j 2 -- -D warnings` | stage3-final-lint，exit0，6.68秒 |
+| `cargo build -p deepagent-cli --offline -j 2` | stage3-final-build，exit0，23.68秒 |
+| `pnpm -C packages/sdk test` | stage3-final-ts-test，exit0，32过/0败/0跳过，4.41秒 |
+| `pnpm -C packages/sdk test:stdio` | stage3-final-ts-test-stdio，exit0，1过/0败/0跳过，7.12秒 |
+| `pnpm -C packages/sdk typecheck` | stage3-final-ts-typecheck，exit0，1.49秒 |
+
+原审计探针已明确执行而非被默认ignore绕过：0/1/0红转为1/0/0绿，600消息样本现在首响应199事件/259699字节/has_continuation=true。默认CLI套件仍有17项历史ignore，未把它们说成已执行；本项原探针最终还需转为常规回归入口并重跑。生产二进制最后SHA256为25617340093C100470226CF3FECFA0D02DA634CB30C07CA4494CD3A1D6BA6252，最终TS三门禁均记录binaryUnchanged=true；更早stage3-sdk-real使用前一次构建，仅作阶段证据，最终stage3-final-sdk-real才对应最后重建字节。
+
+**修正并限定E02的“冻结成员集合”表述**：当前已验的是追加场景的固定插入高水位、原文件generation/byte cut及重开续读；这不是所有并发修改下的不可变快照。SQLite非AUTOINCREMENT表在删除/替换后rowid可能复用，subagent reparent也会改变投影成员关系；这些场景尚未动态验证或收敛，不能用追加测试通过代替它们。控制state/lease/metadata仍是live投影，文件cut与SQLite cut不构成跨存储原子事务。旧raw Event连续segment仍保守整体交付或明确拒绝，不推测/迁移所有权；低预算旧长segment和8MiB frame cap的兼容限制未消除。上述均保留为最终验收前的待处理/边界核对，不降级成已完成。
+
+原审计建议中“拒绝重复cursor”在本候选明确区分：同一只读cursor允许幂等重试，不触发turn、工具、审批或历史写入；不建立无界seen-cursor集合。新SDK不自动循环跟随随机token，压力验收消费器以实际行无丢重与有限窗口检查进展；篡改/foreign/超长及过滤改变仍拒绝。这是可重试只读协议的明确设计取舍，不把token随机变化当作恢复成功，更不保证无限重复请求的全局限流。
+
+尚未执行本项最终全workspace测试/全workspace严格lint、AppCore全套及其全部targets lint、Tauri/desktop构建、GUI、其他OS、进程强杀/掉电或长期RSS压力；尚需完成删除/替换/reparent等cut语义及旧长历史最终兼容审查。检索apps/desktop/src和apps/desktop/src-tauri/src未找到thread/read、ThreadReadRequest或thread_read直接消费方；本阶段没有修改Tauri桥/前端类型，不能据此假称desktop构建已通过。未访问真实内网、凭据、用户数据或第三方资源，不执行数据迁移、推送、PR、Git配置修改或提交半成品。五项原用户未跟踪内容不读/不改/不提交。
+
+306唯一台账重新核对：148已验收/23历史跳过/7归并/3撤销/124待修/1修复中，其余305行与12077439一致；本阶段新增修复验收/历史跳过/归并/撤销均0。125有效未关闭含H180授权跳过，实际待处理124，H178/H180约定不变。下一步仍只处理H218：先以真实反例收敛cut并发语义及旧历史限制，再跑完整影响范围验收、同步双文档后单独commit。H218剩余暂估6–14有效小时，依据剩余存储并发、兼容与全仓验证范围；不是完工承诺。全部剩余200–400有效小时仍沿用未逐项校准的历史粗估，不能提供完成率；编译/依赖/设备等待另计，无可靠等待总上界。goal保持active。
+
+
+**E-H218-04（删除复用与旧格式分页补强，仍修复中，2026-11-04）**：继续同一H218，不归并其他H、不新增完成计数、没有本项commit。重新核对HEAD为12077439，无merge/暂存；五项原用户未跟踪内容不读/不改/不提交。E01～03和原失败证据全部保留，以下是补强过程，不将阶段局部通过冒充最终验收。
+
+真实ArtifactStore删除最高行后put_new不同ID复用旧rowid，stage4-snapshot-rowid-red2实际0过/1败；旧cut只记MAX(rowid)，不能排除后来身份。候选在同一只读事务内捕获六张表cut及定长SHA256身份锚点，每个仓储页在读行前检查该仓储原cut行仍存在且完整主键/排序键未变；共享snapshot与独立仓储cursor均覆盖，through/anchor不匹配拒绝。只查固定cut行，不全表hash、不持有跨请求事务、不新增表/触发器/迁移。普通追加仍排除；锚点删除/复用明确stale，必须显式开始新hydration。全局表锚点变化可能保守地使其他thread旧cursor失效，不作自动重启。
+
+复合身份补测使用真实EventStore回收/清理合成旧session，再在已存在另一run创建同名call；stage8-composite-anchor-red实际0过/1败，证明仅call_id+sequence不足。现已将run_actions的完整(run_id,call_id)纳入同一锚点实现，未修改回收实现。真实ArtifactStore中间删除/OR REPLACE、普通追加、不同snapshot拒绝、序列化坐标重开和临时库VACUUM验收不混入新身份；VACUUM只接受保持原cut或明确stale。真实subagent resume_from_attempt保留origin、变更current parent/state/attempt，固定插入cut排除后插入child，但关系谓词保持live：原有child可出现在新parent和origin下。这不是首屏不可变graph/MVCC快照；任意离线SQL改主键、反复复用同一身份等不在仓储API验收承诺内。
+
+旧格式长segment不再整体缓存/拒绝。20条普通raw Event消息低预算分页先stage5-legacy-page-red 0过/1败；补测pageSize=1又在stage8-legacy-single-red 0过/1败，修正为仅对实际匹配的native item执行原子组预算。native-first 8对消息同样先stage8-native-first-red 0过/1败，再复用event_projection既有native-source matcher，保持native block与source message同页；相邻source-first及function/custom output镜像复用原payload映射并逐条累计字节/项数，部分镜像、超大原子block或有界前瞻用尽明确拒绝。原projection_spans的replay/branch判定未放宽。stage8-legacy-pages-current最终3过/0败，覆盖pageSize=1/5普通旧历史、source-first/custom output及native-first，不改写文件。8MiB压缩/解压帧cap仍保留：旧大单帧重写generation可能被只读拒绝，maxBytes不能提高帧上限，不能宣称所有旧大文件已兼容；最终兼容验收尚需明确覆盖此限制。
+
+阶段命令与结果如下；stage4～7沿既有runner的默认证据路径target/h219-repair-20261104记录，stage8以后显式改为target/h218-repair-20261104，所有标签均不覆盖旧证据。首次测试类型推断/构造字段/误留test属性编译失败、错误使用cargo runner调用pnpm（cargo pnpm）及resume夹具遗漏parent导致FK失败均保留，**不算行为红例或有效验收**。修正夹具后才运行下表；外层PowerShell exit0不能替代各result.json的原生命令exitCode。
+
+| 实际命令 | 实际结果及适用范围 |
+|---|---|
+| `cargo test -p deepagent-persistence bounded_read::tests::h218_ --offline -j 2 -- --nocapture --test-threads=1` | stage8-mutations-final，exit0，11过/0败/0忽略，16.76秒；含完整复合身份及live resume |
+| `cargo test -p deepagent-persistence --offline -j 2 -- --test-threads=1` | stage8-persistence-all，exit0，173过/0败/0忽略，36.44秒；含上述11项及旧格式回归，不重复相加 |
+| `cargo test -p deepagent-cli --offline -j 2 -- --test-threads=1` | stage7-cli-all，exit0，167过/0败/16忽略，238.53秒；H218原600消息探针已移除ignore并默认执行；先于stage8存储边界补强，不能充作最终当前CLI验收 |
+| `cargo clippy -p deepagent-persistence -p deepagent-cli -p deepagent-harness-sdk -p deepagent-harness-protocol --all-targets --no-deps --offline -j 2 -- -D warnings` | stage6-selected-lint，exit0，32.61秒；先于stage8，不是当前全仓lint |
+| `cargo build -p deepagent-cli --offline -j 2` | stage6-cli-build，exit0，101.30秒；不是stage8最终SDK二进制 |
+| `cargo test -p deepagent-harness-sdk --test e2e_stdio h214_owned_real_cli_failure_is_unique_and_durable_after_reopen --offline -j 2 -- --exact --nocapture --test-threads=1` | stage6-rust-sdk-stdio，exit0，1过/0败/0忽略，34.36秒；先于stage8 |
+| `pnpm -C packages/sdk test`、`test:stdio`、`typecheck` | 修正runner调用后的实际直接执行均exit0，32/0/0、真实CLI1/0/0、类型检查通过；未记录stage8重建SHA，不代替最终同字节门禁 |
+| `cargo fmt --all -- --check` | stage7-format-all，exit0，7.44秒；先于stage8 |
+| `cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=1` | stage9-workspace-all，exit101，1683.22秒；135个顶层targets最终汇总4450过/2败/244忽略，不是全绿。原runner136块/4451过多计嵌套helper的1过，已保留原值并以stage9-top-level-results.json更正 |
+| `cargo clippy --all-targets --all-features --offline -j 2 -- -D warnings` | stage9-workspace-lint，exit101，19.97秒；未修改的models/client.rs:385 clone_on_copy阻断 |
+| 同一AppCore测试exe精确运行`completion_plan::audit_tests::discovered_real_build_completes_after_release --exact --nocapture --test-threads=1` | stage10-build-control-exact，exit0，1/0/0，3.83秒；原全仓4秒未出现build-started失败保留，具体调度原因未定。前后测试exe SHA256一致68C4FECE892FA2B49C793CA2344B8AF75F5AAD513041692C6C0A8F7A264004ED |
+| `cargo fmt --all -- --check` | stage10-format，exit0，4.65秒，当前源码 |
+| `cargo clippy -p deepagent-persistence -p deepagent-cli -p deepagent-harness-sdk -p deepagent-harness-protocol --all-targets --no-deps --offline -j 2 -- -D warnings` | stage10-selected-lint，exit0，29.76秒，当前源码；不冒称AppCore/全仓lint通过 |
+| `cargo clippy -p deepagent-app-core --all-targets --no-deps --offline -j 2 -- -D warnings` | stage10-appcore-lint，exit101，47.33秒；12项库诊断及2项lib-test/media诊断，源码基线核对另列，不修改无关代码或加allow |
+| `cargo build -p deepagent-cli --offline -j 2` | stage10-cli-build，exit0，86.63秒；最终CLI SHA256 FDFED8775FECE5AC9AD94A07BBB93EC199F9183A9D8934A0ABE5C86A5A2D3B2D |
+| `cargo test -p deepagent-harness-protocol -p deepagent-harness-sdk --offline -j 2 -- --test-threads=1` | stage10-protocol-sdk，exit0，44过/0败/11忽略，46.47秒；忽略项不计执行通过 |
+| `cargo test -p deepagent-harness-sdk --test e2e_stdio h214_owned_real_cli_failure_is_unique_and_durable_after_reopen --offline -j 2 -- --exact --nocapture --test-threads=1` | stage10-sdk-real，exit0，1/0/0，4.58秒；重建CLI后的真实stdio/reopen/cursor，不另算修复数 |
+| `pnpm -C packages/sdk test`、`test:stdio`、`typecheck` | stage10-ts-unit/stdio/typecheck均exit0，分别32/0/0、真实CLI1/0/0、类型检查通过，3.95/5.59/1.30秒；三项均核对最终CLI hash不变 |
+
+全仓失败另有已登记H306：creative.video-edit.v1 defaultUserPrompt为空。当前CLI顶层target167/0/16（含默认H218原探针）、AppCore kernel_v2_e2e 280/0/36、workflow_audit 128/0/30、协议14/0/0均已执行；这些是上述全仓总数的子集，不重复加总。H306、构建夹具及全仓lint首个阻断源码均与HEAD一致，stage9-baseline-source-check.json留证；静态未变和独立绿色不等于已定位调度原因或全仓通过。
+
+H218继续修复中；当前跨层与双SDK同二进制门禁已取得结果，全仓/严格lint如上失败不隐去。超大旧单帧重写generation的最终兼容边界仍需补足真实验收/设计收敛，不能仅写成限制就关闭；也未执行本项desktop构建、GUI、其他OS、掉电或长期RSS压力。源码29份冻结与最终文档/台账复核后继续同一问题，不提交半成品。306台账状态仍148已验收/23历史跳过/7归并/3撤销/124待修/1修复中，有效未关闭125含H180授权跳过，实际待处理124，本阶段新增验收/跳过/归并/撤销均0。下一步仍H218，H178既有八门禁和H180约定不变。全部剩余200–400有效小时仍是未逐项校准历史粗估；H218暂保留6–14有效小时区间待根据全仓结果校准。设备/编译/依赖等待另计，没有可靠总上界或精确完工日期，goal保持active。
+
+**E-H218-05（旧大单帧兼容与窗口校验，2026-11-04）**：E02/E04的整帧8MiB cap是先前候选限制，现由真实反例收敛，不删除原阶段证据。使用生产rewind/fork的write_generation写入2100条各约4KiB的小Note；stage11-old-frame-red为0过/1败，报history_frame_too_large。新reader通过受文件cut限制的BufReader/Take和zstd single_frame流式解压，只保留skip后的有限记录窗口，完整读取该帧并通过checksum后才交付；按decoder finish后的Take剩余量与read-ahead buffer计算真实帧长度，跨帧不偏移。依据为本地registry zstd-0.13.3的read/with_buffer/single_frame/finish实现，而非猜测API。
+
+边界现在是单条JSONL record 8MiB、保留窗口最多501条且编码record数据8MiB、decoder window 8MiB；4KiB输入块，不缓存全帧/全历史、不建新store、不迁移/改写旧文件。旧大帧每个窗口/续页需O(frame size)重扫并验证帧尾，256帧/32MiB扫描阈值只在窗口之间检查，不是硬CPU/I/O/时长上限；未做总RSS测量，不能将局部分配预算当成进程RSS保证。窗口外的JSON schema在其读取窗口才验证，完整帧checksum始终先验证；超大单record/不可拆投影组/无法确定的legacy lookahead仍明确拒绝。
+
+stage11-file-pages-current先13过/0败；补充大帧skip1000只保留501条、帧尾损坏阻止前窗口交付且文件不变后，stage12-file-pages实际13过/0败/0忽略（25.25秒）。再补空行、末条无换行、skip等于/超过记录总数、相邻压缩帧read-ahead精确offset，以及source-first/native-first组跨501记录窗口，最终`cargo test -p deepagent-persistence session_files::page::tests:: --offline -j 2 -- --nocapture --test-threads=1`为stage12-file-windows，exit0，15过/0败/0忽略（25.71秒）。合成文件读前读后逐字一致，坏checksum不修文件；上述均不是OOM或RSS压测。
+
+stage12-format-apply/2实际exit0。已按29份相关源码重新冻结stage12-source-freeze.json，E04的stage9冻结不能替代它；当前冻结源码的全workspace、严格lint、CLI重建与双SDK同字节stdio/reopen/cursor门禁仍在执行，未取得终态前不宣称最终验收或创建半成品commit。README同步实际兼容边界；其他H与用户未跟踪内容未改，状态/计数暂仍148验收、23历史跳过、7归并、3撤销、124待修、1修复中，有效未关闭125含授权跳过H180，实际待处理124。下一步仍完成H218闭环。
+
+**E-H218-06（最终验收，2026-11-04，限Windows本机离线合成数据）**：当前29份相关源码已按stage12-source-freeze.json冻结并在全部门禁后逐份核对，无变化。原600消息审计探针现为默认回归，原始1201事件/约1.57MiB/无continuation失败不删；当前首屏199事件、260740字节、has_continuation=true，完整续页、追加/重开、篡改/跨thread/rewind、全部控制投影和旧大帧按E02～05真实验收。H218在下列边界内标记已修复并验收，不表示整个workspace全绿或整个goal完成。
+
+| 实际命令 | 当前冻结源码结果（log/result.json位于target/h218-repair-20261104） |
+|---|---|
+| `cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=1` | stage12-workspace-all，exit101，1582.51秒；135顶层targets为4454过/1败/244忽略。唯一失败为既有H306空defaultUserPrompt；原runner4455过多计嵌套helper的1过，保留原值，以stage12-top-level-results.json去重汇总 |
+| 同一全workspace的受影响生产方/消费方targets | persistence lib167+session_control9，共176/0/0；AppCore lib1451/0/67、kernel_v2_e2e280/0/36、workflow_audit128/0/30；CLI167/0/16（含默认H218探针）、protocol14/0/0。均为上一行子集，不重复加总 |
+| `cargo fmt --all -- --check` | stage12-format，exit0，4.31秒 |
+| `cargo clippy --all-targets --all-features --offline -j 2 -- -D warnings` | stage12-workspace-lint，exit101，7.23秒；models/client.rs:385既有clone_on_copy阻断 |
+| `cargo clippy -p deepagent-persistence -p deepagent-cli -p deepagent-harness-sdk -p deepagent-harness-protocol --all-targets --no-deps --offline -j 2 -- -D warnings` | stage12-selected-lint，exit0，27.48秒；未降低级别、加allow或跳过本项生产边界 |
+| `cargo clippy -p deepagent-app-core --all-targets --no-deps --offline -j 2 -- -D warnings` | stage12-appcore-lint，exit101，40.87秒；既有12项库诊断及2项lib-test/media诊断，相关6份源码与HEAD相同，不冒称全仓/AppCore严格lint通过 |
+| `cargo build -p deepagent-cli --offline -j 2` | stage12-cli-build，exit0，74.38秒；最终CLI SHA256为FAB1ECA1D49D96C258CA80DA51106A9E42C48364A821584AB1075903C47BCFEC |
+| `cargo test -p deepagent-harness-protocol -p deepagent-harness-sdk --offline -j 2 -- --test-threads=1` | stage12-protocol-sdk，exit0，44过/0败/11忽略，42.25秒 |
+| `cargo test -p deepagent-cli app_server::tests::audit_thread_read_has_bounded_history_page --offline -j 2 -- --exact --nocapture --test-threads=1` | stage12-original-default-probe，exit0，1/0/0，98.20秒含重新编译；不使用--ignored |
+| `cargo test -p deepagent-harness-sdk --test e2e_stdio h214_owned_real_cli_failure_is_unique_and_durable_after_reopen --offline -j 2 -- --exact --nocapture --test-threads=1` | stage12-sdk-real与stage13-sdk-real-same-binary均exit0、1/0/0，4.33/4.21秒；后者另记录CLI hash与上述一致且前后未变 |
+| `pnpm -C packages/sdk test`、`test:stdio`、`typecheck` | stage12-ts-unit/stdio/typecheck均exit0，32/0/0、真实stdio1/0/0、类型检查通过，4.20/6.05/1.67秒；均记录同一CLI hash且binaryUnchanged=true |
+| `git diff --check`及双文档/台账核对 | 无空白错误；E01～06同步，306唯一编号/8列，其余305行与12077439一致；最终核对JSON另存 |
+
+E04中的构建夹具4秒超时原失败仍保留；此次全workspace同一用例实际通过，未调整超时或相关源码，未据此伪称已定位原调度原因。H306、models首个lint阻断、AppCore六份lint源码及构建夹具均核对未改；不混修、不删除失败、不绕过hook。原探针和本项新回归已真实执行，历史244项ignore不计通过。
+
+根因与兼容：正式thread/read统一复用权威EventStore文件页及原六仓储SQL页、同一graph builder和总响应预算；不是另建history/store或全量load再truncate。旧单调用客户端现在必须处理hasMore/nextCursor或明确超限错误；Rust struct literal新增三个可选字段，双SDK及仓内调用方已同步，未改Tauri command/UI DTO。只读重复cursor是幂等重试，不是新派发；不维护无界seen集合，调用者自行限制读取次数。AES-GCM只保护坐标，pagination-only随机key写入既有DocumentStore内部namespace，不访问真实凭据/SecretStore，不新增schema/执行迁移。无推送、PR、真实网络/用户数据操作。
+
+残余限制：状态/租约/metadata和subagent关系仍live，非跨文件/SQLite原子MVCC；删除/复用cut锚点明确stale且需显式新hydration，全局锚点可能保守影响其他thread。旧大单帧虽内存有界，但每窗口O(frame size)校验，扫描阈值不是硬时限；超大单record/不可拆组明确拒绝，未测总RSS、掉电/强杀/长期压力。未执行Desktop构建、GUI或其他OS：本项未改Tauri/UI入口，验收限定正式stdio生产方与Rust/TS消费方，不把未测平台算通过。
+
+本轮新增验收1、历史跳过0、归并/撤销0；累计149验收、23历史跳过、7归并、3撤销、124待修、0修复中，有效未关闭124（含H180授权跳过，实际待处理123）。H218修复/验收剩余0，代码、测试及当时双文档独立提交后另回填hash，不反复amend。下一项准备按数据损坏风险优先复核H270（坏计划记录导致健康任务被覆盖），先查原探针/当前根因与历史验收，不直接改代码。全部剩余200–400有效小时仍是未逐项校准的历史粗估，依据剩余123项的跨层修复/真实验收规模；环境/编译/依赖等待另计，无可靠总上界，不承诺精确日期，goal保持active。
 
 ### H-219：`tool/list` 是无作用域的静态目录，无法描述当前 run 的实际能力
 

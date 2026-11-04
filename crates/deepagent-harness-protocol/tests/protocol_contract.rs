@@ -219,6 +219,9 @@ fn every_harness_request_variant_has_a_stable_method_and_round_trips() {
         HarnessRequest::ThreadList(ThreadListRequest::default()),
         HarnessRequest::ThreadRead(ThreadReadRequest {
             thread_id: "thread-1".into(),
+            page_size: None,
+            max_bytes: None,
+            cursor: None,
             after_sequence: None,
             session_after_sequence: None,
             run_after_sequence: None,
@@ -290,6 +293,9 @@ fn every_harness_request_variant_has_a_stable_method_and_round_trips() {
 fn thread_read_supports_stream_specific_cursors() {
     let request = HarnessRequest::ThreadRead(ThreadReadRequest {
         thread_id: "thread-1".into(),
+        page_size: None,
+        max_bytes: None,
+        cursor: None,
         after_sequence: None,
         session_after_sequence: Some(12),
         run_after_sequence: Some(7),
@@ -300,6 +306,21 @@ fn thread_read_supports_stream_specific_cursors() {
     assert_eq!(value["params"]["runAfterSequence"], 7);
     assert_eq!(value["params"]["runAfterSequences"]["run-1"], 4);
     assert!(value["params"].get("afterSequence").is_none());
+}
+
+#[test]
+fn h218_thread_read_page_options_are_additive_on_the_wire() {
+    let legacy: ThreadReadRequest =
+        serde_json::from_value(serde_json::json!({"threadId":"t"})).unwrap();
+    assert_eq!(legacy.page_size, None);
+    assert_eq!(legacy.max_bytes, None);
+    assert_eq!(legacy.cursor, None);
+    let value = serde_json::json!({"threadId":"t","pageSize":7,"maxBytes":8192,"cursor":"opaque"});
+    let request: ThreadReadRequest = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(request.page_size, Some(7));
+    assert_eq!(request.max_bytes, Some(8192));
+    assert_eq!(request.cursor.as_deref(), Some("opaque"));
+    assert_eq!(serde_json::to_value(request).unwrap(), value);
 }
 
 #[test]

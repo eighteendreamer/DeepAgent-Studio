@@ -17,6 +17,24 @@ function createAgent(options = {}) {
   });
 }
 
+test("reads one typed history page without automatic accumulation or retry", async () => {
+  const agent = createAgent();
+  try {
+    const first = await agent.readThreadPage("thread-mock", {
+      pageSize: 7, maxBytes: 8192, sessionAfterSequence: 2, runAfterSequences: { "run-1": 3 }
+    });
+    assert.equal(first.hasMore, true);
+    assert.deepEqual(first.events[0].request, {
+      threadId: "thread-mock", pageSize: 7, maxBytes: 8192,
+      sessionAfterSequence: 2, runAfterSequences: { "run-1": 3 }
+    });
+    const second = await agent.readThreadPage("thread-mock", { cursor: first.nextCursor });
+    assert.equal(second.hasMore, false);
+    assert.equal(second.nextCursor, null);
+    await assert.rejects(() => agent.readThreadPage("legacy-history"), /bounded history page/u);
+  } finally { await agent.close(); }
+});
+
 test("starts a thread, streams events, and resolves approvals", async () => {
   const approvals = [];
   const agent = createAgent({

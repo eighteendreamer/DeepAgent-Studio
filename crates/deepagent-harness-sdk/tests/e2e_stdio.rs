@@ -124,6 +124,9 @@ async fn h214_owned_thread_start_and_reconnected_durable_read_use_the_real_cli()
     assert!(events.recv().await.unwrap().is_none());
     let read = || ThreadReadRequest {
         thread_id: thread.clone(),
+        page_size: None,
+        max_bytes: None,
+        cursor: None,
         after_sequence: None,
         session_after_sequence: None,
         run_after_sequence: None,
@@ -290,6 +293,9 @@ async fn h214_owned_real_cli_failure_is_unique_and_durable_after_reopen() {
     assert_eq!(terminals, 1);
     let request = || ThreadReadRequest {
         thread_id: thread.clone(),
+        page_size: None,
+        max_bytes: None,
+        cursor: None,
         after_sequence: None,
         session_after_sequence: None,
         run_after_sequence: None,
@@ -310,6 +316,45 @@ async fn h214_owned_real_cli_failure_is_unique_and_durable_after_reopen() {
     );
     assert!(runs[0]["actions"].as_array().unwrap().is_empty());
     assert!(runs[0]["approvals"].as_array().unwrap().is_empty());
+    let mut page_request = request();
+    page_request.page_size = Some(5);
+    page_request.max_bytes = Some(1048576);
+    let mut page = client.thread_read(page_request.clone()).await.unwrap();
+    let first_continuation = page.result()["nextCursor"].as_str().unwrap().to_owned();
+    let mut second_page = None;
+    let mut session_rows = Vec::new();
+    let mut run_rows = Vec::new();
+    let mut graph_rows = Vec::new();
+    for index in 0..100 {
+        assert!(serde_json::to_vec(&page).unwrap().len() <= 1048576);
+        let value = page.result();
+        let events = value["events"].as_array().unwrap();
+        session_rows.extend(events.iter().cloned());
+        let mut count = events.len();
+        for slice in value["runEvents"].as_array().unwrap() {
+            assert_eq!(slice["runId"], turn);
+            count += 1;
+            for field in ["events", "actions", "approvals", "artifacts"] {
+                count += slice[field].as_array().unwrap().len();
+            }
+            count += slice["graph"]["nodes"].as_array().unwrap().len();
+            run_rows.extend(slice["events"].as_array().unwrap().iter().cloned());
+            graph_rows.extend(slice["graph"]["nodes"].as_array().unwrap().iter().cloned());
+        }
+        assert!(count <= 5);
+        if value["hasMore"] == false {
+            break;
+        }
+        assert!(index < 99, "bounded history did not exhaust");
+        page_request.cursor = Some(value["nextCursor"].as_str().unwrap().into());
+        page = client.thread_read(page_request.clone()).await.unwrap();
+        if index == 0 {
+            second_page = Some(page.clone());
+        }
+    }
+    assert_eq!(session_rows, *before.result()["events"].as_array().unwrap());
+    assert_eq!(run_rows, *records);
+    assert_eq!(graph_rows, *runs[0]["graph"]["nodes"].as_array().unwrap());
     let cursor = records.last().unwrap()["sequence"].as_u64().unwrap();
     assert!(process.wait().await.unwrap().success());
     let reopened = HarnessProcess::spawn(&bin, &workspace).await.unwrap();
@@ -326,6 +371,12 @@ async fn h214_owned_real_cli_failure_is_unique_and_durable_after_reopen() {
         .unwrap();
     let after = current.thread_read(request()).await.unwrap();
     assert_eq!(after.result(), before.result());
+    page_request.cursor = Some(first_continuation);
+    let resumed_page = current.thread_read(page_request).await.unwrap();
+    let expected_page = second_page.unwrap();
+    for field in ["events", "runEvents", "hasMore"] {
+        assert_eq!(resumed_page.result()[field], expected_page.result()[field]);
+    }
     let incremental = current
         .thread_read(ThreadReadRequest {
             run_after_sequences: Some([(turn, cursor)].into()),
@@ -374,6 +425,9 @@ async fn introspection_methods_round_trip_without_a_model() {
     let read = client
         .thread_read(ThreadReadRequest {
             thread_id: thread_id.clone(),
+            page_size: None,
+            max_bytes: None,
+            cursor: None,
             after_sequence: None,
             session_after_sequence: None,
             run_after_sequence: None,

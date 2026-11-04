@@ -187,7 +187,10 @@ impl HarnessClient {
             .await
     }
 
-    /// Read thread state, optionally incrementally from cursors.
+    /// Read one bounded thread-history page. Inspect `hasMore`/`nextCursor`;
+    /// a run's arrays/graph may continue in a later slice. This does not collect
+    /// the full history or automatically retry. Sequence filters apply only to
+    /// the initial cut; omit or repeat them when passing its opaque cursor.
     pub async fn thread_read(&self, request: ThreadReadRequest) -> Result<RpcResponse, SdkError> {
         self.call(HarnessRequest::ThreadRead(request)).await
     }

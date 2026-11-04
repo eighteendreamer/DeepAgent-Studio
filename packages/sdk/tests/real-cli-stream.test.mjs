@@ -57,6 +57,33 @@ test("real CLI early failure is delivered once and reconciles after reconnect wi
     assert.equal(run.events.filter((event) => event.event_type === "run_terminal").length, 1);
     assert.deepEqual(run.actions, []);
     assert.deepEqual(run.approvals, []);
+    // Exercise the public bounded API over real stdio, including a process
+    // restart in the middle. Compare actual rows, not random token inequality.
+    let history = await agent.readThreadPage(thread.id, {pageSize: 5, maxBytes: 1048576});
+    const collected = {events: [], runEvents: [], actions: [], approvals: [], artifacts: [], nodes: []};
+    let pages = 0;
+    for (; pages < 100; pages++) {
+      let items = history.events.length;
+      collected.events.push(...history.events);
+      for (const slice of history.runEvents) {
+        assert.equal(slice.runId, turnId);
+        items += 1 + slice.events.length + slice.actions.length + slice.approvals.length
+          + slice.artifacts.length + slice.graph.nodes.length;
+        collected.runEvents.push(...slice.events);
+        for (const field of ["actions", "approvals", "artifacts"]) collected[field].push(...slice[field]);
+        collected.nodes.push(...slice.graph.nodes);
+      }
+      assert.ok(items <= 5);
+      if (!history.hasMore) break;
+      if (pages === 0) await agent.reconnect();
+      history = await agent.readThreadPage(thread.id, {cursor: history.nextCursor, pageSize: 5, maxBytes: 1048576});
+    }
+    assert.ok(pages > 0 && pages < 100);
+    assert.equal(history.hasMore, false);
+    assert.deepEqual(collected.events, before.events);
+    assert.deepEqual(collected.runEvents, run.events);
+    for (const field of ["actions", "approvals", "artifacts"]) assert.deepEqual(collected[field], run[field]);
+    assert.deepEqual(collected.nodes, run.graph.nodes);
     await agent.reconnect();
     await agent.resumeThread(thread.id);
     const after = await agent.requestForTest("thread/read", { threadId: thread.id });

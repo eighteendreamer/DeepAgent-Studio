@@ -68,6 +68,19 @@ input.on("line", (line) => {
         configuration: configurations.get(request.params.threadId) ?? null
       });
       break;
+    case "thread/read": {
+      if (request.params.threadId === "legacy-history") {
+        response(request.id, { threadId: "legacy-history", events: [], runEvents: [] });
+        break;
+      }
+      response(request.id, {
+        threadId: request.params.threadId, title: null, cwd: null,
+        controlProjectionVersion: 1, cursorMode: "stream_scoped", historyPageVersion: 1,
+        events: [{ request: request.params }], runEvents: [],
+        hasMore: !request.params.cursor, nextCursor: request.params.cursor ? null : "fixture-next"
+      });
+      break;
+    }
     case "turn/start": {
       if (request.params.input === "fixture:busy") {
         error(request.id, -32005, "thread is busy; use turn/steer explicitly");

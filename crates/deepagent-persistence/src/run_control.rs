@@ -8,6 +8,9 @@ use deepagent_core::error::{CoreError, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
+use crate::bounded_read::{
+    self, HistoryCursor, HistoryPage, HistoryQuery, HistoryReadBudget, HistorySource,
+};
 use crate::{map_sqlite, Database};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -416,6 +419,19 @@ impl<'db> RunControlStore<'db> {
         })
     }
 
+    pub fn list_actions_page(
+        &self,
+        run_id: &str,
+        cursor: Option<&HistoryCursor>,
+        budget: HistoryReadBudget,
+    ) -> Result<HistoryPage<RunActionRecord>> {
+        bounded_read::read(self.db,&HistoryQuery {
+            source:HistorySource::Actions,
+            columns:"run_id,turn_id,call_id,sequence,tool_name,arguments_hash,state,risk,approval_id,attempt,lease_owner,lease_expires_at,started_at,finished_at,result_ref,blocked_reason,parent_action_id,created_at,updated_at",
+            table:"run_actions",scope_filter:"run_id=?1",number:"sequence",id:"call_id",descending:false,
+        },run_id,cursor,budget,|row| parse_action(action_from_row(row).map_err(map_sqlite)?))
+    }
+
     pub fn request_approval(&self, approval: &NewRunApproval<'_>) -> Result<ControlMutation> {
         self.db.with_conn(|connection| {
             in_immediate_transaction(connection, || {
@@ -595,6 +611,19 @@ impl<'db> RunControlStore<'db> {
         })
     }
 
+    pub fn list_approvals_page(
+        &self,
+        run_id: &str,
+        cursor: Option<&HistoryCursor>,
+        budget: HistoryReadBudget,
+    ) -> Result<HistoryPage<RunApprovalRecord>> {
+        bounded_read::read(self.db,&HistoryQuery {
+            source:HistorySource::Approvals,
+            columns:"approval_id,run_id,call_id,state,scope,risk,reason,policy_snapshot,expires_at,decided_at,decided_by,created_at,updated_at",
+            table:"run_approvals",scope_filter:"run_id=?1",number:"created_at",id:"approval_id",descending:false,
+        },run_id,cursor,budget,|row| parse_approval(approval_row(row).map_err(map_sqlite)?))
+    }
+
     pub fn acquire_lease(&self, lease: &NewExecutionLease<'_>) -> Result<ExecutionLeaseRecord> {
         if lease.expires_at <= lease.now {
             return Err(CoreError::invalid("lease expiry must be in the future"));
@@ -713,6 +742,25 @@ impl<'db> RunControlStore<'db> {
             let lease = active_lease_from(connection, resource_kind, resource_id)?;
             Ok(lease.filter(|record| record.expires_at > now))
         })
+    }
+
+    /// Same active-lease projection, but reject oversized persisted fields
+    /// before cloning them. Never suppress a storage or budget error.
+    pub fn active_lease_bounded(
+        &self,
+        resource_kind: &str,
+        resource_id: &str,
+        now: i64,
+        max_bytes: usize,
+    ) -> Result<Option<ExecutionLeaseRecord>> {
+        bounded_read::one(
+            self.db,
+            ACTIVE_LEASE_SELECT,
+            [resource_kind, resource_id],
+            Some(max_bytes),
+            lease_record,
+        )
+        .map(|lease| lease.filter(|record| record.expires_at > now))
     }
 
     /// Revoke the currently held lease only when owner and epoch still match.
@@ -1031,6 +1079,8 @@ fn lease_from(connection: &Connection, lease_id: &str) -> Result<Option<Executio
     )
 }
 
+const ACTIVE_LEASE_SELECT: &str = "SELECT lease_id,resource_kind,resource_id,owner,epoch,fencing_token_hash,acquired_at,expires_at,renewed_at,revoked_at,revoke_reason FROM execution_leases WHERE resource_kind=?1 AND resource_id=?2 AND revoked_at IS NULL";
+
 fn active_lease_from(
     connection: &Connection,
     resource_kind: &str,
@@ -1038,7 +1088,7 @@ fn active_lease_from(
 ) -> Result<Option<ExecutionLeaseRecord>> {
     lease_query(
         connection,
-        "SELECT lease_id,resource_kind,resource_id,owner,epoch,fencing_token_hash,acquired_at,expires_at,renewed_at,revoked_at,revoke_reason FROM execution_leases WHERE resource_kind=?1 AND resource_id=?2 AND revoked_at IS NULL",
+        ACTIVE_LEASE_SELECT,
         [resource_kind, resource_id],
     )
 }
@@ -1048,57 +1098,29 @@ fn lease_query<const N: usize>(
     sql: &str,
     values: [&str; N],
 ) -> Result<Option<ExecutionLeaseRecord>> {
-    type RawLease = (
-        String,
-        String,
-        String,
-        String,
-        i64,
-        String,
-        i64,
-        i64,
-        Option<i64>,
-        Option<i64>,
-        Option<String>,
-    );
-    let mut statement = connection.prepare(sql).map_err(map_sqlite)?;
-    let raw = statement
-        .query_row(
-            rusqlite::params_from_iter(values),
-            |row| -> rusqlite::Result<RawLease> {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                    row.get(7)?,
-                    row.get(8)?,
-                    row.get(9)?,
-                    row.get(10)?,
-                ))
-            },
-        )
-        .optional()
-        .map_err(map_sqlite)?;
-    raw.map(|raw| {
-        Ok(ExecutionLeaseRecord {
-            lease_id: raw.0,
-            resource_kind: raw.1,
-            resource_id: raw.2,
-            owner: raw.3,
-            epoch: to_u64(raw.4, "lease epoch")?,
-            fencing_token_hash: raw.5,
-            acquired_at: raw.6,
-            expires_at: raw.7,
-            renewed_at: raw.8,
-            revoked_at: raw.9,
-            revoke_reason: raw.10,
-        })
+    bounded_read::one_on_connection(
+        connection,
+        sql,
+        rusqlite::params_from_iter(values),
+        None,
+        lease_record,
+    )
+}
+
+fn lease_record(row: &rusqlite::Row<'_>) -> Result<ExecutionLeaseRecord> {
+    Ok(ExecutionLeaseRecord {
+        lease_id: row.get(0).map_err(map_sqlite)?,
+        resource_kind: row.get(1).map_err(map_sqlite)?,
+        resource_id: row.get(2).map_err(map_sqlite)?,
+        owner: row.get(3).map_err(map_sqlite)?,
+        epoch: to_u64(row.get(4).map_err(map_sqlite)?, "lease epoch")?,
+        fencing_token_hash: row.get(5).map_err(map_sqlite)?,
+        acquired_at: row.get(6).map_err(map_sqlite)?,
+        expires_at: row.get(7).map_err(map_sqlite)?,
+        renewed_at: row.get(8).map_err(map_sqlite)?,
+        revoked_at: row.get(9).map_err(map_sqlite)?,
+        revoke_reason: row.get(10).map_err(map_sqlite)?,
     })
-    .transpose()
 }
 
 fn ensure_run_open(connection: &Connection, run_id: &str) -> Result<()> {

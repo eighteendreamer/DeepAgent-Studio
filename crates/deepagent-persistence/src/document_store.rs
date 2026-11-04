@@ -126,6 +126,23 @@ impl<'db> DocumentStore<'db> {
         })
     }
 
+    /// Fetch only a small document body, checking borrowed SQLite bytes before
+    /// cloning. Embeddings and unrelated document metadata are not hydrated.
+    pub fn get_body_bounded(
+        &self,
+        collection: &str,
+        id: &str,
+        max_bytes: usize,
+    ) -> Result<Option<String>> {
+        crate::bounded_read::one(
+            self.db,
+            "SELECT body FROM documents WHERE collection=?1 AND id=?2",
+            params![collection, id],
+            Some(max_bytes),
+            |row| row.get(0).map_err(map_sqlite),
+        )
+    }
+
     /// List all documents in a collection (insertion-stable by created_at).
     pub fn list(&self, collection: &str) -> Result<Vec<Document>> {
         self.db.with_conn(|c| {
@@ -246,6 +263,41 @@ mod tests {
         let got = doc.embedding.unwrap();
         assert_eq!(got.len(), 3);
         assert!((got[1] - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn h218_small_body_lookup_does_not_hydrate_embedding_and_rejects_large_body() {
+        let db = Database::open_in_memory().unwrap();
+        let store = DocumentStore::new(&db);
+        store
+            .put(
+                "bounded",
+                "small",
+                "a".repeat(64).as_str(),
+                Some(&vec![0.0; 100_000]),
+                at(1),
+            )
+            .unwrap();
+        assert_eq!(
+            store.get_body_bounded("bounded", "small", 64).unwrap(),
+            Some("a".repeat(64))
+        );
+        assert!(store.get_body_bounded("bounded", "small", 63).is_err());
+        assert_eq!(
+            store.get_body_bounded("bounded", "missing", 64).unwrap(),
+            None
+        );
+        store
+            .put(
+                "bounded",
+                "large",
+                &"H218_PRIVATE".repeat(10000),
+                None,
+                at(1),
+            )
+            .unwrap();
+        let error = store.get_body_bounded("bounded", "large", 64).unwrap_err();
+        assert!(!error.to_string().contains("H218_PRIVATE"));
     }
 
     #[test]

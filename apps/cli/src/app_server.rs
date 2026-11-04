@@ -18,9 +18,7 @@ use deepagent_harness_protocol::{
     TurnInterruptRequest, TurnStartRequest, TurnSteerRequest, CONTROL_PROJECTION_VERSION,
     PROTOCOL_VERSION,
 };
-use deepagent_persistence::artifact_store::ArtifactStore;
 use deepagent_persistence::event_store::EventStore;
-use deepagent_persistence::run_control::RunControlStore;
 use deepagent_persistence::run_store::RunStore;
 use deepagent_persistence::Database;
 use deepagent_session::Session;
@@ -32,9 +30,20 @@ mod event_outbox;
 use event_outbox::{EventOutbox, OutputState};
 #[path = "app_server/connection.rs"]
 mod connection;
+#[path = "app_server/history_cursor.rs"]
+mod history_cursor;
+#[path = "app_server/history_page.rs"]
+mod history_page;
 #[cfg(test)]
 use connection::complete_turn_dispatch;
 use connection::run_stdio_with_io;
+
+#[cfg(test)]
+#[path = "app_server/history_page_tests.rs"]
+mod history_page_tests;
+#[cfg(test)]
+#[path = "app_server/history_test_support.rs"]
+mod history_test_support;
 
 use crate::args::RunOptions;
 
@@ -548,165 +557,19 @@ impl ServerState {
         id: serde_json::Value,
         params: ThreadReadRequest,
     ) -> (RpcResponse, Option<TurnLaunch>) {
-        let session_id = match params.thread_id.parse() {
-            Ok(session_id) => session_id,
+        let response = match history_page::read(&self.database, id.clone(), params) {
+            Ok(response) => response,
             Err(error) => {
-                return (
-                    RpcResponse::error(
-                        id,
-                        ERR_INVALID_THREAD,
-                        format!("invalid thread id: {error}"),
-                    ),
-                    None,
-                )
+                let code = match &error {
+                    CoreError::Invalid(_) => ERR_INVALID_PARAMS,
+                    CoreError::NotFound(_) => ERR_INVALID_THREAD,
+                    _ => ERR_INTERNAL,
+                };
+                RpcResponse::error(id, code, error.to_string())
             }
         };
-        let store = EventStore::new(&self.database);
-        let session_after = params.session_after_sequence.or(params.after_sequence);
-        let run_after = params.run_after_sequence.or(params.after_sequence);
-        let record = match store.get_session(session_id) {
-            Ok(Some(record)) => record,
-            Ok(None) => {
-                return (
-                    RpcResponse::error(id, ERR_INVALID_THREAD, "thread not found"),
-                    None,
-                )
-            }
-            Err(error) => {
-                return (
-                    RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
-                    None,
-                )
-            }
-        };
-        let events = match store.load_session(session_id) {
-            Ok(events) if events.is_empty() => {
-                return (
-                    RpcResponse::error(id, ERR_INVALID_THREAD, "thread has no session file"),
-                    None,
-                )
-            }
-            Ok(events) => events
-                .into_iter()
-                .filter(|event| session_after.map_or(true, |after| event.sequence > after))
-                .filter_map(|event| {
-                    let sequence = event.sequence;
-                    let mut value = serde_json::to_value(event).ok()?;
-                    if let Some(object) = value.as_object_mut() {
-                        object.insert("stream".into(), serde_json::json!("session"));
-                        object.insert("streamSequence".into(), serde_json::json!(sequence));
-                    }
-                    Some(value)
-                })
-                .collect::<Vec<_>>(),
-            Err(error) => {
-                return (
-                    RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
-                    None,
-                )
-            }
-        };
-        let run_events = match RunStore::new(&self.database).list_for_session(&params.thread_id) {
-            Ok(runs) => {
-                let mut projected = Vec::with_capacity(runs.len());
-                for run in runs {
-                    let run_after = params
-                        .run_after_sequences
-                        .as_ref()
-                        .and_then(|cursors| cursors.get(&run.id).copied())
-                        .or(run_after);
-                    let events =
-                        match RunStore::new(&self.database).events_after(&run.id, run_after) {
-                            Ok(events) => events
-                                .into_iter()
-                                .filter_map(|event| {
-                                    let run_id = event.run_id.clone();
-                                    let sequence = event.sequence;
-                                    let mut value = serde_json::to_value(event).ok()?;
-                                    if let Some(object) = value.as_object_mut() {
-                                        object.insert("stream".into(), serde_json::json!("run"));
-                                        object.insert("runId".into(), serde_json::json!(run_id));
-                                        object.insert(
-                                            "streamSequence".into(),
-                                            serde_json::json!(sequence),
-                                        );
-                                    }
-                                    Some(value)
-                                })
-                                .collect::<Vec<_>>(),
-                            Err(error) => {
-                                return (
-                                    RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
-                                    None,
-                                )
-                            }
-                        };
-                    let controls = RunControlStore::new(&self.database);
-                    let artifacts = match ArtifactStore::new(&self.database).list_for_run(&run.id) {
-                        Ok(artifacts) => artifacts,
-                        Err(error) => {
-                            return (
-                                RpcResponse::error(id.clone(), ERR_INTERNAL, error.to_string()),
-                                None,
-                            )
-                        }
-                    };
-                    let actions = controls.list_actions(&run.id).map_err(|error| {
-                        RpcResponse::error(id.clone(), ERR_INTERNAL, error.to_string())
-                    });
-                    let approvals = controls.list_approvals(&run.id).map_err(|error| {
-                        RpcResponse::error(id.clone(), ERR_INTERNAL, error.to_string())
-                    });
-                    let (actions, approvals) = match (actions, approvals) {
-                        (Ok(actions), Ok(approvals)) => (actions, approvals),
-                        (Err(response), _) | (_, Err(response)) => return (response, None),
-                    };
-                    let graph = match deepagent_app_core::run_graph::load(&self.database, &run.id) {
-                        Ok(graph) => graph,
-                        Err(error) => {
-                            return (
-                                RpcResponse::error(id.clone(), ERR_INTERNAL, error.to_string()),
-                                None,
-                            )
-                        }
-                    };
-                    projected.push(serde_json::json!({
-                        "runId": run.id,
-                        "state": run.state,
-                        "terminalKind": run.terminal_kind,
-                        "events": events,
-                        "actions": actions,
-                        "approvals": approvals,
-                        "artifacts": artifacts
-                        ,"graph": graph
-                    }));
-                }
-                projected
-            }
-            Err(error) => {
-                return (
-                    RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
-                    None,
-                )
-            }
-        };
-        (
-            RpcResponse::success(
-                id,
-                serde_json::json!({
-                    "threadId": params.thread_id,
-                    "title": record.title,
-                    "cwd": record.project,
-                    "controlProjectionVersion": CONTROL_PROJECTION_VERSION,
-                    "cursorMode": "stream_scoped",
-                    "events": events,
-                    "runEvents": run_events
-                }),
-            ),
-            None,
-        )
+        (response, None)
     }
-
     fn thread_fork(
         &mut self,
         id: serde_json::Value,
@@ -2025,7 +1888,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit H-218: thread/read must expose a bounded history page instead of materializing the full session"]
     fn audit_thread_read_has_bounded_history_page() {
         let temporary = tempfile::tempdir().unwrap();
         let workspace = temporary.path().join("workspace");

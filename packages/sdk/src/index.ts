@@ -183,6 +183,44 @@ export interface ThreadInfo {
   ended?: boolean;
 }
 
+export interface ThreadReadOptions {
+  /** Total items including run envelopes; default/max 500. Atomic groups must fit. */
+  pageSize?: number;
+  /** Complete server response budget: 4096..1048576 bytes, default 262144. */
+  maxBytes?: number;
+  /** Opaque read-only checkpoint. Never use a notification eventSequence here. */
+  cursor?: string;
+  afterSequence?: number;
+  sessionAfterSequence?: number;
+  runAfterSequence?: number;
+  runAfterSequences?: Record<string, number>;
+}
+
+export interface RunHistorySlice {
+  runId: string;
+  state: string;
+  terminalKind: string | null;
+  events: unknown[];
+  actions: unknown[];
+  approvals: unknown[];
+  artifacts: unknown[];
+  graph: { rootRunId: string; nodes: unknown[] };
+}
+
+export interface ThreadHistoryPage {
+  threadId: string;
+  title: string | null;
+  cwd: string | null;
+  controlProjectionVersion: number;
+  cursorMode: "stream_scoped";
+  historyPageVersion: 1;
+  events: unknown[];
+  /** A run may continue on another page; do not replace its prior slices. */
+  runEvents: RunHistorySlice[];
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+
 export interface ThreadStartResult {
   threadId: string;
   status: string;
@@ -625,6 +663,23 @@ export class DeepAgent {
       threads: ThreadInfo[];
     };
     return result.threads;
+  }
+
+  /** Fetch exactly one bounded page. No automatic accumulation or retry loop. */
+  async readThreadPage(threadId: string, options: ThreadReadOptions = {}): Promise<ThreadHistoryPage> {
+    const value = await this.request("thread/read", { ...options, threadId });
+    const page = value as Partial<ThreadHistoryPage> | null;
+    if (!page || page.threadId !== threadId || page.historyPageVersion !== 1
+      || page.cursorMode !== "stream_scoped" || typeof page.hasMore !== "boolean"
+      || !Array.isArray(page.events) || !Array.isArray(page.runEvents)
+      || (page.hasMore ? typeof page.nextCursor !== "string" || !page.nextCursor.length
+        : page.nextCursor !== null)
+      || !page.runEvents.every((run) => run && typeof run.runId === "string"
+        && [run.events, run.actions, run.approvals, run.artifacts].every(Array.isArray)
+        && run.graph && Array.isArray(run.graph.nodes))) {
+      throw new HarnessTransportError("server did not return a supported bounded history page");
+    }
+    return page as ThreadHistoryPage;
   }
 
   async listTools(options: ToolListOptions = {}): Promise<ToolListResult> {
