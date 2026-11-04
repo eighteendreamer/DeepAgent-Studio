@@ -124,6 +124,34 @@ pub struct RunRequest<'run, 'session, C: Clock> {
     pub agent: &'run mut dyn Agent,
 }
 
+pub use deepagent_persistence::run_store::RegistryCapabilityFingerprint;
+
+/// Fingerprint the one real execution registry. The shared ledger transaction
+/// verifies prebound context or writes the legacy shape before execution.
+pub fn registry_capability_fingerprint(
+    registry: &ToolRegistry,
+) -> Result<RegistryCapabilityFingerprint> {
+    let capabilities = registry
+        .iter_specs()
+        .map(|spec| {
+            serde_json::json!({
+                "name": spec.descriptor.name,
+                "description": spec.descriptor.description,
+                "parameters": spec.descriptor.parameters,
+                "risk": spec.descriptor.risk,
+                "requiredPermissions": spec.descriptor.required_permissions,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(RegistryCapabilityFingerprint {
+        tool_count: capabilities.len(),
+        tool_schema_hash: format!(
+            "sha256:{:x}",
+            sha2::Sha256::digest(serde_json::to_vec(&capabilities)?)
+        ),
+    })
+}
+
 impl<'run, 'session, C: Clock> RunRequest<'run, 'session, C> {
     pub fn new(
         session: &'run mut Session<'session, C>,
@@ -624,32 +652,8 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
             "setup.started",
             &serde_json::json!({ "component": "agent_kernel" }),
         )?;
-        let capabilities: Vec<_> = self
-            .registry
-            .iter_specs()
-            .map(|spec| {
-                serde_json::json!({
-                    "name": spec.descriptor.name,
-                    "description": spec.descriptor.description,
-                    "parameters": spec.descriptor.parameters,
-                    "risk": spec.descriptor.risk,
-                    "requiredPermissions": spec.descriptor.required_permissions,
-                })
-            })
-            .collect();
-        let capability_bytes = serde_json::to_vec(&capabilities).unwrap_or_else(|_| b"[]".to_vec());
-        let schema_hash = format!("sha256:{:x}", sha2::Sha256::digest(&capability_bytes));
-        store.append_event(
-            &run_id,
-            now_ms(),
-            RunPhase::Preparing.label(),
-            "completed",
-            "capability.snapshot",
-            &serde_json::json!({
-                "toolCount": capabilities.len(),
-                "toolSchemaHash": schema_hash,
-            }),
-        )?;
+        let fingerprint = registry_capability_fingerprint(self.registry)?;
+        store.ensure_registry_capabilities(&run_id, &fingerprint, now_ms())?;
         store.transition(&run_id, RunPhase::Preparing.label(), now_ms())?;
 
         let persistent = self.events.clone();
@@ -969,6 +973,10 @@ mod event_persistence_tests;
 #[cfg(test)]
 #[path = "kernel/terminal_commit_tests.rs"]
 mod terminal_commit_tests;
+
+#[cfg(test)]
+#[path = "kernel/capabilities_tests.rs"]
+mod capabilities_tests;
 
 #[cfg(test)]
 mod tests {

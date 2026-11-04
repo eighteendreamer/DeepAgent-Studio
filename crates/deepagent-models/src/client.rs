@@ -26,6 +26,14 @@ pub enum WireMode {
     ChatCompletions,
 }
 
+/// Only the provider's tool face, without prompts, history, URLs or credentials.
+/// Hosts may hash this transient projection; it is not a request or permission.
+pub struct ProviderToolSchemas {
+    pub model: String,
+    pub wire_mode: WireMode,
+    pub tools: Vec<serde_json::Value>,
+}
+
 /// Connection / endpoint configuration.
 #[derive(Debug, Clone)]
 pub struct ModelConfig {
@@ -328,6 +336,28 @@ impl ModelClient {
         request
     }
 
+    /// Project through the exact defaulting and serializers used by dispatch.
+    /// This never resolves credentials, creates history, or sends a request.
+    pub fn project_tool_schemas(
+        &self,
+        model: &str,
+        tools: &[crate::ToolSchema],
+    ) -> ProviderToolSchemas {
+        let tools = match self.config.wire_mode {
+            WireMode::Responses => {
+                let mut tools = tools.to_vec();
+                self.apply_tool_defaults(&mut tools);
+                crate::chat::response_tools_to_wire(&tools)
+            }
+            WireMode::ChatCompletions => crate::chat_completions::chat_tools_to_wire(tools),
+        };
+        ProviderToolSchemas {
+            model: model.to_owned(),
+            wire_mode: self.config.wire_mode,
+            tools,
+        }
+    }
+
     /// Conservative native-image request price for the DeepSeek route.
     /// The local Harness image-tokens implementation documents a 1,024-token
     /// provider cap per image. Actual provider usage calibrates the full request.
@@ -363,14 +393,18 @@ impl ModelClient {
         if request.user.is_none() {
             request.user = self.config.defaults.user.clone();
         }
+        self.apply_tool_defaults(&mut request.tools);
+    }
+
+    fn apply_tool_defaults(&self, tools: &mut [crate::ToolSchema]) {
         if self.config.defaults.native_web_search {
-            for tool in &mut request.tools {
+            for tool in tools.iter_mut() {
                 if tool.function.name == "web_search" {
                     tool.kind = "web_search".to_string();
                 }
             }
         }
-        for tool in &mut request.tools {
+        for tool in tools {
             if tool.function.name == "apply_patch" {
                 tool.kind = "custom".to_string();
             }
@@ -510,6 +544,10 @@ mod input_identity_tests;
 #[cfg(test)]
 #[path = "client_tool_name_tests.rs"]
 mod tool_name_tests;
+
+#[cfg(test)]
+#[path = "client_tool_projection_tests.rs"]
+mod tool_projection_tests;
 
 #[cfg(test)]
 mod tests {

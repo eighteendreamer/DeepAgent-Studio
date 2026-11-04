@@ -381,3 +381,26 @@ fn memory_injection_events_reach_machine_consumers_as_runtime_items() {
     assert_eq!(value["item"]["data"]["latency_ms"], 42);
     assert_eq!(value["item"]["data"]["ids"][0], "project:build-fix");
 }
+
+#[test]
+fn tool_list_accepts_optional_run_scope_without_breaking_legacy_requests() {
+    let scoped: HarnessRequest = serde_json::from_value(serde_json::json!({
+        "method": "tool/list",
+        "params": {"threadId": "thread-1", "runId": "run-1", "expectedSnapshotId":"snapshot-1"}
+    }))
+    .unwrap();
+    let encoded = serde_json::to_value(scoped).unwrap();
+    assert_eq!(encoded["params"]["threadId"], "thread-1");
+    assert_eq!(encoded["params"]["runId"], "run-1");
+    assert_eq!(encoded["params"]["expectedSnapshotId"], "snapshot-1");
+
+    let legacy: HarnessRequest = serde_json::from_value(serde_json::json!({
+        "method": "tool/list",
+        "params": {}
+    }))
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(legacy).unwrap()["params"],
+        serde_json::json!({})
+    );
+}

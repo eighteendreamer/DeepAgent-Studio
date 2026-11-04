@@ -42,6 +42,12 @@ test("real CLI early failure is delivered once and reconciles after reconnect wi
     assert.match(terminals[0].reason, /not initialized|API key/iu);
     const turnId = terminals[0].turnId;
     assert.ok(turnId);
+    const capability = await agent.listTools({threadId: thread.id, runId: turnId});
+    assert.ok(capability.snapshotId);
+    assert.equal(capability.capabilitySnapshot.runId, turnId);
+    assert.equal(capability.capabilitySnapshot.threadId, thread.id);
+    assert.ok(capability.tools.some((tool) => tool.name === "read_file"));
+    assert.ok(capability.tools.every((tool) => /^[a-f0-9]{64}$/u.test(tool.schemaHash)));
     assert.equal(raw.filter((event) => event.type === "turn.failed" && event.turnId === turnId).length, 1);
     const before = await agent.requestForTest("thread/read", { threadId: thread.id });
     assert.equal(before.runEvents.length, 1, "no automatic redispatch");
@@ -55,11 +61,25 @@ test("real CLI early failure is delivered once and reconciles after reconnect wi
     await agent.resumeThread(thread.id);
     const after = await agent.requestForTest("thread/read", { threadId: thread.id });
     assert.deepEqual(after, before, "the new connection reads the existing durable result, not a second run");
+    assert.deepEqual(await agent.listTools({threadId: thread.id, runId: turnId,
+      expectedSnapshotId: capability.snapshotId}), capability, "capabilities survive process restart without registry redispatch");
+    await assert.rejects(() => agent.listTools({threadId: thread.id, expectedSnapshotId: "stale-snapshot"}),
+      /stale capability snapshot/u);
     const cursor = run.events.at(-1).sequence;
     const incremental = await agent.requestForTest("thread/read", {
       threadId: thread.id, runAfterSequences: { [turnId]: cursor }
     });
     assert.deepEqual(incremental.runEvents[0].events, []);
     assert.equal(incremental.runEvents[0].terminalKind, "failed");
+    // Controls have no provider/tool registry and must not need the unavailable
+    // model backend or uninitialized credentials of this synthetic home.
+    const control = await agent.startThread({sandboxBackend: "unavailable-model-backend"});
+    await assert.rejects(() => control.run(`/resume ${thread.id}`), /cannot change its thread/u);
+    const controlledEvents = [];
+    for await (const event of control.runStreamed("/help")) controlledEvents.push(event);
+    assert.equal(controlledEvents.filter((event) => event.type === "turn.completed").length, 1);
+    const controlCapability = await control.listTools();
+    assert.deepEqual(controlCapability.tools, []);
+    assert.equal(controlCapability.capabilitySnapshot.context.executionDomain, "builtin_control");
   } finally { await agent.close(); }
 });

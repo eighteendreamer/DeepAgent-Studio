@@ -956,6 +956,20 @@ pub async fn maybe_handle_slash_command<F>(
 where
     F: Fn(RuntimeEvent) + Send + 'static,
 {
+    let Some(result) = parse_builtin_slash_command(prompt, continue_session)? else {
+        return Ok(None);
+    };
+    execute_builtin_slash_command(rt, prompt, continue_session, result, on_event)
+        .await
+        .map(Some)
+}
+
+/// Parse without effects so an admitted control and its later execution share
+/// the same existing builtin registry, validation and action.
+pub(crate) fn parse_builtin_slash_command(
+    prompt: &str,
+    continue_session: Option<&str>,
+) -> Result<Option<deepagent_intent::CommandResult>> {
     let registry = SlashRegistry::with_builtins();
     let mut ctx = CommandContext {
         session_id: continue_session.map(str::to_string),
@@ -969,8 +983,19 @@ where
     let Some(result) = registry.execute_line(prompt, &mut ctx) else {
         return Ok(None);
     };
-    let result = result?;
+    result.map(Some)
+}
 
+pub(crate) async fn execute_builtin_slash_command<F>(
+    rt: &SlashRuntime<'_>,
+    prompt: &str,
+    continue_session: Option<&str>,
+    result: deepagent_intent::CommandResult,
+    on_event: &F,
+) -> Result<String>
+where
+    F: Fn(RuntimeEvent) + Send + 'static,
+{
     let root = rt.effective_root();
     let project = root.to_string_lossy().into_owned();
     let clock = SystemClock;
@@ -1024,7 +1049,7 @@ where
         edited_files: vec![],
     });
 
-    Ok(Some(session_id))
+    Ok(session_id)
 }
 
 /// Resolve a dynamic (non-builtin) slash command to its rendered body.

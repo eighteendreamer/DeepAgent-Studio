@@ -9,11 +9,23 @@ use tokio::sync::Semaphore;
 
 type ServerSlot = Arc<AsyncMutex<Option<CachedRegistry>>>;
 
+struct ReadyFingerprints {
+    configs: BTreeMap<String, String>,
+    /// Opaque publication identity, independent of secret/environment values.
+    generation: String,
+}
+
+impl ReadyFingerprints {
+    fn advance(&mut self) {
+        self.generation = deepagent_core::id::EventId::new().to_string();
+    }
+}
+
 pub(super) struct McpPreparation {
     slots: Mutex<BTreeMap<String, ServerSlot>>,
     owners: Mutex<BTreeMap<String, BTreeSet<String>>>,
     ready: RwLock<Arc<McpRegistry>>,
-    ready_fingerprints: RwLock<BTreeMap<String, String>>,
+    ready_fingerprints: RwLock<ReadyFingerprints>,
     active_fingerprint: Mutex<Option<String>>,
     generation: AtomicU64,
     cancelled: Mutex<deepagent_runtime::CancellationTree>,
@@ -33,7 +45,10 @@ impl Default for McpPreparation {
             slots: Mutex::new(BTreeMap::new()),
             owners: Mutex::new(BTreeMap::new()),
             ready: RwLock::new(Arc::new(McpRegistry::new())),
-            ready_fingerprints: RwLock::new(BTreeMap::new()),
+            ready_fingerprints: RwLock::new(ReadyFingerprints {
+                configs: BTreeMap::new(),
+                generation: deepagent_core::id::EventId::new().to_string(),
+            }),
             active_fingerprint: Mutex::new(None),
             generation: AtomicU64::new(0),
             cancelled: Mutex::new(Default::default()),
@@ -81,18 +96,23 @@ impl McpService {
                 tracing::warn!(%error, server = name, "could not retire MCP server after bundled payload change");
             }
         }
-        let mut ready = (*self.ready_registry()).clone();
-        ready.retain_servers(|name| !builtin_names.contains(name));
-        self.preparation
+        let mut fingerprints = self
+            .preparation
             .ready_fingerprints
             .write()
-            .unwrap_or_else(|p| p.into_inner())
+            .unwrap_or_else(|p| p.into_inner());
+        let mut ready = (*self.ready_registry()).clone();
+        ready.retain_servers(|name| !builtin_names.contains(name));
+        fingerprints
+            .configs
             .retain(|name, _| !builtin_names.contains(name));
+        fingerprints.advance();
         *self
             .preparation
             .ready
             .write()
             .unwrap_or_else(|p| p.into_inner()) = Arc::new(ready);
+        drop(fingerprints);
         *self
             .preparation
             .active_fingerprint
@@ -141,6 +161,31 @@ impl McpService {
             .read()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
+    }
+
+    /// The configuration identities and callable clients form one generation.
+    /// Writers retain fingerprints through registry publication in this lock
+    /// order. Never project a new config beside an older callable registry.
+    pub(crate) fn ready_runtime_snapshot(
+        &self,
+    ) -> Result<(Arc<McpRegistry>, BTreeMap<String, McpServerConfig>, String)> {
+        let fingerprints = self
+            .preparation
+            .ready_fingerprints
+            .read()
+            .unwrap_or_else(|p| p.into_inner());
+        let registry = self
+            .preparation
+            .ready
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let configs = fingerprints
+            .configs
+            .iter()
+            .map(|(name, fingerprint)| Ok((name.clone(), serde_json::from_str(fingerprint)?)))
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        Ok((registry, configs, fingerprints.generation.clone()))
     }
 
     pub(super) fn cached_status(&self, name: &str) -> McpConnectionStatusDto {
@@ -533,19 +578,21 @@ impl McpService {
                 )
             })
             .collect::<BTreeMap<_, _>>();
-        let mut ready = (*self.ready_registry()).clone();
         let mut ready_fingerprints = self
             .preparation
             .ready_fingerprints
             .write()
             .unwrap_or_else(|p| p.into_inner());
+        let mut ready = (*self.ready_registry()).clone();
         ready.retain_servers(|name| {
-            desired_fingerprints
-                .get(name)
-                .is_some_and(|fingerprint| ready_fingerprints.get(name) == Some(fingerprint))
+            desired_fingerprints.get(name).is_some_and(|fingerprint| {
+                ready_fingerprints.configs.get(name) == Some(fingerprint)
+            })
         });
         ready_fingerprints
+            .configs
             .retain(|name, fingerprint| desired_fingerprints.get(name) == Some(fingerprint));
+        ready_fingerprints.advance();
         *self
             .preparation
             .ready
@@ -593,17 +640,22 @@ impl McpService {
                                 .await;
                             continue;
                         }
-                        service
+                        let mut fingerprints = service
                             .preparation
                             .ready_fingerprints
                             .write()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .insert(name, fingerprint);
+                            .unwrap_or_else(|p| p.into_inner());
+                        if service.preparation.generation.load(Ordering::Acquire) != generation {
+                            return;
+                        }
+                        fingerprints.configs.insert(name, fingerprint);
+                        fingerprints.advance();
                         *service
                             .preparation
                             .ready
                             .write()
                             .unwrap_or_else(|p| p.into_inner()) = Arc::new(ready.clone());
+                        drop(fingerprints);
                     }
                     Err(error) => {
                         tracing::warn!(%error, "MCP preparation failed; excluded from requests")
@@ -701,9 +753,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
         );
 
         let mut registry = deepagent_tools::ToolRegistry::new();
-        crate::mcp_runtime::attach_mcp_tools(&mut registry, Some(&service), None, None)
-            .await
-            .unwrap();
+        crate::mcp_runtime::attach_mcp_tools(&mut registry, Some(&service), None, None).unwrap();
         let discovered: crate::tool_manifest::DiscoveredToolSet = Arc::default();
         let manifest = crate::tool_manifest::prepare_tool_manifest(
             &mut registry,

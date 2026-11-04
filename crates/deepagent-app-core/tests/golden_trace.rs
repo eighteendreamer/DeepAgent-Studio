@@ -266,14 +266,15 @@ async fn golden_trace_simple_answer_matches_fixture() {
     // kernel's canonical durable sink. Raw per-token text remains excluded.
     let expected = vec![
         "accepted:run_accepted",
-        "preparing:setup.started",
         "preparing:capability.snapshot",
+        "preparing:setup.started",
         "preparing:setup.completed",
         "preparing:run_started",
         "preparing:session_registered",
         "running_turn:turn_started",
         "running_turn:model_request_started",
         "running_turn:context_usage",
+        "running_turn:capability_wire_snapshot",
         "running_turn:model_first_token",
         "running_turn:model_output",
         "running_turn:responses_stream_event",
@@ -289,6 +290,33 @@ async fn golden_trace_simple_answer_matches_fixture() {
         trace, expected,
         "golden trace diverged.\nactual:\n{trace:#?}"
     );
+    let capabilities: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == "capability.snapshot")
+        .collect();
+    assert_eq!(
+        capabilities.len(),
+        1,
+        "kernel must reuse the one bound run snapshot"
+    );
+    assert_eq!(capabilities[0].data["version"], 1);
+    assert_eq!(capabilities[0].data["runId"], run_id);
+    assert_eq!(capabilities[0].data["threadId"], session_id);
+    let wire: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == "capability_wire_snapshot")
+        .collect();
+    assert_eq!(
+        wire.len(),
+        1,
+        "one adapter generation, not another run snapshot"
+    );
+    assert_eq!(
+        wire[0].data["snapshotId"],
+        capabilities[0].data["snapshotId"]
+    );
+    assert_eq!(wire[0].data["wireSchema"]["generation"], 0);
+    assert_eq!(wire[0].data["wireSchema"]["wireMode"], "responses");
     assert_terminal_invariants(&chat, &run_id);
     let detail = service.session_detail(&session_id).unwrap();
     assert!(

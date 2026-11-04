@@ -34,6 +34,15 @@ use crate::usage::{
     CallUsageObserver, CallUsageReport, CallUsageSink, ModelUsage, RunUsageTracker,
 };
 
+/// A host-owned schema projection with a fallible durability/validation barrier.
+/// Failure stops the request before any provider or tool dispatch.
+pub type ToolSchemaSource = Arc<dyn Fn() -> Result<Vec<ToolSchema>> + Send + Sync>;
+
+/// Runs before every physical attempt, including retries and model fallback.
+/// It receives only tool schemas, never the conversation or credentials.
+pub type ToolSchemaObserver =
+    Arc<dyn Fn(&[ToolSchema], &deepagent_models::ProviderToolSchemas) -> Result<()> + Send + Sync>;
+
 #[derive(Debug, Clone)]
 pub struct ReactiveCompaction {
     pub messages: Vec<Message>,
@@ -542,7 +551,8 @@ pub struct ModelAgent {
     tools: Vec<ToolSchema>,
     /// Host-owned visibility policy, refreshed before each model turn so a
     /// discovery call can expose schemas within the same run.
-    tool_schema_source: Option<Arc<dyn Fn() -> Vec<ToolSchema> + Send + Sync>>,
+    tool_schema_source: Option<ToolSchemaSource>,
+    tool_schema_observer: Option<ToolSchemaObserver>,
     /// Most recent tool call id, used to correlate the next tool result.
     pending_tool_call_id: Option<String>,
     /// Optional live event sink: when set, token/reasoning deltas are forwarded
@@ -699,6 +709,7 @@ impl ModelAgent {
             response_history,
             tools,
             tool_schema_source: None,
+            tool_schema_observer: None,
             pending_tool_call_id: None,
             events: None,
             usage: Arc::new(RunUsageTracker::default()),
@@ -790,7 +801,19 @@ impl ModelAgent {
         mut self,
         source: Arc<dyn Fn() -> Vec<ToolSchema> + Send + Sync>,
     ) -> Self {
+        self.tool_schema_source = Some(Arc::new(move || Ok(source())));
+        self
+    }
+
+    /// Project schemas only after the host has committed their capability
+    /// generation. The existing infallible builder remains source-compatible.
+    pub fn with_fallible_tool_schema_source(mut self, source: ToolSchemaSource) -> Self {
         self.tool_schema_source = Some(source);
+        self
+    }
+
+    pub fn with_tool_schema_observer(mut self, observer: ToolSchemaObserver) -> Self {
+        self.tool_schema_observer = Some(observer);
         self
     }
 
@@ -2360,7 +2383,7 @@ impl ModelAgent {
             self.record_observation(obs);
         }
         if let Some(source) = &self.tool_schema_source {
-            self.tools = source();
+            self.tools = source()?;
         }
 
         // Gather the completed Surface mutations and pending reminders before
@@ -2426,6 +2449,12 @@ impl ModelAgent {
                 sink.checkpoint()?;
             }
             let (request_fingerprint, request_surface) = self.measure_request(&request);
+            if let Some(observer) = &self.tool_schema_observer {
+                let schemas = self
+                    .client
+                    .project_tool_schemas(&request.model, &request.tools);
+                observer(&request.tools, &schemas)?;
+            }
             if let Some(tools) = tools.as_deref_mut() {
                 tools.begin(attempt);
             }
@@ -5446,6 +5475,113 @@ mod tests {
         assert!(loaded
             .iter()
             .any(|tool| tool["name"] == "mcp__rea__inspect"));
+    }
+
+    #[tokio::test]
+    async fn h219_wire_observer_covers_fallback_and_failure_blocks_the_physical_attempt() {
+        for mode in [
+            deepagent_models::WireMode::Responses,
+            deepagent_models::WireMode::ChatCompletions,
+        ] {
+            for reject_fallback in [false, true] {
+                let done = if mode == deepagent_models::WireMode::Responses {
+                    response_text_completed("fallback ok")
+                } else {
+                    vec![r#"{"choices":[{"index":0,"delta":{"content":"fallback ok"},"finish_reason":"stop"}]}"#.into(), "[DONE]".into()]
+                };
+                let transport = Arc::new(AttemptTransport {
+                    attempts: Mutex::new(VecDeque::from([
+                        vec!["__ERROR_OVERLOADED__".into()],
+                        done,
+                    ])),
+                    requests: Mutex::new(Vec::new()),
+                });
+                let client = Arc::new(ModelClient::new(
+                    transport.clone(),
+                    ModelConfig::deepseek("offline-placeholder")
+                        .with_wire_mode(mode)
+                        .with_defaults(deepagent_models::ResponseDefaults {
+                            native_web_search: true,
+                            ..Default::default()
+                        }),
+                ));
+                let tools: Vec<_> = ["read_file", "apply_patch", "web_search"]
+                    .iter()
+                    .map(|name| {
+                        ToolSchema::function(
+                            *name,
+                            "synthetic schema",
+                            serde_json::json!({"type":"object"}),
+                        )
+                    })
+                    .collect();
+                let observed = Arc::new(Mutex::new(Vec::new()));
+                let captured = observed.clone();
+                let expected_tools = tools.clone();
+                let mut agent =
+                    ModelAgent::new(client, "primary", "private prompt", "private input", tools)
+                        .with_fallback_model(Some("fallback".into()))
+                        .with_tool_schema_observer(Arc::new(move |source, projection| {
+                            assert_eq!(source, expected_tools);
+                            assert_eq!(projection.wire_mode, mode);
+                            captured.lock().unwrap().push((
+                                projection.model.clone(),
+                                serde_json::json!(projection.tools),
+                            ));
+                            if reject_fallback && projection.model == "fallback" {
+                                return Err(CoreError::Persistence(
+                                    "synthetic wire barrier rejection".into(),
+                                ));
+                            }
+                            Ok(())
+                        }));
+                let mut attempts = RecordingToolAttempt::default();
+                let result = agent
+                    .think_streaming_cancelled(0, &[], None, Some(&mut attempts))
+                    .await;
+                if reject_fallback {
+                    assert!(matches!(result, Err(CoreError::Persistence(_))));
+                    assert!(!attempts.events.iter().any(|event| event == "begin:2"));
+                } else {
+                    complete_items(result.unwrap());
+                }
+                let requests = transport.requests.lock().unwrap();
+                assert_eq!(requests.len(), if reject_fallback { 1 } else { 2 });
+                let observed = observed.lock().unwrap();
+                assert_eq!(observed.len(), 2);
+                assert_eq!(observed[0].0, "primary");
+                assert_eq!(observed[1].0, "fallback");
+                for (request, (model, tools)) in requests.iter().zip(observed.iter()) {
+                    assert_eq!(request["model"], *model);
+                    assert_eq!(request["tools"], *tools);
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn h219_fallible_schema_source_stops_before_provider_or_tool_attempt() {
+        let transport = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([response_text_completed("not reached")])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let client = Arc::new(ModelClient::new(
+            transport.clone(),
+            ModelConfig::deepseek("offline-placeholder"),
+        ));
+        let mut agent = ModelAgent::new(client, "model", "system", "inspect", vec![])
+            .with_fallible_tool_schema_source(Arc::new(|| {
+                Err(CoreError::Persistence(
+                    "synthetic capability persistence failure".into(),
+                ))
+            }));
+        let mut attempts = RecordingToolAttempt::default();
+        let result = agent
+            .think_streaming_cancelled(0, &[], None, Some(&mut attempts))
+            .await;
+        assert!(matches!(result, Err(CoreError::Persistence(_))));
+        assert!(transport.requests.lock().unwrap().is_empty());
+        assert!(attempts.events.is_empty());
     }
 
     #[tokio::test]

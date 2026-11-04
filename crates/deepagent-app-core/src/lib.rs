@@ -77,6 +77,7 @@ pub mod recording_service;
 #[path = "../tests/kernel_v2_e2e/responses_fixture.rs"]
 mod responses_fixture;
 pub mod run_assembler;
+mod run_capabilities;
 pub mod run_config;
 pub mod run_coordinator;
 pub mod run_environment;

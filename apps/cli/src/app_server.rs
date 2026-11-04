@@ -96,6 +96,8 @@ struct TurnLaunch {
     thread_id: String,
     turn_id: String,
     input: String,
+    prepared: deepagent_app_core::run_assembler::PreparedChatRun,
+    #[cfg(test)]
     overrides: HarnessRunOverrides,
 }
 
@@ -843,12 +845,20 @@ impl ServerState {
                 .permission_profile
                 .or(thread.overrides.permission_profile),
         };
-        if let Err(error) = thread.chat.admit_run(&turn_id, &params.thread_id) {
-            return (
-                RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
-                None,
-            );
-        }
+        let prepared = match thread.chat.admit_prepared_input(
+            &turn_id,
+            &params.thread_id,
+            &params.input,
+            overrides.clone(),
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                return (
+                    RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
+                    None,
+                )
+            }
+        };
         self.turns.insert(
             turn_id.clone(),
             TurnState {
@@ -864,7 +874,9 @@ impl ServerState {
                 serde_json::json!({
                     "threadId": params.thread_id,
                     "turnId": turn_id,
-                    "status": "started"
+                    "status": "started",
+                    "snapshotId": prepared.capability_snapshot()["snapshotId"],
+                    "capabilitySnapshot": prepared.capability_snapshot()
                 }),
             ),
             Some(TurnLaunch {
@@ -872,6 +884,8 @@ impl ServerState {
                 thread_id: params.thread_id,
                 turn_id,
                 input: params.input,
+                prepared,
+                #[cfg(test)]
                 overrides,
             }),
         )
@@ -967,12 +981,15 @@ impl ServerState {
         // Worker activity is not steering eligibility: a replaced worker still
         // owns cleanup and must remain busy/cancellable until finish_turn. The
         // canonical ledger atomically claims its sole replacement instead.
-        match current
-            .chat
-            .admit_continuation(&params.turn_id, &next_turn, &params.thread_id)
-        {
-            Ok(true) => {}
-            Ok(false) => {
+        let prepared = match current.chat.admit_prepared_continuation(
+            &params.turn_id,
+            &next_turn,
+            &params.thread_id,
+            &params.input,
+            current.overrides.clone(),
+        ) {
+            Ok(Some(prepared)) => prepared,
+            Ok(None) => {
                 return (
                     RpcResponse::error(
                         id,
@@ -988,7 +1005,7 @@ impl ServerState {
                     None,
                 )
             }
-        }
+        };
         self.turns.insert(
             next_turn.clone(),
             TurnState {
@@ -1005,7 +1022,9 @@ impl ServerState {
                     "threadId": params.thread_id,
                     "turnId": next_turn,
                     "replacesTurnId": params.turn_id,
-                    "status": "started"
+                    "status": "started",
+                    "snapshotId": prepared.capability_snapshot()["snapshotId"],
+                    "capabilitySnapshot": prepared.capability_snapshot()
                 }),
             ),
             Some(TurnLaunch {
@@ -1013,6 +1032,8 @@ impl ServerState {
                 thread_id: params.thread_id,
                 turn_id: next_turn,
                 input: params.input,
+                prepared,
+                #[cfg(test)]
                 overrides: current.overrides,
             }),
         )
@@ -1059,27 +1080,175 @@ impl ServerState {
     fn tool_list(
         &self,
         id: serde_json::Value,
-        _params: ToolListRequest,
+        params: ToolListRequest,
     ) -> (RpcResponse, Option<TurnLaunch>) {
-        let chat = self
-            .threads
-            .values()
-            .next()
-            .map(|thread| thread.chat.clone())
-            .unwrap_or_else(|| self.base_chat.clone());
-        match chat.tool_descriptors() {
-            Ok(tools) => (
-                RpcResponse::success(
+        if params.thread_id.is_none() && params.run_id.is_none() {
+            if params.expected_snapshot_id.is_some() {
+                return (
+                    RpcResponse::error(
+                        id,
+                        ERR_INVALID_PARAMS,
+                        "snapshot expectation requires thread or run scope",
+                    ),
+                    None,
+                );
+            }
+            return match self.base_chat.tool_descriptors() {
+                Ok(tools) => (
+                    RpcResponse::success(
+                        id,
+                        serde_json::json!({ "protocolVersion": PROTOCOL_VERSION, "tools": tools }),
+                    ),
+                    None,
+                ),
+                Err(error) => (
+                    RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
+                    None,
+                ),
+            };
+        }
+
+        let requested_thread = match params.thread_id.as_deref() {
+            Some(thread_id) => match thread_id.parse::<SessionId>() {
+                Ok(session_id) => match EventStore::new(&self.database).get_session(session_id) {
+                    Ok(Some(_)) => Some(session_id.to_string()),
+                    Ok(None) => {
+                        return (
+                            RpcResponse::error(id, ERR_INVALID_THREAD, "thread not found"),
+                            None,
+                        )
+                    }
+                    Err(error) => {
+                        return (
+                            RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
+                            None,
+                        )
+                    }
+                },
+                Err(error) => {
+                    return (
+                        RpcResponse::error(
+                            id,
+                            ERR_INVALID_THREAD,
+                            format!("invalid thread id: {error}"),
+                        ),
+                        None,
+                    )
+                }
+            },
+            None => None,
+        };
+        let store = RunStore::new(&self.database);
+        let run = match params.run_id.as_deref() {
+            Some(run_id) => match store.get(run_id) {
+                Ok(Some(run)) => run,
+                Ok(None) => {
+                    return (
+                        RpcResponse::error(id, ERR_INVALID_TURN, "run not found"),
+                        None,
+                    )
+                }
+                Err(error) => {
+                    return (
+                        RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
+                        None,
+                    )
+                }
+            },
+            None => {
+                let Some(thread_id) = requested_thread.as_deref() else {
+                    unreachable!("a scoped request has a thread or run id")
+                };
+                match store.list_for_session(thread_id) {
+                    Ok(mut runs) if !runs.is_empty() => runs.remove(0),
+                    Ok(_) => {
+                        return (
+                            RpcResponse::error(id, ERR_INVALID_TURN, "thread has no run snapshot"),
+                            None,
+                        )
+                    }
+                    Err(error) => {
+                        return (
+                            RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
+                            None,
+                        )
+                    }
+                }
+            }
+        };
+        if requested_thread
+            .as_deref()
+            .is_some_and(|thread_id| thread_id != run.session_id)
+        {
+            return (
+                RpcResponse::error(id, ERR_INVALID_THREAD, "run does not belong to thread"),
+                None,
+            );
+        }
+        let snapshot = match store.capability_snapshot(&run.id) {
+            Ok(Some(snapshot)) => snapshot,
+            Ok(None) => {
+                return (
+                    RpcResponse::error(id, ERR_INVALID_TURN, "run has no capability snapshot"),
+                    None,
+                )
+            }
+            Err(error) => {
+                return (
+                    RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
+                    None,
+                )
+            }
+        };
+        let Some(snapshot_id) = snapshot
+            .get("snapshotId")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+        else {
+            return (
+                RpcResponse::error(
                     id,
-                    serde_json::json!({ "protocolVersion": PROTOCOL_VERSION, "tools": tools }),
+                    ERR_INVALID_TURN,
+                    "run has no versioned capability projection",
                 ),
                 None,
-            ),
-            Err(error) => (
-                RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
+            );
+        };
+        let Some(tools) = snapshot
+            .get("tools")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+        else {
+            return (
+                RpcResponse::error(
+                    id,
+                    ERR_INVALID_TURN,
+                    "run capability projection has no tools",
+                ),
                 None,
-            ),
+            );
+        };
+        if params
+            .expected_snapshot_id
+            .as_deref()
+            .is_some_and(|expected| expected != snapshot_id)
+        {
+            return (RpcResponse::error(id, ERR_INVALID_PARAMS, "stale capability snapshot; query the current run or specify a historical runId"), None);
         }
+        (
+            RpcResponse::success(
+                id,
+                serde_json::json!({
+                    "protocolVersion": PROTOCOL_VERSION,
+                    "threadId": run.session_id,
+                    "runId": run.id,
+                    "snapshotId": snapshot_id,
+                    "tools": tools,
+                    "capabilitySnapshot": snapshot
+                }),
+            ),
+            None,
+        )
     }
 
     fn resolve_workspace(&self, requested: Option<&str>) -> Result<PathBuf, String> {
@@ -1162,19 +1331,7 @@ fn spawn_turn(
         };
         let result = launch
             .chat
-            .run_in_session_with_overrides(
-                &launch.input,
-                Some(&launch.thread_id),
-                None,
-                None,
-                Vec::new(),
-                None,
-                false,
-                Some(&launch.turn_id),
-                launch.overrides,
-                on_event,
-                on_approval,
-            )
+            .run_prepared(launch.prepared, &launch.input, on_event, on_approval)
             .await;
         // Cancellation before preparation or while queued never enters the
         // kernel's event sink. Project its committed outcome through the same
@@ -1368,7 +1525,7 @@ mod tests {
                 "provider": "deepseek",
                 "model": "deepseek-flash",
                 "permissionProfile": "read_only",
-                "sandboxBackend": "windows_sandbox"
+                "sandboxBackend": "direct"
             }),
         ));
         let thread_id = started.result()["threadId"].as_str().unwrap().to_owned();
@@ -1409,7 +1566,7 @@ mod tests {
             2,
             "thread/start",
             serde_json::json!({"provider":"deepseek", "model":"deepseek-flash",
-                "permissionProfile":"read_only", "sandboxBackend":"windows_sandbox"}),
+                "permissionProfile":"read_only", "sandboxBackend":"direct"}),
         ));
         let thread_id = started.result()["threadId"].as_str().unwrap().to_owned();
         let (_, original) = state.dispatch(
@@ -1926,9 +2083,35 @@ mod tests {
         );
     }
 
+    fn seed_tool_list_snapshot(
+        database: &Database,
+        thread_id: &str,
+        run_id: &str,
+        snapshot_id: &str,
+        context: serde_json::Value,
+        tools: serde_json::Value,
+    ) {
+        let store = RunStore::new(database);
+        store.create(run_id, thread_id, None, 1).unwrap();
+        store
+            .bind_capability_snapshot(
+                run_id,
+                &serde_json::json!({
+                    "version": 1,
+                    "runId": run_id,
+                    "threadId": thread_id,
+                    "snapshotId": snapshot_id,
+                    "context": context,
+                    "tools": tools,
+                    "modelSchema": {"generation": 0, "schemaHash": format!("{snapshot_id}-schema")}
+                }),
+                2,
+            )
+            .unwrap();
+    }
+
     #[test]
-    #[ignore = "audit H-219: tool/list must expose a run-scoped capability snapshot"]
-    fn audit_tool_list_is_not_scoped_to_thread_capabilities() {
+    fn tool_list_scopes_each_thread_to_its_latest_run_capability() {
         let temporary = tempfile::tempdir().unwrap();
         let workspace_a = temporary.path().join("workspace-a");
         let workspace_b = temporary.path().join("workspace-b");
@@ -1951,9 +2134,6 @@ mod tests {
             .as_str()
             .expect("first thread id")
             .to_owned();
-        let first_tools =
-            state.handle_request_for_test(rpc_request(3, "tool/list", serde_json::json!({})));
-
         let second = state.handle_request_for_test(rpc_request(
             4,
             "thread/start",
@@ -1967,25 +2147,600 @@ mod tests {
             .as_str()
             .expect("second thread id")
             .to_owned();
-        let second_tools =
-            state.handle_request_for_test(rpc_request(5, "tool/list", serde_json::json!({})));
-        let first_tool_value = first_tools.result()["tools"].clone();
-        let second_tool_value = second_tools.result()["tools"].clone();
+
+        seed_tool_list_snapshot(
+            &state.database,
+            &first_thread_id,
+            "tool-list-read-only-run",
+            "tool-list-read-only-snapshot",
+            serde_json::json!({"workspace":workspace_a, "permissionProfile":"read_only", "sandboxBackend":"direct"}),
+            serde_json::json!([{"name":"read_file", "initiallyVisible":true}]),
+        );
+        seed_tool_list_snapshot(
+            &state.database,
+            &second_thread_id,
+            "tool-list-full-access-run",
+            "tool-list-full-access-snapshot",
+            serde_json::json!({"workspace":workspace_b, "permissionProfile":"full_access", "sandboxBackend":"windows_sandbox"}),
+            serde_json::json!([
+                {"name":"read_file", "initiallyVisible":true},
+                {"name":"write_file", "initiallyVisible":true}
+            ]),
+        );
+
+        let first_tools = state.handle_request_for_test(rpc_request(
+            3,
+            "tool/list",
+            serde_json::json!({"threadId": first_thread_id}),
+        ));
+        let second_tools = state.handle_request_for_test(rpc_request(
+            5,
+            "tool/list",
+            serde_json::json!({"threadId": second_thread_id}),
+        ));
         eprintln!(
-            "tool/list capability audit: first_thread={first_thread_id}, second_thread={second_thread_id}, first_tools={}, second_tools={}, first_has_snapshot={}, second_has_snapshot={}, identical_tools={}",
-            first_tool_value.as_array().map_or(0, Vec::len),
-            second_tool_value.as_array().map_or(0, Vec::len),
-            first_tools.result().get("snapshotId").is_some(),
-            second_tools.result().get("snapshotId").is_some(),
-            first_tool_value == second_tool_value
+            "tool/list scoped capability audit: first_thread={first_thread_id}, second_thread={second_thread_id}, first_snapshot={}, second_snapshot={}",
+            first_tools.result().get("snapshotId").and_then(serde_json::Value::as_str).unwrap_or("missing"),
+            second_tools.result().get("snapshotId").and_then(serde_json::Value::as_str).unwrap_or("missing")
         );
 
         assert!(
-            first_tools.result().get("snapshotId").is_some()
-                && second_tools.result().get("snapshotId").is_some()
-                && first_tool_value != second_tool_value,
-            "tool/list returned one global tool array without a thread/run capability snapshot"
+            first_tools.is_success() && second_tools.is_success(),
+            "thread-scoped tool/list failed: first={first_tools:?}, second={second_tools:?}"
         );
+        assert_eq!(first_tools.result()["threadId"], first_thread_id);
+        assert_eq!(first_tools.result()["runId"], "tool-list-read-only-run");
+        assert_eq!(
+            first_tools.result()["snapshotId"],
+            "tool-list-read-only-snapshot"
+        );
+        assert_eq!(
+            first_tools.result()["capabilitySnapshot"]["context"]["workspace"],
+            workspace_a.to_string_lossy().as_ref()
+        );
+        assert_eq!(
+            first_tools.result()["capabilitySnapshot"]["context"]["permissionProfile"],
+            "read_only"
+        );
+        assert_eq!(
+            first_tools.result()["capabilitySnapshot"]["context"]["sandboxBackend"],
+            "direct"
+        );
+        assert_eq!(first_tools.result()["tools"].as_array().unwrap().len(), 1);
+
+        assert_eq!(second_tools.result()["threadId"], second_thread_id);
+        assert_eq!(second_tools.result()["runId"], "tool-list-full-access-run");
+        assert_eq!(
+            second_tools.result()["snapshotId"],
+            "tool-list-full-access-snapshot"
+        );
+        assert_eq!(
+            second_tools.result()["capabilitySnapshot"]["context"]["workspace"],
+            workspace_b.to_string_lossy().as_ref()
+        );
+        assert_eq!(
+            second_tools.result()["capabilitySnapshot"]["context"]["permissionProfile"],
+            "full_access"
+        );
+        assert_eq!(
+            second_tools.result()["capabilitySnapshot"]["context"]["sandboxBackend"],
+            "windows_sandbox"
+        );
+        assert_eq!(second_tools.result()["tools"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn tool_list_returns_the_requested_run_snapshot_and_rejects_foreign_scope() {
+        let mut state = ServerState::new_for_test();
+        initialize(&mut state);
+
+        let session = Session::create(&state.database, &SystemClock, None).unwrap();
+        let thread_id = session.id().to_string();
+        let run_id = "tool-list-scoped-run";
+        RunStore::new(&state.database)
+            .create(run_id, &thread_id, None, 1)
+            .unwrap();
+        let snapshot = serde_json::json!({
+            "version": 1,
+            "runId": run_id,
+            "threadId": thread_id,
+            "snapshotId": "tool-list-scoped-snapshot",
+            "tools": [{"name": "read_file", "schemaHash": "synthetic-schema"}],
+            "modelSchema": {"generation": 0, "schemaHash": "synthetic-model-schema"}
+        });
+        RunStore::new(&state.database)
+            .bind_capability_snapshot(run_id, &snapshot, 2)
+            .unwrap();
+        RunStore::new(&state.database)
+            .append_event(
+                run_id,
+                3,
+                "running_turn",
+                "ready",
+                "capability_schema_snapshot",
+                &serde_json::json!({
+                    "version": 1,
+                    "snapshotId": "tool-list-scoped-snapshot",
+                    "modelSchema": {"generation": 1, "schemaHash": "latest-model-schema"}
+                }),
+            )
+            .unwrap();
+        RunStore::new(&state.database)
+            .append_event(
+                run_id,
+                4,
+                "running_turn",
+                "ready",
+                "capability_wire_snapshot",
+                &serde_json::json!({
+                    "version": 1,
+                    "snapshotId": "tool-list-scoped-snapshot",
+                    "wireSchema": {"generation": 2, "schemaHash": "latest-wire-schema"}
+                }),
+            )
+            .unwrap();
+
+        let scoped = state.handle_request_for_test(rpc_request(
+            2,
+            "tool/list",
+            serde_json::json!({"threadId": thread_id, "runId": run_id}),
+        ));
+        assert!(scoped.is_success(), "scoped tool/list failed: {scoped:?}");
+        assert_eq!(scoped.result()["threadId"], thread_id);
+        assert_eq!(scoped.result()["runId"], run_id);
+        assert_eq!(scoped.result()["snapshotId"], "tool-list-scoped-snapshot");
+        assert_eq!(scoped.result()["capabilitySnapshot"]["threadId"], thread_id);
+        assert_eq!(scoped.result()["tools"], snapshot["tools"]);
+        assert_eq!(
+            scoped.result()["capabilitySnapshot"]["modelSchema"]["generation"],
+            1
+        );
+        assert_eq!(
+            scoped.result()["capabilitySnapshot"]["modelSchema"]["schemaHash"],
+            "latest-model-schema"
+        );
+        assert_eq!(
+            scoped.result()["capabilitySnapshot"]["wireSchema"]["generation"],
+            2
+        );
+
+        let latest_run_id = "tool-list-latest-run";
+        RunStore::new(&state.database)
+            .create(latest_run_id, &thread_id, None, 10)
+            .unwrap();
+        let latest_snapshot = serde_json::json!({
+            "version": 1,
+            "runId": latest_run_id,
+            "threadId": thread_id,
+            "snapshotId": "tool-list-latest-snapshot",
+            "tools": [{"name": "write_file", "schemaHash": "other-schema"}],
+            "modelSchema": {"generation": 0, "schemaHash": "latest-initial-schema"}
+        });
+        RunStore::new(&state.database)
+            .bind_capability_snapshot(latest_run_id, &latest_snapshot, 11)
+            .unwrap();
+        let latest = state.handle_request_for_test(rpc_request(
+            3,
+            "tool/list",
+            serde_json::json!({"threadId": thread_id}),
+        ));
+        assert!(
+            latest.is_success(),
+            "thread-scoped lookup failed: {latest:?}"
+        );
+        assert_eq!(latest.result()["runId"], latest_run_id);
+        assert_eq!(latest.result()["snapshotId"], "tool-list-latest-snapshot");
+
+        let unbound_run_id = "tool-list-unbound-run";
+        RunStore::new(&state.database)
+            .create(unbound_run_id, &thread_id, None, 12)
+            .unwrap();
+        let unbound = state.handle_request_for_test(rpc_request(
+            4,
+            "tool/list",
+            serde_json::json!({"threadId": thread_id, "runId": unbound_run_id}),
+        ));
+        assert_eq!(unbound.error_code(), Some(ERR_INVALID_TURN));
+
+        let foreign_thread_id = Session::create(&state.database, &SystemClock, None)
+            .unwrap()
+            .id()
+            .to_string();
+        let foreign = state.handle_request_for_test(rpc_request(
+            5,
+            "tool/list",
+            serde_json::json!({"threadId": foreign_thread_id, "runId": run_id}),
+        ));
+        assert_eq!(foreign.error_code(), Some(ERR_INVALID_THREAD));
+
+        let missing = state.handle_request_for_test(rpc_request(
+            6,
+            "tool/list",
+            serde_json::json!({"threadId": thread_id, "runId": "missing-run"}),
+        ));
+        assert_eq!(missing.error_code(), Some(ERR_INVALID_TURN));
+    }
+
+    #[test]
+    fn tool_list_without_scope_remains_a_global_catalog() {
+        let mut state = ServerState::new_for_test();
+        initialize(&mut state);
+
+        let global =
+            state.handle_request_for_test(rpc_request(2, "tool/list", serde_json::json!({})));
+        assert!(global.is_success());
+        assert!(global.result()["tools"]
+            .as_array()
+            .is_some_and(|tools| !tools.is_empty()));
+        assert!(global.result().get("snapshotId").is_none());
+    }
+
+    #[test]
+    fn h219_tool_list_rejects_stale_snapshot_and_latest_ties_are_deterministic() {
+        let workspace = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let mut state = ServerState::new_for_test_with_database(db, workspace.path().to_owned());
+        initialize(&mut state);
+        let thread =
+            state.handle_request_for_test(rpc_request(2, "thread/start", serde_json::json!({})));
+        let thread = thread.result()["threadId"].as_str().unwrap();
+        seed_tool_list_snapshot(
+            &state.database,
+            thread,
+            "old-run",
+            "old-snapshot",
+            serde_json::json!({}),
+            serde_json::json!([]),
+        );
+        let stale = state.handle_request_for_test(rpc_request(
+            3,
+            "tool/list",
+            serde_json::json!({
+                "threadId":thread, "expectedSnapshotId":"unknown-snapshot"
+            }),
+        ));
+        assert!(
+            !stale.is_success(),
+            "stale snapshot expectations must not silently succeed"
+        );
+        seed_tool_list_snapshot(
+            &state.database,
+            thread,
+            "new-run",
+            "new-snapshot",
+            serde_json::json!({}),
+            serde_json::json!([]),
+        );
+        let latest = state.handle_request_for_test(rpc_request(
+            4,
+            "tool/list",
+            serde_json::json!({"threadId":thread}),
+        ));
+        assert_eq!(
+            latest.result()["runId"],
+            "new-run",
+            "same-millisecond admissions still have a deterministic latest run"
+        );
+        let stale = state.handle_request_for_test(rpc_request(
+            5,
+            "tool/list",
+            serde_json::json!({
+                "threadId":thread, "expectedSnapshotId":"old-snapshot"
+            }),
+        ));
+        assert!(!stale.is_success());
+        let historical = state.handle_request_for_test(rpc_request(
+            6,
+            "tool/list",
+            serde_json::json!({
+                "threadId":thread, "runId":"old-run", "expectedSnapshotId":"old-snapshot"
+            }),
+        ));
+        assert_eq!(historical.result()["snapshotId"], "old-snapshot");
+        let unscoped = state.handle_request_for_test(rpc_request(
+            7,
+            "tool/list",
+            serde_json::json!({
+                "expectedSnapshotId":"old-snapshot"
+            }),
+        ));
+        assert!(!unscoped.is_success());
+        assert_eq!(
+            RunStore::new(&state.database)
+                .list_for_session(thread)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn h219_turn_start_binds_real_capabilities_before_ack() {
+        let workspace = tempfile::tempdir().unwrap();
+        let database = Arc::new(Database::open_in_memory().unwrap());
+        let mut state =
+            ServerState::new_for_test_with_database(database, workspace.path().to_path_buf());
+        initialize(&mut state);
+        let thread = state.handle_request_for_test(rpc_request(
+            2,
+            "thread/start",
+            serde_json::json!({"permissionProfile":"read_only", "sandboxBackend":"direct"}),
+        ));
+        assert!(thread.is_success(), "{thread:?}");
+        let thread_id = thread.result()["threadId"].as_str().unwrap();
+        let (response, launch) = state.dispatch(
+            rpc_request(
+                3,
+                "turn/start",
+                serde_json::json!({"threadId":thread_id,"input":"synthetic capability check"}),
+            ),
+            None,
+        );
+        assert!(response.is_success(), "{response:?}");
+        let launch = launch.unwrap();
+        let snapshot = RunStore::new(&state.database)
+            .capability_snapshot(&launch.turn_id)
+            .unwrap()
+            .expect("ACK must follow atomic admission of the real prepared capability snapshot");
+        assert_eq!(response.result()["snapshotId"], snapshot["snapshotId"]);
+        assert_eq!(snapshot["threadId"], thread_id);
+        assert_eq!(snapshot["runId"], launch.turn_id);
+        assert_eq!(snapshot["context"]["sandboxMode"], "read_only");
+        assert_eq!(snapshot["context"]["sandboxBackend"], "direct");
+        let tools = snapshot["tools"].as_array().unwrap();
+        for name in ["read_file", "task", "plan_execute", "snip_history"] {
+            assert!(
+                tools.iter().any(|tool| tool["name"] == name),
+                "missing real main tool {name}"
+            );
+        }
+        assert!(response.result()["capabilitySnapshot"].is_object());
+        assert!(!workspace.path().join(".deepagent").exists());
+    }
+
+    #[test]
+    fn h219_failed_prepared_snapshot_admits_nothing_and_does_not_cancel_predecessor() {
+        let workspace = tempfile::tempdir().unwrap();
+        let database = Arc::new(Database::open_in_memory().unwrap());
+        let mut state =
+            ServerState::new_for_test_with_database(database, workspace.path().to_path_buf());
+        initialize(&mut state);
+        let thread =
+            state.handle_request_for_test(rpc_request(2, "thread/start", serde_json::json!({})));
+        let thread_id = thread.result()["threadId"].as_str().unwrap().to_owned();
+        let fail = || {
+            state.database.with_conn(|conn| conn.execute_batch(
+            "CREATE TRIGGER reject_h219_snapshot BEFORE INSERT ON run_events WHEN NEW.event_type='capability.snapshot' BEGIN SELECT RAISE(ABORT,'synthetic admission snapshot failure'); END;"
+        ).map_err(|error| CoreError::Persistence(error.to_string()))).unwrap()
+        };
+        fail();
+        let request = || {
+            rpc_request(
+                3,
+                "turn/start",
+                serde_json::json!({"threadId":thread_id,"input":"synthetic"}),
+            )
+        };
+        let (failed, launch) = state.dispatch(request(), None);
+        assert_eq!(failed.error_code(), Some(ERR_INTERNAL));
+        assert!(launch.is_none());
+        assert!(state.turns.is_empty());
+        assert!(RunStore::new(&state.database)
+            .list_for_session(&thread_id)
+            .unwrap()
+            .is_empty());
+        state
+            .database
+            .with_conn(|conn| {
+                conn.execute_batch("DROP TRIGGER reject_h219_snapshot")
+                    .map_err(|error| CoreError::Persistence(error.to_string()))
+            })
+            .unwrap();
+        let (started, original) = state.dispatch(request(), None);
+        assert!(started.is_success(), "{started:?}");
+        let original = original.unwrap();
+        let registration = original.chat.database();
+        // Inject after the original is fully admitted, before steering's own
+        // snapshot transaction. Failure must leave its sole replacement free.
+        registration.with_conn(|conn| conn.execute_batch(
+            "CREATE TRIGGER reject_h219_snapshot BEFORE INSERT ON run_events WHEN NEW.event_type='capability.snapshot' BEGIN SELECT RAISE(ABORT,'synthetic admission snapshot failure'); END;"
+        ).map_err(|error| CoreError::Persistence(error.to_string()))).unwrap();
+        let steer = || {
+            rpc_request(
+                4,
+                "turn/steer",
+                serde_json::json!({"threadId":thread_id,"turnId":original.turn_id,"input":"replacement"}),
+            )
+        };
+        let (failed, launch) = state.dispatch(steer(), None);
+        assert_eq!(failed.error_code(), Some(ERR_INTERNAL));
+        assert!(launch.is_none());
+        assert_eq!(state.turns.len(), 1);
+        assert_eq!(
+            RunStore::new(&state.database)
+                .list_for_session(&thread_id)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(!RunStore::new(&state.database)
+            .events_after(&original.turn_id, None)
+            .unwrap()
+            .iter()
+            .any(|event| event.event_type == "continuation.created"));
+        registration
+            .with_conn(|conn| {
+                conn.execute_batch("DROP TRIGGER reject_h219_snapshot")
+                    .map_err(|error| CoreError::Persistence(error.to_string()))
+            })
+            .unwrap();
+        let (accepted, replacement) = state.dispatch(steer(), None);
+        assert!(accepted.is_success(), "{accepted:?}");
+        let replacement = replacement.unwrap();
+        assert_ne!(original.turn_id, replacement.turn_id);
+        assert_eq!(
+            RunStore::new(&state.database)
+                .list_for_session(&thread_id)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            RunStore::new(&state.database)
+                .events_after(&original.turn_id, None)
+                .unwrap()
+                .iter()
+                .filter(|event| event.event_type == "continuation.created")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn h219_unknown_or_unavailable_backend_rejects_before_admission() {
+        for backend in ["per-turn-backend", "windows_sandbox"] {
+            let workspace = tempfile::tempdir().unwrap();
+            let database = Arc::new(Database::open_in_memory().unwrap());
+            let mut state =
+                ServerState::new_for_test_with_database(database, workspace.path().to_path_buf());
+            initialize(&mut state);
+            let thread = state.handle_request_for_test(rpc_request(
+                2,
+                "thread/start",
+                serde_json::json!({"sandboxBackend":backend}),
+            ));
+            assert!(thread.is_success(), "{thread:?}");
+            let thread_id = thread.result()["threadId"].as_str().unwrap();
+            let (response, launch) = state.dispatch(
+                rpc_request(
+                    3,
+                    "turn/start",
+                    serde_json::json!({"threadId":thread_id,"input":"synthetic"}),
+                ),
+                None,
+            );
+            assert_eq!(
+                response.error_code(),
+                Some(ERR_INTERNAL),
+                "{backend}: {response:?}"
+            );
+            assert!(response.result.is_none());
+            assert!(launch.is_none());
+            assert!(state.turns.is_empty());
+            assert!(RunStore::new(&state.database)
+                .list_for_session(thread_id)
+                .unwrap()
+                .is_empty());
+            assert_eq!(
+                state.threads[thread_id]
+                    .overrides
+                    .sandbox_backend
+                    .as_deref(),
+                Some(backend)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn h219_builtin_control_does_not_advertise_or_require_model_tools() {
+        let workspace = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let mut state =
+            ServerState::new_for_test_with_database(db.clone(), workspace.path().to_owned());
+        initialize(&mut state);
+        let thread = state.handle_request_for_test(rpc_request(
+            2,
+            "thread/start",
+            serde_json::json!({"sandboxBackend":"unavailable-model-backend"}),
+        ));
+        let thread_id = thread.result()["threadId"].as_str().unwrap().to_owned();
+        let (response, launch) = state.dispatch(
+            rpc_request(
+                3,
+                "turn/start",
+                serde_json::json!({"threadId":thread_id,"input":"/help"}),
+            ),
+            None,
+        );
+        assert!(
+            response.is_success(),
+            "a builtin control must not resolve a model backend: {response:?}"
+        );
+        let launch = launch.unwrap();
+        let snapshot = response.result()["capabilitySnapshot"].clone();
+        assert_eq!(snapshot["context"]["executionDomain"], "builtin_control");
+        assert_eq!(snapshot["tools"], serde_json::json!([]));
+        assert_eq!(
+            RunStore::new(&db)
+                .capability_snapshot(&launch.turn_id)
+                .unwrap()
+                .unwrap(),
+            snapshot
+        );
+        let result = launch
+            .chat
+            .run_prepared(launch.prepared, &launch.input, |_| {}, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(result, thread_id);
+        let events = RunStore::new(&db)
+            .events_after(&launch.turn_id, None)
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_type == "run_terminal")
+                .count(),
+            1
+        );
+        assert!(!events.iter().any(|event| matches!(
+            event.event_type.as_str(),
+            "capability_wire_snapshot" | "tool_started"
+        )));
+        assert_eq!(
+            RunStore::new(&db)
+                .get(&launch.turn_id)
+                .unwrap()
+                .unwrap()
+                .terminal_kind
+                .as_deref(),
+            Some("succeeded")
+        );
+    }
+
+    #[test]
+    fn h219_cross_thread_resume_control_is_rejected_before_any_admission() {
+        let workspace = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let mut state =
+            ServerState::new_for_test_with_database(db.clone(), workspace.path().to_owned());
+        initialize(&mut state);
+        let first =
+            state.handle_request_for_test(rpc_request(2, "thread/start", serde_json::json!({})));
+        let second =
+            state.handle_request_for_test(rpc_request(3, "thread/start", serde_json::json!({})));
+        let first = first.result()["threadId"].as_str().unwrap();
+        let second = second.result()["threadId"].as_str().unwrap();
+        let (response, launch) = state.dispatch(
+            rpc_request(
+                4,
+                "turn/start",
+                serde_json::json!({"threadId":first,"input":format!("/resume {second}")}),
+            ),
+            None,
+        );
+        assert!(
+            !response.is_success(),
+            "a control cannot retarget the admitted owner: {response:?}"
+        );
+        assert!(launch.is_none());
+        assert!(state.turns.is_empty());
+        for thread in [first, second] {
+            assert!(RunStore::new(&db)
+                .list_for_session(thread)
+                .unwrap()
+                .is_empty());
+        }
     }
 
     #[test]

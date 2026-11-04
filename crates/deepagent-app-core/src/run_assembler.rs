@@ -48,12 +48,15 @@ use crate::dto::{ApprovalRequestDto, PreflightToolCallDto};
 use crate::hook_assembly::{
     assemble_run_hooks, HookAssemblyRequest, OfficeSkillGuardHook, ProjectHookTrust,
 };
-use crate::input_runtime::{accept_input_turn, collect_discovered_tools_from_events};
+use crate::input_runtime::accept_input_turn;
 use crate::kernel_runtime::{build_kernel_runtime_config, KernelRuntimeConfigRequest};
 use crate::model_runtime::select_run_model;
 use crate::office_service::OfficeService;
 use crate::project_map_service::ProjectMapService;
 use crate::prompt_gate::{finalize_blocked_user_prompt, submit_user_prompt};
+use crate::run_capabilities::{
+    capability_context, CapabilityContextRequest, ResolvedRunCapabilities,
+};
 use crate::run_config::RunConfigOverlay;
 use crate::run_coordinator::RunCoordinator;
 use crate::run_environment::RunEnvironment;
@@ -61,14 +64,18 @@ use crate::run_finalizer::{AppRunFinalizer, AppRunFinalizerRequest};
 use crate::runtime_event_log::{append_runtime_log, spawn_runtime_event_pump};
 use crate::settings::SettingsService;
 use crate::skill_catalog_reminder::SkillCatalogSendState;
-use crate::subagent_runner::{
-    collect_runtime_agent_definitions, ChatSubagentRunner, RuntimeAgentDefinition,
-};
+use crate::subagent_runner::ChatSubagentRunner;
 use crate::tool_manifest::DiscoveredToolSet;
 use crate::tool_runtime::{
-    build_base_tool_registry, build_main_run_toolset, CommandExecutorFactory,
-    MainRunToolsetRequest, RemoteOpsFactory, RuntimeCommandExecutor, ToolRegistryBuildRequest,
+    build_base_tool_registry, CommandExecutorFactory, RemoteOpsFactory, RuntimeCommandExecutor,
+    ToolRegistryBuildRequest,
 };
+
+mod prepared_tools;
+use prepared_tools::MainRunPreparationRequest;
+mod prepared_chat;
+pub use prepared_chat::PreparedChatRun;
+use prepared_chat::{PreparedChatContents, PreparedChatTools};
 
 use crate::chat_service::InvokedSkillMap;
 use crate::cost_service::CostService;
@@ -83,9 +90,6 @@ use crate::sandbox_backend::{
 use crate::sandboxie_service::SandboxieExecutor;
 use crate::skills_service::SkillsService;
 use crate::RuntimeBroker;
-
-/// Per-session map of [`DiscoveredToolSet`]s, keyed by session id.
-type DiscoveredToolsMap = Arc<std::sync::Mutex<HashMap<String, DiscoveredToolSet>>>;
 
 /// Map structured input attachments to reference-only message attachments.
 fn message_attachments(
@@ -155,7 +159,6 @@ pub(crate) struct RunAssembler<'a> {
     pub(crate) project_map: &'a Option<Arc<ProjectMapService>>,
     pub(crate) skill_catalog_state:
         &'a Arc<std::sync::Mutex<HashMap<String, SkillCatalogSendState>>>,
-    pub(crate) discovered_tools: &'a DiscoveredToolsMap,
     pub(crate) invoked_skills: &'a InvokedSkillMap,
     /// Host-scoped "one session-memory pass per session" scheduler, borrowed
     /// from `ChatService` so two turns cannot fold the same window twice.
@@ -171,6 +174,7 @@ pub(crate) struct RunAssembler<'a> {
     /// File/image attachments supplied with this turn (structured refs). Empty
     /// for runs without attachments and for the headless/test paths.
     pub(crate) attachments: Vec<deepagent_runtime::InputAttachment>,
+    pub(crate) prepared_run: Option<PreparedChatRun>,
 }
 
 // Chat and workflow share this admission boundary. Cleanup cancellation is
@@ -277,7 +281,7 @@ impl<'a> RunAssembler<'a> {
             .unwrap_or_else(|| format!("run_{}", deepagent_core::id::EventId::new()));
         let db = self.db.clone();
         let session_id = if let Some(id) = continue_session {
-            id.to_owned()
+            SessionId::from_str(id)?.to_string()
         } else {
             let (_, project) = self.run_location(None)?;
             let mode = if env_mode == Some("remote") {
@@ -356,7 +360,20 @@ impl<'a> RunAssembler<'a> {
         if cancellation.cancellation().is_cancelled() {
             return Err(CoreError::other("cancelled before preparation"));
         }
-        let (root, session_project) = self.run_location(continue_session)?;
+        let mut prepared_run = self.prepared_run.take();
+        if let Some(prepared) = &prepared_run {
+            if Some(prepared.run_id.as_str()) != diagnostic_run_id
+                || prepared.session_id != bound_session_id
+            {
+                return Err(CoreError::invalid(
+                    "prepared chat identity does not match admission",
+                ));
+            }
+        }
+        let (root, session_project) = match &prepared_run {
+            Some(prepared) => (prepared.root.clone(), prepared.session_project.clone()),
+            None => self.run_location(continue_session)?,
+        };
         self.knowledge = self
             .knowledge
             .as_ref()
@@ -373,11 +390,41 @@ impl<'a> RunAssembler<'a> {
         let effective_input_text = normalized_input.effective_text.clone();
         let prompt = effective_input_text.as_str();
 
-        if let Some(session_id) = self
-            .maybe_handle_slash_command(prompt, continue_session, &on_event)
-            .await?
-        {
-            return Ok(session_id);
+        if let Some(prepared) = &prepared_run {
+            prepared.validate_input(prompt)?;
+        }
+
+        let mut prepared_run = match prepared_run.take() {
+            Some(prepared) => match prepared.contents {
+                PreparedChatContents::Control {
+                    result,
+                    capabilities,
+                } => {
+                    capabilities.consume(self.db.clone())?;
+                    return crate::slash_runtime::execute_builtin_slash_command(
+                        &self.slash_runtime(),
+                        prompt,
+                        Some(bound_session_id),
+                        result,
+                        &on_event,
+                    )
+                    .await;
+                }
+                contents => Some(PreparedChatRun {
+                    contents,
+                    ..prepared
+                }),
+            },
+            None => None,
+        };
+
+        if prepared_run.is_none() {
+            if let Some(session_id) = self
+                .maybe_handle_slash_command(prompt, continue_session, &on_event)
+                .await?
+            {
+                return Ok(session_id);
+            }
         }
 
         let run_id = diagnostic_run_id
@@ -408,51 +455,36 @@ impl<'a> RunAssembler<'a> {
                 })),
         );
 
-        let plugin_snapshot = self
-            .plugins
-            .as_ref()
-            .map(|plugins| plugins.ready_snapshot());
-        let plugin_projection = plugin_snapshot
-            .as_ref()
-            .map(|(projection, _)| projection.clone());
-        self.sync_plugin_skill_snapshot(plugin_projection.as_ref())?;
-        let legacy_sandboxie_executor = self
-            .sandbox_backend_registry
-            .is_none()
-            .then_some(self.sandboxie_executor.as_ref())
-            .flatten();
-        let project_trusted =
-            crate::trust_service::TrustService::new(self.db.clone()).is_trusted(&root);
-        let run_config = RunConfigOverlay::load(&root, serde_json::to_value(&overrides)?);
+        let (prepared_environment, prepared_tools) = match prepared_run.take() {
+            Some(prepared) => {
+                self.knowledge = prepared.knowledge;
+                let PreparedChatContents::Model(model) = prepared.contents else {
+                    return Err(CoreError::invalid("control escaped prepared dispatch"));
+                };
+                let model = *model;
+                (model.environment, Some(model.tools))
+            }
+            None => (
+                self.prepare_chat_environment(&root, &run_id, &overrides)?,
+                None,
+            ),
+        };
+        // The worker uses the admitted environment, never a second settings or
+        // MCP lookup that could silently retarget the advertised registry.
+        let environment = &prepared_environment.environment;
+        let run_config = environment.config.clone();
+        let effective_permission_rules = prepared_environment.permission_rules.clone();
+        let project_trusted = prepared_environment.project_trusted;
+        let plugin_projection = prepared_environment.plugin_projection.clone();
         let RunEnvironment {
-            config: run_config,
-            profile: _profile,
+            config: _,
+            profile: _,
             policy,
             sandbox_mode,
             local_execution_mode,
-            sandbox_backend,
+            sandbox_backend: _,
             access,
-        } = RunEnvironment::resolve(
-            run_config,
-            self.settings.effective_permission_profile()?,
-            project_trusted,
-            self.runtime_logs,
-            legacy_sandboxie_executor,
-            self.sandbox_backend_registry
-                .as_ref()
-                .map(|registry| registry.default_kind()),
-            &run_id,
-        )?;
-        // Resolve the same effective permission snapshot used by the tool
-        // hooks before any automatic workspace context is assembled.
-        let effective_permission_rules =
-            run_config.merged_permission_rules(self.settings.permission_rules()?)?;
-
-        // Resolve the backend once for this run.  The returned executor is
-        // immutable and is shared by the parent and its sub-agent registries;
-        // another session cannot replace it by changing a process-wide slot.
-        let run_local_executor =
-            self.local_executor_for_run(&root, sandbox_mode, sandbox_backend)?;
+        } = environment.clone();
 
         let mut model_prompt = self
             .dynamic_command_prompt(prompt)?
@@ -517,6 +549,45 @@ impl<'a> RunAssembler<'a> {
             None => env_mode,
         };
 
+        let plan = self.plan_mode_for_session(&session_id_str)?;
+        if continue_session.is_none() && initial_plan_mode {
+            plan.set(true)?;
+        }
+        // Reject unknown/corrupt recovery before issuing a model request.
+        plan.is_active()?;
+
+        let prepared = match prepared_tools {
+            Some(prepared) => prepared,
+            None => {
+                let prepared = self.prepare_chat_tools(
+                    &root,
+                    session_project.clone(),
+                    &run_id,
+                    &session_id_str,
+                    effective_env_mode,
+                    connection_id,
+                    &prior_events,
+                    &prepared_environment,
+                )?;
+                deepagent_persistence::run_store::RunStore::new(self.db).bind_capability_snapshot(
+                    &run_id,
+                    &prepared.capabilities.snapshot,
+                    deepagent_core::clock::Clock::now(&SystemClock).as_millis(),
+                )?;
+                prepared
+            }
+        };
+        let PreparedChatTools {
+            tools: prepared_tools,
+            plan,
+            discovered_before_run,
+            discovered: tool_search_discovered,
+            search_mode: tool_search_mode,
+            search_threshold: tool_search_threshold,
+            capabilities,
+        } = prepared;
+        let capabilities = Arc::new(capabilities.consume(self.db.clone())?);
+
         let run_model = select_run_model(
             self.settings,
             self.transport.clone(),
@@ -530,29 +601,6 @@ impl<'a> RunAssembler<'a> {
         let model = run_model.model;
         let reasoning_effort = run_model.reasoning_effort;
         let fallback_model = run_model.fallback_model;
-
-        let plan = self.plan_mode_for_session(&session_id_str)?;
-        if continue_session.is_none() && initial_plan_mode {
-            plan.set(true)?;
-        }
-        // Reject unknown/corrupt recovery before issuing a model request.
-        plan.is_active()?;
-
-        let restored_discovered = collect_discovered_tools_from_events(&prior_events);
-        if !restored_discovered.is_empty() {
-            let set = self.discovered_tools_for_session(&session_id_str);
-            let mut guard = set.lock().unwrap_or_else(|p| p.into_inner());
-            for name in restored_discovered {
-                guard.insert(name);
-            }
-        }
-
-        let tool_search_mode = self.settings.tool_search_mode().unwrap_or_default();
-        let tool_search_threshold = self
-            .settings
-            .tool_search_auto_threshold()
-            .unwrap_or(SettingsService::DEFAULT_TOOL_SEARCH_AUTO_THRESHOLD_CHARS);
-        let tool_search_discovered = self.discovered_tools_for_session(&session_id_str);
         let subagent_reasoning_effort = reasoning_effort;
 
         let (sink, rx) = ChannelSink::new();
@@ -581,124 +629,34 @@ impl<'a> RunAssembler<'a> {
             on_event,
         );
 
-        let (task_runner, task_agent_types) = {
-            let mut sub_request = self.base_registry_request(
-                &root,
-                access,
-                None,
-                None,
-                Some(local_execution_mode),
-                sandbox_backend.is_some(),
-                run_local_executor.clone(),
-                matches!(policy, crate::settings::ApprovalPolicy::FullAccess),
-                &session_id_str,
-            );
-            sub_request.project = session_project.clone();
-            // A sub-agent has no human watching its own turn, so it answers
-            // `ask_user_question` from the option the model recommended instead
-            // of competing for the parent run's question dialog.
-            sub_request.question_responder = Arc::new(deepagent_builtins::RecommendedResponder);
-            let sub_registry = Arc::new(build_base_tool_registry(sub_request)?.0);
-            let runtime_agents = collect_runtime_agent_definitions(
-                [root.clone(), self.workspace.to_path_buf()],
-                plugin_projection.as_ref(),
-            );
-            let task_agent_types: Vec<deepagent_builtins::TaskAgentType> = runtime_agents
-                .iter()
-                .map(RuntimeAgentDefinition::task_agent_type)
-                .collect();
-            let agent_definitions: std::collections::BTreeMap<String, RuntimeAgentDefinition> =
-                runtime_agents
-                    .into_iter()
-                    .map(|agent| (agent.type_name.clone(), agent))
-                    .collect();
-            let parent_discovered_snapshot: std::collections::HashSet<String> =
-                tool_search_discovered
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .clone();
-            let runner = ChatSubagentRunner {
-                db: self.db.clone(),
-                parent_run_id: run_id.clone(),
-                transcript_root: self.tool_results_dir.join("subagents"),
-                client: client.clone(),
-                usage_owner: Some(call_owner.clone()),
-                model: model.clone(),
-                reasoning_effort: subagent_reasoning_effort,
-                registry: sub_registry,
-                root: root.clone(),
-                assigned_worktree: None,
-                tool_search_mode,
-                tool_search_auto_threshold: tool_search_threshold,
-                parent_discovered_snapshot,
-                agent_definitions,
-                background: self.subagent_controls.clone(),
-                events: Arc::downgrade(&sink),
-                skills: self.skills.clone(),
-                host: self.service.clone(),
-                access,
-                local_execution_mode,
-                bash_full_access: matches!(policy, crate::settings::ApprovalPolicy::FullAccess),
-                hooks: subagent_hooks.clone(),
-                parent_checkpoint: subagent_parent_checkpoint.clone(),
-                parent_approvals: subagent_approvals.clone(),
-            };
-            (runner, task_agent_types)
-        };
-
-        let mut base = self.base_registry_request(
-            &root,
-            // Hooks and actual I/O must enforce the same effective profile.
-            // Implicit glob/grep traversal has no path argument for the hook
-            // to inspect; the file tools cannot be constructed as Full here.
-            access,
-            effective_env_mode,
-            connection_id,
-            Some(local_execution_mode),
-            sandbox_backend.is_some(),
-            run_local_executor,
-            true,
-            &session_id_str,
-        );
-        base.project = session_project.clone();
-        // Multi-agent control plane: the `plan_execute` tool plans a goal into a
-        // DAG and runs it over the SAME sub-agent loop as `task` (one executor).
-        let plan_executor: Option<Arc<dyn deepagent_builtins::PlanExecutor>> = Some(Arc::new(
-            crate::dag_orchestration::ChatPlanExecutor::new(task_runner.clone()),
-        ));
-        // Cross-session multi-tier memory (D3): persistent memory_write/recall.
-        // Backed by the knowledge vault, so a written memory is retrievable by
-        // the same `relevant memories` track that surfaces knowledge notes.
-        let memory_backend: Option<Arc<dyn deepagent_builtins::MemoryBackend>> =
-            self.knowledge.as_ref().map(|knowledge| {
-                Arc::new(crate::memory_service::MemoryService::new(knowledge.clone()))
-                    as Arc<dyn deepagent_builtins::MemoryBackend>
-            });
-        if memory_backend.is_none() {
-            // Memory is vault-backed since the storage convergence, so a host with
-            // no knowledge service has no long-term memory at all. Say so: two
-            // tools quietly missing is otherwise indistinguishable from a
-            // registration bug.
-            tracing::warn!(
-                "no knowledge vault attached; memory_write / memory_recall are off this run"
-            );
-        }
-        let toolset = build_main_run_toolset(MainRunToolsetRequest {
-            base,
-            mcp: self.mcp.as_deref(),
-            plugin_projection: plugin_projection.as_ref(),
-            plugin_registry: plugin_snapshot.map(|(_, registry)| registry),
-            task_runner,
-            task_agent_types,
-            plan_executor,
-            memory_backend,
-            plan: plan.clone(),
-            skills: self.skills.as_ref(),
+        let task_runner = ChatSubagentRunner {
+            db: self.db.clone(),
+            parent_run_id: run_id.clone(),
+            transcript_root: self.tool_results_dir.join("subagents"),
+            client: client.clone(),
+            usage_owner: Some(call_owner.clone()),
+            model: model.clone(),
+            reasoning_effort: subagent_reasoning_effort,
+            registry: prepared_tools.sub_registry,
+            root: root.clone(),
+            assigned_worktree: None,
             tool_search_mode,
-            tool_search_discovered: tool_search_discovered.clone(),
-            tool_search_threshold,
-        })
-        .await?;
+            tool_search_auto_threshold: tool_search_threshold,
+            parent_discovered_snapshot: prepared_tools.parent_discovered_snapshot,
+            agent_definitions: prepared_tools.agent_definitions,
+            background: self.subagent_controls.clone(),
+            events: Arc::downgrade(&sink),
+            skills: self.skills.clone(),
+            host: self.service.clone(),
+            access,
+            local_execution_mode,
+            bash_full_access: matches!(policy, crate::settings::ApprovalPolicy::FullAccess),
+            hooks: subagent_hooks.clone(),
+            parent_checkpoint: subagent_parent_checkpoint.clone(),
+            parent_approvals: subagent_approvals.clone(),
+        };
+        prepared_tools.services.bind(task_runner)?;
+        let toolset = prepared_tools.toolset;
         for lifecycle in &toolset.lifecycle {
             sink.emit(RuntimeEvent::McpLifecycle {
                 server_id: lifecycle.server_id.clone(),
@@ -713,6 +671,7 @@ impl<'a> RunAssembler<'a> {
             });
         }
         let registry = toolset.registry;
+        let skill_snapshot = toolset.skills;
         let todo_store = toolset.todo_store;
         let hook_mcp_registry = toolset.hook_mcp_registry;
         let tool_manifest = toolset.manifest;
@@ -762,7 +721,7 @@ impl<'a> RunAssembler<'a> {
             }
         };
         let office_skill_guard = self
-            .office_skill_guard_hook(&session_id_str, &prior_events)?
+            .office_skill_guard_hook(&session_id_str, &prior_events, skill_snapshot.as_deref())?
             .map(|hook| Arc::new(hook) as Arc<dyn Hook>);
         let hooks = assemble_run_hooks(HookAssemblyRequest {
             settings: self.settings,
@@ -1020,7 +979,7 @@ impl<'a> RunAssembler<'a> {
             mcp_instructions_block: mcp_instructions_block.as_deref(),
             mcp_instructions_entries: Some(&mcp_instructions_entries),
             tool_manifest: &tool_manifest,
-            skills: self.skills.as_ref(),
+            skills: skill_snapshot.as_deref(),
             settings: self.settings,
             skill_catalog_state: self.skill_catalog_state,
             session_id: &session_id,
@@ -1139,13 +1098,16 @@ impl<'a> RunAssembler<'a> {
             tools,
         )
         .with_call_usage_sink(main_usage.clone())
-        .with_tool_schema_source(crate::tool_manifest::live_tool_schema_source(
-            registry.clone(),
-            granted.clone(),
-            tool_search_mode,
-            tool_search_discovered.clone(),
-            tool_search_threshold,
+        .with_fallible_tool_schema_source(capabilities.clone().schema_source(
+            crate::tool_manifest::live_tool_schema_source(
+                registry.clone(),
+                granted.clone(),
+                tool_search_mode,
+                tool_search_discovered.clone(),
+                tool_search_threshold,
+            ),
         ))
+        .with_tool_schema_observer(capabilities.wire_observer())
         .with_reasoning_effort(effective_reasoning_effort)
         .with_fallback_model(fallback_model)
         .with_reactive_compactor(reactive_compactor)
@@ -1230,11 +1192,6 @@ impl<'a> RunAssembler<'a> {
         let config = kernel_runtime.config;
 
         cancellation.add_alias(session_id.clone());
-        let discovered_before_run: std::collections::HashSet<String> = tool_search_discovered
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
-
         let verification_commands = kernel_runtime.verification_commands;
         let verification_plan = crate::completion_plan::discover_verification_plan(
             &root,
@@ -1844,17 +1801,6 @@ impl<'a> RunAssembler<'a> {
         deepagent_builtins::PlanMode::for_session(self.db.clone(), session_id)
     }
 
-    /// Return the shared discovered-tools set for a session.
-    fn discovered_tools_for_session(&self, session_id: &str) -> DiscoveredToolSet {
-        let mut map = self
-            .discovered_tools
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        map.entry(session_id.to_string())
-            .or_insert_with(|| Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())))
-            .clone()
-    }
-
     /// Load the standalone hooks file. Inline settings are loaded only once,
     /// through RunConfigOverlay, preserving their configuration origin.
     fn project_hook_definitions(
@@ -1904,20 +1850,18 @@ impl<'a> RunAssembler<'a> {
         &self,
         session_id: &str,
         prior_events: &[deepagent_core::event::Event],
+        skills: Option<&deepagent_skills::SkillRegistry>,
     ) -> Result<Option<OfficeSkillGuardHook>> {
         if self.office.is_none() {
             return Ok(None);
         }
-        let Some(skills) = self.skills else {
+        let Some(skills) = skills else {
             return Ok(None);
         };
         let enforce_skills: std::collections::HashSet<String> = {
-            let svc = skills
-                .lock()
-                .map_err(|_| CoreError::invalid("skills service mutex poisoned"))?;
             ["docx", "xlsx", "pptx", "pdf"]
                 .into_iter()
-                .filter(|id| svc.manager().registry().contains(id))
+                .filter(|id| skills.contains(id))
                 .map(str::to_string)
                 .collect()
         };

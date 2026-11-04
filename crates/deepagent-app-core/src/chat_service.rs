@@ -44,8 +44,9 @@ use crate::context_runtime::{
 use crate::dto::{ApprovalRequestDto, PreflightToolCallDto};
 #[cfg(test)]
 use crate::hook_assembly::OfficeSkillGuardHook;
+use crate::input_runtime::collect_discovered_tools_from_events;
 #[cfg(test)]
-use crate::input_runtime::{collect_discovered_tools_from_events, full_history_from_events};
+use crate::input_runtime::full_history_from_events;
 use crate::model_runtime::build_model_client;
 use crate::office_service::OfficeService;
 use crate::project_map_service::ProjectMapService;
@@ -141,11 +142,6 @@ pub struct ChatService {
     /// Background child cancellation handles survive the parent tool registry,
     /// so desktop APIs can still inspect or stop a child after the parent turn.
     subagent_controls: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>>,
-    /// Per-session discovered-tool sets for lazy tool loading (tool-search
-    /// spec). Each entry is the set of deferred tool names the model has
-    /// already pulled into its active toolset via `tool_search`. Sessions
-    /// without entries default to empty (= no deferred tool loaded).
-    discovered_tools: DiscoveredToolsMap,
     /// Optional skills service: when set, the chat run registers the
     /// `skill` tool (channel B of the auto-activation design) and injects
     /// the `<available-skills>` catalog reminder (channel A) on each turn.
@@ -202,10 +198,6 @@ pub struct ChatService {
 /// app and captures the `SshService` handle.
 type ExecutorFactory = CommandExecutorFactory;
 
-/// Per-session map of [`DiscoveredToolSet`]s, keyed by session id.
-type DiscoveredToolsMap =
-    Arc<std::sync::Mutex<std::collections::HashMap<String, DiscoveredToolSet>>>;
-
 pub(crate) type InvokedSkillMap =
     Arc<std::sync::Mutex<std::collections::HashMap<String, std::collections::HashSet<String>>>>;
 
@@ -257,7 +249,6 @@ impl ChatService {
             tool_results_dir,
             input_leases: Arc::new(InputLeaseRegistry::default()),
             subagent_controls: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-            discovered_tools: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             skills: None,
             skill_catalog_state: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             invoked_skills: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -337,6 +328,95 @@ impl ChatService {
 
     pub fn admit_run(&self, run_id: &str, session_id: &str) -> Result<()> {
         self.coordinator.admit(run_id, session_id)
+    }
+
+    /// Freeze the normal main-run tools and commit their exact snapshot with
+    /// admission. Preparation failure publishes no run or cancellation owner.
+    /// Text may be supplied at consumption, but builtin controls require the
+    /// input-aware admission below so their distinct domain is frozen as well.
+    pub fn admit_prepared_run(
+        &self,
+        run_id: &str,
+        session_id: &str,
+        overrides: HarnessRunOverrides,
+    ) -> Result<crate::run_assembler::PreparedChatRun> {
+        self.admit_prepared_chat(run_id, session_id, None, None, overrides)?
+            .ok_or_else(|| CoreError::invalid("prepared chat admission was rejected"))
+    }
+
+    /// Builtin controls use the normal slash dispatcher and carry no model
+    /// registry. Dynamic commands and ordinary prompts prepare the real tools.
+    /// The normalized input is bound once and cannot be replaced by the worker.
+    pub fn admit_prepared_input(
+        &self,
+        run_id: &str,
+        session_id: &str,
+        input: &str,
+        overrides: HarnessRunOverrides,
+    ) -> Result<crate::run_assembler::PreparedChatRun> {
+        self.admit_prepared_chat(run_id, session_id, Some(input), None, overrides)?
+            .ok_or_else(|| CoreError::invalid("prepared chat admission was rejected"))
+    }
+
+    /// The existing continuation transaction owns both the prepared snapshot
+    /// and the replacement claim; a failed prepare/write cannot cancel old_run.
+    pub fn admit_prepared_continuation(
+        &self,
+        old_run_id: &str,
+        new_run_id: &str,
+        session_id: &str,
+        input: &str,
+        overrides: HarnessRunOverrides,
+    ) -> Result<Option<crate::run_assembler::PreparedChatRun>> {
+        self.admit_prepared_chat(
+            new_run_id,
+            session_id,
+            Some(input),
+            Some(old_run_id),
+            overrides,
+        )
+    }
+
+    fn admit_prepared_chat(
+        &self,
+        run_id: &str,
+        session_id: &str,
+        input: Option<&str>,
+        replaces: Option<&str>,
+        overrides: HarnessRunOverrides,
+    ) -> Result<Option<crate::run_assembler::PreparedChatRun>> {
+        let session_id = session_id
+            .parse::<deepagent_core::id::SessionId>()?
+            .to_string();
+        self.coordinator
+            .admit_prepared(run_id, &session_id, replaces, || {
+                let prepared = self.run_assembler().prepare_chat_input(
+                    run_id,
+                    &session_id,
+                    input,
+                    overrides,
+                )?;
+                let snapshot = prepared.capability_snapshot().clone();
+                Ok((prepared, Some(snapshot)))
+            })
+    }
+
+    /// Consume the exact one-shot tools admitted by this service. Model,
+    /// hooks, leases, approvals and finalization remain in RunAssembler::run.
+    pub async fn run_prepared<F, A>(
+        &self,
+        prepared: crate::run_assembler::PreparedChatRun,
+        prompt: &str,
+        on_event: F,
+        on_approval: A,
+    ) -> Result<String>
+    where
+        F: Fn(RuntimeEvent) + Send + 'static,
+        A: Fn(ApprovalRequestDto) + Send + Sync + 'static,
+    {
+        self.run_assembler()
+            .run_prepared(prepared, prompt, on_event, on_approval)
+            .await
     }
 
     /// Atomically claim the expected run's sole continuation and admit its
@@ -849,37 +929,30 @@ impl ChatService {
         Ok(active)
     }
 
-    /// Return the shared discovered-tools set for a session, creating an
-    /// empty one the first time this process sees the session. Used by the
-    /// `tool_search` built-in (it captures the handle at registration time)
-    /// and by the per-turn tools-array assembly (it reads the names back).
-    #[cfg(test)]
-    fn discovered_tools_for_session(&self, session_id: &str) -> DiscoveredToolSet {
-        let mut map = self
-            .discovered_tools
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        map.entry(session_id.to_string())
-            .or_insert_with(|| Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())))
-            .clone()
+    pub(crate) fn discovered_tools_for_run(
+        &self,
+        prior_events: &[deepagent_core::event::Event],
+    ) -> (std::collections::HashSet<String>, DiscoveredToolSet) {
+        let baseline = collect_discovered_tools_from_events(prior_events)
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+        let set = Arc::new(std::sync::Mutex::new(baseline.clone()));
+        (baseline, set)
     }
 
-    /// Snapshot the names currently in a session's discovered set
-    /// (read-only). Mostly for tests / diagnostics.
+    /// Read the durable lazy-tool discoveries for a session.
     pub fn discovered_tool_names(&self, session_id: &str) -> Vec<String> {
-        let map = self
-            .discovered_tools
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        match map.get(session_id) {
-            Some(set) => {
-                let names = set.lock().unwrap_or_else(|p| p.into_inner());
-                let mut out: Vec<String> = names.iter().cloned().collect();
-                out.sort();
-                out
-            }
-            None => Vec::new(),
-        }
+        let Ok(session_id) = session_id.parse() else {
+            return Vec::new();
+        };
+        let Ok(events) =
+            deepagent_persistence::event_store::EventStore::new(&self.db).load_session(session_id)
+        else {
+            return Vec::new();
+        };
+        let mut names = collect_discovered_tools_from_events(&events);
+        names.sort();
+        names
     }
 
     /// Build the tool registry with the built-ins confined to `root`.
@@ -1008,7 +1081,7 @@ impl ChatService {
     /// _Validates: Requirements R6.1, R6.2, R6.3, R6.4, R6.5, R6.6._
     #[cfg(test)]
     fn maybe_register_skill_tool(&self, registry: &mut ToolRegistry) -> Result<()> {
-        register_skill_tool(registry, self.skills.as_ref())
+        register_skill_tool(registry, self.skills.as_ref()).map(|_| ())
     }
 
     /// Build a model client for the given role from persisted settings + the
@@ -1371,7 +1444,7 @@ impl ChatService {
     /// Construct a [`RunAssembler`] borrowing every field the run pipeline
     /// needs. The assembler's [`RunAssembler::run`] method contains the full
     /// assembly logic; this service entry-point is a thin wrapper.
-    fn run_assembler(&self) -> RunAssembler<'_> {
+    pub(crate) fn run_assembler(&self) -> RunAssembler<'_> {
         RunAssembler {
             service: self,
             db: &self.db,
@@ -1396,7 +1469,6 @@ impl ChatService {
             office: &self.office,
             project_map: &self.project_map,
             skill_catalog_state: &self.skill_catalog_state,
-            discovered_tools: &self.discovered_tools,
             invoked_skills: &self.invoked_skills,
             session_memory_passes: &self.session_memory_passes,
             sandboxie_executor: &self.sandboxie_executor,
@@ -1407,6 +1479,7 @@ impl ChatService {
             remote_context_factory: &self.remote_context_factory,
             remote_ops_factory: &self.remote_ops_factory,
             attachments: Vec::new(),
+            prepared_run: None,
         }
     }
 }
@@ -4836,33 +4909,55 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn discovered_tools_for_session_persists_across_reads() {
-        // The per-session set is keyed by id and shared via Arc; the same id
-        // returns the same Arc instance.
+    async fn discovered_tools_are_run_local_and_restore_only_from_prior_events() {
         let (db, settings, dir) = seeded().await;
         let chat = ChatService::new(db, settings, chat_transport(), dir.path());
-        let s1 = chat.discovered_tools_for_session("ses_x");
-        let s2 = chat.discovered_tools_for_session("ses_x");
-        s1.lock().unwrap().insert("mcp__svc__op".to_string());
-        // Same id → writes through one handle visible via the other.
-        assert!(s2.lock().unwrap().contains("mcp__svc__op"));
-        // Different id → separate set.
-        let s3 = chat.discovered_tools_for_session("ses_y");
-        assert!(!s3.lock().unwrap().contains("mcp__svc__op"));
+        let events = vec![deepagent_core::event::Event {
+            id: deepagent_core::id::EventId::new(),
+            session_id: deepagent_core::id::SessionId::nil(),
+            sequence: 0,
+            timestamp: deepagent_core::clock::Timestamp::from_millis(1),
+            payload: EventPayload::ToolsDiscovered {
+                names: vec!["restored_tool".into()],
+            },
+        }];
+
+        let (first_baseline, first) = chat.discovered_tools_for_run(&events);
+        assert_eq!(
+            first_baseline,
+            std::collections::HashSet::from(["restored_tool".into()])
+        );
+        first.lock().unwrap().insert("first_run_only".into());
+
+        let (second_baseline, second) = chat.discovered_tools_for_run(&events);
+        assert_eq!(second_baseline, first_baseline);
+        assert_eq!(*second.lock().unwrap(), first_baseline);
+        assert!(!Arc::ptr_eq(&first, &second));
+
+        let (fresh_baseline, fresh) = chat.discovered_tools_for_run(&[]);
+        assert!(fresh_baseline.is_empty());
+        assert!(fresh.lock().unwrap().is_empty());
+        assert!(!Arc::ptr_eq(&first, &fresh));
     }
 
     #[tokio::test]
     async fn discovered_tool_names_returns_sorted_snapshot() {
         let (db, settings, dir) = seeded().await;
         let chat = ChatService::new(db, settings, chat_transport(), dir.path());
-        let set = chat.discovered_tools_for_session("ses_x");
-        {
-            let mut g = set.lock().unwrap();
-            g.insert("zeta".into());
-            g.insert("alpha".into());
-            g.insert("beta".into());
-        }
-        let names = chat.discovered_tool_names("ses_x");
+        let mut session =
+            deepagent_session::Session::create(&chat.db, &deepagent_core::clock::SystemClock, None)
+                .unwrap();
+        session
+            .append(EventPayload::ToolsDiscovered {
+                names: vec!["zeta".into(), "alpha".into()],
+            })
+            .unwrap();
+        session
+            .append(EventPayload::ToolsDiscovered {
+                names: vec!["beta".into()],
+            })
+            .unwrap();
+        let names = chat.discovered_tool_names(&session.id().to_string());
         assert_eq!(names, vec!["alpha", "beta", "zeta"]);
     }
 

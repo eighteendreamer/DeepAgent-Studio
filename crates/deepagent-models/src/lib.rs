@@ -46,7 +46,8 @@ pub use chat::{
 };
 pub use chat_completions::{ChatCompletionAccumulator, ChatCompletionRequest};
 pub use client::{
-    ModelClient, ModelConfig, ResponseDefaults, WireMode, DEEPSEEK_OFFICIAL_PROVIDER,
+    ModelClient, ModelConfig, ProviderToolSchemas, ResponseDefaults, WireMode,
+    DEEPSEEK_OFFICIAL_PROVIDER,
 };
 pub use discovery::{ModelCatalog, ModelDiscovery, ModelInfo, ModelRole, DEEPSEEK_BASE_URL};
 pub use failure::{classify_model_error, ModelFailureKind};

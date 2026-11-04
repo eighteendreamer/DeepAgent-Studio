@@ -65,21 +65,7 @@ impl Serialize for ChatCompletionRequest {
             }
         }
         if !self.tools.is_empty() {
-            let tools = self
-                .tools
-                .iter()
-                .map(|tool| {
-                    serde_json::json!({
-                        "type": "function",
-                        "function": {
-                            "name": tool.function.name,
-                            "description": tool.function.description,
-                            "parameters": tool.function.parameters,
-                        }
-                    })
-                })
-                .collect::<Vec<_>>();
-            map.serialize_entry("tools", &tools)?;
+            map.serialize_entry("tools", &chat_tools_to_wire(&self.tools))?;
         }
         if let Some(value) = self.temperature {
             map.serialize_entry("temperature", &value)?;
@@ -98,6 +84,24 @@ impl Serialize for ChatCompletionRequest {
         }
         map.end()
     }
+}
+
+/// The one Chat Completions tool serializer; kinds are normalized here, not
+/// reinterpreted by a host capability catalog.
+pub(crate) fn chat_tools_to_wire(tools: &[ToolSchema]) -> Vec<serde_json::Value> {
+    tools
+        .iter()
+        .map(|tool| {
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": tool.function.name,
+                    "description": tool.function.description,
+                    "parameters": tool.function.parameters,
+                }
+            })
+        })
+        .collect()
 }
 
 impl ChatCompletionRequest {

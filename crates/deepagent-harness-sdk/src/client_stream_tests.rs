@@ -51,7 +51,7 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
     $approvals++
     Batch @($reply,(Notify @{type='turn.completed';threadId='A';turnId='turn-A';message='approved fixture terminal'}))
   } elseif ($request.method -eq 'tool/list') {
-    $reply.result = @{starts=$starts;approvals=$approvals}
+    $reply.result = @{starts=$starts;approvals=$approvals;threadId=$request.params.threadId;runId=$request.params.runId;expectedSnapshotId=$request.params.expectedSnapshotId}
     Send $reply
   } elseif ($request.method -eq 'config/read') {
     exit 7
@@ -214,6 +214,23 @@ async fn h214_real_pipe_rpc_failure_and_overflow_release_without_redispatch() {
         assert_eq!(client.tool_list().await.unwrap().result()["starts"], 1);
         finish(child, &client).await;
     }
+}
+
+#[tokio::test]
+async fn h219_real_pipe_scoped_tool_list_preserves_requested_run_identity() {
+    let (child, client) = fixture("after", 16).await;
+    let response = client
+        .tool_list_scoped(ToolListRequest {
+            thread_id: Some("thread-A".into()),
+            run_id: Some("run-A".into()),
+            expected_snapshot_id: Some("snapshot-A".into()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(response.result()["threadId"], "thread-A");
+    assert_eq!(response.result()["runId"], "run-A");
+    assert_eq!(response.result()["expectedSnapshotId"], "snapshot-A");
+    finish(child, &client).await;
 }
 
 #[tokio::test]

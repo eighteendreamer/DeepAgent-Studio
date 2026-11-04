@@ -11,7 +11,7 @@ use deepagent_core::error::{CoreError, Result};
 use deepagent_core::id::SessionId;
 use deepagent_persistence::event_store::{EventStore, SessionActivityGuard, SessionDispatchGuard};
 use deepagent_persistence::run_control::RunControlStore;
-use deepagent_persistence::run_store::RunStore;
+use deepagent_persistence::run_store::{RunAdmission, RunStore};
 use deepagent_persistence::Database;
 use serde::Serialize;
 
@@ -21,6 +21,10 @@ use crate::question_bridge::PendingQuestions;
 
 pub(crate) type CancellationMap =
     Arc<Mutex<HashMap<String, Arc<deepagent_runtime::CancellationTree>>>>;
+
+#[cfg(test)]
+#[path = "run_coordinator/capability_tests.rs"]
+mod capability_tests;
 
 #[derive(Clone)]
 pub struct RunCoordinator {
@@ -164,7 +168,20 @@ impl RunCoordinator {
     /// Reserve both durable identity and cancellation before transport ACK.
     /// Session aliases are attached only after the input lease is acquired.
     pub fn admit(&self, run_id: &str, session_id: &str) -> Result<()> {
-        self.admit_with_continuation(run_id, session_id, None)
+        self.admit_with_continuation(run_id, session_id, None, None)
+            .map(|_| ())
+    }
+
+    /// Prepared chat capabilities must commit before publishing cancellation
+    /// ownership or returning success to a transport. Legacy admissions above
+    /// remain supported for workflows and direct-kernel callers.
+    pub fn admit_with_snapshot(
+        &self,
+        run_id: &str,
+        session_id: &str,
+        snapshot: &serde_json::Value,
+    ) -> Result<()> {
+        self.admit_with_continuation(run_id, session_id, None, Some(snapshot))
             .map(|_| ())
     }
 
@@ -176,20 +193,29 @@ impl RunCoordinator {
         new_run_id: &str,
         session_id: &str,
     ) -> Result<bool> {
-        let cancellation = self
-            .cancellations
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(old_run_id)
-            .cloned();
-        let Some(cancellation) = cancellation else {
-            return Ok(false);
-        };
-        let admitted = self.admit_with_continuation(new_run_id, session_id, Some(old_run_id))?;
-        if admitted {
-            cancellation.request_cancel(old_run_id);
-        }
-        Ok(admitted)
+        self.admit_replacement(old_run_id, new_run_id, session_id, None)
+    }
+
+    /// The snapshot, replacement claim and new run are one storage decision.
+    /// In particular a failed snapshot must not cancel the predecessor.
+    pub fn admit_continuation_with_snapshot(
+        &self,
+        old_run_id: &str,
+        new_run_id: &str,
+        session_id: &str,
+        snapshot: &serde_json::Value,
+    ) -> Result<bool> {
+        self.admit_replacement(old_run_id, new_run_id, session_id, Some(snapshot))
+    }
+
+    fn admit_replacement(
+        &self,
+        old_run_id: &str,
+        new_run_id: &str,
+        session_id: &str,
+        snapshot: Option<&serde_json::Value>,
+    ) -> Result<bool> {
+        self.admit_with_continuation(new_run_id, session_id, Some(old_run_id), snapshot)
     }
 
     fn admit_with_continuation(
@@ -197,7 +223,37 @@ impl RunCoordinator {
         run_id: &str,
         session_id: &str,
         replaces: Option<&str>,
+        snapshot: Option<&serde_json::Value>,
     ) -> Result<bool> {
+        self.admit_prepared(run_id, session_id, replaces, || Ok(((), snapshot.cloned())))
+            .map(|prepared| prepared.is_some())
+    }
+
+    /// Run the single preparation callback while holding the original session
+    /// activity/dispatch owner. A failed prepare or transaction releases those
+    /// reservations without publishing a run or signalling its predecessor.
+    pub(crate) fn admit_prepared<T>(
+        &self,
+        run_id: &str,
+        session_id: &str,
+        replaces: Option<&str>,
+        prepare: impl FnOnce() -> Result<(T, Option<serde_json::Value>)>,
+    ) -> Result<Option<T>> {
+        let predecessor = match replaces {
+            Some(old) => {
+                let cancellation = self
+                    .cancellations
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .get(old)
+                    .cloned();
+                let Some(cancellation) = cancellation else {
+                    return Ok(None);
+                };
+                Some((old, cancellation))
+            }
+            None => None,
+        };
         let id = session_id
             .parse()
             .map_err(|error| CoreError::invalid(format!("bad session id: {error}")))?;
@@ -222,14 +278,19 @@ impl RunCoordinator {
                 }
             }
         };
+        let (prepared, snapshot) = prepare()?;
         let mut admissions = self.admissions.lock().unwrap_or_else(|p| p.into_inner());
-        let store = RunStore::new(&self.db);
-        match replaces {
-            Some(old) if !store.create_continuation(old, run_id, session_id, now_millis())? => {
-                return Ok(false);
-            }
-            Some(_) => {}
-            None => store.create(run_id, session_id, None, now_millis())?,
+        if !RunStore::new(&self.db).admit(
+            RunAdmission {
+                run_id,
+                session_id,
+                task_id: None,
+                replaces_run_id: replaces,
+                capability_snapshot: snapshot.as_ref(),
+            },
+            now_millis(),
+        )? {
+            return Ok(None);
         }
         let mut registration = ActiveRunRegistration::new(
             self.cancellations.clone(),
@@ -240,7 +301,10 @@ impl RunCoordinator {
         registration._session_activity = Some(activity);
         registration._session_dispatch = Some(owner);
         admissions.insert(run_id.to_owned(), registration);
-        Ok(true)
+        if let Some((old, cancellation)) = predecessor {
+            cancellation.request_cancel(old);
+        }
+        Ok(Some(prepared))
     }
 
     /// Publish cancellation without waiting for storage. The run lifecycle

@@ -258,6 +258,14 @@ impl HarnessClient {
             .await
     }
 
+    /// List the capability snapshot for one run, or the latest run of a thread.
+    pub async fn tool_list_scoped(
+        &self,
+        request: ToolListRequest,
+    ) -> Result<RpcResponse, SdkError> {
+        self.call(HarnessRequest::ToolList(request)).await
+    }
+
     /// Read effective configuration.
     pub async fn config_read(&self) -> Result<RpcResponse, SdkError> {
         self.call(HarnessRequest::ConfigRead(ConfigReadRequest::default()))

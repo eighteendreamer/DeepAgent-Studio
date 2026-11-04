@@ -10,6 +10,14 @@ use crate::{map_sqlite, Database};
 #[path = "run_store/continuation_tests.rs"]
 mod continuation_tests;
 
+#[cfg(test)]
+#[path = "run_store/capability_tests.rs"]
+mod capability_tests;
+
+#[cfg(test)]
+#[path = "run_store/admission_tests.rs"]
+mod admission_tests;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunRecord {
     pub id: String,
@@ -21,6 +29,16 @@ pub struct RunRecord {
     pub created_at: i64,
     pub updated_at: i64,
     pub finished_at: Option<i64>,
+}
+
+/// The stable registry evidence carried by both legacy and richer run-owned
+/// `capability.snapshot` events. Runtime computes it; storage compares it in
+/// the same transaction that checks ownership and writes the first snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistryCapabilityFingerprint {
+    pub tool_count: usize,
+    pub tool_schema_hash: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -49,6 +67,24 @@ pub struct RunTerminalUpdate<'a> {
     pub kind: &'a str,
     pub reason: Option<&'a str>,
     pub data: &'a serde_json::Value,
+}
+
+/// One admission into the existing ledger. An optional replacement claim and
+/// initial capability snapshot commit with the run, never after its ACK.
+/// This is storage input, not a protocol DTO or execution authorization.
+pub struct RunAdmission<'a> {
+    pub run_id: &'a str,
+    pub session_id: &'a str,
+    pub task_id: Option<&'a str>,
+    pub replaces_run_id: Option<&'a str>,
+    pub capability_snapshot: Option<&'a serde_json::Value>,
+}
+
+/// Storage input for the two run-owned schema domains, not a wire DTO or
+/// authorization grant. Each domain advances independently in the same ledger.
+pub enum CapabilitySchema<'a> {
+    Model(&'a serde_json::Value),
+    Wire(&'a serde_json::Value),
 }
 
 // The canonical terminal doubles as a durable projection intent. Confirmation
@@ -95,6 +131,117 @@ pub(crate) fn insert_run_event(
     Ok(())
 }
 
+fn capability_state(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+) -> Result<(String, Option<serde_json::Value>)> {
+    let owner: Option<(String, Option<i64>)> = conn
+        .query_row(
+            "SELECT session_id, finished_at FROM runs WHERE id=?1",
+            [run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(map_sqlite)?;
+    let Some((session_id, None)) = owner else {
+        return Err(CoreError::invalid(
+            "capability snapshot requires an admitted nonterminal run",
+        ));
+    };
+    let mut query = conn.prepare(
+        "SELECT data FROM run_events WHERE run_id=?1 AND event_type='capability.snapshot' ORDER BY sequence LIMIT 2",
+    ).map_err(map_sqlite)?;
+    let data = query
+        .query_map([run_id], |row| row.get::<_, String>(0))
+        .map_err(map_sqlite)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(map_sqlite)?;
+    if data.len() > 1 {
+        return Err(CoreError::invalid("run has duplicate capability snapshots"));
+    }
+    let snapshot = data
+        .into_iter()
+        .next()
+        .map(|data| serde_json::from_str(&data))
+        .transpose()?;
+    Ok((session_id, snapshot))
+}
+
+fn validate_capability_identity(
+    snapshot: &serde_json::Value,
+    run_id: &str,
+    session_id: &str,
+) -> Result<()> {
+    if snapshot.get("version").and_then(serde_json::Value::as_u64) != Some(1) {
+        return Err(CoreError::invalid(
+            "unsupported run capability snapshot version",
+        ));
+    }
+    if snapshot.get("runId").and_then(serde_json::Value::as_str) != Some(run_id)
+        || snapshot.get("threadId").and_then(serde_json::Value::as_str) != Some(session_id)
+    {
+        return Err(CoreError::invalid(
+            "capability snapshot does not match the admitted owner",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_capability_generation(
+    data: &serde_json::Value,
+    snapshot_id: &str,
+    projection: &str,
+) -> Result<()> {
+    if data.get("version").and_then(serde_json::Value::as_u64) != Some(1)
+        || data.get("snapshotId").and_then(serde_json::Value::as_str) != Some(snapshot_id)
+        || !data
+            .get(projection)
+            .is_some_and(serde_json::Value::is_object)
+    {
+        return Err(CoreError::invalid(
+            "capability generation does not match its snapshot",
+        ));
+    }
+    Ok(())
+}
+
+fn schema_generation_number(projection: &serde_json::Value) -> Result<u64> {
+    if !projection
+        .get("schemaHash")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|hash| !hash.is_empty())
+    {
+        return Err(CoreError::invalid("capability schema has no hash"));
+    }
+    projection
+        .get("generation")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| CoreError::invalid("capability schema has no generation"))
+}
+
+fn bind_capability_snapshot(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+    snapshot: &serde_json::Value,
+    now: i64,
+) -> Result<()> {
+    let (session_id, bound) = capability_state(conn, run_id)?;
+    validate_capability_identity(snapshot, run_id, &session_id)?;
+    if bound.is_some() {
+        return Err(CoreError::invalid(
+            "run capability snapshot is already bound",
+        ));
+    }
+    insert_run_event(
+        conn,
+        run_id,
+        now,
+        "preparing",
+        "capability.snapshot",
+        snapshot,
+    )
+}
+
 impl<'db> RunStore<'db> {
     pub const fn new(db: &'db Database) -> Self {
         Self { db }
@@ -107,11 +254,176 @@ impl<'db> RunStore<'db> {
         task_id: Option<&str>,
         now: i64,
     ) -> Result<()> {
+        self.admit(
+            RunAdmission {
+                run_id,
+                session_id,
+                task_id,
+                replaces_run_id: None,
+                capability_snapshot: None,
+            },
+            now,
+        )
+        .map(|_| ())
+    }
+
+    /// False means the expected predecessor is missing, terminal, foreign or
+    /// already replaced. All writes (including its claim) roll back on error.
+    /// Existing create/continuation callers use this same transaction without
+    /// a snapshot; prepared chat admissions supply the immutable initial one.
+    pub fn admit(&self, admission: RunAdmission<'_>, now: i64) -> Result<bool> {
         self.db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction().map_err(map_sqlite)?;
-            insert_run(&tx, run_id, session_id, task_id, now)?;
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(map_sqlite)?;
+            if let Some(old) = admission.replaces_run_id {
+                let eligible: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM runs r WHERE r.id=?1 AND r.session_id=?2 AND r.finished_at IS NULL
+                     AND NOT EXISTS(SELECT 1 FROM run_events e WHERE e.run_id=r.id AND e.event_type='continuation.created'))",
+                    params![old, admission.session_id], |row| row.get(0),
+                ).map_err(map_sqlite)?;
+                if !eligible {
+                    return Ok(false);
+                }
+            }
+            insert_run(&tx, admission.run_id, admission.session_id, admission.task_id, now)?;
+            if let Some(snapshot) = admission.capability_snapshot {
+                bind_capability_snapshot(&tx, admission.run_id, snapshot, now)?;
+            }
+            if let Some(old) = admission.replaces_run_id {
+                crate::run_control::append_control_event(
+                    &tx, old, now, "continuation.created",
+                    &serde_json::json!({"replacesTurnId":old,"newTurnId":admission.run_id,"disposition":"new_turn"}),
+                )?;
+            }
+            tx.commit().map_err(map_sqlite)?;
+            Ok(true)
+        })
+    }
+
+    /// Bind the one immutable capability snapshot to an admitted, nonterminal
+    /// owner. The eligibility check and append share the ledger transaction,
+    /// including across independently opened database handles. The caller owns
+    /// the capability semantics; storage only enforces identity and lifecycle.
+    pub fn bind_capability_snapshot(
+        &self,
+        run_id: &str,
+        snapshot: &serde_json::Value,
+        now: i64,
+    ) -> Result<()> {
+        self.db.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(map_sqlite)?;
+            bind_capability_snapshot(&tx, run_id, snapshot, now)?;
             tx.commit().map_err(map_sqlite)?;
             Ok(())
+        })
+    }
+
+    /// Verify a richer admitted snapshot, or atomically write the legacy
+    /// registry-only shape. No read/append window remains for direct kernels;
+    /// concurrent identical callers reuse one event, conflicting callers fail.
+    pub fn ensure_registry_capabilities(
+        &self,
+        run_id: &str,
+        fingerprint: &RegistryCapabilityFingerprint,
+        now: i64,
+    ) -> Result<()> {
+        self.db.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(map_sqlite)?;
+            let (session_id, bound) = capability_state(&tx, run_id)?;
+            if let Some(snapshot) = bound {
+                // The only legacy contract is the original two-field shape.
+                // A damaged rich snapshot must not silently lose its owner or
+                // future version by being reinterpreted as legacy evidence.
+                let legacy = snapshot.as_object().is_some_and(|fields| {
+                    fields.len() == 2
+                        && fields.contains_key("toolCount")
+                        && fields.contains_key("toolSchemaHash")
+                });
+                if !legacy {
+                    validate_capability_identity(&snapshot, run_id, &session_id)?;
+                }
+                let bound: RegistryCapabilityFingerprint = serde_json::from_value(snapshot)?;
+                if &bound != fingerprint {
+                    return Err(CoreError::invalid(
+                        "admitted capability snapshot does not match execution registry",
+                    ));
+                }
+            } else {
+                insert_run_event(
+                    &tx,
+                    run_id,
+                    now,
+                    "preparing",
+                    "capability.snapshot",
+                    &serde_json::to_value(fingerprint)?,
+                )?;
+            }
+            tx.commit().map_err(map_sqlite)?;
+            Ok(())
+        })
+    }
+
+    /// Publish or verify one capability generation under the admitted owner.
+    /// Even an unchanged projection checks lifecycle inside this transaction;
+    /// terminal commits and independent writers cannot race a stale success.
+    /// Generic post-terminal receipts remain supported by append_event.
+    pub fn record_capability_schema(
+        &self,
+        run_id: &str,
+        snapshot_id: &str,
+        schema: CapabilitySchema<'_>,
+        now: i64,
+    ) -> Result<()> {
+        let (event_type, key, projection) = match schema {
+            CapabilitySchema::Model(value) => ("capability_schema_snapshot", "modelSchema", value),
+            CapabilitySchema::Wire(value) => ("capability_wire_snapshot", "wireSchema", value),
+        };
+        self.db.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(map_sqlite)?;
+            let (session_id, bound) = capability_state(&tx, run_id)?;
+            let snapshot = bound.ok_or_else(|| CoreError::invalid("run has no capability snapshot"))?;
+            validate_capability_identity(&snapshot, run_id, &session_id)?;
+            if snapshot_id.is_empty() || snapshot["snapshotId"].as_str() != Some(snapshot_id) {
+                return Err(CoreError::invalid("capability schema does not match its admitted snapshot"));
+            }
+            let latest: Option<String> = tx.query_row(
+                "SELECT data FROM run_events WHERE run_id=?1 AND event_type=?2 ORDER BY sequence DESC LIMIT 1",
+                params![run_id, event_type], |row| row.get(0),
+            ).optional().map_err(map_sqlite)?;
+            let current = match latest {
+                Some(data) => {
+                    let data: serde_json::Value = serde_json::from_str(&data)?;
+                    validate_capability_generation(&data, snapshot_id, key)?;
+                    Some(data[key].clone())
+                }
+                None => snapshot.get(key).cloned(),
+            };
+            let number = schema_generation_number(projection)?;
+            if let Some(current) = &current {
+                schema_generation_number(current)?;
+            }
+            if current.as_ref() != Some(projection) {
+                let expected = match current {
+                    Some(current) => schema_generation_number(&current)?.checked_add(1)
+                        .ok_or_else(|| CoreError::invalid("capability schema generation exhausted"))?,
+                    None => 0,
+                };
+                if number != expected {
+                    return Err(CoreError::invalid("stale or nonconsecutive capability schema generation"));
+                }
+                let mut data = serde_json::json!({"version":1, "snapshotId":snapshot_id});
+                data[key] = projection.clone();
+                tx.execute(
+                    "INSERT INTO run_events (run_id, sequence, timestamp, phase, status, event_type, data)
+                     SELECT ?1, COALESCE(MAX(sequence), -1) + 1, ?2, 'running_turn', 'ready', ?3, ?4
+                     FROM run_events WHERE run_id=?1",
+                    params![run_id, now, event_type, data.to_string()],
+                ).map_err(map_sqlite)?;
+            }
+            tx.commit().map_err(map_sqlite)
         })
     }
 
@@ -125,25 +437,16 @@ impl<'db> RunStore<'db> {
         session_id: &str,
         now: i64,
     ) -> Result<bool> {
-        self.db.with_conn(|conn| {
-            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
-                .map_err(map_sqlite)?;
-            let eligible: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM runs r WHERE r.id=?1 AND r.session_id=?2 AND r.finished_at IS NULL
-                 AND NOT EXISTS(SELECT 1 FROM run_events e WHERE e.run_id=r.id AND e.event_type='continuation.created'))",
-                params![replaces_run_id, session_id], |row| row.get(0),
-            ).map_err(map_sqlite)?;
-            if !eligible {
-                return Ok(false);
-            }
-            insert_run(&tx, new_run_id, session_id, None, now)?;
-            crate::run_control::append_control_event(
-                &tx, replaces_run_id, now, "continuation.created",
-                &serde_json::json!({"replacesTurnId":replaces_run_id,"newTurnId":new_run_id,"disposition":"new_turn"}),
-            )?;
-            tx.commit().map_err(map_sqlite)?;
-            Ok(true)
-        })
+        self.admit(
+            RunAdmission {
+                run_id: new_run_id,
+                session_id,
+                task_id: None,
+                replaces_run_id: Some(replaces_run_id),
+                capability_snapshot: None,
+            },
+            now,
+        )
     }
 
     pub fn transition(&self, run_id: &str, state: &str, now: i64) -> Result<()> {
@@ -447,6 +750,81 @@ impl<'db> RunStore<'db> {
             )
             .optional()
             .map_err(map_sqlite)
+        })
+    }
+
+    /// Read the run-owned capability projection and latest model/wire schema
+    /// generations without reconstructing them from the current host.
+    pub fn capability_snapshot(&self, run_id: &str) -> Result<Option<serde_json::Value>> {
+        self.db.with_conn(|conn| {
+            let session_id: Option<String> = conn
+                .query_row("SELECT session_id FROM runs WHERE id=?1", [run_id], |row| {
+                    row.get(0)
+                })
+                .optional()
+                .map_err(map_sqlite)?;
+            let Some(session_id) = session_id else {
+                return Ok(None);
+            };
+            let mut statement = conn
+                .prepare(
+                    "SELECT event_type, data FROM run_events
+                     WHERE run_id=?1 AND event_type IN
+                       ('capability.snapshot','capability_schema_snapshot','capability_wire_snapshot')
+                     ORDER BY sequence",
+                )
+                .map_err(map_sqlite)?;
+            let rows = statement
+                .query_map([run_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(map_sqlite)?;
+            let events = rows
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(map_sqlite)?;
+            let mut snapshot = None;
+            let mut schema_generation = None;
+            let mut wire_generation = None;
+            for (event_type, data) in events {
+                let data: serde_json::Value = serde_json::from_str(&data)?;
+                match event_type.as_str() {
+                    "capability.snapshot" => {
+                        if snapshot.replace(data).is_some() {
+                            return Err(CoreError::invalid(
+                                "run has duplicate capability snapshots",
+                            ));
+                        }
+                    }
+                    "capability_schema_snapshot" => schema_generation = Some(data),
+                    "capability_wire_snapshot" => wire_generation = Some(data),
+                    _ => unreachable!("query only selects capability event types"),
+                }
+            }
+            let Some(mut snapshot) = snapshot else {
+                return Ok(None);
+            };
+            let legacy = snapshot.as_object().is_some_and(|fields| {
+                fields.len() == 2
+                    && fields.contains_key("toolCount")
+                    && fields.contains_key("toolSchemaHash")
+            });
+            if !legacy {
+                validate_capability_identity(&snapshot, run_id, &session_id)?;
+                let snapshot_id = snapshot
+                    .get("snapshotId")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .ok_or_else(|| CoreError::invalid("capability snapshot has no identity"))?;
+                if let Some(data) = schema_generation {
+                    validate_capability_generation(&data, &snapshot_id, "modelSchema")?;
+                    snapshot["modelSchema"] = data["modelSchema"].clone();
+                }
+                if let Some(data) = wire_generation {
+                    validate_capability_generation(&data, &snapshot_id, "wireSchema")?;
+                    snapshot["wireSchema"] = data["wireSchema"].clone();
+                }
+            }
+            Ok(Some(snapshot))
         })
     }
 

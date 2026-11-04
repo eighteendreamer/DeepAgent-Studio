@@ -252,6 +252,295 @@ fn register_fixture(mcp: &McpService, script: &Path, report_path: &Path) {
 }
 
 #[tokio::test]
+async fn h219_prepared_mcp_config_generation_is_frozen_and_disabled_servers_leave_next_run() {
+    check_prepared_mcp_config_generation(false).await;
+}
+
+#[tokio::test]
+async fn h219_mcp_environment_change_has_an_opaque_generation_without_logging_values() {
+    check_prepared_mcp_config_generation(true).await;
+}
+
+async fn check_prepared_mcp_config_generation(environment_only: bool) {
+    let root = tempfile::tempdir().unwrap();
+    let first_root = root.path().join("first");
+    let second_root = root.path().join("second");
+    std::fs::create_dir_all(&first_root).unwrap();
+    std::fs::create_dir_all(&second_root).unwrap();
+    let (first_script, first_report) = fixture(&first_root);
+    let (second_script, second_report) = fixture(&second_root);
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let settings = settings(&db, &Arc::new(MemorySecretStore::new()));
+    settings
+        .initialize("offline-h219-placeholder")
+        .await
+        .unwrap();
+    settings
+        .set_active_permission_preset(PermissionPreset::FullAccess)
+        .unwrap();
+    settings
+        .set_tool_search_mode(ToolSearchMode::Disabled)
+        .unwrap();
+    let mcp = Arc::new(McpService::new(db.clone()));
+    register_fixture(&mcp, &first_script, &first_report);
+    prepare(&mcp).await;
+    let old_registry = mcp.ready_registry();
+    let model = Arc::new(DiscoveryModel {
+        steps: vec![
+            DiscoveryStep::Inspect("h219-mcp-old"),
+            DiscoveryStep::Finish,
+            DiscoveryStep::Inspect("h219-mcp-new"),
+            DiscoveryStep::Finish,
+        ],
+        requests: Mutex::new(Vec::new()),
+    });
+    let chat =
+        ChatService::new(db.clone(), settings, model.clone(), root.path()).with_mcp(mcp.clone());
+    let session = chat.create_session(None).unwrap();
+    let overrides = || deepagent_app_core::HarnessRunOverrides {
+        sandbox_backend: Some("direct".into()),
+        ..Default::default()
+    };
+    let first = chat
+        .admit_prepared_run("h219-mcp-first", &session, overrides())
+        .unwrap();
+    let first_snapshot = first.capability_snapshot().clone();
+    // Identical tools, a different real stdio process/configuration. The
+    // prepared run must still call its original client, not the new service.
+    register_fixture(
+        &mcp,
+        if environment_only {
+            &first_script
+        } else {
+            &second_script
+        },
+        &second_report,
+    );
+    prepare(&mcp).await;
+    let second_registry = mcp.ready_registry();
+    chat.run_prepared(first, "Inspect the synthetic value.", |_| {}, |_| {})
+        .await
+        .unwrap();
+    let second = chat
+        .admit_prepared_run("h219-mcp-second", &session, overrides())
+        .unwrap();
+    let second_snapshot = second.capability_snapshot().clone();
+    chat.run_prepared(second, "Inspect the synthetic value again.", |_| {}, |_| {})
+        .await
+        .unwrap();
+    mcp.set_enabled("discovery_audit", false).unwrap();
+    mcp.start_preparation();
+    let disabled = chat
+        .admit_prepared_run("h219-mcp-disabled", &session, overrides())
+        .unwrap();
+    let disabled_snapshot = disabled.capability_snapshot().clone();
+    chat.request_cancel("h219-mcp-disabled").unwrap();
+    chat.run_prepared(disabled, "No dispatch after cancellation.", |_| {}, |_| {})
+        .await
+        .unwrap();
+    mcp.upsert(
+        serde_json::from_value::<McpServerDto>(serde_json::json!({
+            "name":"discovery_audit", "transport":"stdio", "enabled":true,
+            "command":"h219-synthetic-missing-executable", "args":[]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    mcp.start_preparation();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if mcp
+                .connection_status()
+                .await
+                .unwrap()
+                .iter()
+                .any(|entry| entry.name == "discovery_audit" && entry.status == "failed")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the synthetic missing executable must publish a failed startup");
+    let failed = chat
+        .admit_prepared_run("h219-mcp-failed", &session, overrides())
+        .unwrap();
+    let failed_snapshot = failed.capability_snapshot().clone();
+    chat.request_cancel("h219-mcp-failed").unwrap();
+    chat.run_prepared(
+        failed,
+        "No model or tools after cancellation.",
+        |_| {},
+        |_| {},
+    )
+    .await
+    .unwrap();
+    old_registry.close_all().await.unwrap();
+    second_registry.close_all().await.unwrap();
+    mcp.ready_registry().close_all().await.unwrap();
+    assert_eq!(report(&first_report)["calls"].as_array().unwrap().len(), 1);
+    assert_eq!(report(&second_report)["calls"].as_array().unwrap().len(), 1);
+    assert_eq!(model.requests.lock().unwrap().len(), 4);
+    assert_eq!(
+        failed_snapshot["context"]["mcpSchemas"],
+        serde_json::json!([])
+    );
+    assert!(!failed_snapshot["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tool| tool["name"] == INSPECT));
+    assert!(!failed_snapshot
+        .to_string()
+        .contains("h219-synthetic-missing-executable"));
+    assert_eq!(
+        first_snapshot["toolSchemaHash"],
+        second_snapshot["toolSchemaHash"]
+    );
+    let schemas = |snapshot: &serde_json::Value| snapshot["context"]["mcpSchemas"][0].clone();
+    assert!(
+        schemas(&first_snapshot)["configHash"].is_string(),
+        "host MCP metadata must identify the actual admitted configuration"
+    );
+    if environment_only {
+        assert_eq!(
+            schemas(&first_snapshot)["configHash"],
+            schemas(&second_snapshot)["configHash"],
+            "configHash deliberately excludes environment/header values"
+        );
+    } else {
+        assert_ne!(
+            schemas(&first_snapshot)["configHash"],
+            schemas(&second_snapshot)["configHash"]
+        );
+    }
+    assert_ne!(
+        first_snapshot["context"]["mcpGeneration"], second_snapshot["context"]["mcpGeneration"],
+        "every replacement of callable clients must have an opaque, non-secret identity"
+    );
+    assert!(!first_snapshot
+        .to_string()
+        .contains(first_report.to_str().unwrap()));
+    assert_ne!(
+        first_snapshot["capabilityHash"],
+        second_snapshot["capabilityHash"]
+    );
+    assert_eq!(
+        disabled_snapshot["context"]["mcpSchemas"],
+        serde_json::json!([])
+    );
+    assert!(!disabled_snapshot["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tool| tool["name"] == INSPECT));
+    assert_ne!(
+        disabled_snapshot["capabilityHash"],
+        second_snapshot["capabilityHash"]
+    );
+    assert_eq!(
+        chat.run_events("h219-mcp-first", None)
+            .unwrap()
+            .iter()
+            .find(|event| event.event_type == "capability.snapshot")
+            .unwrap()
+            .data,
+        first_snapshot
+    );
+}
+
+fn assert_capability_generations(chat: &ChatService, run: &str, requests: &[serde_json::Value]) {
+    use sha2::{Digest, Sha256};
+    let events = chat.run_events(run, None).unwrap();
+    let initial = events
+        .iter()
+        .find(|e| e.event_type == "capability.snapshot")
+        .unwrap();
+    let mut schema = initial.data["modelSchema"].clone();
+    let mut changes = events
+        .iter()
+        .filter(|e| e.event_type == "capability_schema_snapshot");
+    let mut wire_changes = events
+        .iter()
+        .filter(|e| e.event_type == "capability_wire_snapshot");
+    let mut wire_schema = serde_json::Value::Null;
+    let mut next_wire_generation = 0;
+    for request in requests {
+        let saved_names = |schema: &serde_json::Value| {
+            schema["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["name"].clone())
+                .collect::<Vec<_>>()
+        };
+        let actual_hash = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&request["tools"]).unwrap())
+        );
+        if wire_schema["schemaHash"] != actual_hash || wire_schema["model"] != request["model"] {
+            let event = wire_changes
+                .next()
+                .expect("each changed adapter schema needs durable wire evidence");
+            assert_eq!(event.data["snapshotId"], initial.data["snapshotId"]);
+            wire_schema = event.data["wireSchema"].clone();
+            assert_eq!(wire_schema["generation"], next_wire_generation);
+            assert_eq!(wire_schema["wireMode"], "responses");
+            next_wire_generation += 1;
+        }
+        // Native provider tools need not carry a name. Correlate by the
+        // adapter's preserved order, then verify each actual wire hash.
+        let names = saved_names(&wire_schema);
+        if saved_names(&schema) != names {
+            let change = changes
+                .next()
+                .expect("a new model-visible tool set needs durable evidence");
+            assert_eq!(change.data["snapshotId"], initial.data["snapshotId"]);
+            assert_eq!(
+                change.data["modelSchema"]["generation"].as_u64(),
+                Some(schema["generation"].as_u64().unwrap() + 1)
+            );
+            schema = change.data["modelSchema"].clone();
+        }
+        assert_eq!(saved_names(&schema), names);
+        let actual = request["tools"].as_array().unwrap();
+        let saved = wire_schema["tools"].as_array().unwrap();
+        assert_eq!(actual.len(), saved.len());
+        for (tool, reference) in actual.iter().zip(saved) {
+            assert_eq!(tool["type"], reference["kind"]);
+            if let Some(name) = tool.get("name") {
+                assert_eq!(*name, reference["name"]);
+            }
+            assert_eq!(
+                reference["schemaHash"],
+                format!("{:x}", Sha256::digest(serde_json::to_vec(tool).unwrap()))
+            );
+        }
+        assert_eq!(wire_schema["schemaHash"], actual_hash);
+        assert_eq!(wire_schema["model"], request["model"]);
+        assert_eq!(wire_schema["sourceSchemaHash"], schema["schemaHash"]);
+        assert_eq!(saved_names(&wire_schema), names);
+    }
+    assert!(
+        changes.next().is_none(),
+        "unchanged model schemas must not create duplicate generations"
+    );
+    assert!(
+        wire_changes.next().is_none(),
+        "no duplicate wire generation"
+    );
+    let inspect = initial.data["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == INSPECT)
+        .unwrap();
+    assert_eq!(inspect["source"], "discovery_audit");
+    assert_eq!(inspect["eligibleForDeferral"], true);
+}
+
+#[tokio::test]
 async fn deferred_mcp_discovery_survives_turns_and_database_reopen_without_session_leak() {
     let root = tempfile::tempdir().unwrap();
     let (script, report_path) = fixture(root.path());
@@ -291,6 +580,8 @@ async fn deferred_mcp_discovery_survives_turns_and_database_reopen_without_sessi
         assert_terminal(&chat, "audit-discovery-next");
         let requests = model.requests.lock().unwrap();
         assert_eq!(requests.len(), 4);
+        assert_capability_generations(&chat, "audit-discovery-first", &requests[..3]);
+        assert_capability_generations(&chat, "audit-discovery-next", &requests[3..]);
         assert!(advertised(&requests[0]).is_empty());
         assert!(requests[0]["tools"]
             .as_array()
@@ -341,9 +632,10 @@ async fn deferred_mcp_discovery_survives_turns_and_database_reopen_without_sessi
     mcp.ready_registry().close_all().await.unwrap();
     restored.unwrap();
     fresh_result.unwrap();
-    assert!(
-        before_resume.is_empty(),
-        "a reconstructed service has no in-memory discoveries"
+    assert_eq!(
+        before_resume,
+        [INSPECT],
+        "discovery queries project durable history even before the first new run"
     );
     assert_eq!(restored_names, [INSPECT]);
     assert!(chat.discovered_tool_names(&fresh).is_empty());
@@ -353,6 +645,8 @@ async fn deferred_mcp_discovery_survives_turns_and_database_reopen_without_sessi
     assert_terminal(&chat, "audit-discovery-fresh");
     let requests = model.requests.lock().unwrap();
     assert_eq!(requests.len(), 2);
+    assert_capability_generations(&chat, "audit-discovery-reopened", &requests[..1]);
+    assert_capability_generations(&chat, "audit-discovery-fresh", &requests[1..]);
     assert_eq!(advertised(&requests[0]), [INSPECT]);
     assert_eq!(requests[0]["tools"], previous_tools);
     assert_replayed_call(&requests[0], "discovery-inspect");
@@ -364,6 +658,55 @@ async fn deferred_mcp_discovery_survives_turns_and_database_reopen_without_sessi
     assert_eq!(server["list"], 1);
     assert_eq!(server["calls"], serde_json::json!([]));
     eprintln!("discovery host 2: requests={}, server={}, restored={restored_names:?}, fresh=[]; tools snapshot unchanged", requests.len(), server);
+}
+
+#[tokio::test]
+async fn h219_discovery_schema_durability_failure_stops_before_next_model_and_mcp_call() {
+    let root = tempfile::tempdir().unwrap();
+    let (script, report_path) = fixture(root.path());
+    let db = Arc::new(Database::open(root.path().join("state.sqlite")).unwrap());
+    let settings = settings(&db, &Arc::new(MemorySecretStore::new()));
+    settings
+        .initialize("offline-audit-placeholder")
+        .await
+        .unwrap();
+    settings
+        .set_active_permission_preset(PermissionPreset::FullAccess)
+        .unwrap();
+    settings
+        .set_tool_search_mode(ToolSearchMode::Enabled)
+        .unwrap();
+    db.with_conn(|connection| connection.execute_batch(
+        "CREATE TRIGGER reject_schema BEFORE INSERT ON run_events WHEN NEW.event_type='capability_schema_snapshot' BEGIN SELECT RAISE(ABORT, 'synthetic schema failure'); END;"
+    ).map_err(|error| CoreError::Persistence(error.to_string()))).unwrap();
+    let mcp = Arc::new(McpService::new(db.clone()));
+    register_fixture(&mcp, &script, &report_path);
+    prepare(&mcp).await;
+    let model = Arc::new(DiscoveryModel::discovering([]));
+    let chat = ChatService::new(db, settings, model.clone(), root.path()).with_mcp(mcp.clone());
+    let session = chat.create_session(None).unwrap();
+    let result = turn(&chat, &session, "h219-schema-failure").await;
+    mcp.ready_registry().close_all().await.unwrap();
+    assert!(result.is_err());
+    assert_eq!(model.requests.lock().unwrap().len(), 1);
+    assert_eq!(report(&report_path)["calls"], serde_json::json!([]));
+    let events = chat.run_events("h219-schema-failure", None).unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.event_type == "capability.snapshot")
+            .count(),
+        1
+    );
+    assert!(!events
+        .iter()
+        .any(|e| e.event_type == "capability_schema_snapshot"));
+    let terminal: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == "run_terminal")
+        .collect();
+    assert_eq!(terminal.len(), 1);
+    assert_eq!(terminal[0].data["kind"], "failed");
 }
 
 #[derive(Clone, Copy)]

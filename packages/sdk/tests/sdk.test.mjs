@@ -51,12 +51,17 @@ test("interrupts and steers a running turn with stable request shapes", async ()
   try {
     const thread = await agent.startThread();
     const turn = await thread.run("long task");
+    assert.equal(turn.snapshotId, "snapshot-start-mock");
+    assert.equal(turn.capabilitySnapshot.runId, turn.id);
+    assert.equal(turn.capabilitySnapshot.threadId, thread.id);
 
     const interrupted = await turn.interrupt();
     assert.equal(interrupted.status, "cancelling");
 
     const steered = await turn.steer("change direction");
     assert.equal(steered.id, "turn-steered");
+    assert.equal(steered.snapshotId, "snapshot-steer-mock");
+    assert.equal(steered.capabilitySnapshot.runId, steered.id);
   } finally {
     await agent.close();
   }
@@ -84,6 +89,27 @@ test("exposes saved configuration on start/resume and distinguishes legacy metad
     const expected = { version: 1, overrides: { permission_profile: "read_only" } };
     assert.deepEqual(thread.configuration, expected);
     assert.deepEqual((await agent.resumeThread(thread.id)).configuration, expected);
+  } finally {
+    await agent.close();
+  }
+});
+
+test("lists global tools and thread-scoped run capabilities", async () => {
+  const agent = createAgent();
+  try {
+    const thread = await agent.startThread();
+    const global = await agent.listTools();
+    assert.deepEqual(global.tools, [{ name: "read_file" }]);
+    assert.equal(global.snapshotId, undefined);
+
+    const scoped = await thread.listTools("run-1");
+    assert.equal(scoped.threadId, thread.id);
+    assert.equal(scoped.runId, "run-1");
+    assert.equal(scoped.snapshotId, "snapshot-mock");
+    const checked = await agent.listTools({threadId: thread.id, runId: "run-1", expectedSnapshotId: scoped.snapshotId});
+    assert.equal(checked.snapshotId, scoped.snapshotId);
+    await assert.rejects(() => agent.listTools({threadId: thread.id, expectedSnapshotId: "stale-snapshot"}),
+      (error) => error instanceof HarnessRpcError && error.code === -32602);
   } finally {
     await agent.close();
   }

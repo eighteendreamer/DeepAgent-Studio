@@ -21,7 +21,28 @@ fn start(state: &mut ServerState, thread_id: &str, extra: Value) -> TurnLaunch {
         .extend(extra.as_object().unwrap().clone());
     let (response, launch) = state.dispatch(rpc("turn/start", params), None);
     assert!(response.is_success(), "{response:?}");
-    launch.unwrap()
+    let launch = launch.unwrap();
+    // H-219: cold resume/fork inherit configuration, never another run's
+    // capability identity. Query the real admission, not a seeded projection.
+    let snapshot = &response.result()["capabilitySnapshot"];
+    assert_eq!(snapshot["threadId"], thread_id);
+    assert_eq!(snapshot["runId"], launch.turn_id);
+    if let Some(backend) = &launch.overrides.sandbox_backend {
+        assert_eq!(snapshot["context"]["sandboxBackend"], *backend);
+    }
+    if let Some(profile) = &launch.overrides.permission_profile {
+        assert_eq!(snapshot["context"]["sandboxMode"], *profile);
+    }
+    let scoped = dispatch(
+        state,
+        "tool/list",
+        json!({
+            "threadId":thread_id, "runId":launch.turn_id,
+            "expectedSnapshotId":snapshot["snapshotId"]
+        }),
+    );
+    assert_eq!(scoped["capabilitySnapshot"], *snapshot);
+    launch
 }
 
 async fn finish_cancelled_metadata_launch(state: &Arc<Mutex<ServerState>>, launch: TurnLaunch) {
@@ -94,7 +115,7 @@ async fn configuration_cold_resume_fork_and_turn_defaults_are_independent() {
         source,
         json!({
             "provider":"per-turn-provider", "model":"per-turn-model", "permissionProfile":"workspace_write",
-            "sandboxBackend":"per-turn-backend", "reasoningEffort":"high"
+            "sandboxBackend":"direct", "reasoningEffort":"high"
         }),
     );
     let (response, replacement) = cold.dispatch(

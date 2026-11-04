@@ -189,6 +189,30 @@ async fn observe_route(
                 expected_models.push(fallback.to_string());
             }
             assert_eq!(first_models, expected_models);
+            // H-219: compare the recorder to actual physical transport routes,
+            // including the rejected primary and the successful fallback.
+            let run_events = chat.run_events(&run_id, None).unwrap();
+            let snapshot = run_events
+                .iter()
+                .find(|event| event.event_type == "capability.snapshot")
+                .unwrap();
+            let wire_models = run_events
+                .iter()
+                .filter(|event| event.event_type == "capability_wire_snapshot")
+                .map(|event| {
+                    assert_eq!(event.data["snapshotId"], snapshot.data["snapshotId"]);
+                    event.data["wireSchema"]["model"]
+                        .as_str()
+                        .unwrap()
+                        .to_owned()
+                })
+                .collect::<Vec<_>>();
+            let mut routes = first_models.clone();
+            routes.dedup();
+            assert_eq!(
+                wire_models, routes,
+                "persisted wire generations must follow real adapter dispatches"
+            );
             let answered = if switch && !stop_after_first {
                 fallback
             } else {

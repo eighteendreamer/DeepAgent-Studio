@@ -9,6 +9,7 @@ use crate::plugin_runtime::PluginRuntimeProjection;
 
 #[derive(Default)]
 pub(crate) struct McpRuntimeTools {
+    pub(crate) generation: Option<String>,
     pub(crate) hook_registry: Option<Arc<deepagent_mcp::McpRegistry>>,
     pub(crate) lifecycle: Vec<McpLifecycleRecord>,
     /// Aggregated `instructions` from every connected server (MCP `initialize`),
@@ -37,7 +38,7 @@ pub(crate) struct McpLifecycleRecord {
 }
 
 /// Read ready host snapshots only; no configuration I/O or startup awaits.
-pub(crate) async fn attach_mcp_tools(
+pub(crate) fn attach_mcp_tools(
     registry: &mut ToolRegistry,
     service: Option<&McpService>,
     plugin_projection: Option<&PluginRuntimeProjection>,
@@ -47,7 +48,8 @@ pub(crate) async fn attach_mcp_tools(
         return Ok(McpRuntimeTools::default());
     };
 
-    let mut ready = (*mcp.ready_registry()).clone();
+    let (ready_registry, configs, generation) = mcp.ready_runtime_snapshot()?;
+    let mut ready = (*ready_registry).clone();
     if let Some(plugins) = plugin_registry {
         let mut plugins = (*plugins).clone();
         let user_names = ready.server_names();
@@ -64,8 +66,12 @@ pub(crate) async fn attach_mcp_tools(
         .server_names()
         .into_iter()
         .map(|server_id| McpLifecycleRecord {
-            config_hash: plugin_projection
-                .and_then(|projection| projection.mcp_config.servers.get(&server_id))
+            config_hash: configs
+                .get(&server_id)
+                .or_else(|| {
+                    plugin_projection
+                        .and_then(|projection| projection.mcp_config.servers.get(&server_id))
+                })
                 .map(config_hash),
             tool_schema_hash: Some(tool_schema_hash(&mcp_registry, &server_id)),
             tool_count: mcp_registry
@@ -82,6 +88,7 @@ pub(crate) async fn attach_mcp_tools(
         })
         .collect();
     Ok(McpRuntimeTools {
+        generation: Some(generation),
         hook_registry: Some(mcp_registry.clone()),
         instructions_block: render_mcp_instructions(&mcp_registry),
         instructions_entries: mcp_registry.server_instructions(),

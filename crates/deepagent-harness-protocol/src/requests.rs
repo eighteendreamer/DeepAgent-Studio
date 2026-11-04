@@ -195,7 +195,20 @@ pub struct EventAckRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct ToolListRequest {}
+pub struct ToolListRequest {
+    #[serde(rename = "threadId", default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(rename = "runId", default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// Compare the immutable admission snapshot identity, not later wire/schema
+    /// generations. Requires thread or run scope; it is not an authorization.
+    #[serde(
+        rename = "expectedSnapshotId",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub expected_snapshot_id: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ConfigReadRequest {}

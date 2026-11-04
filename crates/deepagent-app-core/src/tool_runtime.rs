@@ -364,9 +364,9 @@ fn truncate_tool_context(content: &str, max_chars: usize) -> String {
 pub(crate) fn register_skill_tool(
     registry: &mut ToolRegistry,
     skills: Option<&Arc<Mutex<crate::skills_service::SkillsService>>>,
-) -> Result<()> {
+) -> Result<Option<Arc<deepagent_skills::SkillRegistry>>> {
     let Some(skills) = skills else {
-        return Ok(());
+        return Ok(None);
     };
     let registry_snapshot = {
         let svc = skills
@@ -375,9 +375,9 @@ pub(crate) fn register_skill_tool(
         Arc::new(svc.manager().registry().clone())
     };
     registry.register(Arc::new(deepagent_builtins::SkillTool::new(
-        registry_snapshot,
+        registry_snapshot.clone(),
     )))?;
-    Ok(())
+    Ok(Some(registry_snapshot))
 }
 
 /// Register the `task` sub-agent tool into the MAIN run's registry only.
@@ -469,6 +469,9 @@ pub(crate) fn register_plan_mode_tools(
 /// single entry point for main-run tool wiring.
 pub(crate) struct MainRunToolset {
     pub(crate) registry: ToolRegistry,
+    /// The same immutable skill generation consumed by SkillTool and context.
+    pub(crate) skills: Option<Arc<deepagent_skills::SkillRegistry>>,
+    pub(crate) mcp_generation: Option<String>,
     pub(crate) todo_store: deepagent_builtins::TodoStore,
     pub(crate) manifest: ToolManifest,
     /// MCP registry handle for MCP-typed hooks (None when MCP is disabled or
@@ -515,7 +518,7 @@ where
 /// snapshot — matching the pre-consolidation `run_in_session` sequence
 /// byte-for-byte. The manifest MUST be prepared last so deferred-tool
 /// snapshots cover every registered tool.
-pub(crate) async fn build_main_run_toolset<R>(
+pub(crate) fn build_main_run_toolset<R>(
     request: MainRunToolsetRequest<'_, R>,
 ) -> Result<MainRunToolset>
 where
@@ -537,15 +540,14 @@ where
         request.mcp,
         request.plugin_projection,
         request.plugin_registry,
-    )
-    .await?;
+    )?;
     register_task_tool(&mut registry, request.task_runner, request.task_agent_types)?;
     register_plan_execute_tool(&mut registry, request.plan_executor)?;
     register_memory_tools(&mut registry, request.memory_backend)?;
     register_knowledge_write_tool(&mut registry, knowledge.as_ref())?;
     register_cron_tools(&mut registry, cron.as_ref().cloned());
     register_plan_mode_tools(&mut registry, &request.plan)?;
-    register_skill_tool(&mut registry, request.skills)?;
+    let skills = register_skill_tool(&mut registry, request.skills)?;
     // History-snip tool (Claude Code HISTORY_SNIP): lets the model free
     // context by dropping clearly-finished earlier segments. Registered
     // unconditionally; the ModelAgent applies the removal to the live window.
@@ -558,6 +560,8 @@ where
     )?;
     Ok(MainRunToolset {
         registry,
+        skills,
+        mcp_generation: mcp_runtime.generation,
         todo_store,
         manifest,
         hook_mcp_registry: mcp_runtime.hook_registry,

@@ -26,7 +26,6 @@ use crate::knowledge_service::KnowledgeService;
 use crate::plugin_runtime::{PluginOutputStyleEntry, PluginRuntimeProjection};
 use crate::settings::{SandboxMode, SettingsService};
 use crate::skill_catalog_reminder::SkillCatalogSendState;
-use crate::skills_service::SkillsService;
 use crate::system_context::{build_context_pack_snapshot, build_system_manifest_with_permissions};
 use crate::tool_manifest::{deferred_tools_announcement, ToolManifest};
 
@@ -1434,7 +1433,7 @@ pub(crate) struct RunContextRequest<'a> {
     /// `mcp_instructions_block` path.
     pub(crate) mcp_instructions_entries: Option<&'a [(String, String)]>,
     pub(crate) tool_manifest: &'a ToolManifest,
-    pub(crate) skills: Option<&'a Arc<Mutex<SkillsService>>>,
+    pub(crate) skills: Option<&'a deepagent_skills::SkillRegistry>,
     pub(crate) settings: &'a SettingsService,
     pub(crate) skill_catalog_state: &'a Arc<Mutex<HashMap<String, SkillCatalogSendState>>>,
     pub(crate) session_id: &'a str,
@@ -1599,7 +1598,7 @@ fn mcp_instructions_block_for_run(
 }
 
 fn build_skill_catalog_blocks(
-    skills: Option<&Arc<Mutex<SkillsService>>>,
+    skills: Option<&deepagent_skills::SkillRegistry>,
     settings: &SettingsService,
     skill_catalog_state: &Arc<Mutex<HashMap<String, SkillCatalogSendState>>>,
     session_id: &str,
@@ -1612,16 +1611,13 @@ fn build_skill_catalog_blocks(
 
     let settings = settings.load().ok().flatten();
     let catalog_block = if let Some(settings) = settings {
-        let svc = skills
-            .lock()
-            .map_err(|_| CoreError::invalid("skills service mutex poisoned"))?;
         let mut state_map = skill_catalog_state.lock().unwrap_or_else(|p| {
             let mut inner = p.into_inner();
             inner.clear();
             inner
         });
         let entry = state_map.entry(session_id.to_string()).or_default();
-        entry.next_delta(svc.manager().registry(), &settings)
+        entry.next_delta(skills, &settings)
     } else {
         None
     };

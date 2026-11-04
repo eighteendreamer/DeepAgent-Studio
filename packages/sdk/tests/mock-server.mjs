@@ -77,7 +77,9 @@ input.on("line", (line) => {
       response(request.id, {
         threadId: request.params.threadId,
         turnId,
-        status: "started"
+        status: "started",
+        snapshotId: "snapshot-start-mock",
+        capabilitySnapshot: { runId: turnId, threadId: request.params.threadId, snapshotId: "snapshot-start-mock" }
       });
       setTimeout(() => {
         event({
@@ -126,12 +128,29 @@ input.on("line", (line) => {
         threadId: request.params.threadId,
         turnId: "turn-steered",
         replacesTurnId: request.params.turnId,
-        status: "started"
+        status: "started",
+        snapshotId: "snapshot-steer-mock",
+        capabilitySnapshot: { runId: "turn-steered", threadId: request.params.threadId, snapshotId: "snapshot-steer-mock" }
       });
       break;
     case "thread/list":
       response(request.id, { threads: [] });
       break;
+    case "tool/list": {
+      if (request.params.expectedSnapshotId && request.params.expectedSnapshotId !== "snapshot-mock") {
+        error(request.id, -32602, "stale capability snapshot");
+        break;
+      }
+      const result = { protocolVersion: 1, tools: [{ name: "read_file" }] };
+      if (request.params.threadId) {
+        result.threadId = request.params.threadId;
+        result.runId = request.params.runId ?? "run-mock";
+        result.snapshotId = "snapshot-mock";
+        result.capabilitySnapshot = { snapshotId: result.snapshotId };
+      }
+      response(request.id, result);
+      break;
+    }
     default:
       error(request.id, -32601, `unknown method ${request.method}`);
   }

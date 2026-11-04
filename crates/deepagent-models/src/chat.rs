@@ -213,13 +213,7 @@ impl Serialize for ResponseRequest {
             map.serialize_entry("reasoning", &serde_json::json!({"effort": value.label()}))?;
         }
         if !self.tools.is_empty() {
-            let tools: Vec<serde_json::Value> = self.tools.iter().map(|tool| match tool.kind.as_str() {
-                "function" => serde_json::json!({"type":"function","name":tool.function.name,"description":tool.function.description,"parameters":tool.function.parameters}),
-                "custom" => serde_json::json!({"type":"custom","name":tool.function.name,"description":tool.function.description,"format":{"type":"text"}}),
-                "web_search" => serde_json::json!({"type":"web_search"}),
-                _ => serde_json::json!({"type": tool.kind}),
-            }).collect();
-            map.serialize_entry("tools", &tools)?;
+            map.serialize_entry("tools", &response_tools_to_wire(&self.tools))?;
         }
         if let Some(value) = &self.tool_choice {
             map.serialize_entry("tool_choice", value)?;
@@ -232,6 +226,16 @@ impl Serialize for ResponseRequest {
         }
         map.end()
     }
+}
+
+/// The one Responses tool serializer, also used by read-only wire evidence.
+pub(crate) fn response_tools_to_wire(tools: &[ToolSchema]) -> Vec<serde_json::Value> {
+    tools.iter().map(|tool| match tool.kind.as_str() {
+        "function" => serde_json::json!({"type":"function","name":tool.function.name,"description":tool.function.description,"parameters":tool.function.parameters}),
+        "custom" => serde_json::json!({"type":"custom","name":tool.function.name,"description":tool.function.description,"format":{"type":"text"}}),
+        "web_search" => serde_json::json!({"type":"web_search"}),
+        _ => serde_json::json!({"type": tool.kind}),
+    }).collect()
 }
 
 fn response_input_items_to_wire(

@@ -207,6 +207,25 @@ export interface TurnStartResult {
   threadId: string;
   turnId: string;
   status: string;
+  /** Present when the server atomically admitted the actual run capabilities. */
+  snapshotId?: string;
+  capabilitySnapshot?: unknown;
+}
+
+export interface ToolListOptions {
+  threadId?: string;
+  runId?: string;
+  /** Immutable admission identity; not an authorization or wire-generation token. */
+  expectedSnapshotId?: string;
+}
+
+export interface ToolListResult {
+  protocolVersion: number;
+  threadId?: string;
+  runId?: string;
+  snapshotId?: string;
+  tools: unknown[];
+  capabilitySnapshot?: unknown;
 }
 
 export interface TurnInterruptResult {
@@ -608,6 +627,10 @@ export class DeepAgent {
     return result.threads;
   }
 
+  async listTools(options: ToolListOptions = {}): Promise<ToolListResult> {
+    return (await this.request("tool/list", options)) as ToolListResult;
+  }
+
   runJsonl(prompt: string): AsyncIterable<HarnessEvent> {
     if (!this.cliTransport) {
       throw new HarnessTransportError(
@@ -661,7 +684,7 @@ export class DeepAgent {
       ...options
     }, signal)) as TurnStartResult;
     if (!result || result.threadId !== threadId) throw new HarnessTransportError("turn/start returned an invalid or conflicting threadId");
-    return new Turn(this, threadId, result.turnId);
+    return new Turn(this, threadId, result.turnId, result.snapshotId, result.capabilitySnapshot);
   }
 
   async interrupt(
@@ -680,7 +703,7 @@ export class DeepAgent {
       turnId,
       input
     })) as TurnStartResult & { replacesTurnId?: string };
-    return new Turn(this, threadId, result.turnId);
+    return new Turn(this, threadId, result.turnId, result.snapshotId, result.capabilitySnapshot);
   }
 
   async approvalRespond(
@@ -701,6 +724,10 @@ export class Thread {
 
   async run(input: string, options: TurnStartOptions = {}): Promise<Turn> {
     return this.agent.startTurn(this.id, input, options);
+  }
+
+  async listTools(runId?: string): Promise<ToolListResult> {
+    return this.agent.listTools({ threadId: this.id, runId });
   }
 
   /**
@@ -724,7 +751,9 @@ export class Turn {
   constructor(
     private readonly agent: DeepAgent,
     public readonly threadId: string,
-    public readonly id: string
+    public readonly id: string,
+    public readonly snapshotId?: string,
+    public readonly capabilitySnapshot?: unknown
   ) {}
 
   interrupt(): Promise<TurnInterruptResult> {
