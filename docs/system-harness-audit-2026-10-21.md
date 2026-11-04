@@ -11614,6 +11614,38 @@ E-H260-09（独立提交回填，2026-10-29）：修复提交`0ba0f611a4496e4385
 
 ### H-271：正常创建的日历不可能计划触发日期搜索 panic，终止整个调度任务且重建后再次触发
 
+> 修复状态（2026-11-05）：**已修复并验收**，限E-H271-01～03所列本机日历接纳、旧持久输入隔离与真实Kernel/SQLite重开范围。见[修复进度](system-harness-repair-progress.md#h-271-日历求值总函数与持久计划隔离已修复并验收2026-11-05)。修复hash待独立提交后回填；原始失败证据及旧未修复结论按历史保留，不宣称全仓全绿。
+
+**E-H271-02（偏移边界、生产消费方与夹具纠正，2026-11-05，未最终验收）**：新增epoch库MIN/MAX转本地偏移的真实红测`cargo test -p deepagent-runtime --lib schedule::cron::calendar_tests::h271_epoch_conversion_at_calendar_bounds_does_not_panic --offline -j 2 -- --exact --nocapture`为exit101、0过/1败、27.736秒，实际panic为local datetime out of valid range；核对time源码后将同一转换边界改为checked_to_offset返回None。完整日历7项真实exit0、7过/0败、32.923秒。继续补库MIN、公开重复字段集合语义及独立逐分钟oracle；第一次runtime schedule为43过/1败、121.397秒，失败是oracle的65天窗口不含下一年二月周日，不是产品求值差异；仅将测试oracle窗口覆盖到400天，未改生产窗口或cron语义。
+
+原应用5项名称保留，3个缺陷probe转默认。真实CronCreateTool拒绝新建不可能计划且不发布文件；旧版本可产生的合成持久快照通过原store.write输入，明确不冒称新工具仍成功创建。两种文件顺序逐一验证健康回调、坏计划/lastFired保留、重开同slot不重发及原CronDeleteTool删除；实际AppCore tick使用H96既有Fixture、正式ChatService/Kernel、离线CountingTransport与文件SQLite，等健康运行持久终态后确认loop仍活着，再通过H97 owner关闭和drain，关闭/重开数据库核对唯一run_accepted/schedule.accepted/run_terminal。首轮应用为4过/1败、140.637秒；失败是小怪测试误把既有terminal_kind的succeeded写成completed，实际健康请求和终态均已发生。已沿H97既有契约只纠正断言，不改内核映射或放宽验收；原失败日志保留。
+
+真实Runtime多进程schedule_audit/schedule_delivery_tests为9过/0败、2.618秒；builtins cron为7过/0败、23.467秒。证据target/h271-repair-20261105；5份本项代码/测试已冻结final-sources.json，新runtime schedule、全部AppCore cron、完整workspace、CLI构建、根fmt/严格lint及独立Tauri检查正在实际运行，尚不称通过。无UI/DTO/协议/SQL schema变更，不迁移用户数据；未运行真实模型、DST/时区切换、完整GUI或其他平台，仍保持原当前offset策略及UTC回退，不扩成时区语义改造。当前不标验收、不计新增修复、不提交其他问题。
+
+**E-H271-03（最终验收，2026-11-05）**：5份本项源码/测试与final-sources.json逐份SHA-256一致；最终门禁均已终态。仅修复H271的cron输入求值链总函数根因：按Gregorian 400年周期及time实际范围限制日历搜索；日期/大步长/本地偏移推进返回Option；同一next_due边界同时用于新建接纳和调度。新建语法非法、无可执行下一时刻或anchor越界均在写文件前明确失败；已有坏计划保留、可列出/删除，poll逐条脱敏诊断并继续，不伪造触发时间、删除记录、catch_unwind或另建调度链。合法闰日、8年世纪间隔、DOM/DOW OR、严格晚于anchor、库边界和独立逐分钟对照保持通过。
+
+实际最终命令与结果（均offline；秒数含编译/等待，不当作人工有效工时）：
+
+| 命令 | 真实结果 |
+|---|---|
+| `cargo test -p deepagent-runtime schedule:: --offline -j 2 -- --nocapture --test-threads=1` | exit0，44过/0败/0忽略，39.273秒；含本项9日历测试及H96/H270共享store回归 |
+| `cargo test -p deepagent-app-core --lib cron_service:: --offline -j 2 -- --nocapture --test-threads=1` | exit0，25过/0败/1子进程入口ignored，210.041秒；本项原5项全部默认执行，ignored入口由真实H96父进程验收显式调用，不把它当遗漏的H271探针 |
+| `cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=1` | exit101，1640.616秒；138顶层target去重后4599过/1败/236 ignored；唯一旧H306空defaultUserPrompt，未改prompts；不是全仓通过 |
+| `cargo build -p deepagent-cli --offline -j 2` | exit0，84.653秒 |
+| `cargo fmt --all -- --check` | exit0，4.909秒 |
+| `cargo clippy --all-targets --all-features --offline -j 2 -- -D warnings` | exit101，6.199秒；未改models/client.rs:385的clone_on_copy阻断 |
+| `cargo clippy -p deepagent-runtime --all-targets --all-features --no-deps --offline -j 2 -- -D warnings` | exit101，13.146秒；未改model_agent.rs:294及workflow/canvas.rs:32共2旧诊断 |
+| `cargo clippy -p deepagent-app-core --lib --all-features --no-deps --offline -j 2 -- -D warnings` | exit101，35.077秒；12项旧诊断，文件均与HEAD一致 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --offline -j 2` | exit0，17.770秒，真实桌面Rust消费者通过 |
+| `cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check` | exit1，0.315秒；未改桌面lib.rs四处HEAD已有格式差异，未顺手格式化 |
+| `cargo clippy -p deepagent-runtime -p deepagent-app-core --all-targets --all-features --no-deps --offline -j 2 --message-format=json` | exit101，68.957秒；补充观察测试目标，39 warning/1旧panicking_unwrap错误（mcp_discovery_restore.rs:776）；40条诊断所在文件与HEAD一致，5份本项文件0诊断，仍不冒称严格lint通过 |
+
+workspace原runner机械加139个result会多算1个嵌套子进程结果（4600），最终以大小写敏感Running/Doc-tests归属、每顶层target末次result去重的final-workspace-targets.json为准（4599）。AppCore lib1509/0/61、Kernel287/0/34、Runtime lib431/0/9、Builtins370/0/3、workflow128/0/30；schedule_audit3/0/0、schedule_delivery_tests6/0/0。H271真实AppCore组已证新建拒绝、旧输入保留、健康模型实际请求1、持久succeeded、loop关闭前存活、owner drain后文件SQLite关闭重开、同slot不重发、三类接纳/终态事件各唯一；两种坏计划文件顺序与正常4月末/闰日对照通过。原失败、夹具误断言/窗口不足及全部日志/result保留，不以重跑掩盖失败或默认ignored代验收。
+
+**兼容性与限制**：保持公开DTO/协议、文件schema、H96派发/H97生命周期/H270无损文件边界，无SQL迁移、真实数据操作或新依赖；有意收紧store.add/正常CronCreate的接纳语义，以前会scheduled=true但永不能执行的计划现在明确失败，legacy write/read仍能保留它们。旧坏计划每poll重新有限求值并告警，不提供硬实时/大批量计划吞吐承诺；当前本地offset策略/UTC回退未改，不宣称DST或跨时区转换准确性。未执行完整GUI重启、release/其他平台、真实模型/外部副作用及前端构建（本项无UI/TS/桥接字段变更）；实际CLI构建/桌面Rust检查和离线Kernel/真实进程回归覆盖宿主消费方。旧H306、lint和桌面格式残余不混修、不压制。
+
+本项现按上述本机范围标记**已修复并验收**；代码/测试与当时双文档一起独立提交，修复hash待取得后另做文档回填，不amend、不推送、不创建PR。306唯一台账：157验收/23历史跳过/7归并/3撤销/116待修/0修复中；本轮新增修复1、历史跳过0、归并/撤销0。有效未关闭116含H180授权跳过，实际剩余115（P1五项/P2七十一项/P3三十九项）。下一项准备复核H234：已知成功agent-hook可替换父Todo状态，与声明isolated/read-only执行不一致，按用户优先处理数据/权限执行一致性的原则先核对原探针，不预先合并H233或宣称当前仍复现。整套剩余200–400有效工作小时仍为未逐项校准历史粗估，依据115项跨层/持久化/协议与真实门禁规模，不机械扣减或编造完工日期；设备、依赖、编译和环境等待另计，尚无可靠等待总区间。H271本项修复/所列验收剩余0，整个goal仍active。
+
 **级别：中（P2，持久输入导致调度子系统失效）；状态：正式工具创建、Runtime tick、真实时钟 AppCore tick 及文件 store 重建已复现，未修复。** 输入是 `0 0 31 2 *` 或 `0 0 31 4 *`，分别要求 2 月/4 月 31 日；五个字段各自合法，但日历上无匹配。无需直接写坏 JSON、缺字段、并发、故障文件权限或异常系统时钟。不是 H-270 的全表解码失败，也不是 H-96 的派发后落账失败。
 
 #### 首次即时 Evidence（2026-10-25）

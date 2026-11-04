@@ -1,76 +1,96 @@
-//! Calendar-totality audit through the normal tool, store and scheduler.
-//! All workspaces and prompts are synthetic; no shell or network is used.
+//! H271: creation rejection and legacy calendar isolation through real owners.
+//! Only synthetic workspaces, file SQLite and an offline model transport.
 
 use super::*;
-use crate::{MemorySecretStore, SettingsService};
 use deepagent_builtins::cron_tools::{CronCreateTool, CronDeleteTool};
-use deepagent_models::transport::MockTransport;
-use deepagent_persistence::Database;
-use deepagent_runtime::schedule::cron::{epoch_ms_to_local, parse_5_field};
+use deepagent_persistence::run_store::RunStore;
+use deepagent_runtime::schedule::cron::{epoch_ms_to_local, local_to_epoch_ms, parse_5_field};
+use deepagent_runtime::schedule::ScheduledTask;
 use deepagent_tools::Tool;
+use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use std::time::Duration;
 
-async fn check_calendar_isolation(expression: &str, real_service_clock: bool) {
-    // Calendar-impossible expressions are syntactically accepted. No malformed
-    // JSON, direct store edit, time-zone change or out-of-range field is needed.
+async fn candidate_task(cron: &Arc<CronService>, expression: &str, valid: bool) -> ScheduledTask {
     parse_5_field(expression).unwrap();
-    let root = tempfile::tempdir().unwrap();
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let transport = Arc::new(MockTransport::new(Vec::<String>::new()));
-    let settings = Arc::new(SettingsService::new(
-        db.clone(),
-        transport.clone(),
-        Arc::new(MemorySecretStore::new()),
-    ));
-    let chat = Arc::new(ChatService::new(db, settings, transport, root.path()));
-    let cron = Arc::new(CronService::new(root.path(), chat));
-    let create = CronCreateTool::new(cron.clone());
-    let mut ids = Vec::new();
-    for (expr, prompt) in [
-        (expression, "AUDIT_CALENDAR_CANDIDATE_271"),
-        ("* * * * *", "AUDIT_CALENDAR_HEALTHY_271"),
-    ] {
-        let output = create
-            .invoke(serde_json::json!({"cron": expr, "prompt": prompt, "recurring": true}))
-            .await
-            .unwrap();
+    let output = CronCreateTool::new(cron.clone())
+        .invoke(serde_json::json!({
+            "cron": expression, "prompt": "H271 synthetic candidate", "recurring": true
+        }))
+        .await
+        .unwrap();
+    if valid {
         assert!(output.ok && output.value["scheduled"] == true);
-        ids.push(output.value["id"].as_str().unwrap().to_owned());
-    }
-    assert_eq!(cron.list().await.unwrap().len(), 2);
-    let before = std::fs::read(cron.scheduler.store().path()).unwrap();
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as i64;
-    let due_at = epoch_ms_to_local(now_ms).unwrap() + time::Duration::minutes(2);
-    let shutdown = CancellationToken::new();
-    let fired = Arc::new(Mutex::new(Vec::<String>::new()));
-    let mut runner = if real_service_clock {
-        let service = cron.clone();
-        let stop = shutdown.clone();
-        // Real AppCore tick: the impossible first row panics before the
-        // healthy row, so the fire->ChatService callback is never entered.
-        tokio::spawn(async move { service.run_tick_loop(stop).await })
+        cron.scheduler.store().read().unwrap().pop().unwrap()
     } else {
+        assert!(!output.ok);
+        assert!(output.value["error"]
+            .as_str()
+            .unwrap()
+            .contains("no_calendar_match_in_supported_range"));
+        assert!(!cron.scheduler.store().path().exists());
+        // Deliberately the old-version persistence route, not a claim that the
+        // new production tool still accepts the impossible plan.
+        ScheduledTask {
+            id: "h271bad1".into(),
+            cron: expression.into(),
+            prompt: "H271 synthetic legacy candidate".into(),
+            created_at: 0,
+            last_fired_at: None,
+            recurring: Some(true),
+            permanent: None,
+        }
+    }
+}
+
+async fn healthy_task(cron: &Arc<CronService>) -> ScheduledTask {
+    let output = CronCreateTool::new(cron.clone())
+        .invoke(serde_json::json!({
+            "cron": "* * * * *", "prompt": "H271 synthetic healthy", "recurring": true
+        }))
+        .await
+        .unwrap();
+    assert!(output.ok && output.value["scheduled"] == true);
+    cron.scheduler
+        .store()
+        .read()
+        .unwrap()
+        .into_iter()
+        .find(|task| task.id == output.value["id"].as_str().unwrap())
+        .unwrap()
+}
+
+async fn check_calendar_isolation(expression: &str, valid: bool) {
+    // Both file orders must work: a late bad row must not roll back healthy
+    // bookkeeping, and an early one must not prevent visiting healthy rows.
+    for candidate_first in [true, false] {
+        let fixture = delivery_tests::Fixture::new().await;
+        let cron = Arc::new(CronService::new(&fixture.root, fixture.chat.clone()));
+        let mut candidate = candidate_task(&cron, expression, valid).await;
+        let mut healthy = healthy_task(&cron).await;
+        let now = time::macros::datetime!(2026-11-05 12:00);
+        let now_ms = local_to_epoch_ms(now);
+        candidate.created_at = now_ms - 120_000;
+        healthy.created_at = candidate.created_at;
+        let mut tasks = vec![candidate.clone(), healthy.clone()];
+        if !candidate_first {
+            tasks.reverse();
+        }
+        cron.scheduler.store().write(&tasks).unwrap();
+        let shutdown = CancellationToken::new();
+        let fired = Arc::new(Mutex::new(Vec::new()));
+        let observed = fired.clone();
         let scheduler = cron.scheduler.clone();
         let stop = shutdown.clone();
         let stop_after_fire = shutdown.clone();
-        let observed = fired.clone();
-        let healthy_id = ids[1].clone();
-        // Production runtime loop with an injected clock; callbacks only
-        // record ids and stop after the healthy task has really been visited.
-        tokio::spawn(async move {
+        let mut worker = tokio::spawn(async move {
             run_tick_loop(
                 scheduler,
                 Duration::from_millis(10),
-                move || due_at,
+                move || now,
                 move |task, occurrence| {
                     observed.lock().unwrap().push(task.id.clone());
-                    if task.id == healthy_id {
-                        stop_after_fire.cancel();
-                    }
+                    stop_after_fire.cancel();
                     Ok(deepagent_runtime::schedule::DispatchReceipt {
                         accepted_at_ms: occurrence.polled_at_ms,
                     })
@@ -78,97 +98,168 @@ async fn check_calendar_isolation(expression: &str, real_service_clock: bool) {
                 stop,
             )
             .await
-        })
-    };
-    let joined = match tokio::time::timeout(Duration::from_secs(5), &mut runner).await {
-        Ok(joined) => joined,
-        Err(_) => {
-            shutdown.cancel();
-            runner.await
+        });
+        let completed = tokio::time::timeout(Duration::from_secs(5), &mut worker).await;
+        shutdown.cancel();
+        match completed {
+            Ok(result) => result.unwrap().unwrap(),
+            Err(error) => {
+                worker.await.unwrap().unwrap();
+                panic!("healthy callback must run: {error}");
+            }
         }
-    };
-    let panicked = joined.as_ref().err().is_some_and(|e| e.is_panic());
-    if let Ok(result) = &joined {
-        assert!(
-            result.is_ok(),
-            "loop error is not a calendar panic: {result:?}"
-        );
-    }
-    if panicked {
+        assert_eq!(*fired.lock().unwrap(), vec![healthy.id.clone()]);
+        let reopened = CronScheduler::for_workspace(&fixture.root);
+        let stored = reopened.store().read().unwrap();
+        assert_eq!(stored.len(), 2);
         assert_eq!(
-            std::fs::read(cron.scheduler.store().path()).unwrap(),
-            before
+            stored.iter().find(|t| t.id == candidate.id),
+            Some(&candidate)
         );
+        assert_eq!(
+            stored
+                .iter()
+                .find(|t| t.id == healthy.id)
+                .unwrap()
+                .last_fired_at,
+            Some(now_ms)
+        );
+        assert!(reopened
+            .poll(now, |_, _| panic!("same slot must not dispatch again"))
+            .unwrap()
+            .is_empty());
+        let deleted = CronDeleteTool::new(cron.clone())
+            .invoke(serde_json::json!({"operation": "delete", "task_ids": [candidate.id]}))
+            .await
+            .unwrap();
+        assert!(deleted.ok && deleted.value["removed"] == 1);
+        assert_eq!(cron.list().await.unwrap().len(), 1);
+        eprintln!("expr={expression:?} new_create_accepted={valid} candidate_first={candidate_first} healthy_callbacks=1 reopen_callbacks=0 legacy_retained=true delete_ok=true");
     }
-    let healthy_fired = fired.lock().unwrap().contains(&ids[1]);
-    assert_eq!(cron.list().await.unwrap().len(), 2);
-
-    // The stored input survives the panic. A fresh scheduler meets the same
-    // failure, rather than treating a fresh owner as a recovery mechanism.
-    let reopened = CronScheduler::for_workspace(root.path());
-    let replay = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        reopened.poll(due_at, |_, occurrence| {
-            Ok(deepagent_runtime::schedule::DispatchReceipt {
-                accepted_at_ms: occurrence.polled_at_ms,
-            })
-        })
-    }));
-    let reopen_panicked = replay.is_err();
-    if let Ok(result) = replay {
-        result.unwrap();
-    }
-
-    let deleted = CronDeleteTool::new(cron.clone())
-        .invoke(serde_json::json!({"operation": "delete", "task_ids": [ids[0]]}))
-        .await
-        .unwrap();
-    assert!(deleted.ok && deleted.value["removed"] == 1);
-    let mut recovery = Vec::new();
-    reopened
-        .poll(due_at, |task, occurrence| {
-            recovery.push(task.id.clone());
-            Ok(deepagent_runtime::schedule::DispatchReceipt {
-                accepted_at_ms: occurrence.polled_at_ms,
-            })
-        })
-        .unwrap();
-    if panicked {
-        assert_eq!(recovery, vec![ids[1].clone()]);
-    }
-    eprintln!(
-        "expr={expression:?} real_service_clock={real_service_clock} create_ok=true loop_panicked={panicked} healthy_fired={healthy_fired} reopen_panicked={reopen_panicked} after_delete_callbacks={}",
-        recovery.len(),
-    );
-    assert!(
-        !panicked && !reopen_panicked && (real_service_clock || healthy_fired),
-        "a calendar-impossible schedule must not terminate the scheduler or block healthy tasks"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn valid_april_date_keeps_scheduler_healthy() {
-    check_calendar_isolation("0 0 30 4 *", false).await;
+    check_calendar_isolation("0 0 30 4 *", true).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn valid_leap_day_keeps_scheduler_healthy() {
-    check_calendar_isolation("0 0 29 2 *", false).await;
+    check_calendar_isolation("0 0 29 2 *", true).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "audit: a normal cron_create for February 31 must not panic the runtime loop"]
 async fn audit_february_31_does_not_terminate_scheduler() {
     check_calendar_isolation("0 0 31 2 *", false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "audit: a normal cron_create for April 31 must not poison healthy schedules"]
 async fn audit_april_31_does_not_terminate_scheduler() {
     check_calendar_isolation("0 0 31 4 *", false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "audit: calendar-impossible input must not panic the real AppCore tick task"]
 async fn audit_impossible_date_does_not_terminate_appcore_tick() {
-    check_calendar_isolation("0 0 31 2 *", true).await;
+    let root = tempfile::tempdir().unwrap();
+    let fixture = delivery_tests::Fixture::open(root.path()).await;
+    let cron = Arc::new(CronService::new(root.path(), fixture.chat.clone()));
+    let mut candidate = candidate_task(&cron, "0 0 31 2 *", false).await;
+    let mut healthy = healthy_task(&cron).await;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    candidate.created_at = now_ms - 120_000;
+    healthy.created_at = candidate.created_at;
+    cron.scheduler
+        .store()
+        .write(&[candidate.clone(), healthy.clone()])
+        .unwrap();
+    let shutdown = CancellationToken::new();
+    let owner = cron.clone();
+    let stop = shutdown.clone();
+    let worker = tokio::spawn(async move { owner.run_tick_loop(stop).await });
+    let completed = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let done = fixture
+                .db
+                .with_conn(|connection| {
+                    connection
+                        .query_row(
+                            "SELECT count(*) FROM runs WHERE finished_at IS NOT NULL",
+                            [],
+                            |row| row.get::<_, usize>(0),
+                        )
+                        .map_err(|error| deepagent_core::CoreError::Persistence(error.to_string()))
+                })
+                .unwrap();
+            if done == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    let loop_alive = !worker.is_finished();
+    shutdown.cancel();
+    worker.await.unwrap().unwrap();
+    completed.expect("real healthy Kernel run must reach durable terminal");
+    assert!(loop_alive);
+    assert_eq!(fixture.transport.0.load(Ordering::SeqCst), 1);
+    let stored = cron.scheduler.store().read().unwrap();
+    assert_eq!(
+        stored.iter().find(|t| t.id == candidate.id),
+        Some(&candidate)
+    );
+    let accepted_at = stored
+        .iter()
+        .find(|t| t.id == healthy.id)
+        .unwrap()
+        .last_fired_at
+        .unwrap();
+    drop(cron);
+    drop(fixture);
+
+    // Close and reopen the actual file database and ChatService. The accepted
+    // slot remains accounted for; the legacy input is neither lost nor retried.
+    let reopened = delivery_tests::Fixture::open(root.path()).await;
+    let cron = CronService::new(root.path(), reopened.chat.clone());
+    assert!(cron
+        .scheduler
+        .poll(epoch_ms_to_local(accepted_at).unwrap(), |_, _| {
+            panic!("reopened same slot must not enter admission")
+        })
+        .unwrap()
+        .is_empty());
+    assert_eq!(reopened.transport.0.load(Ordering::SeqCst), 0);
+    let ids = reopened
+        .db
+        .with_conn(|connection| {
+            let mut query = connection
+                .prepare("SELECT id FROM runs")
+                .map_err(|error| deepagent_core::CoreError::Persistence(error.to_string()))?;
+            let ids = query
+                .query_map([], |row| row.get::<_, String>(0))
+                .and_then(|rows| rows.collect::<std::result::Result<Vec<_>, _>>())
+                .map_err(|error| deepagent_core::CoreError::Persistence(error.to_string()))?;
+            Ok(ids)
+        })
+        .unwrap();
+    assert_eq!(ids.len(), 1);
+    let ledger = RunStore::new(&reopened.db);
+    assert_eq!(
+        ledger
+            .get(&ids[0])
+            .unwrap()
+            .unwrap()
+            .terminal_kind
+            .as_deref(),
+        Some("succeeded")
+    );
+    let events = ledger.events_after(&ids[0], None).unwrap();
+    for kind in ["run_accepted", "schedule.accepted", "run_terminal"] {
+        assert_eq!(events.iter().filter(|e| e.event_type == kind).count(), 1);
+    }
+    assert_eq!(cron.scheduler.store().read().unwrap().len(), 2);
+    eprintln!("new_impossible_create_rejected=true legacy_retained=true actual_kernel_requests=1 loop_alive_before_shutdown=true file_sqlite_reopen=true same_slot_requests=0 terminals=1");
 }

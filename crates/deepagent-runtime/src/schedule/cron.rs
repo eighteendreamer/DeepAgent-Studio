@@ -29,11 +29,15 @@ pub struct CronFields {
 
 impl CronFields {
     pub fn is_valid(&self) -> bool {
-        !self.minute.is_empty()
-            && !self.hour.is_empty()
-            && !self.day_of_month.is_empty()
-            && !self.month.is_empty()
-            && !self.day_of_week.is_empty()
+        [
+            (&self.minute, 0..=59),
+            (&self.hour, 0..=23),
+            (&self.day_of_month, 1..=31),
+            (&self.month, 1..=12),
+            (&self.day_of_week, 0..=6),
+        ]
+        .iter()
+        .all(|(values, range)| !values.is_empty() && values.iter().all(|v| range.contains(v)))
     }
 }
 
@@ -100,7 +104,10 @@ fn expand_field(field: &str, min: i32, max: i32, dow: bool) -> Option<Vec<i32>> 
             let mut i = min;
             while i <= eff_max {
                 out.insert(normalize_dow(i, dow));
-                i += step;
+                let Some(next) = i.checked_add(step) else {
+                    break;
+                };
+                i = next;
             }
             continue;
         }
@@ -118,7 +125,10 @@ fn expand_field(field: &str, min: i32, max: i32, dow: bool) -> Option<Vec<i32>> 
             let mut i = lo;
             while i <= hi {
                 out.insert(normalize_dow(i, dow));
-                i += step;
+                let Some(next) = i.checked_add(step) else {
+                    break;
+                };
+                i = next;
             }
             continue;
         }
@@ -147,31 +157,47 @@ fn normalize_dow(n: i32, dow: bool) -> i32 {
 }
 
 /// Compute the next calendar minute strictly after `from` that matches the
-/// fields, walking forward minute-by-minute. Bounded at 366 days; `None` when
-/// no match (impossible for valid input, but satisfies the type).
+/// fields, skipping nonmatching calendar units. Search is bounded by one
+/// Gregorian 400-year cycle (146097 days), independently of jump size.
+/// `None` means invalid fields, no calendar match, or exhaustion of time's
+/// representable range. A leap day may legitimately be over a year away.
 ///
 /// Standard cron semantics: when both day-of-month and day-of-week are
 /// constrained, a date matches if **either** matches (vixie-cron OR semantics,
 /// mirroring [`cron.ts`]'s `computeNextCronRun`).
 pub fn next_local_match(fields: &CronFields, from: PrimitiveDateTime) -> Option<PrimitiveDateTime> {
+    const GREGORIAN_CYCLE_DAYS: i64 = 400 * 365 + 97;
+    if !fields.is_valid() {
+        return None;
+    }
     let minute_set: BTreeSet<i32> = fields.minute.iter().copied().collect();
     let hour_set: BTreeSet<i32> = fields.hour.iter().copied().collect();
     let dom_set: BTreeSet<i32> = fields.day_of_month.iter().copied().collect();
     let month_set: BTreeSet<i32> = fields.month.iter().copied().collect();
     let dow_set: BTreeSet<i32> = fields.day_of_week.iter().copied().collect();
 
-    let dom_wild = fields.day_of_month.len() == 31;
-    let dow_wild = fields.day_of_week.len() == 7;
+    let dom_wild = dom_set.len() == 31;
+    let dow_wild = dow_set.len() == 7;
 
     // Round up to the next whole minute, strictly after `from`.
-    let mut t = floor_minute(from) + time::Duration::minutes(1);
+    let mut t = floor_minute(from).checked_add(time::Duration::minutes(1))?;
+    // The same weekdays/month lengths repeat after this many Gregorian days.
+    // Clamp only at the library's actual range, not a guessed maximum year.
+    let horizon = from
+        .checked_add(time::Duration::days(GREGORIAN_CYCLE_DAYS))
+        .unwrap_or(PrimitiveDateTime::MAX);
 
-    let max_iter = 366 * 24 * 60;
+    // Every step advances at least one calendar minute. This separate work
+    // bound cannot expire before a complete 400-year calendar window.
+    let max_iter = GREGORIAN_CYCLE_DAYS as u64 * 24 * 60;
     for _ in 0..max_iter {
+        if t > horizon {
+            return None;
+        }
         let month = t.month() as u8 as i32;
         if !month_set.contains(&month) {
             // Jump to start of next month.
-            t = first_of_next_month(t);
+            t = first_of_next_month(t)?;
             continue;
         }
 
@@ -185,20 +211,20 @@ pub fn next_local_match(fields: &CronFields, from: PrimitiveDateTime) -> Option<
         };
         if !day_matches {
             // Jump to start of next day.
-            t = start_of_next_day(t);
+            t = start_of_next_day(t)?;
             continue;
         }
 
         let hour = t.hour() as i32;
         if !hour_set.contains(&hour) {
             // Jump to the next hour (minute field then re-tested at :00).
-            t = start_of_next_hour(t);
+            t = start_of_next_hour(t)?;
             continue;
         }
 
         let minute = t.minute() as i32;
         if !minute_set.contains(&minute) {
-            t += time::Duration::minutes(1);
+            t = t.checked_add(time::Duration::minutes(1))?;
             continue;
         }
 
@@ -215,7 +241,7 @@ pub fn epoch_ms_to_local(ms: i64) -> Option<PrimitiveDateTime> {
     let offset = time::OffsetDateTime::now_local()
         .map(|local| local.offset())
         .unwrap_or(time::UtcOffset::UTC);
-    let local = utc.to_offset(offset);
+    let local = utc.checked_to_offset(offset)?;
     Some(PrimitiveDateTime::new(local.date(), local.time()))
 }
 
@@ -236,27 +262,30 @@ fn floor_minute(t: PrimitiveDateTime) -> PrimitiveDateTime {
     )
 }
 
-fn first_of_next_month(t: PrimitiveDateTime) -> PrimitiveDateTime {
+fn first_of_next_month(t: PrimitiveDateTime) -> Option<PrimitiveDateTime> {
     let (y, m) = match t.month() {
-        Month::December => (t.year() + 1, Month::January),
+        Month::December => (t.year().checked_add(1)?, Month::January),
         m => (t.year(), m.next()),
     };
-    let date = Date::from_calendar_date(y, m, 1).expect("first-of-month valid");
-    PrimitiveDateTime::new(date, Time::MIDNIGHT)
+    let date = Date::from_calendar_date(y, m, 1).ok()?;
+    Some(PrimitiveDateTime::new(date, Time::MIDNIGHT))
 }
 
-fn start_of_next_day(t: PrimitiveDateTime) -> PrimitiveDateTime {
-    let next = t.date().next_day().expect("next day within date range");
-    PrimitiveDateTime::new(next, Time::MIDNIGHT)
+fn start_of_next_day(t: PrimitiveDateTime) -> Option<PrimitiveDateTime> {
+    Some(PrimitiveDateTime::new(t.date().next_day()?, Time::MIDNIGHT))
 }
 
-fn start_of_next_hour(t: PrimitiveDateTime) -> PrimitiveDateTime {
-    let next = t + time::Duration::hours(1);
-    PrimitiveDateTime::new(
+fn start_of_next_hour(t: PrimitiveDateTime) -> Option<PrimitiveDateTime> {
+    let next = t.checked_add(time::Duration::hours(1))?;
+    Some(PrimitiveDateTime::new(
         next.date(),
         Time::from_hms(next.hour(), 0, 0).expect("hour valid"),
-    )
+    ))
 }
+
+#[cfg(test)]
+#[path = "cron/calendar_tests.rs"]
+mod calendar_tests;
 
 #[cfg(test)]
 mod tests {

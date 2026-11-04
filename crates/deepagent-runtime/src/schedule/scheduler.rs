@@ -37,13 +37,17 @@ pub enum FireOutcome {
 /// Whether a task's next run (anchored at `last_fired_at ?? created_at`) is at
 /// or before `now`. Shared by [`CronScheduler::poll`] and the missed-task scan.
 pub fn is_due(task: &ScheduledTask, now: PrimitiveDateTime) -> bool {
-    next_due(task).is_some_and(|next| next <= now)
+    next_due(task).is_ok_and(|next| next <= now)
 }
 
-fn next_due(task: &ScheduledTask) -> Option<PrimitiveDateTime> {
-    let from = epoch_ms_to_local(task.schedule_anchor_ms())?;
-    let fields = parse_5_field(&task.cron).ok()?;
-    next_local_match(&fields, from)
+/// One evaluator for creation, polling and missed-task projection. Stable
+/// reasons never include prompt contents or untrusted expression excerpts.
+pub(super) fn next_due(
+    task: &ScheduledTask,
+) -> std::result::Result<PrimitiveDateTime, &'static str> {
+    let from = epoch_ms_to_local(task.schedule_anchor_ms()).ok_or("anchor_out_of_range")?;
+    let fields = parse_5_field(&task.cron).map_err(|_| "invalid_cron")?;
+    next_local_match(&fields, from).ok_or("no_calendar_match_in_supported_range")
 }
 
 /// Tasks whose first run (from their creation anchor) is already in the past —
@@ -103,8 +107,14 @@ impl CronScheduler {
         let mut admission_error = None;
 
         for task in &tasks {
-            let Some(scheduled_for) = next_due(task).filter(|next| *next <= now) else {
-                continue;
+            let scheduled_for = match next_due(task) {
+                Ok(next) if next <= now => next,
+                Ok(_) => continue,
+                Err(reason) => {
+                    tracing::warn!(task_id = %task.id, reason,
+                        "scheduled task retained but has no executable next occurrence");
+                    continue;
+                }
             };
             let age_ms = now_ms.saturating_sub(task.created_at);
             if task.is_recurring()

@@ -2,21 +2,59 @@
 
 ## 当前状态与计数口径（2026-11-05）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计156项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；该次只纠正汇总，不计为新增修复。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计157项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；该次只纠正汇总，不计为新增修复。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 156 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-87、H-88、H-92、H-96、H-97、H-125、H-130、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-147、H-148、H-149、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-178、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-196、H-197、H-198、H-199、H-208、H-214、H-218、H-219、H-224、H-225、H-226、H-227、H-229、H-235、H-236、H-237、H-241、H-242、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-259、H-260、H-261、H-270、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-290、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 157 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-87、H-88、H-92、H-96、H-97、H-125、H-130、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-147、H-148、H-149、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-178、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-196、H-197、H-198、H-199、H-208、H-214、H-218、H-219、H-224、H-225、H-226、H-227、H-229、H-235、H-236、H-237、H-241、H-242、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-259、H-260、H-261、H-270、H-271、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-290、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 23 | 17项原审计历史修复；H-77/H-83/H-238/H-246/H-301/H-232分别随H-78/H-143/H-260/H-245/H-164/H-219共享边界消除，验收另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 3 | H-211/H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | H-229已按E-H229-07本机范围验收；无其他在修项 |
-| 待修复 | 117 | 含H-180授权跳过；实际待处理116项 |
+| 修复中 | 0 | 无；H271见E-H271-03最终验收 |
+| 待修复 | 116 | 含H-180授权跳过，实际待处理115项 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **117（其中H-180按用户要求跳过，实际待处理116项）**；不提供完成率。156项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301/H-232在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4/3cabd45f及真实复核单独列明，合计23项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。
+有效未关闭条目当前为 **116（其中H-180按用户要求跳过，实际待处理115项）**；不提供完成率。157项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301/H-232在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4/3cabd45f及真实复核单独列明，合计23项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。
+
+## H-271 日历求值总函数与持久计划隔离（已修复并验收，2026-11-05）
+
+**E-H271-01（原探针及TDD，2026-11-05，未验收）**：起点d5152411，tracked干净，原五项用户未跟踪内容不读不改不提交。仅H271；H96持久派发、H97运行生命周期及H270无损计划文档边界保留。已读取原审计、cron parser/evaluator、scheduler/store/document、CronService/tool及生产消费方、Cargo/CI/格式配置。原`cargo test -p deepagent-app-core --lib cron_service::calendar_audit --offline -j 2 -- --include-ignored --nocapture --test-threads=1`实际exit101、2过/3败/0忽略、121.180秒含编译，正常工具成功创建不可能计划，真实Runtime/AppCore loop均在first_of_next_month的年份越界panic；原健康月末/闰日通过。证据target/h271-repair-20261105，不使用真实计划/凭据/网络。
+
+新增`cargo test -p deepagent-runtime --lib schedule::cron::calendar_tests:: --offline -j 2 -- --nocapture --test-threads=1`真实exit101、1过/5败/0忽略、35.153秒：所有不可能月日、Date::MAX各推进路径、大步长field expansion溢出、公开字段范围、拒绝前不得改写文件不变量失败；跨世纪8年闰日和DOM/DOW OR对照通过。不是编译失败。原报告已要求大步长/溢出与Date边界，它们属同一cron输入求值链的总函数契约，不另计问题。
+
+**本地设计候选**：time 0.3.47本地源码证实proleptic Gregorian、checked_add/checked_to_offset和实际MAX边界；参考cron.ts只用迭代次数而非366天的错误上界，不照搬。原求值器以146097天Gregorian 400年周期为日历上界、单独保留可证明覆盖该窗口的工作步数上界，日期推进和步长加法均可失败，保持闰日、严格晚于anchor及DOM/DOW OR语义。同一个next_due用于store.add接纳和poll/missed投影；新建不可执行计划在写文件前明确失败，旧计划保留、不伪造lastFired、不删除，poll逐条记录不含prompt/表达式片段的稳定原因并继续健康计划。保持原调度/取消/派发owner，不catch_unwind吞panic、不无限重启。候选日历单测6过/0败，但原应用probe改为默认回归及真实健康模型/文件重开、全仓/生产消费者/格式/lint均未最终验收；暂不计新增修复、不提交。
+
+**E-H271-02（偏移边界、生产消费方与夹具纠正，2026-11-05，未最终验收）**：新增epoch库MIN/MAX转本地偏移的真实红测`cargo test -p deepagent-runtime --lib schedule::cron::calendar_tests::h271_epoch_conversion_at_calendar_bounds_does_not_panic --offline -j 2 -- --exact --nocapture`为exit101、0过/1败、27.736秒，实际panic为local datetime out of valid range；核对time源码后将同一转换边界改为checked_to_offset返回None。完整日历7项真实exit0、7过/0败、32.923秒。继续补库MIN、公开重复字段集合语义及独立逐分钟oracle；第一次runtime schedule为43过/1败、121.397秒，失败是oracle的65天窗口不含下一年二月周日，不是产品求值差异；仅将测试oracle窗口覆盖到400天，未改生产窗口或cron语义。
+
+原应用5项名称保留，3个缺陷probe转默认。真实CronCreateTool拒绝新建不可能计划且不发布文件；旧版本可产生的合成持久快照通过原store.write输入，明确不冒称新工具仍成功创建。两种文件顺序逐一验证健康回调、坏计划/lastFired保留、重开同slot不重发及原CronDeleteTool删除；实际AppCore tick使用H96既有Fixture、正式ChatService/Kernel、离线CountingTransport与文件SQLite，等健康运行持久终态后确认loop仍活着，再通过H97 owner关闭和drain，关闭/重开数据库核对唯一run_accepted/schedule.accepted/run_terminal。首轮应用为4过/1败、140.637秒；失败是小怪测试误把既有terminal_kind的succeeded写成completed，实际健康请求和终态均已发生。已沿H97既有契约只纠正断言，不改内核映射或放宽验收；原失败日志保留。
+
+真实Runtime多进程schedule_audit/schedule_delivery_tests为9过/0败、2.618秒；builtins cron为7过/0败、23.467秒。证据target/h271-repair-20261105；5份本项代码/测试已冻结final-sources.json，新runtime schedule、全部AppCore cron、完整workspace、CLI构建、根fmt/严格lint及独立Tauri检查正在实际运行，尚不称通过。无UI/DTO/协议/SQL schema变更，不迁移用户数据；未运行真实模型、DST/时区切换、完整GUI或其他平台，仍保持原当前offset策略及UTC回退，不扩成时区语义改造。当前不标验收、不计新增修复、不提交其他问题。
+
+**E-H271-03（最终验收，2026-11-05）**：5份本项源码/测试与final-sources.json逐份SHA-256一致；最终门禁均已终态。仅修复H271的cron输入求值链总函数根因：按Gregorian 400年周期及time实际范围限制日历搜索；日期/大步长/本地偏移推进返回Option；同一next_due边界同时用于新建接纳和调度。新建语法非法、无可执行下一时刻或anchor越界均在写文件前明确失败；已有坏计划保留、可列出/删除，poll逐条脱敏诊断并继续，不伪造触发时间、删除记录、catch_unwind或另建调度链。合法闰日、8年世纪间隔、DOM/DOW OR、严格晚于anchor、库边界和独立逐分钟对照保持通过。
+
+实际最终命令与结果（均offline；秒数含编译/等待，不当作人工有效工时）：
+
+| 命令 | 真实结果 |
+|---|---|
+| `cargo test -p deepagent-runtime schedule:: --offline -j 2 -- --nocapture --test-threads=1` | exit0，44过/0败/0忽略，39.273秒；含本项9日历测试及H96/H270共享store回归 |
+| `cargo test -p deepagent-app-core --lib cron_service:: --offline -j 2 -- --nocapture --test-threads=1` | exit0，25过/0败/1子进程入口ignored，210.041秒；本项原5项全部默认执行，ignored入口由真实H96父进程验收显式调用，不把它当遗漏的H271探针 |
+| `cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=1` | exit101，1640.616秒；138顶层target去重后4599过/1败/236 ignored；唯一旧H306空defaultUserPrompt，未改prompts；不是全仓通过 |
+| `cargo build -p deepagent-cli --offline -j 2` | exit0，84.653秒 |
+| `cargo fmt --all -- --check` | exit0，4.909秒 |
+| `cargo clippy --all-targets --all-features --offline -j 2 -- -D warnings` | exit101，6.199秒；未改models/client.rs:385的clone_on_copy阻断 |
+| `cargo clippy -p deepagent-runtime --all-targets --all-features --no-deps --offline -j 2 -- -D warnings` | exit101，13.146秒；未改model_agent.rs:294及workflow/canvas.rs:32共2旧诊断 |
+| `cargo clippy -p deepagent-app-core --lib --all-features --no-deps --offline -j 2 -- -D warnings` | exit101，35.077秒；12项旧诊断，文件均与HEAD一致 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --offline -j 2` | exit0，17.770秒，真实桌面Rust消费者通过 |
+| `cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check` | exit1，0.315秒；未改桌面lib.rs四处HEAD已有格式差异，未顺手格式化 |
+| `cargo clippy -p deepagent-runtime -p deepagent-app-core --all-targets --all-features --no-deps --offline -j 2 --message-format=json` | exit101，68.957秒；补充观察测试目标，39 warning/1旧panicking_unwrap错误（mcp_discovery_restore.rs:776）；40条诊断所在文件与HEAD一致，5份本项文件0诊断，仍不冒称严格lint通过 |
+
+workspace原runner机械加139个result会多算1个嵌套子进程结果（4600），最终以大小写敏感Running/Doc-tests归属、每顶层target末次result去重的final-workspace-targets.json为准（4599）。AppCore lib1509/0/61、Kernel287/0/34、Runtime lib431/0/9、Builtins370/0/3、workflow128/0/30；schedule_audit3/0/0、schedule_delivery_tests6/0/0。H271真实AppCore组已证新建拒绝、旧输入保留、健康模型实际请求1、持久succeeded、loop关闭前存活、owner drain后文件SQLite关闭重开、同slot不重发、三类接纳/终态事件各唯一；两种坏计划文件顺序与正常4月末/闰日对照通过。原失败、夹具误断言/窗口不足及全部日志/result保留，不以重跑掩盖失败或默认ignored代验收。
+
+**兼容性与限制**：保持公开DTO/协议、文件schema、H96派发/H97生命周期/H270无损文件边界，无SQL迁移、真实数据操作或新依赖；有意收紧store.add/正常CronCreate的接纳语义，以前会scheduled=true但永不能执行的计划现在明确失败，legacy write/read仍能保留它们。旧坏计划每poll重新有限求值并告警，不提供硬实时/大批量计划吞吐承诺；当前本地offset策略/UTC回退未改，不宣称DST或跨时区转换准确性。未执行完整GUI重启、release/其他平台、真实模型/外部副作用及前端构建（本项无UI/TS/桥接字段变更）；实际CLI构建/桌面Rust检查和离线Kernel/真实进程回归覆盖宿主消费方。旧H306、lint和桌面格式残余不混修、不压制。
+
+本项现按上述本机范围标记**已修复并验收**；代码/测试与当时双文档一起独立提交，修复hash待取得后另做文档回填，不amend、不推送、不创建PR。306唯一台账：157验收/23历史跳过/7归并/3撤销/116待修/0修复中；本轮新增修复1、历史跳过0、归并/撤销0。有效未关闭116含H180授权跳过，实际剩余115（P1五项/P2七十一项/P3三十九项）。下一项准备复核H234：已知成功agent-hook可替换父Todo状态，与声明isolated/read-only执行不一致，按用户优先处理数据/权限执行一致性的原则先核对原探针，不预先合并H233或宣称当前仍复现。整套剩余200–400有效工作小时仍为未逐项校准历史粗估，依据115项跨层/持久化/协议与真实门禁规模，不机械扣减或编造完工日期；设备、依赖、编译和环境等待另计，尚无可靠等待总区间。H271本项修复/所列验收剩余0，整个goal仍active。
 
 ## H-229 单会话损坏的搜索与启动隔离（已修复并验收，2026-11-05）
 
@@ -5616,7 +5654,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-268：结构化摘要接受空对象与无关 JSON，绕过降级后持续遮蔽原历史](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-269：摘要草稿清理在解析 JSON 前删除字符串内的合法 analysis 标签及正文](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-270：一条计划记录解码失败使全部健康任务不可见，正常创建随后覆盖并删除旧任务](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | 原始三红保留；E-H270-01～04，无归并/跳过 | 统一文档owner逐行隔离与RawValue保留式编辑，坏外层拒写；输入排序兼容 | 调度31/0/0、正式cron9/0/4及工具7/0/0；workspace顶层4469/1/241唯一旧H306，严格lint旧基线未绿；CLI构建通过 | `51c8a3f28b85d38ca000c03c4cbf09a61a73174a` | 本项剩余0；无原子落盘/跨进程普通编辑保证，H96/H97/H271独立；其他OS/GUI/掉电未测；全部200–400历史粗估，等待另计 |
-| [H-271：正常创建的日历不可能计划触发日期搜索 panic，终止整个调度任务且重建后再次触发](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-271：正常创建的日历不可能计划触发日期搜索 panic，终止整个调度任务且重建后再次触发](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H271-01～03；原失败保留，不混修H96/H97/H270 | cron有界总函数、统一next_due接纳/调度；新建拒绝不可执行，旧计划保留并逐条诊断 | runtime44/0；AppCore cron25/0/1；workspace4599/1/236（旧H306）；CLI/Tauri check/fmt通过；旧lint/桌面fmt失败详见E03 | 修复提交待创建后回填 | 本机所列范围验收；DST/完整GUI/release/其他平台未测；本项剩余0，整套200–400历史粗估、等待另计 |
 | [H-272：日/月限额只有 run 准入保护，已取得越限用量后正常工具循环仍继续请求模型](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H272-01～16；原失败、fixture修正、基线及缓存失误均保留，不把旧门禁失败改写成通过 | 同父owner逐物理请求原子入账、下一dispatch共享预算gate，finalizer仅汇总身份；同步workflow及子Agent直接消费者，无SQL迁移 | 28源码budget8/0/0、owner23/0/0、workflow14/0/0；完整workspace3957/1/271仅旧H-306，app-core1381/0/62、kernel203/0/56；根fmt/Tauri check/同源码desktop build通过；旧严格lint/Tauri fmt及独立生命周期6/1失败如实保留 | 2623ea22a377bce8df74d9e5ea1fe0081c986a7f | 不提供并发预留或零超支，H-63未挂owner入口另修；本轮Rust dev已清理且证据/源码保留；下一项先复核H-63，180有效待修，总200–400有效小时历史粗估、环境等待另计 |
 | [H-273：Responses cached_tokens 超过 input_tokens 仍被接受并按低价记账](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H273-02～07；原失败证据 E-H273-usage 保留；H-274 独立不合并 | Responses adapter 在 Usage 进入 Runtime/CostService 前按原始值拒绝 `cached_tokens > input_tokens`，沿现有错误终态，不在账本层 clamp 或猜测；无迁移/新账本/协议变化 | Models stream 24/0/0、Models lib 97/0/21、H-273 正式 1/0/0、usage_contract 默认 4/0/1、相关 check 通过；根 fmt/clippy 被未改基线阻断，H-274 显式 ignored 仍预期失败 | `7ab31dd7`（`【fix】拒绝Responses矛盾缓存用量`） | 限 Windows 本机、离线 Responses fixture、临时 SQLite/合成报价；未验真实供应商/账单、其他 OS、H-274 宽度及其他 usage 关系；本项剩余0，当前177有效待修，总200–400有效小时仍为历史未校准粗估，等待另计 |
 | [H-274：Responses token 计数超过宿主 u32 宽度后静默截断，账本可被压成零](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H274-02～07；原始超宽截断证据 E-H274-width 保留；H-273 的字段关系检查独立不合并 | Responses adapter 对五类 provider usage 计数使用 checked `u64 -> u32` 转换，超界/非法整数在 Usage 发布前拒绝，沿现有失败终态；不改变内部 Usage 宽度、不在 CostService 修正 | Models lib 99/0/21；H-274 正式 1/0/0；usage_contract 5/0/0；相关 check 通过；根 fmt/clippy 受未改基线阻断 | `99dc83c0`（`【fix】拒绝Responses超宽用量计数`） | 限 Windows 本机、离线 Responses fixture、临时 SQLite/合成报价；未验真实供应商/账单、其他 OS、强杀/断电、并发压力及其他 usage 关系；本项剩余0，当前177有效待修，总200–400有效小时仍为历史未校准粗估，等待另计 |

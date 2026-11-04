@@ -37,8 +37,9 @@ use uuid::Uuid;
 pub struct ScheduledTask {
     /// Short id (first 8 hex chars of a v4 UUID).
     pub id: String,
-    /// 5-field cron string in local time — validated on write and re-validated
-    /// on read.
+    /// 5-field cron string in local time. New tasks require an executable next
+    /// occurrence; legacy snapshots are syntax-checked on read and evaluated
+    /// independently on poll without discarding unexecutable rows.
     pub cron: String,
     /// Prompt to run when the task fires.
     pub prompt: String,
@@ -242,8 +243,8 @@ impl ScheduledTaskStore {
         Ok(())
     }
 
-    /// Append a task. Returns the new task with its generated id. The caller is
-    /// responsible for having validated the cron string.
+    /// Append a task only after the shared evaluator finds a next occurrence
+    /// from its creation anchor. A rejected schedule never changes the file.
     pub fn add(
         &self,
         cron: String,
@@ -260,6 +261,11 @@ impl ScheduledTaskStore {
             recurring: recurring.then_some(true),
             permanent: None,
         };
+        super::scheduler::next_due(&task).map_err(|reason| {
+            CoreError::invalid(format!(
+                "scheduled task has no executable next occurrence ({reason})"
+            ))
+        })?;
         let mut document = CronDocument::read(&self.path)?;
         document.push(task.clone())?;
         self.write_document(document)?;
