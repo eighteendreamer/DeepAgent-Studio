@@ -6793,13 +6793,22 @@ pub fn run() {
                 service.shared_database(),
                 Arc::new(KeychainStore::new(KEYCHAIN_SERVICE)),
             ));
+            let settings_arc = Arc::new(SettingsService::new(
+                service.shared_database(),
+                Arc::new(ReqwestTransport::new()),
+                sqlite_secrets.clone(),
+            ));
             // One-time compatibility migration from the former per-secret
             // keychain entries into encrypted SQLite records. The device wrap
             // key remains in the keychain; migrated plaintext entries are
             // removed only after the SQLite write succeeds.
             let legacy_keychain = KeychainStore::new(KEYCHAIN_SERVICE);
+            // The API key shares the sign-in/sign-out generation gate. An old
+            // keychain entry must not undo another host's completed sign-out.
+            settings_arc
+                .import_legacy_api_key(&legacy_keychain)
+                .map_err(|e| e.to_string())?;
             for name in [
-                "deepseek_api_key",
                 "vision_api_key",
                 "anysearch_api_key",
                 KEYCHAIN_SKILLSMP_KEY_NAME,
@@ -6811,11 +6820,6 @@ pub fn run() {
                     }
                 }
             }
-            let settings_arc = Arc::new(SettingsService::new(
-                service.shared_database(),
-                Arc::new(ReqwestTransport::new()),
-                sqlite_secrets.clone(),
-            ));
 
             // SkillsMP API key uses the same encrypted SQLite store. Errors and
             // missing entries are non-fatal — the handle falls through to the

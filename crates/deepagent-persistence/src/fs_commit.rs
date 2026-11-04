@@ -21,7 +21,6 @@ pub struct PathOperationGuard {
 /// are created. This is advisory coordination, not path authorization.
 pub fn lock_path_operation(path: &Path) -> io::Result<PathOperationGuard> {
     use sha2::{Digest, Sha256};
-    use std::time::{Duration, Instant};
 
     let parent = path
         .parent()
@@ -35,12 +34,21 @@ pub fn lock_path_operation(path: &Path) -> io::Result<PathOperationGuard> {
     let digest = Sha256::digest(identity.as_os_str().as_encoded_bytes());
     let directory = std::env::temp_dir().join("deepagent-file-operation-locks-v1");
     std::fs::create_dir_all(&directory)?;
+    lock_operation_file(&directory.join(format!("{digest:x}.lock")))
+}
+
+/// The same bounded operation gate at a caller-owned, stable lock-file path.
+/// Use this when cooperating hosts can have different temporary directories.
+/// The parent must exist; never unlink the lock file while hosts can use it.
+pub fn lock_operation_file(path: &Path) -> io::Result<PathOperationGuard> {
+    use std::time::{Duration, Instant};
+
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(directory.join(format!("{digest:x}.lock")))?;
+        .open(path)?;
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         match fs2::FileExt::try_lock_exclusive(&file) {
@@ -166,6 +174,33 @@ pub fn rename_no_replace(_source: &Path, _destination: &Path) -> io::Result<()> 
 #[cfg(test)]
 mod path_identity_tests {
     use super::*;
+
+    #[test]
+    fn explicit_gate_uses_the_stable_file_and_releases_with_its_owner() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("shared.lock");
+        let guard = lock_operation_file(&path).unwrap();
+        let observer = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let error = fs2::FileExt::try_lock_exclusive(&observer).unwrap_err();
+        assert!(
+            error.kind() == io::ErrorKind::WouldBlock
+                || error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
+        );
+        drop(guard);
+        fs2::FileExt::try_lock_exclusive(&observer).unwrap();
+        drop(observer);
+        assert!(
+            path.is_file(),
+            "ownership must not unlink a shared lock path"
+        );
+        let missing = directory.path().join("not-created/lock");
+        assert!(lock_operation_file(&missing).is_err());
+        assert!(!missing.parent().unwrap().exists());
+    }
 
     #[test]
     fn missing_parent_identity_is_stable_after_creation_and_does_not_create_paths() {

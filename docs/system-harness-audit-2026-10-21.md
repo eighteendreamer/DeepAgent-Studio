@@ -3474,6 +3474,8 @@ E-H79-20261026-06（独立提交及真实hash回填）：修复提交`79519de6`�
 
 ### H-88：旧模型刷新在退出登录或换 Key 后重新写入旧凭据
 
+**当前状态：已修复并验收（2026-11-04，限E-H88-04本机范围）；原始失败证据保留，完整workspace仍有既有H306失败，严格lint/桌面格式基线限制见E04。**
+
 **级别：中（P2）；触发条件：模型刷新已经读取旧 Key 并等待网络，另一个可写宿主随后退出登录或完成新 Key 初始化，而旧刷新较晚收到成功的目录响应。** 本项不是加密被破解，也不证明已退出的远端账户能够继续使用；只有旧 Key 在供应商侧仍有效，后续使用它的请求才可能成功。
 
 - 根因与生产路径：`SettingsService::refresh_models` 读取当前凭据后调用 `initialize(&key)`；后者等待目录发现成功，再无条件 `secrets.set(API_KEY_NAME, api_key)`。`clear_key` 只删除存储值，没有撤销在途刷新的提交资格；新 Key 初始化也没有阻止旧刷新晚提交。该写入不依赖 `AppSettings` 缓存，因此与 H-87 不同，单纯刷新设置缓存不能解决。桌面启动时 `App.tsx` 会自动调用 `refreshModels`，退出经 `clear_api_key`，新 Key 经 `initialize_project`；共享数据目录允许 Standby 正常读写，所以不同宿主可以形成此交错。尚未证明同一 Tauri 窗口的同步 command 也能并发执行这组操作。
@@ -3481,6 +3483,41 @@ E-H79-20261026-06（独立提交及真实hash回填）：修复提交`79519de6`�
 - 成熟实现对照：DeepSeek Harness `packages/credentials/deepseek-account-platform/src/index.ts::signOut` 先 `cancelSignIn` 并等待 attempt.done，再删除凭据；已经进入 committing 的 attempt 则等待其提交完成后再删除。`startSignIn` 等待进行中的 removing；账户查询另捕获 `detailsLifetime`，凭据更新时 abort 旧 lifetime，返回前检查当前 lifetime。该实现采用账户授权流程，与本系统原始 API Key 初始化协议不同，此处只借鉴“撤销与提交共用生命周期所有者、迟到结果无发布资格”的边界；这些进程内对象不直接提供跨宿主数据库栅栏。
 - 影响及限制：已成功退出的本地凭据状态会被恢复，或用户刚保存的新 Key 被旧值覆盖；新连接读到 configured=true。若旧 Key 仍有效，后续运行可能使用旧账户/凭据，影响用户对退出与计费归属的判断；本轮没有发出后续模型请求、测试供应商撤销或验证真实桌面重启。当前 UI 本地 onboarding 标记与后端状态如何表现，仍需 Tauri 验收，不能把本探针写成已自动重新进入工作台。
 - 收敛方向（尚未实施，本地设计）：在现有 SettingsService/SecretStore 边界区分“目录刷新”和“用户显式更换凭据”；刷新不得因为复用初始化就重新保存捕获的旧 Key。撤销/更换与在途操作使用共同凭据代次/提交资格，网络结果提交前对照数据库当前版本；退出也必须推进代次，避免删除后重设相同字符串的 ABA 问题。宿主内取消旧等待可以减少浪费，但跨宿主仍需原子条件提交。回归覆盖退出、换 Key、同值重新登录、两次初始化乱序完成、网络失败及正常顺序操作，验证数据库凭据、配置 view 和真实后续请求所用身份一致；不新增第二套凭据存储。
+
+**E-H88-01（复核、原探针与根因方案，2026-11-04）**：起点ca0e6575，tracked干净、无暂存或未完成合并；五项原用户未跟踪内容不读/不改/不提交。本轮只处理H88，不归并H223，不重复H87。原`cargo test -p deepagent-app-core --lib settings::tests::audit_refresh_models_does_not_restore_a_superseded_api_key --offline -j 2 -- --ignored --exact --nocapture --test-threads=1`实际exit101、0过/1败/0忽略，176.338秒含编译；sign_out/replace_key两组均refresh_succeeded=true、credential_preserved=false、previous_restored=true、configured=true，使用第三个独立SQLite连接复核。证据target/h88-repair-20261104/original-late-refresh-audit.log/-result.json，不接触真实凭据、Keychain、供应商、内网或用户数据。
+
+根因仍在refresh_models复用initialize：捕获旧Key后等待网络，无条件写回旧Key；clear_key只删除值。仅删除刷新set虽能止住这两个原例，却不能处理在途初始化、退出后同值登录ABA、两次登录乱序，也没有跨宿主提交资格。当前本仓SqliteSecretStore、Memory/Env/Keychain适配及所有SettingsService生产读写、CLI/Desktop组装、model_runtime/doctor消费方均已定位；参考DeepSeek Harness signOut/cancelSignIn/committing/detailsLifetime共同所有者，但其进程内对象不能当本机跨进程栅栏。本地设计：仍只用原SecretStore保存Key，原documents保存非敏感生命周期代次/提交阶段；共用原文件操作锁owner，将明确锁文件位置能力内聚到既有fs_commit边界，锁位于共享data_root而不是各宿主可能不同的TEMP。网络等待不持锁，显式初始化开始即推进代次，退出和提交共用短临界区；目录刷新只捕获并核对资格，不写回凭据。跨存储提交阶段持久化标记，未完整提交不得把半完成凭据作为可用配置，需显式登录/清除恢复；不另建凭据库/运行链、不改公开DTO或数据库schema。
+
+新增公开边界测试正在先红验证，覆盖同值重登、乱序初始化、初始未配置时退出、较新失败尝试撤销旧资格、刷新不重写凭据、持久化失败拒绝使用及顺序正常对照。第一版测试因误写不存在的catalog()方法而编译失败（credential-regressions-red，0个测试执行），已改为查证过的load().catalog；该编译错误不计行为复现或TDD红例，public-lifecycle-red仍待终态。原探针真实失败已经成立，生产代码尚未修改。后续需补DB/SecretStore失败和恢复、同TEMP/不同TEMP真实Primary/Standby、正式后续请求身份与默认设置/H87对照，再做相称全仓/桌面/lint/build验收，不能只靠原例通过关闭。尚无H88修复commit。本轮新增验收/历史跳过/归并/撤销均0；306台账为151验收/23历史跳过/7归并/3撤销/121待修复/1修复中，有效未关闭122含H180授权跳过，实际待处理121；下一步仍H88。本项暂估16–32有效修复验收小时，依据跨宿主代次、跨存储失败封闭及正式消费者/进程测试规模；全部剩余200–400有效小时仍为未逐项校准历史粗估，设备/依赖/编译等待另计，不承诺日期，goal保持active。
+
+**E-H88-02（候选实现与分阶段测试，2026-11-04，未验收）**：E01之后的public-lifecycle-red实际exit101、1过/6败/0忽略（183.249秒），正常顺序对照通过，其他真实行为反例失败；早先catalog()编译失败仍不计行为红例。初版候选7过/0败，但不是最终源码验收。已在原SettingsService边界实现持久化generation/ready/committing，共用原fs_commit的有界锁实现，稳定gate位于共享data_root；initialize开始推进资格、退出推进tombstone，refresh不写/重加密Key且返回前核对代次和当前值。提交先标committing，SecretStore写后核对、现有设置owner发布目录/报价，最后ready；任何中途失败持久化拒用，不声称跨存储事务回滚。所有生产API Key读取收敛到生命周期门禁，桌面旧Keychain兼容导入改走同一个commit owner，仅从未有生命周期且目标缺失才导入，避免启动恢复已退出凭据。未实际访问Keychain或执行真实迁移。
+
+expanded-settings误用include-ignored，实际72过/1败/0忽略（193.723秒）：唯一失败为缺少DEEPAGENT_H87_ROOT的H87子进程入口被父测试直接执行；13项H88新增回归及原探针均通过，不将该选择错误认作生产回归。共享fs_commit实际7过/0败（12.907秒）。H88原探针已取消ignore，后续默认settings只忽略专用子入口，父测试显式执行它们。新增真实Primary/Standby及冷重开进程测试，使用正式SqliteSecretStore与固定合成包装值、每进程不同TEMP，覆盖退出/换Key/ABA/初始化乱序及commit中kill后释放gate、重开拒用与显式恢复；正式ChatService/Kernel离线wire测试核对后续请求身份/退出与半提交零请求/单终态；另补旧库无元数据、元数据写失败、Env只读no-op与gate I/O/有界竞争。current-settings/kernel-credential仍在执行，不预写通过。所有测试仅合成临时文件和离线transport，不对第三方或真实用户数据开展操作。尚无H88修复commit、计数不变；H223选型策略、已接纳运行的动态撤权、混合新旧版本宿主及其他OS不在已验证范围。
+
+**E-H88-03（冻结源码专项验收，2026-11-04，全仓门禁未结束）**：进一步把sign-in、sign-out与legacy import的committing→SecretStore写/删除及回读→发布→ready收敛为同一个commit_credential状态机，避免退出另有一套提交阶段。补旧源删除失败：目标已提交但源清理失败必须报错，之后退出仍不能被旧源复活；不夸大跨存储回滚或源条目清理保证。最终8份生产/测试源码SHA-256见target/h88-repair-20261104/final-sources.json，后续门禁均以此冻结版本为准。final-format为exit0；final-settings：`cargo test -p deepagent-app-core --lib settings:: --offline -j 2 -- --nocapture --test-threads=1`实际exit0、79过/0败/2忽略（208.629秒含编译），仅忽略H87/H88子进程入口，默认父测试实际执行全部进程情境。final-original不带ignored显式exact为exit0、1过/0败/0忽略（2.697秒），sign_out/replace_key均旧凭据未恢复且configured反映当前状态。final-kernel-credential为exit0、1过/0败/0忽略（2.639秒），含control/logout/replace/aba/failure五个真实Kernel场景，检查下一wire身份或零请求及单个durable terminal。全workspace、严格lint、CLI与桌面门禁仍运行中，尚无H88提交，不能据此关闭。
+
+兼容与限制：公开DTO/schema/供应商协议不变，只增Rust内部组装使用的legacy导入入口与非敏感documents元数据。旧库缺元数据可读并正常刷新；已损坏或不支持元数据明确拒绝，不用旧Key静默回退。只读EnvSecretStore不能实际替换/清除时不再假报成功，操作员须修改注入环境后显式恢复。gate需共享data_root写权限，有界等待5秒后显式报忙；网络等待不持锁。较新有效初始化尝试即撤销旧发布资格，其网络失败/取消时保留原活动Key；已经接纳或已经发出的模型/发现请求不承诺动态撤权或远端撤销。仅协调采用该owner的同版本宿主，不防任意外部写库/删锁或旧版本旁路；未做真实Keychain、供应商、UI点击、其他OS和长期压力验收。
+
+**E-H88-04（本机范围验收，2026-11-04）**：冻结8份源码在所有最终门禁结束后SHA-256一致；最终设置79过/0败/2专用子入口忽略、原探针默认启用1过、正式Kernel五场景1过，详E03。18项新增生命周期公开边界、2项真实进程父测试及原探针默认执行；进程覆盖真实Primary/Standby和冷重开，所有凭据均合成。原失败/编译错误/选错夹具日志保留，不用局部通过掩盖失败。
+
+| 实际最终命令 | 退出与结果 |
+|---|---|
+| `cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=2` | exit101，1471.880秒含编译；按大小写敏感Cargo target标题、每target最后一个结果去重，135 target为4508过/1败/241忽略；原runner直接累计把派生子测试重复加一次为4509，采用去重结果。AppCore lib1491/0/64、kernel_v2_e2e282/0/36、CLI167/0/16 |
+| 全仓唯一失败 | 既有H306：canvas_prompt::tests::every_node_kind_owns_exactly_one_profile，creative.video-edit.v1的defaultUserPrompt为空；本轮未改该文件，不混修、不称全仓全绿。H64/H92本轮通过 |
+| `cargo fmt --all -- --check`；`git diff --check` | exit0 |
+| `cargo clippy --all-targets --all-features --offline -j 2 -- -D warnings` | exit101，26.374秒，既有models/client.rs:385 clone_on_copy |
+| `cargo clippy -p deepagent-app-core --all-targets --no-deps --offline -j 2 -- -D warnings` | exit101，65.939秒；既有12条lib诊断与workflow_audit/media两条test诊断，未在本轮文件报新诊断 |
+| 同上移除`-D warnings`的all-target lint | exit101，63.441秒，既有kernel_v2_e2e/mcp_discovery_restore.rs:776 panicking_unwrap仍阻断；没有加allow或改基线 |
+| `cargo clippy -p deepagent-app-core --lib --no-deps --offline -j 2` | exit0，23.667秒，保留12条既有警告，不称严格通过 |
+| `cargo clippy -p deepagent-persistence --all-targets --no-deps --offline -j 2 -- -D warnings` | exit0，5.061秒，共享锁owner及其测试严格lint通过 |
+| `cargo build -p deepagent-cli --offline -j 2` | exit0，108.693秒 |
+| `cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check` | exit1，4处既有格式diff；另用git show HEAD保存到target合成基线，rustfmt --check --edition 2021 --config-path rustfmt.toml --config skip_children=true同样exit1，归一化路径后所有诊断逐字相同；本轮只改约6793处，保留24/37/2300/3095处既有内容，不顺手格式化 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --offline -j 1` | exit0，62.907秒，生产桌面组装消费方通过 |
+| `cd apps/desktop; pnpm build` | exit0，179.480秒，既有脚本测试、tsc与Vite构建通过，保留第三方externalized/包体积等构建警告，不代表UI手测 |
+
+证据：target/h88-repair-20261104的final-*.log/-result.json、final-workspace-targets.json/-deduplicated.json、final-sources.json及desktop-baseline-format。完整workspace已执行，不因H306而跳过；严格lint与桌面全文件格式既有失败也全部如实保留。没有真实UI点击、Keychain、供应商、其他OS或长期压力验收：本轮不改UI/请求协议，且不获准接触真实凭据/服务；这些不能以构建冒充。E03列出的混合版本/外部直接写库、在途请求动态撤权、只读Env以及显式恢复限制保留；不修H223选型或H290画布配置凭据事务。公开契约/schema/依赖未改，无数据库迁移或真实用户数据操作。
+
+按上述范围将H88标为已修复并验收，代码/测试/当时双文档将一并独立提交，取得hash后另做文档回填，不反复amend、不推送/PR。306唯一主行/8列核对后，本轮新增验收1、历史跳过/归并/撤销新增0；累计152验收/23历史跳过/7归并/3撤销/121待修复/0修复中，有效未关闭121含H180授权跳过，实际待处理120。下一项准备H290（画布provider配置/凭据混合身份），按持久化完整性与敏感身份错误路由风险优先，先核对原探针与生产消费者，不将H88实现直接套用或合并计数。总剩余200–400有效修复与验收小时仍是未逐项校准历史粗估，依据剩余跨层权限、执行、持久化/消费方规模；尚无可靠工时计量，不能按本次构建等待机械扣减。设备/依赖/编译/环境等待另计，不能给精确完工日期，整体goal保持active。
 
 ### H-89：Harness 显式选择未知模型时静默回退到默认模型
 

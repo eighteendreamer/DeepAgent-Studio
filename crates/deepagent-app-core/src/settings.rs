@@ -1444,18 +1444,20 @@ impl SettingsService {
         if api_key.trim().is_empty() {
             return Err(CoreError::invalid("API key must not be empty"));
         }
+        // Intent takes a shared durable generation before waiting for discovery.
+        let generation = self.begin_credential_change()?;
         // Discover first so we never store a key that doesn't work.
         let discovery = ModelDiscovery::deepseek(self.transport.clone());
         let catalog = discovery.discover(api_key).await?;
 
-        // Key → secret store (NOT the database).
-        self.secrets.set(API_KEY_NAME, api_key)?;
+        self.complete_credential_change(&generation, api_key, catalog)
+    }
 
+    fn merge_discovered_catalog(&self, catalog: ModelCatalog) -> Result<AppSettings> {
         // Merge only discovery-owned fields into the current durable document.
-        // The credential lifecycle is separate; see the H-88 audit item.
         let discovered_at = now_ms();
         let pricing = Self::pricing_snapshot();
-        let settings = self.edit_settings(|prior| {
+        self.edit_settings(|prior| {
             let mut settings = match prior {
                 Some(settings) => settings,
                 None => serde_json::from_value(serde_json::json!({
@@ -1470,19 +1472,13 @@ impl SettingsService {
             settings.pricing_catalog = pricing.clone();
             settings.web_search = normalize_web_search_settings(settings.web_search);
             Ok(settings)
-        })?;
-
-        self.view_with_key(Some(api_key), &settings)
+        })
     }
 
     /// Re-run discovery with the stored key (e.g. to pick up new models).
     /// Also refreshes pricing alongside model discovery.
     pub async fn refresh_models(&self) -> Result<SettingsView> {
-        let key = self
-            .secrets
-            .get(API_KEY_NAME)?
-            .ok_or_else(|| CoreError::not_found("API key not set; initialize first"))?;
-        self.initialize(&key).await
+        self.discover_for_refresh().await
     }
 
     /// Refresh official DeepSeek pricing and persist to settings.
@@ -1567,7 +1563,7 @@ impl SettingsService {
             }
             Ok(())
         })?;
-        let key = self.secrets.get(API_KEY_NAME)?;
+        let key = self.api_key()?;
         self.view_with_key(key.as_deref(), &settings)
     }
 
@@ -1603,7 +1599,7 @@ impl SettingsService {
 
     /// The raw API key from the secret store (for internal runtime use only).
     pub fn api_key(&self) -> Result<Option<String>> {
-        self.secrets.get(API_KEY_NAME)
+        self.read_current_credential()
     }
 
     /// Validate an API key with a read-only `/models` discovery call.
@@ -1631,8 +1627,7 @@ impl SettingsService {
     /// surfaces the error message verbatim.
     pub async fn query_balance(&self) -> Result<BalanceDto> {
         let key = self
-            .secrets
-            .get(API_KEY_NAME)?
+            .api_key()?
             .ok_or_else(|| CoreError::not_found("API key not set; initialize first"))?;
         let settings = self
             .load()?
@@ -2080,7 +2075,7 @@ impl SettingsService {
             settings.reasoning_effort = effort;
             Ok(())
         })?;
-        let key = self.secrets.get(API_KEY_NAME)?;
+        let key = self.api_key()?;
         self.view_with_key(key.as_deref(), &settings)
     }
 
@@ -2102,7 +2097,7 @@ impl SettingsService {
             settings.responses = settings_next.clone();
             Ok(())
         })?;
-        let key = self.secrets.get(API_KEY_NAME)?;
+        let key = self.api_key()?;
         self.view_with_key(key.as_deref(), &settings)
     }
 
@@ -2113,7 +2108,7 @@ impl SettingsService {
             settings.responses.ineffective = developer.ineffective.clone();
             Ok(())
         })?;
-        let key = self.secrets.get(API_KEY_NAME)?;
+        let key = self.api_key()?;
         self.view_with_key(key.as_deref(), &settings)
     }
 
@@ -2123,7 +2118,7 @@ impl SettingsService {
             settings.approval_policy = policy;
             Ok(())
         })?;
-        let key = self.secrets.get(API_KEY_NAME)?;
+        let key = self.api_key()?;
         self.view_with_key(key.as_deref(), &settings)
     }
 
@@ -2133,7 +2128,7 @@ impl SettingsService {
             settings.sandbox_mode = mode;
             Ok(())
         })?;
-        let key = self.secrets.get(API_KEY_NAME)?;
+        let key = self.api_key()?;
         self.view_with_key(key.as_deref(), &settings)
     }
 
@@ -2143,7 +2138,7 @@ impl SettingsService {
             settings.terminal_shell = shell;
             Ok(())
         })?;
-        let key = self.secrets.get(API_KEY_NAME)?;
+        let key = self.api_key()?;
         self.view_with_key(key.as_deref(), &settings)
     }
 
@@ -2229,16 +2224,12 @@ impl SettingsService {
 
     /// The redacted view for the UI, or `None` if uninitialized.
     pub fn view(&self) -> Result<Option<SettingsView>> {
-        let Some(settings) = self.load()? else {
-            return Ok(None);
-        };
-        let key = self.secrets.get(API_KEY_NAME)?;
-        Ok(Some(self.view_with_key(key.as_deref(), &settings)?))
+        self.current_credential_view()
     }
 
     /// Clear the stored key (sign-out). Leaves the catalog in place.
     pub fn clear_key(&self) -> Result<()> {
-        self.secrets.delete(API_KEY_NAME)
+        self.clear_current_credential()
     }
 
     fn view_with_key(&self, key: Option<&str>, settings: &AppSettings) -> Result<SettingsView> {
@@ -2309,6 +2300,9 @@ fn now_ms() -> i64 {
 #[path = "settings/persistence.rs"]
 mod persistence;
 
+#[path = "settings/credential_lifecycle.rs"]
+mod credential_lifecycle;
+
 #[cfg(test)]
 #[path = "settings/repair_tests.rs"]
 mod repair_tests;
@@ -2316,6 +2310,14 @@ mod repair_tests;
 #[cfg(test)]
 #[path = "settings/process_tests.rs"]
 mod process_tests;
+
+#[cfg(test)]
+#[path = "settings/credential_tests.rs"]
+mod credential_tests;
+
+#[cfg(test)]
+#[path = "settings/credential_process_tests.rs"]
+mod credential_process_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2823,7 +2825,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit H-88: an earlier model refresh can restore a removed or replaced credential"]
     async fn audit_refresh_models_does_not_restore_a_superseded_api_key() {
         use crate::secret_store::SqliteSecretStore;
 

@@ -18,6 +18,9 @@ mod build_boundary;
 #[path = "kernel_v2_e2e/settings_host_updates.rs"]
 mod settings_host_updates;
 
+#[path = "kernel_v2_e2e/credential_lifecycle.rs"]
+mod credential_lifecycle;
+
 #[path = "kernel_v2_e2e/failed_response_usage.rs"]
 mod failed_response_usage;
 
