@@ -27,6 +27,11 @@ struct WaitingRead {
 
 #[async_trait]
 impl Tool for WaitingRead {
+    fn read_only_projection(self: Arc<Self>) -> Option<Arc<dyn Tool>> {
+        // Only synthetic wait instrumentation is shared, no parent state.
+        Some(self)
+    }
+
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "h236_read_gate".into(),
@@ -131,7 +136,7 @@ async fn exercise(point: StopPoint) {
         model: "deepseek-flash".into(),
         reasoning_effort: ReasoningEffort::None,
         mcp: None,
-        agent_registry: Arc::new(build_hook_agent_registry(&tools).unwrap()),
+        agent_registry: Arc::new(tools),
         agent_policy: Arc::new(HookRegistry::new()),
         agent_permissions: PermissionSet::empty(),
         events: Arc::downgrade(&sink),

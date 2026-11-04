@@ -25,6 +25,14 @@ static HOOK_EVENT_SEQ: AtomicU64 = AtomicU64::new(1);
 #[path = "hook_cancellation_tests.rs"]
 mod cancellation_tests;
 
+#[cfg(test)]
+#[path = "hook_read_only_tests.rs"]
+mod read_only_tests;
+
+#[cfg(test)]
+#[path = "hook_read_only_lifecycle_tests.rs"]
+mod read_only_lifecycle_tests;
+
 /// Result of a settings-page hook test run (any of the 5 action types).
 #[derive(Debug, Clone)]
 pub struct HookActionTestResult {
@@ -239,6 +247,8 @@ pub(crate) struct AppHookActionExecutor {
     pub(crate) model: String,
     pub(crate) reasoning_effort: ReasoningEffort,
     pub(crate) mcp: Option<Arc<deepagent_mcp::McpRegistry>>,
+    /// Source capabilities only. Materialize a fresh read-only projection for
+    /// every hook agent, so sibling agents never share actor-local caches.
     pub(crate) agent_registry: Arc<ToolRegistry>,
     /// Effective parent policy without user/plugin lifecycle callbacks.
     pub(crate) agent_policy: Arc<HookRegistry>,
@@ -367,8 +377,8 @@ impl AppHookActionExecutor {
             model_hook_system_prompt(true)
         );
         let permissions = self.agent_permissions.clone();
-        let tools = self
-            .agent_registry
+        let registry = build_hook_agent_registry(&self.agent_registry)?;
+        let tools = registry
             .visible_to(&permissions)
             .into_iter()
             .map(|descriptor| {
@@ -401,7 +411,7 @@ impl AppHookActionExecutor {
             ..RuntimeConfig::default()
         };
         let engine: RuntimeEngine<'_, SystemClock> =
-            RuntimeEngine::new(&self.agent_registry, Default::default(), config)
+            RuntimeEngine::new(&registry, Default::default(), config)
                 .with_hooks(&self.agent_policy)
                 .with_cancel(execution.cancel_flag())
                 .with_cancellation_token(execution.cancellation_token());
@@ -577,12 +587,18 @@ fn bounded_hook_text(value: &str, max_chars: usize) -> String {
 
 pub(crate) fn build_hook_agent_registry(source: &ToolRegistry) -> Result<ToolRegistry> {
     let mut registry = ToolRegistry::new();
-    for spec in source.iter_specs().filter(|spec| {
-        spec.descriptor.risk == RiskLevel::Safe
-            && spec.descriptor.name != "task"
-            && spec.descriptor.name != "shell"
-    }) {
-        registry.register(spec.tool.clone())?;
+    for spec in source
+        .iter_specs()
+        .filter(|spec| spec.descriptor.risk == RiskLevel::Safe)
+    {
+        if let Some(observer) = spec.tool.clone().read_only_projection() {
+            if observer.descriptor() != spec.descriptor {
+                return Err(CoreError::invalid(
+                    "read-only projection changed its capability contract",
+                ));
+            }
+            registry.register(observer)?;
+        }
     }
     Ok(registry)
 }

@@ -400,6 +400,12 @@ impl TaskListTool {
 
 #[async_trait]
 impl Tool for TaskListTool {
+    fn read_only_projection(self: Arc<Self>) -> Option<Arc<dyn Tool>> {
+        // snapshot/counts are observers; neither consumes the parent's pending
+        // reminder. TodoWrite deliberately inherits the fail-closed default.
+        Some(self)
+    }
+
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "task_list".into(),

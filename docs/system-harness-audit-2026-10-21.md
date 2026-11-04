@@ -9560,7 +9560,47 @@ source-check.json确认6份相关生产源码与最终测试文件全部匹配�
 
 ### H-234：声明 isolated/read-only 的 agent-hook 共享主运行 TodoStore，正常完成仍替换父任务列表
 
-**级别：低（P3，需配置 agent 类型 hook 的状态隔离缺陷）；状态：正式 SettingsService/ChatService/Kernel 工作流已复现，未修复。不是 H-233 的流失败预执行：本项所有供应商响应均正常 completed，不依赖断流、重试或失败。**
+> 当前状态：已修复并验收（2026-11-05，仅E-H234-03所列本机范围）；见[修复进度](system-harness-repair-progress.md#h-234-agent-hook只读能力与父状态隔离已修复并验收2026-11-05)。原始失败证据保留，旧状态为当时审计事实。
+
+**E-H234-01（原探针复核与本轮范围，2026-11-05，未验收）**：起点2fff0197，tracked干净，原五项用户未跟踪内容只列名、不读改/暂存/删除。仅H234，不混修H233流式预执行、H235费用或H236取消。按code-audit核对原审计及Tool/registry、风险/权限/并发、TodoStore、hook装配/执行、H46文件观察与H238历史共享边界、生产调用/测试及Cargo/CI/格式配置。已授权本仓库，使用合成TempDir/文件SQLite、MemorySecretStore、离线transport及隔离HOME/APPDATA，不接触真实用户文件、凭据、网络或供应商。
+
+真实`cargo test -p deepagent-app-core --test kernel_v2_e2e agent_hook_state --offline -j 2 -- --include-ignored --nocapture --test-threads=1`为exit101、2过/2败/0忽略、134.532秒（含编译），写入allow/deny均实际公开todo_write并改成canary，主run均succeeded/唯一终态，父工具拒绝确实生效、父历史无hook私有call；两个task_list只读对照保持原列表。原复现成立，不以默认ignored绿测跳过。证据target/h234-repair-20261105，原失败保留。
+
+**本地设计准备**：Safe、read_only权限和is_concurrency_safe不是无状态/只读效果承诺；现build_hook_agent_registry按Safe+名称排除后clone Arc，独立Session并不能使共享对象只读。拟在既有Tool边界提供默认None的只读可执行投影；经实现审查的只读观察工具显式提供投影，未知/写状态工具默认不共享，每次hook invocation独立物化，工具广告和执行共用同一registry并保留现有权限/路径/审批守卫。文件读取使用独立缓存，task_list只读观察父列表且不消费reminder；不新增Todo中心、actor全局存储或名称黑名单。参考Claude仅借鉴执行主体作用域，不复制其可写hook策略；本项目既有system明确承诺只读，因此不为保留todo_write而让hook管理新的私有可写列表。新未知工具需显式提供只读投影才可供hook使用，此兼容性收紧将单列。新增能力投影/缓存/父reminder TDD正在运行，尚未生产修复或验收，无本项提交、不计新增修复。
+
+
+**E-H234-02（TDD、设计复核及候选结果，2026-11-05，未最终验收）**：新单元红测命令`cargo test -p deepagent-app-core --lib hook_runtime::read_only_tests:: --offline -j 2 -- --nocapture --test-threads=1`实际exit101、1过/2败/0忽略、111.232秒；任意命名Safe状态工具仍可执行，独立观察者首次读取得到父stub，父reminder只读对照通过。第一候选同组3/0（122.820秒），原agent_hook_state组4/0（112.727秒）；这些不是最终冻结源码。
+
+设计核查后**修正E01的独立缓存计划**：H46/H238已经明确共享文件字节缓存而隔离观察事实，最终read_file投影复用同一byte cache，给没有运行观察上下文的直接调用建立私有fallback generation；真实Runtime提供的generation原样保留，不能覆盖reset。每次execute_agent物化只读registry，广告与执行共用，TaskList只读观察父列表、不消费pending reminder；TodoWrite及未知Safe/MCP/custom能力默认None，不使用名称黑名单或第二套Todo中心。仅read_file/list_dir/glob/grep/task_list五种已审查native能力显式投影；descriptor、权限、路径与现有审批policy必须保留。这是可信native实现契约的本地设计，不是OS沙箱或信任远端readOnlyHint。父工具registry、DTO/协议、数据库schema不变；未知工具不再因Safe自动供agent-hook调用，属于有意兼容性收紧。
+
+扩展真实Runtime生命周期候选green2为8/1（113.634秒）：新夹具误以为空工具列表必有tools数组，实际序列化省略该字段；只修夹具。green3仍8/1（172.792秒）：直接调用内部host并仅取消token，绕过了生产HookRegistry/run_controlled负责同步child flag及有界收尾的资源owner，在新夹具2秒窗超时。已查明调用链，改用正式HookDefinitions/UserPromptSubmit/HookRegistry.dispatch，未修改H236取消生产行为或放宽时限；green4取得9过/0败/0忽略（105.067秒）。两次失败日志保留，不能将它们算产品通过。真实Kernel消费者组`cargo test -p deepagent-app-core --test kernel_v2_e2e hook_ --offline -j 2 -- --nocapture --test-threads=1`候选已63过/0败/5忽略（184.534秒）；原H234两个缺陷探针已取消ignore，允许/拒绝、正常task_list、关闭后重开SQLite检查父列表及唯一终态均通过，H46/H237/H235/H236组对照通过。最终冻结源码的定向及全仓/格式/lint/构建仍需验收；不计新增修复、不提交。
+
+**E-H234-03（最终实现与本机验收，2026-11-05）**：本项已修复并验收，仅限以下Windows本机合成场景。既有Tool trait新增默认拒绝的read_only_projection，只有已审查的五类原生观察工具显式提供；每次hook执行重新投影，descriptor不一致立即拒绝，schema广告与Runtime实际派发同源。TaskList保留父只读视图且不消费reminder，TodoWrite/未知Safe能力无法进入hook。read_file复用H46字节缓存，私有fallback观察scope仅用于缺少Runtime观察context的调用，Runtime的独立generation/reset/取消/编辑依据保持不变。装配保留源registry而非复用一次投影，没有新增状态中心、名称特判、协议/配置/依赖/SQL迁移或绕过权限/审批。
+
+9份Rust源码/测试SHA256冻结于final-sources.json，所有最终命令结束后复核0变化。新6项单元默认执行，含Safe/并发/只读权限与任意名称不等于只读、投影descriptor不变、直接读取观察隔离、父reminder、真实私有Runtime非法todo_write拒绝后的allow/deny/非法JSON/正式派发取消/drop，以及同一host两串行+两并发独立物化。新生命周期单元使用Noop sink，不冒称验收HookStarted/Completed；真实事件、父工具结果、父列表/私有调用不入父历史和唯一终态由原Kernel探针验证。原H234两个缺陷探针取消ignore进入默认回归，四组均新增关闭ChatService/数据库后重开文件SQLite核对父列表持久结果与succeeded终态。文件权限/路径/缓存、取消和用量的现有hook消费者未放宽。
+
+| 命令（最终冻结源码） | 实际结果 |
+|---|---|
+| `cargo test -p deepagent-app-core --lib hook_runtime:: --offline -j 2 -- --nocapture --test-threads=1` | exit0，108.858秒；9过/0败/0忽略 |
+| `cargo test -p deepagent-app-core --test kernel_v2_e2e hook_ --offline -j 2 -- --nocapture --test-threads=1` | exit0，70.749秒；63过/0败/5忽略 |
+| `cargo test -p deepagent-tools -p deepagent-builtins --offline -j 2 -- --test-threads=1` | exit0，107.531秒；401过/0败/3忽略 |
+| `cargo build -p deepagent-cli --offline -j 2` | exit0，73.77秒 |
+| `cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=1` | exit101，1657.697秒；138顶层target，4607过/1败/234忽略（139原始块，嵌套子进程去重） |
+| `cargo fmt --all -- --check` | exit0，4.588秒 |
+| `cargo clippy --all-targets --all-features --offline -j 2 -- -D warnings` | exit101，8.592秒 |
+| `cargo clippy -p deepagent-tools -p deepagent-builtins --all-targets --all-features --no-deps --offline -j 2 -- -D warnings` | exit0，27.011秒 |
+| `cargo clippy -p deepagent-app-core --lib --all-features --no-deps --offline -j 2 -- -D warnings` | exit101，33.317秒 |
+| `cargo clippy -p deepagent-tools -p deepagent-builtins -p deepagent-app-core --all-targets --all-features --no-deps --offline -j 2 --message-format=json` | exit101，57.172秒 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --offline -j 2` | exit0，23.263秒 |
+| `cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check` | exit1，0.63秒 |
+
+全仓唯一失败是既有H306：canvas_prompt::tests::every_node_kind_owns_exactly_one_profile，creative.video-edit.v1的defaultUserPrompt为空；不是本项代码回归。AppCore lib1515过/0败/61忽略、完整Kernel289过/0败/32忽略，SDK stdio8过/0败。全仓严格Clippy仍在未改models/client.rs:385的clone_on_copy阻断；AppCore严格lib仍12项旧诊断（context_runtime八处clone、http_runtime return、plugin_preparation复杂类型、run_assembler参数数量、session_title借用）。补充all-target/all-feature/no-deps JSON诊断为30 warnings/1 error，错误仍为未改mcp_discovery_restore.rs:776的panicking_unwrap，9份本项文件0诊断；这是诊断补充，不是降低严格门禁或声称全绿。Tauri格式仍有未改lib.rs:26/39/2302/3097四处旧差异；根fmt、工具/内置工具严格lint、CLI build与独立Tauri check通过。上述失败文件与2fff0197均无diff，原失败/日志均保留，未混修或压制。
+
+证据为target/h234-repair-20261105下original-hook-state-probe、readonly-projection-red、各候选及final-*日志/result，workspace按大小写敏感Cargo顶层banner归属、每target末次结果去重，不加算子进程。全部为真实命令结果，墙钟包含编译/进程/调度等待，不等于人工有效工时。未执行pnpm build、GUI、真实供应商/第三方MCP、其他OS或OS隔离验收：本项无桥接/前端DTO/UI变更，Tauri仅后端编译检查；也未做强杀/断电、所有第三方native投影实现的纯读证明或全部路径矩阵。原生日志/临时合成数据和用户未跟踪内容未删除、不提交。
+
+兼容性：agent-hook仅保留read_file/list_dir/glob/grep/task_list，经原权限与policy约束；其他Safe、MCP/plugin/custom工具须可信native实现显式只读投影且descriptor一致，不能只凭远端readOnlyHint进入。父工具能力不变；这是有意收紧原“supplied read-only tools”的可执行边界，不是绝对OS只读沙箱。原H233流失败预执行仍独立待复核，本项不计其修复。当前仅本项新增验收1，累计158验收/23历史跳过/7归并/3撤销/115待修/0修复中；115有效未关闭含H180授权跳过，实际待处理114。306唯一台账、每行8列，其他305行不变。本项实现/测试/当时双文档待独立正常commit，真实hash随后另做文档回填，不amend/推送/建PR。下一项优先复核H233失败响应后未记录状态副作用，不提前判定仍可复现。全部剩余200–400有效修复与验收小时仍为历史未逐项校准粗估，依据114项剩余跨层权限/事件/执行/持久化与验证范围；设备、依赖、构建和环境等待另计且暂无可靠上界，不承诺日期。H234本机交付剩余0，整体goal仍active。
+
+**原审计级别与状态（历史证据）：低（P3，需配置 agent 类型 hook 的状态隔离缺陷）；状态：正式 SettingsService/ChatService/Kernel 工作流已复现，未修复。不是 H-233 的流失败预执行：本项所有供应商响应均正常 completed，不依赖断流、重试或失败。**
 
 #### 首轮即时 Evidence（2026-10-24）
 

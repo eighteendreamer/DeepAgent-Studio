@@ -305,6 +305,19 @@ pub trait Tool: Send + Sync {
         self.descriptor().risk == RiskLevel::Safe
     }
 
+    /// Project this capability for an isolated, read-only observer. Unlike
+    /// risk, permissions or concurrency safety, this promises no application
+    /// state writes, commands, nested agents or capability discovery. Unknown
+    /// implementations fail closed. A projection must keep the descriptor and
+    /// all authorization checks, and isolate any actor-local mutable cache.
+    /// Observing shared state is allowed; changing it or consuming its pending
+    /// notifications is not. This is a trusted native implementation contract,
+    /// not an OS sandbox or a claim that remote readOnlyHint is authoritative.
+    /// Create a fresh projection per observer invocation, not per parent run.
+    fn read_only_projection(self: Arc<Self>) -> Option<Arc<dyn Tool>> {
+        None
+    }
+
     /// Whether this tool should be **deferred**: hidden from the per-request
     /// `tools` array until the model explicitly discovers it via `tool_search`.
     /// Default: `false` (always loaded, current behavior).
@@ -375,6 +388,7 @@ mod tests {
             "Tool::should_defer must default to false"
         );
         assert!(!t.always_load(), "Tool::always_load must default to false");
+        assert!(Arc::new(StubTool).read_only_projection().is_none());
     }
 
     #[tokio::test]

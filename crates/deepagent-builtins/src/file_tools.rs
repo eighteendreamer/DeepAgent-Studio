@@ -12,7 +12,9 @@ use async_trait::async_trait;
 
 use deepagent_core::error::Result;
 use deepagent_tools::permission::{Permission, PermissionSet, RiskLevel};
-use deepagent_tools::{Tool, ToolDescriptor, ToolExecutionContext, ToolOutput};
+use deepagent_tools::{
+    Tool, ToolDescriptor, ToolExecutionContext, ToolObservationScope, ToolOutput,
+};
 
 use crate::file_cache::{FileStateCache, SharedFileStateCache};
 use crate::file_mutation::{self, Mutation, Replacement};
@@ -116,6 +118,7 @@ fn format_with_line_numbers<S: AsRef<str>>(lines: &[S], start_line: usize) -> St
 pub struct ReadFileTool {
     root: WorkspaceRoot,
     cache: SharedFileStateCache,
+    observer_scope: Option<ToolObservationScope>,
 }
 
 impl ReadFileTool {
@@ -126,12 +129,27 @@ impl ReadFileTool {
 
     /// Build over a workspace root with a shared per-run cache.
     pub(crate) fn with_cache(root: WorkspaceRoot, cache: SharedFileStateCache) -> Self {
-        Self { root, cache }
+        Self {
+            root,
+            cache,
+            observer_scope: None,
+        }
     }
 }
 
 #[async_trait]
 impl Tool for ReadFileTool {
+    fn read_only_projection(self: Arc<Self>) -> Option<Arc<dyn Tool>> {
+        // Reuse H46's byte cache, not another actor's seen-content evidence.
+        // Runtime invocations supply their own generation; direct callers
+        // get a private fallback generation rather than the parent's None.
+        Some(Arc::new(Self {
+            root: self.root.clone(),
+            cache: self.cache.clone(),
+            observer_scope: Some(ToolObservationScope::default()),
+        }))
+    }
+
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "read_file".into(),
@@ -175,6 +193,10 @@ impl Tool for ReadFileTool {
         args: serde_json::Value,
         context: ToolExecutionContext,
     ) -> Result<ToolOutput> {
+        let context = match (&self.observer_scope, context.observation()) {
+            (Some(scope), None) => context.with_observation(scope.capture()),
+            _ => context,
+        };
         let Some(path) = arg_str(&args, "path") else {
             return Ok(ToolOutput::failure("missing 'path'"));
         };
@@ -741,6 +763,10 @@ impl ListDirTool {
 
 #[async_trait]
 impl Tool for ListDirTool {
+    fn read_only_projection(self: Arc<Self>) -> Option<Arc<dyn Tool>> {
+        Some(self)
+    }
+
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "list_dir".into(),
@@ -811,6 +837,10 @@ impl GlobTool {
 
 #[async_trait]
 impl Tool for GlobTool {
+    fn read_only_projection(self: Arc<Self>) -> Option<Arc<dyn Tool>> {
+        Some(self)
+    }
+
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "glob".into(),
@@ -869,6 +899,10 @@ impl GrepTool {
 
 #[async_trait]
 impl Tool for GrepTool {
+    fn read_only_projection(self: Arc<Self>) -> Option<Arc<dyn Tool>> {
+        Some(self)
+    }
+
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "grep".into(),

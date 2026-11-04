@@ -15,7 +15,7 @@ use deepagent_runtime::RuntimeEventSink;
 use deepagent_tools::{PermissionSet, ToolExecutionContext, ToolRegistry};
 
 use crate::chat_service::InvokedSkillMap;
-use crate::hook_runtime::{build_hook_agent_registry, AppHookActionExecutor, ObservableHookRunner};
+use crate::hook_runtime::{AppHookActionExecutor, ObservableHookRunner};
 use crate::plugin_runtime::PluginRuntimeProjection;
 use crate::project_service::ProjectService;
 use crate::run_config::RunConfigOverlay;
@@ -129,7 +129,7 @@ pub(crate) fn assemble_run_hooks(request: HookAssemblyRequest<'_>) -> Result<Hoo
         model: request.model.clone(),
         reasoning_effort: request.reasoning_effort,
         mcp: request.mcp,
-        agent_registry: Arc::new(build_hook_agent_registry(request.registry)?),
+        agent_registry: Arc::new(request.registry.clone()),
         agent_policy: policy_hooks,
         agent_permissions: request.permissions,
         events: Arc::downgrade(&request.sink),

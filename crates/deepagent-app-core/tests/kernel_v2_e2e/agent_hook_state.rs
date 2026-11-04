@@ -221,7 +221,10 @@ async fn observe(write: bool, deny: bool) -> Value {
         todos(ORIGINAL)
     );
     let hook_output = output(&hook[1], HOOK_CALL);
-    if !write {
+    if write {
+        assert_eq!(hook_output["status"], "error");
+        assert!(hook_output.to_string().contains("unknown tool"));
+    } else {
         assert_eq!(hook_output["status"], "ok");
         assert_eq!(hook_output["result"]["todos"], todos(ORIGINAL));
     }
@@ -240,9 +243,43 @@ async fn observe(write: bool, deny: bool) -> Value {
         .unwrap()
         .iter()
         .any(|tool| tool["name"] == "todo_write");
+    assert!(!advertised_write);
     eprintln!("agent-hook state: write={write}, deny={deny}, advertised_write={advertised_write}, hook_result={hook_output}, parent_list={}, read_status={}, terminal=succeeded, parent_hook_tool_records=0",
         list_output["result"]["todos"], read_output["status"]);
-    list_output["result"]["todos"].clone()
+    let result = list_output["result"]["todos"].clone();
+    drop(hook);
+    drop(parent);
+    drop(events);
+    drop(chat);
+    drop(db);
+    let reopened = Database::open(temporary.path().join("state.sqlite")).unwrap();
+    let history = EventStore::new(&reopened)
+        .load_session(SessionId::from_str(&run.session_id).unwrap())
+        .unwrap();
+    let listed: Vec<_> = history
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ToolCallCompleted {
+                call_id,
+                output,
+                ok: true,
+                ..
+            } if call_id == LIST_CALL => Some(output),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["todos"], todos(ORIGINAL));
+    assert_eq!(
+        RunStore::new(&reopened)
+            .get(RUN)
+            .unwrap()
+            .unwrap()
+            .terminal_kind
+            .as_deref(),
+        Some("succeeded")
+    );
+    result
 }
 
 #[tokio::test]
@@ -256,13 +293,11 @@ async fn read_only_agent_hook_deny_preserves_parent_plan() {
 }
 
 #[tokio::test]
-#[ignore = "audit: a successful isolated agent hook must not replace the parent plan"]
 async fn audit_agent_hook_allow_preserves_parent_plan() {
     assert_eq!(observe(true, false).await, todos(ORIGINAL));
 }
 
 #[tokio::test]
-#[ignore = "audit: denying the parent tool must not leave the hook's task list in the parent"]
 async fn audit_agent_hook_deny_preserves_parent_plan() {
     assert_eq!(observe(true, true).await, todos(ORIGINAL));
 }
