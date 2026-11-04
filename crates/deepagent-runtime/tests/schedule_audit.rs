@@ -1,6 +1,9 @@
 //! Opt-in scheduler ownership audit; real independent processes and file store.
 //! Fire callbacks only record task ids. No model, shell tool or network runs.
 
+#[cfg(windows)]
+#[path = "fixtures/scheduled_admission.rs"]
+mod scheduled_admission;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -20,8 +23,12 @@ fn audit_two_scheduler_processes_cannot_fire_the_same_occurrence() {
         let root = PathBuf::from(root);
         let scheduler = CronScheduler::for_workspace(&root);
         let outcomes = scheduler
-            .poll(now, |task| {
+            .poll(now, |task, occurrence| {
                 std::fs::write(root.join("child-fired"), &task.id).unwrap();
+
+                Ok(deepagent_runtime::schedule::DispatchReceipt {
+                    accepted_at_ms: occurrence.polled_at_ms,
+                })
             })
             .unwrap();
         std::fs::write(root.join("child-outcomes"), outcomes.len().to_string()).unwrap();
@@ -44,7 +51,7 @@ fn audit_two_scheduler_processes_cannot_fire_the_same_occurrence() {
             .unwrap();
         let mut callback_count = 0;
         let outcomes = scheduler
-            .poll(now, |fired| {
+            .poll(now, |fired, occurrence| {
                 callback_count += 1;
                 assert_eq!(fired.id, task.id);
                 // Hold the parent immediately after its real due evaluation
@@ -74,6 +81,10 @@ fn audit_two_scheduler_processes_cannot_fire_the_same_occurrence() {
                     child_status.is_some_and(|status| status.success()),
                     "audit child must exit cleanly"
                 );
+
+                Ok(deepagent_runtime::schedule::DispatchReceipt {
+                    accepted_at_ms: occurrence.polled_at_ms,
+                })
             })
             .unwrap();
         let parent_id = std::fs::read_to_string(root.join("parent-fired")).unwrap();
@@ -81,7 +92,14 @@ fn audit_two_scheduler_processes_cannot_fire_the_same_occurrence() {
         let same_occurrence_fired_twice = child_id.as_deref() == Some(parent_id.as_str());
         let remaining = scheduler.store().read().unwrap();
         let mut sequential_refires = 0;
-        scheduler.poll(now, |_| sequential_refires += 1).unwrap();
+        scheduler
+            .poll(now, |_, occurrence| {
+                sequential_refires += 1;
+                Ok(deepagent_runtime::schedule::DispatchReceipt {
+                    accepted_at_ms: occurrence.polled_at_ms,
+                })
+            })
+            .unwrap();
         assert_eq!(callback_count, 1);
         assert_eq!(outcomes.len(), 1);
         assert_eq!(
@@ -108,13 +126,17 @@ fn audit_scheduler_lock_is_released_after_owner_exit_or_kill() {
         let mode = std::env::var(LOCK_CHILD_MODE).unwrap_or_default();
         let child_now = now;
         scheduler
-            .poll(child_now, |_| {
+            .poll(child_now, |_, occurrence| {
                 std::fs::write(root.join("lock-ready"), "ready").unwrap();
                 if mode == "crash" {
                     std::thread::sleep(Duration::from_secs(30));
                 } else {
                     std::thread::sleep(Duration::from_millis(250));
                 }
+
+                Ok(deepagent_runtime::schedule::DispatchReceipt {
+                    accepted_at_ms: occurrence.polled_at_ms,
+                })
             })
             .unwrap();
         return;
@@ -151,7 +173,14 @@ fn audit_scheduler_lock_is_released_after_owner_exit_or_kill() {
         }
 
         let mut fired = 0;
-        let blocked = scheduler.poll(now, |_| fired += 1).unwrap();
+        let blocked = scheduler
+            .poll(now, |_, occurrence| {
+                fired += 1;
+                Ok(deepagent_runtime::schedule::DispatchReceipt {
+                    accepted_at_ms: occurrence.polled_at_ms,
+                })
+            })
+            .unwrap();
         assert!(
             blocked.is_empty(),
             "{mode} owner must block a competing poll"
@@ -176,7 +205,14 @@ fn audit_scheduler_lock_is_released_after_owner_exit_or_kill() {
         } else {
             now
         };
-        let after_release = scheduler.poll(after_now, |_| fired += 1).unwrap();
+        let after_release = scheduler
+            .poll(after_now, |_, occurrence| {
+                fired += 1;
+                Ok(deepagent_runtime::schedule::DispatchReceipt {
+                    accepted_at_ms: occurrence.polled_at_ms,
+                })
+            })
+            .unwrap();
         assert_eq!(fired, 1, "{mode} owner must not strand the occurrence");
         assert_eq!(after_release.len(), 1);
         assert!(matches!(
@@ -188,7 +224,6 @@ fn audit_scheduler_lock_is_released_after_owner_exit_or_kill() {
 
 #[cfg(windows)]
 #[test]
-#[ignore = "audit H-96: post-fire schedule bookkeeping failure must not replay the same occurrence"]
 fn audit_post_fire_bookkeeping_failure_replays_same_occurrence() {
     let now = time::macros::datetime!(2026-10-21 12:00:00);
 
@@ -205,13 +240,18 @@ fn audit_post_fire_bookkeeping_failure_replays_same_occurrence() {
             )
             .unwrap();
         let schedule_path = scheduler.store().path().to_path_buf();
+        let db =
+            deepagent_persistence::Database::open(directory.path().join("runs.sqlite")).unwrap();
+        let original_permissions = std::fs::metadata(&schedule_path).unwrap().permissions();
         let mut fire_count = 0;
 
-        let first_poll = scheduler.poll(now, |_| {
-            fire_count += 1;
+        let first_poll = scheduler.poll(now, |task, occurrence| {
+            let receipt = scheduled_admission::accept(&db, task, occurrence, || fire_count += 1)?;
             let mut permissions = std::fs::metadata(&schedule_path).unwrap().permissions();
             permissions.set_readonly(true);
             std::fs::set_permissions(&schedule_path, permissions).unwrap();
+
+            Ok(receipt)
         });
         assert!(
             first_poll.is_err(),
@@ -224,18 +264,16 @@ fn audit_post_fire_bookkeeping_failure_replays_same_occurrence() {
         assert_eq!(pending[0].last_fired_at, None);
         drop(scheduler);
 
-        let mut permissions = std::fs::metadata(&schedule_path).unwrap().permissions();
-        permissions.set_readonly(false);
-        std::fs::set_permissions(&schedule_path, permissions).unwrap();
+        std::fs::set_permissions(&schedule_path, original_permissions).unwrap();
 
         let scheduler = CronScheduler::for_workspace(directory.path());
         let retry = scheduler
-            .poll(now, |_| {
-                fire_count += 1;
+            .poll(now, |task, occurrence| {
+                scheduled_admission::accept(&db, task, occurrence, || fire_count += 1)
             })
             .unwrap();
         assert_eq!(retry.len(), 1);
-        assert_eq!(fire_count, 2, "the same occurrence fired again");
+        assert_eq!(fire_count, 1, "the same occurrence must not dispatch again");
         if recurring {
             assert_eq!(
                 scheduler.store().read().unwrap()[0].last_fired_at,

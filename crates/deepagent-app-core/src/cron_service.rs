@@ -1,7 +1,7 @@
 //! Scheduled-prompt runtime (D2): CronBackend impl + tick-loop launcher.
 //!
 //! The backend owns the store and provides the fire→run bridge, spawning each
-//! fired prompt as a background session via `ChatService::run_in_session`.
+//! fired prompt through the normal prepared ChatService admission/executor.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -31,7 +31,7 @@ impl CronService {
 
     /// Launch the tick loop. Each fired task spawns a background session (no
     /// continue_session, so every fire is a fresh session). The loop runs
-    /// until `shutdown` fires or an error occurs.
+    /// until `shutdown` fires or an unrecoverable schedule read error occurs.
     pub async fn run_tick_loop(self: Arc<Self>, shutdown: CancellationToken) -> Result<()> {
         let tick = std::time::Duration::from_secs(60);
         let clock = || {
@@ -42,49 +42,44 @@ impl CronService {
             time::PrimitiveDateTime::new(local.date(), local.time())
         };
 
-        let self_for_fire = self.clone();
-        let fire = move |task: &deepagent_runtime::schedule::ScheduledTask| {
-            let chat = self_for_fire.chat.clone();
-            let prompt = task.prompt.clone();
-            let task_id = task.id.clone();
-            let pending = chat.pending_approvals();
-            let approval_task_id = task_id.clone();
-            tokio::spawn(async move {
-                tracing::info!(task_id = %task_id, "firing scheduled task");
-                let result = chat
-                    .run_in_session(
-                        &prompt,
-                        None, // fresh session every fire
-                        None, // default env_mode
-                        None, // no connection_id
-                        vec![],
-                        None,
-                        false,
-                        None,
-                        |_event| {}, // fire-and-forget: no event collection
-                        move |approval| {
-                            // A scheduled run has no interactive owner.  The
-                            // ordinary channel gate registers before invoking
-                            // this callback, so resolving the request here
-                            // wakes the exact waiter instead of leaving an
-                            // unreachable approval pending forever.
-                            let resolved = pending.resolve_approved(&approval.call_id, false);
-                            tracing::info!(
-                                task_id = %approval_task_id,
-                                call_id = %approval.call_id,
-                                resolved,
-                                "denied approval for unattended scheduled run"
-                            );
-                        },
-                    )
-                    .await;
-                if let Err(e) = result {
-                    tracing::warn!(task_id = %task_id, error = %e, "scheduled task run failed");
-                }
-            });
-        };
+        let owner = self.clone();
+        run_tick_loop(
+            self.scheduler.clone(),
+            tick,
+            clock,
+            move |task, occurrence| owner.dispatch(task, occurrence),
+            shutdown,
+        )
+        .await
+    }
 
-        run_tick_loop(self.scheduler.clone(), tick, clock, fire, shutdown).await
+    fn dispatch(
+        &self,
+        task: &deepagent_runtime::schedule::ScheduledTask,
+        occurrence: &deepagent_runtime::schedule::ScheduledOccurrence,
+    ) -> Result<deepagent_runtime::schedule::DispatchReceipt> {
+        let (receipt, prepared) = self.chat.admit_scheduled(task, occurrence)?;
+        let Some(prepared) = prepared else {
+            return Ok(receipt);
+        };
+        let chat = self.chat.clone();
+        let prompt = task.prompt.clone();
+        let task_id = task.id.clone();
+        let run_id = occurrence.run_id.clone();
+        let pending = chat.pending_approvals();
+        let approval_task_id = task_id.clone();
+        tokio::spawn(async move {
+            tracing::info!(task_id = %task_id, run_id = %run_id, "executing admitted scheduled task");
+            let result = chat.run_prepared(prepared, &prompt, |_event| {}, move |approval| {
+                let resolved = pending.resolve_approved(&approval.call_id, false);
+                tracing::info!(task_id = %approval_task_id, call_id = %approval.call_id, resolved,
+                    "denied approval for unattended scheduled run");
+            }).await;
+            if let Err(error) = result {
+                tracing::warn!(task_id = %task_id, run_id = %run_id, %error, "scheduled task run failed");
+            }
+        });
+        Ok(receipt)
     }
 }
 
@@ -130,6 +125,10 @@ mod store_audit;
 #[cfg(test)]
 #[path = "cron_calendar_audit.rs"]
 mod calendar_audit;
+
+#[cfg(test)]
+#[path = "cron_service/delivery_tests.rs"]
+mod delivery_tests;
 
 #[cfg(test)]
 mod audit_tests {
@@ -372,3 +371,7 @@ mod audit_tests {
         .expect("audit must clean up its scheduled run");
     }
 }
+
+#[cfg(all(test, windows))]
+#[path = "cron_service/process_tests.rs"]
+mod process_tests;

@@ -12,11 +12,8 @@
 //! persisted anchor into that same calendar view so one monotonic wall clock
 //! drives both.
 //!
-//! TODO(schedule): this subsystem is not yet wired into app-core. Nothing in
-//! production constructs a [`CronScheduler`] or drives [`run_tick_loop`] — the
-//! store, poll semantics and tick loop exist and are tested, but the app-core
-//! runtime binding (and a `CronCreate`/`CronDelete` tool surface) is still
-//! pending. The comments below mark where that binding *will* attach.
+//! AppCore supplies synchronous admission receipts from the existing run ledger.
+//! File bookkeeping never substitutes for accepting or executing a run.
 
 use std::path::Path;
 
@@ -25,6 +22,7 @@ use time::PrimitiveDateTime;
 
 use super::cron::{epoch_ms_to_local, next_local_match, parse_5_field};
 use super::store::{ScheduledTask, ScheduledTaskStore, RECURRING_MAX_AGE_MS};
+use super::{DispatchReceipt, SchedulePollError, ScheduledOccurrence};
 
 /// What happened to a task on a poll.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,13 +37,13 @@ pub enum FireOutcome {
 /// Whether a task's next run (anchored at `last_fired_at ?? created_at`) is at
 /// or before `now`. Shared by [`CronScheduler::poll`] and the missed-task scan.
 pub fn is_due(task: &ScheduledTask, now: PrimitiveDateTime) -> bool {
-    let Some(from) = epoch_ms_to_local(task.schedule_anchor_ms()) else {
-        return false;
-    };
-    let Ok(fields) = parse_5_field(&task.cron) else {
-        return false;
-    };
-    next_local_match(&fields, from).is_some_and(|next| next <= now)
+    next_due(task).is_some_and(|next| next <= now)
+}
+
+fn next_due(task: &ScheduledTask) -> Option<PrimitiveDateTime> {
+    let from = epoch_ms_to_local(task.schedule_anchor_ms())?;
+    let fields = parse_5_field(&task.cron).ok()?;
+    next_local_match(&fields, from)
 }
 
 /// Tasks whose first run (from their creation anchor) is already in the past —
@@ -69,9 +67,7 @@ impl CronScheduler {
         Self { store }
     }
 
-    /// Store rooted at `workspace` — the constructor the app-core runtime
-    /// binding will use once the scheduler is wired in (see the module-level
-    /// `TODO(schedule)`); no production caller today.
+    /// Store rooted at the workspace used by the AppCore binding.
     pub fn for_workspace(workspace: &Path) -> Self {
         Self::new(ScheduledTaskStore::new(workspace))
     }
@@ -90,9 +86,9 @@ impl CronScheduler {
     pub fn poll(
         &self,
         now: PrimitiveDateTime,
-        mut fire: impl FnMut(&ScheduledTask),
-    ) -> Result<Vec<FireOutcome>> {
-        let Some(_lock) = self.store.try_lock()? else {
+        mut fire: impl FnMut(&ScheduledTask, &ScheduledOccurrence) -> Result<DispatchReceipt>,
+    ) -> std::result::Result<Vec<FireOutcome>, SchedulePollError> {
+        let Some(_lock) = self.store.try_lock().map_err(SchedulePollError::Read)? else {
             tracing::debug!(
                 path = %self.store.path().display(),
                 "another scheduler owns this poll; skipping this tick"
@@ -100,15 +96,16 @@ impl CronScheduler {
             return Ok(Vec::new());
         };
         let now_ms = super::cron::local_to_epoch_ms(now);
-        let tasks = self.store.read()?;
+        let tasks = self.store.read().map_err(SchedulePollError::Read)?;
         let mut outcomes = Vec::new();
         let mut to_delete: Vec<String> = Vec::new();
-        let mut to_mark_fired: Vec<String> = Vec::new();
+        let mut to_mark_fired: std::collections::BTreeMap<i64, Vec<String>> = Default::default();
+        let mut admission_error = None;
 
         for task in &tasks {
-            if !is_due(task, now) {
+            let Some(scheduled_for) = next_due(task).filter(|next| *next <= now) else {
                 continue;
-            }
+            };
             let age_ms = now_ms.saturating_sub(task.created_at);
             if task.is_recurring()
                 && !task.permanent.unwrap_or(false)
@@ -122,9 +119,26 @@ impl CronScheduler {
                 });
                 continue;
             }
-            fire(task);
+            let occurrence =
+                ScheduledOccurrence::new(self.store.path(), task, scheduled_for, now_ms)
+                    .map_err(SchedulePollError::Read)?;
+            let receipt = match fire(task, &occurrence) {
+                Ok(receipt) if receipt.accepted_at_ms > task.schedule_anchor_ms() => receipt,
+                result => {
+                    let error = result.err().unwrap_or_else(|| {
+                        deepagent_core::error::CoreError::invalid(
+                            "scheduled receipt does not advance its anchor",
+                        )
+                    });
+                    admission_error.get_or_insert(error);
+                    continue;
+                }
+            };
             if task.is_recurring() {
-                to_mark_fired.push(task.id.clone());
+                to_mark_fired
+                    .entry(receipt.accepted_at_ms)
+                    .or_default()
+                    .push(task.id.clone());
             } else {
                 to_delete.push(task.id.clone());
             }
@@ -134,35 +148,57 @@ impl CronScheduler {
         }
 
         if !to_delete.is_empty() {
-            self.store.remove(&to_delete)?;
+            self.store
+                .remove(&to_delete)
+                .map_err(SchedulePollError::Bookkeeping)?;
         }
-        if !to_mark_fired.is_empty() {
-            self.store.mark_fired(&to_mark_fired, now_ms)?;
+        for (accepted_at_ms, ids) in to_mark_fired {
+            self.store
+                .mark_fired(&ids, accepted_at_ms)
+                .map_err(SchedulePollError::Bookkeeping)?;
+        }
+        if let Some(error) = admission_error {
+            return Err(SchedulePollError::Admission(error));
         }
         Ok(outcomes)
     }
 }
 
 /// Run the scheduler loop at a fixed tick until `shutdown` fires. One poll per
-/// tick. `clock` yields the current local calendar minute; the app-core runtime
-/// binding *will* plug the real wall clock here once wired (see the module-level
-/// `TODO(schedule)`), and a test can plug a deterministic one. No caller drives
-/// this loop yet.
+/// tick. Recoverable admission/bookkeeping errors retain their due occurrences
+/// and retry with bounded, cancellation-aware backoff, never a tight spin.
+/// Corrupt/unreadable schedule documents still fail explicitly before dispatch.
 pub async fn run_tick_loop(
     scheduler: CronScheduler,
     tick: std::time::Duration,
     mut clock: impl FnMut() -> PrimitiveDateTime + Send,
-    mut fire: impl FnMut(&ScheduledTask) + Send,
+    mut fire: impl FnMut(&ScheduledTask, &ScheduledOccurrence) -> Result<DispatchReceipt> + Send,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<()> {
-    let mut interval = tokio::time::interval(tick);
+    if tick.is_zero() {
+        return Err(deepagent_core::error::CoreError::invalid(
+            "schedule tick must be nonzero",
+        ));
+    }
+    let mut delay = std::time::Duration::ZERO;
+    let mut consecutive_errors = 0u32;
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => return Ok(()),
-            _ = interval.tick() => {
-                let outcomes = scheduler.poll(clock(), &mut fire)?;
-                if !outcomes.is_empty() {
-                    tracing::info!(n = outcomes.len(), "scheduled tasks fired");
+            _ = tokio::time::sleep(delay) => {
+                match scheduler.poll(clock(), &mut fire) {
+                    Ok(outcomes) => {
+                        if consecutive_errors > 0 { tracing::info!(consecutive_errors, "schedule polling recovered"); }
+                        consecutive_errors = 0;
+                        delay = tick;
+                        if !outcomes.is_empty() { tracing::info!(n = outcomes.len(), "scheduled tasks admitted or reconciled"); }
+                    }
+                    Err(error @ SchedulePollError::Read(_)) => return Err(error.into()),
+                    Err(error) => {
+                        consecutive_errors = consecutive_errors.saturating_add(1);
+                        delay = tick.saturating_mul(1u32 << consecutive_errors.min(3)).min(std::time::Duration::from_secs(300));
+                        tracing::warn!(consecutive_errors, retry_ms = delay.as_millis(), %error, "schedule polling degraded; retrying admission/bookkeeping after backoff");
+                    }
                 }
             }
         }
@@ -185,7 +221,14 @@ mod tests {
 
         let fired_at = time::macros::datetime!(2026-09-15 09:00:00);
         let mut fired: Vec<String> = Vec::new();
-        let outcomes = sched.poll(fired_at, |t| fired.push(t.id.clone())).unwrap();
+        let outcomes = sched
+            .poll(fired_at, |t, occurrence| {
+                fired.push(t.id.clone());
+                Ok(crate::schedule::DispatchReceipt {
+                    accepted_at_ms: occurrence.polled_at_ms,
+                })
+            })
+            .unwrap();
         assert_eq!(outcomes.len(), 1);
         assert_eq!(fired, vec![one_shot.id]);
         assert!(sched.store().read().unwrap().is_empty(), "one-shot removed");
@@ -204,7 +247,14 @@ mod tests {
 
         let day1 = time::macros::datetime!(2026-09-15 09:00:00);
         let mut fired: Vec<String> = Vec::new();
-        let outcomes = sched.poll(day1, |t| fired.push(t.id.clone())).unwrap();
+        let outcomes = sched
+            .poll(day1, |t, occurrence| {
+                fired.push(t.id.clone());
+                Ok(crate::schedule::DispatchReceipt {
+                    accepted_at_ms: occurrence.polled_at_ms,
+                })
+            })
+            .unwrap();
         assert_eq!(
             outcomes,
             vec![FireOutcome::Fired {
@@ -220,7 +270,14 @@ mod tests {
         assert_eq!(stored[0].last_fired_at, Some(fired_ms));
         // Same day later: NOT due again (next is strictly after the last fire).
         let noon = time::macros::datetime!(2026-09-15 12:00:00);
-        let outcomes = sched.poll(noon, |t| fired.push(t.id.clone())).unwrap();
+        let outcomes = sched
+            .poll(noon, |t, occurrence| {
+                fired.push(t.id.clone());
+                Ok(crate::schedule::DispatchReceipt {
+                    accepted_at_ms: occurrence.polled_at_ms,
+                })
+            })
+            .unwrap();
         assert!(outcomes.is_empty());
         assert_eq!(fired.len(), 1);
         // Next day at 09:00 exactly: due again (strictly after means 09:00
@@ -240,8 +297,22 @@ mod tests {
         let day1 = time::macros::datetime!(2026-09-15 09:00:00);
         let day2 = time::macros::datetime!(2026-09-16 09:00:00);
         let mut fired: Vec<String> = Vec::new();
-        let o1 = sched.poll(day1, |t| fired.push(t.id.clone())).unwrap();
-        let o2 = sched.poll(day2, |t| fired.push(t.id.clone())).unwrap();
+        let o1 = sched
+            .poll(day1, |t, occurrence| {
+                fired.push(t.id.clone());
+                Ok(crate::schedule::DispatchReceipt {
+                    accepted_at_ms: occurrence.polled_at_ms,
+                })
+            })
+            .unwrap();
+        let o2 = sched
+            .poll(day2, |t, occurrence| {
+                fired.push(t.id.clone());
+                Ok(crate::schedule::DispatchReceipt {
+                    accepted_at_ms: occurrence.polled_at_ms,
+                })
+            })
+            .unwrap();
         assert_eq!(o1.len(), 1);
         assert_eq!(o2.len(), 1);
         assert_eq!(fired.len(), 2);
@@ -259,7 +330,14 @@ mod tests {
         let sched = CronScheduler::new(store);
         let now = time::macros::datetime!(2026-09-15 09:00:00);
         let mut fired: Vec<String> = Vec::new();
-        let outcomes = sched.poll(now, |t| fired.push(t.id.clone())).unwrap();
+        let outcomes = sched
+            .poll(now, |t, occurrence| {
+                fired.push(t.id.clone());
+                Ok(crate::schedule::DispatchReceipt {
+                    accepted_at_ms: occurrence.polled_at_ms,
+                })
+            })
+            .unwrap();
         assert!(fired.is_empty(), "expired task must NOT fire");
         assert_eq!(
             outcomes,
@@ -289,7 +367,14 @@ mod tests {
         let sched = CronScheduler::new(store);
         let now = time::macros::datetime!(2026-09-15 09:00:00);
         let mut fired: Vec<String> = Vec::new();
-        let outcomes = sched.poll(now, |t| fired.push(t.id.clone())).unwrap();
+        let outcomes = sched
+            .poll(now, |t, occurrence| {
+                fired.push(t.id.clone());
+                Ok(crate::schedule::DispatchReceipt {
+                    accepted_at_ms: occurrence.polled_at_ms,
+                })
+            })
+            .unwrap();
         assert_eq!(fired, vec![task.id.clone()]);
         assert_eq!(outcomes, vec![FireOutcome::Fired { task_id: task.id }]);
         assert_eq!(sched.store().read().unwrap().len(), 1);
@@ -312,14 +397,24 @@ mod tests {
         let held = scheduler.store().try_lock().unwrap().unwrap();
         let mut fired = Vec::new();
         assert!(scheduler
-            .poll(now, |fired_task| fired.push(fired_task.id.clone()))
+            .poll(now, |fired_task, occurrence| {
+                fired.push(fired_task.id.clone());
+                Ok(crate::schedule::DispatchReceipt {
+                    accepted_at_ms: occurrence.polled_at_ms,
+                })
+            })
             .unwrap()
             .is_empty());
         assert!(fired.is_empty());
         drop(held);
 
         let outcomes = scheduler
-            .poll(now, |fired_task| fired.push(fired_task.id.clone()))
+            .poll(now, |fired_task, occurrence| {
+                fired.push(fired_task.id.clone());
+                Ok(crate::schedule::DispatchReceipt {
+                    accepted_at_ms: occurrence.polled_at_ms,
+                })
+            })
             .unwrap();
         assert_eq!(fired, vec![task.id]);
         assert_eq!(outcomes.len(), 1);

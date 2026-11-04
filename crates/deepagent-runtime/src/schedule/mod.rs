@@ -9,9 +9,11 @@
 //!   store + a thin `tokio::time` tick wrapper for real runs.
 
 pub mod cron;
+mod delivery;
 pub mod scheduler;
 pub mod store;
 
 pub use cron::{next_local_match, parse_5_field, CronFields};
+pub use delivery::{DispatchReceipt, SchedulePollError, ScheduledOccurrence};
 pub use scheduler::{run_tick_loop, CronScheduler, FireOutcome};
 pub use store::{ScheduledTask, ScheduledTaskStore};

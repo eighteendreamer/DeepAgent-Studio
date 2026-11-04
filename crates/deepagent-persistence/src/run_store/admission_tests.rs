@@ -30,6 +30,7 @@ fn admit(
             task_id: None,
             replaces_run_id: replaces,
             capability_snapshot: Some(snapshot),
+            scheduled: None,
         },
         2,
     )

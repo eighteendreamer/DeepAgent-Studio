@@ -21,6 +21,14 @@ mod capability_tests;
 #[path = "run_store/admission_tests.rs"]
 mod admission_tests;
 
+#[path = "run_store/scheduled.rs"]
+mod scheduled;
+pub use scheduled::ScheduledRunOrigin;
+
+#[cfg(test)]
+#[path = "run_store/scheduled_tests.rs"]
+mod scheduled_tests;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunRecord {
     pub id: String,
@@ -81,6 +89,7 @@ pub struct RunAdmission<'a> {
     pub task_id: Option<&'a str>,
     pub replaces_run_id: Option<&'a str>,
     pub capability_snapshot: Option<&'a serde_json::Value>,
+    pub scheduled: Option<&'a ScheduledRunOrigin>,
 }
 
 /// Storage input for the two run-owned schema domains, not a wire DTO or
@@ -264,6 +273,7 @@ impl<'db> RunStore<'db> {
                 task_id,
                 replaces_run_id: None,
                 capability_snapshot: None,
+                scheduled: None,
             },
             now,
         )
@@ -291,6 +301,13 @@ impl<'db> RunStore<'db> {
             insert_run(&tx, admission.run_id, admission.session_id, admission.task_id, now)?;
             if let Some(snapshot) = admission.capability_snapshot {
                 bind_capability_snapshot(&tx, admission.run_id, snapshot, now)?;
+            }
+            if let Some(origin) = admission.scheduled {
+                origin.validate(admission.run_id)?;
+                if admission.replaces_run_id.is_some() {
+                    return Err(CoreError::invalid("a scheduled admission cannot replace a run"));
+                }
+                insert_run_event(&tx, admission.run_id, now, "accepted", "schedule.accepted", &serde_json::to_value(origin)?)?;
             }
             if let Some(old) = admission.replaces_run_id {
                 crate::run_control::append_control_event(
@@ -447,6 +464,7 @@ impl<'db> RunStore<'db> {
                 task_id: None,
                 replaces_run_id: Some(replaces_run_id),
                 capability_snapshot: None,
+                scheduled: None,
             },
             now,
         )

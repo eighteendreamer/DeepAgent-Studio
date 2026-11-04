@@ -84,7 +84,12 @@ async fn check_row_isolation(label: &str, fault: RowFault) {
         + time::Duration::minutes(2);
     let mut fired = Vec::new();
     cron.scheduler
-        .poll(due_at, |task| fired.push(task.id.clone()))
+        .poll(due_at, |task, occurrence| {
+            fired.push(task.id.clone());
+            Ok(deepagent_runtime::schedule::DispatchReceipt {
+                accepted_at_ms: occurrence.polled_at_ms,
+            })
+        })
         .unwrap();
     let mut sorted_fired = fired.clone();
     sorted_fired.sort();

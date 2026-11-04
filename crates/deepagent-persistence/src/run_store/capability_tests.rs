@@ -336,6 +336,7 @@ fn admit_schema(db: &Database, run: &str, session: &str) {
                 task_id: None,
                 replaces_run_id: None,
                 capability_snapshot: Some(&data),
+                scheduled: None,
             },
             1
         )

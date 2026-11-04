@@ -1,5 +1,156 @@
 use super::*;
 
+#[cfg(windows)]
+#[test]
+fn h96_unavailable_policy_source_fails_before_writing_staged_content() {
+    use deepagent_persistence::fs_commit::access::{create_snapshot_target, WindowsDacl};
+    struct RestorePolicy {
+        file: File,
+        policy: WindowsDacl,
+    }
+    impl Drop for RestorePolicy {
+        fn drop(&mut self) {
+            let _ = self.policy.apply(&self.file, false);
+        }
+    }
+    let root = tempfile::tempdir().unwrap();
+    let store = ScheduledTaskStore::new(root.path());
+    std::fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+    let mut file = create_snapshot_target(store.path(), false).unwrap();
+    let before = b"{\"tasks\":[]}";
+    std::io::Write::write_all(&mut file, before).unwrap();
+    let policy = WindowsDacl::capture(&file).unwrap();
+    let restore = RestorePolicy { file, policy };
+    // An OWNER_RIGHTS deny removes the owner's implicit READ_CONTROL.
+    // Only this synthetic file changes; the pre-opened handle can restore it.
+    let unavailable: WindowsDacl = serde_json::from_value(serde_json::json!({
+        "version":1,"protected":true,"sddl":"D:P(D;;RC;;;OW)(A;;FA;;;OW)"
+    }))
+    .unwrap();
+    unavailable.apply(&restore.file, false).unwrap();
+    let result = store.publish_document(|_| panic!("no content before policy capture succeeds"));
+    assert!(result.is_err());
+    restore.policy.apply(&restore.file, false).unwrap();
+    drop(restore);
+    assert_eq!(std::fs::read(store.path()).unwrap(), before);
+}
+
+#[cfg(windows)]
+#[test]
+fn h96_staged_and_published_schedule_preserve_the_existing_dacl() {
+    use deepagent_persistence::fs_commit::access::{
+        create_snapshot_target, open_policy_source, WindowsDacl,
+    };
+    for protected in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let store = ScheduledTaskStore::new(root.path());
+        std::fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+        let mut file = create_snapshot_target(store.path(), false).unwrap();
+        let policy = WindowsDacl::capture(&file).unwrap();
+        let mut wire = serde_json::to_value(policy).unwrap();
+        if protected {
+            wire["protected"] = serde_json::json!(true);
+            let text = wire["sddl"].as_str().unwrap().replacen("D:", "D:P", 1);
+            wire["sddl"] = serde_json::json!(text);
+        }
+        let protected: WindowsDacl = serde_json::from_value(wire).unwrap();
+        protected.apply(&file, false).unwrap();
+        std::io::Write::write_all(&mut file, b"{\"tasks\":[]}").unwrap();
+        let expected = WindowsDacl::capture(&file).unwrap();
+        drop(file);
+        store
+            .publish_document(|stage| {
+                assert_eq!(
+                    WindowsDacl::capture(stage).unwrap(),
+                    expected,
+                    "protect the staging DACL before writing any sensitive bytes"
+                );
+                std::io::Write::write_all(stage, b"{\"tasks\":[]}")
+            })
+            .unwrap();
+        assert_eq!(
+            WindowsDacl::capture(&open_policy_source(store.path()).unwrap()).unwrap(),
+            expected
+        );
+        store
+            .add("* * * * *".into(), "H96 DACL control".into(), false, 1)
+            .unwrap();
+        assert_eq!(
+            WindowsDacl::capture(&open_policy_source(store.path()).unwrap()).unwrap(),
+            expected
+        );
+        assert_eq!(store.read().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn h96_partial_bookkeeping_write_failure_preserves_the_complete_previous_schedule() {
+    let root = tempfile::tempdir().unwrap();
+    let store = ScheduledTaskStore::new(root.path());
+    store
+        .add("* * * * *".into(), "H96 synthetic".into(), false, 1)
+        .unwrap();
+    let before = std::fs::read(store.path()).unwrap();
+    let failed = store.publish_document(|file| {
+        std::io::Write::write_all(file, b"{\"tasks\":[")?;
+        Err(std::io::Error::other(
+            "H96 injected error after actual partial write",
+        ))
+    });
+    assert!(failed.is_err());
+    assert_eq!(std::fs::read(store.path()).unwrap(), before);
+    assert_eq!(store.read().unwrap().len(), 1);
+}
+
+#[test]
+fn h96_killed_staged_writer_preserves_the_live_schedule() {
+    const ROOT: &str = "DEEPAGENT_H96_STAGE_ROOT";
+    if let Some(root) = std::env::var_os(ROOT) {
+        let root = std::path::PathBuf::from(root);
+        let store = ScheduledTaskStore::new(&root);
+        store
+            .publish_document(|file| {
+                std::io::Write::write_all(file, b"{\"tasks\":[")?;
+                file.sync_all()?;
+                std::fs::write(root.join("stage-ready"), b"ready")?;
+                std::thread::sleep(std::time::Duration::from_secs(60));
+                Ok(())
+            })
+            .unwrap();
+        panic!("parent must kill before publication");
+    }
+    let root = tempfile::tempdir().unwrap();
+    let store = ScheduledTaskStore::new(root.path());
+    store
+        .add("* * * * *".into(), "H96 staged kill".into(), false, 1)
+        .unwrap();
+    let before = std::fs::read(store.path()).unwrap();
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "schedule::store::repair_tests::h96_killed_staged_writer_preserves_the_live_schedule",
+            "--test-threads=1",
+        ])
+        .env(ROOT, root.path())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !root.path().join("stage-ready").exists() {
+        if std::time::Instant::now() >= deadline || child.try_wait().unwrap().is_some() {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("child did not reach a partial staged write");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(std::fs::read(store.path()).unwrap(), before);
+    assert_eq!(store.read().unwrap().len(), 1);
+}
+
 fn fixture() -> (ScheduledTaskStore, tempfile::TempDir, ScheduledTask) {
     let dir = tempfile::tempdir().unwrap();
     let store = ScheduledTaskStore::new_at(dir.path().join("scheduled-tasks.json"));
@@ -305,7 +456,12 @@ async fn h270_real_tick_loop_keeps_bad_rows_and_settles_healthy_tasks_once() {
                 }
                 now
             },
-            |task| fired.push(task.id.clone()),
+            |task, occurrence| {
+                fired.push(task.id.clone());
+                Ok(crate::schedule::DispatchReceipt {
+                    accepted_at_ms: occurrence.polled_at_ms,
+                })
+            },
             shutdown,
         ),
     )
@@ -338,7 +494,12 @@ async fn h270_corrupt_document_ends_tick_with_an_error_before_any_dispatch() {
             CronScheduler::new(store.clone()),
             std::time::Duration::from_millis(5),
             || time::macros::datetime!(2026-11-04 10:00:00),
-            |_| fired += 1,
+            |_, occurrence| {
+                fired += 1;
+                Ok(crate::schedule::DispatchReceipt {
+                    accepted_at_ms: occurrence.polled_at_ms,
+                })
+            },
             tokio_util::sync::CancellationToken::new(),
         ),
     )

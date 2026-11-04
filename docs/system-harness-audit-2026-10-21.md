@@ -3662,13 +3662,15 @@ expanded-settings误用include-ignored，实际72过/1败/0忽略（193.723秒�
 
 ### H-96：定时任务已派发但落账失败，重启后会再次派发且调度循环退出
 
+> 2026-11-05 已修复并验收，限Windows本机合成/离线验收：见[修复进度 E-H96-01～04](system-harness-repair-progress.md#h-96-定时派发接纳与落账已修复并验收2026-11-05限e04本机范围)。稳定occurrence经原RunStore事务共写run/能力快照/schedule.accepted，仅新owner走原Kernel；已接纳则只对账，落账失败有界退避，暂存发布并保留Windows DACL。原默认探针及18项本项验收通过；最终全仓4547过/2败/241忽略（保留既有H306与build夹具失败），严格lint/Tauri格式既有阻断另列，非全仓全绿。提交待E05回填；不与H97合并，不宣称外部exactly-once或跨平台完成。以下保留原审计失败事实与证据，不代表修复后行为。
+
 **级别：中（P2，条件性调度可靠性缺陷）；触发条件：桌面调度器发现到期任务并调用 fire 后，one-shot 删除或 recurring 的 `last_fired_at` 写入失败，之后应用重启。** 本项确认重复派发和 tick loop 退出；没有执行模型或工具副作用。
 
 - 根因与生产路径：桌面启动时创建 `CronService` 并启动 `run_tick_loop()`。其 fire callback 对每个任务立即 `tokio::spawn` `ChatService::run_in_session()`，然后返回。`CronScheduler::poll()` 在 callback 执行后才调用 `ScheduledTaskStore::remove()` 或 `mark_fired()`；若写入错误，due task 的持久状态仍在。`run_tick_loop()` 对 `poll()` 使用 `?`，因此错误会结束循环；Tauri 调用处只记录错误并结束该后台任务，没有重试 owner。应用重启重新读取未变化的 due 文件后会再次触发。
 - 动态复现：Windows ignored 探针 `crates/deepagent-runtime/tests/schedule_audit.rs::audit_post_fire_bookkeeping_failure_replays_same_occurrence` 让正式 poll 读取临时计划后，在 fire callback 中将计划文件设为只读，注入 callback 之后的持久化错误。one-shot 删除和 recurring 标记都失败，计划仍保持 due；释放权限并重建 `CronScheduler` 后，同一 `now` 再 poll，两个模式的 callback 计数都为 2。探针 **1 passed** 表示预期的重复已复现；callback 仅记录次数，没有执行 `ChatService`、模型、工具或公网请求，也没有重启桌面应用。
 - 成熟实现对照：Claude Code `utils/cronScheduler.ts` 用 `inFlight` 阻止异步文件删除/`lastFiredAt` 更新尚未完成时重复处理，并在 recurring 文件持久化之前先推进进程内 `nextFireAt`；失败会记录日志并清理 in-flight 状态。该机制提供进程内去重和明确错误路径，不证明跨重启 exactly-once；本系统需要额外定义 durable occurrence 与恢复语义。
 - 影响及限制：故障后当前桌面 cron tick loop 停止，直至应用重启；重启后 one-shot 仍在文件中、recurring 的 fire anchor 仍旧时，同一到期 occurrence 可重新创建会话并再次请求模型。具体费用、工具副作用和重复操作未在探针中发生或量化。该条件需要计划记账写入失败，不能外推为每轮计划都会重复。
-- 收敛方向（尚未实施，本地设计）：以稳定的 task+scheduled-time occurrence identity 接入现有 AppCore 接纳与 RunStore，区分待派发、已接纳、结果未知；同一 occurrence 的重放必须关联或发现既有 run，不能因计划文件写失败而盲目再建会话。计划文件与 SQLite 不能原子提交，必须明确崩溃窗口和人工/自动恢复策略，不宣称外部动作 exactly-once。tick owner 对可恢复 poll 错误要有有界重试和可观测状态；恢复策略需同时验证失败发生在 fire 前、接纳后及标记持久化后。
+- 原审计收敛方向（历史建议；现按E-H96-04收敛，残余限制见进度文档）：以稳定的 task+scheduled-time occurrence identity 接入现有 AppCore 接纳与 RunStore，区分待派发、已接纳、结果未知；同一 occurrence 的重放必须关联或发现既有 run，不能因计划文件写失败而盲目再建会话。计划文件与 SQLite 不能原子提交，必须明确崩溃窗口和人工/自动恢复策略，不宣称外部动作 exactly-once。tick owner 对可恢复 poll 错误要有有界重试和可观测状态；恢复策略需同时验证失败发生在 fire 前、接纳后及标记持久化后。
 
 ### H-97：调度器停止不取消或等待已派发的定时运行
 

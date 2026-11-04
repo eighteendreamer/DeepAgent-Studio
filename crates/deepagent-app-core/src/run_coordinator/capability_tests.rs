@@ -145,10 +145,11 @@ fn h219_preparation_uses_original_session_owner_and_releases_on_failure() {
             .is_err());
         assert!(competitor.admit("foreign", &session).is_err());
     };
-    let failed: Result<Option<()>> = coordinator.admit_prepared("prepared", &session, None, || {
-        check_owner();
-        Err(CoreError::invalid("synthetic preparation failure"))
-    });
+    let failed: Result<Option<()>> =
+        coordinator.admit_prepared("prepared", &session, None, None, || {
+            check_owner();
+            Err(CoreError::invalid("synthetic preparation failure"))
+        });
     assert!(failed
         .unwrap_err()
         .to_string()
@@ -163,7 +164,7 @@ fn h219_preparation_uses_original_session_owner_and_releases_on_failure() {
     );
     let data = snapshot("prepared", &session);
     let prepared = coordinator
-        .admit_prepared("prepared", &session, None, || {
+        .admit_prepared("prepared", &session, None, None, || {
             check_owner();
             Ok(("one real preparation", Some(data.clone())))
         })

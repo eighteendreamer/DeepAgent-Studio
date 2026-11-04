@@ -91,7 +91,7 @@ pub struct ScheduledTaskStore {
 /// A non-blocking ownership lease for one scheduled-tasks file.
 ///
 /// The lock lives beside the data file rather than on the data file itself:
-/// the latter may be replaced by a future atomic-write implementation and
+/// the latter is replaced by the staged-write implementation and
 /// would therefore not provide stable ownership. The OS releases this lease
 /// when the process exits, including an abnormal exit.
 pub(crate) struct ScheduleFileLock {
@@ -197,9 +197,49 @@ impl ScheduledTaskStore {
                 CoreError::other(format!("failed to create {}: {error}", parent.display()))
             })?;
         }
-        fs::write(&self.path, json).map_err(|error| {
-            CoreError::other(format!("failed to write {}: {error}", self.path.display()))
-        })
+        self.publish_document(|file| std::io::Write::write_all(file, json.as_bytes()))
+            .map_err(|error| {
+                CoreError::other(format!("failed to write {}: {error}", self.path.display()))
+            })
+    }
+
+    fn publish_document(
+        &self,
+        write: impl FnOnce(&mut File) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        let parent = self
+            .path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        #[cfg(windows)]
+        let mut staging = {
+            use deepagent_persistence::fs_commit::access::{
+                create_snapshot_target, open_policy_source, WindowsDacl,
+            };
+            let policy = match open_policy_source(&self.path) {
+                Ok(source) => Some(WindowsDacl::capture(&source)?),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error),
+            };
+            let staging = tempfile::Builder::new()
+                .make_in(parent, |path| create_snapshot_target(path, false))?;
+            if let Some(policy) = policy {
+                // Reuse the existing DACL boundary and acquire WRITE_DAC at
+                // creation. Protect the empty stage before any prompt bytes.
+                policy.apply(staging.as_file(), false)?;
+            }
+            staging
+        };
+        #[cfg(not(windows))]
+        let mut staging = tempfile::NamedTempFile::new_in(parent)?;
+        write(staging.as_file_mut())?;
+        staging.as_file().sync_all()?;
+        // Never truncate the live schedule. A failed write/publication leaves
+        // the complete old document available for receipt reconciliation.
+        let published = staging.persist(&self.path).map_err(|error| error.error)?;
+        drop(published);
+        Ok(())
     }
 
     /// Append a task. Returns the new task with its generated id. The caller is

@@ -68,6 +68,9 @@ use crate::tool_manifest::deferred_tools_announcement;
 #[cfg(test)]
 use crate::tool_manifest::should_activate_tool_search;
 use crate::tool_manifest::DiscoveredToolSet;
+
+#[path = "chat_service/scheduled.rs"]
+mod scheduled;
 #[cfg(test)]
 use crate::tool_manifest::{build_visible_tool_schemas, register_tool_search_into};
 #[cfg(test)]
@@ -340,7 +343,7 @@ impl ChatService {
         session_id: &str,
         overrides: HarnessRunOverrides,
     ) -> Result<crate::run_assembler::PreparedChatRun> {
-        self.admit_prepared_chat(run_id, session_id, None, None, overrides)?
+        self.admit_prepared_chat(run_id, session_id, None, None, None, overrides)?
             .ok_or_else(|| CoreError::invalid("prepared chat admission was rejected"))
     }
 
@@ -354,7 +357,7 @@ impl ChatService {
         input: &str,
         overrides: HarnessRunOverrides,
     ) -> Result<crate::run_assembler::PreparedChatRun> {
-        self.admit_prepared_chat(run_id, session_id, Some(input), None, overrides)?
+        self.admit_prepared_chat(run_id, session_id, Some(input), None, None, overrides)?
             .ok_or_else(|| CoreError::invalid("prepared chat admission was rejected"))
     }
 
@@ -373,6 +376,7 @@ impl ChatService {
             session_id,
             Some(input),
             Some(old_run_id),
+            None,
             overrides,
         )
     }
@@ -383,13 +387,14 @@ impl ChatService {
         session_id: &str,
         input: Option<&str>,
         replaces: Option<&str>,
+        scheduled: Option<&deepagent_persistence::run_store::ScheduledRunOrigin>,
         overrides: HarnessRunOverrides,
     ) -> Result<Option<crate::run_assembler::PreparedChatRun>> {
         let session_id = session_id
             .parse::<deepagent_core::id::SessionId>()?
             .to_string();
         self.coordinator
-            .admit_prepared(run_id, &session_id, replaces, || {
+            .admit_prepared(run_id, &session_id, replaces, scheduled, || {
                 let prepared = self.run_assembler().prepare_chat_input(
                     run_id,
                     &session_id,

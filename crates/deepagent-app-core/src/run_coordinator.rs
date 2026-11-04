@@ -225,8 +225,10 @@ impl RunCoordinator {
         replaces: Option<&str>,
         snapshot: Option<&serde_json::Value>,
     ) -> Result<bool> {
-        self.admit_prepared(run_id, session_id, replaces, || Ok(((), snapshot.cloned())))
-            .map(|prepared| prepared.is_some())
+        self.admit_prepared(run_id, session_id, replaces, None, || {
+            Ok(((), snapshot.cloned()))
+        })
+        .map(|prepared| prepared.is_some())
     }
 
     /// Run the single preparation callback while holding the original session
@@ -237,6 +239,7 @@ impl RunCoordinator {
         run_id: &str,
         session_id: &str,
         replaces: Option<&str>,
+        scheduled: Option<&deepagent_persistence::run_store::ScheduledRunOrigin>,
         prepare: impl FnOnce() -> Result<(T, Option<serde_json::Value>)>,
     ) -> Result<Option<T>> {
         let predecessor = match replaces {
@@ -287,6 +290,7 @@ impl RunCoordinator {
                 task_id: None,
                 replaces_run_id: replaces,
                 capability_snapshot: snapshot.as_ref(),
+                scheduled,
             },
             now_millis(),
         )? {

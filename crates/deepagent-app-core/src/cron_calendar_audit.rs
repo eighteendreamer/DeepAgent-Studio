@@ -66,11 +66,14 @@ async fn check_calendar_isolation(expression: &str, real_service_clock: bool) {
                 scheduler,
                 Duration::from_millis(10),
                 move || due_at,
-                move |task| {
+                move |task, occurrence| {
                     observed.lock().unwrap().push(task.id.clone());
                     if task.id == healthy_id {
                         stop_after_fire.cancel();
                     }
+                    Ok(deepagent_runtime::schedule::DispatchReceipt {
+                        accepted_at_ms: occurrence.polled_at_ms,
+                    })
                 },
                 stop,
             )
@@ -104,7 +107,11 @@ async fn check_calendar_isolation(expression: &str, real_service_clock: bool) {
     // failure, rather than treating a fresh owner as a recovery mechanism.
     let reopened = CronScheduler::for_workspace(root.path());
     let replay = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        reopened.poll(due_at, |_| {})
+        reopened.poll(due_at, |_, occurrence| {
+            Ok(deepagent_runtime::schedule::DispatchReceipt {
+                accepted_at_ms: occurrence.polled_at_ms,
+            })
+        })
     }));
     let reopen_panicked = replay.is_err();
     if let Ok(result) = replay {
@@ -118,7 +125,12 @@ async fn check_calendar_isolation(expression: &str, real_service_clock: bool) {
     assert!(deleted.ok && deleted.value["removed"] == 1);
     let mut recovery = Vec::new();
     reopened
-        .poll(due_at, |task| recovery.push(task.id.clone()))
+        .poll(due_at, |task, occurrence| {
+            recovery.push(task.id.clone());
+            Ok(deepagent_runtime::schedule::DispatchReceipt {
+                accepted_at_ms: occurrence.polled_at_ms,
+            })
+        })
         .unwrap();
     if panicked {
         assert_eq!(recovery, vec![ids[1].clone()]);
