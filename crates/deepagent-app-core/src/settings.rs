@@ -1292,7 +1292,7 @@ pub struct SettingsService {
     db: Arc<Database>,
     transport: Arc<dyn HttpTransport>,
     secrets: Arc<dyn SecretStore>,
-    settings_cache: Mutex<Option<Option<AppSettings>>>,
+    settings_cache: Mutex<Option<(String, AppSettings)>>,
 }
 
 /// The command prefixes `rules` allows, minus any fenced by an `ask`/`deny` rule.
@@ -1451,95 +1451,26 @@ impl SettingsService {
         // Key → secret store (NOT the database).
         self.secrets.set(API_KEY_NAME, api_key)?;
 
-        // Public catalog → database.
-        let prior = self.load().ok().flatten();
-        let mut settings = AppSettings {
-            catalog,
-            discovered_at: now_ms(),
-            approval_policy: prior
-                .as_ref()
-                .map(|s| s.approval_policy)
-                .unwrap_or_default(),
-            sandbox_mode: prior.as_ref().map(|s| s.sandbox_mode).unwrap_or_default(),
-            terminal_shell: prior.as_ref().map(|s| s.terminal_shell).unwrap_or_default(),
-            permission_rules: prior
-                .as_ref()
-                .map(|s| s.permission_rules.clone())
-                .unwrap_or_default(),
-            hooks_json: prior
-                .as_ref()
-                .map(|s| s.hooks_json.clone())
-                .unwrap_or_default(),
-            reasoning_effort: prior
-                .as_ref()
-                .map(|s| s.reasoning_effort)
-                .unwrap_or_default(),
-            responses: prior
-                .as_ref()
-                .map(|s| s.responses.clone())
-                .unwrap_or_default(),
-            verification_policy: prior
-                .as_ref()
-                .map(|s| s.verification_policy)
-                .unwrap_or_default(),
-            web_search: prior
-                .as_ref()
-                .map(|s| normalize_web_search_settings(s.web_search.clone()))
-                .unwrap_or_default(),
-            vision: prior.as_ref().map(|s| s.vision.clone()).unwrap_or_default(),
-            tool_search_mode: prior
-                .as_ref()
-                .map(|s| s.tool_search_mode)
-                .unwrap_or(Self::DEFAULT_TOOL_SEARCH_MODE),
-            tool_search_auto_threshold_chars: prior
-                .as_ref()
-                .and_then(|s| s.tool_search_auto_threshold_chars),
-            skill_catalog_enabled: prior
-                .as_ref()
-                .map(|s| s.skill_catalog_enabled)
-                .unwrap_or_else(default_skill_catalog_enabled),
-            skill_catalog_char_budget: prior
-                .as_ref()
-                .map(|s| s.skill_catalog_char_budget)
-                .unwrap_or_else(default_skill_catalog_char_budget),
-            skill_install_ai_review_enabled: prior
-                .as_ref()
-                .map(|s| s.skill_install_ai_review_enabled)
-                .unwrap_or_else(default_skill_install_ai_review_enabled),
-            skill_install_ai_review_model: prior
-                .as_ref()
-                .and_then(|s| s.skill_install_ai_review_model.clone()),
-            active_permission_preset: prior
-                .as_ref()
-                .map(|s| s.active_permission_preset)
-                .unwrap_or_default(),
-            permission_preset_visibility: prior
-                .as_ref()
-                .map(|s| s.permission_preset_visibility.clone())
-                .unwrap_or_default(),
-            welcome_name: prior
-                .as_ref()
-                .map(|s| s.welcome_name.clone())
-                .unwrap_or_default(),
-            autocompact_reserve_tokens: prior.as_ref().and_then(|s| s.autocompact_reserve_tokens),
-            context_headroom_tokens: prior.as_ref().and_then(|s| s.context_headroom_tokens),
-            output_style: prior.as_ref().map(|s| s.output_style).unwrap_or_default(),
-            execution_features: prior
-                .as_ref()
-                .map(|s| s.execution_features)
-                .unwrap_or_default(),
-            pricing_catalog: prior
-                .as_ref()
-                .map(|s| s.pricing_catalog.clone())
-                .unwrap_or_default(),
-            language: prior
-                .as_ref()
-                .map(|s| s.language.clone())
-                .unwrap_or_default(),
-        };
-        // The built-in pricing snapshot is local, not a parallel HTTP request.
-        // Commit models and pricing together before reporting activation success.
-        self.refresh_pricing_inner(&mut settings).await?;
+        // Merge only discovery-owned fields into the current durable document.
+        // The credential lifecycle is separate; see the H-88 audit item.
+        let discovered_at = now_ms();
+        let pricing = Self::pricing_snapshot();
+        let settings = self.edit_settings(|prior| {
+            let mut settings = match prior {
+                Some(settings) => settings,
+                None => serde_json::from_value(serde_json::json!({
+                    "catalog": &catalog,
+                    "discovered_at": discovered_at,
+                    "sandbox_mode": SandboxMode::default(),
+                    "tool_search_mode": Self::DEFAULT_TOOL_SEARCH_MODE,
+                }))?,
+            };
+            settings.catalog = catalog.clone();
+            settings.discovered_at = discovered_at;
+            settings.pricing_catalog = pricing.clone();
+            settings.web_search = normalize_web_search_settings(settings.web_search);
+            Ok(settings)
+        })?;
 
         self.view_with_key(Some(api_key), &settings)
     }
@@ -1560,15 +1491,16 @@ impl SettingsService {
     /// from https://api-docs.deepseek.com/zh-cn/quick_start/pricing (2026-10-02).
     /// Future versions may fetch dynamically if DeepSeek provides a pricing API.
     pub async fn refresh_pricing(&self) -> Result<PricingCatalog> {
-        let mut settings = self
-            .load()?
-            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
-        self.refresh_pricing_inner(&mut settings).await?;
+        let pricing = Self::pricing_snapshot();
+        let settings = self.update_settings(|settings| {
+            settings.pricing_catalog = pricing.clone();
+            Ok(())
+        })?;
         Ok(settings.pricing_catalog)
     }
 
-    /// Internal helper: refresh pricing and update the given settings in-place.
-    async fn refresh_pricing_inner(&self, settings: &mut AppSettings) -> Result<()> {
+    /// Local pricing snapshot; persistence belongs to the settings commit owner.
+    fn pricing_snapshot() -> PricingCatalog {
         // Official DeepSeek pricing (idle-tier, RMB per million tokens).
         // Source: https://api-docs.deepseek.com/zh-cn/quick_start/pricing
         // Verified: 2026-10-02
@@ -1606,14 +1538,11 @@ impl SettingsService {
             },
         );
 
-        settings.pricing_catalog = PricingCatalog {
+        PricingCatalog {
             models,
             fetched_at: now_ms(),
             source_url: "https://api-docs.deepseek.com/zh-cn/quick_start/pricing".to_string(),
-        };
-
-        self.save(settings)?;
-        Ok(())
+        }
     }
 
     /// Manually override which model fills a role (must be a discovered id).
@@ -1622,72 +1551,29 @@ impl SettingsService {
         role: deepagent_models::ModelRole,
         model_id: &str,
     ) -> Result<SettingsView> {
-        let mut settings = self
-            .load()?
-            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
-        if !settings.catalog.has_model(model_id) {
-            return Err(CoreError::invalid(format!(
-                "model '{model_id}' is not in the discovered set"
-            )));
-        }
-        match role {
-            deepagent_models::ModelRole::Chat => settings.catalog.chat_model = model_id.to_string(),
-            deepagent_models::ModelRole::Reasoner => {
-                settings.catalog.reasoner_model = model_id.to_string()
+        let settings = self.update_settings(|settings| {
+            if !settings.catalog.has_model(model_id) {
+                return Err(CoreError::invalid(format!(
+                    "model '{model_id}' is not in the discovered set"
+                )));
             }
-        }
-        self.save(&settings)?;
+            match role {
+                deepagent_models::ModelRole::Chat => {
+                    settings.catalog.chat_model = model_id.to_string()
+                }
+                deepagent_models::ModelRole::Reasoner => {
+                    settings.catalog.reasoner_model = model_id.to_string()
+                }
+            }
+            Ok(())
+        })?;
         let key = self.secrets.get(API_KEY_NAME)?;
         self.view_with_key(key.as_deref(), &settings)
     }
 
     /// Load the public settings (catalog) from the database.
     pub fn load(&self) -> Result<Option<AppSettings>> {
-        // Keep DB reads/writes and cache publication in one owner order. A
-        // delayed initial load must not replace a later committed snapshot.
-        let mut cache = self
-            .settings_cache
-            .lock()
-            .map_err(|_| CoreError::other("settings cache lock poisoned"))?;
-        if let Some(cached) = &*cache {
-            return Ok(cached.clone());
-        }
-
-        let store = DocumentStore::new(&self.db);
-        let mut migration_retries = 0;
-        let loaded = loop {
-            let Some(doc) = store.get(SETTINGS_COLLECTION, SETTINGS_ID)? else {
-                break None;
-            };
-            let mut stored: serde_json::Value = serde_json::from_str(&doc.body)?;
-            let changes = migrate_persisted_reasoning(&mut stored);
-            if changes > 0 {
-                let body = serde_json::to_string(&stored)?;
-                if !store.replace_body_if_unchanged(
-                    SETTINGS_COLLECTION,
-                    SETTINGS_ID,
-                    &doc.body,
-                    &body,
-                    Timestamp::from_millis(now_ms()),
-                )? {
-                    migration_retries += 1;
-                    if migration_retries >= 5 {
-                        return Err(CoreError::Persistence(
-                            "settings kept changing while removing obsolete reasoning values"
-                                .to_string(),
-                        ));
-                    }
-                    continue;
-                }
-                tracing::info!(
-                    migrated_fields = changes,
-                    "migrated persisted reasoning settings"
-                );
-            }
-            break Some(serde_json::from_value::<AppSettings>(stored)?);
-        };
-        *cache = Some(loaded.clone());
-        Ok(loaded)
+        self.load_current_settings()
     }
 
     /// Read the persisted welcome name. An empty value means the UI should use
@@ -1708,11 +1594,10 @@ impl SettingsService {
             ));
         }
 
-        let mut settings = self
-            .load()?
-            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
-        settings.welcome_name = name.to_string();
-        self.save(&settings)?;
+        let settings = self.update_settings(|settings| {
+            settings.welcome_name = name.to_string();
+            Ok(())
+        })?;
         Ok(settings.welcome_name)
     }
 
@@ -1785,12 +1670,8 @@ impl SettingsService {
                 return Some(parsed);
             }
         }
-        if let Some(headroom) = self
-            .load()
-            .ok()
-            .flatten()
-            .and_then(|s| s.context_headroom_tokens)
-        {
+        let settings = self.load().ok().flatten();
+        if let Some(headroom) = settings.as_ref().and_then(|s| s.context_headroom_tokens) {
             return Some(headroom);
         }
         if let Ok(raw) = std::env::var("DEEPAGENT_AUTOCOMPACT_RESERVE_TOKENS") {
@@ -1798,10 +1679,7 @@ impl SettingsService {
                 return Some(parsed);
             }
         }
-        self.load()
-            .ok()
-            .flatten()
-            .and_then(|s| s.autocompact_reserve_tokens)
+        settings.and_then(|s| s.autocompact_reserve_tokens)
     }
 
     /// The selected built-in output style. `DEEPAGENT_OUTPUT_STYLE`
@@ -1827,11 +1705,10 @@ impl SettingsService {
     /// next run: `output_style()` → `output_style_prompt_block()` injects the
     /// matching (or no) style block into the cacheable system prefix.
     pub fn set_output_style(&self, style: OutputStyle) -> Result<()> {
-        let mut settings = self
-            .load()?
-            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
-        settings.output_style = style;
-        self.save(&settings)?;
+        self.update_settings(|settings| {
+            settings.output_style = style;
+            Ok(())
+        })?;
         Ok(())
     }
 
@@ -1856,21 +1733,19 @@ impl SettingsService {
 
     /// Persist the opt-in execution safeguards.
     pub fn set_execution_features(&self, features: ExecutionFeatures) -> Result<()> {
-        let mut settings = self
-            .load()?
-            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
-        settings.execution_features = features;
-        self.save(&settings)?;
+        self.update_settings(|settings| {
+            settings.execution_features = features;
+            Ok(())
+        })?;
         Ok(())
     }
 
     /// Set the post-edit verification policy, persisting it.
     pub fn set_verification_policy(&self, policy: VerificationPolicy) -> Result<()> {
-        let mut settings = self
-            .load()?
-            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
-        settings.verification_policy = policy;
-        self.save(&settings)?;
+        self.update_settings(|settings| {
+            settings.verification_policy = policy;
+            Ok(())
+        })?;
         Ok(())
     }
 
@@ -1883,11 +1758,10 @@ impl SettingsService {
 
     /// Persist web-search settings.
     pub fn set_web_search_settings(&self, settings_next: WebSearchSettings) -> Result<()> {
-        let mut settings = self
-            .load()?
-            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
-        settings.web_search = normalize_web_search_settings(settings_next);
-        self.save(&settings)?;
+        self.update_settings(|settings| {
+            settings.web_search = normalize_web_search_settings(settings_next.clone());
+            Ok(())
+        })?;
         Ok(())
     }
 
@@ -1931,8 +1805,7 @@ impl SettingsService {
 
     /// Set image-analysis settings.
     pub fn set_vision_settings(&self, settings_next: VisionSettings) -> Result<VisionSettings> {
-        let mut settings = self
-            .load()?
+        self.load()?
             .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
         if let Some(api_key) = settings_next.api_key.as_deref() {
             let api_key = api_key.trim();
@@ -1942,10 +1815,12 @@ impl SettingsService {
                 self.secrets.set(VISION_API_KEY_NAME, api_key)?;
             }
         }
-        settings.vision = normalize_vision_settings(settings_next);
-        let saved = settings.vision.clone();
-        self.save(&settings)?;
-        self.vision_settings_view(saved)
+        let next = normalize_vision_settings(settings_next);
+        let settings = self.update_settings(|settings| {
+            settings.vision = next.clone();
+            Ok(())
+        })?;
+        self.vision_settings_view(settings.vision)
     }
 
     /// The configured third-party system-vision API key, if present.
@@ -1979,11 +1854,10 @@ impl SettingsService {
 
     /// Set the tool-search mode, persisting it.
     pub fn set_tool_search_mode(&self, mode: deepagent_builtins::ToolSearchMode) -> Result<()> {
-        let mut settings = self
-            .load()?
-            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
-        settings.tool_search_mode = mode;
-        self.save(&settings)?;
+        self.update_settings(|settings| {
+            settings.tool_search_mode = mode;
+            Ok(())
+        })?;
         Ok(())
     }
 
@@ -2006,11 +1880,10 @@ impl SettingsService {
     /// Values below 1 are clamped to 1 (zero would mean "Auto always
     /// activates", which is what `Enabled` already does).
     pub fn set_tool_search_auto_threshold(&self, value: Option<usize>) -> Result<()> {
-        let mut settings = self
-            .load()?
-            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
-        settings.tool_search_auto_threshold_chars = value.map(|v| v.max(1));
-        self.save(&settings)?;
+        self.update_settings(|settings| {
+            settings.tool_search_auto_threshold_chars = value.map(|v| v.max(1));
+            Ok(())
+        })?;
         Ok(())
     }
 
@@ -2033,11 +1906,10 @@ impl SettingsService {
 
     /// Persist the master switch for the skill-catalog reminder.
     pub fn set_skill_catalog_enabled(&self, enabled: bool) -> Result<()> {
-        let mut settings = self
-            .load()?
-            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
-        settings.skill_catalog_enabled = enabled;
-        self.save(&settings)?;
+        self.update_settings(|settings| {
+            settings.skill_catalog_enabled = enabled;
+            Ok(())
+        })?;
         Ok(())
     }
 
@@ -2054,11 +1926,10 @@ impl SettingsService {
     /// consumers are expected to honor R10.5 (treat `0` as disabled) at the
     /// rendering site, not here.
     pub fn set_skill_catalog_char_budget(&self, budget: usize) -> Result<()> {
-        let mut settings = self
-            .load()?
-            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
-        settings.skill_catalog_char_budget = budget;
-        self.save(&settings)?;
+        self.update_settings(|settings| {
+            settings.skill_catalog_char_budget = budget;
+            Ok(())
+        })?;
         Ok(())
     }
 
@@ -2073,11 +1944,10 @@ impl SettingsService {
 
     /// Persist the AI-review master switch.
     pub fn set_skill_install_ai_review_enabled(&self, enabled: bool) -> Result<()> {
-        let mut settings = self
-            .load()?
-            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
-        settings.skill_install_ai_review_enabled = enabled;
-        self.save(&settings)?;
+        self.update_settings(|settings| {
+            settings.skill_install_ai_review_enabled = enabled;
+            Ok(())
+        })?;
         Ok(())
     }
 
@@ -2091,13 +1961,13 @@ impl SettingsService {
     /// string, which is normalized to `None`) to fall back to the chat
     /// model.
     pub fn set_skill_install_ai_review_model(&self, model: Option<String>) -> Result<()> {
-        let mut settings = self
-            .load()?
-            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
-        settings.skill_install_ai_review_model = model
-            .map(|m| m.trim().to_string())
-            .filter(|m| !m.is_empty());
-        self.save(&settings)?;
+        self.update_settings(|settings| {
+            settings.skill_install_ai_review_model = model
+                .clone()
+                .map(|m| m.trim().to_string())
+                .filter(|m| !m.is_empty());
+            Ok(())
+        })?;
         Ok(())
     }
 
@@ -2114,14 +1984,13 @@ impl SettingsService {
     /// Set the active permission preset, persisting it. Also syncs the legacy
     /// `approval_policy` and `sandbox_mode` fields for backward compatibility.
     pub fn set_active_permission_preset(&self, preset: PermissionPreset) -> Result<()> {
-        let mut settings = self
-            .load()?
-            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
-        settings.active_permission_preset = preset;
-        let profile = preset.to_effective_profile();
-        settings.approval_policy = profile.approval_policy;
-        settings.sandbox_mode = profile.sandbox_mode;
-        self.save(&settings)?;
+        self.update_settings(|settings| {
+            settings.active_permission_preset = preset;
+            let profile = preset.to_effective_profile();
+            settings.approval_policy = profile.approval_policy;
+            settings.sandbox_mode = profile.sandbox_mode;
+            Ok(())
+        })?;
         Ok(())
     }
 
@@ -2147,30 +2016,29 @@ impl SettingsService {
                 "at least one permission preset must remain visible",
             ));
         }
-        let mut settings = self
-            .load()?
-            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
-        // If the current preset is being hidden, fall back to the first visible one.
-        let current_hidden = match settings.active_permission_preset {
-            PermissionPreset::Default => !visibility.default_enabled,
-            PermissionPreset::AutoReview => !visibility.auto_review_enabled,
-            PermissionPreset::FullAccess => !visibility.full_access_enabled,
-        };
-        if current_hidden {
-            let fallback = if visibility.default_enabled {
-                PermissionPreset::Default
-            } else if visibility.auto_review_enabled {
-                PermissionPreset::AutoReview
-            } else {
-                PermissionPreset::FullAccess
+        self.update_settings(|settings| {
+            // If the current preset is being hidden, fall back to the first visible one.
+            let current_hidden = match settings.active_permission_preset {
+                PermissionPreset::Default => !visibility.default_enabled,
+                PermissionPreset::AutoReview => !visibility.auto_review_enabled,
+                PermissionPreset::FullAccess => !visibility.full_access_enabled,
             };
-            settings.active_permission_preset = fallback;
-            let profile = fallback.to_effective_profile();
-            settings.approval_policy = profile.approval_policy;
-            settings.sandbox_mode = profile.sandbox_mode;
-        }
-        settings.permission_preset_visibility = visibility;
-        self.save(&settings)?;
+            if current_hidden {
+                let fallback = if visibility.default_enabled {
+                    PermissionPreset::Default
+                } else if visibility.auto_review_enabled {
+                    PermissionPreset::AutoReview
+                } else {
+                    PermissionPreset::FullAccess
+                };
+                settings.active_permission_preset = fallback;
+                let profile = fallback.to_effective_profile();
+                settings.approval_policy = profile.approval_policy;
+                settings.sandbox_mode = profile.sandbox_mode;
+            }
+            settings.permission_preset_visibility = visibility.clone();
+            Ok(())
+        })?;
         Ok(())
     }
 
@@ -2179,8 +2047,17 @@ impl SettingsService {
     /// set_sandbox_mode) write to the same underlying fields, so reading them
     /// directly is always authoritative.
     pub fn effective_permission_profile(&self) -> Result<EffectivePermissionProfile> {
-        let policy = self.approval_policy()?;
-        let sandbox = self.sandbox_mode()?;
+        // Coupled policy fields must come from one committed document, not
+        // separate getters that can straddle another host's preset update.
+        let settings = self.load()?;
+        let policy = settings
+            .as_ref()
+            .map(|s| s.approval_policy)
+            .unwrap_or_default();
+        let sandbox = settings
+            .as_ref()
+            .map(|s| s.sandbox_mode)
+            .unwrap_or_default();
         let local_execution_mode = if matches!(policy, ApprovalPolicy::FullAccess)
             && matches!(sandbox, SandboxMode::FullAccess)
         {
@@ -2199,11 +2076,10 @@ impl SettingsService {
 
     /// Set the Thinking Mode depth, persisting it. Returns the redacted view.
     pub fn set_reasoning_effort(&self, effort: ReasoningEffort) -> Result<SettingsView> {
-        let mut settings = self
-            .load()?
-            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
-        settings.reasoning_effort = effort;
-        self.save(&settings)?;
+        let settings = self.update_settings(|settings| {
+            settings.reasoning_effort = effort;
+            Ok(())
+        })?;
         let key = self.secrets.get(API_KEY_NAME)?;
         self.view_with_key(key.as_deref(), &settings)
     }
@@ -2222,56 +2098,51 @@ impl SettingsService {
         )?;
         settings_next.developer = canonical_developer.developer;
         settings_next.ineffective = canonical_developer.ineffective;
-        let mut settings = self
-            .load()?
-            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
-        settings.responses = settings_next;
-        self.save(&settings)?;
+        let settings = self.update_settings(|settings| {
+            settings.responses = settings_next.clone();
+            Ok(())
+        })?;
         let key = self.secrets.get(API_KEY_NAME)?;
         self.view_with_key(key.as_deref(), &settings)
     }
 
     pub fn set_responses_developer_json(&self, raw: &str) -> Result<SettingsView> {
         let developer = ResponsesApiSettings::from_developer_json(raw)?;
-        let mut settings = self
-            .load()?
-            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
-        settings.responses.developer = developer.developer;
-        settings.responses.ineffective = developer.ineffective;
-        self.save(&settings)?;
+        let settings = self.update_settings(|settings| {
+            settings.responses.developer = developer.developer.clone();
+            settings.responses.ineffective = developer.ineffective.clone();
+            Ok(())
+        })?;
         let key = self.secrets.get(API_KEY_NAME)?;
         self.view_with_key(key.as_deref(), &settings)
     }
 
     /// Set the approval policy, persisting it. Returns the redacted view.
     pub fn set_approval_policy(&self, policy: ApprovalPolicy) -> Result<SettingsView> {
-        let mut settings = self
-            .load()?
-            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
-        settings.approval_policy = policy;
-        self.save(&settings)?;
+        let settings = self.update_settings(|settings| {
+            settings.approval_policy = policy;
+            Ok(())
+        })?;
         let key = self.secrets.get(API_KEY_NAME)?;
         self.view_with_key(key.as_deref(), &settings)
     }
 
     /// Set the sandbox mode, persisting it. Returns the redacted view.
     pub fn set_sandbox_mode(&self, mode: SandboxMode) -> Result<SettingsView> {
-        let mut settings = self
-            .load()?
-            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
-        settings.sandbox_mode = mode;
-        self.save(&settings)?;
+        let settings = self.update_settings(|settings| {
+            settings.sandbox_mode = mode;
+            Ok(())
+        })?;
         let key = self.secrets.get(API_KEY_NAME)?;
         self.view_with_key(key.as_deref(), &settings)
     }
 
     /// Set the preferred integrated-terminal shell, persisting it.
     pub fn set_terminal_shell(&self, shell: TerminalShell) -> Result<SettingsView> {
-        let mut settings = self
-            .load()?
-            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
-        settings.terminal_shell = shell;
-        self.save(&settings)?;
+        let settings = self.update_settings(|settings| {
+            settings.terminal_shell = shell;
+            Ok(())
+        })?;
         let key = self.secrets.get(API_KEY_NAME)?;
         self.view_with_key(key.as_deref(), &settings)
     }
@@ -2283,11 +2154,11 @@ impl SettingsService {
 
     /// Set the declarative permission rules, persisting them.
     pub fn set_permission_rules(&self, rules: PermissionRules) -> Result<()> {
-        let mut settings = self
-            .load()?
-            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
-        settings.permission_rules = rules;
-        self.save(&settings)
+        self.update_settings(|settings| {
+            settings.permission_rules = rules.clone();
+            Ok(())
+        })
+        .map(|_| ())
     }
 
     /// Command prefixes the human gave standing approval for, by answering an
@@ -2311,18 +2182,20 @@ impl SettingsService {
                 "a command prefix grant needs a command prefix",
             ));
         }
-        let mut rules = self.permission_rules()?;
-        if let Some(fence) = fencing_rule(&rules, &prefix) {
-            return Err(CoreError::invalid(format!(
-                "permission rule `{fence}` fences a grant for `{prefix}`; remove it first"
-            )));
-        }
-        let rule = bash_prefix_rule(&prefix);
-        if rules.allow.iter().any(|existing| existing == &rule) {
-            return Ok(());
-        }
-        rules.allow.push(rule);
-        self.set_permission_rules(rules)
+        self.update_settings(|settings| {
+            let rules = &mut settings.permission_rules;
+            if let Some(fence) = fencing_rule(rules, &prefix) {
+                return Err(CoreError::invalid(format!(
+                    "permission rule `{fence}` fences a grant for `{prefix}`; remove it first"
+                )));
+            }
+            let rule = bash_prefix_rule(&prefix);
+            if !rules.allow.contains(&rule) {
+                rules.allow.push(rule);
+            }
+            Ok(())
+        })
+        .map(|_| ())
     }
 
     /// The raw `hooks.json` source (empty when unset).
@@ -2347,11 +2220,11 @@ impl SettingsService {
             // Validate before persisting; reject malformed input early.
             deepagent_hooks::HookDefinitions::parse(hooks_json)?;
         }
-        let mut settings = self
-            .load()?
-            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
-        settings.hooks_json = hooks_json.to_string();
-        self.save(&settings)
+        self.update_settings(|settings| {
+            settings.hooks_json = hooks_json.to_string();
+            Ok(())
+        })
+        .map(|_| ())
     }
 
     /// The redacted view for the UI, or `None` if uninitialized.
@@ -2406,6 +2279,9 @@ impl SettingsService {
         })
     }
 
+    // Explicit full snapshots are only for test setup. Production writers use
+    // edit_settings/update_settings and never publish cached whole documents.
+    #[cfg(test)]
     fn save(&self, settings: &AppSettings) -> Result<()> {
         let mut cache = self
             .settings_cache
@@ -2420,7 +2296,7 @@ impl SettingsService {
             None,
             Timestamp::from_millis(settings.discovered_at),
         )?;
-        *cache = Some(Some(settings.clone()));
+        *cache = Some((body, settings.clone()));
         Ok(())
     }
 }
@@ -2429,6 +2305,17 @@ fn now_ms() -> i64 {
     use deepagent_core::clock::{Clock, SystemClock};
     SystemClock.now().as_millis()
 }
+
+#[path = "settings/persistence.rs"]
+mod persistence;
+
+#[cfg(test)]
+#[path = "settings/repair_tests.rs"]
+mod repair_tests;
+
+#[cfg(test)]
+#[path = "settings/process_tests.rs"]
+mod process_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2876,7 +2763,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit H-87: a stale settings cache can overwrite a concurrent host update"]
     async fn audit_refresh_models_preserves_other_host_sandbox_mode() {
         let database_dir = tempfile::tempdir().unwrap();
         let database_path = database_dir.path().join("settings.sqlite");

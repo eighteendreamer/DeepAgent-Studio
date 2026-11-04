@@ -2,21 +2,55 @@
 
 ## 当前状态与计数口径（2026-11-04）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计150项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；该次只纠正汇总，不计为新增修复。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计151项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；该次只纠正汇总，不计为新增修复。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 150 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-92、H-125、H-130、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-147、H-148、H-149、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-178、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-196、H-197、H-198、H-199、H-208、H-214、H-218、H-219、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-241、H-242、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-259、H-260、H-261、H-270、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 151 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-87、H-92、H-125、H-130、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-147、H-148、H-149、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-178、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-196、H-197、H-198、H-199、H-208、H-214、H-218、H-219、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-241、H-242、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-259、H-260、H-261、H-270、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 23 | 17项原审计历史修复；H-77/H-83/H-238/H-246/H-301/H-232分别随H-78/H-143/H-260/H-245/H-164/H-219共享边界消除，验收另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 3 | H-211/H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | 当前无未交付候选 |
-| 待修复 | 123 | 含H-180授权跳过，实际待处理122项 |
+| 修复中 | 0 | 下一项H-88待原探针复核 |
+| 待修复 | 122 | 含H-180授权跳过，实际待处理121项 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **123（其中H-180按用户要求跳过，实际待处理122项）**；不提供完成率。150项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301/H-232在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4/3cabd45f及真实复核单独列明，合计23项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。
+有效未关闭条目当前为 **122（其中H-180按用户要求跳过，实际待处理121项）**；不提供完成率。151项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301/H-232在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4/3cabd45f及真实复核单独列明，合计23项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。
+
+## H-87 跨宿主设置丢失更新（已修复并验收，2026-11-04，限E04范围）
+
+**E-H87-01（复核与TDD，修复中，2026-11-04）**：起点d016c747，tracked干净、无未完成合并或暂存；用户五项未跟踪内容不读/不改/不提交。原`cargo test -p deepagent-app-core --lib settings::tests::audit_refresh_models_preserves_other_host_sandbox_mode --offline -j 2 -- --ignored --exact --nocapture --test-threads=1`实际exit101，0过/1败/0忽略，14.11秒：两条独立临时SQLite连接，旧刷新使另一宿主已提交的ReadOnly重新成为WorkspaceWrite，原失败证据保留。
+
+新增公开边界回归先执行`cargo test -p deepagent-app-core --lib settings::repair_tests:: --offline -j 2 -- --nocapture --test-threads=1`，public-boundary-red为exit101、1过/3败/0忽略，150.09秒含编译。正常单宿主刷新/偏好/价格对照通过；热缓存不感知其他连接已提交的限制、不同宿主交替编辑丢失不相关字段、热缓存掩盖当前文档损坏并允许覆盖均真实失败。仅合成文件SQLite、MemorySecretStore和离线transport，不访问真实凭据/公网/用户设置。
+
+根因方案（本地设计，尚待实现/验收）：复用原DocumentStore的insert_if_absent/replace_body_if_unchanged，不新增设置库、协议DTO或数据库schema。所有设置读改写都须在同一owner内读取数据库当前文档、应用本次字段操作并CAS提交；冲突重新基于当前文档应用，预算耗尽明确报错、不静默整份覆盖。热缓存按当前原文身份校验，只在已提交后发布；刷新只发布自己拥有的目录/发现时间/价格与已有规范化，不把旧权限/hooks/偏好当基线。普通setter必须共用边界，否则旧缓存writer仍可撤回其他宿主刚提交的限制；这些修改属于H87同一丢失更新根因，不另计多个问题。现有条件写入测试、canvas_workflow_store、Codex同owner更新/持久化许可均已查证；参考进程内锁不能替代本机跨连接CAS。
+
+不归并H88（凭据撤销/代次与迟到secret写入）或H223（刷新自动选型策略）；本轮不修改SecretStore、不承诺解决这些独立问题。当前原探针与新增红例已经成立，接下来补统一提交边界、显式冲突/拒写/正常场景和真实Primary/Standby进程交错验收，再验证正式设置消费方及全仓。尚无本项commit，不宣称修复成功。306台账为150验收/23历史跳过/7归并/3撤销/122待修/1修复中，有效未关闭123含H180授权跳过，实际待处理122；本轮新增验收/历史跳过/归并/撤销均0，下一步仍H87。本项初估12–24有效小时，依据所有设置writer同owner收敛、跨连接/进程与消费方验收规模；全部200–400有效小时仍是未逐项校准历史粗估，设备/依赖/编译等待另计，无可靠总上界或日期承诺，goal保持active。
+
+**E-H87-02（统一提交边界与候选验收，2026-11-04，尚未关闭）**：SettingsService生产writer已全部收敛到settings/persistence.rs：同一服务锁内读当前SQLite原文、应用本次字段变更、沿用DocumentStore条件写入，最多5次冲突后明确报错；不在重试闭包中执行网络或SecretStore副作用。缓存携带原文身份，每次load核对当前文档；当前文档损坏或DB拒写不得用热缓存覆盖或发布成功。effective_permission_profile从一个已提交文档读取耦合字段，默认值/公开DTO/协议/schema/依赖版本保持不变；顶层未知JSON字段语义保留，不声称嵌套未知字段或任意大数逐字保真。SecretStore与SQLite跨存储原子性仍属H88；模型目录刷新仍保持现行自动选型，H223未修。
+
+分阶段真实结果：candidate-public-boundary为4过/0败/0忽略，candidate-original-audit显式1过/0败，candidate-settings为47过/0败/2忽略；expanded-settings为56过/0败/2忽略（123.997秒）；补齐初始化竞争及消费测试后current-settings同命令`cargo test -p deepagent-app-core --lib settings:: --offline -j 2 -- --nocapture --test-threads=1`为exit0、58过/0败/2忽略，131.500秒含编译。12项新增公开边界测试覆盖独立连接冷热缓存、不同字段交错编辑、损坏拒写、真实CAS重试/耗尽、触发器拒写、前缀授权不撤回deny、顶层扩展保留、耦合profile及初始创建竞争；2项默认跨进程父测试通过显式执行ignored子夹具，真实AppService Primary/Standby断言、刷新暂停/恢复与Primary被kill后新进程夺锁/冷重开均通过。两项忽略分别是H88原探针及仅供父测试启动的子进程入口，不是H87跳过；H87原探针已改默认执行。
+
+`cargo test -p deepagent-app-core --test kernel_v2_e2e settings_host_updates:: --offline -j 2 -- --nocapture --test-threads=1`候选exit0、1过/0败/0忽略，153.323秒：真实ChatService/Kernel/write_file、独立连接和正常写入对照通过。之后补强拒绝原因断言及安全错误分类/位置诊断，不能用该旧候选结果代替冻结源码最终验收。final-format的`cargo fmt --all -- --check`exit0，5.360秒；六份Rust源码SHA256已冻结于target/h87-repair-20261104/final-sources.json。当前完整workspace、CLI、严格lint及Desktop Rust/前端构建仍在执行，无本项commit、不宣称全绿。全部仅合成临时文件/SQLite、MemorySecretStore、离线transport；证据与构建产物不提交。
+
+**E-H87-03（完整门禁首轮失败与复核，2026-11-04，尚未关闭）**：冻结首版执行`cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=1`，exit101、1859.093秒。按Cargo大小写敏感顶层target边界、每target最后一条汇总去重，135个target为4482过/4败/241忽略（不能把派生子测试重复计入）。4个失败完整保留在final-workspace.log/-deduplicated.json：①本轮消费回归新增的报错文本断言误把FsGuard报错当成更早的统一Hook报错；实测已被hook_denied阻止且未写文件，依据guard_hooks.rs/tool_pipeline.rs修正为error.error_type=hook_denied及当前sandbox拒写原因，不改生产门禁。②completion_plan::audit_tests::discovered_real_build_completes_after_release未在既有4秒内观察到合成build-started文件；该夹具直接装配AgentKernel/SystemCommandRunner，不调用SettingsService，尚不把超时归因于本轮设置修改或无证据宣布环境正常。③既有CLI H92实际命令测试在读取PID标记后得到ParseIntError::Empty；源码只等待文件存在、不等待写完，未到达最终进程退出断言，属于需要单独维护的夹具就绪竞争，不能据此推断生产取消失败。④既有H306的canvas_prompt::tests::every_node_kind_owns_exactly_one_profile，仍是creative.video-edit.v1空defaultUserPrompt。
+
+首轮完整appcore/lib为1469过/1败/64忽略，全部H87单元/双进程/原探针均默认通过；kernel_v2_e2e为280过/1败/36忽略（唯一失败为上述本轮断言定位错误），CLI为166过/1败/16忽略。修正消费断言后仅settings_host_updates.rs哈希改变，其余5份冻结Rust源码不变；accepted-sources.json保留新冻结清单，旧final-sources.json/失败日志不覆盖。当前重新执行相同完整workspace命令，不以改单条断言后的局部通过关闭H87。首轮CLI构建exit0（87.013秒）；Desktop前端pnpm build exit0（179.847秒，含静态测试/tsc/Vite），独立Tauri `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --offline -j 1`exit0（81.488秒）。这些构建结果对应未再修改的生产代码，不替代GUI或真实用户数据验收。严格全仓lint已由既有models/client.rs:385 clone_on_copy阻断；相关crate lint仍待终态。本轮不混修H64/H92/H306或H88/H223、不降低门禁，尚无本项commit。
+
+**E-H87-04（最终本机验收，已修复并验收，2026-11-04）**：只修H87的跨宿主旧快照丢失更新根因，生产改动限SettingsService及其原持久化owner内聚模块。全部公开设置writer在当前文档上应用自己的字段变更并条件提交；冲突重读重放、耗尽明确失败；冷热缓存都核对数据库当前原文身份；耦合permission profile只读一个已提交文档。初始化/刷新仍沿用原目录发现、模型自动选型及SecretStore时序，H88/H223独立保留。复用既有DocumentStore CAS/insert-if-absent，不新增store、依赖、schema、DTO或运行链；默认权限和外部接口不变。损坏文档拒绝覆盖、冲突耗尽失败以及每次load多一次文档读取，是有意的兼容性/性能边界变化，不提供任意时刻的跨getter事务或运行中动态撤权保证。
+
+验收清单（隔离合成HOME/temp、文件SQLite、MemorySecretStore、离线transport；没有公网、真实内网、真实凭据或真实用户数据）：
+
+- `cargo fmt --all -- --check`：accepted-format exit0，4.823秒；`git diff --check`通过。accepted-sources.json六份Rust源码SHA256在最终测试后逐份复核一致；与首轮仅消费测试断言文件不同，生产源码未再改动。
+- `cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=1`：final2-workspace exit101，1565.857秒；135顶层target去重为**4485过/1败/241忽略**。原runner的4486过含1个派生子测试重复，使用大小写敏感Cargo标题、每target最后一条汇总校正，不能照抄原加总。appcore/lib **1470过/0败/64忽略**，kernel_v2_e2e **281过/0败/36忽略**，CLI **167过/0败/16忽略**；H87原探针、12项新单元/独立连接测试、2项真实Primary/Standby父测试和1项正式工具消费测试均默认通过。子夹具由父测试实际显式执行，不用其ignore伪装通过。首轮H64夹具4秒就绪超时和H92空PID解析本次均通过；原失败保留，不证明这两个既有夹具无时序风险，也不把重跑当作它们的新修复。
+- 唯一全仓失败仍为既有H306 `deepagent-prompts::canvas_prompt::tests::every_node_kind_owns_exactly_one_profile`，creative.video-edit.v1空defaultUserPrompt，未混修。241忽略含其他独立未修审计探针，不能声称系统/全部审计已通过。
+- `cargo build -p deepagent-cli --offline -j 2`：exit0，87.013秒。Desktop `pnpm build`：exit0，179.847秒，静态脚本、tsc与Vite完成（有既有打包/外置模块警告）；`cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --offline -j 1`：exit0，81.488秒。公开Rust/TS设置view、command及调用方已核对无形状变化；构建不等于GUI实测。
+- `cargo clippy --all-targets --all-features --offline -j 2 -- -D warnings`：exit101，10.136秒，既有models/client.rs:385 clone_on_copy；`cargo clippy -p deepagent-app-core --all-targets --no-deps --offline -j 2 -- -D warnings`：exit101，36.434秒，既有12个lib及2个workflow_audit/media测试诊断。普通all-targets同命令去掉`-- -D warnings`仍exit101（173.842秒），由未修改的kernel_v2_e2e/mcp_discovery_restore.rs:776 panicking_unwrap阻断，不称lint全绿。生产lib单独执行`cargo clippy -p deepagent-app-core --lib --no-deps --offline -j 2`exit0（31.318秒），保留既有12警告；本轮修改路径未产生所列诊断，未加allow/禁用规则。
+
+残余/未验：未启动真实双桌面GUI、未测其他OS、真实供应商、磁盘故障或长期高并发；不保证已接纳运行动态撤权、多个独立getter/整次运行的事务快照、SecretStore与SQLite跨存储原子提交（H88）、目录刷新保留显式选型（H223）。保留顶层未知字段的JSON语义，不承诺嵌套未知字段、重复JSON键或任意大数逐字保真；旧格式仍由原serde defaults/reasoning迁移读取。CAS高竞争超过5次返回可重试错误，不无条件覆盖。
+
+证据统一在target/h87-repair-20261104的各label日志/result、两轮去重汇总和两版源码清单，不提交构建产物或敏感日志。代码、测试及两文档同步独立提交，取得ID后另做文档回填，不反复amend、不推送、不建PR。本轮新增根因修复1，历史跳过/归并/撤销新增均0；306主行核对为**151验收、23历史跳过、7归并、3撤销、122待修复、0修复中**，有效未关闭122含H180授权跳过，实际待处理121。下一项准备复核H88，先显式执行原迟到凭据探针并核对统一secret生命周期，不复用H87修复宣称其已解决。全部剩余仍仅能提供未逐项校准的**200–400有效修复与验收小时**历史粗估，依据剩余权限/执行/持久化跨层规模；无法可靠按本次构建耗时扣减，环境/设备/依赖及构建等待另计且暂无可信上界，不承诺精确日期。整体goal保持active，不宣布全部完成。
 
 ## H-270 计划文件坏行隔离与保留式编辑（已修复并验收，2026-11-04，限E03范围）
 
@@ -5085,7 +5119,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-84：审批请求在 gate 决策前投影，造成重复发送或自动放行误报](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-85：模型目录与余额 GET 没有总时限，响应头或响应体停滞时请求可无限 pending（已修复）](system-harness-audit-2026-10-21.md) | P2 | 历史已修复跳过 | 原报告明确记录修复实现与修复后验收 | 保留现有实现，不重复修复 | 历史命令与结果见原项；本轮未重跑，不声称重新验收 | 历史提交未在本轮重新定位，不猜填 hash | 保留原项未验限制；本阶段不另估修复工时 |
 | [H-86：模型发现 GET 的错误正文可把反射的 API Key 写入 `/doctor` 会话历史（已修复）](system-harness-audit-2026-10-21.md) | P3 | 历史已修复跳过 | 原报告明确记录修复实现与修复后验收 | 保留现有实现，不重复修复 | 历史命令与结果见原项；本轮未重跑，不声称重新验收 | 历史提交未在本轮重新定位，不猜填 hash | 保留原项未验限制；本阶段不另估修复工时 |
-| [H-87：模型刷新用宿主本地旧快照覆盖另一宿主新设置](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-87：模型刷新用宿主本地旧快照覆盖另一宿主新设置](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H87-01～04；原失败保留，无归并/跳过 | 当前文档字段操作/CAS统一所有writer；热缓存原文校验、耦合profile同快照 | 设置58/0/2；最终appcore1470/0/64、kernel281/0/36、CLI167/0/16；全仓4485/1/241仅H306失败；严格及all-target lint既有阻断详E04 | 本轮H-87验收提交后回填 | 不覆盖H88/H223、运行中撤权或跨getter事务；下一项H88；实际待处理121，总200–400有效小时未校准粗估，等待另计 |
 | [H-88：旧模型刷新在退出登录或换 Key 后重新写入旧凭据](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-89：Harness 显式选择未知模型时静默回退到默认模型](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-90：Harness SDK 关闭 writer 后的失败请求残留 pending reply](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
