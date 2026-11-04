@@ -15,6 +15,13 @@ use deepagent_runtime::schedule::{run_tick_loop, CronScheduler};
 
 use crate::chat_service::ChatService;
 
+#[path = "cron_service/owned_runs.rs"]
+mod owned_runs;
+
+#[cfg(test)]
+#[path = "cron_service/shutdown_tests.rs"]
+mod shutdown_tests;
+
 /// Production backend: file-backed store + fire→run via ChatService.
 pub struct CronService {
     scheduler: CronScheduler,
@@ -42,21 +49,30 @@ impl CronService {
             time::PrimitiveDateTime::new(local.date(), local.time())
         };
 
-        let owner = self.clone();
-        run_tick_loop(
+        let owned = owned_runs::OwnedRuns::new(self.chat.clone());
+        let result = run_tick_loop(
             self.scheduler.clone(),
             tick,
             clock,
-            move |task, occurrence| owner.dispatch(task, occurrence),
+            |task, occurrence| self.dispatch(task, occurrence, &owned),
             shutdown,
         )
-        .await
+        .await;
+        let drained = owned.drain().await;
+        match (result, drained) {
+            (Ok(()), drained) => drained,
+            (Err(error), Ok(())) => Err(error),
+            (Err(error), Err(cleanup)) => Err(deepagent_core::CoreError::other(format!(
+                "schedule polling failed: {error}; shutdown failed: {cleanup}"
+            ))),
+        }
     }
 
     fn dispatch(
         &self,
         task: &deepagent_runtime::schedule::ScheduledTask,
         occurrence: &deepagent_runtime::schedule::ScheduledOccurrence,
+        owned: &owned_runs::OwnedRuns,
     ) -> Result<deepagent_runtime::schedule::DispatchReceipt> {
         let (receipt, prepared) = self.chat.admit_scheduled(task, occurrence)?;
         let Some(prepared) = prepared else {
@@ -68,7 +84,7 @@ impl CronService {
         let run_id = occurrence.run_id.clone();
         let pending = chat.pending_approvals();
         let approval_task_id = task_id.clone();
-        tokio::spawn(async move {
+        owned.spawn(run_id.clone(), async move {
             tracing::info!(task_id = %task_id, run_id = %run_id, "executing admitted scheduled task");
             let result = chat.run_prepared(prepared, &prompt, |_event| {}, move |approval| {
                 let resolved = pending.resolve_approved(&approval.call_id, false);
@@ -240,7 +256,6 @@ mod audit_tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit: scheduler shutdown must account for in-flight scheduled runs"]
     async fn audit_scheduler_shutdown_leaves_started_cron_run_active() {
         #[derive(Debug)]
         struct NotifyHangTransport {
@@ -346,29 +361,48 @@ mod audit_tests {
             "scheduler_returned=true run_finished={finished} model_cancel_observed={scheduler_cancelled_run}"
         );
 
-        assert!(!finished, "the held model response keeps the run active");
-        assert!(
-            !scheduler_cancelled_run,
-            "scheduler shutdown must propagate to or await its dispatched work"
-        );
-
-        assert!(chat.request_cancel(&run_id).unwrap().accepted);
-        tokio::time::timeout(Duration::from_secs(2), cancelled.notified())
+        // Always clean up the red test before checking the desired contract.
+        if !finished {
+            assert!(chat.request_cancel(&run_id).unwrap().accepted);
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while RunStore::new(&db)
+                    .get(&run_id)
+                    .unwrap()
+                    .unwrap()
+                    .finished_at
+                    .is_none()
+                {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
             .await
-            .expect("explicit run cancellation must reach the held model request");
-        tokio::time::timeout(Duration::from_secs(3), async {
-            while RunStore::new(&db)
+            .expect("red test must not leave a live scheduled run");
+        }
+        assert!(
+            finished,
+            "shutdown returned before its admitted run reached durable terminal"
+        );
+        assert!(
+            scheduler_cancelled_run,
+            "shutdown must route cancellation to its own run"
+        );
+        let events = RunStore::new(&db).events_after(&run_id, None).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_type == "run_terminal")
+                .count(),
+            1
+        );
+        assert_eq!(
+            RunStore::new(&db)
                 .get(&run_id)
                 .unwrap()
                 .unwrap()
-                .finished_at
-                .is_none()
-            {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("audit must clean up its scheduled run");
+                .terminal_kind
+                .as_deref(),
+            Some("cancelled")
+        );
     }
 }
 

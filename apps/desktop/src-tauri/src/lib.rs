@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+mod cron_lifecycle;
+
 use async_trait::async_trait;
 use deepagent_app_core::{
     builtin_resources, data_root, migrate,
@@ -7223,15 +7225,8 @@ pub fn run() {
                 chat.clone(),
             ));
 
-            // Start Cron tick loop in background (will run until process exit)
-            let cron_for_loop = cron_service.clone();
-            tauri::async_runtime::spawn(async move {
-                use tokio_util::sync::CancellationToken;
-                let shutdown = CancellationToken::new();
-                if let Err(e) = cron_for_loop.run_tick_loop(shutdown).await {
-                    eprintln!("cron tick loop failed: {}", e);
-                }
-            });
+            // Retain cancellation and completion ownership through app exit.
+            app.manage(cron_lifecycle::CronLifecycle::start(cron_service.clone()));
 
             // Attach cron service to chat (returns new Arc, need to shadow)
             let chat = {
@@ -7714,8 +7709,9 @@ pub fn run() {
             mobile_stop_network_capture,
             mobile_get_network_records
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running DeepAgent Studio");
+        .build(tauri::generate_context!())
+        .expect("error while building DeepAgent Studio")
+        .run(|app, event| cron_lifecycle::on_event(app, &event));
 }
 
 #[cfg(test)]
