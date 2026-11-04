@@ -171,10 +171,127 @@ fn observe_app_and_reopen(tail: Tail) -> (bool, bool) {
 }
 
 #[test]
-#[ignore = "audit: an unrelated corrupt session must not block scoped search or database startup"]
 fn audit_corrupt_other_project_does_not_block_search_or_startup() {
     let (search_ok, open_ok) = observe_app_and_reopen(Tail::InvalidFrame);
     assert!(search_ok && open_ok);
+}
+
+#[test]
+fn h229_startup_recovery_defers_a_damaged_run_without_faking_terminal_or_blocking_other_sessions() {
+    use deepagent_persistence::run_store::RunStore;
+    let fixture = HistoryFixture::new();
+    let runs = RunStore::new(&fixture.db);
+    runs.create("h229-good-recovery", &fixture.good.to_string(), None, 102)
+        .unwrap();
+    runs.create("h229-bad-recovery", &fixture.bad.to_string(), None, 102)
+        .unwrap();
+    let original_run_events =
+        serde_json::to_value(runs.events_after("h229-bad-recovery", None).unwrap()).unwrap();
+    let fault = FileFault::inject(&fixture.db, fixture.bad, Tail::InvalidFrame);
+    let bad_bytes = std::fs::read(&fault.path).unwrap();
+    let app = AppService::from_shared(fixture.db.clone());
+    let recovered = app.recover_unfinished_runs().unwrap();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].run_id, "h229-good-recovery");
+    let bad = runs.get("h229-bad-recovery").unwrap().unwrap();
+    assert!(bad.finished_at.is_none());
+    assert!(bad.terminal_kind.is_none());
+    assert_eq!(
+        serde_json::to_value(runs.events_after("h229-bad-recovery", None).unwrap()).unwrap(),
+        original_run_events
+    );
+    assert_eq!(std::fs::read(&fault.path).unwrap(), bad_bytes);
+    let report = app
+        .search_sessions_with_status("repairneedle", None, 10)
+        .unwrap();
+    assert!(!report.complete);
+    assert_eq!(report.unavailable[0].session_id, fixture.bad.to_string());
+    drop(fault);
+    let recovered = app.recover_unfinished_runs().unwrap();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].run_id, "h229-bad-recovery");
+    assert!(app.recover_unfinished_runs().unwrap().is_empty());
+    for id in ["h229-good-recovery", "h229-bad-recovery"] {
+        assert_eq!(
+            runs.events_after(id, None)
+                .unwrap()
+                .iter()
+                .filter(|e| e.event_type == "run_terminal")
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn h229_app_report_keeps_visibility_and_explicit_partial_results() {
+    use deepagent_app_core::ArchiveService;
+    let fixture = HistoryFixture::new();
+    let app = AppService::from_shared(fixture.db.clone());
+    let fault = FileFault::inject(&fixture.db, fixture.bad, Tail::InvalidFrame);
+    let summaries = app.list_sessions().unwrap();
+    assert_eq!(
+        summaries.len(),
+        2,
+        "metadata listing must not replay the damaged transcript or silently hide its identity"
+    );
+    assert!(summaries.iter().any(|s| s.id == fixture.good.to_string()));
+    assert!(summaries.iter().any(|s| s.id == fixture.bad.to_string()));
+    assert!(app.session_conversation(&fixture.bad.to_string()).is_err());
+    for query in QUERIES {
+        let scoped = app
+            .search_sessions_with_status(query, Some(&fixture.good_project), 10)
+            .unwrap();
+        assert!(scoped.complete);
+        assert!(scoped.unavailable.is_empty());
+        let report = app.search_sessions_with_status(query, None, 10).unwrap();
+        assert_eq!(report.version, 1);
+        assert!(!report.complete);
+        assert_eq!(report.results.len(), 1);
+        assert_eq!(report.results[0].session.id, fixture.good.to_string());
+        assert_eq!(report.unavailable.len(), 1);
+        assert_eq!(report.unavailable[0].session_id, fixture.bad.to_string());
+        assert_eq!(report.unavailable[0].kind, "corrupt");
+        assert!(app
+            .search_sessions(query, None, 10)
+            .unwrap_err()
+            .to_string()
+            .contains("session_search_incomplete"));
+        let wire = serde_json::to_value(report).unwrap();
+        assert!(wire["unavailable"][0].get("path").is_none());
+        assert!(wire["unavailable"][0].get("error").is_none());
+    }
+    let archive = ArchiveService::new(fixture.db.clone());
+    assert!(archive.archive_session(&fixture.bad.to_string()).unwrap());
+    let archived = app
+        .search_sessions_with_status("repairneedle", None, 10)
+        .unwrap();
+    assert!(archived.complete);
+    assert_eq!(archived.results.len(), 1);
+    assert!(archived.unavailable.is_empty());
+    assert!(archive.unarchive_session(&fixture.bad.to_string()).unwrap());
+    assert!(
+        !app.search_sessions_with_status("repairneedle", None, 10)
+            .unwrap()
+            .complete
+    );
+    assert!(ProjectService::new(fixture.db.clone())
+        .remove_project(&fixture.bad_project)
+        .unwrap());
+    assert!(
+        app.search_sessions_with_status("repairneedle", None, 10)
+            .unwrap()
+            .complete
+    );
+    drop(fault);
+    ProjectService::new(fixture.db.clone())
+        .add_project(&fixture.bad_project)
+        .unwrap();
+    assert!(
+        app.search_sessions_with_status("repairneedle", None, 10)
+            .unwrap()
+            .complete
+    );
 }
 
 #[test]
@@ -189,6 +306,7 @@ struct SearchModel {
     bad: SessionId,
     query: &'static str,
     tail: Tail,
+    cross_project: bool,
     calls: AtomicUsize,
     fault: Mutex<Option<FileFault>>,
     output: Mutex<Option<serde_json::Value>>,
@@ -206,7 +324,7 @@ impl HttpTransport for SearchModel {
                 response_function_call(
                     "audit-repair-isolation",
                     "session_search",
-                    serde_json::json!({"query":self.query}),
+                    serde_json::json!({"query":self.query,"cross_project":self.cross_project}),
                 )
             }
             1 => {
@@ -231,6 +349,14 @@ impl HttpTransport for SearchModel {
 }
 
 async fn observe_tool(tail: Tail, query: &'static str) -> bool {
+    observe_tool_with_scope(tail, query, false).await.0
+}
+
+async fn observe_tool_with_scope(
+    tail: Tail,
+    query: &'static str,
+    cross_project: bool,
+) -> (bool, serde_json::Value) {
     let fixture = HistoryFixture::new();
     let settings = Arc::new(SettingsService::new(
         fixture.db.clone(),
@@ -254,6 +380,7 @@ async fn observe_tool(tail: Tail, query: &'static str) -> bool {
         bad: fixture.bad,
         query,
         tail,
+        cross_project,
         calls: AtomicUsize::new(0),
         fault: Mutex::new(None),
         output: Mutex::new(None),
@@ -297,7 +424,10 @@ async fn observe_tool(tail: Tail, query: &'static str) -> bool {
         });
     if !found {
         assert_eq!(output["status"], "error");
-        assert!(output.to_string().contains("invalid zstd frame"));
+        assert!(
+            output.to_string().contains("invalid zstd frame")
+                || output.to_string().contains("session_search_incomplete")
+        );
     }
     let events = chat.run_events("audit-repair-isolation-run", None).unwrap();
     let terminals: Vec<_> = events
@@ -314,11 +444,26 @@ async fn observe_tool(tail: Tail, query: &'static str) -> bool {
     assert_eq!(restored.len(), 1);
     assert_eq!(restored[0].session.id, fixture.good.to_string());
     eprintln!("repair isolation tool: tail={tail:?}, query={query}, active_project=A, wire_has_good_history={found}, unique_succeeded=true, restore_recovers=true");
-    found
+    (found, output)
 }
 
 #[tokio::test]
-#[ignore = "audit: corrupt B must not make A's session_search return an error to the model"]
+async fn h229_cross_project_search_returns_good_history_with_explicit_incomplete_wire() {
+    for query in QUERIES {
+        let (found, output) = observe_tool_with_scope(Tail::InvalidFrame, query, true).await;
+        assert!(
+            found,
+            "a bad history must not discard other matching histories"
+        );
+        assert_eq!(output["result"]["complete"], false);
+        assert_eq!(output["result"]["version"], 1);
+        let issues = output["result"]["unavailable"].as_array().unwrap();
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0]["kind"], "corrupt");
+    }
+}
+
+#[tokio::test]
 async fn audit_other_corrupt_session_does_not_fail_model_search() {
     let mut results = Vec::new();
     for query in QUERIES {

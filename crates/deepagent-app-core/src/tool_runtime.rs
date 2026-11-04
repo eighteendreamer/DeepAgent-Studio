@@ -4,9 +4,11 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use deepagent_core::error::{CoreError, Result};
-use deepagent_persistence::event_store::{EventStore, SessionSearchScope};
+use deepagent_persistence::event_store::{EventStore, SessionSearchControl, SessionSearchScope};
 use deepagent_persistence::Database;
-use deepagent_tools::{PermissionSet, RiskLevel, Tool, ToolDescriptor, ToolOutput, ToolRegistry};
+use deepagent_tools::{
+    PermissionSet, RiskLevel, Tool, ToolDescriptor, ToolExecutionContext, ToolOutput, ToolRegistry,
+};
 
 use crate::knowledge_service::KnowledgeService;
 use crate::mcp_runtime::attach_mcp_tools;
@@ -226,6 +228,7 @@ pub(crate) fn build_base_tool_registry(
     Ok((registry, todo_store))
 }
 
+#[derive(Clone)]
 struct SessionSearchTool {
     db: Arc<Database>,
     project: Option<String>,
@@ -271,6 +274,31 @@ impl Tool for SessionSearchTool {
     }
 
     async fn invoke(&self, arguments: serde_json::Value) -> Result<ToolOutput> {
+        self.invoke_with_context(arguments, ToolExecutionContext::default())
+            .await
+    }
+
+    async fn invoke_with_context(
+        &self,
+        arguments: serde_json::Value,
+        context: ToolExecutionContext,
+    ) -> Result<ToolOutput> {
+        let worker = self.clone();
+        run_session_search_worker(context, move |context| {
+            let cancelled = || context.is_cancelled();
+            let control = SessionSearchControl::new(context.timeout(), &cancelled);
+            worker.search(arguments, &control)
+        })
+        .await
+    }
+}
+
+impl SessionSearchTool {
+    fn search(
+        &self,
+        arguments: serde_json::Value,
+        control: &SessionSearchControl<'_>,
+    ) -> Result<ToolOutput> {
         let query = arguments
             .get("query")
             .and_then(serde_json::Value::as_str)
@@ -294,14 +322,12 @@ impl Tool for SessionSearchTool {
             SessionSearchScope::NoProject
         };
         let store = EventStore::new(&self.db);
-        let hits = store.search(query, scope, limit)?;
-        let mut results = Vec::with_capacity(hits.len());
-        for hit in hits {
-            let start = hit.sequence.saturating_sub(2);
-            let context = store
-                .read_from(hit.session.id, start)?
+        let report = store.search_with_control(query, scope, limit, control)?;
+        let mut results = Vec::with_capacity(report.hits.len());
+        for hit in report.hits {
+            let context = hit
+                .context
                 .into_iter()
-                .take_while(|event| event.sequence <= hit.sequence.saturating_add(2))
                 .filter_map(tool_context_line)
                 .collect::<Vec<_>>();
             results.push(serde_json::json!({
@@ -316,11 +342,31 @@ impl Tool for SessionSearchTool {
             }));
         }
         Ok(ToolOutput::success(serde_json::json!({
+            "version": 1,
+            "complete": report.unavailable.is_empty(),
+            "unavailable": report.unavailable,
             "query": query,
             "project": if cross_project { None } else { self.project.as_deref() },
             "results": results,
         })))
     }
+}
+
+/// Blocking maintenance still belongs to the invocation's cancellation tree.
+/// Dropping the awaiting future cancels its child, not the parent run. Merely
+/// dropping spawn_blocking's JoinHandle would leave real file work running.
+async fn run_session_search_worker<T: Send + 'static>(
+    context: ToolExecutionContext,
+    worker: impl FnOnce(ToolExecutionContext) -> Result<T> + Send + 'static,
+) -> Result<T> {
+    let token = context.cancellation_token().child_token();
+    let worker_context =
+        ToolExecutionContext::from_token_and_flag(token.clone(), context.cancel_flag())
+            .with_timeout(context.timeout());
+    let _cancel_on_drop = token.drop_guard();
+    tokio::task::spawn_blocking(move || worker(worker_context))
+        .await
+        .map_err(|_| CoreError::other("session_search_failed: maintenance worker failed"))?
 }
 
 fn tool_context_line(event: deepagent_core::event::Event) -> Option<serde_json::Value> {
@@ -1218,6 +1264,156 @@ mod session_search_tests {
     use deepagent_core::message::Message;
     use deepagent_runtime::workflow::ToolExecutor;
     use deepagent_session::Session;
+
+    #[tokio::test]
+    async fn h229_session_search_observes_token_legacy_cancellation_and_zero_budget() {
+        use deepagent_tools::ToolExecutionContext;
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let clock = FixedClock::new(1_000);
+        let mut session = Session::create_in_project(
+            &db,
+            &clock,
+            Some("synthetic"),
+            Default::default(),
+            Some("A"),
+        )
+        .unwrap();
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::user("repairneedle"),
+            })
+            .unwrap();
+        let tool = SessionSearchTool::new(db, Some("A".into()));
+        let token = tokio_util::sync::CancellationToken::new();
+        token.cancel();
+        for context in [
+            ToolExecutionContext::from_token(token),
+            ToolExecutionContext::new(Arc::new(AtomicBool::new(true))),
+        ] {
+            let result = tool
+                .invoke_with_context(serde_json::json!({"query":"repairneedle"}), context)
+                .await;
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("session_search_cancelled"));
+        }
+        let result = tool
+            .invoke_with_context(
+                serde_json::json!({"query":"repairneedle"}),
+                ToolExecutionContext::default().with_timeout(std::time::Duration::ZERO),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.value["complete"], false);
+        assert_eq!(result.value["unavailable"][0]["kind"], "deferred");
+        assert_eq!(result.value["results"], serde_json::json!([]));
+        let retry = tool
+            .invoke(serde_json::json!({"query":"repairneedle"}))
+            .await
+            .unwrap();
+        assert_eq!(retry.value["complete"], true);
+        assert_eq!(retry.value["results"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn h229_dropping_the_async_owner_stops_the_actual_decoder_worker_without_cancelling_its_parent(
+    ) {
+        use std::sync::atomic::AtomicUsize;
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let clock = FixedClock::new(1_000);
+        let mut session = Session::create_in_project(
+            &db,
+            &clock,
+            Some("drop fixture"),
+            Default::default(),
+            Some("A"),
+        )
+        .unwrap();
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::user("real search decoder ".repeat(128 * 1024)),
+            })
+            .unwrap();
+        let path = std::fs::read_dir(db.session_transcript_dir(session.id()))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|p| p.to_string_lossy().ends_with(".v1.jsonl.zst"))
+            .unwrap();
+        let mut original = std::fs::read(&path).unwrap();
+        original.extend_from_slice(&[0x28, 0xb5, 0x2f, 0xfd]);
+        std::fs::write(&path, &original).unwrap();
+        let parent = tokio_util::sync::CancellationToken::new();
+        let context = ToolExecutionContext::from_token(parent.clone());
+        let worker_db = db.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let task = tokio::spawn(run_session_search_worker(context, move |context| {
+            let calls = AtomicUsize::new(0);
+            let started_tx = Mutex::new(Some(started_tx));
+            let release_rx = Mutex::new(release_rx);
+            let cancelled = || {
+                // Pause a real source-read/decompression checkpoint, not a
+                // fake worker loop. The storage regression separately asserts
+                // positive compressed/decoded byte counters at this stage.
+                if calls.fetch_add(1, Ordering::SeqCst) == 50 {
+                    let _ = started_tx.lock().unwrap().take().unwrap().send(());
+                    let _ = release_rx
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(std::time::Duration::from_secs(5));
+                }
+                context.is_cancelled()
+            };
+            let control = SessionSearchControl::new(context.timeout(), &cancelled);
+            let result = EventStore::new(&worker_db).search_with_control(
+                "decoder",
+                SessionSearchScope::All,
+                10,
+                &control,
+            );
+            let _ = done_tx.send(result);
+            Ok(())
+        }));
+        let started = tokio::time::timeout(std::time::Duration::from_secs(5), started_rx).await;
+        task.abort();
+        let dropped = task.await;
+        let _ = release_tx.send(());
+        assert!(
+            matches!(started, Ok(Ok(()))),
+            "real worker must reach the decode barrier"
+        );
+        assert!(dropped.unwrap_err().is_cancelled());
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), done_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("session_search_cancelled"));
+        assert!(
+            !parent.is_cancelled(),
+            "dropping a tool may not cancel its parent run"
+        );
+        assert_eq!(
+            std::fs::read(path).unwrap(),
+            original,
+            "abandoned maintenance must not commit torn-tail recovery"
+        );
+        let health: i64 = db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM documents WHERE collection='session_file_health_v1'",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(|e| CoreError::Persistence(e.to_string()))
+            })
+            .unwrap();
+        assert_eq!(health, 0, "cancellation is not authority corruption");
+    }
 
     struct ApprovalOnlyTool;
 

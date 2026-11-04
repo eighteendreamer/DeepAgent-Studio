@@ -19,6 +19,13 @@ export interface SessionSearchHit {
   snippet: string;
 }
 
+export interface SessionSearchReport {
+  version: 1;
+  complete: boolean;
+  results: SessionSearchHit[];
+  unavailable: { session_id: string; kind: "corrupt" | "missing" | "unreadable" | "busy" | "deferred" }[];
+}
+
 export interface SessionUiPrefs {
   env_panel_auto_open: boolean;
 }

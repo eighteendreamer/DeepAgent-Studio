@@ -19,6 +19,10 @@ const SESSION_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 const SESSION_LOCK_POLL: Duration = Duration::from_millis(10);
 
 pub(crate) mod page;
+mod read_control;
+pub(crate) mod scan;
+pub(crate) use read_control::{ReadControl, ReadStop};
+pub(crate) use scan::ScannedSessionFile;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SessionFileHeader {
@@ -134,6 +138,90 @@ pub(crate) fn load(root: &Path, session_id: SessionId) -> Result<Option<LoadedSe
     match (result, unlock_result) {
         (Ok(loaded), Ok(())) => Ok(Some(loaded)),
         (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+    }
+}
+
+/// Optional projection maintenance must not wait behind a writer. Preserve
+/// the file/open error category at this boundary rather than parsing CoreError
+/// display text in the repository. The strict decoder/recovery is shared.
+pub(crate) enum MaintenanceReadError {
+    Busy,
+    Source(CoreError),
+    Stopped(ReadStop),
+    Projection(CoreError),
+}
+
+impl From<CoreError> for MaintenanceReadError {
+    fn from(error: CoreError) -> Self {
+        Self::Source(error)
+    }
+}
+
+impl From<std::io::Error> for MaintenanceReadError {
+    fn from(error: std::io::Error) -> Self {
+        if is_lock_contention(&error) {
+            Self::Busy
+        } else {
+            Self::Source(io_error(error))
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn try_load_for_maintenance(
+    root: &Path,
+    session_id: SessionId,
+    control: &ReadControl<'_>,
+) -> std::result::Result<Option<LoadedSessionFile>, MaintenanceReadError> {
+    let mut events = Vec::new();
+    let mut projections = Vec::new();
+    try_visit_for_maintenance(root, session_id, control, &mut |group, projection| {
+        events.extend(group);
+        projections.extend(projection);
+        Ok(())
+    })
+    .map(|scanned| {
+        scanned.map(|s| LoadedSessionFile {
+            generation: s.generation,
+            header: s.header,
+            events,
+            projections,
+            byte_len: s.byte_len,
+            recovered_tail_bytes: s.recovered_tail_bytes,
+        })
+    })
+}
+
+pub(crate) fn try_visit_for_maintenance(
+    root: &Path,
+    session_id: SessionId,
+    control: &ReadControl<'_>,
+    visitor: &mut scan::GroupVisitor<'_>,
+) -> std::result::Result<Option<ScannedSessionFile>, MaintenanceReadError> {
+    control
+        .checkpoint()
+        .map_err(|e| maintenance_read_error(e, control))?;
+    let Some((generation, path)) = current_generation(root, session_id)? else {
+        return Ok(None);
+    };
+    let mut file = open_session_file_once(&path, false)?;
+    FileExt::try_lock_exclusive(&file)?;
+    let result = scan::read(&mut file, generation, session_id, true, control, visitor);
+    let unlock = FileExt::unlock(&file).map_err(io_error);
+    match (result, unlock) {
+        (Ok(loaded), Ok(())) => Ok(Some(loaded)),
+        (Err(error), _) => match control.stopped() {
+            Some(reason) => Err(MaintenanceReadError::Stopped(reason)),
+            None => Err(error),
+        },
+        (Ok(_), Err(error)) => Err(maintenance_read_error(error, control)),
+    }
+}
+
+fn maintenance_read_error(error: CoreError, control: &ReadControl<'_>) -> MaintenanceReadError {
+    match control.stopped() {
+        Some(reason) => MaintenanceReadError::Stopped(reason),
+        None => MaintenanceReadError::Source(error),
     }
 }
 
@@ -540,23 +628,57 @@ fn read_locked_file(
     expected_session: SessionId,
     repair_tail: bool,
 ) -> Result<LoadedSessionFile> {
-    file.seek(SeekFrom::Start(0)).map_err(io_error)?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).map_err(io_error)?;
-    let (records, valid_len, torn_tail) = decode_frames(&bytes)?;
-    if torn_tail > 0 && repair_tail {
-        file.set_len(valid_len as u64).map_err(io_error)?;
-        file.sync_all().map_err(io_error)?;
-    }
-    parse_records(
-        records,
+    read_locked_file_controlled(
+        file,
         generation,
         expected_session,
-        valid_len as u64,
-        torn_tail as u64,
+        repair_tail,
+        &ReadControl::unbounded(),
     )
 }
 
+fn read_locked_file_controlled(
+    file: &mut File,
+    generation: u64,
+    expected_session: SessionId,
+    repair_tail: bool,
+    control: &ReadControl<'_>,
+) -> Result<LoadedSessionFile> {
+    let mut events = Vec::new();
+    let mut projections = Vec::new();
+    let scanned = scan::read(
+        file,
+        generation,
+        expected_session,
+        repair_tail,
+        control,
+        &mut |group, projection| {
+            events.extend(group);
+            projections.extend(projection);
+            Ok(())
+        },
+    )
+    .map_err(|error| match error {
+        MaintenanceReadError::Source(error) | MaintenanceReadError::Projection(error) => error,
+        MaintenanceReadError::Stopped(ReadStop::Cancelled) => {
+            CoreError::other("session_search_cancelled")
+        }
+        MaintenanceReadError::Stopped(ReadStop::Budget) => {
+            CoreError::other("session_search_maintenance_deferred")
+        }
+        MaintenanceReadError::Busy => CoreError::Persistence("session authority busy".into()),
+    })?;
+    Ok(LoadedSessionFile {
+        generation: scanned.generation,
+        header: scanned.header,
+        events,
+        projections,
+        byte_len: scanned.byte_len,
+        recovered_tail_bytes: scanned.recovered_tail_bytes,
+    })
+}
+
+#[cfg(test)]
 fn parse_records(
     records: Vec<StoredRecord>,
     generation: u64,
@@ -564,11 +686,32 @@ fn parse_records(
     byte_len: u64,
     recovered_tail_bytes: u64,
 ) -> Result<LoadedSessionFile> {
+    parse_records_controlled(
+        records,
+        generation,
+        expected_session,
+        byte_len,
+        recovered_tail_bytes,
+        &ReadControl::unbounded(),
+    )
+}
+
+#[cfg(test)]
+fn parse_records_controlled(
+    records: Vec<StoredRecord>,
+    generation: u64,
+    expected_session: SessionId,
+    byte_len: u64,
+    recovered_tail_bytes: u64,
+    control: &ReadControl<'_>,
+) -> Result<LoadedSessionFile> {
+    control.checkpoint()?;
     let mut records = records.into_iter();
     let header = parse_header(records.next(), generation, expected_session)?;
     let mut events = Vec::new();
     let mut projections = Vec::new();
     for record in records {
+        control.checkpoint()?;
         let (group, projection) = parse_event_group(record, expected_session, events.len() as u64)?;
         projections.extend(projection);
         events.extend(group);
@@ -677,50 +820,6 @@ fn parse_event_group(
             .ok_or_else(|| CoreError::EventLog("session sequence overflow".into()))?;
     }
     Ok((group, projection))
-}
-
-fn decode_frames(bytes: &[u8]) -> Result<(Vec<StoredRecord>, usize, usize)> {
-    let mut records = Vec::new();
-    let mut offset = 0usize;
-    while offset < bytes.len() {
-        let remaining = &bytes[offset..];
-        // A write can stop within the magic itself. Only its exact prefix is
-        // a recoverable short tail; arbitrary/corrupt bytes still fail below.
-        if remaining.len() < ZSTD_MAGIC.len() && ZSTD_MAGIC.starts_with(remaining) {
-            return Ok((records, offset, remaining.len()));
-        }
-        let frame_size = match zstd::zstd_safe::find_frame_compressed_size(remaining) {
-            Ok(size) => size,
-            Err(code) if remaining.starts_with(&ZSTD_MAGIC) && is_truncated_frame(code) => {
-                return Ok((records, offset, remaining.len()));
-            }
-            Err(code) => {
-                return Err(CoreError::EventLog(format!(
-                    "invalid zstd frame at byte {offset}: {}",
-                    zstd::zstd_safe::get_error_name(code)
-                )))
-            }
-        };
-        let end = offset
-            .checked_add(frame_size)
-            .ok_or_else(|| CoreError::EventLog("session frame size overflow".to_string()))?;
-        if end > bytes.len() {
-            return Ok((records, offset, bytes.len() - offset));
-        }
-        let decoded = zstd::decode_all(&bytes[offset..end]).map_err(|error| {
-            CoreError::EventLog(format!("corrupt zstd frame at byte {offset}: {error}"))
-        })?;
-        for line in decoded.split(|byte| *byte == b'\n') {
-            if line.is_empty() {
-                continue;
-            }
-            records.push(serde_json::from_slice(line).map_err(|error| {
-                CoreError::EventLog(format!("invalid JSONL record at byte {offset}: {error}"))
-            })?);
-        }
-        offset = end;
-    }
-    Ok((records, offset, 0))
 }
 
 fn is_truncated_frame(code: usize) -> bool {
@@ -933,7 +1032,11 @@ pub(crate) fn try_lock_session_scope(
     scope: &str,
     exclusive: bool,
 ) -> Result<Option<SessionLock>> {
-    let file = open_session_lock(root, session_id, scope)?;
+    let file = match open_session_lock_once(root, session_id, scope) {
+        Ok(file) => file,
+        Err(error) if is_lock_contention(&error) => return Ok(None),
+        Err(error) => return Err(io_error(error)),
+    };
     let result = if exclusive {
         FileExt::try_lock_exclusive(&file)
     } else {
@@ -941,10 +1044,7 @@ pub(crate) fn try_lock_session_scope(
     };
     match result {
         Ok(()) => Ok(Some(SessionLock { file })),
-        Err(error)
-            if error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
-                || error.kind() == std::io::ErrorKind::WouldBlock =>
-        {
+        Err(error) if is_lock_contention(&error) => {
             tracing::info!(%session_id, scope, exclusive, "session access refused while busy");
             Ok(None)
         }
@@ -955,18 +1055,9 @@ pub(crate) fn try_lock_session_scope(
 }
 
 fn open_session_lock(root: &Path, session_id: SessionId, suffix: &str) -> Result<File> {
-    let lock_root = root.parent().unwrap_or(root).join("locks").join("sessions");
-    fs::create_dir_all(&lock_root).map_err(io_error)?;
-    let path = lock_root.join(format!("{session_id}.{suffix}"));
     let deadline = Instant::now() + SESSION_LOCK_TIMEOUT;
     let file = loop {
-        match OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&path)
-        {
+        match open_session_lock_once(root, session_id, suffix) {
             Ok(file) => break file,
             Err(error) if is_lock_busy(&error) && Instant::now() < deadline => {
                 thread::sleep(SESSION_LOCK_POLL);
@@ -981,6 +1072,21 @@ fn open_session_lock(root: &Path, session_id: SessionId, suffix: &str) -> Result
         }
     };
     Ok(file)
+}
+
+fn open_session_lock_once(
+    root: &Path,
+    session_id: SessionId,
+    suffix: &str,
+) -> std::io::Result<File> {
+    let lock_root = root.parent().unwrap_or(root).join("locks").join("sessions");
+    fs::create_dir_all(&lock_root)?;
+    OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(lock_root.join(format!("{session_id}.{suffix}")))
 }
 
 fn lock_exclusive_with_timeout(file: &File) -> Result<()> {
@@ -1005,14 +1111,7 @@ fn lock_exclusive_with_timeout(file: &File) -> Result<()> {
 fn open_session_file(path: &Path, append: bool) -> Result<File> {
     let deadline = Instant::now() + SESSION_LOCK_TIMEOUT;
     loop {
-        let mut options = OpenOptions::new();
-        options.read(true);
-        if append {
-            options.append(true);
-        } else {
-            options.write(true);
-        }
-        match options.open(path) {
+        match open_session_file_once(path, append) {
             Ok(file) => return Ok(file),
             Err(error) if is_lock_busy(&error) && Instant::now() < deadline => {
                 thread::sleep(SESSION_LOCK_POLL);
@@ -1025,6 +1124,41 @@ fn open_session_file(path: &Path, append: bool) -> Result<File> {
             }
             Err(error) => return Err(io_error(error)),
         }
+    }
+}
+
+fn open_session_file_once(path: &Path, append: bool) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    if append {
+        options.append(true);
+    } else {
+        options.write(true);
+    }
+    options.open(path)
+}
+
+fn is_lock_contention(error: &std::io::Error) -> bool {
+    if error
+        .raw_os_error()
+        .is_some_and(|code| Some(code) == fs2::lock_contended_error().raw_os_error())
+        || error.kind() == std::io::ErrorKind::WouldBlock
+    {
+        return true;
+    }
+    // Windows sharing/byte-range violations are contention; an ordinary
+    // access denied is not. Never infer "busy" from PermissionDenied.
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION};
+        matches!(
+            error.raw_os_error().map(|code| code as u32),
+            Some(ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION)
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        false
     }
 }
 

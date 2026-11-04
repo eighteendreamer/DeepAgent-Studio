@@ -42,6 +42,22 @@ pub struct SessionSearchHitDto {
     pub snippet: String,
 }
 
+/// Versioned UI search envelope. An empty list is not evidence of a complete
+/// search when an authority file was unavailable. No source paths/errors leak.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionSearchReportDto {
+    pub version: u32,
+    pub complete: bool,
+    pub results: Vec<SessionSearchHitDto>,
+    pub unavailable: Vec<SessionSearchIssueDto>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionSearchIssueDto {
+    pub session_id: String,
+    pub kind: String,
+}
+
 /// Durable UI preferences bound to a session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionUiPrefsDto {

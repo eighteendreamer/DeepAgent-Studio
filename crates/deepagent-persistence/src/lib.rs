@@ -72,7 +72,7 @@ impl Database {
         let db = Self::from_connection(conn, data_root, None)?;
         db.run_session_file_cutover_maintenance()?;
         event_store::EventStore::new(&db).recover_orphaned_session_files()?;
-        event_store::EventStore::new(&db).repair_search_indexes()?;
+        event_store::EventStore::new(&db).repair_metadata_on_open()?;
         // Opening a connection is not evidence that any runtime owner died.
         // Lifecycle recovery is explicitly guarded by session dispatch ownership.
         Ok(db)
@@ -145,6 +145,18 @@ impl Database {
             .map_err(|_| CoreError::Persistence("session file mutex poisoned".into()))
     }
 
+    /// Optional maintenance never waits behind an authority writer. Poisoning
+    /// remains a global coordination failure, not a per-session file fault.
+    pub(crate) fn try_lock_session_io(&self) -> Result<Option<std::sync::MutexGuard<'_, ()>>> {
+        match self.session_io.try_lock() {
+            Ok(guard) => Ok(Some(guard)),
+            Err(std::sync::TryLockError::WouldBlock) => Ok(None),
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                Err(CoreError::Persistence("session file mutex poisoned".into()))
+            }
+        }
+    }
+
     /// Acquire the session-file gate without allowing a read request to wait
     /// forever behind a long-running writer. Writes keep the historical
     /// blocking lock; UI-facing reads use this bounded variant.
@@ -181,6 +193,45 @@ impl Database {
             .lock()
             .map_err(|_| CoreError::Persistence("connection mutex poisoned".into()))?;
         f(&guard)
+    }
+
+    /// Optional search maintenance must not park behind an in-process owner
+    /// or another SQLite writer. It uses this same connection/store, fails
+    /// globally on contention, and restores the exact configured busy timeout.
+    pub(crate) fn with_maintenance_conn<T>(
+        &self,
+        f: impl FnOnce(&Connection) -> Result<T>,
+    ) -> Result<T> {
+        let guard = match self.conn.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(CoreError::Persistence(
+                    "session_search_busy: database connection has another owner".into(),
+                ));
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(CoreError::Persistence("connection mutex poisoned".into()));
+            }
+        };
+        let timeout: u64 = guard
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .map_err(map_sqlite)?;
+        let mut policy = MaintenanceBusyPolicy {
+            connection: &guard,
+            timeout: std::time::Duration::from_millis(timeout),
+            restored: false,
+        };
+        guard
+            .busy_timeout(std::time::Duration::ZERO)
+            .map_err(map_sqlite)?;
+        let result = f(&guard);
+        match (result, policy.restore()) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+            (Err(error), Err(restore)) => Err(CoreError::Persistence(format!(
+                "optional search operation failed: {error}; restoring busy policy also failed: {restore}"
+            ))),
+        }
     }
 
     /// The current schema version (number of applied migrations).
@@ -220,6 +271,32 @@ impl Database {
             .map_err(map_sqlite)?;
             Ok(())
         })
+    }
+}
+
+struct MaintenanceBusyPolicy<'a> {
+    connection: &'a Connection,
+    timeout: std::time::Duration,
+    restored: bool,
+}
+
+impl MaintenanceBusyPolicy<'_> {
+    fn restore(&mut self) -> Result<()> {
+        self.connection
+            .busy_timeout(self.timeout)
+            .map_err(map_sqlite)?;
+        self.restored = true;
+        Ok(())
+    }
+}
+
+impl Drop for MaintenanceBusyPolicy<'_> {
+    fn drop(&mut self) {
+        if !self.restored {
+            if let Err(error) = self.restore() {
+                tracing::error!(%error, "could not restore SQLite busy timeout after optional maintenance");
+            }
+        }
     }
 }
 

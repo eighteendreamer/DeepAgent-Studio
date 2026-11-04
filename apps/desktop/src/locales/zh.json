@@ -1307,7 +1307,11 @@
   },
   "searchModal": {
     "searchChats": "搜索对话",
-    "recentChats": "近期对话"
+    "recentChats": "近期对话",
+    "searching": "正在搜索正文…",
+    "failed": "正文搜索失败；标题结果仍可用，请重试。",
+    "incomplete": "正文结果不完整：有 {{count}} 个会话暂不可搜索，请稍后重试。",
+    "retry": "重试"
   },
   "skillsView": {
     "origin": {

@@ -25,7 +25,8 @@ use crate::diff::{diff_lines, DiffResult};
 use crate::dto::{
     AttachmentDto, CommandDto, ConversationMessageDto, ConversationPartDto, ConversationTurnDto,
     ConversationUsageDto, ForkResultDto, RewindResultDto, RunRecoveryDto, SessionDetailDto,
-    SessionSearchHitDto, SessionStatsDto, SessionSummaryDto, TimelineEntryDto, TranscriptDto,
+    SessionSearchHitDto, SessionSearchIssueDto, SessionSearchReportDto, SessionStatsDto,
+    SessionSummaryDto, TimelineEntryDto, TranscriptDto,
 };
 use crate::host_lock::{self, HostRole};
 use crate::{ArchiveService, ProjectService, SessionStateService};
@@ -120,13 +121,10 @@ impl AppService {
                 tracing::info!(%session_id, "startup recovery skipped: session has an active owner");
                 continue;
             };
-            if EventStore::new(&self.db)
-                .trashed_session_deleted_at(id)?
-                .is_some()
-            {
-                // User recycling is not a crashed projection. Wait for an
-                // explicit restore rather than recreating the source file.
-                tracing::info!(%session_id, "startup recovery deferred: session is recycled");
+            if !scope.authority_is_available()? {
+                // Includes intentional recycle, busy and invalid authority.
+                // Never invent a failed terminal for an unreadable history.
+                tracing::warn!(%session_id, "startup recovery deferred: session authority is unavailable; original run state retained");
                 continue;
             }
             let mut control_recovery = scope.recover_controls(recovery_now)?;
@@ -210,14 +208,8 @@ impl AppService {
         let pinned = SessionStateService::new(self.db.clone()).pinned_ids()?;
         let projects = ProjectService::new(self.db.clone());
         let (registered_projects, project_names) = projects.session_projection()?;
-        let records = store.list_sessions()?;
-        let mut file_backed_records = Vec::with_capacity(records.len());
-        for record in records {
-            if store.event_count(record.id)? > 0 {
-                file_backed_records.push(record);
-            }
-        }
-        Ok(file_backed_records
+        Ok(store
+            .list_nonempty_sessions()?
             .into_iter()
             .filter(|r| !archived.contains(&r.id.to_string()))
             // V11 Responses cutover clears legacy transcript sessions while
@@ -251,6 +243,24 @@ impl AppService {
         project: Option<&str>,
         limit: usize,
     ) -> Result<Vec<SessionSearchHitDto>> {
+        let report = self.search_sessions_with_status(query, project, limit)?;
+        if !report.complete {
+            return Err(CoreError::Persistence(format!(
+                "session_search_incomplete: {} unavailable histories",
+                report.unavailable.len()
+            )));
+        }
+        Ok(report.results)
+    }
+
+    /// The desktop consumes explicit partial results. Legacy Rust consumers
+    /// above keep the strict Vec contract instead of silently losing status.
+    pub fn search_sessions_with_status(
+        &self,
+        query: &str,
+        project: Option<&str>,
+        limit: usize,
+    ) -> Result<SessionSearchReportDto> {
         let store = EventStore::new(&self.db);
         let archived = ArchiveService::new(self.db.clone()).archived_ids()?;
         let pinned = SessionStateService::new(self.db.clone()).pinned_ids()?;
@@ -260,17 +270,47 @@ impl AppService {
             deepagent_persistence::event_store::SessionSearchScope::All,
             deepagent_persistence::event_store::SessionSearchScope::Project,
         );
-        let hits = store.search(query, scope, limit)?;
-        Ok(hits
-            .into_iter()
-            .filter(|hit| !archived.contains(&hit.session.id.to_string()))
-            .filter(|hit| {
-                hit.session
-                    .project
-                    .as_deref()
+        let report = store.search_with_status(query, scope, limit)?;
+        let visible = |id: &SessionId, project: Option<&str>| {
+            !archived.contains(&id.to_string())
+                && project
                     .map(|path| registered_projects.contains(path))
                     .unwrap_or(true)
-            })
+        };
+        let mut unavailable = Vec::new();
+        for issue in report.unavailable {
+            // Unknown orphan ownership cannot be presented as a visible
+            // conversation. Its health is retained by the persistence owner.
+            let Some(record) = store.get_session(issue.session_id)? else {
+                continue;
+            };
+            if !visible(&record.id, record.project.as_deref()) {
+                continue;
+            }
+            unavailable.push(SessionSearchIssueDto {
+                session_id: issue.session_id.to_string(),
+                kind: match issue.kind {
+                    deepagent_persistence::event_store::SessionSearchIssueKind::Corrupt => {
+                        "corrupt"
+                    }
+                    deepagent_persistence::event_store::SessionSearchIssueKind::Missing => {
+                        "missing"
+                    }
+                    deepagent_persistence::event_store::SessionSearchIssueKind::Unreadable => {
+                        "unreadable"
+                    }
+                    deepagent_persistence::event_store::SessionSearchIssueKind::Busy => "busy",
+                    deepagent_persistence::event_store::SessionSearchIssueKind::Deferred => {
+                        "deferred"
+                    }
+                }
+                .into(),
+            });
+        }
+        let results = report
+            .hits
+            .into_iter()
+            .filter(|hit| visible(&hit.session.id, hit.session.project.as_deref()))
             .map(|hit| {
                 let project = hit.session.project.as_deref().map(|path| {
                     project_names
@@ -288,7 +328,13 @@ impl AppService {
                     snippet: hit.snippet,
                 }
             })
-            .collect())
+            .collect();
+        Ok(SessionSearchReportDto {
+            version: 1,
+            complete: unavailable.is_empty(),
+            results,
+            unavailable,
+        })
     }
 
     /// Open a session: its summary, full timeline, and aggregated stats.

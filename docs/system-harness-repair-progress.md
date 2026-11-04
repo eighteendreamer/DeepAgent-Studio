@@ -2,21 +2,150 @@
 
 ## 当前状态与计数口径（2026-11-05）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计155项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；该次只纠正汇总，不计为新增修复。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计156项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；该次只纠正汇总，不计为新增修复。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 155 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-87、H-88、H-92、H-96、H-97、H-125、H-130、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-147、H-148、H-149、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-178、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-196、H-197、H-198、H-199、H-208、H-214、H-218、H-219、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-241、H-242、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-259、H-260、H-261、H-270、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-290、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 156 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-87、H-88、H-92、H-96、H-97、H-125、H-130、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-147、H-148、H-149、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-178、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-196、H-197、H-198、H-199、H-208、H-214、H-218、H-219、H-224、H-225、H-226、H-227、H-229、H-235、H-236、H-237、H-241、H-242、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-259、H-260、H-261、H-270、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-290、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 23 | 17项原审计历史修复；H-77/H-83/H-238/H-246/H-301/H-232分别随H-78/H-143/H-260/H-245/H-164/H-219共享边界消除，验收另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 3 | H-211/H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | H-97已按E-H97-03限定范围验收；整体未完成 |
-| 待修复 | 118 | 含H-180授权跳过；实际待处理117项 |
+| 修复中 | 0 | H-229已按E-H229-07本机范围验收；无其他在修项 |
+| 待修复 | 117 | 含H-180授权跳过；实际待处理116项 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **118（其中H-180按用户要求跳过，实际待处理117项）**；不提供完成率。155项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301/H-232在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4/3cabd45f及真实复核单独列明，合计23项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。
+有效未关闭条目当前为 **117（其中H-180按用户要求跳过，实际待处理116项）**；不提供完成率。156项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301/H-232在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4/3cabd45f及真实复核单独列明，合计23项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。
+
+## H-229 单会话损坏的搜索与启动隔离（已修复并验收，2026-11-05）
+
+**E-H229-01（原probe、TDD与候选起点，2026-11-05，未验收）**：起点ff50edff，tracked干净、无未完成合并；原五项用户未跟踪内容不读不改不提交。仅H229，不混修H228可见性/limit、H271日历panic或H180授权跳过项。已读取原报告、当前Database/EventStore/session_files、AppService/SessionSearchTool及Desktop search_sessions/TS SearchModal等生产消费方，并核对Cargo/格式/CI配置。`cargo test -p deepagent-app-core --test kernel_v2_e2e session_repair_isolation:: --offline -j 2 -- --include-ignored --nocapture --test-threads=1`实际exit101、2过/2败/0忽略，118.854秒含编译；三个A查询及三个模型工具wire均被B的invalid zstd frame阻断，关闭全部owner后Database::open失败，健康/可恢复尾帧对照通过。不是编译失败或模型误判，原文件由夹具还原。日志仅target/h229-repair-20261105。
+
+新增存储TDD`cargo test -p deepagent-persistence --lib event_store::search_repair_tests:: --offline -j 2 -- --nocapture --test-threads=1`确认1过/2败：scoped A查询及已知/孤儿坏文件重开不变量失败，全局SQLite/schema错误继续严格失败的对照通过。原invalid尾字节、真实文件连接及后续还原恢复均保留；未使用真实历史、凭据、内网、供应商或用户数据。
+
+根因仍为无scope同步全库repair在SQL范围过滤前传播单文件错误，且Database::open把派生搜索修复当强门禁。源码对照Claude Code逐lite log的loadFullLog try/catch和Codex build_thread_item逐rollout隔离；不采用其静默缺失历史或可选整库语义。**本地设计**：继续唯一EventStore/session_files/SQLite owner，文件错误只在文件边界隔离，SQLite、schema及投影事务错误不降级；不改变严格事件回放、不截断未知坏尾、不另建store。利用既有documents保存最小非敏感、version1命名空间的可重建隔离信息，与search cursor的dirty标记同事务；只有成功校验并重新投影后清除。现有Rust Vec搜索保留严格完整结果契约，新增同owner的显式状态结果用于UI和工具消费，空结果也必须能表达不完整。计划修复范围必须在读文件前限定；维护预算/取消、锁忙/权限拒绝/CRC校验、多坏会话、恢复及归档/回收边界仍需真实回归，不能用只吞错误或只改A的scope结案。
+
+E01当时仅候选：已抽出EventStore搜索健康模块，scope传到原repair边界；不可恢复文件保留原字节并隔离搜索投影，孤儿解码失败不再直接阻断其他元数据恢复。candidate-storage-check exit0，4.737秒；当时存储测试尚未终态。以下E02续接其真实结果，不改写原红测和当时未完成的事实。
+
+**E-H229-02（显式部分结果、启动投影解耦及边界TDD，2026-11-05，仍未验收）**：接续时只修改本项已有候选；五项原用户未跟踪内容仍不读不改不提交。先回收partial-model-wire-red真实终态：原正式Kernel/离线Responses工具链在跨项目查询时0过/1败、exit101、139.613秒，健康A历史被坏B丢弃；未把编译成功当红测。另checksum-status-red在同长度Zstd校验字节损坏且B不匹配查询时0过/1败；修改时间/长度/代际仅作为派生验证缓存失效提示，**不是内容完整性证明**。缓存不匹配时仍走原严格帧校验，实际命中与邻近context从同一次严格源读取投影，不在工具层重读后再丢弃全部结果。
+
+候选继续唯一EventStore/session_files/SQLite边界；文件错误隔离、进程级协调/SQLite/schema/投影事务错误严格传播。修正了候选的末次fingerprint错误漏出和全局mutex错误误隔离边界，SQL按原仓库多行风格整理。新增`search_with_status`报告保留旧Rust Vec入口的严格完整性契约；AppService复用原archive/project/pinned投影过滤，同时过滤不可见记录的健康信息，不混修H228的limit顺序。现有Tauri `search_sessions`和TS API改为`version=1/complete/results/unavailable`信封，所有仓内调用方同步；SessionSearchTool保留results并新增相同状态字段。UI使用现有shadcn Input/Button，区分加载、完整空结果、不完整结果和全局失败，支持同查询重试、忽略过期响应，不显示/console输出原始文件错误。没有新增command、数据库迁移、依赖、store、审批或权限旁路。
+
+两项维护边界真实红测在候选4仍7过/2败、exit101、16.801秒：单个OS锁忙让其他命中等待5.013秒；真实关闭全部owner后，搜索投影INSERT故障触发器仍阻断Database::open。候选5在相同owner内将startup限定为权威元数据恢复、不执行可选搜索重建；显式search依然保留同触发器错误。文件级维护/孤儿恢复/搜索context复用现有OS try-lock，锁忙报告busy而非corrupt，不以跳过锁或绕开写入owner恢复可用性。candidate5全部存储189过/0败；默认应用/模型6过/0败；严格存储lint通过。**这还不是整个维护已可取消或硬实时有界**：进程级I/O gate、锁文件打开、源文件打开/解码及整批维护仍需预算/取消闭环。
+
+又用真实回收/恢复补充反例：recycle-status-red为0过/1败、exit101、61.173秒（含Cargo锁等待），候选曾把有意回收当成异常Missing。候选6在原搜索投影事务中清除回收记录的派生索引和健康标记、保留dirty以便恢复后重新验证；不移动或改写回收源文件。读取途中发现已回收也不伪报损坏；恢复坏原文件后仍必须报告Corrupt且严格回放失败。candidate6-storage实际190过/0败（181 lib+9进程集成），50.339秒；回收扩展已在其中默认执行，不能用candidate5的结果代替它。
+
+| 实际已执行命令/证据标签 | 实际结果及范围 |
+|---|---|
+| candidate3-storage：`cargo test -p deepagent-persistence --lib event_store:: --offline -j 2 -- --nocapture --test-threads=1` | 38过/0败，17.143秒；candidate3正式模型wire含显式原ignored探针5过/0败，142.550秒 |
+| candidate4-storage-matrix：同EventStore命令 | 41过/0败，16.099秒；真实CRC、多个同scope匹配坏文件/NoProject、Missing及隔离持久化/还原、源context、SQLite投影和隔离事务错误不降级；源坏字节不变 |
+| candidate4-persistence-full：`cargo test -p deepagent-persistence --offline -j 2 -- --test-threads=1` | 187过/0败，44.038秒；不能覆盖随后新增的维护/回收测试 |
+| candidate4-default-model-app：`cargo test -p deepagent-app-core --test kernel_v2_e2e session_repair_isolation:: --offline -j 2 -- --nocapture --test-threads=1` | 原两probe已取消ignore；6过/0败/0忽略，144.777秒。健康/可恢复截断对照、scoped A、跨项目部分wire、真实关闭owner重开，以及archive/移除项目/恢复的可见性均执行 |
+| candidate5-storage：`cargo test -p deepagent-persistence --offline -j 2 -- --nocapture --test-threads=1` | 189过/0败，49.756秒；含新增维护边界2项由红转绿。candidate5-default-model-app同默认模块6过/0败，146.984秒 |
+| candidate5-storage-lint：`cargo clippy -p deepagent-persistence --all-targets --no-deps --offline -j 2 -- -D warnings` | exit0，7.903秒；candidate4同严格命令也通过 |
+| candidate6：同完整存储命令、严格存储lint、默认应用/模型模块、Tauri check | 全部原生exit0，50.339/4.423/140.980/22.555秒；存储顶层lib181过+进程集成9过=190过；应用/模型6过/0败/0忽略 |
+| candidate4-appcore-lib：`cargo test -p deepagent-app-core --lib --offline -j 2 -- --test-threads=2` | exit101，326.205秒；顶层去重1503过/1败/55忽略。runner原始1504过多算1个子进程result，不采用该重复计数。未改的H64冷compiler-started门禁在4009ms未就绪，cleanup取消和落账完成；不调高门限、不重跑取绿或顺手修改H64 |
+| candidate4-appcore-lib-lint：`cargo clippy -p deepagent-app-core --lib --no-deps --offline -j 2 -- -D warnings` | exit101，31.916秒；12项旧lib诊断，context_runtime/http_runtime/plugin_preparation/run_assembler/session_title，未放宽lint |
+| candidate4-tauri-check：`cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --offline -j 2` | exit0，60.241秒；新信封生产/消费接口可编译，不代表真实桌面启动通过；后续Rust候选仍须重验 |
+| `node --test apps/desktop/scripts/check-session-search.test.cjs` | 初版3过/2败，拒绝旧/不支持/矛盾报告和无桌面环境的验收为真红；API候选先5过/0败，整理子测试后10过/0败。该脚本已进入pnpm build，未只在本机单独跑 |
+| `cd apps/desktop; pnpm build`（npm_config_offline=true） | candidate4两次exit0，130.172/143.094秒；后一次Node检查324过/0败、TypeScript/Vite通过。保留第三方externalized/大chunk警告。直接`node node_modules/typescript/bin/tsc --noEmit`原生exit0；早先`pnpm exec`只留依赖状态输出的中间调用不单独当类型验收证据 |
+| `cargo fmt --all -- --check`；`git diff --check` | 当次均exit0；后续候选需再查，不声称独立桌面旧格式基线已消除 |
+
+候选6源码18文件已保存SHA-256清单candidate6-sources.json；最后复核TypeScript原生exit0（16.085秒）、API报告10过/0败（nodeNativeExit=0），根workspace格式/diff通过。存储测试按target末次result计数：candidate4为lib178+集成9=187，candidate5为lib180+集成9=189，candidate6为lib181+集成9=190；这些不同候选不累加计功，也不把lib子进程结果重复计算。以上测试均为本机候选验证，未替代缺失的最终完整验收。
+
+真实浏览器手测：只启动target/h229-repair-20261105/ui内的临时Vite夹具，经实际SearchModal、API与Tauri JS invoke消费者接收合成报告，不运行真实桌面setup或访问用户数据库。观察到健康结果与不完整警告共存，坏文件导致的空结果不显示“暂无对话”，全局SQLite假错只显示脱敏失败；Ctrl+1选择good并关闭，重开清空状态；同查询点击重试从部分恢复完整；通过显式Promise屏障在empty已完成后释放旧slow，旧响应没有覆盖当前空结果。截图和DOM存于该目录（不提交）。夹具HMR出现createRoot重复警告，已保留，不把其控制台称为全无错误；原始合成错误路径没有被UI输出。该手测不是Rust命令集成、真实OS重启、跨平台或实际坏盘验收。
+
+兼容性/尚未完成：现有Tauri命令由数组改为version1报告，是刻意的跨层返回契约变化；仓内唯一UI调用方已同步，自建旧客户端须适配。Rust SessionSearchHit新增同源context字段，仓外结构体字面量需适配；现有Vec搜索方法仍在，不会静默把部分结果伪装完整。尚缺维护预算/协作取消（含工具future被drop）、真实权限拒绝及锁文件打开/解码边界、缓存metadata不变时的完整性策略、真实隔离CLI/Desktop启动，以及最终冻结后的workspace/CLI/Tauri/格式/lint/build闭环。当前候选不能提交或标为验收通过，也没有以全仓历史H306或本轮H64失败替代本项验收。
+
+台账再次解析为306行/306唯一编号：155验收、23历史跳过、7归并、3撤销、117待修、1修复中；本次新增修复/历史跳过/归并撤销均0，有效未关闭118含H180授权跳过，实际待处理117。下一步仍H229，未进入其他问题。本项后续暂估8–20有效修复/验收小时，依据剩余预算/取消、权限与真实宿主/跨层矩阵，尚未逐子项校准；整套200–400有效小时仍是历史未逐项校准粗估，不当作完工承诺。所有秒数含机器编译/锁等待，不等于有效工时；设备、依赖与环境等待另计，尚无可靠总上界。无H229 commit、不推送、不建PR，goal保持active；H178旧八项不要求用户重跑，H180继续授权跳过。
+
+**E-H229-03（完整性反例、真实打开边界与协作控制，2026-11-05，仍未验收）**：接续核对HEAD仍为ff50edff、无未完成合并；只推进H229，原五项用户未跟踪内容保持不读不改不提交。H178八项外部门禁证据继续有效，不要求用户重跑；普通本地PowerShell命令均由小怪执行。以下结果取本轮实际终态，不把E02缓存候选或旧测试成功当作最终验收。
+
+先补真实反例：`fixed-mtime-red`在已验证投影后翻转不匹配会话的Zstd CRC字节，保持长度和恢复原mtime，实际0过/1败、exit101、11.400秒；旧候选错误返回unavailable=[]。`exclusive-opens-red`用Windows share_mode(0)独占打开合成数据文件/锁文件，实际0过/1败、exit101、14.010秒；失败是Busy被误分类Unreadable，**不是这次红测动态证明了5秒等待**。`process-gate-red`持有真实进程I/O gate，500ms内搜索无法返回，实际0过/1败、exit101、14.978秒；释放gate后join清理，不留下挂起线程。原CRC/无效尾帧字节均保留。
+
+候选7删除仅凭generation/length/mtime复用的派生验证缓存；显式搜索必须先走原权威文件的严格帧/JSONL/身份/序列校验，正常启动仍只按需恢复元数据，不把每条搜索投影事务设为启动门禁。维护与普通回放共用原打开、解码和恢复边界，不新增第二套解析器。try-lock现在也对锁文件打开即时尝试；在文件边界按真实OS错误类别区分sharing/byte-range contention与普通access denied，不解析错误字符串，也不把SQLite失败当坏会话。真实只读文件属性导致ERROR_ACCESS_DENIED的对照（数据文件和锁文件两种）显示Unreadable而非Busy/Corrupt，还原权限后正常恢复；这不是ACL/DACL测试，不声称已覆盖所有权限形态。候选7全部存储193过/0败、严格存储lint通过。
+
+协作控制先有行为红测：预取消`cancel-pre-red`和零预算`maintenance-budget-red`各0过/1败（exit101，14.218/0.569秒）。工具上下文测试首次误用ToolOutput.content导致编译失败，已按真实value字段纠正；该52.380秒、0个测试结果不作为行为证据。随后`tool-context-behavior-red`真实执行0过/1败、exit101、104.867秒，正式Tool默认上下文入口没有观察已取消信号。
+
+**本地设计及当前候选9**：沿既有EventStore/session_files与ToolExecutionContext取消树扩展检查点；普通回放和维护共用一个严格解码/记录校验实现，分块读取/解压/哈希与投影循环可协作停止，投影取消由原SQLite事务回滚。完整前缀通过记录校验且最后一次检查点成功后才允许既有合法尾帧恢复；取消或预算耗尽不截掉尚未完整验证的尾部，不伪造事件。进程I/O gate与文件打开采用try语义，mutex毒化等全局协调失败仍传播。搜索默认协作时间窗最多5秒，维护占前2/3、预留后1/3给源片段；单文件检查点时间窗最多1秒、每次源读取32MiB压缩/64MiB解码字节，预算耗尽显式Deferred，不冒充Corrupt或complete。派生round-robin位置只在原documents命名空间保存opaque session ID，预算中断后的下次尝试继续后续文件，不另建索引/store；真实三会话短预算轮转、关闭owner重开与正常重试已测试。**这些是协作工作量/时间检查，不是硬实时抢占OS调用、serde单次解析或SQLite操作的保证。** 超限单文件目前会持续Deferred，仍需容量/续接策略及正常大历史对照；不能把该限制当作完整召回已经验收。
+
+SessionSearchTool现在通过原上下文的child token将阻塞文件维护移出async worker；drop guard只取消本调用子节点，保留legacy flag，未取消父run或另建全局取消链。真实decoder检查点屏障证明：异步owner被abort/drop后，实际blocking worker返回session_search_cancelled，尚未提交的合成尾帧恢复未发生、无Corrupt记录，父token保持未取消；不是只丢JoinHandle或用假循环替代文件读取。存储回归另外断言取消时已读取实际压缩字节并解压超过64KiB；预取消、读取/解码字节预算、恢复正常回放、零预算重试均默认执行。Deferred贯穿原报告/服务DTO/工具/TS消费者；UI文案仅说明暂不可搜索并提示重试，不再对其他正常会话的合法尾部恢复作“所有源文件绝不改写”的过度承诺。
+
+| 当前实际命令/证据标签 | 结果及边界 |
+|---|---|
+| candidate9-storage：`cargo test -p deepagent-persistence --offline -j 2 -- --nocapture --test-threads=1` | exit0；189 lib + 9进程集成 = **198过/0败/0忽略**，49.950秒；不跨候选累加 |
+| candidate9-storage-lint：`cargo clippy -p deepagent-persistence --all-targets --no-deps --offline -j 2 -- -D warnings` | exit0，3.818秒；未放宽lint |
+| candidate9-tool-drop-and-context：`cargo test -p deepagent-app-core --lib tool_runtime::session_search_tests:: --offline -j 2 -- --nocapture --test-threads=1` | exit0；**4过/0败/0忽略**，106.669秒；包含实际worker drop、token/legacy取消、Deferred及两项正常权限/scope对照 |
+| candidate9-default-model-app：`cargo test -p deepagent-app-core --test kernel_v2_e2e session_repair_isolation:: --offline -j 2 -- --nocapture --test-threads=1` | exit0；**6过/0败/0忽略**，150.636秒；原应用/模型probe默认运行，scoped/跨项目部分wire及文件重开正常；不是整个Kernel目标全过 |
+| candidate9-tauri-check：`cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --offline -j 2` | exit0，50.860秒；不是实际桌面setup启动 |
+| candidate9-frontend：`node --test scripts/check-session-search.test.cjs`；`node node_modules/typescript/bin/tsc --noEmit`；`pnpm build`，目录`G:\Code_Warehouse\DeepAgent-Studio\apps\desktop` | 原生Node/tsc均exit0；报告API **11过/0败**（含Deferred空结果），两项21.031秒；完整build exit0，146.556秒，Node检查合计**325过/0败**、tsc/Vite通过；第三方externalized/大chunk警告保留 |
+| candidate9-appcore-lib-lint：`cargo clippy -p deepagent-app-core --lib --no-deps --offline -j 2 -- -D warnings` | exit101，25.736秒；12项诊断消息与candidate4完全相同，context_runtime/http_runtime/plugin_preparation/run_assembler/session_title旧问题，未顺手修或压制；不能报告AppCore严格lint通过 |
+| candidate9-format：`cargo fmt --all -- --check`；`git diff --check` | 均exit0；19份本项源码SHA256清单candidate9-sources.json及freeze-validation全部unchanged=true |
+
+全部日志/JSON在target/h229-repair-20261105，不提交。E02的真实浏览器实际组件+合成IPC手测证据保留；本轮没有重跑该手测，也未把新文案build说成实际Rust/Tauri命令手测。当前所有本轮测试/构建已结束，没有后台测试进程需要用户接管。
+
+**仍未完成/下一步**：全局SQLite/connection等待及单次系统调用不能被上述检查点抢占，需继续验证/收敛实际维护停止边界；单文件容量/续接、真实ACL拒绝与真实隔离CLI/Desktop启动仍未验收；最终冻结后的全workspace/CLI构建/完整AppCore回归及严格lint残余归属尚需闭环。candidate4完整AppCore的1503过/1败/55忽略（H64冷compiler-started门禁失败）与既有H306全仓失败证据保留，不靠重跑单测取绿或调大门限结案。Tauri命令信封和Rust Hit字段的兼容性影响仍见E02。本项仍修复中、无commit、不计新增修复，不进入其他H问题，不推送、不建PR。
+
+复核台账解析适配H305原有“撤销”标题格式后为306行/306唯一编号：155验收、23历史跳过、7归并、3撤销、117待修、1修复中；未修改H305行或把它漏算。新增修复/历史跳过/归并撤销均0，有效未关闭118含H180授权跳过，实际待处理117。H229后续暂估仍8–20有效小时，依据SQLite/容量边界、真实宿主与最终跨层回归，尚未逐子项校准；整套200–400有效小时仍为历史未逐项校准粗估，不是可靠完工承诺。编译/设备/依赖/环境等待另计，没有可靠等待总上界；工具秒数不冒充有效工时。goal保持active。
+
+**E-H229-04（SQLite等待、流式严格扫描与真实宿主边界，2026-11-05，最终验证中）**：仍只推进H229，HEAD为ff50edff，未提交；E01～03与原审计失败证据全部保留。原五项用户未跟踪内容未读未改。以下是后续候选的真实结果，不把不同候选累计计功。
+
+- SQLite先红后绿：`sqlite-mutex-red`实际0过/1败，11.840秒，持有原connection mutex使搜索500ms内不能返回；释放后join清理。`sqlite-writer-red`实际0过/1败，6.426秒，第二条真实SQLite连接持有BEGIN IMMEDIATE时旧候选等待5.909秒。新增原Database的with_maintenance_conn边界：try-lock同一mutex、原连接暂用零busy timeout、RAII精确还原原PRAGMA busy_timeout；未新建连接/store，未改普通with_conn。全局busy/SQLite错误仍传播，不伪造单文件Corrupt。candidate10全部存储200过/0败、53.672秒，严格存储lint通过。只承诺恢复本仓实际使用的busy_timeout，不臆造恢复外部自定义busy_handler的能力。
+- 大历史真实红测`large-history-red`实际0过/1败，15.603秒：健康单会话70条1MiB Note加一条正常Message被原64MiB聚合解码预算排除。不是调大总上限：删除原decode_frames整库收集实现，普通回放与维护共用session_files/scan严格walker，64KiB分块读取/解压，仍复用原header/schema/身份/sequence校验；普通回放收集事件，搜索按组写入原SQLite事务，context只保留目标邻近范围但继续验证所有后续帧，startup孤儿恢复只收集必要元数据。末尾CRC失败时delete/insert整体回滚，原派生doc ID/hash不变，损坏字节不改写。全部前缀和末次检查点成功后才允许既有合法torn-tail恢复。visitor/SQL错误按全局投影错误传播，不误报源文件损坏。
+- E03聚合32/64MiB及强制单文件1秒限制已被取代：现在32MiB是单个压缩frame上限、64MiB是单条JSONL记录上限，累计字节仅统计进展；默认操作协作时间窗仍5秒，显式调用方可使用原工具timeout，维护/片段继续2/3与1/3分配。超大单frame/record、未在预算内完成的历史仍显式Deferred；不承诺任意大小完整召回或跨请求恢复半个未验证frame。OS调用、一次serde解析和SQLiteCPU执行不是硬抢占；AppService的archive/project前置查询仍用普通with_conn，不把存储维护try-lock说成整个UI服务硬实时保证。
+- `streaming-large-green`实际1过/0败，19.474秒；`streaming-storage`全部存储201过/0败，39.413秒，严格lint exit0。随后补完整投影回滚断言及真实DACL：采用仓内file_metadata探针已有的本地.NET ACL API，仅对fixture数据文件/锁文件拒绝当前身份ReadData/WriteData，确认真实ERROR_ACCESS_DENIED，健康A仍返回、B为Unreadable、恢复原DACL后正常重试且源字节一致；SID/SDDL不输出、不提交。`streaming-acl-and-rollback`实际22过/0败、22.373秒。这是DACL测试，区别于E03只读属性测试。
+- `streaming-tool-context`实际4过/0败、127.752秒；`streaming-app-model`默认6过/0败/0忽略、122.838秒。walker增加检查点后工具drop屏障从20移至50，确保位于实际大Message解码中；该最后调整仍须冻结全仓重验，不以旧4项通过代替当前代码。
+- 新默认CLI集成测试通过真实deepagent二进制的stdio initialize/thread-list/thread-read/EOF，健康、合法torn-tail和无效尾帧三种对照均有正常A历史，只有合法尾帧被恢复，坏B字节保持；子进程env_clear后仅保留必要系统变量，HOME/APPDATA/TEMP/数据根/工作目录均是自有TempDir，未发送turn请求或读取凭据。`host-cli-startup`实际1过/0败/1忽略，157.337秒；忽略的是另需Wry构建的独立宿主探针，尚不计为已执行。
+- Wry新example只在真实setup内执行桌面现有AppService::open/recover_unfinished_runs及正常项目搜索，使用CLI测试创建的同一临时数据库；没有调用完整生产setup、OS凭据库、WebView或模型。`host-wry-check`exit0、21.440秒；真实构建、运行及最终Tauri/前端/CLI/workspace/格式/lint仍在验，不能把check当宿主验收。
+
+代码SHA-256已冻结为target/h229-repair-20261105/final-sources.json。当前不标验收、不创建本项commit；最终日志终态及源码一致性核对后再决定交付。下一步仍H229，不进入其他H。计数仍155验收/23历史跳过/7归并/3撤销/117待修/1修复中；有效未关闭118含H180授权跳过，实际待处理117。剩余有效工作尚需依最终失败归属校准，旧8–20小时并非新承诺；整套200–400小时仍是历史粗估，编译/设备/依赖等待另计。
+
+**E-H229-05（真实宿主暴露的剩余全库读取、恢复源预检，2026-11-05，仍在最终验证）**：Wry第一次真实运行`host-wry-run`为0过/1败、exit101、0.471秒，不把example编译通过视为验收。随后仅在target编译透明的诊断转发器，透传同一命令/退出码并保存合成子进程stderr，定位到setup内的无效帧错误；源码追踪显示数据库已打开、无run的恢复扫描为空，后续AppService::list_sessions仍通过event_count对全部历史做严格读取，且在项目可见性过滤前读取B。关联依据：这与原H229同为可选元数据视图强依赖全库正文有效，而不是H228搜索limit顺序或H271日历问题；已在改动前向用户说明本项关联，不另计编号。
+
+沿原EventStore抽出同一个元数据列表查询，仅桌面nonempty列表按既有session_file_state.last_sequence筛选；不以正文校验成功作为列表门禁、不用元数据证明内容完整。正常空记录、legacy无文件、回收和project/archive规则保持；损坏但有投影的历史保留为可选择摘要，直接打开仍严格报错。列表目录读取失败也走原健康owner记录文件局部故障，SQLite/健康写入错误仍传播。正式应用回归新增两个项目均注册时A/B摘要可见、B正文明确失败的对照。`host-wry-list-build`exit0、150.886秒；相同owned fixture下真实`host-wry-list-run`1过/0败、0.493秒。此时尚未包含下一段的未终结run补强。
+
+补未终结run的真实红测`recovery-source-red`0过/1败、189.575秒：坏B仍会令recover_unfinished_runs返回EventLog错误。根因补强不捕获整个恢复函数的任意错误：在原SessionRecovery持有dispatch/activity gate之后，写入session恢复副作用之前，复用同一个文件局部visit_available_authority边界和严格walker；坏/缺失/忙/预算不足/已回收的源明确延后，健康信息持久化、日志脱敏，不把坏源解释成空run，不补造terminal，不重新执行模型/工具。原控制/派发锁文件不可读时也保留健康记录并拒绝取得所有权；健康owner/SQL错误严格传播，未绕过门禁。全局过期lease撤销仍是原有规则；不声称该规则也因源延后而暂停。
+
+候选首次因闭包Result类型推断失败，recovery-source-green/recovery-storage各0个测试结果，不能当行为证据；补显式现有Result类型。recovery2默认应用组6过/1败、160.466秒，失败是fixture误将RunStore::create已有接纳事件当成空事件集，不是发生了新增终态；核对实际admit实现后改为比较恢复前后完整run_events快照。recovery3默认应用/模型组实际7过/0败/0忽略、156.622秒：坏run状态/原事件/坏字节保持，正常A可完成恢复；只还原B源字节后下一次恢复成功，再次扫为空且两run各只有一个terminal。原Kernel/Responses/三种查询和正常/torn-tail对照继续运行。recovery2全部存储202过/0败、120.558秒，严格存储lint exit0、139.978秒；真实DACL已扩展至control.lock/dispatch.lock，拒绝该会话、恢复ACL后仍走原所有权门禁和严格校验。CLI/Wry fixture也已加入坏B未终结run，并比较原接纳事件快照，须以新二进制重验。
+
+旧标签final-workspace在上述列表/恢复补强前已编译，实际exit101、1295.797秒：138顶层target按各自最后result去重为4586过/1败/239忽略，runner原4587多计一个子进程测试；唯一失败仍是未改的H306空defaultUserPrompt，不能覆盖当前源码。旧final-cli-build通过、70.767秒，storage/CLI测试严格lint通过；AppCore严格lint仍12项旧诊断，23.790秒。最终前端第二轮fallback-build已通过、172.023秒，325项Node检查/tsc/Vite通过；这是更正旧备用文案过度承诺后的版本，保留第一次232.785秒构建记录，不累加计功。未重新运行E02组件手测，不称其为完整桌面/真实Rust IPC验收。
+
+当前22份代码重新冻结为final2-sources.json，最终workspace/CLI/存储lint/测试lint/AppCore lint与新Wry构建/Tauri检查正在执行；不以以上旧候选替代。尚无H229提交、不增加修复数，双文档继续标修复中。单frame/record边界、协作而非硬抢占及仓外客户端兼容性限制仍见E02～04；也不承诺Zstd内部window或单次serde解析的硬RSS/时间界限。下一步仍H229，完整终态和源码一致性核对后再验收。
+
+**E-H229-06（拒绝扩展到所有权门禁，2026-11-05，最终验证重启）**：主动复核原H46的owned_recovery契约发现E05候选把control.lock/dispatch.lock真实打开错误当作None，会使协调失败被误报为忙。对final2冻结后构建的实际owned_recovery二进制执行原`real_lock_open_error_is_not_treated_as_a_busy_or_abandoned_session`，ownership-gate-contract-red为0过/1败、exit101、0.167秒，原测试未修改。该失败是本候选引入的兼容性回归，不归咎于既有基线，也不删除断言或重定义H46。
+
+重新审查边界后撤回E05对try_begin_recovery和其错误契约的改动，保留原所有权gate失败严格传播；只在成功持有原gate后隔离正文及其读取锁的不可用，复用同源walker，不混淆协调错误和普通文件损坏。DACL对control/dispatch的测试同步要求真实Err、健康表不伪标Corrupt/Busy，健康会话仍能取得scope；ACL恢复后仍走原gate。数据文件/读取锁DACL仍是局部Unreadable，坏正文的未终结run仍延后且不伪造terminal。该设计允许所有权门禁故障按原H46阻止启动，这是有意失败关闭边界，不声称H229提供任意权限/协调故障下的宿主可用性。
+
+`cargo test -p deepagent-app-core --test owned_recovery --offline -j 2 -- --nocapture --test-threads=1`实际7过/0败/0忽略、78.695秒，恢复原门禁语义；后续recovery4应用/存储与完整门禁仍须终态。E05中“锁文件不可读时保留健康并拒绝所有权”的实现描述仅属已撤回候选，不能当当前交付设计。final2真实Wry加入坏run后1过/0败、0.721秒，构建168.708秒、Tauri check29.288秒，但它与final2 workspace均编译于本次门禁收窄之前，不替代新冻结验收。
+
+桌面独立`cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check`实际exit1、0.413秒，报告lib.rs的26/39/2302/3097四个原位置格式差异；把HEAD原文件仅保存到target并用相同rustfmt配置/skip_children检查，实际也在同四处失败。没有顺手格式化整份宿主。新增example单文件rustfmt check exit0；根workspace格式和git diff check通过，不能称整个桌面格式基线干净。
+
+当前22份代码已重新冻结为final3-sources.json，新全workspace/CLI/相关严格lint及Wry/Tauri门禁正在执行。E04～05初称“最终”的旧标签均保留其原始结果，但已被后续真实反例否决，不能用于宣称当前验收或计新增修复。状态仍修复中、无commit、不推送；下一步仍H229完整验收，不进入其他问题。
+
+**E-H229-07（当前源码最终验收，2026-11-05）**：final3冻结后22份代码逐份SHA-256复核，全部一致；本次没有再改生产代码或测试取绿。E01～06的原失败、候选错误和中间编译/夹具失误均保留。final2完整workspace真实终态为138顶层target、4586过/2败/239忽略，失败为候选引入的原H46门禁回归及旧H306；不是最终交付代码。撤回门禁降级后的final3结果如下，按每个顶层Running/Doc-tests的末次result去重，排除子进程result重复计数。
+
+| 当前实际执行命令（均离线、自有合成数据，Cargo使用`-j 2`） | 原生结果与验收范围 |
+|---|---|
+| `cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=2`（final3-workspace） | exit101，1311.996秒；138/138目标终态，**4587过/1败/239忽略**。AppCore lib1506/0/64、Kernel287/0/34、原owned_recovery7/0/0、存储lib193/0/0＋进程集成9/0/0、真实CLI启动1/0/1。唯一失败为原H306的`every_node_kind_owns_exactly_one_profile`，不是全仓通过；runner原4588过多计一个子进程result，不采用 |
+| `cargo test -p deepagent-app-core --test kernel_v2_e2e session_repair_isolation:: --offline -j 2 -- --nocapture --test-threads=1`（recovery4-app-model） | **7过/0败/0忽略**，119.872秒；原应用/模型探针已转默认，LIKE/CJK/FTS、正常/合法尾帧、跨项目部分wire、文件重开、坏源run保留/还原后唯一恢复终态均执行 |
+| `cargo test -p deepagent-persistence --offline -j 2 -- --nocapture --test-threads=1`（recovery4-storage） | **202过/0败/0忽略**，587.060秒含Cargo锁等待；与final3全仓存储相同源码，不重复累计。含70MiB正常历史/晚期CRC整事务回滚、固定mtime损坏、真实DACL、所有权gate严格错误、SQLite第二连接争用、取消/预算/回收恢复 |
+| `cargo rustc --manifest-path apps/desktop/src-tauri/Cargo.toml --example h229_startup_acceptance --offline -j 2 -- -C link-arg=<本次Tauri out_dir>/resource.lib`（final3-wry-build） | exit0，234.362秒；使用原Tauri资源，不更改manifest、生产身份或门禁 |
+| 当前CLI集成测试exe `--exact h229_real_wry_setup_uses_the_production_database_boundary_without_a_credentials_store --ignored --nocapture`，`DEEPAGENT_H229_WRY_EXE`指向上述example（final3-wry-real） | **1过/0败/0忽略**，exit0，0.479秒；显式实际执行，不以默认ignored代替。真实Wry setup调用生产AppService open/recover/list/search，坏B带未终结run，原run_events/坏字节不变；两exe SHA-256已保存 |
+| `cargo build -p deepagent-cli --offline -j 2`；`cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --offline -j 2` | exit0，2.590/44.281秒；生产宿主与新信封消费可编译，不冒充完整桌面setup/真实IPC手测 |
+| `cargo clippy -p deepagent-persistence --all-targets --no-deps --offline -j 2 -- -D warnings`；`cargo clippy -p deepagent-cli --test session_startup_isolation --no-deps --offline -j 2 -- -D warnings` | 两项exit0，0.667/1.281秒，未放宽lint |
+| `cargo clippy -p deepagent-app-core --lib --no-deps --offline -j 2 -- -D warnings` | exit101，23.280秒；仍为context_runtime八处clone-on-copy、http_runtime return、plugin_preparation类型复杂、run_assembler参数数、session_title needless borrow共12项旧诊断；上述文件与HEAD无差异，不能称AppCore严格lint通过 |
+| `cargo clippy --all-targets --all-features --offline -j 2 -- -D warnings` | exit101，7.745秒；未修改的models/client.rs:385 clone_on_copy阻断，不声称后续所有目标lint已完成 |
+| `cd apps/desktop; pnpm build`（final-frontend-fallback-build） | exit0，172.023秒，**325项Node检查/0败**、tsc/Vite通过。7份前端文件与当时冻结一致，已再次核对；第三方externalized/大chunk警告保留，不跨候选累计 |
+| `cargo fmt --all -- --check`（final3-format）；`git diff --check` | 均exit0。独立桌面fmt仍为E06已证实的四处HEAD基线差异，新增example单文件格式通过，未顺手格式化整个宿主 |
+
+最终浏览器复核使用实际SearchModal/API和合成Tauri JS invoke，实际操作部分命中、不完整空结果、全局失败、同查询重试、完整空结果及迟到响应，均符合状态契约；截图/AX证据为`target/h229-repair-20261105/ui/final3-*`。初次临时Vite root未加载项目Tailwind配置，截图无utility样式；仅把临时夹具改用本次pnpm build的生产main CSS并reload，随后截图确认搜索框、提示和正常命中布局，不修改生产样式来适配夹具。控制台保存两条夹具HMR的重复createRoot警告，未泄露注入的合成私有路径；不冒称控制台全零。自建Vite进程已停止，实际验收页已关闭。这仍不是完整桌面setup或真实Rust IPC端到端UI；后两者会涉及不在本轮范围的凭据/插件初始化，未执行。
+
+**交付实现与兼容性**：继续唯一Database/EventStore/session_files和原dispatch/activity恢复owner；scope先于正文维护，单文件坏/缺失/读取权限/忙隔离并持久最小健康信息，全局SQLite/schema/投影和所有权门禁失败严格传播。启动仅维护必要元数据、不同步重建可选搜索；列表不依赖全库正文，未终结坏源run延后而非伪造失败/重派发。回放、维护和context共用严格流式walker，末尾CRC成功才发布搜索事务；取消沿原调用child token，drop停止实际worker。旧Rust Vec入口仍为完整结果或错误；桌面原command返回version1信封，仓内TS调用方同步，仓外旧数组消费者需适配。工具results保留、新增version/complete/unavailable；Rust SessionSearchHit新增context字段，仓外结构体字面量需更新。无新增依赖、command、store、SQL迁移、权限或沙箱放宽。
+
+**残余限制/未执行**：默认5秒是协作窗口，32MiB单压缩frame/64MiB单JSONL record是本地维护容量边界；超限或预算不足显式Deferred，不承诺任意大历史完整召回、跨请求半帧续接、OS/serde/SQLite硬抢占或硬RSS。所有权锁不可访问仍按H46失败关闭；不承诺任意权限故障下宿主可用。正常合法torn-tail仍按原规则恢复，未知坏字节保留。H228的可见性/limit顺序、H271日历panic均未混修。全仓唯一H306、旧严格lint/桌面格式失败保留；其他OS、完整桌面/真实IPC、真实供应商、断电、长时压力未验，亦未逐一执行其余历史ignored探针，原因分别为本轮Windows合成边界、禁止真实凭据/数据及独立问题范围。
+
+H229现按上述本机范围标记**已修复并验收**；提交前双文档同步，代码/测试/当时文档一起独立提交，取得hash后另做文档回填，不amend或推送。台账306行/306唯一编号：**156验收、23历史跳过、7归并、3撤销、117待修、0修复中**；本轮新增修复1、历史跳过0、归并/撤销0。有效未关闭117含H180授权跳过，实际待处理116（P1五项/P2七十二项/P3三十九项）。下一项准备复核H271：它可由持久正常工具输入终止整个调度worker，优先于剩余协议/配置与提示词语义问题；尚未修改其他H。整套剩余仍粗估**200–400有效工作小时**，依116项跨层/持久化/协议与真实门禁范围，未逐项校准，不作为完工承诺；编译、设备、依赖和环境等待另计，目前无法可靠给出等待上界。整个goal仍active，未完成。
 
 ## H-97 调度在途运行生命周期（已修复并验收，2026-11-05）
 
@@ -5443,7 +5572,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-226：备用模型切换后仍按初始模型结算，完整 usage 被错误归价且下一轮预算误放行或误拒绝](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-30限本机验收，原失败正文保留；无归并 | 复用统一attempt/route usage与finalizer，按实际模型落账及整轮receipt；side固定原模型 | 原探针1过3败→默认4过；关键25项过；最终全仓3900/1/279仅旧H-306失败；CLI/Tauri/前端通过，旧fmt/lint与未验限制见E-H226-01～07 | `6db428e57fa6a6a01c11f29518cedcf8282d7b93`（本项独立fix；另做docs回填，不amend/不推送） | 本项所列验收剩余0；不补算旧账，不扩修H-63/H-227；其余总200–400有效小时仍为历史未校准粗估，等待另计 |
 | [H-227：日/月限额仅驻留内存，宿主服务重建后历史费用保留但预算静默变为无限](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | 2026-10-30限本机范围，原失败正文保留；无归并 | DocumentStore为唯一预算事实源，整份持久替换、读取失败拒绝；Rust读写Result | 原默认扩展1过3败→6过；成本16过；全仓3911/1/277仅既有H-306；CLI/Tauri/前端296/build过，旧lint/fmt失败及限制见E-H227-01～06 | `d581e3bcaa118f5c77a59f2d818ae4cf3a66754c`（本项独立fix；另做docs回填，不amend/推送） | 本项所列验收剩余0；无并发消费预留/运行中硬停/真实GUI或断电保证；182有效待修总200–400有效小时仍为历史未校准粗估，环境等待另计 |
 | [H-228：会话搜索在可见性过滤前截断候选，隐藏记录可挤掉全部有效历史](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-229：单会话文件损坏经全库搜索修复阻断无关项目搜索与数据库启动](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-229：单会话文件损坏经全库搜索修复阻断无关项目搜索与数据库启动](system-harness-audit-2026-10-21.md#h-229单会话文件损坏经全库搜索修复阻断无关项目搜索与数据库启动) | P2 | 已修复并验收 | E-H229-01～07保留原红测/候选回归；仅本项，不归并H228/H271 | 原owner统一严格流式walker、scope先行、单文件健康隔离；启动/列表不依赖可选搜索，坏源run延后；SQLite及所有权门禁严格 | 当前应用模型7/0、存储202/0、真实CLI1/0及显式Wry1/0；全仓4587/1/239仅旧H306，前端325/build/Tauri/fmt通过；旧lint/桌面格式失败与未验范围见E07 | 本次独立提交后另行回填 | 协作非硬抢占、单frame/record超限Deferred；仓外信封/Hit字段需适配，无迁移；下一H271复核，余116实际待处理，总200–400历史粗估有效小时、等待另计 |
 | [H-230：单文件验证只按扩展名选择严格 JSON，合法 TypeScript 配置被误报并在 Strict 模式记为失败动作](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-231：可选 ruff 未安装时真实 shell 返回非零结果，被 Python 验证器误报为源代码失败](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-232：回退删除发现事件后，原宿主仍公开旧工具，重建宿主则隐藏](system-harness-audit-2026-10-21.md) | P3 | 历史已修复跳过 | E-H232-01～02；开始前已随H219共享边界消除，非本轮新增生产修复 | 当前分支事件恢复run-local发现集；只纠正旧探针阶段比较并加强真实回归，两个ignore移为默认 | 真实发现/回退/重开7/0/0，完整Kernel280/0/36，fmt/diff通过；严格/诊断lint仍失败详见E02；未重跑workspace/GUI | 生产归属3cabd45f；本轮测试/文档3bf20d953370ee9ba85407a47b963c000e50e552 | 本项剩余0有效小时（限验收范围）；下一H219测试警告，再H218；总200–400历史粗估未逐项校准，等待另计 |

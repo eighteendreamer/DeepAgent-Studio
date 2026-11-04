@@ -86,7 +86,7 @@ import type {
   ScanResult,
   SandboxieStatus,
   SessionDetail,
-  SessionSearchHit,
+  SessionSearchReport,
   SessionSummary,
   SessionUiPrefs,
   SettingsView,
@@ -226,16 +226,22 @@ export async function searchSessions(
   query: string,
   project?: string,
   limit = 50,
-): Promise<SessionSearchHit[]> {
+): Promise<SessionSearchReport> {
   const invoke = getInvoke();
   if (invoke) {
-    return invoke<SessionSearchHit[]>("search_sessions", {
+    const report = await invoke<SessionSearchReport>("search_sessions", {
       query,
       project: project ?? null,
       limit,
     });
+    if (!report || report.version !== 1 || typeof report.complete !== "boolean"
+      || !Array.isArray(report.results) || !Array.isArray(report.unavailable)
+      || report.complete !== (report.unavailable.length === 0)) {
+      throw new Error("Invalid or unsupported session search report");
+    }
+    return report;
   }
-  return [];
+  throw new Error("Persisted session search requires the desktop app");
 }
 
 export async function getSessionDetail(id: string): Promise<SessionDetail> {

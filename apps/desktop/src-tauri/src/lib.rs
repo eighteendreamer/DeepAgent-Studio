@@ -42,7 +42,7 @@ use deepagent_app_core::{
     RuntimeProgressDto, RuntimeRootsDto, RuntimeService, RuntimeStatusDto, DirectSandboxBackend,
     SandboxBackend, SandboxBackendRegistry,
     SandboxieBackend, SandboxieExecutor, SandboxieService, SandboxieStatusDto, SecretStore,
-    SessionDetailDto, SessionSearchHitDto,
+    SessionDetailDto, SessionSearchReportDto,
     SessionStateService, SessionSummaryDto, SessionUiPrefsDto, SettingsService, SettingsView,
     SkillActivationDto, SkillDto, SkillsMpClientHandle, SkillsRoots, SkillsService, SpeechService,
     SqliteSecretStore, StoredRunEvent, TerminalResultDto, TerminalService, TerminalShell,
@@ -658,11 +658,11 @@ async fn search_sessions(
     query: String,
     project: Option<String>,
     limit: Option<usize>,
-) -> Result<Vec<SessionSearchHitDto>, String> {
+) -> Result<SessionSearchReportDto, String> {
     let service = Arc::clone(&state.service);
     run_blocking(move || {
         let svc = service.lock().map_err(|e| e.to_string())?;
-        svc.search_sessions(&query, project.as_deref(), limit.unwrap_or(50))
+        svc.search_sessions_with_status(&query, project.as_deref(), limit.unwrap_or(50))
             .map_err(|e| e.to_string())
     })
     .await

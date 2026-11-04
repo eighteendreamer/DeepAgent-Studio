@@ -29,6 +29,12 @@ use crate::session_files::{self, SessionFileCursor, SessionFileHeader};
 use crate::{map_sqlite, Database};
 
 mod plan_mode;
+mod search_health;
+pub use search_health::{
+    SessionSearchControl, SessionSearchIssue, SessionSearchIssueKind, SessionSearchReport,
+};
+#[cfg(test)]
+mod search_repair_tests;
 pub use crate::session_files::page::{SessionEventPage, SessionPageBudget, SessionPageCursor};
 pub use plan_mode::SessionPlanMode;
 
@@ -67,6 +73,19 @@ pub struct SessionRecovery<'db> {
 }
 
 impl SessionRecovery<'_> {
+    /// Preflight under the existing dispatch/activity reservation before any
+    /// recovery terminal/control side effects. A damaged/unavailable authority
+    /// is retained for a later explicit repair, not interpreted as an empty run.
+    /// SQLite/health-owner errors still propagate.
+    pub fn authority_is_available(&self) -> Result<bool> {
+        let control = SessionSearchControl::default();
+        EventStore::new(self.db).visit_available_authority(
+            self.session_id,
+            &control.file_read(std::time::Instant::now() + control.timeout),
+            &mut |_, _| Ok(()),
+        )
+    }
+
     pub fn recover_controls(&self, now: i64) -> Result<crate::run_control::RunControlRecovery> {
         crate::run_control::RunControlStore::new(self.db)
             .recover_session(&self.session_id.to_string(), now)
@@ -148,6 +167,9 @@ pub struct SessionSearchHit {
     pub timestamp: Timestamp,
     /// Short excerpt reconstructed from the source event, not the FTS table.
     pub snippet: String,
+    /// Nearby source events from the same validated read as the snippet.
+    /// Consumers project/redact these; they are not a second authority log.
+    pub context: Vec<Event>,
 }
 
 /// Scope for a session-body query. `NoProject` is distinct from `All` so an
@@ -734,8 +756,23 @@ impl<'db> EventStore<'db> {
         session_id: SessionId,
         max_bytes: Option<usize>,
     ) -> Result<Option<SessionRecord>> {
-        crate::bounded_read::one(
-            self.db,
+        self.db
+            .with_conn(|connection| Self::read_session_record(connection, session_id, max_bytes))
+    }
+
+    fn get_session_for_search(&self, session_id: SessionId) -> Result<Option<SessionRecord>> {
+        self.db.with_maintenance_conn(|connection| {
+            Self::read_session_record(connection, session_id, None)
+        })
+    }
+
+    fn read_session_record(
+        connection: &rusqlite::Connection,
+        session_id: SessionId,
+        max_bytes: Option<usize>,
+    ) -> Result<Option<SessionRecord>> {
+        crate::bounded_read::one_on_connection(
+            connection,
             "SELECT id,title,mode,project,created_at,updated_at,ended_at FROM sessions WHERE id=?1",
             params![session_id.to_string()],
             max_bytes,
@@ -780,6 +817,17 @@ impl<'db> EventStore<'db> {
     /// rows without a source file and recycled sessions remain hidden from
     /// every caller, including CLI and harness thread listings.
     pub fn list_sessions(&self) -> Result<Vec<SessionRecord>> {
+        self.list_projected_sessions(false)
+    }
+
+    /// Metadata-only summaries for the desktop. Projected event presence is
+    /// not a promise that the transcript is readable or valid; opening it is
+    /// still strict. Do not turn listing into a full-library replay.
+    pub fn list_nonempty_sessions(&self) -> Result<Vec<SessionRecord>> {
+        self.list_projected_sessions(true)
+    }
+
+    fn list_projected_sessions(&self, nonempty: bool) -> Result<Vec<SessionRecord>> {
         let records = self.db.with_conn(|c| {
             let mut stmt = c
                 .prepare(
@@ -787,11 +835,12 @@ impl<'db> EventStore<'db> {
                             s.updated_at, s.ended_at
                      FROM sessions s
                      JOIN session_file_state f ON f.session_id = s.id
+                     WHERE (?1=0 OR f.last_sequence IS NOT NULL)
                      ORDER BY s.updated_at DESC",
                 )
                 .map_err(map_sqlite)?;
             let rows = stmt
-                .query_map([], |row| {
+                .query_map([nonempty], |row| {
                     let id_str: String = row.get(0)?;
                     let title: Option<String> = row.get(1)?;
                     let mode: String = row.get(2)?;
@@ -825,8 +874,16 @@ impl<'db> EventStore<'db> {
         let root = self.db.session_files_root();
         let mut visible = Vec::with_capacity(records.len());
         for record in records {
-            if session_files::current_cursor(&root, record.id)?.is_some() {
-                visible.push(record);
+            match session_files::current_cursor(&root, record.id) {
+                Ok(Some(_)) => visible.push(record),
+                Ok(None) => {}
+                Err(error) => {
+                    // A metadata-only view may retain an unavailable history
+                    // as a selectable summary, never publish its content. The
+                    // same health owner records the file-local failure.
+                    self.quarantine_search_file(record.id, &error)?;
+                    visible.push(record);
+                }
             }
         }
         Ok(visible)
@@ -953,11 +1010,39 @@ impl<'db> EventStore<'db> {
         scope: SessionSearchScope<'_>,
         limit: usize,
     ) -> Result<Vec<SessionSearchHit>> {
+        self.search_with_status(query, scope, limit)?
+            .require_complete()
+    }
+
+    /// Explicitly incomplete results never pretend that unavailable histories
+    /// were searched. Legacy `search` remains strict for existing Rust callers.
+    pub fn search_with_status(
+        &self,
+        query: &str,
+        scope: SessionSearchScope<'_>,
+        limit: usize,
+    ) -> Result<SessionSearchReport> {
+        self.search_with_control(query, scope, limit, &SessionSearchControl::default())
+    }
+
+    pub fn search_with_control(
+        &self,
+        query: &str,
+        scope: SessionSearchScope<'_>,
+        limit: usize,
+        control: &SessionSearchControl<'_>,
+    ) -> Result<SessionSearchReport> {
+        control.check_cancelled()?;
+        let started = std::time::Instant::now();
+        let deadline = started + control.timeout;
         let query = query.trim();
         if query.is_empty() {
-            return Ok(Vec::new());
+            return Ok(SessionSearchReport::default());
         }
-        self.repair_search_indexes()?;
+        // Reserve the final third for authoritative snippets. Exhausting
+        // maintenance alone must not discard already healthy matching files.
+        self.repair_search_indexes(scope, control, started + control.timeout * 2 / 3)?;
+        control.check_cancelled()?;
         let limit = limit.clamp(1, 100) as i64;
         let char_count = query.chars().count();
         let is_cjk_bigram = char_count == 2 && query.chars().all(is_cjk);
@@ -967,7 +1052,7 @@ impl<'db> EventStore<'db> {
             SessionSearchScope::NoProject => (None, true),
         };
         let candidates: Vec<(SessionId, Sequence, Option<Role>, Timestamp)> =
-            self.db.with_conn(|c| {
+            self.db.with_maintenance_conn(|c| {
                 let sql = if is_cjk_bigram {
                     "SELECT d.session_id, d.sequence, d.role, d.timestamp
                      FROM session_search_cjk_bigrams b
@@ -975,6 +1060,8 @@ impl<'db> EventStore<'db> {
                      JOIN sessions s ON s.id = d.session_id
                      WHERE b.gram = ?1 AND (?2 IS NULL OR s.project = ?2)
                        AND (?4 = 0 OR s.project IS NULL)
+                       AND NOT EXISTS (SELECT 1 FROM documents h
+                           WHERE h.collection='session_file_health_v1' AND h.id=d.session_id)
                      ORDER BY d.timestamp DESC LIMIT ?3"
                 } else if char_count >= 3 {
                     "SELECT d.session_id, d.sequence, d.role, d.timestamp
@@ -984,6 +1071,8 @@ impl<'db> EventStore<'db> {
                      WHERE session_search_fts MATCH ?1
                        AND (?2 IS NULL OR s.project = ?2)
                        AND (?4 = 0 OR s.project IS NULL)
+                       AND NOT EXISTS (SELECT 1 FROM documents h
+                           WHERE h.collection='session_file_health_v1' AND h.id=d.session_id)
                      ORDER BY bm25(session_search_fts), d.timestamp DESC LIMIT ?3"
                 } else {
                     "SELECT d.session_id, d.sequence, d.role, d.timestamp
@@ -993,6 +1082,8 @@ impl<'db> EventStore<'db> {
                      WHERE f.content LIKE ?1 ESCAPE '\\'
                        AND (?2 IS NULL OR s.project = ?2)
                        AND (?4 = 0 OR s.project IS NULL)
+                       AND NOT EXISTS (SELECT 1 FROM documents h
+                           WHERE h.collection='session_file_health_v1' AND h.id=d.session_id)
                      ORDER BY d.timestamp DESC LIMIT ?3"
                 };
                 let search_term = if is_cjk_bigram {
@@ -1028,16 +1119,27 @@ impl<'db> EventStore<'db> {
 
         let mut hits = Vec::with_capacity(candidates.len());
         for (session_id, sequence, role, timestamp) in candidates {
-            let Some(session) = self.get_session(session_id)? else {
+            control.check_cancelled()?;
+            let Some(session) = self.get_session_for_search(session_id)? else {
                 continue;
             };
-            let Some(event) = self.read_from(session_id, sequence)?.into_iter().next() else {
+            let Some(events) = self.read_search_context(
+                session_id,
+                sequence.saturating_sub(2),
+                sequence.saturating_add(2),
+                &control.file_read(deadline),
+            )?
+            else {
                 continue;
             };
-            if event.sequence != sequence {
+            let Some(event) = events.iter().find(|event| event.sequence == sequence) else {
+                self.quarantine_search_file(
+                    session_id,
+                    &CoreError::not_found("search source event unavailable"),
+                )?;
                 continue;
-            }
-            let Some((_, content)) = search_document(&event) else {
+            };
+            let Some((_, content)) = search_document(event) else {
                 continue;
             };
             hits.push(SessionSearchHit {
@@ -1046,9 +1148,14 @@ impl<'db> EventStore<'db> {
                 role,
                 timestamp,
                 snippet: make_snippet(&content, query, 240),
+                context: events,
             });
         }
-        Ok(hits)
+        control.check_cancelled()?;
+        Ok(SessionSearchReport {
+            hits,
+            unavailable: self.search_file_issues(scope)?,
+        })
     }
 
     fn mark_search_dirty(
@@ -1078,26 +1185,48 @@ impl<'db> EventStore<'db> {
 
     pub(crate) fn recover_orphaned_session_files(&self) -> Result<()> {
         for session_id in session_files::list_active_session_ids(&self.db.session_files_root())? {
-            let _io = self.db.lock_session_io()?;
-            let _file_lock =
-                session_files::lock_session(&self.db.session_files_root(), session_id)?;
             if self.projected_cursor(session_id)?.is_some() {
                 continue;
             }
-            let Some(loaded) = session_files::load(&self.db.session_files_root(), session_id)?
-            else {
+            let Some(_io) = self.db.try_lock_session_io()? else {
+                self.mark_search_unavailable(session_id, SessionSearchIssueKind::Busy)?;
                 continue;
             };
-            let updated_at = loaded
-                .events
-                .last()
-                .map_or(loaded.header.created_at.as_millis(), |event| {
-                    event.timestamp.as_millis()
-                });
-            let ended_at = loaded.events.iter().rev().find_map(|event| {
-                matches!(event.payload, EventPayload::SessionEnded { .. })
-                    .then_some(event.timestamp.as_millis())
-            });
+            let _file_lock = match session_files::try_lock_session_scope(
+                &self.db.session_files_root(),
+                session_id,
+                "lock",
+                true,
+            ) {
+                Ok(Some(guard)) => guard,
+                Ok(None) => {
+                    self.mark_search_unavailable(session_id, SessionSearchIssueKind::Busy)?;
+                    continue;
+                }
+                Err(error) => {
+                    self.quarantine_search_file(session_id, &error)?;
+                    continue;
+                }
+            };
+            if self.projected_cursor(session_id)?.is_some() {
+                continue;
+            }
+            let loaded = match session_files::try_visit_for_maintenance(
+                &self.db.session_files_root(),
+                session_id,
+                &SessionSearchControl::default()
+                    .file_read(std::time::Instant::now() + std::time::Duration::from_secs(1)),
+                &mut |_, _| Ok(()),
+            ) {
+                Ok(Some(loaded)) => loaded,
+                Ok(None) => continue,
+                Err(error) => {
+                    self.quarantine_maintenance_read(session_id, &error)?;
+                    continue;
+                }
+            };
+            let updated_at = loaded.updated_at.as_millis();
+            let ended_at = loaded.ended_at.map(|t| t.as_millis());
             self.db.with_conn(|c| {
                 let tx = c.unchecked_transaction().map_err(map_sqlite)?;
                 tx.execute(
@@ -1129,127 +1258,20 @@ impl<'db> EventStore<'db> {
                     params![
                         session_id.to_string(),
                         loaded.generation as i64,
-                        loaded.events.last().map(|event| event.sequence as i64),
+                        loaded.last_sequence.map(|s| s as i64),
                         loaded.byte_len as i64,
                         updated_at,
                     ],
+                )
+                .map_err(map_sqlite)?;
+                tx.execute(
+                    "DELETE FROM documents WHERE collection='session_file_health_v1' AND id=?1",
+                    [session_id.to_string()],
                 )
                 .map_err(map_sqlite)?;
                 tx.commit().map_err(map_sqlite)
             })?;
             tracing::warn!(%session_id, "recovered session metadata from authoritative file");
-        }
-        Ok(())
-    }
-
-    pub(crate) fn repair_search_indexes(&self) -> Result<()> {
-        let states: Vec<(SessionId, u64, u64, bool)> = self.db.with_conn(|c| {
-            let mut stmt = c
-                .prepare(
-                    "SELECT f.session_id, f.generation, f.byte_size,
-                            CASE WHEN c.session_id IS NULL OR c.dirty <> 0
-                                OR c.generation <> f.generation
-                                OR c.last_sequence IS NOT f.last_sequence
-                            THEN 1 ELSE 0 END
-                     FROM session_file_state f
-                     LEFT JOIN session_search_cursors c ON c.session_id = f.session_id",
-                )
-                .map_err(map_sqlite)?;
-            let rows = stmt
-                .query_map([], |row| {
-                    let id: String = row.get(0)?;
-                    let generation: i64 = row.get(1)?;
-                    let byte_size: i64 = row.get(2)?;
-                    let dirty: i64 = row.get(3)?;
-                    Ok((id, generation, byte_size, dirty))
-                })
-                .map_err(map_sqlite)?;
-            let mut states = Vec::new();
-            for row in rows {
-                let (id, generation, byte_size, dirty) = row.map_err(map_sqlite)?;
-                states.push((
-                    id.parse::<SessionId>()
-                        .map_err(|error| CoreError::Persistence(error.to_string()))?,
-                    generation as u64,
-                    byte_size as u64,
-                    dirty != 0,
-                ));
-            }
-            Ok(states)
-        })?;
-        for (session_id, projected_generation, projected_bytes, dirty) in states {
-            let _io = self.db.lock_session_io()?;
-            let _file_lock =
-                session_files::lock_session(&self.db.session_files_root(), session_id)?;
-            let physical =
-                session_files::current_cursor(&self.db.session_files_root(), session_id)?;
-            let projection_matches_file = physical.as_ref().is_some_and(|cursor| {
-                cursor.generation == projected_generation && cursor.byte_len == projected_bytes
-            });
-            if !dirty && projection_matches_file {
-                continue;
-            }
-            let Some(loaded) = session_files::load(&self.db.session_files_root(), session_id)?
-            else {
-                continue;
-            };
-            let updated_at = loaded
-                .events
-                .last()
-                .map_or(loaded.header.created_at.as_millis(), |event| {
-                    event.timestamp.as_millis()
-                });
-            let ended_at = loaded.events.iter().rev().find_map(|event| {
-                matches!(event.payload, EventPayload::SessionEnded { .. })
-                    .then_some(event.timestamp.as_millis())
-            });
-            self.db.with_conn(|c| {
-                let tx = c.unchecked_transaction().map_err(map_sqlite)?;
-                tx.execute(
-                    "UPDATE session_file_state SET
-                        generation = ?2, last_sequence = ?3, byte_size = ?4, updated_at = ?5
-                     WHERE session_id = ?1",
-                    params![
-                        session_id.to_string(),
-                        loaded.generation as i64,
-                        loaded.events.last().map(|event| event.sequence as i64),
-                        loaded.byte_len as i64,
-                        updated_at,
-                    ],
-                )
-                .map_err(map_sqlite)?;
-                tx.execute(
-                    "UPDATE sessions SET updated_at = ?2, ended_at = ?3 WHERE id = ?1",
-                    params![session_id.to_string(), updated_at, ended_at],
-                )
-                .map_err(map_sqlite)?;
-                replace_search_index(&tx, session_id, &loaded.events)?;
-                tx.execute(
-                    "INSERT INTO session_search_cursors
-                        (session_id, generation, last_sequence, dirty, updated_at)
-                     VALUES (?1, ?2, ?3, 0, ?4)
-                     ON CONFLICT(session_id) DO UPDATE SET
-                        generation=excluded.generation,
-                        last_sequence=excluded.last_sequence,
-                        dirty=0,
-                        updated_at=excluded.updated_at",
-                    params![
-                        session_id.to_string(),
-                        loaded.generation as i64,
-                        loaded.events.last().map(|event| event.sequence as i64),
-                        updated_at
-                    ],
-                )
-                .map_err(map_sqlite)?;
-                tx.commit().map_err(map_sqlite)
-            })?;
-            if let Err(error) = session_files::prune_older_generations(
-                &self.db.session_files_root(),
-                session_id,
-                loaded.generation,
-            ) {
-                tracing::warn!(%session_id, %error, "could not remove obsolete session generations");
-            }
         }
         Ok(())
     }
@@ -1574,6 +1596,16 @@ fn replace_search_index(
     session_id: SessionId,
     events: &[Event],
 ) -> Result<()> {
+    replace_search_index_controlled(connection, session_id, events, &|| Ok(()))
+}
+
+fn replace_search_index_controlled(
+    connection: &rusqlite::Connection,
+    session_id: SessionId,
+    events: &[Event],
+    checkpoint: &dyn Fn() -> Result<()>,
+) -> Result<()> {
+    checkpoint()?;
     connection
         .execute(
             "DELETE FROM session_search_fts
@@ -1597,19 +1629,34 @@ fn replace_search_index(
         )
         .map_err(map_sqlite)?;
     for event in events {
-        index_search_event(connection, event)?;
+        checkpoint()?;
+        index_search_event_controlled(connection, event, checkpoint)?;
     }
     Ok(())
 }
 
 fn index_search_event(connection: &rusqlite::Connection, event: &Event) -> Result<()> {
+    index_search_event_controlled(connection, event, &|| Ok(()))
+}
+
+fn index_search_event_controlled(
+    connection: &rusqlite::Connection,
+    event: &Event,
+    checkpoint: &dyn Fn() -> Result<()>,
+) -> Result<()> {
+    checkpoint()?;
     let Some((role, content)) = search_document(event) else {
         return Ok(());
     };
     if content.trim().is_empty() {
         return Ok(());
     }
-    let content_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
+    let mut digest = Sha256::new();
+    for chunk in content.as_bytes().chunks(64 * 1024) {
+        checkpoint()?;
+        digest.update(chunk);
+    }
+    let content_hash = format!("{:x}", digest.finalize());
     let inserted = connection
         .execute(
             "INSERT OR IGNORE INTO session_search_docs
@@ -1641,13 +1688,18 @@ fn index_search_event(connection: &rusqlite::Connection, event: &Event) -> Resul
         )
         .map_err(map_sqlite)?;
     let mut bigrams = std::collections::BTreeSet::new();
-    let chars: Vec<char> = content.chars().collect();
-    for pair in chars.windows(2) {
-        if pair.iter().all(|character| is_cjk(*character)) {
-            bigrams.insert(pair.iter().collect::<String>());
+    let mut previous = None;
+    for (index, character) in content.chars().enumerate() {
+        if index % 1024 == 0 {
+            checkpoint()?;
         }
+        if let Some(before) = previous.filter(|before| is_cjk(*before) && is_cjk(character)) {
+            bigrams.insert(format!("{before}{character}"));
+        }
+        previous = Some(character);
     }
     for gram in bigrams {
+        checkpoint()?;
         connection
             .execute(
                 "INSERT OR IGNORE INTO session_search_cjk_bigrams(doc_id, gram)

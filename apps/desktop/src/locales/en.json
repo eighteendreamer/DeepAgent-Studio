@@ -1307,7 +1307,12 @@
   },
   "searchModal": {
     "searchChats": "Search chats",
-    "recentChats": "Recent chats"
+    "recentChats": "Recent chats",
+    "searching": "Searching conversation text…",
+    "failed": "Conversation search failed; title results remain available. Please retry.",
+    "incomplete_one": "Conversation results are incomplete: {{count}} history is temporarily unavailable. Please try again later.",
+    "incomplete_other": "Conversation results are incomplete: {{count}} histories are temporarily unavailable. Please try again later.",
+    "retry": "Retry"
   },
   "skillsView": {
     "origin": {

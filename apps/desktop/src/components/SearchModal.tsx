@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { searchSessions } from "../api";
-import type { Project, SessionSearchHit, SessionSummary } from "../types";
+import type { Project, SessionSearchReport, SessionSummary } from "../types";
+import { Button } from "./shadcn/button";
+import { Input } from "./shadcn/input";
 import { GlobalModal } from "./ui/GlobalModal";
 import { ListItem } from "./ui/ListItem";
 
@@ -16,30 +18,41 @@ interface Props {
 export function SearchModal({ isOpen, onClose, sessions, projects, onSelectSession }: Props) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
-  const [searchHits, setSearchHits] = useState<SessionSearchHit[]>([]);
+  const [report, setReport] = useState<SessionSearchReport | null>(null);
+  const [searchError, setSearchError] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [retry, setRetry] = useState(0);
 
   useEffect(() => {
     if (!isOpen || !query.trim()) {
-      setSearchHits([]);
+      setReport(null);
+      setSearchError(false);
+      setLoading(false);
       return;
     }
-    setSearchHits([]);
+    setReport(null);
+    setSearchError(false);
+    setLoading(true);
     let cancelled = false;
     const timer = window.setTimeout(() => {
       void searchSessions(query.trim(), undefined, 50)
-        .then((hits) => {
-          if (!cancelled) setSearchHits(hits);
+        .then((result) => {
+          if (!cancelled) setReport(result);
         })
-        .catch((error) => {
-          console.error("Failed to search persisted sessions", error);
-          if (!cancelled) setSearchHits([]);
+        .catch(() => {
+          // Parser/SQLite errors may contain paths or transcript excerpts.
+          // Do not dump them into the browser console or user-facing status.
+          if (!cancelled) setSearchError(true);
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
         });
     }, 200);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [isOpen, query]);
+  }, [isOpen, query, retry]);
 
   const results = useMemo(() => {
     const projectNames = new Set(projects.map((project) => project.name));
@@ -61,7 +74,7 @@ export function SearchModal({ isOpen, onClose, sessions, projects, onSelectSessi
       )
       .map((session) => ({ session, sequence: null, snippet: null }));
     const seen = new Set(titleMatches.map((result) => `${result.session.id}:title`));
-    const bodyMatches = searchHits
+    const bodyMatches = (report?.results ?? [])
       .filter((hit) => !seen.has(`${hit.session.id}:${hit.sequence}`))
       .map((hit) => ({
         session: hit.session,
@@ -69,7 +82,7 @@ export function SearchModal({ isOpen, onClose, sessions, projects, onSelectSessi
         snippet: hit.snippet,
       }));
     return [...titleMatches, ...bodyMatches];
-  }, [projects, query, searchHits, sessions]);
+  }, [projects, query, report, sessions]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -104,18 +117,35 @@ export function SearchModal({ isOpen, onClose, sessions, projects, onSelectSessi
           panelClassName="h-[340px] w-[380px] max-h-[calc(100vh-96px)] max-w-[calc(100vw-32px)] flex flex-col overflow-hidden">
         {/* Header / Input area */}
         <div className="px-4 py-3 border-b border-transparent">
-          <input 
+          <Input
             type="text" 
             placeholder={t("searchModal.searchChats")}
             autoFocus
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            className="w-full text-[14px] bg-transparent outline-none text-text-base placeholder:text-text-secondary placeholder:font-normal"
+            aria-label={t("searchModal.searchChats")}
+            className="h-auto w-full rounded-none border-0 p-0 text-[14px] bg-transparent shadow-none focus:ring-0 text-text-base placeholder:text-text-secondary placeholder:font-normal"
           />
         </div>
 
         {/* List Content */}
         <div className="flex-1 overflow-y-auto px-2 pb-2">
+          {(loading || searchError || report?.complete === false) && (
+            <div role="status" aria-live="polite" className="px-2 py-1.5 text-[12px] text-text-secondary">
+              {loading ? t("searchModal.searching", "正在搜索正文…")
+                : searchError ? t("searchModal.failed", "正文搜索失败；标题结果仍可用，请重试。")
+                : t("searchModal.incomplete", {
+                    count: report?.unavailable.length ?? 0,
+                    defaultValue: "正文结果不完整：有 {{count}} 个会话暂不可搜索，请稍后重试。",
+                  })}
+              {!loading && (
+                <Button variant="ghost" size="sm" className="ml-1 h-6 px-1.5"
+                  onClick={() => setRetry((value) => value + 1)}>
+                  {t("searchModal.retry", "重试")}
+                </Button>
+              )}
+            </div>
+          )}
           <div className="px-2 py-1.5 text-[11px] text-text-secondary font-medium">{t("searchModal.recentChats")}</div>
           <div className="flex flex-col space-y-0.5">
             {results.map((result, i) => (
@@ -146,7 +176,7 @@ export function SearchModal({ isOpen, onClose, sessions, projects, onSelectSessi
                 </div>
               </ListItem>
             ))}
-            {results.length === 0 && (
+            {results.length === 0 && !loading && !searchError && report?.complete !== false && (
               <div className="px-3 py-8 text-center text-[13px] text-text-secondary">
                 {t("sidebar.noChats")}
               </div>
