@@ -329,19 +329,20 @@ async fn check_prepared_skill_snapshot(change_description: bool) {
     )
     .await
     .unwrap();
-    let requests = model.0.lock().unwrap();
-    assert_eq!(requests.len(), 2);
-    let first = requests[0].to_string();
-    assert!(first.contains("H219_INITIAL_SKILL_DESCRIPTION"));
-    assert!(
-        !first.contains("H219_REPLACEMENT_SKILL_DESCRIPTION"),
-        "the reminder must describe the admitted skill registry"
-    );
-    assert!(requests[1].to_string().contains("H219_INITIAL_SKILL_BODY"));
-    assert!(!requests[1]
-        .to_string()
-        .contains("H219_REPLACEMENT_SKILL_BODY"));
-    drop(requests);
+    {
+        let requests = model.0.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        let first = requests[0].to_string();
+        assert!(first.contains("H219_INITIAL_SKILL_DESCRIPTION"));
+        assert!(
+            !first.contains("H219_REPLACEMENT_SKILL_DESCRIPTION"),
+            "the reminder must describe the admitted skill registry"
+        );
+        assert!(requests[1].to_string().contains("H219_INITIAL_SKILL_BODY"));
+        assert!(!requests[1]
+            .to_string()
+            .contains("H219_REPLACEMENT_SKILL_BODY"));
+    }
     let next = chat
         .admit_prepared_run("h219-skill-next", &session, overrides())
         .unwrap();
@@ -446,13 +447,14 @@ async fn h219_plugin_enablement_changes_future_capabilities_not_an_admitted_skil
     )
     .await
     .unwrap();
-    let requests = model.0.lock().unwrap();
-    assert_eq!(requests.len(), 2);
-    assert!(requests[0]
-        .to_string()
-        .contains("H219_FROZEN_PLUGIN_DESCRIPTION"));
-    assert!(requests[1].to_string().contains("H219_FROZEN_PLUGIN_BODY"));
-    drop(requests);
+    {
+        let requests = model.0.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0]
+            .to_string()
+            .contains("H219_FROZEN_PLUGIN_DESCRIPTION"));
+        assert!(requests[1].to_string().contains("H219_FROZEN_PLUGIN_BODY"));
+    }
     let next = chat
         .admit_prepared_run("h219-plugin-disabled", &session, overrides())
         .unwrap();
@@ -539,26 +541,27 @@ async fn h219_prepared_run_consumes_admitted_tools_and_environment_once() {
         .unwrap(),
         session
     );
-    let requests = model.0.lock().unwrap();
-    assert_eq!(requests.len(), 2);
-    assert!(requests[1]
-        .to_string()
-        .contains("H219_PREPARED_OBSERVATION"));
-    let task = requests[0]["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|tool| tool["name"] == "task")
-        .unwrap();
-    assert!(task["description"]
-        .as_str()
-        .unwrap()
-        .contains("H219_INITIAL_AGENT_DESCRIPTOR"));
-    assert!(!task["description"]
-        .as_str()
-        .unwrap()
-        .contains("H219_REPLACEMENT_AGENT_DESCRIPTOR"));
-    drop(requests);
+    {
+        let requests = model.0.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[1]
+            .to_string()
+            .contains("H219_PREPARED_OBSERVATION"));
+        let task = requests[0]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "task")
+            .unwrap();
+        assert!(task["description"]
+            .as_str()
+            .unwrap()
+            .contains("H219_INITIAL_AGENT_DESCRIPTOR"));
+        assert!(!task["description"]
+            .as_str()
+            .unwrap()
+            .contains("H219_REPLACEMENT_AGENT_DESCRIPTOR"));
+    }
     let events = chat.run_events(run_id, None).unwrap();
     let snapshots = events
         .iter()

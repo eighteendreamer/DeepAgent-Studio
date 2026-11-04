@@ -12,7 +12,7 @@
 | 历史已修复跳过 | 23 | 17项原审计历史修复；H-77/H-83/H-238/H-246/H-301/H-232分别随H-78/H-143/H-260/H-245/H-164/H-219共享边界消除，验收另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 3 | H-211/H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | H-219/H-232已完成所列验收；下一项先跟进H-219新增测试诊断 |
+| 修复中 | 0 | H-219/H-232已完成所列验收；H-219新增测试诊断已补强，下一项H-218 |
 | 待修复 | 125 | 含H-180授权跳过，实际待处理124项；H-232已核对并记历史跳过 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
@@ -253,6 +253,24 @@ prepared-input-domain-candidate-valid同命令6过0败/0忽略、141.55秒，新
 **相关旧探针如实保留**：额外执行cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_discovery_restore::audit_ --offline -j 2 -- --ignored --nocapture --test-threads=1为exit101、1/1/0、5.04秒（input-final-rewind-ignored-*）。H232 discarded组通过；rediscovery组观察到新发现事件1份、真实二次inspect和cold schema均存在，但原最终断言取requests[3]（重搜前首请求）的空schema与cold重搜后schema比较而失败。这里只记录观察与代码位置，不改该oracle、不宣布H232已修复，也不把显式失败藏在默认ignored中。下一轮先复核此时序与历史归属再决定跳过/修复；本轮只验收H219。H178在a51cab3c及外部八门禁已有验收，不要求重跑；H180的53a03f9b提交与用户授权跳过保持原样。
 
 验收结论限本机Windows、上述正式内核/生产消费者和隔离离线矩阵；真实供应商、真实内网/凭据、其他OS、GUI手动交互、断电/强杀/多宿主压力及全部ignored未执行，不作这些保证。H219本阶段新增修复并验收1；306行/306唯一H核对为**148验收、22历史跳过、7归并、3撤销、126待修、0修复中/阻塞**；有效未关闭126包含授权跳过H180，实际待处理125。H232尚不计历史跳过，不提供完成率。修复commit为3cabd45f6bc88f3c575cf3df96ac85543b88e86f；本次另做文档回填提交，不amend。下一项先核对H232相关探针与共享根因的历史状态，然后按风险继续H218无界历史控制面，不借此混修。全部剩余修复及验收仍暂列**200–400有效小时**历史未逐项校准粗估，依据125项剩余有效任务及跨层/持久化/权限矩阵规模；不从本项机械扣减，不保证日期。构建/设备/依赖等待另计，除本批机器实测外没有可靠总区间。整体goal仍active，未宣称全系统完成。
+
+**E-H219-13（2026-11-04，新增测试锁作用域补强，不重复计修复）**：本轮起点570f7862，tracked干净、无未完成合并；上一goal轮有实际修复/测试/文档提交与新证据，属于进展，不是无进展或阻塞。本轮只处理E-H232-02发现的H219新增run_capabilities测试中三处await_holding_lock诊断，不混改旧panicking_unwrap或其他生产/lint问题，五项用户未跟踪内容保留。
+
+原测试在await前已有显式drop(requests)，本轮未动态证明发生过持锁等待或死锁；问题是该写法未向Clippy的保守生命周期检查清楚表达guard边界。沿同一原测试将三段请求断言包入词法作用域，让MutexGuard及从它借用的值在后续admit/run_prepared/await前一并退出作用域；不复制请求、不增运行链、不压制lint、不修改任何断言或生产代码。三处属于同一测试生命周期表达根因，合并在本项补强提交，不增加H编号或生产修复计数。
+
+| 本轮实际命令 | 原生结果 |
+|---|---|
+| cargo clippy -p deepagent-app-core --test kernel_v2_e2e --no-deps --offline -j 2 -- -D clippy::await_holding_lock | 修前exit101、41.35秒，三个目标error及旧panicking_unwrap error；修后同命令exit101、9.94秒，目标error为0，只剩旧panicking_unwrap error与三个其他test warnings。不是整条lint命令通过，也不是产品行为红测 |
+| cargo test -p deepagent-app-core --features web --test kernel_v2_e2e h219_ --offline -j 2 -- --nocapture --test-threads=1 | exit0，17过/0败/0忽略，88.26秒；技能/plugin/真实工具registry/输入域/native wire等原真实断言全部保留 |
+| cargo test -p deepagent-app-core --test kernel_v2_e2e --offline -j 2 -- --test-threads=1 | exit0，280/0/36，437.35秒；36个ignored不计通过 |
+| cargo fmt --all -- --check；git diff --check | 均通过；fmt5.04秒 |
+| cargo clippy -p deepagent-app-core --test kernel_v2_e2e --no-deps --offline -j 2 -- -D warnings | 最终实际exit101、33.00秒，仍被未改AppCore lib12项诊断阻断，尚未进入test target；不宣称严格lint全绿 |
+
+上述命令继续使用显式合成profile/data/temp、离线模型、MemorySecretStore、临时SQLite/文件与自建stdio；日志、逐项JSON和冻结位于target/h219-test-lint-20261104/，不提交本地运行产物。final-source-diagnostic-check.json确认目标诊断3→0、最终测试源码哈希未漂移、生产目录零diff；工作树实际只改本测试文件及两文档。六次机器命令合计614.94秒约10.25分钟，与人工有效工时分开。
+
+本轮无生产行为、协议/API、前端、权限/沙箱、依赖或SQL schema变化，不需要迁移；未重跑完整workspace、双SDK、Desktop构建/GUI、真实供应商或其他OS，原因是本轮仅测试作用域表达变化，完整受影响Kernel已实际通过。H219 E12的完整跨层/全仓证据只代表当时冻结版，不冒称本轮重跑；全仓H306与上述其他lint残余仍独立保留。H219生产修复仍归属3cabd45f6bc88f3c575cf3df96ac85543b88e86f；本轮测试补强提交待取得hash后另做文档回填，不amend、不推送、不建PR。
+
+本轮新增修复/历史跳过/归并/撤销均0；306行/306唯一H核对保持148验收、23历史跳过、7归并、3撤销、125待修、0修复中/阻塞，有效未关闭125含授权跳过H180，实际待处理124。H232历史复核已于3bf20d95完成，不重复修复；H178不重跑、H180继续授权跳过。下一项按既定风险顺序进入H218无界历史读取，先核对原审计、当前生产与消费方并运行原探针，不提前改生产。全部剩余暂保留200–400有效小时历史未逐项校准粗估，依据124项剩余与跨层/权限/持久化矩阵及未知反例，不从测试补强机械扣减；设备/依赖/编译等待另计，暂无可靠总区间或完工日期。整体goal仍active。
 
 ## H-242 子Agent原生上下文恢复（已修复并验收，2026-11-04，仅E03所列范围）
 
@@ -5021,7 +5039,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-216：Harness 冷分叉返回成功但新 thread 未加载，首个 `turn/start` 被拒绝](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-217：未知 namespaced JSON-RPC method 被误报为 Invalid params](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-218：`thread/read` 无界全量物化历史，缺少分页与响应预算](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-219：`tool/list` 是无作用域的静态目录，无法描述当前 run 的实际能力](system-harness-audit-2026-10-21.md#h-219toollist-是无作用域的静态目录无法描述当前-run-的实际能力) | P1 | 已修复并验收 | E-H219-01～12；原scope/owner/wire/代次/终态/input红测保留，限E12矩阵 | 唯一真实prepare/consume；原owner与RunStore事务接纳绑定、最小持久化快照及双SDK作用域消费 | 40份冻结无漂移；CLI154/0、web专项17/0、AppCore1942/0、双SDK/真实stdio和Tauri/build通过；workspace4408/1/247仅H306，严格lint及H232旧探针失败详见E12 | 修复3cabd45f6bc88f3c575cf3df96ac85543b88e86f，另做文档回填，不amend | 本项剩余0有效小时（限验收范围）；H232先复核，再按风险H218；全部200–400有效小时历史粗估未逐项校准，等待另计 |
+| [H-219：`tool/list` 是无作用域的静态目录，无法描述当前 run 的实际能力](system-harness-audit-2026-10-21.md#h-219toollist-是无作用域的静态目录无法描述当前-run-的实际能力) | P1 | 已修复并验收 | E-H219-01～13；原scope/owner/wire/代次/终态/input红测保留，限E12矩阵 | 唯一真实prepare/consume；原owner与RunStore事务接纳绑定、最小持久化快照及双SDK作用域消费 | 40份冻结无漂移；CLI154/0、web专项17/0、AppCore1942/0、双SDK/真实stdio和Tauri/build通过；workspace4408/1/247仅H306，严格lint限制见E12/E13，三个新增测试锁诊断已清理；H232另记历史复核 | 生产修复3cabd45f；本轮测试补强提交待回填 | 本项剩余0有效小时（限验收范围）；下一项H218；全部200–400有效小时历史粗估未逐项校准，等待另计 |
 | [H-220：`thread/list` 无界返回全部 session，缺少列表分页与服务端过滤](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-221：`config/read` 只返回静态协议 banner，无法读取有效执行配置](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-222：`thread/start` 的 `reasoningEffort` 被静默丢弃，后续 turn 回退到默认思考配置](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

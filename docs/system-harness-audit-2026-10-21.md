@@ -8626,6 +8626,24 @@ prepared-input-domain-candidate-valid同命令6过0败/0忽略、141.55秒，新
 
 验收结论限本机Windows、上述正式内核/生产消费者和隔离离线矩阵；真实供应商、真实内网/凭据、其他OS、GUI手动交互、断电/强杀/多宿主压力及全部ignored未执行，不作这些保证。H219本阶段新增修复并验收1；306行/306唯一H核对为**148验收、22历史跳过、7归并、3撤销、126待修、0修复中/阻塞**；有效未关闭126包含授权跳过H180，实际待处理125。H232尚不计历史跳过，不提供完成率。修复commit为3cabd45f6bc88f3c575cf3df96ac85543b88e86f；本次另做文档回填提交，不amend。下一项先核对H232相关探针与共享根因的历史状态，然后按风险继续H218无界历史控制面，不借此混修。全部剩余修复及验收仍暂列**200–400有效小时**历史未逐项校准粗估，依据125项剩余有效任务及跨层/持久化/权限矩阵规模；不从本项机械扣减，不保证日期。构建/设备/依赖等待另计，除本批机器实测外没有可靠总区间。整体goal仍active，未宣称全系统完成。
 
+**E-H219-13（2026-11-04，新增测试锁作用域补强，不重复计修复）**：本轮起点570f7862，tracked干净、无未完成合并；上一goal轮有实际修复/测试/文档提交与新证据，属于进展，不是无进展或阻塞。本轮只处理E-H232-02发现的H219新增run_capabilities测试中三处await_holding_lock诊断，不混改旧panicking_unwrap或其他生产/lint问题，五项用户未跟踪内容保留。
+
+原测试在await前已有显式drop(requests)，本轮未动态证明发生过持锁等待或死锁；问题是该写法未向Clippy的保守生命周期检查清楚表达guard边界。沿同一原测试将三段请求断言包入词法作用域，让MutexGuard及从它借用的值在后续admit/run_prepared/await前一并退出作用域；不复制请求、不增运行链、不压制lint、不修改任何断言或生产代码。三处属于同一测试生命周期表达根因，合并在本项补强提交，不增加H编号或生产修复计数。
+
+| 本轮实际命令 | 原生结果 |
+|---|---|
+| cargo clippy -p deepagent-app-core --test kernel_v2_e2e --no-deps --offline -j 2 -- -D clippy::await_holding_lock | 修前exit101、41.35秒，三个目标error及旧panicking_unwrap error；修后同命令exit101、9.94秒，目标error为0，只剩旧panicking_unwrap error与三个其他test warnings。不是整条lint命令通过，也不是产品行为红测 |
+| cargo test -p deepagent-app-core --features web --test kernel_v2_e2e h219_ --offline -j 2 -- --nocapture --test-threads=1 | exit0，17过/0败/0忽略，88.26秒；技能/plugin/真实工具registry/输入域/native wire等原真实断言全部保留 |
+| cargo test -p deepagent-app-core --test kernel_v2_e2e --offline -j 2 -- --test-threads=1 | exit0，280/0/36，437.35秒；36个ignored不计通过 |
+| cargo fmt --all -- --check；git diff --check | 均通过；fmt5.04秒 |
+| cargo clippy -p deepagent-app-core --test kernel_v2_e2e --no-deps --offline -j 2 -- -D warnings | 最终实际exit101、33.00秒，仍被未改AppCore lib12项诊断阻断，尚未进入test target；不宣称严格lint全绿 |
+
+上述命令继续使用显式合成profile/data/temp、离线模型、MemorySecretStore、临时SQLite/文件与自建stdio；日志、逐项JSON和冻结位于target/h219-test-lint-20261104/，不提交本地运行产物。final-source-diagnostic-check.json确认目标诊断3→0、最终测试源码哈希未漂移、生产目录零diff；工作树实际只改本测试文件及两文档。六次机器命令合计614.94秒约10.25分钟，与人工有效工时分开。
+
+本轮无生产行为、协议/API、前端、权限/沙箱、依赖或SQL schema变化，不需要迁移；未重跑完整workspace、双SDK、Desktop构建/GUI、真实供应商或其他OS，原因是本轮仅测试作用域表达变化，完整受影响Kernel已实际通过。H219 E12的完整跨层/全仓证据只代表当时冻结版，不冒称本轮重跑；全仓H306与上述其他lint残余仍独立保留。H219生产修复仍归属3cabd45f6bc88f3c575cf3df96ac85543b88e86f；本轮测试补强提交待取得hash后另做文档回填，不amend、不推送、不建PR。
+
+本轮新增修复/历史跳过/归并/撤销均0；306行/306唯一H核对保持148验收、23历史跳过、7归并、3撤销、125待修、0修复中/阻塞，有效未关闭125含授权跳过H180，实际待处理124。H232历史复核已于3bf20d95完成，不重复修复；H178不重跑、H180继续授权跳过。下一项按既定风险顺序进入H218无界历史读取，先核对原审计、当前生产与消费方并运行原探针，不提前改生产。全部剩余暂保留200–400有效小时历史未逐项校准粗估，依据124项剩余与跨层/权限/持久化矩阵及未知反例，不从测试补强机械扣减；设备/依赖/编译等待另计，暂无可靠总区间或完工日期。整体goal仍active。
+
 ### H-220：`thread/list` 无界返回全部 session，缺少列表分页与服务端过滤
 
 **级别：中（P2，控制面规模与客户端刷新稳定性）；触发条件：** app-server 的 durable session 数量超过一个普通列表窗口，客户端周期性调用 `thread/list` 刷新历史、恢复入口或归档视图。当前 `ThreadListRequest` 是空结构，服务端没有 limit、cursor、排序、workspace/provider/archived 过滤或快照语义。
