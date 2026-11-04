@@ -22,6 +22,19 @@ use serde::{Deserialize, Serialize};
 
 use crate::secret_store::SecretStore;
 
+#[path = "canvas_provider_service/commit.rs"]
+mod commit;
+use commit::CredentialEdit;
+
+/// Backend-only reference into the existing SecretStore. Missing on legacy
+/// documents; an explicit empty reference never falls back to the legacy slot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CanvasCredentialRef {
+    Empty,
+    Secret { id: String },
+}
+
 /// Document-store collection for all canvas configuration documents.
 pub const CANVAS_COLLECTION: &str = "canvas";
 /// Document id holding the full provider + model set.
@@ -155,6 +168,8 @@ pub struct CanvasProviderConfig {
     /// when the API key changes. It contains no secret material.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub credential_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_ref: Option<CanvasCredentialRef>,
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// Optional custom icon (data URL, size-capped).
@@ -495,6 +510,7 @@ fn normalize_provider_input(
         protocol: CanvasProtocol::from_label(&input.protocol),
         base_url,
         credential_version: String::new(),
+        credential_ref: None,
         enabled: input.enabled,
         logo: normalize_logo(input.logo.as_deref())?,
         models,
@@ -519,32 +535,16 @@ impl CanvasProviderService {
 
     /// Read the raw provider state (empty when never configured).
     fn read_state(&self) -> Result<CanvasProviderState> {
-        let doc = DocumentStore::new(&self.db).get(CANVAS_COLLECTION, CANVAS_PROVIDERS_ID)?;
-        let Some(doc) = doc else {
-            return Ok(CanvasProviderState::default());
-        };
-        serde_json::from_str(&doc.body)
-            .map_err(|e| CoreError::invalid(format!("decode canvas provider state: {e}")))
-    }
-
-    fn write_state(&self, state: &CanvasProviderState) -> Result<()> {
-        let body = serde_json::to_string(state)
-            .map_err(|e| CoreError::Other(format!("encode canvas provider state: {e}")))?;
-        DocumentStore::new(&self.db).put(
-            CANVAS_COLLECTION,
-            CANVAS_PROVIDERS_ID,
-            &body,
-            None,
-            self.clock_now(),
-        )
+        Ok(self.read_provider_document()?.state)
     }
 
     /// All providers with their models, plus secret presence (never the value).
     pub fn list_providers(&self) -> Result<Vec<CanvasProviderDto>> {
+        let _gate = self.provider_gate()?;
         let state = self.read_state()?;
         let mut out = Vec::with_capacity(state.providers.len());
         for provider in state.providers {
-            let key = self.provider_api_key(&provider.id)?;
+            let key = self.credential_for(&provider)?;
             out.push(provider.to_dto(key.as_deref()));
         }
         Ok(out)
@@ -553,82 +553,66 @@ impl CanvasProviderService {
     /// Insert or replace a provider. Existing models are preserved when the
     /// incoming model list is empty and the provider already had models.
     pub fn save_provider(&self, input: CanvasProviderInput) -> Result<CanvasProviderDto> {
+        let _gate = self.provider_gate()?;
         let api_key = input
             .api_key
             .as_deref()
             .map(str::trim)
             .filter(|k| !k.is_empty())
             .map(ToString::to_string);
-        let mut state = self.read_state()?;
-        let existing = state
+        let document = self.read_provider_document()?;
+        let existing = document
+            .state
             .providers
             .iter()
             .find(|p| !input.id.trim().is_empty() && p.id == input.id.trim())
             .cloned();
         let mut normalized =
             normalize_provider_input(input, existing.as_ref().map(|p| p.id.clone()))?;
-        let credential_changed = if let Some(new_key) = api_key.as_deref() {
-            self.provider_api_key(&normalized.id)?.as_deref() != Some(new_key)
-        } else {
-            false
-        };
-        normalized.credential_version = match existing.as_ref() {
-            Some(previous) if !credential_changed && !previous.credential_version.is_empty() => {
-                previous.credential_version.clone()
-            }
-            _ => uuid::Uuid::new_v4().to_string(),
-        };
         if normalized.models.is_empty() {
             if let Some(previous) = &existing {
                 normalized.models = previous.models.clone();
             }
         }
-        if let Some(index) = state.providers.iter().position(|p| p.id == normalized.id) {
-            state.providers[index] = normalized.clone();
-        } else {
-            if state
+        if existing.is_none()
+            && document
+                .state
                 .providers
                 .iter()
                 .any(|p| p.name.eq_ignore_ascii_case(&normalized.name))
-            {
-                return Err(CoreError::invalid(format!(
-                    "a provider named `{}` already exists",
-                    normalized.name
-                )));
-            }
-            state.providers.push(normalized.clone());
+        {
+            return Err(CoreError::invalid(format!(
+                "a provider named `{}` already exists",
+                normalized.name
+            )));
         }
-        self.write_state(&state)?;
-        if credential_changed {
-            if let Some(key) = api_key.as_deref() {
-                self.secrets
-                    .set(&provider_secret_key(&normalized.id), key)?;
-            }
-            // Close the small window where a request could observe the new
-            // key alongside the pre-update generation. Tasks created in that
-            // window are intentionally invalidated by this second rotation.
-            normalized.credential_version = self.rotate_credential_version(&normalized.id)?;
-        }
-        let stored = self.provider_api_key(&normalized.id)?;
-        Ok(normalized.to_dto(stored.as_deref()))
+        self.commit_provider(
+            document,
+            normalized,
+            existing.as_ref(),
+            api_key
+                .as_deref()
+                .map(CredentialEdit::Set)
+                .unwrap_or(CredentialEdit::Preserve),
+        )
     }
 
     /// Remove a provider and its stored secret.
     pub fn remove_provider(&self, provider_id: &str) -> Result<bool> {
-        let mut state = self.read_state()?;
-        let before = state.providers.len();
-        state.providers.retain(|p| p.id != provider_id);
-        if state.providers.len() == before {
+        let _gate = self.provider_gate()?;
+        let mut document = self.read_provider_document()?;
+        let removed = document
+            .state
+            .providers
+            .iter()
+            .find(|p| p.id == provider_id)
+            .cloned();
+        let Some(removed) = removed else {
             return Ok(false);
-        }
-        self.write_state(&state)?;
-        if let Err(error) = self.secrets.delete(&provider_secret_key(provider_id)) {
-            tracing::warn!(
-                provider_id,
-                error = %error,
-                "canvas provider removed but secret cleanup failed"
-            );
-        }
+        };
+        document.state.providers.retain(|p| p.id != provider_id);
+        self.write_provider_document(&document)?;
+        self.retire_credential(&removed);
         Ok(true)
     }
 
@@ -638,45 +622,58 @@ impl CanvasProviderService {
         if api_key.is_empty() {
             return Err(CoreError::invalid("api key is empty"));
         }
-        if self.provider_api_key(provider_id)?.as_deref() == Some(api_key) {
+        let _gate = self.provider_gate()?;
+        let document = self.read_provider_document()?;
+        let previous = document
+            .state
+            .providers
+            .iter()
+            .find(|p| p.id == provider_id)
+            .cloned()
+            .ok_or_else(|| CoreError::not_found(format!("canvas provider `{provider_id}`")))?;
+        if self.credential_for(&previous)?.as_deref() == Some(api_key) {
             return Ok(());
         }
-        self.rotate_credential_version(provider_id)?;
-        self.secrets
-            .set(&provider_secret_key(provider_id), api_key)?;
-        self.rotate_credential_version(provider_id)?;
-        Ok(())
+        self.commit_provider(
+            document,
+            previous.clone(),
+            Some(&previous),
+            CredentialEdit::Set(api_key),
+        )
+        .map(|_| ())
     }
 
     /// Delete the stored api key for a provider.
     pub fn clear_provider_api_key(&self, provider_id: &str) -> Result<()> {
-        self.ensure_provider(provider_id)?;
-        if self.provider_api_key(provider_id)?.is_none() {
+        let _gate = self.provider_gate()?;
+        let document = self.read_provider_document()?;
+        let previous = document
+            .state
+            .providers
+            .iter()
+            .find(|p| p.id == provider_id)
+            .cloned()
+            .ok_or_else(|| CoreError::not_found(format!("canvas provider `{provider_id}`")))?;
+        if self.credential_for(&previous)?.is_none() {
             return Ok(());
         }
-        self.rotate_credential_version(provider_id)?;
-        self.secrets.delete(&provider_secret_key(provider_id))?;
-        self.rotate_credential_version(provider_id)?;
-        Ok(())
-    }
-
-    fn rotate_credential_version(&self, provider_id: &str) -> Result<String> {
-        let mut state = self.read_state()?;
-        let version = uuid::Uuid::new_v4().to_string();
-        let provider = state
-            .providers
-            .iter_mut()
-            .find(|provider| provider.id == provider_id)
-            .ok_or_else(|| CoreError::not_found(format!("canvas provider `{provider_id}`")))?;
-        provider.credential_version = version.clone();
-        self.write_state(&state)?;
-        Ok(version)
+        self.commit_provider(
+            document,
+            previous.clone(),
+            Some(&previous),
+            CredentialEdit::Clear,
+        )
+        .map(|_| ())
     }
 
     /// Raw api key for backend-internal use only (adapters / routing).
     pub fn provider_api_key(&self, provider_id: &str) -> Result<Option<String>> {
-        let value = self.secrets.get(&provider_secret_key(provider_id))?;
-        Ok(value.filter(|v| !v.trim().is_empty()))
+        let _gate = self.provider_gate()?;
+        let state = self.read_state()?;
+        match state.providers.iter().find(|p| p.id == provider_id) {
+            Some(provider) => self.credential_for(provider),
+            None => Ok(None),
+        }
     }
 
     fn ensure_provider(&self, provider_id: &str) -> Result<CanvasProviderConfig> {
@@ -693,8 +690,14 @@ impl CanvasProviderService {
         provider_id: &str,
         model: CanvasModelConfig,
     ) -> Result<CanvasProviderDto> {
-        let mut state = self.read_state()?;
-        let Some(provider) = state.providers.iter_mut().find(|p| p.id == provider_id) else {
+        let _gate = self.provider_gate()?;
+        let mut document = self.read_provider_document()?;
+        let Some(provider) = document
+            .state
+            .providers
+            .iter_mut()
+            .find(|p| p.id == provider_id)
+        else {
             return Err(CoreError::not_found(format!(
                 "canvas provider `{provider_id}`"
             )));
@@ -705,21 +708,22 @@ impl CanvasProviderService {
             Some(slot) => *slot = entry,
             None => provider.models.push(entry),
         }
-        self.write_state(&state)?;
-        let key = self.provider_api_key(provider_id)?;
-        let provider = self
-            .read_state()?
-            .providers
-            .into_iter()
-            .find(|p| p.id == provider_id)
-            .ok_or_else(|| CoreError::not_found(format!("canvas provider `{provider_id}`")))?;
-        Ok(provider.to_dto(key.as_deref()))
+        let key = self.credential_for(provider)?;
+        let dto = provider.to_dto(key.as_deref());
+        self.write_provider_document(&document)?;
+        Ok(dto)
     }
 
     /// Remove one model from a provider.
     pub fn remove_model(&self, provider_id: &str, model_id: &str) -> Result<bool> {
-        let mut state = self.read_state()?;
-        let Some(provider) = state.providers.iter_mut().find(|p| p.id == provider_id) else {
+        let _gate = self.provider_gate()?;
+        let mut document = self.read_provider_document()?;
+        let Some(provider) = document
+            .state
+            .providers
+            .iter_mut()
+            .find(|p| p.id == provider_id)
+        else {
             return Ok(false);
         };
         let before = provider.models.len();
@@ -727,7 +731,7 @@ impl CanvasProviderService {
         if provider.models.len() == before {
             return Ok(false);
         }
-        self.write_state(&state)?;
+        self.write_provider_document(&document)?;
         Ok(true)
     }
 
@@ -794,12 +798,15 @@ impl CanvasProviderService {
     /// Resolve the enabled provider + model behind a `(provider_id, model_id)`
     /// pair, with its api key attached for backend-internal use.
     pub fn resolve_model(&self, provider_id: &str, model_id: &str) -> Result<ResolvedCanvasModel> {
-        let state = self.read_state()?;
-        let provider = state
-            .providers
-            .into_iter()
-            .find(|p| p.id == provider_id)
-            .ok_or_else(|| CoreError::not_found(format!("canvas provider `{provider_id}`")))?;
+        let _gate = self.provider_gate()?;
+        self.resolve_from_provider(&self.ensure_provider(provider_id)?, model_id)
+    }
+
+    fn resolve_from_provider(
+        &self,
+        provider: &CanvasProviderConfig,
+        model_id: &str,
+    ) -> Result<ResolvedCanvasModel> {
         if !provider.enabled {
             return Err(CoreError::invalid(format!(
                 "canvas provider `{}` is disabled",
@@ -812,16 +819,16 @@ impl CanvasProviderService {
             .find(|m| m.id == model_id)
             .cloned()
             .ok_or_else(|| {
-                CoreError::not_found(format!("canvas model `{model_id}` in `{provider_id}`"))
+                CoreError::not_found(format!("canvas model `{model_id}` in `{}`", provider.id))
             })?;
         if !model.enabled {
             return Err(CoreError::invalid(format!(
                 "canvas model `{model_id}` is disabled"
             )));
         }
-        let api_key = self.provider_api_key(provider_id)?;
+        let api_key = self.credential_for(provider)?;
         Ok(ResolvedCanvasModel {
-            provider,
+            provider: provider.clone(),
             model,
             api_key,
         })
@@ -834,6 +841,7 @@ impl CanvasProviderService {
         scenario: CanvasScenario,
         workspace_id: Option<&str>,
     ) -> Result<Vec<ResolvedCanvasModel>> {
+        let _gate = self.provider_gate()?;
         let state = self.read_state()?;
         let bindings = self.bindings(workspace_id)?;
         let mut ordered: Vec<ResolvedCanvasModel> = Vec::new();
@@ -841,20 +849,17 @@ impl CanvasProviderService {
             .iter()
             .filter(|b| b.enabled && CanvasScenario::from_label(&b.scenario) == Some(scenario))
         {
-            if let Some(found) = state
+            if let Some(provider) = state
                 .providers
                 .iter()
                 .find(|p| p.id == binding.provider_id && p.enabled)
-                .and_then(|p| {
+                .filter(|p| {
                     p.models
                         .iter()
-                        .find(|m| m.id == binding.model_id && m.enabled)
-                })
-                .and_then(|_| {
-                    self.resolve_model(&binding.provider_id, &binding.model_id)
-                        .ok()
+                        .any(|m| m.id == binding.model_id && m.enabled)
                 })
             {
+                let found = self.resolve_from_provider(provider, &binding.model_id)?;
                 if !ordered
                     .iter()
                     .any(|r| r.model.id == found.model.id && r.provider.id == found.provider.id)
@@ -876,7 +881,7 @@ impl CanvasProviderService {
                 {
                     continue;
                 }
-                let api_key = self.provider_api_key(&provider.id)?;
+                let api_key = self.credential_for(provider)?;
                 extras.push(ResolvedCanvasModel {
                     provider: provider.clone(),
                     model: model.clone(),
@@ -897,6 +902,18 @@ impl CanvasProviderService {
     /// Direct access to the provider record (used by the gateway / adapters).
     pub fn provider(&self, provider_id: &str) -> Result<CanvasProviderConfig> {
         self.ensure_provider(provider_id)
+    }
+
+    /// Backend-only coherent endpoint/authentication snapshot for calls without
+    /// a model (catalog discovery). Never expose this tuple as a renderer DTO.
+    pub fn provider_credentials(
+        &self,
+        provider_id: &str,
+    ) -> Result<(CanvasProviderConfig, Option<String>)> {
+        let _gate = self.provider_gate()?;
+        let provider = self.ensure_provider(provider_id)?;
+        let key = self.credential_for(&provider)?;
+        Ok((provider, key))
     }
 }
 

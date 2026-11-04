@@ -12651,6 +12651,8 @@ E-H288-11（独立提交与回填，2026-10-29）：本项代码、默认回归�
 
 ### H-290：画布供应商保存先提交配置、后写密钥，密钥持久化失败后发布新配置与旧凭据的混合身份
 
+**当前状态：已修复并验收（2026-11-04，限E-H290-03本机范围）；原始失败证据及全仓既有失败保留。修复提交取得hash后另行回填。**
+
 **级别：中（P2，条件性 provider 身份/配置原子性缺陷）；状态：正式 `CanvasProviderService`、文件 SQLite 和故障注入 `SecretStore` 已复现，未修复。** 触发条件是编辑一个已有画布供应商并同时更换 endpoint/API key，provider secret 写入在配置文档提交后失败。不是正常保存必现，也不是密钥明文泄露；本项关注失败返回与 durable 配置不一致。
 
 #### 即时 Evidence（2026-10-25，首次有效复现后立即登记）
@@ -12684,6 +12686,43 @@ E-H288-11（独立提交与回填，2026-10-29）：本项代码、默认回归�
 
 - 本轮只新增上述 test-only 故障探针和本节文档，没有修改生产逻辑、数据库 schema、权限或模型协议。`cargo fmt --all` 已执行；故障命令结果按上文为 **0 passed / 1 failed（预期）**。
 - 尚未执行完整 workspace、Desktop build/UI、真实 SecretStore/keychain、真实 DeepSeek、provider HTTP 或多进程崩溃恢复；这些未执行项不被本项动态证据替代。用户已有未跟踪文件保持不动，未调查用户排除的 `encrypted-content` 问题。
+
+**E-H290-01（复核、原探针与根因方案，2026-11-04，修复中）**：起点4ebf2c7b，tracked干净，无暂存或未完成合并；原五项用户未跟踪内容不读/不改/不提交。仅处理H290，不归并H88/H122/H292。原`cargo test -p deepagent-app-core --test canvas_provider_transaction_audit audit_provider_save_is_atomic_across_config_and_secret --offline -j 2 -- --ignored --exact --nocapture`实际exit101、0过/1败/0忽略，17.237秒含编译；保存返回错误后公开resolve_model仍读出新endpoint和旧合成Key，原始日志target/h290-repair-20261104/original-provider-audit.log/-result.json保留。新增公开边界TDD覆盖新建、写前/写后secret错误、真实SQLite文档拒写、独立冷重开和正常改/清Key对照，public-transactions-red仍在执行，尚不预写结果。所有数据均临时合成，不访问真实Keychain、供应商、内网或用户数据库。
+
+根因边界已核对：CanvasProviderService全体provider/model writer、resolve/list/candidates和CanvasModelGateway的正式execute/video/discover消费者；discover_models另有分开读取provider和Key的窗口，必须一起收敛。单纯交换写顺序仍会在另一存储失败或并发读取时混合身份。本地设计：复用原SecretStore的不可变版本记录，先准备/回读核对新secret，再用原DocumentStore条件提交一次发布provider与版本化secret引用；同版本宿主复用原fs_commit稳定共享gate，读取消费同一配置/凭据快照。旧文档缺引用兼容旧slot；显式新引用缺失不得回退旧slot。所有provider/model writer须同owner以免覆盖引用；改Key/清Key/删除共用提交边界，不再两次轮换发布；清理失败/提交前进程退出的不可达记录风险需真实验证并如实保留，不臆称两个存储可事务回滚或安全擦除。公开UI DTO保持不变，内部持久化需可兼容引用字段，Rust config字面量和正式gateway消费方同步；不新增provider registry/secret store/迁移脚本。已有DocumentStore CAS、fs_commit gate、canvas artifact版本引用及H88的跨存储失败证据为依据，不直接套用H88的账户意图状态机。
+
+尚未实施生产修改、未验收/提交。本轮新增验收/历史跳过/归并/撤销均0；306台账为152验收/23历史跳过/7归并/3撤销/120待修复/1修复中，有效未关闭121含H180授权跳过，实际待处理120。下一步仍H290，需验证并发/崩溃、正式gateway请求身份/旧视频resume及全仓/桌面/lint/build。H290暂估16–32有效修复验收小时，依据不可变secret引用、跨进程共享gate和正式消费者/失败组合；总剩余200–400有效小时仍是未逐项校准的历史粗估，设备/编译/依赖/环境等待另计，不作日期承诺，goal保持active。
+
+**E-H290-02（候选实现与真实消费方补强，2026-11-04，尚未最终验收）**：E01的公开TDD初版实际2过/2败（18.965秒）；拆开写前/写后新建与更新四个反例后2过/4败（15.350秒），正常与文档拒写对照通过。候选公开边界6过、原显式ignored探针1过、provider单位10过，但不是最终源码验收。扩展进程测试初次因HostRole导入位置写错而编译失败、0测试执行，改为本仓host_lock::HostRole；之后14过/1败/1忽略（17.943秒），唯一失败是Windows自建HTTP夹具accepted socket继承nonblocking而读出WouldBlock，改夹具明确blocking后wire专项1过（18.306秒），未为此改生产网络规则。再扩展视频resume、缺失引用零请求、读写快照及首文档拒写，expanded-final-public候选20过/0败/1忽略；仅忽略由默认父测试显式执行的进程子入口。以上中间失败与原始失败日志均保留于target/h290-repair-20261104，不把编译错误当TDD行为红例。
+
+生产已在原CanvasProviderService内实现不可变secret准备/回读、单次DocumentStore CAS发布配置+generation+引用；原SecretStore/文档仍是唯一存储，没有第二套provider链路。全部provider/model写入、清Key/删除与resolve/list/candidates/discovery共用共享data_root稳定gate；跨await前已复制完整快照。CAS冲突不覆盖外部文档、不重试secret副作用；保存失败保留旧配置/Key/generation；相同Key不换代，成功替换/清Key只换代一次。旧文档缺引用兼容固定slot，成功写入时移到版本引用；新引用缺失/损坏拒用，不回退旧slot。公开UI DTO/command/供应商协议不变，内部Rust Config增加可选持久化引用（外部Rust字面量需显式补字段），无schema迁移。
+
+真实Primary/Standby及独立TEMP、冷重开通过stage前/发布后kill、gate释放和并发model/provider写入；两个kill场景明确验证可能残留一条不可达加密记录。HTTP仅自建127.0.0.1：正式explicit/scenario execute、catalog discovery验证旧旧/新新成对，缺失新引用零请求；prepare_video只暂存合成URL而不下载，验证失败保存仍poll旧任务、成功替换重新submit且不以新Key poll旧账户、无Key参数/同Key正常resume、clear后零请求。清理失败可留下不可达记录，不会复活清除/删除的身份；不承诺安全擦除、崩溃孤儿自动GC、跨存储回滚、旧版本旁路协调或在途请求动态撤权。gate需要共享data_root写权限，等待上限沿用原5秒；其他OS、真实Keychain、真实供应商及UI点击未验。最新gate有界争用和可读性调整之后尚需最终冻结源码专项、全workspace、lint、CLI/Tauri/前端门禁；未关闭本项，计数仍152/23/7/3/120待修/1修复中，无本项commit。
+
+**E-H290-03（冻结源码验收与交付，2026-11-04，已修复并验收，限本节本机范围）**：7份生产/测试源码SHA-256清单final-sources.json在全部门禁后逐份核对不变，证据仍在target/h290-repair-20261104/，原红测、编译错误和HTTP夹具失败均保留。原探针已取消ignore并停止打印合成Key；新增唯一ignored为由默认父测试显式执行的进程子入口，不靠默认跳过探针结案。未改H88/H122/H292、权限、网络策略、供应商协议或数据库schema。
+
+| 实际命令 | 终态与证据label（耗时包含编译） |
+|---|---|
+| `cargo fmt --all -- --check` | final-format，exit0，5.641秒 |
+| `cargo test -p deepagent-app-core --test canvas_provider_transaction_tests --offline -j 2 -- --nocapture --test-threads=1` | final-public，exit0，21过/0败/1忽略，96.968秒；含三项真实Primary/Standby父测试、SQLite冷重开、单次CAS、before/after/no-op secret错误、INSERT/UPDATE拒写、清理失败/kill、CAS冲突、旧库兼容、引用损坏、读写快照、gate I/O/5秒有界争用及正式HTTP/video消费 |
+| `cargo test -p deepagent-app-core --test canvas_provider_transaction_audit audit_provider_save_is_atomic_across_config_and_secret --offline -j 2 -- --exact --nocapture` | final-original，不带ignored，exit0，1过/0败/0忽略，19.564秒；失败保存保留旧endpoint+旧Key |
+| `cargo test -p deepagent-app-core --lib canvas_provider_service:: --offline -j 2 -- --nocapture --test-threads=1` | final-provider-unit，exit0，10过/0败/0忽略，152.970秒 |
+| `cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=2` | final-workspace，exit101，1232.860秒；按大小写敏感Cargo标题及每target最后汇总，136顶层target去重为4529过/2败/241忽略（原runner4530过重复计入1个子测试）。不是全绿 |
+| `cargo clippy --all-targets --all-features --offline -j 2 -- -D warnings` | final-workspace-strict-lint，exit101，19.693秒，既有models/client.rs:385 clone_on_copy阻断 |
+| `cargo clippy -p deepagent-app-core --all-targets --no-deps --offline -j 2 -- -D warnings` | final-appcore-strict-lint，exit101，55.917秒；既有12项lib与workflow_audit/media两项test诊断 |
+| `cargo clippy -p deepagent-app-core --all-targets --no-deps --offline -j 2` | final-appcore-standard-lint，exit101，61.895秒；既有kernel_v2_e2e/mcp_discovery_restore.rs:776 panicking_unwrap，不能称全target lint通过 |
+| `cargo clippy -p deepagent-app-core --lib --no-deps --offline -j 2` | final-appcore-production-lint，exit0，33.516秒，保留12项既有警告 |
+| `cargo clippy -p deepagent-app-core --test canvas_provider_transaction_tests --test canvas_provider_transaction_audit --no-deps --offline -j 2` | final-selected-tests-lint，exit0，3.351秒，仅上述12项lib警告，本项两套test无新诊断 |
+| `cargo build -p deepagent-cli --offline -j 2` | final-cli-build，exit0，103.568秒 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --offline -j 1` | final-desktop-rust-check，exit0，75.704秒 |
+| `cd apps/desktop; pnpm build` | final-desktop-frontend，exit0，155.700秒；实际执行package scripts、tsc与Vite，保留既有externalization/大chunk警告，无UI行为改动 |
+| `cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check` | final-desktop-format，exit1，3.103秒；未修改的lib.rs:24/37/2300/3095四处旧格式差异 |
+
+全仓两项失败分别是H306 creative.video-edit.v1空defaultUserPrompt，以及completion_plan::audit_tests::discovered_real_build_completes_after_release在原4秒窗口未生成build-started。后者已有H163/H225/H87等历史同类证据；本轮用同一workspace测试exe（SHA256前后均CB064181A3D506A07D323D3A95024BCE019A30804A18B0DB1BE56E2A0DF47EC8）直接exact复核，final-build-control-recheck exit0、1过/0败/0忽略、3.676秒，真实terminal=Succeeded/terminal_count=1/cleanup_success=true。该复核不覆盖或抹掉原全仓失败，具体冷启动/调度原因仍未定位，不宣称修复H64夹具。相关completion_plan/verification/prompts及lint诊断源文件对HEAD无差异；严格workspace/AppCore、生产lib lint和Tauri fmt的诊断与H88上轮记录逐字规范化比较一致，baseline-diagnostics.json保存四组true。全仓门禁与既有lint/格式缺口继续保留，不混入本项提交，也不降低门限。
+
+本项验收结论仅为：正式公开保存、主备/崩溃/冷重开和HTTP/video消费者均未再发布混合身份，正常对照保持；不是全仓全绿或全系统完成。新引用缺失/损坏明确拒用，需要恢复记录，或显式删除该provider后重新建立并录入凭据；不自动猜测/采用孤儿。仍保留E02的不可达加密记录、无自动GC/安全擦除、同版本协调、共享data_root可写和已接纳请求不动态撤权限制。未执行真实Keychain/供应商、UI点击、其他OS、长期压力或掉电介质故障验收；本轮只用临时合成数据、自建回环和正式加密SQLite，没有执行真实迁移或接触用户数据。
+
+本轮新增修复并验收1（H290），历史跳过/归并/撤销新增均0；逐行核对后累计153验收/23历史跳过/7归并/3撤销/120待修/0修复中/0阻塞，总306；有效未关闭120含H180授权跳过，实际待处理119。修复commit待生成，取得hash后单独文档回填，不反复amend。下一项准备按重复副作用优先复核H96定时派发落账失败重放（先核对当前代码、原探针及与既有接纳/持久化能力的依赖，不预判仍有缺陷）；H180继续按授权跳过。全部剩余仍沿用200–400有效修复/验收小时的未逐项校准历史粗估：依据119项跨运行状态/持久化/权限/协议与消费者验证规模，实际单项跨度和复用程度不明，逐轮重估，不作精确日期承诺。编译及设备/依赖/环境等待另计，无法给出可靠上界，不能把本次命令墙钟时间当人工有效工时。goal保持active。
 
 ### H-291：重复编号撤销，归并 H-126（2026-10-25 更正）
 

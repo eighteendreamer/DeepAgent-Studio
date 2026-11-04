@@ -1718,21 +1718,16 @@ impl CanvasModelGateway {
     /// gateways answer `GET {base}/v1beta/models`; a protocol with no catalog
     /// endpoint surfaces `UnsupportedCapability` rather than a fake preset list.
     pub async fn discover_models(&self, provider_id: &str) -> CanvasResult<Vec<String>> {
-        let provider = self
+        let (provider, api_key) = self
             .providers
-            .provider(provider_id)
+            .provider_credentials(provider_id)
             .map_err(|e| CanvasError::new(CanvasErrorCode::InvalidInput, e.to_string()))?;
-        let api_key = self
-            .providers
-            .provider_api_key(provider_id)
-            .map_err(|e| CanvasError::new(CanvasErrorCode::InvalidInput, e.to_string()))?
-            .filter(|k| !k.trim().is_empty())
-            .ok_or_else(|| {
-                CanvasError::new(
-                    CanvasErrorCode::SecretMissing,
-                    format!("provider `{}` has no stored api key", provider.name),
-                )
-            })?;
+        let api_key = api_key.filter(|k| !k.trim().is_empty()).ok_or_else(|| {
+            CanvasError::new(
+                CanvasErrorCode::SecretMissing,
+                format!("provider `{}` has no stored api key", provider.name),
+            )
+        })?;
         let endpoint = endpoint_url(
             provider.protocol,
             &provider.base_url,
@@ -4186,6 +4181,7 @@ mod tests {
                 protocol: CanvasProtocol::OpenAi,
                 base_url: "https://video.example/v1".to_string(),
                 credential_version: "credential-generation-1".to_string(),
+                credential_ref: None,
                 enabled: true,
                 logo: None,
                 models: vec![],
@@ -4856,6 +4852,7 @@ mod tests {
                 protocol: CanvasProtocol::OpenAi,
                 base_url: "https://x".to_string(),
                 credential_version: String::new(),
+                credential_ref: None,
                 enabled: true,
                 logo: None,
                 models: vec![],
@@ -4909,6 +4906,7 @@ mod tests {
                 protocol: CanvasProtocol::OpenAi,
                 base_url: "https://x".to_string(),
                 credential_version: String::new(),
+                credential_ref: None,
                 enabled: true,
                 logo: None,
                 models: vec![],

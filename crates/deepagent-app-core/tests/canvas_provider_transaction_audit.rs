@@ -66,7 +66,6 @@ fn provider_input(id: &str, base_url: &str, api_key: &str) -> CanvasProviderInpu
 }
 
 #[test]
-#[ignore = "audit reproducer: provider config must not commit when API-key persistence fails"]
 fn audit_provider_save_is_atomic_across_config_and_secret() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db = Arc::new(Database::open(dir.path().join("state.sqlite")).expect("database"));
@@ -102,8 +101,9 @@ fn audit_provider_save_is_atomic_across_config_and_secret() {
         .resolve_model("audit-provider", "audit-model")
         .expect("provider remains resolvable");
     eprintln!(
-        "provider save failure: result_error=true base_url={} credential_version={} api_key={:?}",
-        after.provider.base_url, after.provider.credential_version, after.api_key
+        "provider save failure: result_error=true base_url={} identity_preserved={}",
+        after.provider.base_url,
+        after.api_key.as_deref() == Some("old-key")
     );
     assert_eq!(
         after.provider.base_url, "http://old.invalid/v1",
