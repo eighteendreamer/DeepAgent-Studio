@@ -2,21 +2,58 @@
 
 ## 当前状态与计数口径（2026-11-04）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计149项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；该次只纠正汇总，不计为新增修复。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计150项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；该次只纠正汇总，不计为新增修复。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 149 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-92、H-125、H-130、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-147、H-148、H-149、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-178、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-196、H-197、H-198、H-199、H-208、H-214、H-218、H-219、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-241、H-242、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-259、H-260、H-261、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 150 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-92、H-125、H-130、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-147、H-148、H-149、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-178、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-196、H-197、H-198、H-199、H-208、H-214、H-218、H-219、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-241、H-242、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-259、H-260、H-261、H-270、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 23 | 17项原审计历史修复；H-77/H-83/H-238/H-246/H-301/H-232分别随H-78/H-143/H-260/H-245/H-164/H-219共享边界消除，验收另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 3 | H-211/H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | 本轮H-218已完成所列范围验收；未把全仓既有失败说成通过 |
-| 待修复 | 124 | 含H-180授权跳过，实际待处理123项 |
+| 修复中 | 0 | 当前无未交付候选 |
+| 待修复 | 123 | 含H-180授权跳过，实际待处理122项 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **124（其中H-180按用户要求跳过，实际待处理123项）**；不提供完成率。149项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301/H-232在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4/3cabd45f及真实复核单独列明，合计23项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。
+有效未关闭条目当前为 **123（其中H-180按用户要求跳过，实际待处理122项）**；不提供完成率。150项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301/H-232在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4/3cabd45f及真实复核单独列明，合计23项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。
+
+## H-270 计划文件坏行隔离与保留式编辑（已修复并验收，2026-11-04，限E03范围）
+
+**E-H270-01（复核与TDD，修复中，2026-11-04）**：起点c38afdbf，tracked干净，无未完成合并或暂存；五项用户未跟踪内容不读/不改/不提交。原`cargo test -p deepagent-app-core --lib cron_service::store_audit --offline -j 2 -- --include-ignored --nocapture --test-threads=1`实际exit101，2过/3败/0忽略，124.39秒含编译；健康和非法cron对照通过，缺prompt、createdAt错类型、lastFiredAt错类型仍使list=0、poll无健康派发、create成功后只剩新任务。原报告失败证据保留，不因默认ignore而跳过本项。
+
+新增真实文件回归先执行`cargo test -p deepagent-runtime --lib schedule::store::repair_tests:: --offline -j 2 -- --nocapture --test-threads=1`，new-store-regression-red为exit101、1过/5败/0忽略、28.55秒；覆盖所有修改入口的原始坏行/未知值保留、整份文档损坏拒绝覆盖、读取失败/非法UTF-8、必需/可选字段错类型、重复字段与合法旧可选字段默认。不是编译错误或假设性反例，详细log/result.json在target/h270-repair-20261104，不提交运行产物。
+
+方案只修H270：现有ScheduledTaskStore内部统一读取完整原始文档、逐行形成可调度投影；坏行与未知字段使用现有serde_json的raw_value能力保留，不从投影Vec重建唯一原文件。缺失文件允许初始化；存在但空白/截断、tasks结构错误、重复外层字段或I/O错误明确拒绝普通覆盖。坏可选anchor不退化成新任务，整个坏行暂不派发。日志仅记录路径、行号、静态原因及部分投影计数，不输出prompt/坏值。参考ClaudeCode逐行隔离及Codex错误读取不作为可写空基线；保留式编辑和重复字段拒绝为本地设计，依据本地锁定serde_json-1.0.150 RawValue原样序列化API，不引入第二套store/调度器/新依赖版本。
+
+候选正在测试，尚未宣称修复成功、尚无本项commit。不归并H42/H96/H97/H271；既有调度锁、派发后落账、后台run生命周期、日历panic、并发/原子替换仍分别追踪，不把它们算成本项成果。原正式工具/服务/poll与新增文件测试、异常拒写、默认探针及跨crate/workspace门禁需实际完成后才能关闭。本阶段新增验收/历史跳过/归并/撤销均0；149验收/23历史跳过/7归并/3撤销/123待修/1修复中，有效未关闭124含H180授权跳过，实际待处理123。下一步仍H270；暂估本项6–12有效小时，依据原文件保留式编辑、所有写入口和正式工具/调度消费方验收，随实测校准。全部剩余200–400有效小时仍为未逐项校准历史粗估，环境/编译/依赖等待另计，无可靠总上界或精确日期，goal保持active。
+
+**E-H270-02（候选审查与扩展回归，修复中，2026-11-04）**：store-regression-candidate的10过/1败来自测试错误地比较未知字段键前空白；改为RawValue字段值精确比较后，store-regression-candidate2为11过/0败，未放宽原始坏行和大数值保留断言。original-service-candidate原五组5过/0败；随后三条故障探针移为默认测试，expanded-appcore-service为6过/0败/0忽略（108.90秒），包括真实CronCreate/CronDelete错误返回、原文件不变与错误正文不回显标记。expanded-runtime-schedule为29过/0败/0忽略（28.90秒），覆盖真实tick的健康one-shot/recurring落账和坏行保留、corrupt文档在派发前明确失败，回调只计数，不启动真实模型/任务。
+
+审查发现初版保留式public write改变输入排序，先补write-order-red：exit101、0过/1败（26.42秒），再按ID继承未知字段、按调用者输入顺序组装可识别任务并保留opaque原始行；只有显式write可将opaque行排列在末尾，其值和相对顺序不变。默认add/remove/mark_fired保持原行顺序。final-runtime-schedule为31过/0败/0忽略（26.83秒），其中排序兼容反例转绿。final-diagnostic-isolated实际执行1过/0败；外部diagnostic-content-check为exit0，确认真实生产JSON日志包含row_index/reason和total_rows/rejected_rows，且H270_PRIVATE_ID/CRON/PROMPT三标记均不出现。日志不以静默丢弃坏行冒充容错。
+
+原runtime-lint严格命令exit101，Runtime既有model_agent.rs:294 clone_on_copy和workflow/canvas.rs:32 derivable_impls阻断，相关旧源码未修改。最终5份相关源码已冻结final-source-freeze.json；final-format-check exit0。当前源码的正式CronService/工具消费者、完整workspace、CLI构建和严格/普通lint继续执行，取得终态前不把旧版本局部绿结果当本项验收，不提交半成品。证据均在target/h270-repair-20261104；状态与计数仍149验收/23历史跳过/7归并/3撤销/123待修/1修复中，有效未关闭124含H180授权跳过、实际待处理123；本轮新增关闭0，下一步仍H270闭环。
+
+**E-H270-03（最终验收，2026-11-04，限本机文件存储/正式工具与调度消费方）**：final-source-freeze.json的5份相关源码在完整验证后SHA256全部不变。根因修复位于原ScheduledTaskStore唯一文件owner：文档原始行与可调度投影分离，逐行隔离而不丢弃坏行；所有写入口读取完整文档后只修改自己识别的字段，不再将失败/部分投影重建为唯一存储。RawValue保留坏行、root/健康行未知字段及超出普通Value整数域的原始大数。坏anchor整行暂不派发；外层损坏、空白、重复字段、UTF-8/I/O错误拒绝普通覆盖，只有NotFound可初始化。没有新增store、scheduler、DTO、迁移或依赖版本；Cargo.lock不变，仅启用既有serde_json的raw_value feature。
+
+| 实际命令 | 当前冻结源码结果 |
+|---|---|
+| `cargo fmt --all -- --check` | final-format-check，exit0，4.60秒；最终git diff --check通过 |
+| `cargo test -p deepagent-runtime --lib schedule:: --offline -j 2 -- --nocapture --test-threads=1` | final-runtime-schedule，exit0，31过/0败/0忽略，26.83秒；所有写入口、旧可选字段、未知值/坏行保留、输入排序、真实tick与corrupt拒派发 |
+| `cargo test -p deepagent-runtime --lib h270_partial_diagnostics_expose_only_static_reasons_and_counts --offline -j 2 -- --nocapture --test-threads=1` | final-diagnostic-isolated，exit0，1过/0败/0忽略；独立输出检查确认两类真实诊断/计数存在且三敏感标记不出现。该日志内容检查为外部验收，不冒充Rust内部日志断言 |
+| `cargo test -p deepagent-app-core --lib cron_service:: --offline -j 2 -- --nocapture --test-threads=1` | final-appcore-cron，exit0，9过/0败/4忽略，133.00秒；H270原三故障及健康/非法cron对照均默认通过，6项store_audit无忽略；4忽略是另列H97/H271，不计为本项验收 |
+| `cargo test -p deepagent-builtins --lib cron_tools:: --offline -j 2 -- --nocapture --test-threads=1` | final-builtins-cron，exit0，7过/0败/0忽略，25.24秒 |
+| `cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=1` | final-workspace，exit101，1696.02秒；135顶层target均取得终态，按每个target末条汇总去重为4469过/1败/241忽略。runner原始136块4470过包含AppCore派生探针1次，不能重复计数；去重JSON另存证据目录。唯一失败仍为既有H306：deepagent-prompts的canvas_prompt::tests::every_node_kind_owns_exactly_one_profile，本轮不混修、不宣称全仓绿 |
+| 同一完整workspace中的相关消费者 | Runtime lib418过/0败/9忽略、schedule_audit 2过/0败/1忽略（H96）；AppCore lib1455过/0败/64忽略、kernel_v2_e2e 280过/0败/36忽略、workflow_audit 128过/0败/30忽略；CLI167过/0败/16忽略。忽略项不冒充各自问题已修复 |
+| `cargo build -p deepagent-cli --offline -j 2` | final-cli-build，exit0，100.04秒；二进制SHA256为520AE589BA5AD468CBBCBB32AE5C2AEC3DFEA17D1AC63CF7C0325B0008383BA8 |
+| `cargo clippy -p deepagent-runtime --all-targets --no-deps --offline -j 2 -- -D warnings` | final-runtime-strict-lint，exit101，10.59秒；既有model_agent.rs:294 clone_on_copy、workflow/canvas.rs:32 derivable_impls阻断 |
+| `cargo clippy -p deepagent-runtime --all-targets --no-deps --offline -j 2` | final-runtime-standard-lint，exit0，12.36秒；只有上面两项及既有tests/schedule_audit.rs:228 permissions_set_readonly_false警告，修改/新增文件无诊断；不是严格lint通过 |
+| `cargo clippy -p deepagent-app-core --all-targets --no-deps --offline -j 2 -- -D warnings` | final-appcore-strict-lint，exit101，46.78秒；既有context_runtime八处clone、http_runtime needless_return、plugin_preparation type_complexity、run_assembler too_many_arguments、session_title needless_borrow共12项，另workflow_audit/media.rs两项测试诊断；不混修 |
+| `cargo clippy --all-targets --all-features --offline -j 2 -- -D warnings` | final-workspace-strict-lint，exit101，9.15秒；既有models/client.rs:385 clone_on_copy在依赖阶段阻断。全仓严格lint未通过，不以普通lint代替 |
+
+兼容性与残余边界：正常camelCase文件、旧optional默认值和公开Rust签名不变，显式write保留输入顺序；空白/损坏现存文件由成功空表改为明确错误是有意纠正，须显式修复源文档，不能用普通删除猜测清理opaque行。坏行继续保留且不调度；不会自动恢复已经历史丢失的数据。整文档损坏时tick明确返回错误，仍需修复后重新启动。原有fs::write非原子落盘、跨进程普通编辑竞争、派发后落账、在途run生命周期及日历搜索panic未改变；不归并或计入H42/H96/H97/H271。未做掉电/磁盘满/长期压力、其他OS、真实用户计划、真实供应商/提醒、GUI或Desktop构建；没有Tauri/前端契约改动，本项正式Rust消费方与CLI已验，不能外推GUI和其他平台。全部测试只用临时合成文件、离线Mock和临时SQLite，不访问真实凭据或用户数据。
+
+两份文档和306行台账同步：本轮新增修复验收1、历史跳过0、归并/撤销0；累计150验收/23历史跳过/7归并/3撤销/123待修/0修复中，有效未关闭123含H180授权跳过，实际待处理122。H270本项修复/验收剩余0，代码、测试与当时文档一起独立提交后另回填hash，不反复amend、不推送、不创建PR。下一项准备按权限与持久化风险复核H87（旧模型刷新覆盖另一宿主已收紧的沙箱设置），先查原探针、当前共享边界和历史证据，不预先归并H88或宣称仍复现。全部剩余200–400有效小时仍为未逐项校准历史粗估，依据122项及跨宿主/权限/协议/持久化验收规模，不据本项机械扣时；已记录24个cargo门禁机器执行累计2621.29秒约43.69分钟（含编译），不混作人工有效工时。后续设备/依赖/编译等待另计，没有可靠等待总区间或精确完工日期，整体goal继续active。五项用户未跟踪内容不读/不改/不提交。
 
 ## H-218 有界历史读取（已修复并验收，2026-11-04，限E06范围）
 
@@ -5229,7 +5266,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-267：TypeScript SDK 的 CLI JSONL 缺少进程 owner 收尾，停止迭代、解析失败和 close 后仍执行后台工作](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-268：结构化摘要接受空对象与无关 JSON，绕过降级后持续遮蔽原历史](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-269：摘要草稿清理在解析 JSON 前删除字符串内的合法 analysis 标签及正文](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-270：一条计划记录解码失败使全部健康任务不可见，正常创建随后覆盖并删除旧任务](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-270：一条计划记录解码失败使全部健康任务不可见，正常创建随后覆盖并删除旧任务](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | 原始三红保留；E-H270-01～03，无归并/跳过 | 统一文档owner逐行隔离与RawValue保留式编辑，坏外层拒写；输入排序兼容 | 调度31/0/0、正式cron9/0/4及工具7/0/0；workspace顶层4469/1/241唯一旧H306，严格lint旧基线未绿；CLI构建通过 | 提交ID待取得后另行回填 | 本项剩余0；无原子落盘/跨进程普通编辑保证，H96/H97/H271独立；其他OS/GUI/掉电未测；全部200–400历史粗估，等待另计 |
 | [H-271：正常创建的日历不可能计划触发日期搜索 panic，终止整个调度任务且重建后再次触发](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-272：日/月限额只有 run 准入保护，已取得越限用量后正常工具循环仍继续请求模型](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H272-01～16；原失败、fixture修正、基线及缓存失误均保留，不把旧门禁失败改写成通过 | 同父owner逐物理请求原子入账、下一dispatch共享预算gate，finalizer仅汇总身份；同步workflow及子Agent直接消费者，无SQL迁移 | 28源码budget8/0/0、owner23/0/0、workflow14/0/0；完整workspace3957/1/271仅旧H-306，app-core1381/0/62、kernel203/0/56；根fmt/Tauri check/同源码desktop build通过；旧严格lint/Tauri fmt及独立生命周期6/1失败如实保留 | 2623ea22a377bce8df74d9e5ea1fe0081c986a7f | 不提供并发预留或零超支，H-63未挂owner入口另修；本轮Rust dev已清理且证据/源码保留；下一项先复核H-63，180有效待修，总200–400有效小时历史粗估、环境等待另计 |
 | [H-273：Responses cached_tokens 超过 input_tokens 仍被接受并按低价记账](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H273-02～07；原失败证据 E-H273-usage 保留；H-274 独立不合并 | Responses adapter 在 Usage 进入 Runtime/CostService 前按原始值拒绝 `cached_tokens > input_tokens`，沿现有错误终态，不在账本层 clamp 或猜测；无迁移/新账本/协议变化 | Models stream 24/0/0、Models lib 97/0/21、H-273 正式 1/0/0、usage_contract 默认 4/0/1、相关 check 通过；根 fmt/clippy 被未改基线阻断，H-274 显式 ignored 仍预期失败 | `7ab31dd7`（`【fix】拒绝Responses矛盾缓存用量`） | 限 Windows 本机、离线 Responses fixture、临时 SQLite/合成报价；未验真实供应商/账单、其他 OS、H-274 宽度及其他 usage 关系；本项剩余0，当前177有效待修，总200–400有效小时仍为历史未校准粗估，等待另计 |

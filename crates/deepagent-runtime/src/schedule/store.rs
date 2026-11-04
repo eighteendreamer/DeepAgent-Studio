@@ -12,11 +12,11 @@
 //! - **Recurring** (`recurring: true`) — fire, reschedule from now, persist
 //!   until deleted via `CronDelete` or auto-expiry after 7 days.
 //!
-//! File reads are tolerant: a missing/empty/malformed file yields an empty
-//! list, and entries with invalid cron strings or missing required fields are
-//! skipped so a single bad entry never blocks the whole file. Writes create
-//! `.deepagent/` if missing and always write `{ "tasks": [...] }` (an empty
-//! file, never a delete) so a file watcher sees the last-task-removed change.
+//! Missing files yield an empty projection. Invalid document shape or read
+//! errors are explicit. Rows with invalid cron or schema are retained, but
+//! excluded from dispatch so one bad row does not hide healthy tasks. Edits
+//! preserve unknown fields/raw values and create `.deepagent/` if missing.
+//! Explicit empty documents remain files so watchers see last-task removal.
 
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -70,11 +70,9 @@ impl ScheduledTask {
     }
 }
 
-/// JSON document shape on disk.
-#[derive(Debug, Serialize, Deserialize)]
-struct CronFile {
-    tasks: Vec<ScheduledTask>,
-}
+#[path = "store/document.rs"]
+mod document;
+use document::CronDocument;
 
 /// Default recurring auto-expiry: 7 days after creation (CC
 /// `DEFAULT_CRON_JITTER_CONFIG.recurringMaxAgeMs`). `0` = unlimited.
@@ -176,62 +174,32 @@ impl ScheduledTaskStore {
         }
     }
 
-    /// Read and validate all tasks. Tolerant of missing/empty/malformed files;
-    /// invalid rows are skipped and logged via `tracing`.
+    /// Read the usable task projection. Missing is empty; invalid document
+    /// shape, empty/truncated JSON and I/O errors are errors, never an empty
+    /// writable baseline. Bad rows are diagnosed and preserved by every edit.
     pub fn read(&self) -> Result<Vec<ScheduledTask>> {
-        let raw = match fs::read_to_string(&self.path) {
-            Ok(raw) => raw,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => {
-                return Err(CoreError::other(format!(
-                    "failed to read {}: {e}",
-                    self.path.display()
-                )));
-            }
-        };
-        if raw.trim().is_empty() {
-            return Ok(Vec::new());
-        }
-        let file: CronFile = match serde_json::from_str(&raw) {
-            Ok(file) => file,
-            Err(e) => {
-                tracing::warn!(
-                    path = %self.path.display(),
-                    "scheduled-tasks file unparseable, starting empty: {e}"
-                );
-                return Ok(Vec::new());
-            }
-        };
-        let mut out = Vec::new();
-        for t in file.tasks {
-            if t.id.trim().is_empty() || t.cron.trim().is_empty() || t.prompt.trim().is_empty() {
-                tracing::warn!("skipping malformed scheduled task without id/cron/prompt");
-                continue;
-            }
-            if crate::schedule::cron::parse_5_field(&t.cron).is_err() {
-                tracing::warn!(id = %t.id, cron = %t.cron, "skipping task with invalid cron");
-                continue;
-            }
-            out.push(t);
-        }
-        Ok(out)
+        Ok(CronDocument::read(&self.path)?.tasks())
     }
 
-    /// Overwrite the file with `tasks`. Creates `.deepagent/` if missing.
-    /// Empty lists write an empty file (never delete) so watchers see changes.
+    /// Replace recognized tasks, preserving opaque rows and unknown fields.
+    /// This is not a recovery API for an unreadable document. An empty list
+    /// removes only recognized tasks and never deletes the file.
     pub fn write(&self, tasks: &[ScheduledTask]) -> Result<()> {
+        let mut document = CronDocument::read(&self.path)?;
+        document.replace(tasks)?;
+        self.write_document(document)
+    }
+
+    fn write_document(&self, document: CronDocument) -> Result<()> {
+        let json = document.encode()?;
         if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                CoreError::other(format!("failed to create {}: {e}", parent.display()))
+            fs::create_dir_all(parent).map_err(|error| {
+                CoreError::other(format!("failed to create {}: {error}", parent.display()))
             })?;
         }
-        let body = CronFile {
-            tasks: tasks.to_vec(),
-        };
-        let json = serde_json::to_string_pretty(&body)
-            .map_err(|e| CoreError::invalid(format!("serialize scheduled-tasks: {e}")))?;
-        fs::write(&self.path, format!("{json}\n"))
-            .map_err(|e| CoreError::other(format!("failed to write {}: {e}", self.path.display())))
+        fs::write(&self.path, json).map_err(|error| {
+            CoreError::other(format!("failed to write {}: {error}", self.path.display()))
+        })
     }
 
     /// Append a task. Returns the new task with its generated id. The caller is
@@ -252,9 +220,9 @@ impl ScheduledTaskStore {
             recurring: recurring.then_some(true),
             permanent: None,
         };
-        let mut tasks = self.read()?;
-        tasks.push(task.clone());
-        self.write(&tasks)?;
+        let mut document = CronDocument::read(&self.path)?;
+        document.push(task.clone())?;
+        self.write_document(document)?;
         Ok(task)
     }
 
@@ -264,16 +232,10 @@ impl ScheduledTaskStore {
         if ids.is_empty() {
             return Ok(0);
         }
-        let id_set: std::collections::HashSet<&str> = ids.iter().map(String::as_str).collect();
-        let tasks = self.read()?;
-        let before = tasks.len();
-        let remaining: Vec<ScheduledTask> = tasks
-            .into_iter()
-            .filter(|t| !id_set.contains(t.id.as_str()))
-            .collect();
-        let removed = before - remaining.len();
+        let mut document = CronDocument::read(&self.path)?;
+        let removed = document.remove(ids);
         if removed > 0 {
-            self.write(&remaining)?;
+            self.write_document(document)?;
         }
         Ok(removed)
     }
@@ -285,25 +247,18 @@ impl ScheduledTaskStore {
         if ids.is_empty() {
             return Ok(0);
         }
-        let id_set: std::collections::HashSet<&str> = ids.iter().map(String::as_str).collect();
-        let tasks = self.read()?;
-        let mut changed = 0;
-        let updated: Vec<ScheduledTask> = tasks
-            .into_iter()
-            .map(|mut t| {
-                if id_set.contains(t.id.as_str()) {
-                    t.last_fired_at = Some(fired_at_ms);
-                    changed += 1;
-                }
-                t
-            })
-            .collect();
+        let mut document = CronDocument::read(&self.path)?;
+        let changed = document.mark_fired(ids, fired_at_ms)?;
         if changed > 0 {
-            self.write(&updated)?;
+            self.write_document(document)?;
         }
         Ok(changed)
     }
 }
+
+#[cfg(test)]
+#[path = "store/repair_tests.rs"]
+mod repair_tests;
 
 #[cfg(test)]
 mod tests {

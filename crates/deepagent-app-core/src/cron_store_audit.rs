@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::{MemorySecretStore, SettingsService};
-use deepagent_builtins::cron_tools::CronCreateTool;
+use deepagent_builtins::cron_tools::{CronCreateTool, CronDeleteTool};
 use deepagent_models::transport::MockTransport;
 use deepagent_persistence::Database;
 use deepagent_runtime::schedule::ScheduledTaskStore;
@@ -17,7 +17,7 @@ enum RowFault {
     WrongOptionalAnchor,
 }
 
-async fn check_row_isolation(label: &str, fault: RowFault) {
+fn fixture() -> (tempfile::TempDir, Arc<CronService>) {
     let root = tempfile::tempdir().unwrap();
     let db = Arc::new(Database::open_in_memory().unwrap());
     let transport = Arc::new(MockTransport::new(Vec::<String>::new()));
@@ -28,6 +28,11 @@ async fn check_row_isolation(label: &str, fault: RowFault) {
     ));
     let chat = Arc::new(ChatService::new(db, settings, transport, root.path()));
     let cron = Arc::new(CronService::new(root.path(), chat));
+    (root, cron)
+}
+
+async fn check_row_isolation(label: &str, fault: RowFault) {
+    let (root, cron) = fixture();
     let mut healthy = Vec::new();
     for prompt in ["AUDIT_CRON_HEALTHY_A_270", "AUDIT_CRON_HEALTHY_B_270"] {
         healthy.push(
@@ -56,7 +61,7 @@ async fn check_row_isolation(label: &str, fault: RowFault) {
         }
     }
     if !matches!(fault, RowFault::None) {
-        document["tasks"].as_array_mut().unwrap().push(bad);
+        document["tasks"].as_array_mut().unwrap().push(bad.clone());
     }
     // Test-owned document only. The surrounding JSON and the two healthy rows
     // remain valid; this is not a truncated document or a filesystem failure.
@@ -91,6 +96,12 @@ async fn check_row_isolation(label: &str, fault: RowFault) {
         .unwrap()
         .iter()
         .any(|row| row["id"].as_str() == Some(id))));
+    if !matches!(fault, RowFault::None) {
+        assert!(raw_before_create["tasks"]
+            .as_array()
+            .unwrap()
+            .contains(&bad));
+    }
 
     // The ordinary model-facing tool uses the real CronService backend.
     let created = CronCreateTool::new(cron.clone())
@@ -117,6 +128,9 @@ async fn check_row_isolation(label: &str, fault: RowFault) {
     let healthy_on_reopen = healthy
         .iter()
         .all(|id| remaining.iter().any(|task| &task.id == id));
+    if !matches!(fault, RowFault::None) {
+        assert!(raw_after["tasks"].as_array().unwrap().contains(&bad));
+    }
     assert!(remaining.iter().any(|task| task.id == new_id));
     eprintln!(
         "{label}: listed={listed}, due_callbacks={}, create_ok={}, reopened={}, healthy_raw_after_create={healthy_on_disk}, healthy_reopened={healthy_on_reopen}",
@@ -139,19 +153,53 @@ async fn invalid_cron_row_does_not_poison_healthy_schedules() {
 }
 
 #[tokio::test]
-#[ignore = "audit: one missing required field must not erase unrelated scheduled tasks"]
 async fn audit_missing_prompt_row_is_isolated() {
     check_row_isolation("missing-prompt", RowFault::MissingPrompt).await;
 }
 
 #[tokio::test]
-#[ignore = "audit: one mistyped required field must not erase unrelated scheduled tasks"]
 async fn audit_wrong_created_at_row_is_isolated() {
     check_row_isolation("wrong-createdAt", RowFault::WrongCreatedAt).await;
 }
 
 #[tokio::test]
-#[ignore = "audit: one mistyped optional anchor must not erase unrelated scheduled tasks"]
 async fn audit_wrong_optional_anchor_row_is_isolated() {
     check_row_isolation("wrong-lastFiredAt", RowFault::WrongOptionalAnchor).await;
+}
+
+#[tokio::test]
+async fn h270_corrupt_document_is_reported_by_real_tools_without_overwriting_it() {
+    for raw in [r#"{"tasks":["PRIVATE_UNCLOSED""#, r#"{"tasks":{}}"#, "\n"] {
+        let (root, cron) = fixture();
+        let id = cron
+            .create("* * * * *".into(), "healthy".into(), true)
+            .await
+            .unwrap();
+        let path = cron.scheduler.store().path();
+        std::fs::write(path, raw).unwrap();
+        for output in [
+            CronCreateTool::new(cron.clone())
+                .invoke(serde_json::json!({"cron":"* * * * *", "prompt":"new"}))
+                .await
+                .unwrap(),
+            CronDeleteTool::new(cron.clone())
+                .invoke(serde_json::json!({"operation":"list"}))
+                .await
+                .unwrap(),
+            CronDeleteTool::new(cron.clone())
+                .invoke(serde_json::json!({"operation":"delete", "task_ids":[id]}))
+                .await
+                .unwrap(),
+        ] {
+            assert!(
+                !output.ok,
+                "a corrupt existing document must not report success"
+            );
+            assert!(!serde_json::to_string(&output.value)
+                .unwrap()
+                .contains("PRIVATE_UNCLOSED"));
+            assert_eq!(std::fs::read_to_string(path).unwrap(), raw);
+        }
+        assert!(ScheduledTaskStore::new(root.path()).read().is_err());
+    }
 }
