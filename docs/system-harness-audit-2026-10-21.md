@@ -4743,6 +4743,8 @@ H-147限E04本机工具名称/路由/权限/发现/持久化范围已修复并�
 
 ### H-150：Responses `input` 与 `instructions` 同时为空仍发送请求
 
+**2026-11-05已修复并验收，限E-H150-01～03所列Windows本机离线范围**；原始失败与当时建议保留，当前根因/repair边界修正见E01，完整workspace与严格lint未全绿及具体未验项目见E02～03，不宣称整个任务完成。
+
 **级别：中高（P1，条件性无效请求）；触发条件：公共请求构造器收到空消息列表且未设置 instructions。** 正常 ChatService turn 会提供用户输入或系统上下文；本项证明的是 Responses adapter 的公共边界允许构造并发送协议上无效的请求，不能把它扩大为每次正常对话都会出现空 turn。
 
 #### 生产路径与动态证据
@@ -4762,6 +4764,36 @@ H-147限E04本机工具名称/路由/权限/发现/持久化范围已修复并�
 - 应在现有 Responses provider seam 增加请求级校验：`instructions` 非空或 `input` 至少含一个可发送 item；空白 instructions、只有被 repair 丢弃的工具 item、以及取消/恢复产生的空 turn 都应在进入 transport 前得到统一的可回放错误或 no-op 终态。校验不能依赖 provider 返回，也不能用隐式占位文本制造模型输入。
 - 回归需覆盖空消息、空白 instructions、仅工具输出被修复为空、正常 system-only、正常 user-only、Chat/Responses 分路以及取消/重试/恢复的空 turn；正确失败必须断言 transport 调用数为零。
 - 本轮只增加审计探针和报告，生产校验未修改。证据来自正式模型客户端和受控 transport，未向真实 DeepSeek 发送空请求，也未在完整桌面接纳链路中制造空用户回合；Harness/Codex 的空 turn 处理用于边界对照，不代表两者内部协议完全相同。
+
+**E-H150-01（当前复现、TDD与修复边界，2026-11-05）**：起点4ce6e094，tracked干净，五项既有未跟踪内容只列名，不读改/提交。核对H150主项、台账、ModelClient四入口、ResponseRequest构造/刷新/validate与Chat转换、repair、ModelAgent retry与Kernel持久终态、manifest/CI/rustfmt及SDK前置后，本轮只处理空input数组且无有效instructions的请求跨过provider seam。原probe仍ignored且无既有验收，未将H148/H149/H80身份修复误计为H150完成。
+
+证据目录target/h150-repair-20261105（不提交）：原样`cargo test -p deepagent-models client::tests::audit_responses_require_input_or_instructions_before_transport --lib --offline -j 2 -- --ignored --exact --nocapture --test-threads=1`实际0/1/0、exit101、17.421秒，空请求返回Ok且transport_calls=1。仅加测试时Models三项1/2/0、exit101、18.583秒，正常system/user/工具对照已过，空输入及历史清空回归红；Runtime首候选因测试临时FixedClock借用E0716无法编译（20.478秒，不计红测），绑定有生命周期的clock后原样Runtime两项0/2/0、exit101、46.457秒，真实ModelAgent与Kernel空历史返回成功而非失败。未先改生产再造红测。
+
+2026-11-05核对[DeepSeek官方Responses参数](https://api-docs.deepseek.com/api/create-response/)：input或instructions至少提供一种，item数组为正式输入；官方未定义本机对纯空白instructions的解释，本项按原审计要求作显式本地设计——无item时纯空白与缺失同样拒绝，不隐式制造占位文本。现有typed ResponseItem每项均有wire映射、没有序列化过滤；当前repair对孤立合法tool output补配对call，不会把它丢弃为空，故原项“只有被repair丢弃工具”的假设不适用于当前代码，保留真实normal对照而不改身份/配对历史。这里检查的是最终数组存在item，不扩成每一种message正文、图片有效性或全provider schema校验。
+
+根因是原ResponseRequest::validate只校验user/tool schema/身份，没有输入存在性，而不是当前发送函数根本未调用validate。新增私有validate_input_presence，由原validate和Responses→Chat转换共用；检查实时public input/instructions，避免旧Chat projection或历史refresh旁路，错误固定CoreError::Invalid且不带模型/正文/身份、原分类不可重试。原生ChatCompletionRequest保持原validator/serializer，不把Responses规则套到另一个协议。所有四个Responses普通/observed/cancel-aware入口、两wire路由、预取消、无字段/空/Unicode空白instructions、public清空/replace_messages/replace_history_from、system-only/user-only及repair工具正常对照均有默认回归；Runtime私有历史故障注入只模拟canonical Surface丢失，不宣称正常ChatService可创建空用户turn。复用真实retry、Kernel终态和临时SQLite重开，不新增执行/持久/取消机制、迁移、依赖或公共DTO。
+
+本项为修复中，冻结与完整Models/Runtime/AppCore/CLI/SDK生产消费方、格式/lint/build/workspace尚待验收，不先计新增修复或提交。306唯一台账165验收/23历史跳过/7归并/3撤销/107待修/1修复中；108未关闭含H180授权跳过，实际待处理107。总余200–400有效小时仍为跨层修复/大范围验收规模的低置信历史粗估，未逐项校准；编译/设备/环境/依赖等待另计，无精确日历承诺。仅合成文件/隔离HOME与凭据环境/录制transport/临时SQLite，不访问真实供应商、内网、凭据或用户数据。
+
+**E-H150-02（定向转绿、冻结与扩大验收，2026-11-05）**：补齐唯一输入存在性helper后，定向Models3/0/0、exit0/17.923秒，Runtime2/0/0、exit0/57.888秒；Runtime第一测试随后仅改为准确名称h150_empty_replaced_history_fails_without_retry_or_dispatch（无行为变更），当前冻结版本完整组已实际执行新名称。5份Rust交付源码/测试冻结final-sources.json，生产代码仅chat.rs的helper及原validate调用、client.rs的兼容转换调用；Runtime生产只cfg(test)注册，不改状态机。原probe取消ignore并在最终all-features版本默认1/0/0、exit0/16.377秒，未用默认测试跳过原probe来宣称修复。
+
+最终相关组`cargo test -p deepagent-models -p deepagent-runtime -p deepagent-cli -p deepagent-harness-sdk -p deepagent-harness-protocol --offline --no-fail-fast -j 2 -- --test-threads=1`28个顶层target共866/0/65、exit0/314.153秒；Models lib157/0/16、Runtime lib434/0/9、CLI179/0/14、协议17/0/0、SDK32/0/9、Rust真实CLI9/0/0，6项H150原probe/新增回归均执行。CLI引入的http统一特性在models组实际启用；无新增skip/allow。`cargo fmt --all -- --check`exit0/7.363秒；CLI build exit0/147.508秒；相关组no-run产物提取exit0/256.568秒；CLI严格all-target/all-feature no-deps lint exit0/49.742秒。`pnpm -C packages/sdk test:stdio`真实1/0/0、exit0/10.593秒，前后CLI D9EB6586…一致，不把旧二进制当新版本验收。
+
+Models自身all-target/all-feature/no-deps严格lint exit101/7.747秒，唯一既有阻断client.rs:385 clone_on_copy；Runtime同等lint exit101/18.646秒，两项既有model_agent.rs:294 Usage clone_on_copy及workflow/canvas.rs:32 derivable_impls。本轮没有修改这些行或加allow，不能称两crate严格lint全绿。完整workspace编译/执行及全仓lint仍待终态；本项维持修复中，没有新增验收/commit。所有验证隔离HOME/USERPROFILE/APPDATA/TEMP和凭据环境，只有合成文件/SQLite与录制transport；五项既有未跟踪不读改。原生日志/结果及逐target归约保留target/h150-repair-20261105。
+
+**E-H150-03（最终验收、未绿门禁与边界，2026-11-05）**：final.ps1与同二进制AppCore复核均已终结；5份冻结Rust源码/测试与final-sources.json逐份SHA256相同。E02的28个相关target 866/0/65、原probe默认all-features 1/0/0、新增5项默认回归、Rust真实stdio 9项及TS真实stdio 1项均实际执行，不把编译成功或其他ignored探针计入本项验收。正常system-only/user-only/孤立合法工具repair、错误后替换恢复及原生Chat对照通过；真实ModelAgent五次上限下空历史只启动一次模型attempt、transport为0；真实Kernel failed/预取消两种终态在SQLite重开后仍唯一且无工具dispatch。
+
+完整命令 `cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=1` exit101、1826.063秒；按Running/Doc-tests取各target最后结果，140个顶层target为4675/3/223，原141块4676过含AppCore嵌套helper的1过，未重复计数。Models157/0/16、Runtime434/0/9、Kernel v2 e2e294/0/28及本项6个probe/回归通过。三失败原样保留：H306的creative.video-edit.v1空defaultUserPrompt；未修改的verification_commands::lifecycle_tests::{dropping_active_verification_future_stops_real_descendant,post_edit_default_timeout_stops_real_descendant}，均在原4秒compiler-started等待处失败（4008/4005ms），compiler_stages=[]、无build/worker/canary标记，尚未进入被验的停止断言。不能从这些信息臆断具体OS调度/安全软件原因，也不把它们改成通过。
+
+保持原限时/断言/隔离环境，对本次workspace同一AppCore二进制 `G:\Code_Warehouse\DeepAgent-Studio\target\debug\deps\deepagent_app_core-32f391e263e6c0fa.exe --nocapture --test-threads=1` 完整复核，exit101、444.888秒；最后顶层结果1516/2/61（嵌套helper不再计入）。原post_edit超时项本次通过；drop项仍在4000ms compiler-started等待处失败，另原completion_plan::audit_tests::discovered_real_build_completes_after_release在4秒build-started等待处失败。二进制前后SHA256均84C4F6E3…，没有换旧版本或增加等待。失败集合变化是事实，不是根因结论，不继续循环重跑寻求绿色。前次H222在H150改动前也有同类compiler-started时间窗失败，但不是本次两个具体失败的同条件HEAD因果对照，不夸称已做该对照。
+
+调用链复核：drop/post_edit的CommandRunner/VerificationDispatcher路径不调用ModelClient；completion_plan正常对照的ModelAgent使用非空system和user，原失败位置是构建标记等待，未修改其实现/fixture。当前workspace与同二进制复核中的三组production_*真实正常/取消/Deadline/父进程退出控制均通过；没有据此证明所有构建启动时序可靠或重新验收H64。具体启动延迟成因仍待单独定位，本项不放宽门禁、混修进程边界或改变其他H状态；这些失败限制完整workspace结论，不伪装为全仓通过。
+
+`cargo test --workspace --offline --no-fail-fast --no-run --message-format json -j 2` exit0、744.497秒，仅作为全仓编译证据。`cargo clippy --workspace --all-targets --all-features --offline -j 2 -- -D warnings` exit101、16.654秒，阻断仍为未改client.rs:385 clone_on_copy；Models/Runtime自身严格lint的三项旧诊断、fmt/CLI build/CLI严格lint及完整相关命令沿E02，不新增allow或修改旧行。两组Cargo feature组合CLI哈希分别D9EB6586…与3E478B4A…，各自测试前后不变；不将不同组合哈希差异当漂移。原生日志、退出码、完整命令、逐target归约、hash及复核保留target/h150-repair-20261105（不提交）。
+
+据当前原始红测、冻结后完整相关组、实际全仓执行与上述关系核对，H150在所列Windows本机离线范围标为已修复并验收；不表示完整workspace/严格lint/所有平台通过。无真实DeepSeek、内网、真实凭据/用户数据访问；其他OS、真实供应商、Desktop/Tauri WebView/UI、真实外部插件/设备未验，本轮无UI/桥接变化。新增拒绝仅影响空item数组且无非空白instructions的Responses请求（含兼容Chat路由），原生Chat不改；非空typed item正文/图片有效性及全provider schema不在本项。另两条旧ignored Chat tool_choice探针用空输入，新guard可能先报缺输入，未来须以合法输入复核各自问题，不据此关闭其他H。
+
+306唯一台账仅H150主行变更，本轮新增验收1，历史跳过/归并/撤销新增各0；累计166验收/23历史跳过/7归并/3撤销/107待修/0修复中，107未关闭含H180授权跳过、实际待处理106。另纠正原顶部汇总仍列164且漏H222的展示错误：H222已有真实验收提交，不重复计新增成果。5份源码/测试和当时两文共7文件独立提交，取得真实hash后另做文档回填，不amend自身hash、不推送/建PR/迁移。五项既有未跟踪内容只列名不读改，不纳入提交。本项余0，下一准备复核H223模型目录刷新持久化选型；整体goal保持active。全余200–400有效小时仍为跨层配置/执行/持久化和大范围验收规模的低置信历史粗估，未逐项校准、不按关闭数机械扣减；编译/设备/依赖/环境等待另计，尚无可靠总等待上界或精确完工日期。
 
 ### H-151：Responses malformed function call 被填充默认身份并继续提交
 

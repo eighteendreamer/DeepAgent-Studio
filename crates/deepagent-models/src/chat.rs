@@ -529,11 +529,28 @@ impl ResponseRequest {
 
     /// Validate provider-bound fields after defaults have been applied.
     pub fn validate(&self) -> Result<()> {
+        self.validate_input_presence()?;
         if let Some(user) = &self.user {
             validate_responses_user_identifier(user)?;
         }
         validate_function_tool_schemas(&self.tools)?;
         crate::responses::validate_tool_call_history(&self.input)?;
+        Ok(())
+    }
+
+    /// Shared by Responses dispatch and the compatibility Chat conversion.
+    /// Inspect the final public input, never a stale pre-repair projection.
+    pub(crate) fn validate_input_presence(&self) -> Result<()> {
+        if self.input.is_empty()
+            && !self
+                .instructions
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+        {
+            return Err(CoreError::invalid(
+                "Responses requires input items or nonblank instructions",
+            ));
+        }
         Ok(())
     }
 }

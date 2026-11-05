@@ -500,6 +500,7 @@ fn log_response_input_pairs(request: &ResponseRequest) {
 }
 
 fn response_to_chat_completion(request: ResponseRequest) -> Result<ChatCompletionRequest> {
+    request.validate_input_presence()?;
     crate::responses::validate_tool_call_history(&request.input)?;
     if request.top_logprobs.is_some() {
         return Err(deepagent_core::error::CoreError::invalid(
@@ -536,6 +537,10 @@ fn response_to_chat_completion(request: ResponseRequest) -> Result<ChatCompletio
     chat.attachment_data_urls = request.attachment_data_urls;
     Ok(chat)
 }
+
+#[cfg(test)]
+#[path = "client_input_presence_tests.rs"]
+mod input_presence_tests;
 
 #[cfg(test)]
 #[path = "client_input_identity_tests.rs"]
@@ -1029,7 +1034,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: Responses require input or instructions before transport"]
     async fn audit_responses_require_input_or_instructions_before_transport() {
         struct CountingTransport {
             calls: Arc<AtomicUsize>,

@@ -2973,6 +2973,10 @@ fn retry_delay_with_provider(
 }
 
 #[cfg(test)]
+#[path = "model_input_presence_tests.rs"]
+mod input_presence_tests;
+
+#[cfg(test)]
 #[path = "model_context_authority_tests.rs"]
 mod context_authority_tests;
 
