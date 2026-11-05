@@ -632,6 +632,17 @@ impl ObservableHookRunner {
 
 #[async_trait]
 impl HookCommandRunner for ObservableHookRunner {
+    fn dedup_scope(&self) -> String {
+        // CWD and injected base environment change execution even when the
+        // declared action is identical. Preserve OS path bytes, not a lossy
+        // display string. Event sinks are observation only, not policy identity.
+        let cwd = self
+            .cwd
+            .as_ref()
+            .map(|path| path.as_os_str().as_encoded_bytes());
+        serde_json::json!(["observable_hook_runner", 1, cwd, self.runtime_environment]).to_string()
+    }
+
     async fn run(
         &self,
         command: &str,

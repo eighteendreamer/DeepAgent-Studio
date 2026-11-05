@@ -1,12 +1,17 @@
 //! Distinct applicable lifecycle policies must survive dispatch deduplication.
 //! Real SettingsService/Kernel/file tools; only the model transport is synthetic.
+#[path = "hook_dedup/mcp.rs"]
+mod mcp;
 
 use super::responses_fixture::{call, completed, text};
 use super::*;
+use deepagent_core::{event::EventPayload, id::SessionId};
 use deepagent_models::ModelRole;
+use deepagent_persistence::event_store::EventStore;
 use deepagent_persistence::run_store::RunStore;
 use deepagent_runtime::RuntimeEvent;
 use serde_json::{json, Value};
+use std::str::FromStr;
 use std::time::Duration;
 
 const FLASH: &str = "deepseek-flash";
@@ -226,15 +231,8 @@ async fn observe(case: Case, kind: &str) -> Observation {
     .await
     .expect("dedup audit must settle")
     .unwrap();
-    assert_eq!(
-        RunStore::new(&db)
-            .get(RUN)
-            .unwrap()
-            .unwrap()
-            .terminal_kind
-            .as_deref(),
-        Some("succeeded")
-    );
+    let run = RunStore::new(&db).get(RUN).unwrap().unwrap();
+    assert_eq!(run.terminal_kind.as_deref(), Some("succeeded"));
     assert_eq!(
         chat.run_events(RUN, None)
             .unwrap()
@@ -249,6 +247,36 @@ async fn observe(case: Case, kind: &str) -> Observation {
     );
     let observed = summarize(&model, &events.lock().unwrap());
     eprintln!("Hook-dedup audit: case={case:?} kind={kind} observed={observed:?}");
+    drop(chat);
+    drop(db);
+    let reopened = Database::open(temporary.path().join("state.sqlite")).unwrap();
+    let history = EventStore::new(&reopened)
+        .load_session(SessionId::from_str(&run.session_id).unwrap())
+        .unwrap();
+    assert_eq!(
+        history
+            .iter()
+            .filter(|event| matches!(&event.payload,
+        EventPayload::ToolCallRequested {call} if call.id == CALL))
+            .count(),
+        1
+    );
+    assert_eq!(history.iter().filter(|event| matches!(&event.payload,
+        EventPayload::ToolCallCompleted {call_id, ok, ..} if call_id == CALL && *ok == observed.tool_ok)).count(), 1);
+    assert_eq!(RunStore::new(&reopened).get(RUN).unwrap(), Some(run));
+    assert_eq!(
+        RunStore::new(&reopened)
+            .events_after(RUN, None)
+            .unwrap()
+            .iter()
+            .filter(|event| event.event_type == "run_terminal")
+            .count(),
+        1
+    );
+    assert_eq!(
+        model.hooks.lock().unwrap().len(),
+        observed.hook_models.len()
+    );
     observed
 }
 
@@ -296,7 +324,6 @@ async fn hook_dedup_unmatched_condition_does_not_execute() {
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: model is part of a model-backed hook's behavior"]
 async fn hook_dedup_different_model_must_not_drop_second_policy() {
     let mut observations = Vec::new();
     for kind in ["prompt", "agent"] {
@@ -311,7 +338,6 @@ async fn hook_dedup_different_model_must_not_drop_second_policy() {
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: a non-applicable hook must not suppress an applicable policy"]
 async fn hook_dedup_different_condition_must_not_drop_applicable_policy() {
     let mut observations = Vec::new();
     for kind in ["prompt", "agent"] {

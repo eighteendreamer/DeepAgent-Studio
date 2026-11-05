@@ -705,6 +705,13 @@ pub struct HookCommandResult {
 /// Pluggable so the runtime can sandbox later and tests run offline.
 #[async_trait]
 pub trait HookCommandRunner: Send + Sync {
+    /// Opaque execution identity. Independent custom runners are not assumed
+    /// equivalent. Override only when all execution context is represented;
+    /// never log this key, which may include private environment values.
+    fn dedup_scope(&self) -> String {
+        format!("{}:{:p}", std::any::type_name::<Self>(), self)
+    }
+
     /// Run `command`, writing `stdin_json` to its stdin, killing it after
     /// `timeout`. Returns the captured result.
     async fn run(
@@ -738,6 +745,12 @@ pub trait HookCommandRunner: Send + Sync {
 /// model provider, MCP transport, or agent runtime.
 #[async_trait]
 pub trait HookActionExecutor: Send + Sync {
+    /// Default to this executor instance: equal action declarations do not
+    /// establish equivalence of two arbitrary hosts and their hidden state.
+    fn dedup_scope(&self) -> String {
+        format!("{}:{:p}", std::any::type_name::<Self>(), self)
+    }
+
     async fn execute(&self, action: &HookAction, payload: serde_json::Value)
         -> Result<HookOutcome>;
 
@@ -757,6 +770,12 @@ pub struct SystemHookRunner;
 
 #[async_trait]
 impl HookCommandRunner for SystemHookRunner {
+    fn dedup_scope(&self) -> String {
+        // No instance-specific state. Ambient process context is common to
+        // every instance during a dispatch; scoped adapters supply their own.
+        "system_hook_runner_v1".into()
+    }
+
     async fn run(
         &self,
         command: &str,
@@ -1202,7 +1221,7 @@ impl Hook for OnceHook {
     }
 
     fn dedup_key(&self) -> String {
-        format!("once|{}", self.inner.dedup_key())
+        serde_json::json!(["once_hook", self.inner.dedup_key()]).to_string()
     }
 
     fn applies(&self, ctx: &HookContext) -> bool {
@@ -1325,6 +1344,51 @@ impl ExternalCommandHook {
     }
 }
 
+// Keep the full declaration in one structured identity, rather than maintaining
+// a partial field list for each backend. Expand only defaults whose equivalence
+// is established by execution here. Other distinct declarations stay distinct.
+// This transient key can contain private prompt/header/env values: never log it.
+fn external_hook_dedup_key(
+    event: HookEvent,
+    matcher: Option<&str>,
+    condition: Option<&str>,
+    action: &HookAction,
+    execution_scope: Option<String>,
+) -> String {
+    let mut action = action.clone();
+    action.timeout = Some(action.timeout_duration().as_secs());
+    match action.action_type {
+        HookActionType::Command => action.shell = action.shell.resolve(),
+        HookActionType::Http => {
+            action.method = Some(action.method.take().unwrap_or_else(|| "POST".into()));
+            action.url = action.url.trim().into();
+        }
+        _ => {}
+    }
+    let matcher = matcher.map(str::trim).unwrap_or("*");
+    let matcher = if matches!(matcher, "" | ".*") {
+        "*"
+    } else {
+        matcher
+    };
+    let condition = condition
+        .map(str::trim)
+        .filter(|value| !matches!(*value, "" | "*"));
+    let mut identity = serde_json::json!({
+        "kind": "external_hook",
+        "version": 1,
+        "event": event,
+        "matcher": matcher,
+        "condition": condition,
+        "action": action,
+        "execution_scope": execution_scope,
+    });
+    // Also canonicalize nested MCP arguments when preserve_order is enabled by
+    // another workspace consumer; JSON object insertion order is not behavior.
+    identity.sort_all_objects();
+    identity.to_string()
+}
+
 // One declarative filter for direct execution and one-shot admission across
 // command, HTTP and host-owned actions. It performs no I/O or state mutation.
 fn external_hook_applies(
@@ -1358,12 +1422,12 @@ impl Hook for ExternalCommandHook {
     }
 
     fn dedup_key(&self) -> String {
-        format!(
-            "{}|{}|{}|{}",
-            self.event.label(),
-            self.matcher.as_deref().unwrap_or("*"),
-            self.action.shell.label(),
-            self.action.command.trim()
+        external_hook_dedup_key(
+            self.event,
+            self.matcher.as_deref(),
+            self.if_condition.as_deref(),
+            &self.action,
+            Some(self.runner.dedup_scope()),
         )
     }
 
@@ -1429,14 +1493,12 @@ impl Hook for ExternalHostHook {
     }
 
     fn dedup_key(&self) -> String {
-        format!(
-            "{}|{}|{:?}|{}|{}|{}",
-            self.event.label(),
-            self.matcher.as_deref().unwrap_or("*"),
-            self.action.action_type,
-            self.action.command.trim(),
-            self.action.prompt.trim(),
-            self.action.agent.as_deref().unwrap_or("")
+        external_hook_dedup_key(
+            self.event,
+            self.matcher.as_deref(),
+            self.if_condition.as_deref(),
+            &self.action,
+            Some(self.host.dedup_scope()),
         )
     }
 
@@ -1495,11 +1557,12 @@ impl Hook for ExternalHttpHook {
     }
 
     fn dedup_key(&self) -> String {
-        format!(
-            "{}|{}|http|{}",
-            self.event.label(),
-            self.matcher.as_deref().unwrap_or("*"),
-            self.action.url.trim()
+        external_hook_dedup_key(
+            self.event,
+            self.matcher.as_deref(),
+            self.if_condition.as_deref(),
+            &self.action,
+            None,
         )
     }
 

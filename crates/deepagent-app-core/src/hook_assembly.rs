@@ -534,6 +534,139 @@ mod project_hook_tests {
     }
 
     #[tokio::test]
+    async fn h239_command_execution_context_is_part_of_identity_not_just_the_declaration() {
+        struct Sink;
+        impl RuntimeEventSink for Sink {
+            fn emit(&self, _: deepagent_runtime::RuntimeEvent) {}
+        }
+        for different_cwd in [true, false] {
+            let root = tempfile::tempdir().unwrap();
+            let first = root.path().join("first");
+            let second = root.path().join("second");
+            std::fs::create_dir(&first).unwrap();
+            std::fs::create_dir(&second).unwrap();
+            let command = if cfg!(windows) {
+                "[IO.File]::AppendAllText((Join-Path (Get-Location) ('marker'+$env:SYNTHETIC_POLICY)), 'x')"
+            } else {
+                "printf x >> \"marker$SYNTHETIC_POLICY\""
+            };
+            let defs = HookDefinitions::parse(&serde_json::json!({"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":command,"timeout":5}]}]}}).to_string()).unwrap();
+            let events: Arc<dyn RuntimeEventSink> = Arc::new(Sink);
+            let mut registry = HookRegistry::new();
+            for index in [0, 1, 1] {
+                let cwd = if different_cwd && index == 1 {
+                    second.clone()
+                } else {
+                    first.clone()
+                };
+                let policy = if !different_cwd && index == 1 {
+                    "B"
+                } else {
+                    "A"
+                };
+                let runner = ObservableHookRunner::new_in_dir(
+                    events.clone(),
+                    cwd,
+                    BTreeMap::from([("SYNTHETIC_POLICY".into(), policy.into())]),
+                );
+                defs.register_into(&mut registry, Arc::new(runner));
+            }
+            registry
+                .dispatch(&HookContext::new(
+                    SessionId::nil(),
+                    HookPoint::SessionStart,
+                    HookData::None,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(std::fs::read_to_string(first.join("markerA")).unwrap(), "x");
+            let expected = if different_cwd {
+                second.join("markerA")
+            } else {
+                first.join("markerB")
+            };
+            assert_eq!(
+                std::fs::read_to_string(expected).unwrap_or_default(),
+                "x",
+                "different_cwd={different_cwd}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn h239_native_source_metadata_and_policy_variants_preserve_project_authorization() {
+        struct Host(std::sync::Mutex<Vec<deepagent_hooks::HookAction>>);
+        #[async_trait]
+        impl HookActionExecutor for Host {
+            async fn execute(
+                &self,
+                action: &deepagent_hooks::HookAction,
+                _: serde_json::Value,
+            ) -> Result<HookOutcome> {
+                self.0.lock().unwrap().push(action.clone());
+                Ok(HookOutcome::Continue)
+            }
+        }
+        struct Sink;
+        impl RuntimeEventSink for Sink {
+            fn emit(&self, _: deepagent_runtime::RuntimeEvent) {}
+        }
+        let root = tempfile::tempdir().unwrap();
+        let projects = Arc::new(ProjectService::new(Arc::new(
+            deepagent_persistence::Database::open_in_memory().unwrap(),
+        )));
+        let path = root.path().to_string_lossy().into_owned();
+        projects.add_project(&path).unwrap();
+        let trust = Arc::new(ProjectHookTrust::new(
+            Some(projects.clone()),
+            root.path().to_owned(),
+        ));
+        let defs = HookDefinitions::parse(r#"{"hooks":{"PreToolUse":[{"matcher":"read_file","hooks":[{"type":"mcp_tool","command":"mcp__synthetic__policy"}]}]}}"#).unwrap();
+        let host = Arc::new(Host(std::sync::Mutex::new(Vec::new())));
+        let executor: Arc<dyn HookActionExecutor> = host.clone();
+        let sink: Arc<dyn RuntimeEventSink> = Arc::new(Sink);
+        let mut registry = HookRegistry::new();
+        defs.register_into_with_host(
+            &mut registry,
+            Arc::new(deepagent_hooks::SystemHookRunner),
+            executor.clone(),
+        );
+        // This real assembly boundary injects project root metadata and wraps
+        // every action in the current trust grant. Duplicate source loading
+        // must not duplicate effects, nor hide a different source declaration.
+        for _ in 0..2 {
+            register_project_hooks(
+                &mut registry,
+                defs.clone(),
+                &trust,
+                root.path(),
+                &sink,
+                &executor,
+                &BTreeMap::new(),
+            );
+        }
+        let ctx = HookContext::new(
+            SessionId::nil(),
+            HookPoint::BeforeToolUse,
+            HookData::before_tool("read_file", serde_json::json!({"path":"synthetic"})),
+        );
+        for trusted in [false, true, false] {
+            projects.set_hooks_trusted(&path, trusted).unwrap();
+            let before = host.0.lock().unwrap().len();
+            registry.clone().dispatch(&ctx).await.unwrap();
+            let actions = host.0.lock().unwrap();
+            assert_eq!(actions.len() - before, if trusted { 2 } else { 1 });
+            assert!(actions[before].env.is_empty());
+            if trusted {
+                assert_eq!(
+                    actions[before + 1].env.get("DEEPAGENT_PROJECT_ROOT"),
+                    Some(&path)
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn project_hook_trust_is_rechecked_for_lifecycle_and_cloned_registries() {
         let db = Arc::new(deepagent_persistence::Database::open_in_memory().unwrap());
         let projects = Arc::new(ProjectService::new(db));
