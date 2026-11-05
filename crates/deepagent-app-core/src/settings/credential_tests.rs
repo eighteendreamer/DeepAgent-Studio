@@ -463,7 +463,15 @@ async fn h88_existing_database_without_lifecycle_remains_readable_without_refres
         Ok(())
     }).unwrap();
     assert!(pair.reopen().api_key().unwrap().as_deref() == Some(OLD));
-    pair.second.refresh_models().await.unwrap();
+    // This is the successful legacy-credential control, not model removal.
+    // Keep the independent second connection but discover the selected Flash;
+    // the second host's usual Pro-only fixture now correctly rejects refresh.
+    let refresh_host = SettingsService::new(
+        pair.second.db.clone(),
+        pair.discovery.clone(),
+        pair.second.secrets.clone(),
+    );
+    refresh_host.refresh_models().await.unwrap();
     assert!(DocumentStore::new(&pair.first.db)
         .get(SETTINGS_COLLECTION, "credential_lifecycle")
         .unwrap()

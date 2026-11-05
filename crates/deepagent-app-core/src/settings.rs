@@ -1295,6 +1295,13 @@ pub struct SettingsService {
     settings_cache: Mutex<Option<(String, AppSettings)>>,
 }
 
+/// Initialization may choose defaults; discovery refresh has no such authority.
+#[derive(Clone, Copy)]
+enum CatalogUpdate {
+    Initialize,
+    Refresh,
+}
+
 /// The command prefixes `rules` allows, minus any fenced by an `ask`/`deny` rule.
 fn granted_prefixes(rules: &PermissionRules) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -1453,11 +1460,30 @@ impl SettingsService {
         self.complete_credential_change(&generation, api_key, catalog)
     }
 
-    fn merge_discovered_catalog(&self, catalog: ModelCatalog) -> Result<AppSettings> {
+    fn merge_discovered_catalog(
+        &self,
+        catalog: ModelCatalog,
+        update: CatalogUpdate,
+    ) -> Result<AppSettings> {
         // Merge only discovery-owned fields into the current durable document.
         let discovered_at = now_ms();
         let pricing = Self::pricing_snapshot();
         self.edit_settings(|prior| {
+            let mut catalog = catalog.clone();
+            if let (CatalogUpdate::Refresh, Some(current)) = (update, prior.as_ref()) {
+                // Re-evaluate the latest durable choices on every CAS attempt,
+                // never the choices captured before asynchronous discovery.
+                if !catalog.has_model(&current.catalog.chat_model)
+                    || !catalog.has_model(&current.catalog.reasoner_model)
+                {
+                    return Err(CoreError::invalid(
+                        "model catalog refresh rejected: selected model is unavailable; \
+                         choose another model or explicitly initialize again",
+                    ));
+                }
+                catalog.chat_model = current.catalog.chat_model.clone();
+                catalog.reasoner_model = current.catalog.reasoner_model.clone();
+            }
             let mut settings = match prior {
                 Some(settings) => settings,
                 None => serde_json::from_value(serde_json::json!({
@@ -1467,7 +1493,7 @@ impl SettingsService {
                     "tool_search_mode": Self::DEFAULT_TOOL_SEARCH_MODE,
                 }))?,
             };
-            settings.catalog = catalog.clone();
+            settings.catalog = catalog;
             settings.discovered_at = discovered_at;
             settings.pricing_catalog = pricing.clone();
             settings.web_search = normalize_web_search_settings(settings.web_search);
@@ -1476,7 +1502,8 @@ impl SettingsService {
     }
 
     /// Re-run discovery with the stored key (e.g. to pick up new models).
-    /// Also refreshes pricing alongside model discovery.
+    /// Preserve current role choices; reject the entire publication if either
+    /// selected id disappears. Pricing refreshes only alongside a committed catalog.
     pub async fn refresh_models(&self) -> Result<SettingsView> {
         self.discover_for_refresh().await
     }
@@ -2312,6 +2339,10 @@ mod credential_lifecycle;
 #[cfg(test)]
 #[path = "settings/repair_tests.rs"]
 mod repair_tests;
+
+#[cfg(test)]
+#[path = "settings/selection_tests.rs"]
+mod selection_tests;
 
 #[cfg(test)]
 #[path = "settings/process_tests.rs"]

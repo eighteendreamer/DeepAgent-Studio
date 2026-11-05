@@ -150,7 +150,7 @@ impl SettingsService {
             return Err(superseded());
         }
         let settings = self.commit_credential(&current, generation, Some(key), || {
-            self.merge_discovered_catalog(catalog)
+            self.merge_discovered_catalog(catalog, CatalogUpdate::Initialize)
         })?;
         tracing::info!("credential initialization committed");
         self.view_with_key(Some(key), &settings)
@@ -223,7 +223,13 @@ impl SettingsService {
         {
             return Err(superseded());
         }
-        let settings = self.merge_discovered_catalog(catalog)?;
+        let publication = self.merge_discovered_catalog(catalog, CatalogUpdate::Refresh);
+        if publication.is_err() {
+            // Do not echo provider identifiers, credentials or persisted fields.
+            tracing::warn!("model catalog refresh not published; prior settings retained");
+        }
+        let settings = publication?;
+        tracing::info!("model catalog refreshed without replacing saved role choices");
         // Discovery never writes/re-encrypts its captured credential.
         self.view_with_key(Some(&captured.key), &settings)
     }

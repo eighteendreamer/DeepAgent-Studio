@@ -9172,6 +9172,62 @@ workspace两失败保留：H306的creative.video-edit.v1 defaultUserPrompt为空
 
 本轮验证：`cargo fmt --all -- --check` 与 `git diff --check` 通过（首次格式检查提示新增探针两处布局，调整后重跑通过）；上述 H-223 显式探针按预期失败。既有 model-selection 两项正常对照单独执行均为 1 passed；`cargo test -p deepagent-app-core --lib --offline` 为 **1091 passed / 50 ignored**，`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline` 为 **35 passed / 37 ignored**。默认忽略的已知缺陷不因常规测试为绿而关闭。本轮没有修改生产行为或前端契约，未执行全 workspace/clippy/桌面构建、真实 UI 或公网模型验收。
 
+**E-H223-01（当前原探针与范围，2026-11-05，修复中）**：从948e59df开始，tracked干净、无未完成合并；五项既有未跟踪内容只列名不读改。核对原主项、SettingsService/ModelCatalog、H87的edit_settings条件更新、H88的credential_lifecycle、模型唯一resolver/接纳冻结/生产消费方、Desktop启动refreshModels与Tauri command、manifest/CI/格式及参考源码。原文refresh_models直接initialize的描述已不适用于当前代码：H88已分离只读凭据刷新并守住代次，但两种意图最终仍共用merge_discovered_catalog整块覆盖catalog，选型丢失仍成立，不重复修复已验H87/H88。
+
+原样`cargo test -p deepagent-app-core --test kernel_v2_e2e model_selection::audit_catalog_refresh_preserves_selected_model_on_provider_wire --offline -j 2 -- --ignored --exact --nocapture --test-threads=1`实际exit101、0/1/0、268.657秒（含编译）；未手动选型对照的两次wire及重开均Flash，显式Pro组刷新前Pro、刷新后及落盘Flash。4次真实ChatService/Kernel运行均唯一succeeded。原始日志/退出码保留target/h223-repair-20261105，不改写或凭ignored默认组为绿关闭问题。fixture沿用原旧模型ID，只是合成目录，不据此声称当前公网模型命名。
+
+本地设计：目录发现只拥有可用项/元数据，当前已提交设置拥有Chat/Reasoner选择；在原edit_settings的每次CAS尝试内读取最新两角色选择，精确ID仍可用则保留，不取网络等待前快照。任一选中ID下架/改名则拒绝整次刷新并保留原目录、选择、pricing/date等全部字段，返回固定无凭据错误并记录安全日志；不静默替代、猜别名或制造新用户意图。用户可选择旧目录内仍可用的其他模型再刷新，或显式initialize重新自动选型；没有既有catalog时仍允许原初始化默认。显式initialize继续是凭据/目录重新初始化意图，不等同后台refresh。保留H88代次/无刷新写密钥、H87条件更新和H221接纳冻结；不新增store/运行链/DTO/迁移，不混修H89未知逐次override等独立问题。Startup现有catch不新增UI提示，服务失败/日志与保持旧配置是本项边界，不保证旧模型在真实供应商仍能调用。
+
+2026-11-05复核[DeepSeek Models](https://api-docs.deepseek.com/api/list-models/)与[Responses参数](https://api-docs.deepseek.com/api/create-response/)：前者描述目录及模型ID、后者要求显式model，不替宿主定义偏好生命周期；本项失效选择拒绝策略是本地设计而非供应商强制。参考Codex models-manager的刷新/显式选择分离及保留supported requested model测试、DeepSeek Harness AcpModelControl的choices/selected/turn snapshot分离，仅阅读未执行参考项目，不照搬其fallback策略。
+
+目前仅原探针已真实红；新增默认回归正在执行仅测试版本（生产未改），覆盖两角色、相同/重排/新增目录、精确下架/改名、独立连接并发选择、失败不发布、显式初始化对照、真实Role ModelClient及Kernel/config/wire/replay一致性。最终验收、完整门禁和提交未完成，不新增修复数。台账166验收/23历史跳过/7归并/3撤销/106待修/1修复中，107未关闭含H180授权跳过、实际待处理106。本项暂估4–10有效小时，完整跨层验收仍有不确定性；全余200–400有效小时仍为未逐项校准的低置信历史粗估，编译/设备/依赖/环境等待另计。隔离HOME/USERPROFILE/APPDATA/TEMP及凭据环境，仅合成文件/临时SQLite/MemorySecretStore/录制transport，不访问真实凭据、用户数据、供应商或内网。
+
+**E-H223-02（TDD转绿、实现与冻结，2026-11-06，最终门禁进行中）**：只加入默认真实回归、未改生产时，`cargo test -p deepagent-app-core --lib h223_ --offline -j 2 -- --nocapture --test-threads=1`实际2/5/0、exit101、274.283秒；显式初始化和缺失catalog正常对照已过，其余失败是选型被覆盖或下架刷新误返回Ok。新增正式Kernel组同命令改为`--test kernel_v2_e2e h223_`为1/1/0、exit101、268.957秒：既有接纳冻结对照通过，刷新后新运行的config model仍错误变成Flash。原始断言/红测保留，没有用编译失败冒充缺陷复现。
+
+唯一生产根因修改：原merge_discovered_catalog接受私有CatalogUpdate意图；Initialize继续自动默认，Refresh在原edit_settings每次重读/CAS尝试内校验最新Chat/Reasoner精确ID并保留两字段，再原子发布可用项/metadata、pricing和日期。任一选择消失或改名返回固定CoreError::Invalid，整个文档不发布；发现失败、真实SQLite触发器写失败也不刷新cache/角色。credential_lifecycle两原调用显式传递意图，继续原凭据代次/发布门禁，刷新不写密钥；日志只有固定拒绝/提交原因，无模型/凭据/配置正文。没有新配置字段、公开DTO、依赖或迁移，不改唯一模型resolver、override策略、RunStore/事件/运行链。原H223探针取消ignore，H89原探针仍独立ignored，不能计为已修复。
+
+相同7项服务回归修后7/0/0、exit0、244.003秒，覆盖默认/手动两角色、同目录/重排/新增强默认、下架/改名整文档拒绝、网络等待中另一SQLite连接选择与权限更新、malformed/空目录/真实写失败、恢复对照、显式重新initialize、缺失catalog及真实两Role ModelClient wire。`cargo test -p deepagent-app-core --test kernel_v2_e2e model_selection:: --offline -j 2 -- --nocapture --test-threads=1`为5/0/1、exit0、285.093秒；原probe默认执行，显式Pro的刷新前后wire及重开均Pro，正常默认/逐次override/不支持provider对照仍通过。新增Kernel验证真实config/read、admission capability snapshot、model_request_started与wire一致，关闭全部DB owner后重开核对持久选择/事件/唯一终态；拒绝下架刷新不改后续配置，已接纳运行继续用原冻结模型，下一接纳使用最新选型。独立连接竞争不冒称本项已做跨进程压力验收，H87/H88已有跨进程测试将在完整组复验。
+
+5份Rust实现/测试已按final-sources.json冻结，final.ps1正在顺序执行设置完整组、完整workspace/no-run、严格AppCore/CLI/全仓lint、CLI build、SDK类型/单元/真实stdio、Tauri消费方check及桌面tsc；当前root fmt exit0、11.488秒，其余最终结果待收取。Tauri使用既有独立target缓存，准备真实CLI sidecar前核对不存在或hash相同，不覆盖不同的已有文件、不用占位；不会启动真实WebView/设备。Desktop UI/command字段没有修改，不运行会准备外部payload的完整分发build，也不把tsc/check冒充完整安装包验收。当前仍修复中，未新增验收或commit，计数沿E01；原probe和阶段red/green耗时含编译，不能当作有效开发工时。完整门禁、台账核对、两文同步及提交未完成，整体goal active，总余200–400有效小时低置信粗估和等待另计口径不变。
+
+**E-H223-03（扩大组发现兼容夹具冲突并纠正，2026-11-06，仍未最终验收）**：首冻结`cargo test -p deepagent-app-core --lib settings:: --offline -j 2 -- --nocapture --test-threads=1`实际85/1/2、exit101、35.946秒；失败是原H88的h88_existing_database_without_lifecycle_remains_readable_without_refresh_rekey：其当前已选Flash，但第二连接固定只返回Pro，旧预期成功刷新隐含依赖自动替代模型。新生产策略明确拒绝该下架组合，不能把这次失败归为历史基线、放宽规则或简单把断言改成接受Err。
+
+保留原独立第二SQLite连接、SqliteSecretStore及全部凭据/无lifecycle/迟到刷新撤销/重开断言，仅为此正常凭据刷新对照建立SettingsService，使用当前选中Flash仍存在的离线discovery。原PRO-only其他H88情形不改，H223自己的下架/改名负向完整保留，不额外关闭或重修H88。仅多一份相关测试夹具文件，生产实现不变。完整同一settings组重新86/0/2、exit0、260.597秒，H223七项与H87/H88默认/真实主备子进程父测试均实际通过；两个ignored是由父测试显式启动的child entry，不是本项原probe被跳过。
+
+首冻结扩大脚本在已知失败后停止，不空跑到最终提交：核对只属于本轮的pwsh命令/创建时间/PID树后终止其正在进行的CLI编译，身份/停止原因存first-frozen-stopped.json；该CLI编译记录exit-1是本轮主动中止，不是编译通过或产品编译错误。首fmt exit0/11.488秒；首AppCore严格all-target/all-features/no-deps lint exit101/94.447秒，lib12个、lib test共14个旧诊断（context_runtime 8个clone_on_copy；http_runtime needless_return；plugin_preparation type_complexity；原run_assembler too_many_arguments；session_title needless_borrow；workflow_audit/media两项），这些位置未改、未加allow，不称全绿。原脚本没有取得workspace验收，首日志不覆盖。
+
+6份当前Rust实现/测试已按final2-sources.json重新冻结，final2.ps1已启动；若settings组再失败将在扩大验收前停止。当前新root fmt exit0/8.287秒，其余workspace、SDK、构建、严格lint和桌面消费检查等待真实终态，不以7项局部过或86项设置组过代替完成。两文台账仍166验收/23历史跳过/7归并/3撤销/106待修/1修复中，107未关闭含H180授权跳过、实际待处理106，尚无本项commit。E01/E02的本地拒绝策略、未验范围和隔离边界不扩大；本轮不是H88新生产修复。总体工时仍200–400有效小时未校准低置信粗估，编译/设备/依赖/环境等待另计，无精确日历承诺。
+
+**E-H223-04（最终本机验收与残余失败，2026-11-06）**：修正H88正常夹具后的6份Rust实现/测试与final2-sources.json逐份SHA256一致，所有最终门禁均已终结；原红测、首扩大组失败/停止及E01～03不改写。默认完整settings组86/0/2、exit0、33.002秒，含H223全部7项、H87/H88真实多宿主父测试；两个ignored为父测试显式调用的child entry。E02原模型选择完整组5/0/1保持有效，原H223探针已默认真实通过；独立H89仍ignored，不算关闭。
+
+实际最终命令与原生结果（耗时含编译/测试，不当作有效开发工时）：
+
+| 命令 | 实际结果 |
+|---|---|
+| `cargo fmt --all -- --check` | exit0，8.287秒 |
+| `cargo test -p deepagent-app-core --lib settings:: --offline -j 2 -- --nocapture --test-threads=1` | exit0，86/0/2，33.002秒 |
+| `cargo clippy -p deepagent-app-core --all-targets --all-features --no-deps --offline -j 2 -- -D warnings` | exit101，67.363秒，E03同14个旧诊断，未抑制 |
+| `cargo build -p deepagent-cli --offline --message-format json -j 2` | exit0，32.334秒 |
+| `cargo clippy -p deepagent-cli --all-targets --all-features --no-deps --offline -j 2 -- -D warnings` | exit0，37.221秒 |
+| `cargo test --workspace --offline --no-fail-fast --no-run --message-format json -j 2` | exit0，571.675秒，仅全仓编译证据 |
+| `cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=1` | exit101，1609.365秒，140顶层target为4684/4/222；原141结果块4685过含AppCore嵌套helper 1过，已排除重复计数 |
+| `pnpm test`、`pnpm typecheck`、`pnpm test:stdio`（packages/sdk） | 均exit0；分别39/0/0、类型通过、真实当前CLI管道1/0/0；5.297/1.369/6.163秒 |
+| `cargo clippy --workspace --all-targets --all-features --offline -j 2 -- -D warnings` | exit101，23.711秒，未改models/client.rs:385旧clone_on_copy阻断 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --target-dir G:\Code_Warehouse\DeepAgent-Studio\target\h272-tauri-build --offline -j 2` | exit0，75.152秒，独立真实sidecar路径覆盖见下 |
+| `pnpm exec tsc --noEmit`（apps/desktop） | exit0，22.009秒，不等于完整分发build/UI验收 |
+
+全仓中的AppCore lib为1523/2/61、kernel_v2_e2e完整组297/0/27、CLI179/0/14。H223默认原探针与新增服务/Kernel回归全部真实执行；两Role ModelClient wire、config/read、接纳快照/事件、持久化重开、逐次合法override与接纳后冻结对照通过。不是用编译、默认ignored或少数局部测试替代跨层验收。全仓四失败均保留：
+
+- AppCore `completion_plan::audit_tests::discovered_real_build_completes_after_release` 未在4秒内出现build-started；`verification_commands::lifecycle_tests::dropping_active_verification_future_stops_real_descendant` 的warm部分通过，cold部分在4002ms仍无compiler-started/target目录。这两个同名/同断言失败已在H150的完整AppCore复核记录出现；本项未修改其源码、fixture或执行器，它们直接构造独立Kernel/命令测试，不经过本轮Settings目录发布边界。具体启动延迟成因仍未确定，不归咎于已证实的环境原因，不放宽时间窗或继续循环重跑。
+- CodeGraph `indexes_1000_file_project_under_30_seconds_and_sync_is_smaller` 的单文件数量/正常功能断言已过，但sync 496.327ms不小于full 425.726ms。本轮额外观察到的性能断言失败，不声称已知基线或已修。锁定该次workspace生成的同一`index_pipeline-5e1f999173fffdaf.exe`（EE2F6835…）完整5项仅复核一次：`G:\Code_Warehouse\DeepAgent-Studio\target\debug\deps\index_pipeline-5e1f999173fffdaf.exe --nocapture --test-threads=1`仍4/1/0、exit101、3.395秒，sync 566.6574ms对full 552.6065ms，保留首次及复核。该crate只依赖Core/SQLite等、不依赖AppCore或Settings，源码/manifest无本项diff；性能成因未确定，不在H223扩大修复或修改断言。
+- Prompts原H306 `every_node_kind_owns_exactly_one_profile` 仍因creative.video-edit.v1的defaultUserPrompt为空失败，未改该资源/测试，不因本轮验收关闭H306。
+
+final2.ps1在SDK和全仓lint终结后因既有桌面sidecar哈希453DF899…不同于本轮AAFA8AEC…而安全停止，未覆盖原文件，不能把wrapper当全部成功。随后核对当前锁定tauri-build/codegen 2.6.2及tauri-utils 2.9.2源码：二者均合并TAURI_CONFIG，external_binaries按源路径添加target suffix。finish.ps1只在target本轮独立目录复制真实当前CLI，并仅覆盖bundle.externalBin的源路径，保留所有其他真实Tauri配置/资源/能力与相同输出文件名；未使用空占位或禁用sidecar。上述Tauri check与tsc均真实通过，结束后原sidecar、CLI及6份冻结源码全部哈希不变。两种Cargo feature组合CLI分别F8276215…与AAFA8AEC…，各自执行前后身份核对；后者在全仓、SDK和桌面消费检查后不变。原命令/日志/原生退出/耗时/逐target归约与hash保留target/h223-repair-20261105，不提交构建、缓存或日志。
+
+据原始红测、根因修改、上述完整相称门禁及失败路径核对，H223在所列Windows本机离线范围标为已修复并验收，不表示完整workspace或严格lint已通过。模型下架/改名现在拒绝整次refresh、保留旧文档并返回安全错误，不再自动替换；显式initialize仍可重选默认，没有旧catalog仍可初始化。没有公共DTO/依赖/数据库迁移，凭据不因refresh重写，原H87/H88/H221内核与门禁复用。仅合成文件/临时SQLite/Memory及合成SqliteSecretStore/离线transport；未访问真实凭据、用户数据、DeepSeek/内网。真实供应商可用性、其他OS、Desktop WebView启动/UI提示、真实插件/设备与跨进程高压竞争未验；桌面现有catch没有新增用户提示，保留旧模型不保证真实服务仍支持它。无UI/command字段修改，本轮未运行会准备外部payload的完整桌面分发build；check/tsc不冒充安装包或真实启动验收。
+
+306唯一台账仅H223主行改变，本轮新增验收1、历史跳过/归并/撤销新增各0；累计167验收/23历史跳过/7归并/3撤销/106待修/0修复中，106未关闭含H180授权跳过，实际待处理105。6份实现/测试及当时两文共8文件独立提交，取得真实hash后另做文档回填，不amend填写自身hash，不推送/建PR/迁移；五项既有未跟踪内容只列名不读改，不纳入提交。本项验收剩余0，下一先复核H267的SDK进程owner收尾，按孤儿后台工作/副作用与运行状态风险优先，不预先合并其他SDK问题。整体goal仍active；全余200–400有效小时仍是依据跨层配置/执行、持久化/权限及广泛验收规模的未逐项校准低置信历史粗估，不按完成数量机械扣减。编译、设备、依赖及环境等待另计，无可靠总等待上界或精确日历承诺。
+
 ### H-224：日/月费用使用错误时间桶，真实预算接纳漏计本期历史费用后继续请求模型
 
 **级别：中高（P1/P2 之间，本地费用上限的决策完整性）；触发条件：** 已附加 CostService 的入口设置有限 daily/monthly budget，并且既有费用位于真实日历边界和错误取模边界之间。日统计声明从本地午夜开始，月统计声明本月；月缺陷在 UTC 时区也存在，不以本地时区歧义为成立前提。默认无限预算不会拦截，也不能代表有限预算正确。

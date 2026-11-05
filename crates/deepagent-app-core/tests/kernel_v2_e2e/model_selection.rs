@@ -6,6 +6,9 @@ use deepagent_app_core::HarnessRunOverrides;
 const DEFAULT_MODEL: &str = "deepseek-v4-flash";
 const KNOWN_OVERRIDE: &str = "deepseek-v4-pro";
 
+#[path = "model_selection_refresh.rs"]
+mod refresh;
+
 #[derive(Default)]
 struct SelectionModel(Mutex<Vec<String>>);
 
@@ -120,7 +123,6 @@ async fn unsupported_explicit_provider_fails_before_any_model_request() {
 }
 
 #[tokio::test]
-#[ignore = "audit H-223: catalog refresh must preserve a still-available explicit model selection"]
 async fn audit_catalog_refresh_preserves_selected_model_on_provider_wire() {
     let mut observations = Vec::new();
     for explicit_selection in [false, true] {
