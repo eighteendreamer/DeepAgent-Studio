@@ -417,7 +417,7 @@ pub struct HookMatcherGroup {
     /// The hook only fires when the condition matches the current context.
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "if")]
     pub if_condition: Option<String>,
-    /// One-shot hook: auto-skips after the first execution.
+    /// One-shot hook: auto-skips after the first applicable admission.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub once: bool,
 }
@@ -1177,7 +1177,10 @@ fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
-/// A wrapper that skips execution after the first invocation (one-shot hook).
+/// Admit at most one applicable invocation per wrapper instance. Cloned
+/// registries share its state; registering definitions again creates new state.
+/// Admission consumes the opportunity even if execution later denies, fails,
+/// times out, is cancelled or is dropped: external effects cannot be rolled back.
 pub struct OnceHook {
     inner: Arc<dyn Hook>,
     fired: std::sync::atomic::AtomicBool,
@@ -1202,6 +1205,10 @@ impl Hook for OnceHook {
         format!("once|{}", self.inner.dedup_key())
     }
 
+    fn applies(&self, ctx: &HookContext) -> bool {
+        self.inner.applies(ctx)
+    }
+
     async fn run(&self, ctx: &HookContext) -> Result<HookOutcome> {
         self.run_with_context(ctx, ToolExecutionContext::default())
             .await
@@ -1212,6 +1219,12 @@ impl Hook for OnceHook {
         ctx: &HookContext,
         execution: ToolExecutionContext,
     ) -> Result<HookOutcome> {
+        if !self.applies(ctx) {
+            return Ok(HookOutcome::Continue);
+        }
+        if execution.is_cancelled() {
+            return Err(CoreError::other("one-shot hook cancelled before admission"));
+        }
         if self.fired.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return Ok(HookOutcome::Continue);
         }
@@ -1310,24 +1323,22 @@ impl ExternalCommandHook {
         }
         serde_json::Value::Object(payload)
     }
+}
 
-    /// Whether this hook applies to `ctx` (matcher test for tool events).
-    fn applies(&self, ctx: &HookContext) -> bool {
-        if let Some(condition) = &self.if_condition {
-            if !evaluate_condition(condition, ctx) {
-                return false;
-            }
-        }
-        if !self.event.uses_matcher() {
-            return true;
-        }
-        let Some(matcher) = &self.matcher else {
-            return true; // no matcher → all tools
-        };
-        match &ctx.data {
-            HookData::Tool { name, .. } => matcher_matches(matcher, name),
-            _ => true,
-        }
+// One declarative filter for direct execution and one-shot admission across
+// command, HTTP and host-owned actions. It performs no I/O or state mutation.
+fn external_hook_applies(
+    event: HookEvent,
+    matcher: Option<&str>,
+    condition: Option<&str>,
+    ctx: &HookContext,
+) -> bool {
+    if condition.is_some_and(|condition| !evaluate_condition(condition, ctx)) {
+        return false;
+    }
+    match (event.uses_matcher(), matcher, &ctx.data) {
+        (true, Some(matcher), HookData::Tool { name, .. }) => matcher_matches(matcher, name),
+        _ => true,
     }
 }
 
@@ -1335,6 +1346,15 @@ impl ExternalCommandHook {
 impl Hook for ExternalCommandHook {
     fn name(&self) -> &str {
         "external_command_hook"
+    }
+
+    fn applies(&self, ctx: &HookContext) -> bool {
+        external_hook_applies(
+            self.event,
+            self.matcher.as_deref(),
+            self.if_condition.as_deref(),
+            ctx,
+        )
     }
 
     fn dedup_key(&self) -> String {
@@ -1390,6 +1410,15 @@ pub struct ExternalHostHook {
 
 #[async_trait]
 impl Hook for ExternalHostHook {
+    fn applies(&self, ctx: &HookContext) -> bool {
+        external_hook_applies(
+            self.event,
+            self.matcher.as_deref(),
+            self.if_condition.as_deref(),
+            ctx,
+        )
+    }
+
     fn name(&self) -> &str {
         match self.action.action_type {
             HookActionType::McpTool => "external_mcp_hook",
@@ -1421,17 +1450,8 @@ impl Hook for ExternalHostHook {
         ctx: &HookContext,
         execution: ToolExecutionContext,
     ) -> Result<HookOutcome> {
-        if let Some(condition) = &self.if_condition {
-            if !evaluate_condition(condition, ctx) {
-                return Ok(HookOutcome::Continue);
-            }
-        }
-        if self.event.uses_matcher() {
-            if let (Some(matcher), HookData::Tool { name, .. }) = (&self.matcher, &ctx.data) {
-                if !matcher_matches(matcher, name) {
-                    return Ok(HookOutcome::Continue);
-                }
-            }
+        if !self.applies(ctx) {
+            return Ok(HookOutcome::Continue);
         }
         let child = execution
             .child()
@@ -1465,6 +1485,15 @@ impl Hook for ExternalHttpHook {
         "external_http_hook"
     }
 
+    fn applies(&self, ctx: &HookContext) -> bool {
+        external_hook_applies(
+            self.event,
+            self.matcher.as_deref(),
+            self.if_condition.as_deref(),
+            ctx,
+        )
+    }
+
     fn dedup_key(&self) -> String {
         format!(
             "{}|{}|http|{}",
@@ -1489,17 +1518,8 @@ impl Hook for ExternalHttpHook {
     }
 
     async fn run(&self, ctx: &HookContext) -> Result<HookOutcome> {
-        if let Some(condition) = &self.if_condition {
-            if !evaluate_condition(condition, ctx) {
-                return Ok(HookOutcome::Continue);
-            }
-        }
-        if self.event.uses_matcher() {
-            if let (Some(matcher), HookData::Tool { name, .. }) = (&self.matcher, &ctx.data) {
-                if !matcher_matches(matcher, name) {
-                    return Ok(HookOutcome::Continue);
-                }
-            }
+        if !self.applies(ctx) {
+            return Ok(HookOutcome::Continue);
         }
         let method = self
             .action

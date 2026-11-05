@@ -3,10 +3,13 @@
 
 use super::responses_fixture::{call, completed, text};
 use super::*;
+use deepagent_core::{event::EventPayload, id::SessionId};
 use deepagent_models::ModelRole;
+use deepagent_persistence::event_store::EventStore;
 use deepagent_persistence::run_store::RunStore;
 use deepagent_runtime::RuntimeEvent;
 use serde_json::{json, Value};
+use std::str::FromStr;
 use std::time::Duration;
 
 const MODEL: &str = "deepseek-flash";
@@ -244,15 +247,8 @@ async fn observe(case: Case, kind: &str) -> Observation {
     .await
     .expect("one-shot workflow must settle")
     .unwrap();
-    assert_eq!(
-        RunStore::new(&db)
-            .get(RUN)
-            .unwrap()
-            .unwrap()
-            .terminal_kind
-            .as_deref(),
-        Some("succeeded")
-    );
+    let run = RunStore::new(&db).get(RUN).unwrap().unwrap();
+    assert_eq!(run.terminal_kind.as_deref(), Some("succeeded"));
     assert_eq!(
         chat.run_events(RUN, None)
             .unwrap()
@@ -267,6 +263,38 @@ async fn observe(case: Case, kind: &str) -> Observation {
     );
     let observed = summarize(&model, &events.lock().unwrap(), &target);
     eprintln!("Once-hook audit: case={case:?} kind={kind} observed={observed:?}");
+    drop(chat);
+    drop(db);
+    let reopened = Database::open(temporary.path().join("state.sqlite")).unwrap();
+    let history = EventStore::new(&reopened)
+        .load_session(SessionId::from_str(&run.session_id).unwrap())
+        .unwrap();
+    for (id, ok) in [
+        (FIRST, Some(observed.first_ok)),
+        (SECOND, observed.second_ok),
+    ] {
+        let requests = history
+            .iter()
+            .filter(|event| {
+                matches!(&event.payload,
+            EventPayload::ToolCallRequested {call} if call.id == id)
+            })
+            .count();
+        let results = history.iter().filter(|event| matches!(&event.payload,
+            EventPayload::ToolCallCompleted {call_id, ok: actual, ..} if call_id == id && Some(*actual) == ok)).count();
+        assert_eq!(requests, usize::from(ok.is_some()));
+        assert_eq!(results, usize::from(ok.is_some()));
+    }
+    assert_eq!(RunStore::new(&reopened).get(RUN).unwrap(), Some(run));
+    assert_eq!(
+        RunStore::new(&reopened)
+            .events_after(RUN, None)
+            .unwrap()
+            .iter()
+            .filter(|event| event.event_type == "run_terminal")
+            .count(),
+        1
+    );
     observed
 }
 
@@ -326,13 +354,11 @@ async fn verify_unrelated_dispatch_does_not_consume(case: Case) {
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: matcher mismatch must not consume a one-shot hook"]
 async fn hook_once_matcher_mismatch_must_preserve_first_applicable_execution() {
     verify_unrelated_dispatch_does_not_consume(Case::MatcherOnce).await;
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: condition mismatch must not consume a one-shot hook"]
 async fn hook_once_condition_mismatch_must_preserve_first_applicable_execution() {
     verify_unrelated_dispatch_does_not_consume(Case::ConditionOnce).await;
 }

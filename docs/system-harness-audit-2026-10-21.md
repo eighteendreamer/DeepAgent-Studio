@@ -10089,6 +10089,52 @@ E-H238-04（独立提交回填，2026-10-29）：本轮测试与当时两份文�
 
 ### H-240：一次性 hook 被不匹配的工具提前消耗，首次实际写入没有经过校验
 
+> 2026-11-05已修复并验收，限E-H240-03～04所列本机范围；下文原始失败及未修复描述为历史快照，保留追溯。
+
+**E-H240-01（原探针复核与本轮范围，2026-11-05，未验收）**：起点5fa3eddb，tracked干净、无未完成合并；原五项用户未跟踪内容仅列名，不读改/暂存/删除。按code-audit核对本仓库授权、Hook/OnceHook/三种native action/两种注册入口/来源授权wrapper/HookRegistry与H236取消资源owner、原正式Kernel探针、Cargo/CI/格式/前端构建配置。仅H240，不混修独立H239身份去重或其他历史lint/H306；合成TempDir/文件SQLite、离线模型transport、隔离HOME/APPDATA/TEMP并清凭据环境，不访问真实用户数据、凭据、第三方或内网。
+
+真实`cargo test -p deepagent-app-core --test kernel_v2_e2e hook_once --offline -j 2 -- --include-ignored --nocapture --test-threads=1`为exit101、5过/2败/0忽略、110.037秒（含编译），两个缺陷探针在prompt/agent都完成真实read/write观察后失败：不匹配读使once消耗，hook请求/完成数0，随后write实际成功且目标落盘；五种正常对照通过。原失败保留，证据target/h240-repair-20261105，不能以默认ignore绿测跳过。
+
+根因在OnceHook先fired.swap、后native内部matcher/if；Continue混合未匹配与执行后允许，不能根据结果猜消耗，也不能挪到await后引入并发重复执行。本地设计拟在既有Hook边界提供兼容默认的无副作用适用性查询，三种native实现共用同一matcher/condition规则，OnceHook在匹配且未预取消后原子领取；来源授权仍在现有外层wrapper先检查。保留每个注册action的Arc owner/克隆共享与重新注册新状态、接纳后包括拒绝/错误/超时/取消/drop均消耗，不能保证外部效果exactly-once或跨进程持久化。公共自定义hook若有过滤必须显式表达，不猜测run内部条件；不新增审批/store/协议。Claude skill/session hook源码仅借鉴匹配先于once消耗，保留本系统拒绝也消耗的不同语义，不照搬其success-only策略，未运行参考工程或真实供应商。新增全action/并发/生命周期真实回归与最终验收尚未完成，不计新增修复。
+
+
+
+**E-H240-02（根因实现、候选与夹具纠正，2026-11-05，未最终验收）**：Hook新增有兼容默认的applies无副作用查询；command/http/host共用原matcher/condition规则的同一helper，直接执行与OnceHook均调用，不改变原glob/alias/非tool匹配语义。OnceHook在适用且非预取消时才原子领取，既有SeqCst状态及per-Arc lifetime保留；接纳后即使deny/error/async/timeout/cancel/drop也不重新武装，避免外部重复副作用。TrustedProjectHook透传纯查询但来源授权仍在外层真实run先检查，查询不等于grant。无第二执行/审批/store、配置/协议/schema/新依赖；自定义有过滤的Hook及wrapper需显式实现/透传查询，默认true保留既有无过滤实现。注册入口与dedup_key未改，独立H239未修。
+
+新native组原命令`cargo test -p deepagent-hooks --test once --offline -j 2 -- --nocapture --test-threads=1`初次0/3失败（9.635秒），候选green仍0/3（7.635秒），增加纯查询定位的diagnose亦0/3（7.963秒）。保留这些日志，**不能把三组全当成产品红测**：初始matcher样本确实到达原once问题，但新condition/both夹具误认为allowed*可匹配allowed.txt，现有glob实现按首token比较，实际不匹配；此外registry将AsyncPending折叠为Continue。按原实现改为精确allowed.txt条件、按既有reducer验证Continue，不改glob/registry生产行为，不放宽首次适用必须执行的不变量。纠正后green2为7/0/0（11.795秒）；新增真正4线程/32并发、native timeout及source授权边界后green3为8/0/0（13.184秒）。原正式probe候选green为7/0/0（155.172秒），它与E01真实5/2是本项可靠红绿证据。
+
+新tests/once模块覆盖三种host类型、matcher/if/合取、重复不匹配与参数不匹配、原Arc克隆共享/重新注册新状态、允许/拒绝/错误/AsyncPending消耗、真正4线程32调用的原子领取、直接预取消/嵌套wrapper透传/已接纳future drop、正式dispatcher取消清理与超时后不重启。真实SystemHookRunner向合成临时文件append恰好1次；自建IPv4回环HTTP验证实际payload及仅1请求；两者都验证register_into与host注册入口，三种过滤各跑一遍。host MCP/prompt/agent在该小组仅记录executor seam，不冒称远端MCP或真实供应商；正式prompt/agent另由原Kernel探针验证。
+
+最终候选`cargo test -p deepagent-app-core --lib hook_assembly::project_hook_tests:: --offline -j 2 -- --nocapture --test-threads=1`为3/0/0（178.679秒），授权未授予/恢复/撤销/再次授予、clone与原once消费均验证。原两个缺陷探针移除ignore，强化每组正常/拒绝的实际工具往返及RunStore终态在关闭SQLite后重开仍唯一且一致；`cargo test -p deepagent-app-core --test kernel_v2_e2e hook_once --offline -j 2 -- --nocapture --test-threads=1`为7/0/0（204.837秒）。这些均为候选；7份Rust源码/测试最终冻结SHA256、完整crate/workspace/格式/lint/CLI/Tauri验收另列，暂不计新增成果。
+
+**E-H240-03（冻结源码最终门禁，2026-11-05）**：7份Rust源码/测试的SHA256在最终门禁前后及续接核对均一致；沿用既有运行中的全仓命令，不重复启动。隔离HOME/APPDATA及仓库外TEMP，清凭据环境、offline；全部原始失败、候选、最终log/JSON、冻结清单和顶层target去重汇总保留于target/h240-repair-20261105。以下秒数为含编译/等待的墙钟，不是有效开发工时。
+
+| 实际命令 | 实际结果（过/败/忽略） |
+|---|---|
+| `cargo test -p deepagent-hooks --offline -j 2 -- --nocapture --test-threads=1` | exit0；80/0/0；28.813秒 |
+| `cargo test -p deepagent-app-core --lib hook_assembly::project_hook_tests:: --offline -j 2 -- --nocapture --test-threads=1` | exit0；3/0/0；177.346秒 |
+| `cargo test -p deepagent-app-core --test kernel_v2_e2e hook_once --offline -j 2 -- --nocapture --test-threads=1` | exit0；7/0/0；20.986秒 |
+| `cargo build -p deepagent-cli --offline -j 2` | exit0；101.717秒 |
+| `cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=1` | exit101；139顶层target为4624/1/230；原始140结果块含嵌套子进程1过，不重复加算；2025.690秒 |
+| `cargo fmt --all -- --check` | exit0；5.784秒 |
+| `cargo clippy --all-targets --all-features --offline -j 2 -- -D warnings` | exit101；28.116秒 |
+| `cargo clippy -p deepagent-hooks --all-targets --all-features --no-deps --offline -j 2 -- -D warnings` | exit0；10.739秒 |
+| `cargo clippy -p deepagent-app-core --lib --no-deps --offline -j 2 -- -D warnings` | exit101；45.823秒 |
+| `cargo clippy -p deepagent-runtime --all-targets --no-deps --offline -j 2 -- -D warnings` | exit101；15.567秒 |
+| `cargo clippy -p deepagent-hooks -p deepagent-runtime -p deepagent-app-core --all-targets --no-deps --offline -j 2 --message-format json` | exit101；59.941秒 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --offline -j 2` | exit0；33.187秒 |
+| `cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check` | exit1；0.457秒 |
+
+workspace中AppCore lib1516/0/61、完整Kernel291/0/30、Runtime lib431/0/9、新once组8/0/0；正式hook_once七项均默认执行，原两个缺陷ignore已去掉，不拿全仓230个既有ignored代替本项验收。唯一失败仍为deepagent-prompts的canvas_prompt::tests::every_node_kind_owns_exactly_one_profile：creative.video-edit.v1空defaultUserPrompt，即H306。根fmt、hooks all-targets/all-features/no-deps严格lint、CLI build、Tauri check通过；全仓不是全绿。
+
+全仓严格lint仍停于models/client.rs:385 clone_on_copy；AppCore lib严格lint为旧12项（context_runtime.rs八处clone、http_runtime.rs needless_return、plugin_preparation.rs type_complexity、run_assembler.rs too_many_arguments、session_title.rs needless_borrow）；Runtime严格lint为model_agent.rs:294 clone_on_copy及workflow/canvas.rs:32 derivable_impls。all-target JSON诊断实际31 warning/1 error、exit101；error为旧kernel_v2_e2e/mcp_discovery_restore.rs:774/776 panicking_unwrap，7份本项文件诊断0，这不等于全范围严格lint通过。独立Tauri fmt仍为lib.rs:26/39/2302/3097四处原格式。上述失败相关文件相对起点5fa3eddb无修改，未混修、调低lint或改ignore掩盖；原始失败保留。
+
+**E-H240-04（本轮验收边界与交付，2026-11-05）**：仅H240，在上述Windows本机、临时命令/自建IPv4回环HTTP/host seam、正式SettingsService→ChatService→Kernel及文件SQLite重开范围已修复并验收。根因是把dispatch当成执行，现收敛为同一纯适用性规则加原子领取；保留现有注册/来源授权/取消资源owner，不新建运行、审批、状态或持久化链。公共Hook增加默认true的applies，既有无过滤实现兼容；有过滤的自定义Hook和包装器须实现或透传此纯查询。未改配置/DTO/协议/schema或依赖，无数据库迁移和真实数据操作。once仍是每注册action的Arc实例生命周期，clone共享、重新注册新状态；已接纳的allow/deny/error/async/timeout/cancel/drop均消耗，不提供外部exactly-once、回滚或跨进程持久化保证。H239的dedup身份是独立根因，本轮未修改。
+
+未验真实供应商、真实远端MCP、其他OS、GUI/前端完整build、进程强杀/断电、所有生命周期/动态plugin/跨turn重建组合：本项未改Tauri command/事件/前端类型/UI，Tauri生产消费者已cargo check，不能将编译当GUI成功；SQLite重开也不是崩溃恢复。原五项用户未跟踪内容未读改/暂存/删除，H178外部八门禁及H180既有提交与授权跳过按原台账保持，不重复计功。
+
+本轮7份Rust源码/测试与双文档共9文件待独立提交，取得真实hash后另做文档回填，不amend/推送/建PR。台账306唯一编号/8列核对，本轮只改H240主行，其余305行与起点5fa3eddb逐字相同；新增验收1、历史跳过0、归并/撤销0；累计160验收、23历史跳过、7归并、3撤销、113待修、0在修，即113有效未关闭（含H180授权跳过，实际排队112）。本项本机范围剩余0。下一项准备复核H239校验器去重身份碰撞，依据实际检查器被吞掉的执行一致性影响排在同类扩展边界；不与本项合并，也未提前改其生产代码。全部剩余200–400有效修复/验收小时沿用历史低置信、未逐项校准粗估，依据112项跨层权限/执行/状态/持久化及回归提交范围；不是精确排期，复杂问题可能扩大。编译/测试/设备/依赖/环境等待另计，尚不能可靠预测日历等待区间，不承诺精确完工；全局goal继续active。
+
 **级别：中（P2，显式 once hook 的执行语义失效）；状态：正式 SettingsService/ChatService/Kernel、文件 SQLite、真实 read_file/write_file 已复现，未修复。模型 transport 为离线正常 Responses fixture。**
 
 #### 首次即时 Evidence（2026-10-24）

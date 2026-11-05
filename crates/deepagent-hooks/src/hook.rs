@@ -181,6 +181,15 @@ pub trait Hook: Send + Sync {
         self.name().to_string()
     }
 
+    /// Side-effect-free applicability used by admission wrappers. Direct
+    /// execution must gate effects with this same predicate; `Continue` alone
+    /// cannot tell an unmatched hook from an executed one. Wrappers preserving
+    /// eligibility must forward this query. Legacy unfiltered hooks apply by
+    /// default. This is not an authorization grant or a claim of execution.
+    fn applies(&self, _ctx: &HookContext) -> bool {
+        true
+    }
+
     /// Run the hook for the given context.
     async fn run(&self, ctx: &HookContext) -> Result<HookOutcome>;
 

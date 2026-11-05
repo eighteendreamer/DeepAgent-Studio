@@ -95,6 +95,10 @@ impl Hook for TrustedProjectHook {
         self.inner.dedup_key()
     }
 
+    fn applies(&self, ctx: &HookContext) -> bool {
+        self.inner.applies(ctx)
+    }
+
     async fn run(&self, ctx: &HookContext) -> Result<HookOutcome> {
         self.run_with_context(ctx, ToolExecutionContext::default())
             .await
@@ -608,5 +612,83 @@ mod project_hook_tests {
             registry.dispatch(&ctx).await.unwrap();
             assert_eq!(calls.load(Ordering::SeqCst) - before, 1);
         }
+    }
+
+    #[tokio::test]
+    async fn h240_project_authorization_and_native_matching_both_precede_once_admission() {
+        struct Host(Arc<AtomicUsize>);
+        #[async_trait]
+        impl deepagent_hooks::HookActionExecutor for Host {
+            async fn execute(
+                &self,
+                _: &deepagent_hooks::HookAction,
+                _: serde_json::Value,
+            ) -> Result<HookOutcome> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(HookOutcome::deny("synthetic project gate"))
+            }
+        }
+        let projects = Arc::new(ProjectService::new(Arc::new(
+            deepagent_persistence::Database::open_in_memory().unwrap(),
+        )));
+        projects.add_project("synthetic-once-project").unwrap();
+        let trust = Arc::new(ProjectHookTrust::new(
+            Some(projects.clone()),
+            "synthetic-once-project".into(),
+        ));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let definitions = HookDefinitions::parse(
+            r#"{"hooks":{"PreToolUse":[{
+            "matcher":"write_file","if":"write_file(allowed.txt)","once":true,
+            "hooks":[{"type":"mcp_tool","command":"mcp__synthetic__gate"}]}]}}"#,
+        )
+        .unwrap();
+        let ctx = |name, path| {
+            HookContext::new(
+                SessionId::nil(),
+                HookPoint::BeforeToolUse,
+                deepagent_hooks::HookData::before_tool(name, serde_json::json!({"path":path})),
+            )
+        };
+        let read = ctx("read_file", "primer");
+        let write = ctx("write_file", "allowed.txt");
+        let mut registry = HookRegistry::new();
+        definitions.register_into_with_host_wrapped(
+            &mut registry,
+            Arc::new(deepagent_hooks::SystemHookRunner),
+            Arc::new(Host(calls.clone())),
+            |inner| {
+                let outer = trust.wrap(inner);
+                assert!(!outer.applies(&read));
+                assert!(outer.applies(&write)); // A match is not a trust grant.
+                outer
+            },
+        );
+        let cloned = registry.clone();
+        assert_eq!(
+            cloned.dispatch(&write).await.unwrap(),
+            HookOutcome::Continue
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        projects
+            .set_hooks_trusted("synthetic-once-project", true)
+            .unwrap();
+        assert_eq!(cloned.dispatch(&read).await.unwrap(), HookOutcome::Continue);
+        assert_eq!(
+            cloned.dispatch(&ctx("write_file", "other")).await.unwrap(),
+            HookOutcome::Continue
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(registry.dispatch(&write).await.unwrap().is_deny());
+        for trusted in [false, true] {
+            projects
+                .set_hooks_trusted("synthetic-once-project", trusted)
+                .unwrap();
+            assert_eq!(
+                cloned.dispatch(&write).await.unwrap(),
+                HookOutcome::Continue
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }
