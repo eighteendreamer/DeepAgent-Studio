@@ -28,6 +28,11 @@ pub enum InputAttachment {
         id: String,
         path: PathBuf,
         media_type: String,
+        /// Digest returned by attachment ingestion, not recomputed at replay.
+        /// Optional on the wire so old clients receive an explicit integrity
+        /// error instead of an opaque deserialization failure.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sha256: Option<String>,
     },
     File {
         id: String,

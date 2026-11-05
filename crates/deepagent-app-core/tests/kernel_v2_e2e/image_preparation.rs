@@ -5,6 +5,9 @@ use deepagent_app_core::{AttachmentIngestDto, AttachmentService, VisionMode, Vis
 use deepagent_models::ModelRole;
 use deepagent_runtime::InputAttachment;
 
+#[path = "image_integrity.rs"]
+mod integrity;
+
 struct ImageAnswer {
     images_per_request: Arc<Mutex<Vec<usize>>>,
     request_bytes: Option<Arc<Mutex<Vec<usize>>>>,
@@ -276,6 +279,7 @@ async fn observe_imported_image(
             false,
             Some("audit-image-first"),
             vec![InputAttachment::Image {
+                sha256: imported.sha256.clone(),
                 id: imported.id.clone(),
                 path: path.clone(),
                 media_type: "image/png".into(),
@@ -443,6 +447,7 @@ async fn audit_unsupported_image_mime_is_rejected_before_transport() {
             false,
             Some("audit-svg-first"),
             vec![InputAttachment::Image {
+                sha256: imported.sha256.clone(),
                 id: imported.id,
                 path,
                 media_type: "image/svg+xml".into(),
@@ -525,6 +530,7 @@ async fn audit_retained_image_reuses_deepseek_file_id() {
             false,
             Some("audit-file-reference-first"),
             vec![InputAttachment::Image {
+                sha256: imported.sha256.clone(),
                 id: imported.id,
                 path: PathBuf::from(imported.original_path.unwrap()),
                 media_type: "image/png".into(),
@@ -637,6 +643,7 @@ async fn large_image_request(image_count: usize, source: &std::path::Path) -> (V
         assert!(imported.size_bytes > 20 * 1024 * 1024);
         assert!(imported.size_bytes < 32 * 1024 * 1024);
         inputs.push(InputAttachment::Image {
+            sha256: imported.sha256.clone(),
             id: imported.id,
             path: PathBuf::from(imported.original_path.unwrap()),
             media_type: "image/png".into(),
@@ -741,7 +748,6 @@ async fn audit_multi_image_request_respects_inline_body_budget() {
 
 #[cfg(feature = "runtimes")]
 #[tokio::test]
-#[ignore = "audit probe: retained image identity must not silently change with file bytes"]
 async fn audit_retained_image_verifies_ingested_digest() {
     use image::ImageEncoder;
     use sha2::{Digest, Sha256};
@@ -767,5 +773,14 @@ async fn audit_retained_image_verifies_ingested_digest() {
     assert!(
         !replacement_sent,
         "the original persisted attachment identity was reused to send different image bytes"
+    );
+    assert!(
+        !changed.1,
+        "integrity failure must not silently become text-only success"
+    );
+    assert_eq!(
+        changed.0,
+        vec![1],
+        "only the verified first request may reach transport"
     );
 }

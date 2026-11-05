@@ -105,21 +105,25 @@ fn message_attachments(
                 id,
                 path,
                 media_type,
+                sha256,
             } => MessageAttachment {
                 id: id.clone(),
                 kind: "image".into(),
                 media_type: Some(media_type.clone()),
                 path: Some(path.to_string_lossy().into_owned()),
+                sha256: sha256.clone(),
             },
             InputAttachment::File { id, path } => MessageAttachment {
                 id: id.clone(),
                 kind: "file".into(),
+                sha256: None,
                 media_type: None,
                 path: Some(path.to_string_lossy().into_owned()),
             },
             InputAttachment::Text { id, .. } => MessageAttachment {
                 id: id.clone(),
                 kind: "text".into(),
+                sha256: None,
                 media_type: None,
                 path: None,
             },
@@ -2428,6 +2432,7 @@ mod attachment_mapping_tests {
     fn maps_input_attachments_to_reference_only_message_attachments() {
         let mapped = message_attachments(&[
             InputAttachment::Image {
+                sha256: Some("a".repeat(64)),
                 id: "att_1".into(),
                 path: PathBuf::from("/tmp/a.png"),
                 media_type: "image/png".into(),
@@ -2440,6 +2445,7 @@ mod attachment_mapping_tests {
         assert_eq!(mapped.len(), 2);
         assert_eq!(mapped[0].kind, "image");
         assert_eq!(mapped[0].id, "att_1");
+        assert_eq!(mapped[0].sha256.as_deref(), Some("a".repeat(64).as_str()));
         assert_eq!(mapped[0].media_type.as_deref(), Some("image/png"));
         assert!(mapped[0]
             .path

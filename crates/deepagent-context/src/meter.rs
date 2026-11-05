@@ -306,6 +306,7 @@ mod tests {
             role: "user".into(),
             content: "look".into(),
             attachments: vec![deepagent_core::message::MessageAttachment {
+                sha256: None,
                 id: "image-1".into(),
                 kind: "image".into(),
                 media_type: Some("image/png".into()),

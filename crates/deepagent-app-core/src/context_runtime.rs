@@ -2617,6 +2617,7 @@ mod tests {
         }
         let image_message = Message::user("retained image").with_attachments(vec![
             deepagent_core::message::MessageAttachment {
+                sha256: Some("a".repeat(64)),
                 id: "retained-image".into(),
                 kind: "image".into(),
                 path: Some("retained.png".into()),

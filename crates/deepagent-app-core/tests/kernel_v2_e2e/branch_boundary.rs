@@ -383,6 +383,7 @@ async fn native_attachment_is_kept_once_when_branching_at_its_ui_source() {
         }).unwrap();
         assert_eq!(imported.status, "ready");
         let attachment = MessageAttachment {
+            sha256: imported.sha256,
             id: imported.id,
             kind: "image".into(),
             media_type: Some("image/png".into()),

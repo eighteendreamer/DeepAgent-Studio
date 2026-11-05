@@ -2158,6 +2158,7 @@ export function App() {
               id: a.id,
               path: a.originalPath as string,
               media_type: a.mime || null,
+              sha256: a.sha256 ?? null,
             }))
         : [];
 

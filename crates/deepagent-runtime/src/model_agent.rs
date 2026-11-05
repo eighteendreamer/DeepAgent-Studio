@@ -306,6 +306,15 @@ pub trait ReactiveContextCompactor: Send + Sync {
 /// materialized; the message then falls back to its text content.
 pub trait AttachmentDataResolver: Send + Sync {
     fn data_url(&self, attachment: &deepagent_core::message::MessageAttachment) -> Option<String>;
+    /// Checked materialization used by the sampling boundary. Integrity errors
+    /// must abort the request rather than silently projecting text-only input.
+    /// The default preserves existing non-file resolver implementations.
+    fn try_data_url(
+        &self,
+        attachment: &deepagent_core::message::MessageAttachment,
+    ) -> Result<Option<String>> {
+        Ok(self.data_url(attachment))
+    }
     /// Eligibility for request pricing. File-backed implementations can avoid
     /// loading and base64-encoding image bytes on every meter refresh.
     fn is_resolvable(&self, attachment: &deepagent_core::message::MessageAttachment) -> bool {
@@ -990,10 +999,11 @@ impl ModelAgent {
         }
     }
 
-    fn request_for_current_history(&self) -> ResponseRequest {
+    fn request_for_current_history(&self) -> Result<ResponseRequest> {
         let mut request = self.response_history.request(self.model.clone());
         if let Some(resolver) = self.attachment_resolver.as_ref() {
             let mut urls = std::collections::BTreeMap::new();
+            let mut references = std::collections::BTreeMap::new();
             for item in &request.input {
                 if let deepagent_core::response_item::ResponseInputItem::InputMessage {
                     attachments,
@@ -1002,7 +1012,24 @@ impl ModelAgent {
                 {
                     for attachment in attachments {
                         if attachment.kind == "image" {
-                            if let Some(url) = resolver.data_url(attachment) {
+                            // Both provider adapters index materialized URLs by
+                            // id. Reject ambiguous history, never let a later
+                            // reference overwrite an earlier content identity.
+                            if let Some(previous) = references.insert(&attachment.id, attachment) {
+                                if previous != attachment {
+                                    return Err(CoreError::invalid(
+                                        "attachment_integrity: conflicting image references; reattach with a new id",
+                                    ));
+                                }
+                            }
+                            if let Some(url) = resolver.try_data_url(attachment)? {
+                                if let Some(previous) = urls.get(&attachment.id) {
+                                    if previous != &url {
+                                        return Err(CoreError::invalid(
+                                            "attachment_integrity: inconsistent image materialization",
+                                        ));
+                                    }
+                                }
                                 urls.insert(attachment.id.clone(), url);
                             }
                         }
@@ -1013,7 +1040,7 @@ impl ModelAgent {
                 request.attachment_data_urls = urls;
             }
         }
-        request
+        Ok(request)
     }
 
     fn push_provider_output_items(&mut self, _assistant: Message, items: &[ResponseOutputItem]) {
@@ -2399,7 +2426,7 @@ impl ModelAgent {
         self.maybe_inject_todo_reminder();
 
         let mut request = self
-            .request_for_current_history()
+            .request_for_current_history()?
             .with_reasoning_effort(self.reasoning_effort)
             .with_tools(self.tools.clone());
         let request_started_at = std::time::Instant::now();
@@ -2431,7 +2458,7 @@ impl ModelAgent {
             {
                 return Err(CoreError::other("request cancelled by user"));
             }
-            let canonical = self.request_for_current_history();
+            let canonical = self.request_for_current_history()?;
             request.replace_history_from(&canonical);
             if attempt == 1 {
                 if let Some(sink) = &self.events {
@@ -2537,7 +2564,7 @@ impl ModelAgent {
                         self.sync_message_projection();
                         self.push_message(Message::user(MAX_OUTPUT_RECOVERY_PROMPT));
                         request = self
-                            .request_for_current_history()
+                            .request_for_current_history()?
                             .with_reasoning_effort(self.reasoning_effort)
                             .with_tools(self.tools.clone());
                         max_output_recoveries += 1;
@@ -2580,7 +2607,7 @@ impl ModelAgent {
                                         return Err(CoreError::other("request cancelled by user"));
                                     }
                                     request = self
-                                        .request_for_current_history()
+                                        .request_for_current_history()?
                                         .with_reasoning_effort(self.reasoning_effort)
                                         .with_tools(self.tools.clone());
                                     continue;
@@ -2621,7 +2648,7 @@ impl ModelAgent {
                                             ));
                                         }
                                         request = self
-                                            .request_for_current_history()
+                                            .request_for_current_history()?
                                             .with_reasoning_effort(self.reasoning_effort)
                                             .with_tools(self.tools.clone());
                                         emit_attempt_reset(

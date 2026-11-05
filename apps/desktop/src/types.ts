@@ -473,7 +473,7 @@ export type ComposerAttachmentStatus = "ready" | "processing" | "error";
  * parts server-side at request time.
  */
 export type RunAttachment =
-  | { type: "image"; id: string; path: string; media_type?: string | null }
+  | { type: "image"; id: string; path: string; media_type?: string | null; sha256?: string | null }
   | { type: "file"; id: string; path: string }
   | { type: "text"; id: string; content: string };
 

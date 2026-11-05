@@ -113,6 +113,7 @@ mod tests {
         let text = Message::user("same text");
         let legacy = ResponseItem::from_message_content(&text);
         let image = text.clone().with_attachments(vec![MessageAttachment {
+            sha256: Some("a".repeat(64)),
             id: "image".into(),
             kind: "image".into(),
             media_type: Some("image/png".into()),

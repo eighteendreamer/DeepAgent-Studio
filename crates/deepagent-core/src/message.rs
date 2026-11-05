@@ -63,6 +63,10 @@ pub struct MessageAttachment {
     /// On-disk path of the persisted original, resolved at request time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// SHA-256 of the admitted original bytes. Absent on legacy references;
+    /// readers must not reconstruct historical identity from the current file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 /// A single conversation message.
@@ -217,7 +221,15 @@ mod tests {
 
     #[test]
     fn attachment_reference_roundtrips() {
+        let legacy: MessageAttachment =
+            serde_json::from_str(r#"{"id":"old","kind":"image","path":"old.png"}"#).unwrap();
+        assert!(legacy.sha256.is_none());
+        assert!(serde_json::to_value(&legacy)
+            .unwrap()
+            .get("sha256")
+            .is_none());
         let m = Message::user("look at this").with_attachments(vec![MessageAttachment {
+            sha256: Some("a".repeat(64)),
             id: "att_1".into(),
             kind: "image".into(),
             media_type: Some("image/png".into()),

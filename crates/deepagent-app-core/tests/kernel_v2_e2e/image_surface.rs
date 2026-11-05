@@ -63,6 +63,7 @@ async fn multi_image_tool_loop_and_disk_restart_keep_one_admitted_turn() {
         }).unwrap();
         assert_eq!(imported.status, "ready");
         inputs.push(InputAttachment::Image {
+            sha256: imported.sha256.clone(),
             id: imported.id,
             path: imported.original_path.unwrap().into(),
             media_type: "image/png".into(),

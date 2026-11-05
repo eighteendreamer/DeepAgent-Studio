@@ -9,6 +9,7 @@ fn admitted_images_keep_native_refs_and_legacy_mirror_branch_boundaries() {
     let path = root.path().join("images.sqlite");
     let clock = FixedClock::new(1000);
     let message = Message::user("image turn").with_attachments(vec![MessageAttachment {
+        sha256: Some("a".repeat(64)),
         id: "image-ref".into(),
         kind: "image".into(),
         media_type: Some("image/png".into()),

@@ -639,6 +639,7 @@ mod tests {
             "deepseek-flash",
             vec![
                 Message::user("look at this").with_attachments(vec![MessageAttachment {
+                    sha256: None,
                     id: "att_1".into(),
                     kind: "image".into(),
                     media_type: Some("image/png".into()),

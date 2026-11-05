@@ -23,6 +23,7 @@ fn admitted_images_survive_history_replacement_compaction_and_metering() {
     let refs: Vec<_> = ["left", "right"]
         .iter()
         .map(|id| MessageAttachment {
+            sha256: Some("a".repeat(64)),
             id: (*id).into(),
             kind: "image".into(),
             media_type: Some("image/png".into()),
@@ -43,7 +44,7 @@ fn admitted_images_survive_history_replacement_compaction_and_metering() {
         content: "native old answer".into(),
     }])
     .with_attachment_resolver(Arc::new(ImageResolver));
-    let request = agent.request_for_current_history();
+    let request = agent.request_for_current_history().unwrap();
     assert_eq!(request.attachment_data_urls.len(), 2);
     let live = request.input.last().unwrap().clone();
     assert!(
@@ -75,6 +76,7 @@ fn admitted_images_survive_history_replacement_compaction_and_metering() {
         assert_eq!(
             agent
                 .request_for_current_history()
+                .unwrap()
                 .attachment_data_urls
                 .len(),
             2

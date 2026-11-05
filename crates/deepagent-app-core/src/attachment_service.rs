@@ -5,6 +5,7 @@
 //! attachment folder and reuses `FilePreviewService` for model-readable text.
 
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use base64::Engine as _;
@@ -334,10 +335,12 @@ fn clean_file_name(value: &str) -> String {
 /// Resolves a persisted image attachment to a base64 data URL for provider wire
 /// encoding, reading the file referenced by [`MessageAttachment::path`].
 ///
-/// DeepSeek accepts `data:` URLs for both Chat Completions (`image_url.url`) and
-/// Responses (`input_image.image_url`). A single image must be ≤ 32 MiB; larger
-/// images are skipped (returns `None`) so the message falls back to its text.
+/// The persisted digest, not mutable metadata.json, is authoritative. Hashing
+/// and encoding use the same bounded read; an unverified image never reaches
+/// sampling. Legacy references remain deserializable but require reattachment.
 pub struct FileAttachmentResolver;
+
+const MAX_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
 
 impl AttachmentDataResolver for FileAttachmentResolver {
     fn is_resolvable(&self, attachment: &MessageAttachment) -> bool {
@@ -347,19 +350,53 @@ impl AttachmentDataResolver for FileAttachmentResolver {
                 .as_deref()
                 .and_then(|path| std::fs::metadata(path).ok())
                 .is_some_and(|metadata| {
-                    metadata.is_file() && metadata.len() > 0 && metadata.len() <= 32 * 1024 * 1024
+                    metadata.is_file() && metadata.len() > 0 && metadata.len() <= MAX_IMAGE_BYTES
                 })
     }
 
     fn data_url(&self, attachment: &MessageAttachment) -> Option<String> {
-        if !self.is_resolvable(attachment) {
-            return None;
+        self.try_data_url(attachment).ok().flatten()
+    }
+
+    fn try_data_url(&self, attachment: &MessageAttachment) -> Result<Option<String>> {
+        if attachment.kind != "image" {
+            return Ok(None);
         }
-        let path = attachment.path.as_deref()?;
-        let bytes = std::fs::read(path).ok()?;
-        const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
-        if bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
-            return None;
+        let failure = |reason: &str| {
+            CoreError::invalid(format!(
+                "attachment_integrity: {reason}; reattach the image"
+            ))
+        };
+        let expected = attachment
+            .sha256
+            .as_deref()
+            .ok_or_else(|| failure("historical or input image has no admitted SHA-256"))?;
+        if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(failure("invalid admitted SHA-256"));
+        }
+        let path = attachment
+            .path
+            .as_deref()
+            .ok_or_else(|| failure("missing image path"))?;
+        let file = fs::File::open(path)
+            .map_err(|error| failure(&format!("open image failed: {error}")))?;
+        let metadata = file
+            .metadata()
+            .map_err(|error| failure(&format!("inspect opened image failed: {error}")))?;
+        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_IMAGE_BYTES {
+            return Err(failure(
+                "image is not a nonempty regular file within the byte limit",
+            ));
+        }
+        let mut bytes = Vec::new();
+        file.take(MAX_IMAGE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| failure(&format!("read image failed: {error}")))?;
+        if bytes.is_empty() || bytes.len() as u64 > MAX_IMAGE_BYTES {
+            return Err(failure("image changed size outside the byte limit"));
+        }
+        if !hex_sha256(&bytes).eq_ignore_ascii_case(expected) {
+            return Err(failure("image bytes do not match admitted SHA-256"));
         }
         let mime = attachment
             .media_type
@@ -367,7 +404,7 @@ impl AttachmentDataResolver for FileAttachmentResolver {
             .or_else(|| sniff_image_mime(path))
             .unwrap_or_else(|| "image/png".to_string());
         let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-        Some(format!("data:{mime};base64,{encoded}"))
+        Ok(Some(format!("data:{mime};base64,{encoded}")))
     }
 }
 
@@ -401,6 +438,7 @@ mod tests {
         let path = dir.path().join("shot.png");
         std::fs::write(&path, [0x89u8, b'P', b'N', b'G']).unwrap();
         let attachment = MessageAttachment {
+            sha256: Some(hex_sha256(&[0x89u8, b'P', b'N', b'G'])),
             id: "att_1".into(),
             kind: "image".into(),
             media_type: Some("image/png".into()),
@@ -414,6 +452,7 @@ mod tests {
     fn file_attachment_resolver_skips_non_image_and_missing() {
         use deepagent_runtime::AttachmentDataResolver;
         let non_image = MessageAttachment {
+            sha256: None,
             id: "t".into(),
             kind: "text".into(),
             media_type: None,
@@ -421,12 +460,57 @@ mod tests {
         };
         assert!(FileAttachmentResolver.data_url(&non_image).is_none());
         let no_path = MessageAttachment {
+            sha256: None,
             id: "i".into(),
             kind: "image".into(),
             media_type: None,
             path: None,
         };
         assert!(FileAttachmentResolver.data_url(&no_path).is_none());
+    }
+
+    #[test]
+    fn checked_image_resolution_binds_one_read_and_rejects_unverifiable_content() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("image.png");
+        let original = b"synthetic content";
+        fs::write(&path, original).unwrap();
+        let mut reference = MessageAttachment {
+            id: "fixture".into(),
+            kind: "image".into(),
+            media_type: Some("image/png".into()),
+            path: Some(path.to_string_lossy().into_owned()),
+            sha256: Some(hex_sha256(original)),
+        };
+        let url = FileAttachmentResolver
+            .try_data_url(&reference)
+            .unwrap()
+            .unwrap();
+        // Encoding must use exactly the buffer that passed the digest check.
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(url.split_once(',').unwrap().1)
+                .unwrap(),
+            original
+        );
+        reference.sha256 = Some(hex_sha256(original).to_uppercase());
+        assert!(FileAttachmentResolver
+            .try_data_url(&reference)
+            .unwrap()
+            .is_some());
+        for bytes in [b"changed".as_slice(), b"".as_slice()] {
+            fs::write(&path, bytes).unwrap();
+            assert!(FileAttachmentResolver.try_data_url(&reference).is_err());
+        }
+        fs::File::create(&path)
+            .unwrap()
+            .set_len(MAX_IMAGE_BYTES + 1)
+            .unwrap();
+        assert!(FileAttachmentResolver.try_data_url(&reference).is_err());
+        fs::remove_file(&path).unwrap();
+        assert!(FileAttachmentResolver.try_data_url(&reference).is_err());
+        reference.path = Some(root.path().to_string_lossy().into_owned());
+        assert!(FileAttachmentResolver.try_data_url(&reference).is_err());
     }
 
     #[test]

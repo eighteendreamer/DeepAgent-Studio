@@ -113,6 +113,8 @@ async fn sample_image_role(role: &str) -> RoleImageObservation {
             role: role.into(),
             content: "Interpret this role-scoped image.".into(),
             attachments: vec![MessageAttachment {
+
+                sha256: None,
                 id: "role-image".into(),
                 kind: "image".into(),
                 media_type: Some("image/png".into()),
@@ -165,6 +167,7 @@ async fn audit_responses_tool_output_images_are_preserved_before_transport() {
     let image_result =
         Message::tool_result("call-image", "screenshot ready").with_attachments(vec![
             MessageAttachment {
+                sha256: None,
                 id: "tool-image".into(),
                 kind: "image".into(),
                 media_type: Some("image/png".into()),
@@ -237,6 +240,7 @@ async fn sample(model: &str, with_image: bool) -> Observation {
             role: "user".into(),
             content: "Inspect the image.".into(),
             attachments: vec![MessageAttachment {
+                sha256: None,
                 id: "audit-pixel".into(),
                 kind: "image".into(),
                 media_type: Some("image/png".into()),

@@ -400,6 +400,7 @@ fn h242_saved_surface_uses_existing_compaction_replacement_and_native_item_proje
             role: "user".into(),
             content: "NATIVE_ATTACHMENT_REF".into(),
             attachments: vec![MessageAttachment {
+                sha256: None,
                 id: "file-242".into(),
                 kind: "file".into(),
                 media_type: Some("text/plain".into()),

@@ -1006,6 +1006,7 @@ mod tests {
         use deepagent_core::message::MessageAttachment;
         let sid = SessionId::nil();
         let image = Message::user("image turn").with_attachments(vec![MessageAttachment {
+            sha256: Some("a".repeat(64)),
             id: "legacy-image".into(),
             kind: "image".into(),
             media_type: Some("image/png".into()),

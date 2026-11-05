@@ -741,6 +741,7 @@ mod tests {
             role: "user".into(),
             content: "what is this?".into(),
             attachments: vec![MessageAttachment {
+                sha256: None,
                 id: "att_1".into(),
                 kind: "image".into(),
                 media_type: Some("image/png".into()),
@@ -772,6 +773,7 @@ mod tests {
             role: "assistant".into(),
             content: "hi".into(),
             attachments: vec![MessageAttachment {
+                sha256: None,
                 id: "att_1".into(),
                 kind: "image".into(),
                 media_type: None,
@@ -795,6 +797,7 @@ mod tests {
             role: "user".into(),
             content: "hi".into(),
             attachments: vec![MessageAttachment {
+                sha256: None,
                 id: "missing".into(),
                 kind: "image".into(),
                 media_type: None,
