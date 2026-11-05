@@ -4,6 +4,8 @@
 use super::*;
 use deepagent_models::ModelRole;
 use deepagent_persistence::checkpoint_store::CheckpointStore;
+use deepagent_persistence::fs_commit::access::{open_policy_source, WindowsDacl};
+use deepagent_persistence::run_store::RunStore;
 use serde_json::{json, Value};
 use std::path::Path;
 
@@ -132,6 +134,8 @@ struct Observation {
     before: Value,
     after: Value,
     restored: Value,
+    after_preserved: bool,
+    restored_preserved: bool,
 }
 
 async fn observe(tool: &'static str, protect: bool) -> Observation {
@@ -142,6 +146,7 @@ async fn observe(tool: &'static str, protect: bool) -> Observation {
     std::fs::write(&path, BEFORE).unwrap();
     assert!(path.starts_with(temporary.path()));
     let before = acl(&path, protect);
+    let native_before = WindowsDacl::capture(&open_policy_source(&path).unwrap()).unwrap();
     if protect {
         assert_eq!(before["protected"], true);
         assert_eq!(before["rules"], 1);
@@ -208,10 +213,27 @@ async fn observe(tool: &'static str, protect: bool) -> Observation {
         if tool == "read_file" { BEFORE } else { AFTER }
     );
     let after = acl(&path, false);
+    let after_preserved = native_before
+        .verify_publication(&open_policy_source(&path).unwrap(), || {
+            open_policy_source(&workspace)
+        })
+        .unwrap();
     let db = Database::open(&db_path).unwrap();
+    let persisted_run = RunStore::new(&db).get(RUN_ID).unwrap().unwrap();
+    assert_eq!(persisted_run.terminal_kind.as_deref(), Some("succeeded"));
     deepagent_runtime::CheckpointManager::restore(&db, &checkpoint_id).unwrap();
     assert_eq!(std::fs::read_to_string(&path).unwrap(), BEFORE);
     let restored = acl(&path, false);
+    let restored_preserved = native_before
+        .verify_publication(&open_policy_source(&path).unwrap(), || {
+            open_policy_source(&workspace)
+        })
+        .unwrap();
+    assert_eq!(RunStore::new(&db).get(RUN_ID).unwrap(), Some(persisted_run));
+    assert_eq!(before["protected"], after["protected"]);
+    assert_eq!(before["protected"], restored["protected"]);
+    assert_eq!(before["rules"], after["rules"]);
+    assert_eq!(before["rules"], restored["rules"]);
     eprintln!("file-metadata audit: tool={tool} protected_fixture={protect} before_protected={} after_protected={} before_rules={} after_rules={} policy_equal={} restored_policy_equal={}",
         before["protected"],after["protected"],before["rules"],after["rules"],
         before["dacl"] == after["dacl"], before["dacl"] == restored["dacl"]);
@@ -219,6 +241,8 @@ async fn observe(tool: &'static str, protect: bool) -> Observation {
         before,
         after,
         restored,
+        after_preserved,
+        restored_preserved,
     }
 }
 
@@ -230,12 +254,11 @@ async fn file_metadata_read_and_inherited_write_controls() {
         read.before == read.restored,
         "read-only restore changed DACL"
     );
-    let write = observe("write_file", false).await;
-    assert!(write.before == write.after, "inherited write changed DACL");
-    assert!(
-        write.before == write.restored,
-        "inherited restore changed DACL"
-    );
+    for tool in ["write_file", "edit_file", "multi_edit"] {
+        let write = observe(tool, false).await;
+        assert!(write.after_preserved, "inherited write changed policy");
+        assert!(write.restored_preserved, "inherited restore changed policy");
+    }
 }
 
 #[tokio::test]
@@ -248,13 +271,13 @@ async fn audit_file_content_tools_preserve_protected_dacl() {
     assert!(
         observations
             .iter()
-            .all(|(_, value)| value.before == value.after),
+            .all(|(_, value)| value.before == value.after && value.after_preserved),
         "content-only edits replaced the original access-control policy"
     );
     assert!(
         observations
             .iter()
-            .all(|(_, value)| value.before == value.restored),
+            .all(|(_, value)| value.before == value.restored && value.restored_preserved),
         "checkpoint restore did not recover the original access-control policy"
     );
 }

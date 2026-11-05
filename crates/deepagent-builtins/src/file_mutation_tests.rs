@@ -252,11 +252,19 @@ mod access_policy {
                 }
                 let before = capture(&files.path());
                 files.read().await;
+                let result = files.change(tool, INITIAL).await;
+                assert!(result.ok, "tool={tool}, explicit={explicit}: {result:?}");
+                let file = std::fs::File::open(files.path()).unwrap();
                 assert!(
-                    files.change(tool, INITIAL).await.ok,
-                    "tool={tool}, explicit={explicit}"
+                    before
+                        .verify_publication(&file, || {
+                            deepagent_persistence::fs_commit::access::open_policy_source(
+                                files.root.path(),
+                            )
+                        })
+                        .unwrap(),
+                    "tool changed DACL"
                 );
-                assert!(capture(&files.path()) == before, "tool changed DACL");
                 assert_eq!(files.disk(), INITIAL.replace("value=old", "value=new"));
                 no_staging(files.root.path());
             }
@@ -273,6 +281,28 @@ mod access_policy {
             .unwrap();
         assert!(result.ok, "{result:?}");
         assert!(capture(&files.root.path().join("created.txt")) == expected);
+        no_staging(files.root.path());
+    }
+
+    #[test]
+    fn inherited_stage_policy_is_verified_before_publication() {
+        use deepagent_persistence::fs_commit::access::open_policy_source;
+        let files = Files::new(INITIAL);
+        let before = capture(&files.path());
+        let target = files.root.write_target(&files.path(), false).unwrap();
+        let mut stage = target.stage().unwrap();
+        use std::io::Write;
+        stage
+            .file_mut()
+            .write_all(b"published synthetic body")
+            .unwrap();
+        stage.publish(&target, true).unwrap();
+        assert_eq!(files.disk(), "published synthetic body");
+        assert!(before
+            .verify_publication(&open_policy_source(&files.path()).unwrap(), || {
+                open_policy_source(files.root.path())
+            })
+            .unwrap());
         no_staging(files.root.path());
     }
 

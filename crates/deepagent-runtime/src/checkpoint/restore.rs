@@ -582,6 +582,39 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn legacy_inherited_checkpoint_metadata_restores_without_host_temp_dependency() {
+        // Replay a version-1 legacy snapshot of the same inherited ACEs. Do not
+        // depend on TEMP having a legacy DACL or edit any host directory policy.
+        let fixture = Fixture::new();
+        fs::create_dir(fixture.path("tree")).unwrap();
+        fs::write(fixture.path("tree/file"), "before").unwrap();
+        let mut record = fixture.snapshot(&["tree"]);
+        let mut manifest: serde_json::Value = serde_json::from_str(&record.manifest).unwrap();
+        for entry in manifest["entries"][0]["windows_dacl"]["entries"]
+            .as_array_mut()
+            .unwrap()
+        {
+            let policy = &mut entry["policy"];
+            assert_eq!(policy["protected"], false);
+            let text = policy["sddl"].as_str().unwrap();
+            let rules = &text[text.find('(').unwrap()..];
+            policy["sddl"] = format!("D:{rules}").into();
+        }
+        record.manifest = manifest.to_string();
+        fs::write(fixture.path("tree/file"), "current").unwrap();
+        RestoreTransaction::run(&[record], |_| {
+            assert_eq!(
+                fs::read_to_string(fixture.path("tree/file")).unwrap(),
+                "before"
+            );
+            Ok(())
+        })
+        .unwrap();
+        fixture.assert_no_stages();
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn changed_final_parent_policy_compensates_content_and_dacl() {
         use deepagent_persistence::fs_commit::access::{
             create_snapshot_target, open_snapshot_source, WindowsDacl,

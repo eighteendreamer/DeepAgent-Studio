@@ -173,7 +173,7 @@ impl WriteDirectory {
         match open_name(
             self.handle(),
             &mut relative_name(name)?,
-            READ_CONTROL,
+            READ_CONTROL | FILE_READ_ATTRIBUTES,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             FILE_OPEN,
             FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
@@ -182,6 +182,19 @@ impl WriteDirectory {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error),
         }
+    }
+
+    fn policy_source(&self) -> io::Result<File> {
+        // Empty relative name reopens the retained directory itself, not a
+        // pathname. Include attribute access for the correct inheritance view.
+        open_name(
+            self.handle(),
+            &mut [],
+            READ_CONTROL | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_OPEN,
+            FILE_DIRECTORY_FILE,
+        )
     }
 
     pub(in crate::fs_guard) fn stage(
@@ -237,12 +250,7 @@ impl Stage {
             return Err(io::Error::other("FILE_ACCESS_POLICY_CHANGED: target policy changed during staging; no content was published"));
         }
         if let Some(policy) = &self.policy {
-            policy.apply(&self.file, false)?;
-            if WindowsDacl::capture(&self.file)? != *policy {
-                return Err(io::Error::other(
-                    "file access policy could not be preserved before publication",
-                ));
-            }
+            policy.publish(&self.file, || parent.policy_source())?;
         }
         let name = relative_name(name)?;
         let size = size_of::<FILE_RENAME_INFORMATION>() + size_of_val(name.as_slice());
@@ -283,6 +291,67 @@ impl Stage {
         }
         self.published = true;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+    use deepagent_persistence::fs_commit::access::open_policy_source;
+
+    #[test]
+    fn policy_queries_require_attributes_and_keep_the_pinned_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let pinned = WriteDirectory::open(root.path(), false).unwrap();
+        let original = open_policy_source(root.path()).unwrap();
+        let query = pinned.policy_source().unwrap();
+        assert!(file_identity(&original).unwrap() == file_identity(&query).unwrap());
+        assert_eq!(
+            WindowsDacl::capture(&original).unwrap(),
+            WindowsDacl::capture(&query).unwrap()
+        );
+
+        std::fs::write(root.path().join("source"), b"synthetic").unwrap();
+        let source = open_policy_source(&root.path().join("source")).unwrap();
+        let before = WindowsDacl::capture(&source).unwrap();
+        for access in [READ_CONTROL, READ_CONTROL | FILE_READ_ATTRIBUTES] {
+            let native_source = open_name(
+                pinned.handle(),
+                &mut relative_name(OsStr::new("source")).unwrap(),
+                access,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                FILE_OPEN,
+                FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+            )
+            .unwrap();
+            assert!(file_identity(&source).unwrap() == file_identity(&native_source).unwrap());
+            let captured = WindowsDacl::capture(&native_source);
+            if access == READ_CONTROL {
+                assert_eq!(
+                    captured.unwrap_err().kind(),
+                    io::ErrorKind::PermissionDenied,
+                    "an incomplete handle must not silently capture a synthesized policy"
+                );
+            } else {
+                assert_eq!(captured.unwrap(), before);
+            }
+        }
+        drop((source, original, query));
+        let mut stage = pinned.stage(root.path(), OsStr::new("source")).unwrap();
+        assert_eq!(stage.policy.as_ref(), Some(&before));
+        use std::io::Write;
+        stage.file.write_all(b"published synthetic body").unwrap();
+        stage.publish(&pinned, OsStr::new("source"), true).unwrap();
+        assert_eq!(
+            std::fs::read(root.path().join("source")).unwrap(),
+            b"published synthetic body"
+        );
+        assert!(before
+            .verify_publication(
+                &open_policy_source(&root.path().join("source")).unwrap(),
+                || pinned.policy_source()
+            )
+            .unwrap());
     }
 }
 

@@ -55,16 +55,30 @@ mod native {
         /// final parent; descendants are prepared below their original tree.
         pub(crate) fn publish_policy(&self, published: &Path) -> Result<()> {
             if let Some(file) = &self.file {
-                self.policy.apply(file, false).map_err(fs_error)?;
+                self.policy
+                    .publish(file, || publication_parent(published))
+                    .map_err(fs_error)?;
             }
             let file = open_policy_source(published).map_err(fs_error)?;
-            if WindowsDacl::capture(&file).map_err(fs_error)? != self.policy {
+            if !self
+                .policy
+                .verify_publication(&file, || publication_parent(published))
+                .map_err(fs_error)?
+            {
                 return Err(CoreError::other(
                     "checkpoint DACL differs after publication; refusing history commit",
                 ));
             }
             Ok(())
         }
+    }
+
+    fn publication_parent(published: &Path) -> io::Result<File> {
+        open_policy_source(
+            published
+                .parent()
+                .ok_or_else(|| io::Error::other("published entry has no parent"))?,
+        )
     }
 
     /// Windows refuses a directory move with live descendant file objects,

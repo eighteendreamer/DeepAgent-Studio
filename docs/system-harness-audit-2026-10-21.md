@@ -12666,7 +12666,7 @@ E-H272-17（提交回填，2026-10-30）：修复提交2623ea22a377bce8df74d9e5e
 
 ### H-287：Windows 内容原子替换丢失目标文件 DACL，成功编辑及检查点恢复均未保留原访问控制策略
 
-**级别：中（P2，条件性文件权限元数据完整性缺陷）；当前状态：待修复（2026-11-05依据E-H287-16的D:继承控制位反例重新打开）；历史修复`f2efc1b5`及2026-10-28原所列本机范围验收保留，不覆盖新输入。H-306与旧lint仍独立。** 以下保留原始事实和历史路径，候选及真实失败/通过边界见E-H287-01～15；不描述为所有文件默认泄漏、权限提升或沙箱绕过。
+**级别：中（P2，条件性文件权限元数据完整性缺陷）；当前状态：修复中（2026-11-05依据E-H287-16重新打开，E-H287-17起返修）；历史修复`f2efc1b5`及2026-10-28原所列本机范围验收保留，不覆盖新输入。H-306与旧lint仍独立。** 以下保留原始事实和历史路径，候选及真实失败/通过边界见E-H287-01～15；不描述为所有文件默认泄漏、权限提升或沙箱绕过。
 
 #### 即时 Evidence（2026-10-25，首次有效复现后立即登记）
 
@@ -12769,6 +12769,45 @@ E-H287-15（独立提交与收尾回执）：修复、默认回归测试及当�
 初步根因边界仍是deepagent-persistence/fs_commit/access.rs的原生capture/apply与严格策略身份，消费方为builtins既有原子发布、Runtime检查点树复制/发布及AppCore恢复；需区分自动继承控制位的原生变化与真实授权差异，不能通过删除DACL检查、只比数量、去掉SDDL前缀、强制所有目标protected或吞失败取绿。下一步先补不依赖宿主TEMP形状的真实D:与D:AI对照，查证原生控制位/继承规则，形成单一可验证假设，再决定共享seam修复并对三工具/目录树/重开/失败补偿全链验收。NULL/empty、显式allow/deny、来源策略变化及旧checkpoint拒绝仍需保留。
 
 当前状态改为待修复：原独立commit保留追溯，本次无修复提交、不计新增验收；本机范围返修预计6–12有效小时，依据共享seam及三个生产消费方/正式Kernel与持久化重开的回归规模，低置信，未知原生继承组合可能扩大。整体当前160验收/23历史跳过/7归并/3撤销/113待修/0修复中，113未关闭含H180授权跳过，实际待处理112；本轮H239新增1与H287重新打开1分别记录，不能净增或重复计数。总200–400有效小时仍是未逐项校准的历史粗估；设备/依赖/环境等待另计，目前无可靠总等待上界，不承诺日历完工。
+
+**E-H287-17（本轮原探针复核与方案边界，2026-11-05，未验收）**：从638b86a9开始，tracked干净、无未完成合并；原五项未跟踪内容仅列名不读改。重读审计/台账、Cargo/CI/格式、共享WindowsDacl、builtins句柄发布、Runtime树复制/恢复补偿及正式Kernel/SQLite重开测试。本轮只处理H287继承控制位根因，不混修H306/旧lint。隔离HOME/APPDATA/凭据环境，独立target/h287-repair-20261105保存证据，仅合成文件与临时SQLite。原精确探针在G根合成TEMP再次真实0过/1败、exit101、2.917秒，D:变D:AI，original-g-root.log保留。
+
+查证本地Codex registered_runtime/metadata.rs使用持句柄NtSetSecurityObject保留控制位、避免SetSecurityInfo递归传播，及[微软NtSetSecurityObject](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntsetsecurityobject)、[控制位](https://learn.microsoft.com/en-us/windows/win32/secauthz/security-descriptor-control)、[SetSecurityInfo](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo)文档。候选必须精确保留原策略和继承语义，严格相等检查不放宽；还需验证父目录规则改变时仍拒绝或补偿，不能只把setter替换后删旧失败测试。正在补不依赖宿主TEMP的legacy/AI/protected、显式allow/deny、NULL/empty及目录树对照；首个新增夹具在native seed等值断言失败，尚未到产品断言，不记为产品红测。当前无生产行为修改、无新验收/修复commit。H287修复中，160验收/23历史跳过/7归并/3撤销/112待修/1修复中，113未关闭含H180授权跳过，实际待处理112。返修6–12与总200–400有效小时均低置信估算，环境等待另计。
+
+**E-H287-18（方案反例、用户兼容性决策与候选，2026-11-05，未验收）**：原生NtSetSecurityObject控制位矩阵（8种输入控制位×4个初始设置×3种security-information，共96组、每组两次setter调用）均未产生未保护legacy D:：不含AR+AI的输入实际变为D:P，AR+AI变为D:AI/PAI；初始设置也是经该setter产生，不能说成96个不同实际初始模型。CreateFileW显式descriptor的5组也均成为D:P。native-control-matrix/native-information-matrix/creation-control-matrix及native-experiments.patch保留；这些是方案反例/诊断，不是修复验收。试验测试与Wdk feature已精确反向移出tracked改动，不把失败候选提交到生产。用户随后明确选择“允许受控升级，但须完整验证”，仅据此推进有条件的legacy→AI兼容变化，不再承诺原始控制位逐位保留。
+
+新增不依赖宿主TEMP的版本1legacy检查点树元数据回放测试，在原生产实现真实0/1、exit101、43.575秒（legacy-checkpoint-red.log）。候选复用原SetSecurityInfo与共享WindowsDacl边界，原快照/PartialEq、目标策略漂移检查和NULL/empty仍保持严格身份；新增publication verifier只允许未保护D:→D:AI且ACE全文/顺序/继承flags完全相同，还必须由微软ConvertToAutoInheritPrivateObjectSecurity依据当前父目录证明整个转换结果严格相等，不是全局忽略AI。父策略不符、原生转换失败、protected改变及规则差异均拒绝；日志仅记录升级事实，不打印策略/身份。转换所需owner/group只从当前句柄读取到内存，不能持久化或改变owner/SACL。首候选因DACL-only descriptor缺owner/group而真实0/1（1338），补完整内存descriptor后legacy回放1/0，原失败保留。
+
+共享真实读取允许/执行拒绝、规则掩码/ACE类型/继承flags、错误父目录与保护位对照补充中；ReOpenFile目录查询候选真实access denied，未作为最终路径。当前共享7/0、Runtime checkpoint 21/0（含父策略变更拒绝与目录恢复/历史失败补偿）已通过；builtins G根组2/1，真实工具仍失败，需追查句柄父目录查询，不据局部通过宣布完成。先前一次builtins过滤名错误为0测试，明确不计验收。正式Kernel/重开、完整相关组/workspace/fmt/lint/CLI/Tauri尚待最终候选验收。证据均在独立target/h287-repair-20261105，本项仍修复中、无修复commit、新增验收0；总状态/工时沿E17，不混修其他编号。
+
+**E-H287-19（句柄查询契约与发布前原生证明，2026-11-05，候选未最终验收）**：E18后继续排查，同一文件ID的READ_CONTROL-only原生句柄经GetSecurityInfo返回protected/非继承视图；加入FILE_READ_ATTRIBUTES才与Win32路径句柄一致，backup-intent不能代替该权限。handle-query-contract.log记录bare/attributes/backup-intent的控制位和ACE flags，不输出身份。NtQuerySecurityObject原始磁盘ACL不能直接替代：legacy原始ACL缺少推导的ID信息，候选导致ACE重复/保护位不符，native-query-builtins、native-boundary-{shared,builtins,runtime}、native-publication-rule-shape及native-boundary-candidate.patch保留失败，已撤回原始查询/原生setter候选及Wdk feature。最终候选沿用GetSecurityInfo/SetSecurityInfo，在共享读取前检查属性查询权限；builtins目标及固定父句柄、Runtime共享目录创建/策略重开补齐FILE_READ_ATTRIBUTES，不再保存错误视图。属性契约候选G根builtins4/0及共享7/0，分别30.461/11.830秒，只是候选局部证据。
+
+继续补出“先apply再verify”的真实红测：preflight-parent-red.log中0过/1败、exit101、15.005秒，父规则不符时stage已从protected变为unprotected。因此将发布证明收敛到共享WindowsDacl::publish/expected_publication：先用[ConvertToAutoInheritPrivateObjectSecurity](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-converttoautoinheritprivateobjectsecurity)分类原ACE，再以[CreatePrivateObjectSecurityEx](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-createprivateobjectsecurityex)重算当前父目录继承，防止新增父ACE被分类步骤漏掉；两次原生结果都必须与原快照的完整ACE文本、顺序、flags和保护位一致，只允许获授权的D:→D:AI。仅内存计算，不设置owner/SACL或赋予新权限；原生权限检查不由内存证明替代。证明失败不解除保护，应用后严格回读；应用/回读失败则尝试恢复protected原策略并保留恢复错误。snapshot/PartialEq/原目标漂移检查不变。builtins原发布与Runtime原树事务消费同一边界，目录发布后仍逐项验证和补偿，不新增执行/存储链。
+
+G根preflight-shared8/0、preflight-checkpoint21/0（含父目录变更补偿、整树历史失败补偿）；首次正式句柄回归0/1是在替换时夹具额外保持目标读取句柄导致原生拒绝，释放诊断句柄后preflight2-native-handles1/0（0.957秒）。preflight2-handles-builtins4/0（29.512秒）、preflight2-shared8/0（14.237秒）；另已补父规则部分收紧/新增deny/移除deny×D:/D:AI的真实访问断言及protected NULL/empty发布对照，后补版本须重跑，不用旧8/0覆盖。正式Kernel三工具/SQLite重开与最终冻结源码、G根完整相关组、workspace/格式/lint/CLI/Tauri仍待终态；H287修复中、无新修复commit，新增验收0，统计沿E17。非协作外部writer在证明和应用间竞态、其他OS/远程卷/owner/SACL/断电不在本机证明范围，不能承诺全ACL模型或无瞬时竞态。
+
+**E-H287-20（正常AI模型对照与最终门禁冻结，2026-11-05，未最终验收）**：独立复核发现旧候选把已有AI策略也交给legacy分类器，会拒绝“父目录无可继承ACE、子项已有显式AI规则”的正常情况。为补真实正常对照，主动停止仅本轮final3 runner及其子进程；final3仅fmt终态通过，related-libs未终态，不把中断/排队命令当验收，final3-interrupted.json保留。首个新增测试停在手工SDDL的规范化夹具断言（0/1，30.672秒，不记产品红测）；改为捕获原生规范化策略并明确AI/无ID后，ai-explicit-normal-canonical-red.log真实0/1、exit101、20.360秒，在publish拒绝处失败。
+
+同一共享根因补强：legacy D:必须先原生分类，再重算父继承；已有AI快照保留其显式/继承区分，直接原生重算并严格比较完整策略，不再把其显式规则重分类成protected。两者仍复用同一inherit_descriptor原生入口，不增加另一套权限/发布链。新增AI显式正常发布及其父目录新增deny的失败对照；父规则变化×两种输入的正文、读允许/执行拒绝、源文件真实写入拒绝/移除执行拒绝均有断言。NULL/empty对照第一次8/1是手工D:P seed经Windows添加AI后不能与seed逐位相等，改用原生捕获快照验证原有NULL/empty严格区分与protected发布，未放宽生产比较。ai-model2-shared为9/0、exit0、13.673秒；ai-model-checkpoint21/0、41.552秒、builtins4/0、29.781秒是随后抽取单一inherit helper前的局部事实，不代替最终版本。
+
+6份Rust源码/测试最终SHA256冻结于final4-sources.json；final4-fmt已exit0、7.324秒。已串行启动G根persistence/builtins/runtime完整lib、AppCore Kernel/checkpoint_audit完整正式组及真实rewind，然后短AI物理根完整workspace、严格lint/逐crate诊断、CLI build和独立Tauri check/fmt。仍须收取各原生exit及顶层test target统计、核对六份哈希和两文档，不能提前标已修复或提交。未修改旧H306、基线lint、UI/协议/SQL；本项无修复commit、新增验收0，台账统计不变；等待与有效工时分开，原6–12小时是返修启动时粗估而非剩余承诺。
+
+**E-H287-21（最终验收与基线残余，2026-11-05，限本机范围）**：final4冻结6份Rust源码/测试未变化，原生exit/耗时和完整日志见target/h287-repair-20261105/final4-*及validation-results.json。保留E16～20的全部失败与中断，不以换TEMP或删除检查取绿。最终命令及结果如下（过/败/忽略）：
+
+- `cargo fmt --all -- --check`：exit0、7.324秒；`git diff --check`通过。
+- G根合成TEMP：`cargo test -p deepagent-persistence -p deepagent-builtins -p deepagent-runtime --lib --no-fail-fast --offline -j 2 -- --quiet --test-threads=1`：exit0、238.645秒，builtins372/0/3、persistence197/0/0、runtime432/0/9，合计1001/0/12。包含9项共享DACL回归、固定句柄权限对照、三工具正常/拒绝、父规则变化、legacy检查点树回放及原目录/历史提交失败补偿；未把其他ignored当执行。
+- G根正式生产方/消费者：`cargo test -p deepagent-app-core --test kernel_v2_e2e --test checkpoint_audit --no-fail-fast --offline -j 2 -- --quiet --test-threads=1`：exit0、662.249秒，Kernel294/0/28、checkpoint_audit19/0/1，合计313/0/29。H287两项默认执行（不是include-ignored或零测试）；protected三工具/只读仍逐位核对，未保护write/edit/multi_edit各验证正文、完整原生继承证明、保护位/规则数、检查点恢复、关闭SQLite后重开RunStore唯一succeeded且恢复不改原运行。此前独立正式2/0、199.099秒保留为preflight2-kernel，不能覆盖后补共享代码，最终以上完整组为准。
+- G根`cargo test -p deepagent-app-core --lib service::tests::rewind_restores_files_from_checkpoints --offline -j 2 -- --exact --nocapture --test-threads=1`：exit0、150.250秒、1/0/0，原生产恢复反例真实通过。
+- 短AI物理根`cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=1`：exit101、2023.971秒。按140个顶层target末尾结果统计4644/1/228；原始141块的4645过多含一个嵌套子进程，不重复加算，逐target见final4-workspace-targets.json。唯一失败为既有H306 `canvas_prompt::tests::every_node_kind_owns_exactly_one_profile`，creative.video-edit.v1的defaultUserPrompt为空；不宣称workspace全绿，不混修该独立项。
+- `cargo clippy -p deepagent-persistence -p deepagent-builtins --all-targets --all-features --no-deps --offline -j 2 -- -D warnings`：exit0、14.102秒，无新增抑制。全workspace同等严格lint为exit101、18.444秒，models/client.rs:385旧clone_on_copy；runtime自身严格no-deps为exit101、20.432秒，旧model_agent.rs:294 clone_on_copy及workflow/canvas.rs:32 derivable_impls；app-core自身同等严格lint为exit101、64.734秒，context_runtime/http_runtime/plugin_preparation/run_assembler/session_title及既有workflow_audit测试诊断。未以局部lint冒充全局通过。
+- `cargo clippy --workspace --all-targets --all-features --no-deps --message-format json --offline -j 2`：exit101、85.082秒，38条warning/1条error（含不同target的重复诊断），error仍既有mcp_discovery_restore.rs:776 panicking_unwrap。所有诊断文件与HEAD无diff，六份本项文件0诊断，详final4-lint-summary.json；这不是严格lint通过，也不修改基线或放宽门禁。
+- `cargo build -p deepagent-cli --offline -j 2`：exit0、161.133秒；`cargo check --target-dir target --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --offline -j 2`：exit0、78.833秒。独立Tauri `cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check`：exit1、0.600秒，只在与HEAD无diff的lib.rs四处既有格式差异；未格式化无关文件。
+
+根因修复只涉及共享WindowsDacl、builtins原句柄相对发布、Runtime原检查点树事务及其回归。按用户明确授权，只有未保护legacy D:可在原生分类/当前父继承重算及完整ACE文本/顺序/flags/保护位一致时升级为D:AI；已有AI正常显式规则不重分类。protected/NULL/empty、原snapshot/PartialEq、目标漂移与损坏/未来版本拒绝不放宽。捕获句柄须有READ_CONTROL和FILE_READ_ATTRIBUTES；未保护发布还须能读取父策略，无法证明则拒绝，不静默降低权限。owner/group仅内存证明，owner/SACL不写入/不持久化，Debug和升级日志不输出身份/SDDL。无新依赖、SQL迁移、UI/DTO/协议变更，沿用现有发布与失败补偿边界。
+
+据原G根失败、非宿主依赖的legacy回放、发布前保护红测、AI正常/拒绝对照及以上完整生产消费方验收，H287恢复为“已修复并验收”，限Windows本机离线合成文件/临时SQLite范围。兼容边界为受控继承模型升级，不保证原控制位逐位相同；非规范化/无法证明的特殊ACL继续严格拒绝。未验其他OS、远程/跨卷、真实用户数据、owner/SACL、硬链接/ADS/EFS全部组合、断电或非协作外部writer在证明与应用间的排他/无瞬时竞态；未改前端，因此未执行pnpm build、完整Tauri窗口或截图，不把lib check当UI验收。H306及既有lint/fmt失败保持原记录。
+
+本轮返修验收1（恢复原编号，不新增/重复计数），当前161验收/23历史跳过/7归并/3撤销/112待修/0修复中；112未关闭含H180授权跳过，实际待处理111。306行唯一编号，只有H287行相对HEAD变化，两文E17～21一致，五项用户未跟踪内容仅列名未读改，构建产物/敏感策略不纳入提交。代码、测试及当时两文将一并独立提交，取得hash后另做文档回填，不amend/推送/建PR。下一项先复核P1 H213的SDK通知方法/事件可信边界，不在本项混修。总剩余仍为未逐项校准的200–400有效小时历史粗估，依据剩余跨层授权/执行/状态持久化及客户端验收规模，低置信；等待设备、依赖、编译与环境另计且无可靠总上界，不能按数量机械扣减或承诺日历完工。
 
 ### H-288：计划模式只存在服务内存，恢复同一会话后静默失去写入限制
 
