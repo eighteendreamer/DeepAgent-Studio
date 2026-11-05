@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, type Interface } from "node:readline";
 import { TurnEventStream } from "./turnStream.js";
+import { CliJsonlTransport } from "./cliJsonl.js";
 
 export const PROTOCOL_VERSION = 1;
 const JSONRPC_VERSION = "2.0";
@@ -169,6 +170,11 @@ export interface ExecutionConfigSnapshot {
 
 /** Local stream consumption options; signal is never serialized onto the wire. */
 export interface RunStreamOptions extends TurnStartOptions {
+  signal?: AbortSignal;
+}
+
+/** Stops this owned CLI process; never serialized as a provider/wire field. */
+export interface CliRunOptions {
   signal?: AbortSignal;
 }
 
@@ -517,54 +523,6 @@ class StdioTransport implements RpcTransport {
   }
 }
 
-class CliJsonlTransport {
-  private readonly command: string;
-  private readonly args: readonly string[];
-  private readonly cwd?: string;
-  private readonly onStderr?: (line: string) => void;
-
-  constructor(options: DeepAgentOptions) {
-    this.command = options.command ?? "deepagent";
-    this.args = options.args ?? [];
-    this.cwd = options.cwd;
-    this.onStderr = options.onStderr;
-  }
-
-  async *run(prompt: string): AsyncIterable<HarnessEvent> {
-    const child = spawn(
-      this.command,
-      [...this.args, "run", "--json", prompt],
-      {
-        cwd: this.cwd,
-        stdio: ["ignore", "pipe", "pipe"]
-      }
-    );
-    const stderr = createInterface({ input: child.stderr });
-    stderr.on("line", (line) => this.onStderr?.(line));
-    const lines = createInterface({ input: child.stdout });
-    let exitError: Error | undefined;
-    child.once("error", (error) => {
-      exitError = new HarnessTransportError("failed to start CLI JSONL process", {
-        cause: error
-      });
-    });
-    for await (const line of lines) {
-      if (!line.trim()) {
-        continue;
-      }
-      try {
-        yield JSON.parse(line) as HarnessEvent;
-      } catch (error) {
-        throw new HarnessTransportError("CLI emitted invalid JSONL", { cause: error });
-      }
-    }
-    stderr.close();
-    if (exitError) {
-      throw exitError;
-    }
-  }
-}
-
 export class DeepAgent {
   private readonly options: DeepAgentOptions;
   private readonly approvalHandler?: ApprovalHandler;
@@ -579,7 +537,8 @@ export class DeepAgent {
     this.options = options;
     this.approvalHandler = options.onApproval;
     if ((options.transport ?? "stdio") === "cli-jsonl") {
-      this.cliTransport = new CliJsonlTransport(options);
+      this.cliTransport = new CliJsonlTransport(options, (message, cause) =>
+        new HarnessTransportError(message, cause === undefined ? undefined : { cause }));
     } else {
       this.createStdioTransport();
     }
@@ -719,13 +678,13 @@ export class DeepAgent {
     return (await this.request("config/read", options)) as ExecutionConfigSnapshot;
   }
 
-  runJsonl(prompt: string): AsyncIterable<HarnessEvent> {
+  runJsonl(prompt: string, options: CliRunOptions = {}): AsyncIterable<HarnessEvent> {
     if (!this.cliTransport) {
       throw new HarnessTransportError(
         "runJsonl requires the cli-jsonl transport"
       );
     }
-    return this.cliTransport.run(prompt);
+    return this.cliTransport.run(prompt, options);
   }
 
   /** Only future live events; for a turn use Thread.runStreamed before admission. */
@@ -758,6 +717,7 @@ export class DeepAgent {
     if (this.transport) {
       await this.transport.close();
     }
+    await this.cliTransport?.close();
   }
 
   async startTurn(

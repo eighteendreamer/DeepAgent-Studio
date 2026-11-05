@@ -219,7 +219,7 @@
 | Harness JSON-RPC 方法分派 | 未知无斜杠 method 返回 `-32601`，但未知 namespaced method 因包含 `/` 被误报为 `-32602`；已知方法坏参数仍正确返回 `-32602` | 已确认 H-217；正式 `ServerState` dispatcher，无模型、工具、文件或网络副作用 |
 | Harness SDK 断线后的事件等待 | 真实本机子进程退出且生产 reader 已清空 pending RPC，保留公开 client 时，既有和新订阅均无断线/关闭结果；丢弃 client 后两者才 Closed | 已确认 H-256（P2）；正常完成通知交付对照通过，Windows stdio fixture；未运行真实 Agent/模型或桌面 |
 | TypeScript SDK 的 CLI JSONL 进程终态 | 真实子进程只输出部分事件或零条事件后 exit=23，公开 runJsonl 仍无异常结束；成功对照正常 | 已确认 H-266（P2）；正式 SDK 与本机 Node CLI fixture，未运行真实 Rust CLI/模型；stdout.end 提前结束假设未获证实 |
-| TypeScript SDK 的 CLI JSONL 进程归属 | return、for-await break、解析失败及 close 后，直接 child 仍存活并处理后置 probe 写 canary；完整消费对照正常 | 已确认 H-267（P2）；正式 SDK 与本机 Node fixture，测试自身回收全部进程；未测真实模型、工具副作用或进程树 |
+| TypeScript SDK 的 CLI JSONL 进程归属 | return、for-await break、解析失败及 close 后，直接 child 仍存活并处理后置 probe 写 canary；完整消费对照正常 | H-267（P2）已于2026-11-06按E03本机验收；直接root统一owner与退出确认，真实CLI/SQLite重开及树边界已测；不保证任意detached树或业务取消 |
 | Provider SSE 非法 UTF-8 的故障隔离 | 合法事件后插入一个非法字节，正式 HTTP→ModelClient 不及时拒绝，后续文本和完整终态均未交付；解码器同序列保留 65,537 字节 | 已确认 H-257（P2）；中文/emoji 全切点解码和真实 HTTP 正常对照通过；未测真实供应商、Kernel 或 OOM |
 | CLI TUI 的模型 attempt 回滚 | 正式聊天部分输出后断线并重试成功，runtime及run_events有reset，落盘只有新答案，终端state与实际HistoryCell渲染仍拼入废弃答案和推理 | 已确认 H-258（P2）；无故障/首个delta前断线对照通过，正式ChatService/Kernel/SQLite；未启动真实TTY或公网 |
 | 工具双完成事件的调用身份一致性 | 同一调用的arguments.done为A、output_item.done为B时，正式write_file执行A，原生历史及下一请求却以B配对A的成功结果 | 已确认 H-259（P2）；正式ChatService/Kernel、文件SQLite和真实临时文件；两个正常对照通过，限矛盾provider故障注入，不声称DeepSeek正常流有此问题 |
@@ -11908,7 +11908,7 @@ E-H260-09（独立提交回填，2026-10-29）：修复提交`0ba0f611a4496e4385
 
 ### H-267：TypeScript SDK 的 CLI JSONL 缺少进程 owner 收尾，停止迭代、解析失败和 close 后仍执行后台工作
 
-**级别：中（P2，一次性运行的资源归属与停止契约）；状态：公开 TypeScript SDK 与真实本机 CLI fixture 已复现，未修复。** 触发条件是 SDK 启动的 CLI 尚在工作，调用方提前退出异步迭代、遇到无效 JSONL，或显式关闭 DeepAgent。正常完整消费对照不触发。本项不重复 H-266：即使补上非零退出校验，迭代提前离开时仍必须清理尚未退出的进程；也不是 H-46 的 MCP 后代进程树或 H-64 的自动构建验证，本项连 SDK 直接拥有的 CLI 根进程都没有回收。
+**级别：中（P2，一次性运行的资源归属与停止契约）；状态：2026-11-06 已修复并验收，限 E-H267-03 本机直接进程所有权范围；原失败证据保留。** 触发条件是 SDK 启动的 CLI 尚在工作，调用方提前退出异步迭代、遇到无效 JSONL，或显式关闭 DeepAgent。正常完整消费对照不触发。本项不重复 H-266：即使补上非零退出校验，迭代提前离开时仍必须清理尚未退出的进程；也不是 H-46 的 MCP 后代进程树或 H-64 的自动构建验证，本项连 SDK 直接拥有的 CLI 根进程都没有回收。
 
 #### 首次即时 Evidence（2026-10-25）
 
@@ -11931,6 +11931,52 @@ E-H260-09（独立提交回填，2026-10-29）：修复提交`0ba0f611a4496e4385
 - **本地治理建议，未实施**：沿既有 CLI transport 建立唯一活动进程 owner，在 generator finally 和显式 close 中复用有界终止/等待与 reader 清理；明确 concurrent runJsonl、close 后调用、信号/解析错误、正常终态后 session-memory 等待的所有权。若要求业务可恢复取消，应优先通过现有 Harness turn/interrupt、取消树和 RunStore 收尾；一段宽泛 child.kill 不能替代协议级取消，也不能用另建运行中心解决。
 - 这是宿主 SDK 资源生命周期问题，不是 DeepSeek Responses/tool/cache 字段问题；provider 的流式协议不能自动替应用回收本机 CLI。验收需保留完整消费对照，并覆盖 for-await break（本轮与显式 iterator.return 均已验证）、malformed JSON、close 期间读取、并发迭代、取消/强制终止升级、进程树、持久化终态及真实 CLI 离线运行。当前只确认本机直接 child 的后置工作，未运行真实 Rust CLI、Runtime/RunStore、桌面、模型、跨平台或参考工程。
 - 验证收尾：`pnpm test`（含 build）**5 passed**，`pnpm typecheck` 通过；最终新探针默认 **1 passed / 4 skipped**，显式开启为 **1 passed / 4 failed（预期复现）**。`cargo fmt --all -- --check`、`git diff --check` 通过；未运行 workspace 测试、Clippy 或桌面构建，本轮只有 test-only JavaScript 与 Markdown。code-audit 促使本轮用后置文件握手证明实际工作仍在继续，而非只凭缺少 finally 或进程 PID 就登记问题；全系统目标仍未完成。
+
+**E-H267-01（当前原探针与仅测试TDD，2026-11-06，修复中）**：从97078bf2开始，tracked干净、无未完成合并；五项原有未跟踪内容只列名、不读改。用户本地授权/code-audit范围已核对；读取SDK公开runJsonl/close、CliJsonlTransport、stdio与已有TurnEventStream生命周期、测试/manifest/tsconfig/CI、CLI生产run/日志/审批/session-memory路径及既有本机进程Job边界。不重修已验收的H223或其他SDK项，不默认把源码缺少finally当作当前已复现。
+
+隔离HOME/USERPROFILE/APPDATA/TEMP与凭据环境、仅合成临时文件及Node子进程。`packages/sdk`下`pnpm build` exit0、1.700秒；随后`RUN_HARNESS_AUDIT=1 node --test tests/jsonl-lifecycle-audit.test.mjs` exit1、1/4/0、1.124秒：正常完整消费无存活/新工作；return、for-await break、malformed和close均在生命周期方法返回后写入probe，真实相同PID回写新ack且仍存活。原夹具释放gate/确认退出后才清理，未遗留测试进程。日志/命令/原生退出码存target/h267-repair-20261106，原始审计失败正文保留。
+
+将这四个原探针取消默认skip，新增默认jsonl-owner.test.mjs与真实Node合成文件gate，生产尚未修改。`pnpm build`仍exit0、2.567秒；`node --test tests/jsonl-owner.test.mjs`为2/6/0、exit1、13.773秒：读取中return不能抢占pending next，close不回收silent子进程，consumer throw不能及时返回原错误，结束一个并发iterator不回收它，terminal事件后的close无效，pre-abort未阻止spawn；未启动iterator保持lazy和启动失败正常对照通过。所有测试均释放仅属于自己的gate并确认fixture退出，红测不是编译失败或杀用户进程。此轮新断言明确要求实际退出确认，不把child.killed当作已退出。
+
+本地设计待实施：沿原CliJsonlTransport建立单一活动进程owner，generator finally、主动return/throw、AbortSignal与DeepAgent.close复用同一幂等有界收尾；return/close必须能唤醒正在等待的next，不排队到原async generator之后。保持lazy未启动语义、并发运行彼此隔离，close先撤销新启动资格，再收齐已启动owner；normal完整消费/终态后的session-memory等待不得被一个turn.completed事件误当作进程已退出。启动/解析/收尾错误保留类型和原因，失败不伪造完成/取消，不自动重发。H266非零exit结果传播仍是独立待修；H265 stdio换代/握手与本项不同，不混修。进程树、真实CLI/持久化、终止失败/升级、全部SDK及跨平台验证尚待补齐，不能先缩成单次kill或仅靠原五项过就宣布完成。
+
+已核查本地CodexExec的finally与DeepSeek Harness disposeRuntimeProcess的退出确认/分级终止，仅参考边界、不复制业务实现或声称已跑参考工程。[当前Node 22.22.1子进程文档](https://nodejs.org/download/release/v22.22.1/docs/api/child_process.html)与[readline文档](https://nodejs.org/download/release/v22.22.1/docs/api/readline.html)区分exit/close、发送kill与实际退出、asyncIterator收尾；Windows模拟信号是强制终止，不提供业务取消或任意后代树保证。SDK自身owner与原Runtime取消树/RunStore及原工具进程owner必须分开描述，不引入第二套运行/取消中心。
+
+当前167验收/23历史跳过/7归并/3撤销/105待修/1修复中；106未关闭含H180授权跳过，实际待处理105，不新增修复数。H267尚无生产修复、最终验收或commit，本项暂估6–14有效小时，须随进程树与真实CLI证据校准；全余200–400有效小时仍为未逐项校准的低置信历史粗估，编译/设备/依赖/环境等待另计，无精确完工承诺。当前不访问真实凭据/用户数据/供应商/内网，不运行数据库迁移、推送或PR。
+
+**E-H267-02（候选实现、边界补强与扩大门禁，2026-11-06，尚未最终验收）**：沿原CliJsonlTransport提取同一transport模块与唯一CliProcessOwner，不新建运行/取消/持久化链。直接ChildProcess对象、readline、exit/close与dispose Promise归同一owner；finally、抢占式return/throw、AbortSignal与DeepAgent.close共用幂等stop，先收回新启动资格再收齐并发owner。未启动iterator不spawn，并发分别结束，失败保留owner可显式重试；正常消费等待真实exit并完整drain stderr，不把turn.completed当作session-memory已结束。错误保留cause；JSON.parse只包解析，不把consumer throw误标无效JSON。Windows强制停止，POSIX TERM后升级KILL；本机没有验证POSIX升级分支。
+
+候选build与原五项/新增十二项曾17/0/0、exit0、2.021秒。进程树补强初版错误假定普通Node后代在root退出后存活，被实际Windows libuv 1.51.0的父owner Job回收推翻，两断言失败不属产品红测；核对[对应libuv源码](https://github.com/libuv/libuv/blob/v1.51.0/src/win/process.c)后改用显式detached合成worker，仅测试任意自定义wrapper边界。有效树探针1/1/0、exit1、2.992秒：root回收对照通过，但root自然退出、detached后代持有继承管道时next悬挂。根因是原候选的pipe关闭期限只在stdout EOF后启动，永不到EOF则到不了该检查。改为唯一exit触发drain检查，逾期主动唤醒reader并返回明确的descendant ownership unresolved，不伪造完成；随后原五项/owner十四项19/0/0、exit0、3.387秒。该测试明确证明SDK回收直接root，不保证任意detached后代；后代由测试自己的release gate回收并确认退出，未杀用户进程。
+
+新增真实CLI JSONL门禁，使用实际CLI的字节相同副本、全新HOME/data/workspace、无模型配置或凭据；仅合成SQLite、现有原生初始化和本机文件，不执行真实数据库迁移。前两次误要求无配置时CLI发turn.failed，实测是error/run_failed，原RunStore已写failed；第三次误要求强杀一定填exitCode，实际close收到signalCode而exitCode仍null。上述是验收断言假设错误，未改生产方制造通过，原日志保留。改为分别验证真实wire/持久化来源、原生close receipt与PID不存在后，门禁1/0/0、exit0、4.429秒：正常/help有唯一completed与succeeded账本；无配置只一个failed run/terminal；持有该合成DB的BEGIN IMMEDIATE写锁时读取parked，close在释放写锁前确认真实CLI退出且不新增run或取消终态；真实stdio reopen读回同一failed与唯一terminal，无action/自动重发。SDK的清理不是业务interrupt，未测真实模型、工具中途强杀或任意原生wrapper后代全回收。
+
+源码/manifest/README/四测试已冻结target/h267-repair-20261106/final-sources.json；默认SDK纳入原四缺陷探针且不skip，新增stderr callback cause/reap测试。最终SDK/真实双入口/CLI生产方/原生MCP树owner与lint正在执行，未结束项不计通过；H266显式探针仍1/3/0、exit1（原非零exit缺陷保留），不因所有权修复将其关闭。无Rust生产/协议/迁移变更，无新依赖，生产Node最低20不变；显式test:jsonl的node:sqlite测试helper须Node>=22.13。两文台账仍167验收/105待修/1修复中；无本项commit、不新增验收数。
+
+**E-H267-03（本机最终验收，2026-11-06）**：本项为同一CLI root owner缺失的根因修复；保留E01全部原失败与E02候选/验收假设修正，不删除审计证据。最终8份源码/manifest/README/测试冻结hash均不变，完整命令/原生退出码/日志存target/h267-repair-20261106；该目录、dist与合成DB不提交。唯一新生产模块是原CliJsonlTransport提取与统一owner；SDK公开增加可选CliRunOptions.signal、close后禁止新启动，原runJsonl(prompt)保持兼容；未改Rust生产方、协议、模型适配、权限、RunStore或数据库schema，无依赖/配置/真实迁移。
+
+实际最终门禁：
+
+| 命令（SDK命令在packages/sdk） | 实际结果 |
+|---|---|
+| `cargo fmt --all -- --check` | exit0，4.825秒 |
+| `cargo build -p deepagent-cli --offline -j 2` | exit0，31.448秒；本轮CLI SHA256=C7B5F38725AEDE8A2920CA96090DADBBF7C2A1FE123646A8997B073065E51A6E |
+| `pnpm test`（含build，含原五项及新增owner十五项） | exit0，59/0/0，5.511秒；原四缺陷探针无skip |
+| `pnpm typecheck` | exit0，1.276秒；SDK无独立lint脚本，strict/noUnused类型检查与node syntax均实际执行 |
+| `pnpm test:stdio` | exit0，1/0/0，10.861秒；真实CLI跨入口/重连/分页/持久化对照 |
+| `pnpm test:jsonl` | exit0，1/0/0，5.907秒；新鲜临时根，4个真实Rust进程，合成DB门禁与failed终态重开 |
+| `node --check tests/<jsonl-lifecycle-audit.test.mjs/jsonl-owner.test.mjs/jsonl-owner-fixture.mjs/real-cli-jsonl-owner.test.mjs>`（分别4条） | 均exit0，0.046–0.053秒 |
+| `RUN_HARNESS_AUDIT=1 node --test tests/jsonl-exit-audit.test.mjs` | exit1，1/3/0，0.721秒；H266原缺陷仍存在，未关闭/未计修复 |
+| `cargo test -p deepagent-cli --offline -j 2 -- --nocapture --test-threads=2` | exit0，两个顶层target合计180/0/15，127.108秒；179/0/14单元+1/0/1原session-startup集成；ignored不当作通过 |
+| `cargo test -p deepagent-mcp --lib stdio::windows_job::tests --offline -j 2 -- --nocapture --test-threads=1` | exit0，12/0/1，17.449秒；1项是原生子进程入口，由owner测试按精确入口调用，不当作独立通过 |
+| `cargo clippy -p deepagent-cli --all-targets --all-features --no-deps --offline -j 2 -- -D warnings` | exit0，25.043秒，仅CLI自身，不冒充依赖或全仓lint |
+| `cargo clippy -p deepagent-mcp --all-targets --all-features --no-deps --offline -j 2 -- -D warnings` | exit0，6.435秒，仅MCP自身 |
+| `git diff --check`、两文E01～E03一致性、306行唯一编号/状态计数、冻结源hash复核 | 提交前均通过；最终文档不改已验收源码 |
+
+原四生命周期触发均确认自己的直接child实际退出且无法响应后置probe。新增覆盖parked next抢占、silent close、并发隔离、lazy/禁止重启、consumer throw、pre/active abort、spawn失败、拒绝/抛错的kill及显式重试、终态后工作仍有owner、stderr尾部完整交付与callback cause、顽固直接child、detached树与继承管道。原MCP生产ProcessJob的12项真实原生测试含嵌套树、资源teardown与取消/并发close；这验证其既有owner，不将它误说成SDK对任意wrapper树的承诺。
+
+验收边界与残余限制：H267的范围仍是SDK直接启动的CLI根进程与reader，不是任意detached树，亦不产生新的durable cancel/rollback保证。真实JSONL门禁观察/help的唯一succeeded、无模型配置的原failed账本、writer gate期间close不新增run/terminal，真实stdio重开保留原结果且无redispatch；没有宣称真实模型或工具执行中被强杀后已安全收尾。任意自定义wrapper须自己提供原生后代owner；detach后代由测试自己的gate回收，不把那次清理计为SDK树能力。POSIX/macOS/Node20运行、真实供应商、桌面窗口、原生任意wrapper树、模型/工具中途取消与完整session-memory强杀恢复未执行；本机无相应平台/不访问真实服务且不是本项root所有权保证，调用方需以stdio turn/interrupt及durable reconciliation处理业务取消。无Rust生产/前端变更，未重跑workspace/全仓clippy或桌面构建；上轮H223公开的workspace四失败与旧全仓lint失败保留，不能以本轮局部门禁抹去。独立SDK测试helper的node:sqlite实验性警告保留，不作为生产依赖。
+
+本轮新增修复并验收1（H267），新增历史跳过/归并/撤销0；306槽位核对为168验收、23历史跳过、7归并、3撤销、105待修、0修复中/阻塞，105有效未关闭含H180授权跳过，实际待处理104。修复commit取得后另行回填，不为填自身hash反复amend、不推送/PR。下一项准备核对H268结构化摘要遮蔽历史事实，优先数据/恢复完整性；本项实施剩余0，文档/提交正在收尾。全部余项仍沿200–400有效工作小时的低置信历史粗估，尚未逐项重新校准；依据104项跨运行时/持久化/协议/配置缺陷及相应红绿/跨层验收，未知复现差异会显著改变区间。等待编译/设备/依赖/环境另计、目前无已知外部等待阻塞，不承诺精确日期。系统整体任务继续active，未完成。
 
 ### H-268：结构化摘要接受空对象与无关 JSON，绕过降级后持续遮蔽原历史
 

@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { DeepAgent, HarnessTransportError } from "../dist/index.js";
 
 const fixture = fileURLToPath(new URL("./jsonl-lifecycle-fixture.mjs", import.meta.url));
-const auditOnly = { skip: process.env.RUN_HARNESS_AUDIT !== "1", timeout: 12000 };
+const regression = { timeout: 12000 };
 
 async function readRecord(file, timeout = 2000) {
   const deadline = Date.now() + timeout;
@@ -95,7 +95,7 @@ test("CLI JSONL fully consumed process exits and performs no work after close", 
 });
 
 for (const action of ["return", "break", "malformed", "close"]) {
-  test(`CLI JSONL ${action} must release its owned child`, auditOnly, async () => {
+  test(`CLI JSONL ${action} must release its owned child`, regression, async () => {
     const value = await observe(action);
     assert.equal(value.workAfterClose, false, "fixture did new work after SDK lifecycle exit");
     assert.equal(value.aliveAfterClose, false, "SDK left its one-shot CLI child alive");

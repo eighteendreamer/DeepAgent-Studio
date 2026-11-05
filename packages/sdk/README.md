@@ -79,6 +79,48 @@ await agent.close();
 `cli-jsonl` is available for one-shot automation through `runJsonl(prompt)`.
 Thread lifecycle and turn control require the stdio app-server transport.
 
+### CLI JSONL process ownership
+
+`runJsonl(prompt, { signal })` is lazy: an unused iterator starts no process.
+Early `return()` / `for await` break, consumer `throw()`, malformed JSONL,
+local abort and `await agent.close()` share one owner cleanup boundary. They
+close local readers, terminate the directly spawned CLI if needed and await
+its actual exit/stream-close receipt. `return()` and close can preempt a parked
+`next()`; ending one invocation leaves concurrent invocations alone. Close
+prevents future launches, waits for every active owner and is idempotent.
+Unconfirmed termination rejects, retains the owner, and permits explicit close
+retry; sending a signal or `child.killed` alone is not an exit receipt.
+
+Normal consumption drains stderr and waits for real process completion, not
+just `turn.completed` or stdout EOF (the CLI may still be saving session memory).
+After process exit, pipes must close within one second; inherited pipes still
+held by an unmanaged descendant produce an explicit error instead of hanging.
+On Windows local termination is forced, not a cooperative runtime interrupt.
+On POSIX cleanup allows up to one second for SIGTERM before SIGKILL, then up
+to one second for exit and one for stream closure. These are timer bounds,
+not real-time scheduling guarantees. SIGTERM escalation has not been exercised
+on this Windows host.
+
+This contract owns the **direct process**, not arbitrary custom wrapper trees,
+detached jobs, remote effects, or a new durable cancellation mechanism. Native
+tool/MCP process owners retain their existing responsibilities. Reaping the CLI
+does not prove its run was cancelled, its session-memory pass completed, or
+earlier side effects rolled back. Reconcile persistent state before retrying;
+use stdio turn/interrupt when business cancellation is needed. CLI nonzero-exit
+result propagation (H-266) is still a separate outstanding issue: EOF without
+an exception is not sufficient evidence of a successful run.
+
+`pnpm -C packages/sdk test:jsonl` is an explicit real-CLI gate (no skipped
+fallback), after `cargo build -p deepagent-cli --offline`. Its SQLite test
+helper needs Node >=22.13; production SDK still supports Node >=20 without
+that module. It runs in a fresh synthetic home/data/workspace with an identical
+executable copy and no provider settings: normal `/help`, uninitialized-model
+failure, forced close during a held synthetic SQLite writer gate, and durable
+reopen without redispatch or invented cancellation. It does not test a real
+provider, an interrupted in-flight model/tool, packaged plugins or arbitrary
+descendant-tree cleanup. Default tests separately exercise real Node children,
+concurrent owners, termination refusal/retry and detached inherited-pipe limits.
+
 ## Bounded durable history
 
 `readThreadPage(threadId, options)` fetches **one** `thread/read` page; it does
