@@ -2,21 +2,21 @@
 
 ## 当前状态与计数口径（2026-11-06）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；当前168项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；该次只纠正汇总，不计为新增修复。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；当前169项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；该次只纠正汇总，不计为新增修复。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 168 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-87、H-88、H-92、H-96、H-97、H-125、H-130、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-147、H-148、H-149、H-150、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-178、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-196、H-197、H-198、H-199、H-208、H-212、H-213、H-214、H-218、H-219、H-221、H-222、H-223、H-224、H-225、H-226、H-227、H-229、H-233、H-234、H-235、H-236、H-237、H-239、H-240、H-241、H-242、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-259、H-260、H-261、H-267、H-270、H-271、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-290、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 169 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-87、H-88、H-92、H-96、H-97、H-125、H-130、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-147、H-148、H-149、H-150、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-178、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-196、H-197、H-198、H-199、H-208、H-212、H-213、H-214、H-218、H-219、H-221、H-222、H-223、H-224、H-225、H-226、H-227、H-229、H-233、H-234、H-235、H-236、H-237、H-239、H-240、H-241、H-242、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-259、H-260、H-261、H-267、H-268、H-270、H-271、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-290、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 23 | 17项原审计历史修复；H-77/H-83/H-238/H-246/H-301/H-232分别随H-78/H-143/H-260/H-245/H-164/H-219共享边界消除，验收另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 3 | H-211/H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | H-267按E03完成本机验收 |
-| 待修复 | 105 | 105未关闭含H180授权跳过，实际待处理104项 |
+| 修复中 | 0 | H-268本机范围验收完成 |
+| 待修复 | 104 | 含H180授权跳过，实际队列103项 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **105（其中H-180按用户要求跳过，实际待处理104项）**；不提供完成率。当前168项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301/H-232在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4/3cabd45f及真实复核单独列明，合计23项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。2026-11-05本轮H239新增验收1后，H287依据新D:继承控制位反例重新打开1，其后本轮H287按E21返修恢复验收，当前161，其后H213新增验收1，当前162，其后H212新增验收1，当前163，其后H221新增验收1，当前164，其后H222新增验收1为165，H150新增验收1为166，本轮H223新增验收1为167，其后H267按E03新增验收1为168；历史f2efc1b5与E-H287-01～20不删除。
+有效未关闭条目当前为 **104（其中H-180按用户要求跳过，实际待处理103项）**；不提供完成率。当前169项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301/H-232在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4/3cabd45f及真实复核单独列明，合计23项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。2026-11-05本轮H239新增验收1后，H287依据新D:继承控制位反例重新打开1，其后本轮H287按E21返修恢复验收，当前161，其后H213新增验收1，当前162，其后H212新增验收1，当前163，其后H221新增验收1，当前164，其后H222新增验收1为165，H150新增验收1为166，本轮H223新增验收1为167，其后H267按E03新增验收1为168；其后H268按E04新增验收1为169；历史f2efc1b5与E-H287-01～20不删除。
 
 ## H-221 有效执行配置读取（已修复并验收，2026-11-05，限E05范围）
 
@@ -6015,7 +6015,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-265：TypeScript SDK 自动替换已退出进程，却沿用旧握手状态，新进程首条业务请求被拒绝](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-266：TypeScript SDK 的 CLI JSONL 迭代忽略非零退出，部分输出或空输出均无错误结束](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-267：TypeScript SDK 的 CLI JSONL 缺少进程 owner 收尾，停止迭代、解析失败和 close 后仍执行后台工作](system-harness-audit-2026-10-21.md#h-267typescript-sdk-的-cli-jsonl-缺少进程-owner-收尾停止迭代解析失败和-close-后仍执行后台工作) | P2 | 已修复并验收 | E01原探针1/4与TDD2/6；E02树补强；E03真实本机验收，非历史跳过 | 原transport统一直接process owner/finally/close/AbortSignal，抢占读取、退出与drain确认，失败保留可重试；无第二运行链 | 默认SDK59/0/0、真实stdio1/0/0、真实JSONL+DB重开1/0/0、CLI180/0/15、原生MCP树12/0/1；fmt/typecheck/build/两自身lint/syntax通过；H266仍1/3 | 修复 `fc2e3987378c9337880d00a1299328707a3f3ce4`，E04独立回填 | 仅直接root与reader，不保证任意detached树、业务取消或回滚；跨平台/真实模型/工具中断未执行，完整workspace旧失败保留；本项实施0小时，整体200–400低置信有效小时，等待另计 |
-| [H-268：结构化摘要接受空对象与无关 JSON，绕过降级后持续遮蔽原历史](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-268：结构化摘要接受空对象与无关 JSON，绕过降级后持续遮蔽原历史](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E01真实红测、E02～04正式路径/冷恢复闭环；不计H269/旧兼容formatter | 唯一模型解析边界在goal/prior/framing前拒收无真实状态对象，复用既有heuristic与usage，合法稀疏状态保持 | Context59/0/2、摘要11/0/1（H269显式0/1）、AppCore1531/0、Kernel297/0；最终workspace4696/1旧H306/219，CLI/SDK/Tauri/fmt/Context lint过；旧14项/Models lint失败详E03 | 本项代码/测试/两文待本轮独立commit；取得hash后另文档回填，不amend | 仅Windows本机离线所列范围；有损fallback/存量边界/旧兼容指针与持久化warn-only限制保留，本项实施剩余0；下一H293，总体200–400有效小时历史粗估，等待另计 |
 | [H-269：摘要草稿清理在解析 JSON 前删除字符串内的合法 analysis 标签及正文](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-270：一条计划记录解码失败使全部健康任务不可见，正常创建随后覆盖并删除旧任务](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | 原始三红保留；E-H270-01～04，无归并/跳过 | 统一文档owner逐行隔离与RawValue保留式编辑，坏外层拒写；输入排序兼容 | 调度31/0/0、正式cron9/0/4及工具7/0/0；workspace顶层4469/1/241唯一旧H306，严格lint旧基线未绿；CLI构建通过 | `51c8a3f28b85d38ca000c03c4cbf09a61a73174a` | 本项剩余0；无原子落盘/跨进程普通编辑保证，H96/H97/H271独立；其他OS/GUI/掉电未测；全部200–400历史粗估，等待另计 |
 | [H-271：正常创建的日历不可能计划触发日期搜索 panic，终止整个调度任务且重建后再次触发](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H271-01～03；原失败保留，不混修H96/H97/H270 | cron有界总函数、统一next_due接纳/调度；新建拒绝不可执行，旧计划保留并逐条诊断 | runtime44/0；AppCore cron25/0/1；workspace4599/1/236（旧H306）；CLI/Tauri check/fmt通过；旧lint/桌面fmt失败详见E03 | `1b26c14cea2d0306ef01bc4daf0467f1c60833b8`；E-H271-04 | 本机所列范围验收；DST/完整GUI/release/其他平台未测；本项剩余0，整套200–400历史粗估、等待另计 |
@@ -6289,3 +6289,50 @@ final2.ps1在SDK和全仓lint终结后因既有桌面sidecar哈希453DF899…不
 本轮新增修复并验收1（H267），新增历史跳过/归并/撤销0；306槽位核对为168验收、23历史跳过、7归并、3撤销、105待修、0修复中/阻塞，105有效未关闭含H180授权跳过，实际待处理104。修复commit取得后另行回填，不为填自身hash反复amend、不推送/PR。下一项准备核对H268结构化摘要遮蔽历史事实，优先数据/恢复完整性；本项实施剩余0，文档/提交正在收尾。全部余项仍沿200–400有效工作小时的低置信历史粗估，尚未逐项重新校准；依据104项跨运行时/持久化/协议/配置缺陷及相应红绿/跨层验收，未知复现差异会显著改变区间。等待编译/设备/依赖/环境另计、目前无已知外部等待阻塞，不承诺精确日期。系统整体任务继续active，未完成。
 
 **E-H267-04（独立提交回填，2026-11-06）**：修复/测试/README与当时两文已一并提交为 `fc2e3987378c9337880d00a1299328707a3f3ce4`（【fix】统一SDK JSONL进程所有权与退出收尾），随后只回填文档，不amend、不推送/PR。提交后tracked干净，仅原五项untracked保留且未读取/修改/提交；E01～E03一致性、306条唯一编号、168验收/23历史跳过/7归并/3撤销/105待修、冻结8文件hash与diff检查均通过。H180继续按授权跳过，H265/H266仍独立未修。剩余105未关闭含H180，实际待处理104；下一项H268，估时与验收边界沿E03，整体仍active。
+
+**E-H268-01（当前复现、仅测试TDD与修复范围，2026-11-06，修复中）**：从9f9ed705开始，tracked干净、无未完成合并；五项原有untracked只列名、不读改。复核原审计、SDK上一轮交付、ModelCompactor/TaskSummary、native/compatibility/prefire/notes调用方、RunStore恢复、manifest/rustfmt/CI与本地参考；code-audit按用户的本地源码修复授权执行，不访问真实供应商、凭据、用户数据或内网，不做真实迁移。只修H268，H269字面量analysis标签清理是独立根因，保留未修事实。
+
+隔离HOME/USERPROFILE/APPDATA/TEMP并清除凭据类环境，以离线ScriptedTransport、实际ModelAgent、原生压缩、文件SQLite冷重开运行原命令：`cargo test -p deepagent-app-core --lib context_runtime::summary_audit --offline -j 2 -- --include-ignored --nocapture --test-threads=1` exit101、5/4/0、3.154秒。原三项H268均写了边界，raw_fact=true而summary/wire/replay_fact=false；正常结构化/非JSON降级对照通过。当前该模块另含H269四项，其中一项同样失败，其余三对照通过，不能把全部四失败计成H268。
+
+仅加测试时，`cargo test -p deepagent-context h268_ --offline -j 2 -- --nocapture --test-threads=1` exit101、1/2/0、9.460秒：空/无关/goal-only/空白/数组tuple/数组内对象/fence空对象均被错误采用；空模型对象掩盖prior与历史的真实新增事实。合法稀疏状态正常。`cargo test -p deepagent-app-core --lib context_runtime::summary_audit::h268_ --offline -j 2 -- --nocapture --test-threads=1` exit101、0/1/0、115.136秒，goal-only正式下一wire/重开丢事实；不是编译失败。三个原缺陷探针已取消ignore，H269保持独立ignore。
+
+根因与本地设计：只在现有ModelCompactor的唯一解析采用边界、prior/goal/固定标题注入之前判断模型输出资格：必须为对象且completed/pending/decisions/failures中至少有一个trim后非空的模型状态字符串。不以字符串总长度、goal、prior或路径充当状态；不要求每个类别都非空，保留既有稀疏字段兼容，缺少所有状态键/仅goal、空白/错误类型/数组包装拒收，复用已有HeuristicSummarizer及usage归属，不新建摘要/压缩/历史链。回归同时保留正常、prior、用量、wire与冷恢复对照；已有heuristic是有损降级，不保证任意事实都被抽取，原始事件/指针必须保留，不能宣称语义无损。当前候选与跨路径/提交故障/取消/完整门禁尚待验收，无本项commit，不计新增修复。
+
+状态核对仍168验收/23历史跳过/7归并/3撤销，104待修+1修复中；105未关闭含H180授权跳过，实际待处理104。H268本项剩余暂估4–10有效小时，取决于跨路径与持久化边界反例；全余200–400有效小时沿低置信历史粗估、未逐项校准，编译/设备/依赖/环境等待另计，不承诺日期。原始命令/日志/原生退出码存target/h268-repair-20261106，不提交产物；整体继续active。
+
+**E-H268-02（扩大候选验收与反例，2026-11-06，仍修复中）**：首候选Context完整组exit0、59/0/2、5.108秒，摘要模块默认exit0、9/0/1、118.575秒；之后又补强了测试，不能当作最终冻结验收。candidate-expanded首次因夹具漏传prefire的instructions参数编译失败、零测试，已按真实trait签名修正；expanded2为1/2/0，expanded3为2/1/0（117.463秒）。expanded3的native、compatibility、prefire-native、prefire-compatibility、compatibility-valid五路径全部通过：原请求收到事实、拒收后走既有fallback、usage120+18、体积收益、单一边界、原生工具尾部字节保留、正式ModelClient下一wire、文件SQLite冷重开；prefire还验证pass1不写边界与stale fingerprint拒绝。正常稀疏模型摘要含模型独有标记，确认不是所有输入都强制fallback。
+
+扩大测试发现现有compatibility的live/cold第一summary差一条重复transcript pointer：summarize_zone已加指针，record_durable_boundary再加一次；其余tail相同，合法模型控制也复现。因此本项不改独立formatter，不声称兼容路径逐字相同，测试精确断言仅这一已知差异；native仍要求完整逐字一致。此为独立待治理证据，不新增编号或改变306条计数，完整兼容格式一致性仍未验收。
+
+Windows故障夹具持有合成权威日志的read-only share句柄；真实错误为Persistence、OS error32。expanded2/3失败均因测试错误假定英文路径上下文，实际尚未到后续usage/冷恢复断言；已改为CoreError枚举分类。生产canonical load也请求writer access，所以该集成故障发生在边界materialization前，不能冒充append/write syscall失败。另补Session预先recover后、保持同一OS限制的真实ContextCompacted append拒绝，以区分实际append入口；尚待终态。没有新增生产故障开关、存储链或SQLite trigger（projection不是权威提交），未声称磁盘满/部分写/sync/断电覆盖。
+
+原失败日志全部保留，当前补强候选正在运行；取消、notes复用、相关完整组、workspace、格式/严格lint、CLI/SDK消费者与独立Tauri尚待最终门禁。H269仍单独未修。无本项commit、验收新增0，状态计数沿E01；本项剩余4–10有效小时仍低置信，总体200–400为历史粗估，构建/设备/依赖/环境等待另计。用户此次回传的H287受控D:→D:AI授权已在历史E17～21及已提交返修中使用，本项不重新修改H287或重复计数。
+
+**E-H268-03（冻结门禁与夹具环境纠正，2026-11-06，待全仓复验收束）**：最终两份Rust源码SHA256已冻结于target/h268-repair-20261106/frozen-sources.json，之后未改源码。Windows存储分类/真实append入口拒绝测试exit0、1/0/0（100.735秒，含编译）：compactor因权威文件materialization拒绝而返回Persistence，已发生usage120+18未丢，预先recover的Session确实进入append_session_file拒绝；释放OS句柄后原文件字节不变，冷重开无新边界且原Surface完整。证明的是拒绝writer-open，不是磁盘满、write_all部分写或sync失败。
+
+初次完整AppCore默认组为1528/3/49，初次完整workspace按顶层target去重为4690/7/219、exit101、978.834秒（原runner简单求和多计一个嵌套child通过，不能用4691当顶层总数）。其中AppCore三项、CLI snapshot一项、subagents一项与workspace一项均为测试夹具TEMP放在仓库target下所致：原生祖先搜索会合法发现上级Git/Cargo，CLI快照路径前缀也随TEMP盘符变化。未修改这六项产品/断言或自动接受snapshot；已将原snap.new移动到本轮target保留。subagents的no-repo反例因此产生一条本轮临时detached worktree注册，TempDir已自行删除树；核对绝对路径仅在本轮target/temp内、目录不存在后，git worktree remove --force只移除此条残留注册，原main与C盘baseline两棵worktree保留。未全局prune、未改Git配置或用户工作树。
+
+改用新建的仓库外合成TEMP（HOME/凭据隔离不变），上述六项使用首轮**同一原生测试二进制与SHA256**逐条真实复验，合计6/0/0；完整AppCore默认组1531/0/49、exit0、183.345秒（已去掉嵌套child重复计数），完整CLI180/0/15、exit0、133.254秒，故前六失败不认定为H268产品回归。H306的empty defaultUserPrompt仍为独立真实失败；先前CodeGraph性能反例本轮通过不代表已修。为避免用六个局部重试替代全仓，已启动仓库外TEMP的第二次完整workspace，尚未取得终态，不写全仓通过。
+
+| 实际命令（除fmt外，cargo均带offline、-j 2） | 当前终态 |
+|---|---|
+| cargo test -p deepagent-context -- --nocapture --test-threads=1 | 59/0/2，exit0，4.828秒；2个原tokenizer审计ignore不当作通过 |
+| cargo test -p deepagent-app-core --lib context_runtime::summary_audit -- --nocapture --test-threads=1 | 11/0/1，exit0，9.681秒；H268原三反例已默认执行，唯一ignore为独立H269 |
+| cargo test -p deepagent-app-core --lib context_runtime::summary_audit::audit_literal_summary_analysis_tag_does_not_erase_fact -- --include-ignored --nocapture --test-threads=1 | 0/1/0，exit101，1.184秒；H269仍真实复现，另一次误拼过滤器得到零测试不算验收 |
+| cargo fmt --all -- --check | exit0，4.368秒 |
+| cargo clippy -p deepagent-context --all-targets --all-features --no-deps -- -D warnings | exit0，11.448秒 |
+| cargo clippy -p deepagent-app-core --all-targets --all-features --no-deps -- -D warnings | exit101，43.706秒，14个既有lint；全部报告位置的7份文件与HEAD逐字相同，无新增allow或顺手修正 |
+| cargo clippy --all-targets --all-features -- -D warnings | exit101，3.603秒，models/client.rs:385旧clone_on_copy；未到全仓后续crate，不写全局lint通过 |
+| cargo build -p deepagent-cli | exit0，65.300秒；新CLI哈希D395DDBC6BF0F4A37AF82E122297969AC4FE216E9AE0DCC50DA6746F1A1F3FFC |
+| cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --target-dir target/h272-tauri-build | exit0，26.327秒；独立Tauri Rust消费者 |
+| packages/sdk内pnpm test / test:stdio / test:jsonl / typecheck | exit均0；默认59/0/0、真实stdio1/0/0、真实JSONL/SQLite重开1/0/0；6.153/9.513/5.972/1.256秒，真实门禁使用上述重建CLI，无自动skip |
+
+本项不新增依赖、协议/DTO/迁移或并行摘要链；改变的是空/无状态模型对象转入既有有损fallback，合法稀疏状态继续采用。不会重写已持久化的存量退化checkpoint，不操作真实历史；旧边界仍须从保留的原始事件/指针恢复。正常summary、prior、notes、取消、prefire、工具尾部及计费归属随完整组验证；不是任意语义无损/正确性证明。没有前端/UI变更，未执行pnpm desktop build或窗口、其他OS、真实DeepSeek/凭据/内网、全量业务或断电/磁盘满；compatibility重复指针与其旧的warn-only持久化失败处理不在本次validator修改内，不宣称已治理这些独立边界。当前无commit、H268仍修复中，新增验收0；余数/估时沿E01，构建等待另计。
+
+**E-H268-04（最终本机验收与交付范围，2026-11-06）**：仓库外合成TEMP的完整 `cargo test --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=2` 已终态，exit101、718.113秒，按140个顶层target去重为 **4696 passed / 1 failed / 219 ignored**；唯一失败仍为独立H306的creative.video-edit.v1空defaultUserPrompt，未混修，不写全仓通过。首轮六项夹具问题均在第二次完整运行通过，原七失败及同二进制六项复验仍保留。相关生产/消费方：AppCore **1531/0/58**、Kernel正式端到端 **297/0/27**、Context单元 **58/0/0**（独立完整Context另59/0/2）、Models **157/0/16**、Runtime **434/0/9**、Persistence **197/0/0**、Session **21/0/0**；CLI整组/真实SDK门禁、Tauri、格式与严格lint结果沿E03。ignore只列数量，不当作验收；真实SDK门禁验证其既有离线启动/失败/持久化消费者，不冒充通过SDK发起了真实供应商摘要。
+
+原三项H268反例现在默认执行，均为split20、单一边界、raw/summary/wire/replay_fact全部true、side_usage120+18，正常有效模型摘要和非JSON对照均保留；新增goal-only/空白/缺状态/错误类型/数组包装/重复字段/截断正文、prior与完整计费断言通过。五条正式摘要路径和文件SQLite冷重开、prefire不提前写边界、工具尾部、notes/取消既有组及权威writer拒绝已按E02～03完成本机范围验收。仅改唯一ModelCompactor解析资格，未改权限/沙箱、公开类型、供应商字段或存储格式；不把heuristic有损降级、历史退化checkpoint、compatibility重复指针/warn-only持久化处理及H269字面量清理宣称已修，未验范围仍沿E03。AppCore14个旧lint及全仓Models旧lint也保持公开，无新增lint抑制。
+
+据此H268标为**已修复并验收（限上述Windows本机离线范围）**，本轮新增1，历史跳过/归并/撤销新增0。306行台账为169验收、23历史跳过、7归并、3撤销、104待修、0修复中/阻塞；104有效未关闭含H180授权跳过，实际队列103，不提供完成率。代码/测试/两文只提交本项四个文件，取得commit后另文档回填，不amend、不推送或PR。下一项拟复核H293共享终端租约与实际PTY存活/清理，优先运行状态与资源所有权，而非先挑低风险格式问题。H268实施验收剩余0，提交收尾中；全部余项200–400有效工作小时仍为未逐项校准的低置信历史粗估，依据跨层运行/授权/持久化/协议缺陷及相应TDD验收规模，不机械按数量扣减。编译等待与设备/依赖/环境等待另计、后者尚不能量化，不承诺完工日期；整体目标仍active、未完成。
+
+**E-H268-05（提交前产物身份复核，2026-11-06）**：预提交校验发现第二次workspace feature统一编译重新生成了target/debug/deepagent.exe（F592E416…），与此前SDK门禁使用的D395DDBC…不同，故校验真实失败，未忽略哈希或直接提交。源码冻结哈希不变；重新执行 `cargo build -p deepagent-cli --offline -j 2` exit0、24.097秒，最终CLI SHA256为 **11F73F4E96F6C5C9B2E878D323C66BBBCA483DC2C9F32276A372F01CAD728B8B**。随后对这份当前产物再跑packages/sdk的 `pnpm test:stdio` 与 `pnpm test:jsonl`，各1/0/0、原生exit0，合计16.306秒；不是用旧二进制结果替代新产物。最终四文件diff、两文E01～05一致性、306槽唯一编号/状态计数、仅H268一行台账改变及两份冻结源码复核通过后才提交；不再触发改变feature组合的Cargo构建。E04验收范围与169/23/7/3/104计数不变，不扩大为全系统完成。

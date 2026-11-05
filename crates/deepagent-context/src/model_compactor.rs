@@ -10,7 +10,8 @@
 //! [`Summarizer`](crate::compaction::Summarizer) trait directly. Instead it
 //! exposes [`ModelCompactor::summarize`] returning a [`TaskSummary`], and falls
 //! back to the heuristic summarizer on any model failure (no key, network
-//! error, malformed JSON) so compaction always succeeds (Requirement 4.5).
+//! error, malformed JSON or a checkpoint with no task state). This fallback is
+//! deliberately lossy; a nonempty goal/title is not proof of preserved progress.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -361,17 +362,37 @@ fn strip_analysis(content: &str) -> String {
 fn parse_summary_json(content: &str) -> Option<SummaryJson> {
     let cleaned = strip_analysis(content);
     let trimmed = cleaned.trim();
-    // Fast path: whole thing is JSON.
-    if let Ok(v) = serde_json::from_str::<SummaryJson>(trimmed) {
-        return Some(v);
-    }
-    // Otherwise, slice from the first '{' to the last '}'.
-    let start = trimmed.find('{')?;
-    let end = trimmed.rfind('}')?;
-    if end <= start {
+    let json = if serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
+        trimmed
+    } else {
+        // Retain the existing fence/prose tolerance, but do not extract a
+        // checkpoint from inside an otherwise valid JSON array or string.
+        let start = trimmed.find('{')?;
+        let end = trimmed.rfind('}')?;
+        if end <= start {
+            return None;
+        }
+        &trimmed[start..=end]
+    };
+    if !json.starts_with('{') {
         return None;
     }
-    serde_json::from_str::<SummaryJson>(&trimmed[start..=end]).ok()
+    // Deserialize the original object, not a Value round-trip: duplicate known
+    // fields and wrong types must still be rejected by the typed schema.
+    let parsed: SummaryJson = serde_json::from_str(json).ok()?;
+    // Check before prior/goal/framing injection can disguise an empty model
+    // response. Sparse sections remain compatible, but at least one actual
+    // task-state entry is required; a goal alone is not a progress checkpoint.
+    let has_state = [
+        &parsed.completed,
+        &parsed.pending,
+        &parsed.decisions,
+        &parsed.failures,
+    ]
+    .into_iter()
+    .flatten()
+    .any(|item| !item.trim().is_empty());
+    has_state.then_some(parsed)
 }
 
 /// Merge a freshly parsed summary into the prior one (extend, dedup), keeping
@@ -434,6 +455,97 @@ mod tests {
     }
 
     #[test]
+    fn h268_rejects_empty_unrelated_goal_only_and_whitespace_checkpoints() {
+        let cases = [
+            ("empty", "{}"),
+            ("unrelated", r#"{"unrelated":"not a checkpoint"}"#),
+            ("goal-only", r#"{"goal":"continue the same task"}"#),
+            (
+                "empty-state",
+                r#"{"goal":"g","completed":[],"pending":[],"decisions":[],"failures":[]}"#,
+            ),
+            (
+                "whitespace",
+                r#"{"goal":"g","completed":[" \n\t"],"pending":["　"],"decisions":[],"failures":[""]}"#,
+            ),
+            ("wrong-type", r#"{"goal":"g","completed":"Created fact"}"#),
+            ("null-state", r#"{"goal":"g","pending":null}"#),
+            ("sequence", r#"["g",["Created fact"],[],[],[]]"#),
+            ("array-wrapper", r#"[{"completed":["Created fact"]}]"#),
+            ("string-wrapper", r#""{\"completed\":[\"Created fact\"]}""#),
+            (
+                "duplicate-field",
+                r#"{"completed":["Created fact"],"completed":[]}"#,
+            ),
+            ("fenced-empty", "```json\n{}\n```"),
+        ];
+        let incorrectly_adopted: Vec<_> = cases
+            .into_iter()
+            .filter_map(|(name, text)| parse_summary_json(text).map(|_| name))
+            .collect();
+        assert!(
+            incorrectly_adopted.is_empty(),
+            "adopted: {incorrectly_adopted:?}"
+        );
+    }
+
+    #[test]
+    fn h268_sparse_real_state_is_valid_without_fabricating_other_sections() {
+        for key in ["completed", "pending", "decisions", "failures"] {
+            let text = serde_json::json!({key: ["  concrete checkpoint  ", ""]}).to_string();
+            let parsed = parse_summary_json(&text).expect("one meaningful state section suffices");
+            let merged = merge_into_prior(&TaskSummary::default(), parsed, "fallback task");
+            assert_eq!(merged.goal, "fallback task");
+            let sections = [
+                merged.completed_steps,
+                merged.pending_steps,
+                merged.design_decisions,
+                merged.known_failures,
+            ];
+            assert_eq!(
+                sections.iter().flatten().collect::<Vec<_>>(),
+                ["concrete checkpoint"]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn h268_rejected_checkpoint_uses_existing_fallback_preserves_prior_and_usage() {
+        let prior = TaskSummary {
+            goal: "original task".into(),
+            pending_steps: vec!["prior pending".into()],
+            ..Default::default()
+        };
+        let turns = vec!["Created H268_ORIGINAL_FACT".to_string()];
+        let expected = HeuristicSummarizer.summarize("fallback goal", &prior, &turns);
+        for body in [
+            "{}",
+            r#"{"unrelated":"object"}"#,
+            r#"{"goal":"replacement goal"}"#,
+            r#"{"completed":[" "],"pending":[],"decisions":[],"failures":[]}"#,
+            r#"{"completed":["truncated"#,
+        ] {
+            let events = vec![
+                serde_json::json!({"type":"response.output_text.delta", "delta":body}).to_string(),
+                usage_events()[1].clone(),
+            ];
+            let compactor = ModelCompactor::new(client(events), "deepseek-v4-flash");
+            let (actual, usage) = compactor
+                .summarize_accounted("fallback goal", &prior, &turns)
+                .await;
+            assert_eq!(
+                actual, expected,
+                "rejected body must use the original fallback: {body}"
+            );
+            assert_eq!(usage.prompt_tokens, 900);
+            assert_eq!(usage.completion_tokens, 60);
+            assert_eq!(usage.reasoning_tokens, 20);
+            assert_eq!(usage.prompt_cache_hit_tokens, 700);
+            assert_eq!(usage.total_tokens, 960);
+        }
+    }
+
+    #[test]
     fn strips_leading_analysis_block_before_parsing() {
         let s =
             "<analysis>\nprivate reasoning\n</analysis>\n{\"goal\":\"g\",\"completed\":[\"a\"]}";
@@ -444,7 +556,8 @@ mod tests {
 
     #[test]
     fn unclosed_analysis_block_drops_remainder() {
-        let s = "{\"goal\":\"kept\",\"completed\":[]} trailing <analysis> never closed";
+        let s =
+            "{\"goal\":\"kept\",\"completed\":[\"kept state\"]} trailing <analysis> never closed";
         let v = parse_summary_json(s).unwrap();
         assert_eq!(v.goal, "kept");
     }

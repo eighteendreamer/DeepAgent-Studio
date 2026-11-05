@@ -152,25 +152,360 @@ async fn non_json_summary_uses_existing_heuristic_fallback() {
 }
 
 #[tokio::test]
-#[ignore = "audit: empty JSON must not silently shadow the original history"]
 async fn audit_empty_object_does_not_shadow_history() {
     check_summary_adoption("empty-object", "{}").await;
 }
 
 #[tokio::test]
-#[ignore = "audit: unrelated JSON must not silently shadow the original history"]
 async fn audit_unrelated_object_does_not_shadow_history() {
     check_summary_adoption("unrelated-object", r#"{"unrelated":"not a checkpoint"}"#).await;
 }
 
 #[tokio::test]
-#[ignore = "audit: empty progress sections must not silently shadow the original history"]
 async fn audit_empty_sections_do_not_shadow_history() {
     check_summary_adoption(
         "empty-sections",
         r#"{"goal":"","completed":[],"pending":[],"decisions":[],"failures":[]}"#,
     )
     .await;
+}
+
+#[tokio::test]
+async fn h268_goal_only_whitespace_missing_state_and_wrong_types_use_fallback() {
+    for (label, body) in [
+        ("goal-only", r#"{"goal":"continue audit"}"#),
+        (
+            "whitespace",
+            r#"{"goal":"continue audit","completed":["　"],"pending":[" \n"],"decisions":[""],"failures":[]}"#,
+        ),
+        (
+            "wrong-type",
+            r#"{"goal":"continue audit","completed":"invalid shape"}"#,
+        ),
+        ("null", r#"{"goal":"continue audit","pending":null}"#),
+        ("fenced-empty", "```json\n{}\n```"),
+    ] {
+        check_summary_adoption(label, body).await;
+    }
+}
+
+fn h268_seed_history(
+    with_tool_tail: bool,
+) -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    Arc<Database>,
+    SessionId,
+    Vec<ResponseInputItem>,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("h268.sqlite3");
+    let db = Arc::new(Database::open(&path).unwrap());
+    let mut session =
+        deepagent_session::Session::create(&db, &deepagent_core::clock::SystemClock, None).unwrap();
+    let sid = session.id();
+    for index in 0..24 {
+        session
+            .append_response_item(ResponseInputItem::Message {
+                role: if index % 2 == 0 { "user" } else { "assistant" }.into(),
+                content: if index == 1 {
+                    format!("Created {FACT}\n{}", "history detail ".repeat(600))
+                } else {
+                    format!("turn {index}: {}", "history detail ".repeat(600))
+                },
+            })
+            .unwrap();
+    }
+    if with_tool_tail {
+        session
+            .append_response_item(ResponseInputItem::FunctionCall {
+                call_id: "h268-tail".into(),
+                name: "read_file".into(),
+                arguments: " { \"path\" : \"synthetic.txt\" } ".into(),
+            })
+            .unwrap();
+        session
+            .append_response_item(ResponseInputItem::FunctionCallOutput {
+                call_id: "h268-tail".into(),
+                output: "synthetic retained output".into(),
+            })
+            .unwrap();
+    }
+    session
+        .append_response_item(ResponseInputItem::Message {
+            role: "user".into(),
+            content: "current".into(),
+        })
+        .unwrap();
+    drop(session);
+    let events = deepagent_persistence::event_store::EventStore::new(&db)
+        .load_session(sid)
+        .unwrap();
+    let items = crate::input_runtime::response_items_from_events(&events);
+    (dir, path, db, sid, items)
+}
+
+#[tokio::test]
+async fn h268_fallback_is_shared_by_native_compatibility_and_prefire_with_cold_reopen() {
+    for mode in [
+        "native",
+        "compatibility",
+        "prefire-native",
+        "prefire-compatibility",
+        "compatibility-valid",
+    ] {
+        let native = mode.ends_with("native");
+        let (_dir, path, db, sid, items) = h268_seed_history(native);
+        let messages =
+            deepagent_models::messages_from_response_items(Some("protected rules"), &items);
+        let body = if mode == "compatibility-valid" {
+            serde_json::json!({"completed": [format!("Created {FACT}; H268_MODEL_ONLY")]})
+                .to_string()
+        } else {
+            "{}".into()
+        };
+        let (client, summary_wire) =
+            scripted_client_with_transport(vec![ScriptedTransport::text(&body)]);
+        let compactor = HookedReactiveContextCompactor::new(
+            client,
+            "deepseek-flash".into(),
+            Arc::new(HookRegistry::new()),
+            sid,
+            db.clone(),
+        );
+        let result = match mode {
+            "native" => compactor
+                .compact_response_items(
+                    Some("protected rules"),
+                    &items,
+                    CompactionTrigger::ContextOverflow,
+                )
+                .await
+                .unwrap()
+                .unwrap(),
+            "compatibility" | "compatibility-valid" => compactor
+                .compact(&messages, CompactionTrigger::ContextOverflow)
+                .await
+                .unwrap()
+                .unwrap(),
+            _ => {
+                let note = if native {
+                    compactor
+                        .prefire_pass1_response_items(Some("protected rules"), &items)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                } else {
+                    compactor.prefire_pass1(&messages).await.unwrap().unwrap()
+                };
+                assert!(
+                    note.note.contains(FACT),
+                    "{mode}: rejected model object must use fallback before prefire caching"
+                );
+                let before = deepagent_persistence::event_store::EventStore::new(&db)
+                    .load_session(sid)
+                    .unwrap();
+                assert!(!before
+                    .iter()
+                    .any(|event| matches!(event.payload, EventPayload::ContextCompacted { .. })));
+                let mut stale = note.clone();
+                stale.fingerprint ^= 1;
+                let refused = if native {
+                    compactor
+                        .apply_prefire_response_items(&stale, Some("protected rules"), &items)
+                        .await
+                        .unwrap()
+                } else {
+                    compactor.apply_prefire(&stale, &messages).await.unwrap()
+                };
+                assert!(refused.is_none());
+                if native {
+                    compactor
+                        .apply_prefire_response_items(&note, Some("protected rules"), &items)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                } else {
+                    compactor
+                        .apply_prefire(&note, &messages)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                }
+            }
+        };
+        assert!(summary_wire.last_prompt().contains(FACT));
+        assert_eq!(result.usage.prompt_tokens, 120);
+        assert_eq!(result.usage.completion_tokens, 18);
+        assert!(result.tokens_after < result.tokens_before);
+        assert!(
+            result.summary.contains(FACT)
+                && result.summary.contains("完整记录（未压缩的原始事件）")
+        );
+        if mode == "compatibility-valid" {
+            assert!(
+                result.summary.contains("H268_MODEL_ONLY"),
+                "valid sparse model state is actually adopted"
+            );
+        }
+        let live = result
+            .response_items
+            .unwrap_or_else(|| deepagent_models::response_items_from_messages(&result.messages).1);
+        if native {
+            for item in &items {
+                if matches!(
+                    item,
+                    ResponseInputItem::FunctionCall { .. }
+                        | ResponseInputItem::FunctionCallOutput { .. }
+                ) {
+                    assert!(
+                        live.contains(item),
+                        "{mode}: retained tool pair must be exact"
+                    );
+                }
+            }
+        }
+        // Exercise the real provider serializer on the adopted surface, not a
+        // hand-built JSON expectation. The transport stays entirely offline.
+        let (next_client, next_wire) =
+            scripted_client_with_transport(vec![ScriptedTransport::text("done")]);
+        next_client
+            .stream_response(deepagent_models::ResponseRequest::from_response_items(
+                "deepseek-flash",
+                Some("protected rules".into()),
+                live.clone(),
+            ))
+            .await
+            .unwrap();
+        let request: serde_json::Value = serde_json::from_str(&next_wire.last_prompt()).unwrap();
+        let sent: Vec<ResponseInputItem> =
+            serde_json::from_value(request["input"].clone()).unwrap();
+        assert_eq!(sent, live);
+        assert_eq!(request["instructions"], "protected rules");
+        drop(compactor);
+        drop(db);
+        let reopened = Database::open(&path).unwrap();
+        let events = deepagent_persistence::event_store::EventStore::new(&reopened)
+            .load_session(sid)
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event.payload, EventPayload::ContextCompacted { .. }))
+                .count(),
+            1
+        );
+        let replay = crate::input_runtime::response_items_from_events(&events);
+        if native {
+            assert!(
+                replay == sent,
+                "{mode}: native cold replay must equal live wire"
+            );
+        } else {
+            // Existing compatibility record_durable_boundary unconditionally
+            // adds one extra transcript pointer. Check that exact discrepancy,
+            // including the valid model control, rather than hiding differences
+            // with trim/field omission or mixing this independent formatter bug.
+            let mut expected = sent.clone();
+            let Some(ResponseInputItem::Message { content, .. }) = expected.first_mut() else {
+                panic!("summary message required")
+            };
+            *content = crate::input_runtime::with_transcript_pointer(
+                content.clone(),
+                &reopened.session_transcript_dir(sid),
+            );
+            assert!(
+                replay == expected,
+                "{mode}: only the known extra compatibility pointer may differ"
+            );
+        }
+        assert!(serde_json::to_string(&replay).unwrap().contains(FACT));
+        eprintln!("H268 {mode}: fact, tool tail where applicable, 120+18 usage, one boundary; native exact replay / compatibility known extra pointer verified");
+    }
+}
+
+#[tokio::test]
+#[cfg(windows)]
+async fn h268_native_boundary_storage_failure_does_not_adopt_or_erase_usage() {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+
+    let (_dir, path, db, sid, items) = h268_seed_history(true);
+    let (client, _) = scripted_client_with_transport(vec![ScriptedTransport::text("{}")]);
+    let compactor = HookedReactiveContextCompactor::new(
+        client,
+        "deepseek-flash".into(),
+        Arc::new(HookRegistry::new()),
+        sid,
+        db.clone(),
+    );
+    // The event file, not its SQLite projection, is authoritative. Hold a
+    // read-only share handle to deny the writer access used by the boundary.
+    // Canonical reads also request writer access; this fails during boundary
+    // materialization, before append, and is not an append-only fault injection.
+    let files: Vec<_> = std::fs::read_dir(db.session_transcript_dir(sid))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.to_string_lossy().ends_with(".v1.jsonl.zst"))
+        .collect();
+    assert_eq!(files.len(), 1);
+    let bytes_before = std::fs::read(&files[0]).unwrap();
+    let clock = deepagent_core::clock::SystemClock;
+    let mut recovered = deepagent_session::Session::recover(&db, &clock, sid).unwrap();
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(&files[0])
+        .unwrap();
+    let failure = compactor
+        .compact_response_items_accounted(
+            Some("protected rules"),
+            &items,
+            CompactionTrigger::ContextOverflow,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&failure.error, CoreError::Persistence(_)),
+        "actual storage failure: {}",
+        failure.error
+    );
+    assert_eq!(failure.usage.prompt_tokens, 120);
+    assert_eq!(failure.usage.completion_tokens, 18);
+    // Separately reach the real Session -> EventStore -> append_projection
+    // writer with recovery already complete. This proves append rejection, not
+    // an injected mock or a SQLite projection failure. The compactor case above
+    // stops earlier at materialization; do not conflate these two boundaries.
+    let append_error = recovered
+        .append(EventPayload::ContextCompacted {
+            tokens_before: 100,
+            tokens_after: 10,
+            strategy: deepagent_core::compaction_strategy::REACTIVE_MODEL.into(),
+            summary: Some("synthetic rejected boundary".into()),
+            first_kept_sequence: Some(1),
+        })
+        .unwrap_err();
+    assert!(
+        matches!(&append_error, CoreError::Persistence(message) if message.starts_with("append session file:")),
+        "actual append failure: {append_error}"
+    );
+    drop(held);
+    assert_eq!(std::fs::read(&files[0]).unwrap(), bytes_before);
+    drop(recovered);
+    drop(compactor);
+    drop(db);
+    let reopened = Database::open(&path).unwrap();
+    let events = deepagent_persistence::event_store::EventStore::new(&reopened)
+        .load_session(sid)
+        .unwrap();
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event.payload, EventPayload::ContextCompacted { .. })));
+    assert_eq!(
+        crate::input_runtime::response_items_from_events(&events),
+        items
+    );
 }
 
 const LITERAL_FACT: &str = "<analysis>AUDIT_SUMMARY_LITERAL_269</analysis>";
