@@ -1,6 +1,6 @@
 //! Bounded delivery for one stdio connection. Sync runtime callbacks cannot
 //! await channel capacity: overflow poisons the connection instead of hiding loss.
-use super::{HarnessEvent, RpcNotification, NOTIFICATION_METHOD};
+use super::{HarnessEvent, RpcNotification, JSONRPC_VERSION, NOTIFICATION_METHOD};
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -110,7 +110,7 @@ impl EventOutbox {
     ) -> Result<(), String> {
         while let Some(queued) = rx.recv().await {
             let notification = RpcNotification {
-                jsonrpc: "2.0".into(),
+                jsonrpc: JSONRPC_VERSION.into(),
                 method: NOTIFICATION_METHOD.into(),
                 event_sequence: Some(queued.sequence),
                 params: serde_json::to_value(queued.event)

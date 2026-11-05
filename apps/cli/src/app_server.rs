@@ -16,7 +16,7 @@ use deepagent_harness_protocol::{
     RpcNotification, RpcRequest, RpcResponse, ThreadArchiveRequest, ThreadForkRequest,
     ThreadListRequest, ThreadReadRequest, ThreadResumeRequest, ThreadStartRequest, ToolListRequest,
     TurnInterruptRequest, TurnStartRequest, TurnSteerRequest, CONTROL_PROJECTION_VERSION,
-    PROTOCOL_VERSION,
+    JSONRPC_VERSION, PROTOCOL_VERSION,
 };
 use deepagent_persistence::event_store::EventStore;
 use deepagent_persistence::run_store::RunStore;
@@ -200,7 +200,7 @@ impl ServerState {
         request: RpcRequest,
         emitter: Option<&EventEmitter>,
     ) -> (RpcResponse, Option<TurnLaunch>) {
-        if request.jsonrpc != "2.0" {
+        if request.jsonrpc != JSONRPC_VERSION {
             return (
                 RpcResponse::error(request.id, -32600, "jsonrpc must be '2.0'"),
                 None,

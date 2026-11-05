@@ -3,6 +3,7 @@ import { createInterface, type Interface } from "node:readline";
 import { TurnEventStream } from "./turnStream.js";
 
 export const PROTOCOL_VERSION = 1;
+const JSONRPC_VERSION = "2.0";
 
 export type HarnessEvent =
   | ThreadStartedEvent
@@ -390,6 +391,11 @@ class StdioTransport implements RpcTransport {
       );
       return;
     }
+    // Reject incompatible envelopes before either pending removal or event
+    // delivery. Keep the request for a later valid reply or normal close/EOF.
+    if (typeof message !== "object" || message === null || message.jsonrpc !== JSONRPC_VERSION) {
+      return;
+    }
     if ("method" in message && message.method !== undefined) {
       for (const handler of this.notificationHandlers) {
         handler(message as RpcNotification);
@@ -435,7 +441,7 @@ class StdioTransport implements RpcTransport {
     const child = this.ensureStarted();
     const id = this.nextId++;
     const line = `${JSON.stringify({
-      jsonrpc: "2.0",
+      jsonrpc: JSONRPC_VERSION,
       id,
       method,
       params

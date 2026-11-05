@@ -8,6 +8,19 @@ use deepagent_harness_protocol::{
 use deepagent_runtime::RuntimeEvent;
 
 #[test]
+fn h212_response_constructors_own_the_same_wire_version_for_results_and_errors() {
+    use deepagent_harness_protocol::{RpcResponse, JSONRPC_VERSION};
+    assert_eq!(JSONRPC_VERSION, "2.0");
+    for response in [
+        RpcResponse::success(serde_json::json!(17), serde_json::json!({})),
+        RpcResponse::error(serde_json::json!(18), -32004, "synthetic"),
+    ] {
+        assert_eq!(response.jsonrpc, "2.0");
+        assert_eq!(serde_json::to_value(response).unwrap()["jsonrpc"], "2.0");
+    }
+}
+
+#[test]
 fn thread_start_request_uses_stable_machine_field_names() {
     let request = HarnessRequest::ThreadStart(ThreadStartRequest {
         cwd: Some("G:/workspace".into()),

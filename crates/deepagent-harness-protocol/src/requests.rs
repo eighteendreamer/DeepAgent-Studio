@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 /// The current version of the machine protocol.
 pub const PROTOCOL_VERSION: u32 = 1;
 
+/// JSON-RPC envelope version, independent of the Harness machine protocol version.
+pub const JSONRPC_VERSION: &str = "2.0";
+
 /// Requests accepted by CLI/app-server transports.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
@@ -275,7 +278,7 @@ pub struct RpcNotification {
 impl RpcResponse {
     pub fn success(id: serde_json::Value, result: serde_json::Value) -> Self {
         Self {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: JSONRPC_VERSION.to_string(),
             id,
             result: Some(result),
             error: None,
@@ -284,7 +287,7 @@ impl RpcResponse {
 
     pub fn error(id: serde_json::Value, code: i32, message: impl Into<String>) -> Self {
         Self {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: JSONRPC_VERSION.to_string(),
             id,
             result: None,
             error: Some(RpcError {

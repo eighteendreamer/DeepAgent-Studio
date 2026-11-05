@@ -30,7 +30,7 @@ use tokio::{
 use tracing::debug;
 
 use crate::error::SdkError;
-use crate::transport::{decode_line, notification_event, request_line, WireMessage};
+use crate::transport::{decode_server_line, notification_event, request_line, WireMessage};
 use crate::RequestEvents;
 
 /// Shared pending-reply table keyed by request id.
@@ -415,7 +415,7 @@ fn spawn_reader(
     tokio::spawn(async move {
         let mut lines = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            match decode_line(&line) {
+            match decode_server_line(&line) {
                 Ok(WireMessage::Response(response)) => {
                     let id = response.id.as_i64().unwrap_or_default();
                     let reply = pending
@@ -800,7 +800,6 @@ mod audit_tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: a response with a non-2.0 JSON-RPC version must not complete an SDK request"]
     async fn audit_wrong_jsonrpc_version_does_not_complete_request() {
         let marker = std::env::temp_dir().join(format!(
             "deepagent-harness-sdk-audit-jsonrpc-version-{}-{}.marker",
@@ -867,7 +866,7 @@ mod audit_tests {
         let _ = std::fs::remove_file(marker);
 
         assert!(
-            !accepted,
+            !accepted && pending_before_eof == 1,
             "a response with jsonrpc != 2.0 must be rejected before completing the request: accepted={accepted}, pending_before_eof={pending_before_eof}, observed={observed:?}"
         );
     }
@@ -1112,3 +1111,7 @@ mod stream_tests;
 #[cfg(all(test, windows))]
 #[path = "client_id_contract_tests.rs"]
 mod id_contract_tests;
+
+#[cfg(all(test, windows))]
+#[path = "client_version_contract_tests.rs"]
+mod version_contract_tests;

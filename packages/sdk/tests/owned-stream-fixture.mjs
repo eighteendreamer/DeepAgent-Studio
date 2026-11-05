@@ -4,7 +4,7 @@ import { createInterface } from "node:readline";
 const mode = process.argv[2];
 const response = (id, result) => ({ jsonrpc: "2.0", id, result });
 const notification = (event) => ({ jsonrpc: "2.0", method: "harness/event", params: event });
-const send = (messages) => process.stdout.write(messages.map(JSON.stringify).join("\n") + "\n");
+const send = (messages, onFlushed) => process.stdout.write(messages.map(JSON.stringify).join("\n") + "\n", onFlushed);
 const threads = [];
 const starts = [];
 const withheld = [];
@@ -12,13 +12,28 @@ const watchdog = setTimeout(() => process.exit(24), 6000);
 const terminal = (threadId, type = "turn.completed") => ({
   type, threadId, turnId: `turn-${threadId}`, message: "original terminal", reason: "synthetic stop"
 });
+const invalidVersions = ["1.0", "", "2", "2.0 ", "2.O", 2, null, false, [], {}, undefined];
+const versionNoise = (id) => invalidVersions
+  .flatMap((jsonrpc) => [
+    { jsonrpc, id, result: { protocolVersion: 1, serverName: "wrong-version", serverVersion: "1" } },
+    { jsonrpc, id, error: { code: -32004, message: "wrong-version error" } }
+  ]);
+const versionBarrier = () => notification({ type: "thread.started", threadId: "version-barrier", protocolVersion: 1 });
+const versionNotifications = () => invalidVersions.map((jsonrpc) => ({
+  ...notification({ type: "approval.requested", approvalId: "fake", reason: "wrong version" }), jsonrpc
+}));
 
 createInterface({ input: process.stdin }).on("line", (line) => {
   const request = JSON.parse(line);
   switch (request.method) {
-    case "initialize":
-      send([response(request.id, { protocolVersion: 1, serverName: "owned-stream-fixture", serverVersion: "1" })]);
+    case "initialize": {
+      const reply = response(request.id, { protocolVersion: 1, serverName: "owned-stream-fixture", serverVersion: "1" });
+      if (mode === "version-initialize") {
+        withheld.push(reply);
+        send([...versionNoise(request.id), ...versionNotifications(), versionBarrier()]);
+      } else send([reply]);
       break;
+    }
     case "thread/start": {
       const threadId = `thread-${threads.length + 1}`;
       threads.push(threadId);
@@ -65,6 +80,16 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     }
     case "audit/barrier":
       send([response(request.id, { starts })]);
+      break;
+    case "audit/version":
+      withheld.push(mode === "version-error"
+        ? { jsonrpc: "2.0", id: request.id, error: { code: -32004, message: "valid matched error" } }
+        : response(request.id, { source: "valid matched result" }));
+      send([...versionNoise(request.id), ...versionNotifications(), versionBarrier()]);
+      break;
+    case "audit/version-eof":
+      clearTimeout(watchdog);
+      send(versionNoise(request.id), () => process.exit(0));
       break;
     case "audit/emit":
       send([...(request.params.events ?? []).map(notification), response(request.id, {})]);

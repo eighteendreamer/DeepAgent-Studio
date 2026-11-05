@@ -6,7 +6,9 @@
 //! single `untagged` decode distinguishes them by their shapes (`id` ⇒ response,
 //! `method` ⇒ notification).
 
-use deepagent_harness_protocol::{HarnessEvent, RpcNotification, RpcRequest, RpcResponse};
+use deepagent_harness_protocol::{
+    HarnessEvent, RpcNotification, RpcRequest, RpcResponse, JSONRPC_VERSION,
+};
 use serde::Deserialize;
 
 /// One envelope read from the server's stdout.
@@ -26,7 +28,7 @@ pub fn request_line(
     params: &serde_json::Value,
 ) -> Result<String, serde_json::Error> {
     let request = RpcRequest {
-        jsonrpc: "2.0".into(),
+        jsonrpc: JSONRPC_VERSION.into(),
         id: serde_json::Value::from(id),
         method: method.to_string(),
         params: params.clone(),
@@ -36,21 +38,39 @@ pub fn request_line(
 
 /// Decode one stdout line into a raw response or notification envelope.
 ///
-/// This preserves wire fields, including unknown notification methods. It does
-/// not authorize the envelope as a Harness event; the client validates that at
-/// the notification projection boundary before publishing to subscribers.
+/// This preserves wire fields, including unsupported version strings and unknown
+/// notification methods. It is not the client's validated dispatch boundary.
 pub fn decode_line(line: &str) -> Result<WireMessage, serde_json::Error> {
     serde_json::from_str(line)
 }
 
+/// The client's single inbound envelope gate, before any pending/event mutation.
+pub(crate) fn decode_server_line(line: &str) -> Result<WireMessage, serde_json::Error> {
+    let message = decode_line(line)?;
+    let (version, diagnostic) = match &message {
+        WireMessage::Response(response) => (
+            response.jsonrpc.as_str(),
+            "unsupported JSON-RPC response version",
+        ),
+        WireMessage::Notification(notification) => (
+            notification.jsonrpc.as_str(),
+            "unsupported JSON-RPC notification version",
+        ),
+    };
+    if version != JSONRPC_VERSION {
+        // The version is peer-controlled and may contain private data. Preserve
+        // the envelope kind and reason, not its received string or payload.
+        return Err(<serde_json::Error as serde::de::Error>::custom(diagnostic));
+    }
+    Ok(message)
+}
+
 /// The single notification-to-event projection used by the client reader.
+/// Envelope version is validated by `decode_server_line` before dispatch.
 /// Errors are fixed diagnostic reasons: never include untrusted payload data.
 pub(crate) fn notification_event(
     notification: RpcNotification,
 ) -> Result<HarnessEvent, &'static str> {
-    if notification.jsonrpc != "2.0" {
-        return Err("unsupported notification version");
-    }
     if notification.method != "harness/event" {
         return Err("unsupported notification method");
     }
@@ -138,7 +158,8 @@ mod tests {
             "params": {"type": "thread.started", "threadId": "synthetic", "protocolVersion": 1}
         });
         let project = |value: serde_json::Value| {
-            let WireMessage::Notification(notification) = decode_line(&value.to_string()).unwrap()
+            let WireMessage::Notification(notification) = decode_server_line(&value.to_string())
+                .map_err(|_| "unsupported notification version")?
             else {
                 panic!("expected notification");
             };
@@ -195,6 +216,75 @@ mod tests {
             r#"{"jsonrpc":"2.0","method":"other/event","eventSequence":91,"params":{"type":"turn.completed","message":"synthetic"}}"#,
         ).unwrap() else { panic!("expected raw notification") };
         assert_eq!(notification.method, "other/event");
+        assert_eq!(notification.event_sequence, Some(91));
+        assert_eq!(
+            notification_event(notification),
+            Err("unsupported notification method")
+        );
+    }
+
+    #[test]
+    fn h212_inbound_gate_rejects_invalid_response_versions_without_changing_raw_decode() {
+        for body in [
+            serde_json::json!({"result": {"source": "synthetic"}}),
+            serde_json::json!({"error": {"code": -32004, "message": "synthetic"}}),
+        ] {
+            let mut valid = body;
+            valid["jsonrpc"] = "2.0".into();
+            valid["id"] = 17.into();
+            assert!(matches!(
+                decode_server_line(&valid.to_string()),
+                Ok(WireMessage::Response(_))
+            ));
+            for version in [
+                serde_json::json!("1.0"),
+                serde_json::json!("2"),
+                serde_json::json!("2.0 "),
+                serde_json::json!(""),
+                serde_json::json!("synthetic-private-version"),
+                serde_json::json!(2),
+                serde_json::Value::Null,
+                serde_json::json!(false),
+                serde_json::json!([]),
+                serde_json::json!({}),
+            ] {
+                let mut invalid = valid.clone();
+                invalid["jsonrpc"] = version.clone();
+                let error = decode_server_line(&invalid.to_string()).unwrap_err();
+                assert!(error.is_data());
+                assert!(!error.to_string().contains("synthetic-private-version"));
+                if version.is_string() {
+                    let WireMessage::Response(raw) = decode_line(&invalid.to_string()).unwrap()
+                    else {
+                        panic!("raw response contract changed");
+                    };
+                    assert_eq!(raw.jsonrpc, version.as_str().unwrap());
+                    assert_eq!(error.to_string(), "unsupported JSON-RPC response version");
+                }
+            }
+            valid.as_object_mut().unwrap().remove("jsonrpc");
+            assert!(decode_server_line(&valid.to_string()).is_err());
+        }
+    }
+
+    #[test]
+    fn h212_shared_gate_validates_notification_version_before_method_projection() {
+        let mut value = serde_json::json!({
+            "jsonrpc": "synthetic-private-version", "method": "other/event", "eventSequence": 91,
+            "params": {"type": "turn.completed", "message": "synthetic"}
+        });
+        let error = decode_server_line(&value.to_string()).unwrap_err();
+        assert!(error.is_data());
+        assert_eq!(
+            error.to_string(),
+            "unsupported JSON-RPC notification version"
+        );
+        value["jsonrpc"] = "2.0".into();
+        let WireMessage::Notification(notification) =
+            decode_server_line(&value.to_string()).unwrap()
+        else {
+            panic!("expected notification")
+        };
         assert_eq!(notification.event_sequence, Some(91));
         assert_eq!(
             notification_event(notification),

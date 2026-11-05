@@ -13,7 +13,7 @@ pub use requests::{
     RpcError, RpcNotification, RpcRequest, RpcResponse, SandboxStatusRequest, ThreadArchiveRequest,
     ThreadForkRequest, ThreadListRequest, ThreadReadRequest, ThreadResumeRequest,
     ThreadStartRequest, ToolListRequest, TurnInterruptRequest, TurnStartRequest, TurnSteerRequest,
-    PROTOCOL_VERSION,
+    JSONRPC_VERSION, PROTOCOL_VERSION,
 };
 
 /// Version of the durable run/action/approval projection returned by
