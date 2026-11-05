@@ -66,6 +66,7 @@ async fn initialize_then_thread_start_streams_thread_started_event() {
             cwd: None,
             provider: Some("deepseek-official".into()),
             model: None,
+            reasoning_effort: None,
             permission_profile: None,
             sandbox_backend: None,
         })
@@ -109,6 +110,7 @@ async fn h214_owned_thread_start_and_reconnected_durable_read_use_the_real_cli()
             cwd: None,
             provider: None,
             model: None,
+            reasoning_effort: None,
             permission_profile: None,
             sandbox_backend: None,
         })
@@ -154,6 +156,56 @@ async fn h214_owned_thread_start_and_reconnected_durable_read_use_the_real_cli()
         before.result(),
         "reconnect reads the existing durable thread; no replay or new turn is invented"
     );
+    assert!(reopened.wait().await.unwrap().success());
+}
+
+#[tokio::test]
+async fn h222_real_stdio_thread_reasoning_survives_process_restart() {
+    let Some(bin) = isolated_cli(
+        "h222_real_stdio_thread_reasoning_survives_process_restart",
+        "h222-reasoning",
+    )
+    .await
+    else {
+        return;
+    };
+    let workspace = temp_workspace("h222-reasoning-reopen");
+    let process = HarnessProcess::spawn(&bin, &workspace).await.unwrap();
+    let client = process.client();
+    client.initialize("h222-start", "1").await.unwrap();
+    let mut saved = Vec::new();
+    for effort in ["none", "low", "high", "max"] {
+        let response = client
+            .thread_start(ThreadStartRequest {
+                cwd: None,
+                provider: None,
+                model: None,
+                reasoning_effort: Some(effort.into()),
+                permission_profile: None,
+                sandbox_backend: None,
+            })
+            .await
+            .unwrap();
+        let configuration = response.result()["configuration"].clone();
+        assert_eq!(configuration["overrides"]["reasoning_effort"], effort);
+        saved.push((
+            response.result()["threadId"].as_str().unwrap().to_owned(),
+            configuration,
+        ));
+    }
+    drop(client);
+    assert!(process.wait().await.unwrap().success());
+    let reopened = HarnessProcess::spawn(&bin, &workspace).await.unwrap();
+    let current = reopened.client();
+    current.initialize("h222-resume", "1").await.unwrap();
+    for (thread_id, configuration) in saved {
+        let response = current
+            .thread_resume(ThreadResumeRequest { thread_id })
+            .await
+            .unwrap();
+        assert_eq!(response.result()["configuration"], configuration);
+    }
+    drop(current);
     assert!(reopened.wait().await.unwrap().success());
 }
 
@@ -248,6 +300,7 @@ async fn h214_owned_real_cli_failure_is_unique_and_durable_after_reopen() {
             cwd: None,
             provider: None,
             model: None,
+            reasoning_effort: None,
             permission_profile: Some("read_only".into()),
             sandbox_backend: Some("direct".into()),
         })
@@ -417,6 +470,7 @@ async fn introspection_methods_round_trip_without_a_model() {
             cwd: None,
             provider: None,
             model: None,
+            reasoning_effort: None,
             permission_profile: None,
             sandbox_backend: None,
         })
@@ -477,6 +531,7 @@ async fn interrupt_unknown_turn_surfaces_rpc_error() {
             cwd: None,
             provider: None,
             model: None,
+            reasoning_effort: None,
             permission_profile: None,
             sandbox_backend: None,
         })
@@ -513,6 +568,7 @@ async fn request_before_initialize_is_rejected() {
             cwd: None,
             provider: None,
             model: None,
+            reasoning_effort: None,
             permission_profile: None,
             sandbox_backend: None,
         })

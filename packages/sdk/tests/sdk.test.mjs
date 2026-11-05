@@ -17,6 +17,17 @@ function createAgent(options = {}) {
   });
 }
 
+test("forwards explicit thread reasoning and exposes the saved value after resume", async () => {
+  const agent = createAgent();
+  try {
+    for (const effort of ["none", "low", "high", "max"]) {
+      const thread = await agent.startThread({reasoningEffort: effort});
+      assert.equal(thread.configuration.overrides.reasoning_effort, effort);
+      assert.deepEqual((await agent.resumeThread(thread.id)).configuration, thread.configuration);
+    }
+  } finally { await agent.close(); }
+});
+
 test("reads host/thread/cwd configuration through the existing stdio transport", async () => {
   const agent = createAgent();
   try {

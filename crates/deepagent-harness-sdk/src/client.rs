@@ -953,6 +953,7 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
                 cwd: None,
                 provider: None,
                 model: None,
+                reasoning_effort: None,
                 permission_profile: None,
                 sandbox_backend: None,
             })
@@ -969,6 +970,7 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
                 cwd: None,
                 provider: None,
                 model: None,
+                reasoning_effort: None,
                 permission_profile: None,
                 sandbox_backend: None,
             })
@@ -1097,6 +1099,7 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
                 cwd: None,
                 provider: None,
                 model: None,
+                reasoning_effort: None,
                 permission_profile: None,
                 sandbox_backend: None,
             })

@@ -62,6 +62,14 @@ pub struct ThreadStartRequest {
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Explicit thread default; individual turns may override it without
+    /// changing the durable session configuration. Uses the shared model resolver.
+    #[serde(
+        rename = "reasoningEffort",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reasoning_effort: Option<String>,
     #[serde(
         rename = "permissionProfile",
         default,

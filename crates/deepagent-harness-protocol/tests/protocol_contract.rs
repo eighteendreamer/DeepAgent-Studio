@@ -43,11 +43,31 @@ fn h212_response_constructors_own_the_same_wire_version_for_results_and_errors()
 }
 
 #[test]
+fn h222_thread_reasoning_round_trips_without_losing_explicit_none() {
+    for effort in ["none", "low", "high", "max"] {
+        let params = serde_json::json!({"reasoningEffort":effort});
+        let request: ThreadStartRequest = serde_json::from_value(params.clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), params);
+    }
+    for params in [
+        serde_json::json!({}),
+        serde_json::json!({"reasoningEffort":null}),
+    ] {
+        let request: ThreadStartRequest = serde_json::from_value(params).unwrap();
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({})
+        );
+    }
+}
+
+#[test]
 fn thread_start_request_uses_stable_machine_field_names() {
     let request = HarnessRequest::ThreadStart(ThreadStartRequest {
         cwd: Some("G:/workspace".into()),
         provider: Some("deepseek-official".into()),
         model: Some("deepseek-v4-flash".into()),
+        reasoning_effort: None,
         permission_profile: Some("workspace_write".into()),
         sandbox_backend: Some("windows_sandbox".into()),
     });
@@ -246,6 +266,7 @@ fn every_harness_request_variant_has_a_stable_method_and_round_trips() {
             cwd: None,
             provider: None,
             model: None,
+            reasoning_effort: None,
             permission_profile: None,
             sandbox_backend: None,
         }),

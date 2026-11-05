@@ -26,6 +26,7 @@
 //!         cwd: None,
 //!         provider: Some("deepseek-official".into()),
 //!         model: None,
+//!         reasoning_effort: None,
 //!         permission_profile: None,
 //!         sandbox_backend: None,
 //!     })

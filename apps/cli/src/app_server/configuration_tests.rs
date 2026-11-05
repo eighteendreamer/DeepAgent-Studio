@@ -5,6 +5,9 @@ use deepagent_models::DEEPSEEK_OFFICIAL_PROVIDER;
 #[path = "config_read_tests.rs"]
 mod config_read_tests;
 
+#[path = "reasoning_configuration_tests.rs"]
+mod reasoning_configuration_tests;
+
 fn configured_thread(state: &mut ServerState, workspace: &std::path::Path) -> Value {
     dispatch(
         state,

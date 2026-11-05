@@ -9051,6 +9051,52 @@ Rust请求字段加性但public struct literals是源兼容变化：TurnStartReq
 
 本轮只新增正式失败探针和审计文档，未修改 Harness 生产行为。H-54/H-155/H-221 已分别记录其他层级；H-222 关注 `thread/start` 这一协议入口是否把 DeepSeek reasoning 选择传入后续 turn。
 
+**E-H222-01（当前复现与本轮范围，2026-11-05）**：起点52ee7429，tracked干净，五项既有未跟踪内容只列名、不读取/修改/提交。H222仍是待修且无验收记录；本轮只补thread/start reasoning字段到既有SessionExecutionConfig/ExecutionOverrides的入口，复用H04的resume/fork/turn继承、H221的统一配置解析/接纳快照及原模型resolver，不新增配置链/解析器、DB表、迁移或供应商协议。H155兼容别名、H49备用模型预算、H180授权跳过仍独立。
+
+证据留在target/h222-repair-20261105（不提交）：原样执行`cargo test -p deepagent-cli app_server::tests::audit_thread_start_reasoning_effort_is_not_silently_dropped --offline -j 2 -- --ignored --exact --nocapture --test-threads=1`，0过/1败/0忽略、exit101、29.569秒，日志明确success=true/effort=None。新增正式CLI回归先红0/3/0、exit101、32.990秒；协议round-trip先红0/1/0、exit101、27.934秒，均在生产改动前实际执行，不以编译失败代替红测。首次Windows PowerShell 5调用因stderr被ErrorAction Stop转换为NativeCommandError而中止编译，随后使用已核对存在的PowerShell 7保留原生退出码；该次不计验收。
+
+生产只增加typed reasoningEffort字段并写入原持久配置，TS暴露同字段，Rust literals和文档示例同步；原审计probe取消ignore。首个候选CLI1过/2败（44.004秒）及协议1过（5.739秒）保留：冷恢复通用metadata夹具使用空EnvSecretStore，不能执行录制wire；已改为新Database连接+新ServerState，同时保留原MemorySecretStore/recording transport。另确认共享RunConfigOverlay既有规则把空/纯空白视作缺省，不能错误断言它会报invalid；保留原规则并增加明确对照，未为本项改动共享空串语义。非法非空值由原resolver在configured run admission拒绝，thread创建成功仅表示保存输入，不是已验证模型/后端/凭据就绪。
+
+本项暂为修复中，完整相关组、真实双SDK管道、格式/lint/全workspace与源码冻结尚待执行/收取；没有新增验收或修复commit。台账306唯一行：164验收/23历史跳过/7归并/3撤销/108待修/1修复中；109未关闭含H180，实际待处理108。全部剩余200–400有效小时仍为未逐项校准的低置信历史粗估，环境/编译/设备/依赖等待另计，无精确日历承诺。
+
+**E-H222-02（共享边界复核与冻结验收准备，2026-11-05）**：第二候选CLI2过/1败、exit101、37.603秒，协议1过/0败、exit0、0.980秒。冷恢复录制wire已通过；剩余失败揭示测试误将“模型resolver返回invalid”当作“turn admission同步拒绝”。沿prepared_chat→run_assembler核对后确认现有H221生命周期保存无效model_plan，turn先ACK，worker在provider/凭据绑定前取出原错误，持久failed终态；本轮不为thread入口另建校验器或更改公共admission错误码。新回归改为严格断言原值持久保存、scoped config和admitted capability均invalid、最终唯一failed、recording transport零请求；不是改成接受默认effort。E01此前的“run admission拒绝”推断由本段纠正，实际是执行前供应商边界拒绝。空/纯空白继续原overlay缺省语义并有对照；数字/对象由typed DTO拒绝，字符串none与缺省明确区分。
+
+所有测试只使用合成文件、临时SQLite和自建录制transport/MemorySecretStore占位值；metadata-only通用冷恢复夹具无凭据可绑定，不会发起真实请求。正式冷恢复执行夹具已显式使用录制transport，新数据库连接及新ServerState，实际进程重启另由双SDK gate验收。生产改动仍只在协议字段及原thread配置赋值，没有修改AppCore resolver、权限、模型adapter或生命周期。
+
+**E-H222-03（扩大候选验收与新增lint收敛，2026-11-05）**：定向第三候选CLI3/0/0、exit0、64.486秒，协议1/0/0、exit0、9.420秒。首轮冻结13份源码/测试/SDK说明（final-sources.json）后执行原probe默认1/0/0、exit0、22.927秒；root fmt exit0/7.055秒，CLI build exit0/35.253秒。完整相关组（含AppCore和models）55个顶层target，2512过/1败/195忽略、exit101、1259.245秒；原始56个结果块2513过包含AppCore嵌套helper重复1过，按逐target末结果归约，不重复计数。唯一失败为未改动的completion_plan::audit_tests::discovered_real_build_completes_after_release，在原4秒限时内未生成build-started标记；目前尚未证明具体耗时原因，不称已验收或默认为无关成功。
+
+该候选TS39/0/0、exit0、4.950秒；typecheck exit0/1.706秒，真实CLI stdio重开1/0/0、exit0/6.069秒，两个node --check分别exit0/0.064与0.099秒。SDK/Core/协议严格all-target/all-feature no-deps lint通过（15.944秒）；CLI同等lint真实报新增测试await_holding_lock，不能归入旧基线：虽显式drop(state)，仍改用词法块产出launch后才await，不加allow、不换执行锁、不改生产逻辑。AppCore自身严格lint保留14项旧诊断（72.285秒），未顺手修。该候选workspace已完成no-run（exit0/63.963秒）并刚开始执行，随后由小怪Ctrl-C停止旧候选整套runner以重冻测试源码；该partial workspace不计完整验收。
+
+final2-sources.json重新冻结同13份文件，比较确认只有reasoning_configuration_tests.rs的锁词法作用域改变，生产代码/协议/SDK全部hash相同。下一对原构建夹具原样独立复核，执行最终CLI/Core/models/SDK/协议完整组、双SDK门禁与严格lint，再对最终冻结版本跑完整workspace。两个CLI feature组合的artifact从Cargo JSON获取，首轮相关组C09146B2…与workspace编译375AE234…各自锁定；不能跨组合把不同hash当漂移。全部原失败、部分运行和中断日志保留，final2尚未收齐前仍为修复中、无新增验收或commit。
+
+**E-H222-04（最终验收、兼容性与剩余边界，2026-11-05）**：最终13份实现/测试/SDK说明与final2-sources.json严格SHA256一致，日志/原生退出码/耗时位于target/h222-repair-20261105，不提交target。修复只在ThreadStartRequest增加可选reasoning_effort（wire reasoningEffort），thread_start写入原SessionExecutionConfig；TS ThreadStartOptions同步字段，Rust仓内literal/SDK示例同步。复用H04持久header和turn显式优先/否则继承、H221统一config/read/接纳快照、既有ModelAgent/ModelClient Responses serializer；不新建配置解析、执行、权限、审批或存储链。原探针取消ignore，新增3项CLI真实回归、1项协议round-trip、1项Rust SDK真实重启、1项TS传输回归并加强原TS真实CLI重启对照。
+
+最终实际执行（过/败/忽略，不把嵌套helper重复计数）：
+
+| 命令/门禁 | 结果与原生退出 | 耗时秒 |
+|---|---|---|
+| `cargo test -p deepagent-cli app_server::tests::audit_thread_start_reasoning_effort_is_not_silently_dropped --offline -j 2 -- --exact --nocapture --test-threads=1` | 默认1/0/0，exit0，launch effort=high | 33.918 |
+| `cargo test -p deepagent-core -p deepagent-models -p deepagent-harness-sdk -p deepagent-harness-protocol -p deepagent-cli --offline --no-fail-fast -j 2 -- --test-threads=1` | 24顶层target共457/0/56，exit0；CLI179/0/14、协议17/0/0、Rust SDK32/0/9、真实stdio9/0/0、models153/0/17，所有H222测试实际执行 | 163.876 |
+| `pnpm -C packages/sdk test`、`typecheck`、`test:stdio` | 分别39/0/0、类型检查exit0、真实CLI1/0/0，均exit0 | 8.153 / 1.943 / 6.986 |
+| `node --check tests/mock-server.mjs`、`node --check tests/real-cli-stream.test.mjs`（packages/sdk） | 两项均exit0 | 0.076 / 0.065 |
+| `cargo fmt --all -- --check`；`cargo build -p deepagent-cli --message-format json --offline -j 2` | 均exit0 | 5.982 / 23.378 |
+| `cargo clippy -p deepagent-core -p deepagent-harness-sdk -p deepagent-harness-protocol --all-targets --all-features --no-deps --offline -j 2 -- -D warnings` | exit0 | 2.888 |
+| `cargo clippy -p deepagent-cli --all-targets --all-features --no-deps --offline -j 2 -- -D warnings` | exit0；新增await_holding_lock已按词法作用域修复，无allow | 39.253 |
+| `cargo test --workspace --offline --no-fail-fast --no-run --message-format json -j 2`；随后`cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=1` | no-run exit0；140顶层target共4670/2/224，exit101（原141结果块4671过含helper重复1过） | 45.480 / 1768.922 |
+| 同一冻结workspace AppCore二进制`target/debug/deps/deepagent_app_core-32f391e263e6c0fa.exe --exact verification_commands::lifecycle_tests::production_cold_compiler_gate_normal_cancel_and_deadline --nocapture --test-threads=1` | 1/0/0，exit0；与workspace失败时相同二进制，无重编译/改测试/放宽限时 | 19.491 |
+| 同一AppCore二进制`--nocapture --test-threads=1`完整重跑 | 1518/0/61，exit0；不是只重试失败项 | 396.444 |
+| `cargo clippy --workspace --all-targets --all-features --offline -j 2 -- -D warnings` | exit101，旧models/client.rs:385 clone_on_copy | 31.278 |
+
+workspace两失败保留：H306的creative.video-edit.v1 defaultUserPrompt为空；另未改动verification_commands::lifecycle_tests::production_cold_compiler_gate_normal_cancel_and_deadline在原4秒窗口无compiler-started，原诊断记录cargo_lock=false、compiler_stages=[]、清理cancel接受且settled_actions_terminal=true。后者同二进制F7728309…独立及完整AppCore重跑均过，说明本次可重现的负载/时序敏感现象，不证明具体OS调度原因，更不把原workspace exit101改写为成功。首候选另一个completion_plan夹具超时也原样单独复核1/0/0、exit0/259.941秒（大部分编译），最终workspace及同二进制完整AppCore中均通过。两类构建夹具没有代码变更。AppCore严格lint仍E03所列14项既有诊断，未抑制/顺手修；全仓严格lint和完整workspace不是全绿。
+
+最终CLI组合身份从Cargo compiler-artifact取得：相关组8302E44300C37E689B24C72F5C8B7FA649A343A205BEE2F0E9B417FEBB375832，真实双SDK/TS前后不变；workspace组合63780E9876ECF714F53247D04959578D51BA0FEF478498B0659AD1E2C0F96500，执行后与lint后不变。AppCore同二进制复核SHA256 F77283093F4683B3C368831B0A3E43D0F004BDE4764D218ADB0912F1A8E0F363前后不变；13份最终冻结文件均无漂移。保留首轮失败与Ctrl-C部分运行，不以后续重跑抹去。
+
+实测范围：无字段默认low对照与none/low/high/max四档，各执行默认→turn覆盖→恢复thread默认共15次真实Kernel→ModelAgent→ModelClient录制请求，逐次wire effort严格相等、持久thread配置不变，Responses无Chat-only thinking字段。新Database/ServerState冷resume与冷fork继承、steer替换、合成read_file工具两次模型循环、另一已接纳none线程及随后host设置变化均不改变high快照；唯一终态和工具成功正常对照真实检查。非法非空/别名不再被协议丢弃，原值保存、read及admitted config均invalid、worker唯一failed且零provider请求；数字/对象被DTO拒绝，空/纯空白继续共享overlay继承规则。真实Rust SDK四档跨进程重启、TS none跨进程重启准确保持configuration，不把mock传输当供应商执行验收。
+
+兼容性：wire加性可选、旧省略/null保留旧默认，字符串none显式禁用；Rust public struct literal是源兼容变更，须增加reasoning_effort=None，仓内调用/示例已更新。旧历史thread已丢字段无法逆推恢复；未来新thread开始保存，不新增迁移。不改变原managed/config优先级；不新增模型能力协商或别名兼容，H155独立待修，非法配置ACK后failed和空串继承均明确保留，不声称thread创建就绪。不修改Chat adapter/备用模型预算/截断算法；existing models/runtime及workspace正常对照覆盖保持，未做真实供应商质量/费用A/B、每一种网络retry/截断组合或能力不支持模型专项。未运行其他OS、真实DeepSeek/凭据、Desktop WebView/UI及真实外部设备/插件；本轮无Tauri桥接/UI修改，没有理由启动真实服务或把这些未执行项当通过。
+
+据原始红测、最终真实链路与上述受限验收，H222标为已修复并验收（限本机Windows离线范围），不是整系统完成。两文同步，仅H222台账行变化；本轮新增验收1、历史跳过/归并/撤销新增各0，累计165验收/23历史跳过/7归并/3撤销/108待修/0修复中；108未关闭含H180授权跳过，实际待处理107。修复代码、测试/SDK说明和当时两文将独立提交，真实hash取得后另文档回填，不反复amend；不推送/建PR/数据库迁移/操作真实数据，五项既有未跟踪不读改提交。本项剩余0；下一按风险复核唯一尚在队列P1 H150空输入供应商边界，H180不进入修复队列。全余200–400有效小时仍是跨层配置/执行、持久化/权限和大范围验收规模的低置信历史粗估，未逐项校准，不按数量机械扣减；编译/设备/依赖/环境等待另计，当前无可靠总等待上界或精确日历承诺。
+
 ### H-223：刷新相同模型目录会覆盖仍有效的用户选型，下一次 Responses 请求静默换模型
 
 **级别：中（P2，模型选择与能力/成本预期一致性）；触发条件：** 用户用正式 `set_model(Chat, Pro)` 选择非自动默认模型，随后模型目录刷新成功，即使返回的目录完全相同、选中的 Pro 仍存在。无需多宿主、并发、网络故障、未知模型或恢复/steer。

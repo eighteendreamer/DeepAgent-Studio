@@ -33,7 +33,8 @@ test("real CLI early failure is delivered once and reconciles after reconnect wi
   const raw = [];
   const agent = new DeepAgent({ command: isolatedBin, cwd: workspace, onEvent: (event) => raw.push(event) });
   try {
-    const thread = await agent.startThread({ permissionProfile: "read_only", sandboxBackend: "direct" });
+    const thread = await agent.startThread({ permissionProfile: "read_only", sandboxBackend: "direct", reasoningEffort: "none" });
+    assert.equal(thread.configuration.overrides.reasoning_effort, "none");
     const config = await agent.readConfig({threadId: thread.id});
     assert.equal(config.configSnapshotVersion, 1);
     assert.equal(config.resolutionStatus, "uninitialized");
@@ -94,7 +95,9 @@ test("real CLI early failure is delivered once and reconciles after reconnect wi
     for (const field of ["actions", "approvals", "artifacts"]) assert.deepEqual(collected[field], run[field]);
     assert.deepEqual(collected.nodes, run.graph.nodes);
     await agent.reconnect();
-    await agent.resumeThread(thread.id);
+    const resumedThread = await agent.resumeThread(thread.id);
+    assert.deepEqual(resumedThread.configuration, thread.configuration,
+      "explicit thread reasoning survives a real process restart");
     const reopenedConfig = await agent.readConfig({threadId: thread.id});
     assert.equal(typeof reopenedConfig.mcpGeneration, "string");
     assert.notEqual(reopenedConfig.mcpGeneration, config.mcpGeneration,

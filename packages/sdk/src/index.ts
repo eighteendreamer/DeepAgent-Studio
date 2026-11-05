@@ -133,6 +133,7 @@ export interface ThreadStartOptions {
   cwd?: string;
   provider?: string;
   model?: string;
+  reasoningEffort?: string;
   permissionProfile?: string;
   sandboxBackend?: string;
 }

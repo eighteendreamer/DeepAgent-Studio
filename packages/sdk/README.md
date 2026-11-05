@@ -4,6 +4,23 @@ TypeScript client for the DeepAgent Harness app-server.
 
 ## Effective execution configuration
 
+`startThread({reasoningEffort: "none"})` persists an explicit thread default
+through resume, fork and host restart. Omission (or JSON null) keeps the existing
+host/project default; the string `"none"` explicitly disables thinking.
+`thread.run(input, {reasoningEffort: "high"})` overrides only that turn, including
+its tool loop and steer replacement; it does not rewrite the thread default.
+The existing model resolver validates the canonical `none`/`low`/`high`/`max`
+values in the shared model resolver, not thread creation. A successful creation only
+acknowledges saved input, not model/backend/credential readiness; invalid nonblank strings
+are preserved and reported as invalid by scoped `readConfig`. The existing
+turn lifecycle acknowledges the invalid plan and persists a failed terminal
+before any provider request; it does not silently fall back to a default effort.
+Empty/whitespace-only strings retain the
+existing shared overlay's inherit-default behavior (not explicit `"none"`).
+Compatibility aliases remain unsupported
+(H-155); no new provider parser is introduced. Rust `ThreadStartRequest` literals
+must supply `reasoning_effort: None` to retain the old omitted-field behavior.
+
 `await agent.readConfig()` reads defaults for the **host workspace, including
 its project layers**, not the last thread or machine-wide project-free settings.
 Use `readConfig({threadId})` for persistent thread overrides (also before resume),

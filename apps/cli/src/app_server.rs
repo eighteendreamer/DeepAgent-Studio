@@ -370,9 +370,9 @@ impl ServerState {
         let configuration = SessionExecutionConfig::new(HarnessRunOverrides {
             provider: params.provider,
             model: params.model,
+            reasoning_effort: params.reasoning_effort,
             permission_profile: params.permission_profile,
             sandbox_backend: params.sandbox_backend,
-            ..Default::default()
         });
         let session = match Session::create_configured(
             &self.database,
@@ -2774,7 +2774,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit H-222: thread/start reasoning effort must reach the next turn"]
     fn audit_thread_start_reasoning_effort_is_not_silently_dropped() {
         let temporary = tempfile::tempdir().unwrap();
         let workspace = temporary.path().join("workspace");

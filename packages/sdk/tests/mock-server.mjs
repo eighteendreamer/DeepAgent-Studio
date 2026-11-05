@@ -44,8 +44,11 @@ input.on("line", (line) => {
       threads.add(threadId);
       // Only emit the new field when testing a configured thread. Unconfigured
       // responses remain the older-server compatibility control.
-      const configuration = request.params.permissionProfile ? {
-        version: 1, overrides: { permission_profile: request.params.permissionProfile }
+      const configuration = request.params.permissionProfile || request.params.reasoningEffort !== undefined ? {
+        version: 1, overrides: {
+          ...(request.params.permissionProfile ? {permission_profile: request.params.permissionProfile} : {}),
+          ...(request.params.reasoningEffort !== undefined ? {reasoning_effort: request.params.reasoningEffort} : {})
+        }
       } : undefined;
       configurations.set(threadId, configuration);
       response(request.id, { threadId, status: "ready", cwd: request.params.cwd ?? null, configuration });
