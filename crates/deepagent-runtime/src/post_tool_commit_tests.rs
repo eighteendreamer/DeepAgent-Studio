@@ -154,7 +154,7 @@ impl Hook for CommitHook {
 #[derive(Default)]
 struct Case {
     parallel: bool,
-    speculative: bool,
+    stream_prepared: bool,
     failed_tool: bool,
     file_changed: bool,
     cancel_in_hook: bool,
@@ -277,34 +277,25 @@ async fn exercise(case: Case) {
             RuntimeEngine::new(&registry, Metrics::default(), config)
                 .with_hooks(&hooks)
                 .with_cancel(cancel.clone());
-        let mut attempt = StreamingToolAttempt::new(
-            &registry,
-            PermissionSet::developer(),
-            Arc::new(AtomicBool::new(false)),
-            None,
-            engine.observations.clone(),
-            std::time::Duration::from_secs(3),
-            true,
-        );
-        let speculative = if case.speculative {
+        let mut attempt = StreamingToolAttempt::new(&registry);
+        if case.stream_prepared {
             attempt.begin(1);
             for call in &invocations {
                 attempt.prepare(call.clone());
             }
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
             attempt.commit(1);
-            let prepared = attempt.take_speculative_batch(&invocations);
-            assert_eq!(
-                prepared.len(),
-                count,
-                "exercise real speculative completion"
-            );
-            prepared
-        } else {
-            Default::default()
-        };
+            invocations = match attempt
+                .normalize_decision(AgentDecision::CallTools(invocations))
+                .unwrap()
+            {
+                AgentDecision::CallTools(calls) => calls,
+                other => panic!("expected normalized batch: {other:?}"),
+            };
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+        }
         {
-            let execution =
-                engine.execute_tools(&mut session, session_id, invocations, speculative, false);
+            let execution = engine.execute_tools(&mut session, session_id, invocations, false);
             if case.cancel_pending_hook {
                 tokio::pin!(execution);
                 tokio::select! {
@@ -397,18 +388,18 @@ async fn valid_parallel_hooks_preserve_observations() {
     .await;
 }
 #[tokio::test]
-async fn speculative_result_commits_before_hook_error() {
+async fn stream_prepared_result_commits_before_hook_error() {
     exercise(Case {
-        speculative: true,
+        stream_prepared: true,
         ..Case::default()
     })
     .await;
 }
 #[tokio::test]
-async fn speculative_parallel_peers_commit_before_hook_error() {
+async fn stream_prepared_parallel_peers_commit_before_hook_error() {
     exercise(Case {
         parallel: true,
-        speculative: true,
+        stream_prepared: true,
         ..Case::default()
     })
     .await;

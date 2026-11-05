@@ -156,7 +156,7 @@ async fn concurrent_and_reused_engine_runs_neither_share_nor_revoke_observations
 }
 
 #[tokio::test]
-async fn normal_speculative_and_legacy_dispatch_capture_the_owner_generation() {
+async fn normal_stream_prepared_and_legacy_dispatch_capture_the_owner_generation() {
     let db = Database::open_in_memory().unwrap();
     let clock = FixedClock::new(1);
     let mut session = Session::create(&db, &clock, Some("paths")).unwrap();
@@ -187,23 +187,27 @@ async fn normal_speculative_and_legacy_dispatch_capture_the_owner_generation() {
             .unwrap()
             .ok
     );
-    let mut attempt = StreamingToolAttempt::new(
-        &registry,
-        PermissionSet::read_only(),
-        Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        None,
-        engine.observations.clone(),
-        std::time::Duration::from_secs(10),
-        true,
-    );
-    let invocation = call("speculative", "s", false);
+    let mut attempt = StreamingToolAttempt::new(&registry);
+    let invocation = call("stream_prepared", "s", false);
     attempt.begin(1);
     attempt.prepare(invocation.clone());
+    assert_eq!(probe.seen.lock().unwrap().len(), 2);
     attempt.commit(1);
-    let speculative = attempt
-        .take_speculative(&invocation)
-        .expect("safe read should speculate");
-    assert!(speculative.handle.await.unwrap().0.unwrap().ok);
+    assert_eq!(probe.seen.lock().unwrap().len(), 2);
+    let invocation = match attempt
+        .normalize_decision(AgentDecision::CallTool(invocation))
+        .unwrap()
+    {
+        AgentDecision::CallTool(call) => call,
+        other => panic!("expected normalized read: {other:?}"),
+    };
+    assert!(
+        engine
+            .execute_tool(&mut session, session_id, invocation, false)
+            .await
+            .unwrap()
+            .ok
+    );
     let old = engine.observations.capture();
     {
         let seen = probe.seen.lock().unwrap();

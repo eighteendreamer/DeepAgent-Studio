@@ -230,12 +230,6 @@ pub struct RuntimeEngine<'a, C: Clock> {
 /// the provider attempt commits.
 struct StreamingToolAttempt<'a> {
     registry: &'a ToolRegistry,
-    permissions: PermissionSet,
-    runtime_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    runtime_token: Option<CancellationToken>,
-    observations: ToolObservationScope,
-    timeout: std::time::Duration,
-    speculation_enabled: bool,
     active_attempt: Option<usize>,
     committed_attempt: Option<usize>,
     identity_conflict: bool,
@@ -245,33 +239,12 @@ struct StreamingToolAttempt<'a> {
 struct StreamPreparedCall {
     source: deepagent_tools::ToolInvocation,
     invocation: deepagent_tools::ToolInvocation,
-    speculative: Option<SpeculativeToolExecution>,
-}
-
-struct SpeculativeToolExecution {
-    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    token: Option<CancellationToken>,
-    handle: tokio::task::JoinHandle<(Result<deepagent_tools::ToolOutput>, u64)>,
 }
 
 impl<'a> StreamingToolAttempt<'a> {
-    fn new(
-        registry: &'a ToolRegistry,
-        permissions: PermissionSet,
-        runtime_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        runtime_token: Option<CancellationToken>,
-        observations: ToolObservationScope,
-        timeout: std::time::Duration,
-        speculation_enabled: bool,
-    ) -> Self {
+    fn new(registry: &'a ToolRegistry) -> Self {
         Self {
             registry,
-            permissions,
-            runtime_cancel,
-            runtime_token,
-            observations,
-            timeout,
-            speculation_enabled,
             active_attempt: None,
             committed_attempt: None,
             identity_conflict: false,
@@ -338,60 +311,10 @@ impl<'a> StreamingToolAttempt<'a> {
             "Committed tool call conflicts with its prepared identity",
         )
     }
-
-    fn cancel_speculation(&mut self) {
-        for prepared in self.prepared.values_mut() {
-            if let Some(speculative) = prepared.speculative.take() {
-                speculative
-                    .cancel
-                    .store(true, std::sync::atomic::Ordering::Release);
-                if let Some(token) = speculative.token.as_ref() {
-                    token.cancel();
-                }
-                speculative.handle.abort();
-            }
-        }
-    }
-
-    fn take_speculative(
-        &mut self,
-        invocation: &deepagent_tools::ToolInvocation,
-    ) -> Option<SpeculativeToolExecution> {
-        if self.committed_attempt != self.active_attempt {
-            return None;
-        }
-        let call_id = invocation.id.as_deref()?;
-        let prepared = self.prepared.get_mut(call_id)?;
-        if prepared.invocation != *invocation {
-            return None;
-        }
-        prepared.speculative.take()
-    }
-
-    fn take_speculative_batch(
-        &mut self,
-        invocations: &[deepagent_tools::ToolInvocation],
-    ) -> std::collections::HashMap<String, SpeculativeToolExecution> {
-        invocations
-            .iter()
-            .filter_map(|invocation| {
-                let call_id = invocation.id.clone()?;
-                self.take_speculative(invocation)
-                    .map(|speculative| (call_id, speculative))
-            })
-            .collect()
-    }
-}
-
-impl Drop for StreamingToolAttempt<'_> {
-    fn drop(&mut self) {
-        self.cancel_speculation();
-    }
 }
 
 impl ToolAttemptController for StreamingToolAttempt<'_> {
     fn begin(&mut self, attempt: usize) {
-        self.cancel_speculation();
         self.active_attempt = Some(attempt);
         self.committed_attempt = None;
         self.identity_conflict = false;
@@ -405,7 +328,6 @@ impl ToolAttemptController for StreamingToolAttempt<'_> {
         if let Some(previous) = self.prepared.get(&call_id) {
             if previous.source != invocation {
                 self.identity_conflict = true;
-                self.cancel_speculation();
             }
             return;
         }
@@ -422,77 +344,14 @@ impl ToolAttemptController for StreamingToolAttempt<'_> {
         };
         let normalized = deepagent_tools::ToolInvocation::new(validated.name, validated.arguments)
             .with_id(call_id.clone());
-        let speculative = if self.speculation_enabled
-            && !self
-                .runtime_cancel
-                .load(std::sync::atomic::Ordering::Acquire)
-        {
-            self.registry.get(&normalized.name).and_then(|spec| {
-                let safe = spec.descriptor.risk == deepagent_tools::permission::RiskLevel::Safe
-                    && spec.tool.is_concurrency_safe(&normalized.arguments)
-                    && self
-                        .registry
-                        .check(&normalized.name, &self.permissions, true)
-                        .is_ok();
-                if !safe {
-                    return None;
-                }
-                let registry = self.registry.clone();
-                let permissions = self.permissions.clone();
-                let name = normalized.name.clone();
-                let arguments = normalized.arguments.clone();
-                let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let execution_cancel = cancel.clone();
-                let execution_token = self
-                    .runtime_token
-                    .as_ref()
-                    .map(CancellationToken::child_token);
-                let task_token = execution_token.clone();
-                let timeout = self.timeout;
-                let observation = self.observations.capture();
-                let handle =
-                    tokio::spawn(async move {
-                        let started = std::time::Instant::now();
-                        let result = registry
-                        .invoke_with_context(
-                            &name,
-                            arguments,
-                            &permissions,
-                            true,
-                            task_token.as_ref().map_or_else(
-                                || {
-                                    deepagent_tools::ToolExecutionContext::new(
-                                        execution_cancel.clone(),
-                                    )
-                                },
-                                |token| {
-                                    deepagent_tools::ToolExecutionContext::from_token_and_flag(
-                                        token.clone(),
-                                        execution_cancel.clone(),
-                                    )
-                                },
-                            )
-                            .with_observation(observation)
-                            .with_timeout(timeout),
-                        )
-                        .await;
-                        (result, started.elapsed().as_millis() as u64)
-                    });
-                Some(SpeculativeToolExecution {
-                    cancel,
-                    token: execution_token,
-                    handle,
-                })
-            })
-        } else {
-            None
-        };
+        // Safe/concurrency-safe/read-only capabilities can still update
+        // application state or observation evidence. There is no rollback
+        // contract here: only the canonical post-commit pipeline may invoke.
         self.prepared.insert(
             call_id,
             StreamPreparedCall {
                 source: invocation,
                 invocation: normalized,
-                speculative,
             },
         );
     }
@@ -505,7 +364,6 @@ impl ToolAttemptController for StreamingToolAttempt<'_> {
 
     fn abort(&mut self, attempt: usize, _reason: &str) {
         if self.active_attempt == Some(attempt) {
-            self.cancel_speculation();
             self.prepared.clear();
             self.committed_attempt = None;
             self.identity_conflict = false;
@@ -819,19 +677,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 break;
             }
             self.events.checkpoint()?;
-            let runtime_cancel = self
-                .cancel
-                .clone()
-                .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
-            let mut streaming_tools = StreamingToolAttempt::new(
-                self.registry,
-                self.config.permissions.clone(),
-                runtime_cancel,
-                self.cancel_token.clone(),
-                self.observations.clone(),
-                self.config.tool_timeout,
-                self.hooks.is_none(),
-            );
+            let mut streaming_tools = StreamingToolAttempt::new(self.registry);
             let decision = match agent
                 .think_streaming_cancelled(
                     step,
@@ -1199,28 +1045,9 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     }
                     let tool_name = invocation.name.clone();
                     let tool_args = invocation.arguments.clone();
-                    let speculative = streaming_tools.take_speculative(&invocation);
-                    let observation = match speculative {
-                        Some(speculative) => {
-                            self.execute_tool_with_speculative(
-                                session,
-                                session_id,
-                                invocation,
-                                Some(speculative),
-                                provider_items_persisted,
-                            )
-                            .await?
-                        }
-                        None => {
-                            self.execute_tool(
-                                session,
-                                session_id,
-                                invocation,
-                                provider_items_persisted,
-                            )
-                            .await?
-                        }
-                    };
+                    let observation = self
+                        .execute_tool(session, session_id, invocation, provider_items_persisted)
+                        .await?;
                     if observation.ok {
                         tool_effects.push(crate::completion::ToolEffectRecord {
                             tool_name,
@@ -1238,15 +1065,8 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                         .iter()
                         .map(|inv| (inv.name.clone(), inv.arguments.clone()))
                         .collect();
-                    let speculative = streaming_tools.take_speculative_batch(&invocations);
                     last_observations = self
-                        .execute_tools(
-                            session,
-                            session_id,
-                            invocations,
-                            speculative,
-                            provider_items_persisted,
-                        )
+                        .execute_tools(session, session_id, invocations, provider_items_persisted)
                         .await?;
                     for (obs, (name, args)) in last_observations.iter().zip(tool_inputs) {
                         if obs.ok {
@@ -1615,7 +1435,6 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         session: &mut Session<'a, C>,
         session_id: deepagent_core::id::SessionId,
         mut invocations: Vec<deepagent_tools::ToolInvocation>,
-        mut speculative: std::collections::HashMap<String, SpeculativeToolExecution>,
         provider_tool_calls_persisted: bool,
     ) -> Result<Vec<Observation>> {
         if self.is_cancelled() {
@@ -1631,26 +1450,10 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         if invocations.len() <= 1 {
             let mut out = Vec::with_capacity(invocations.len());
             for inv in invocations {
-                let early = inv
-                    .id
-                    .as_ref()
-                    .and_then(|call_id| speculative.remove(call_id));
-                out.push(match early {
-                    Some(early) => {
-                        self.execute_tool_with_speculative(
-                            session,
-                            session_id,
-                            inv,
-                            Some(early),
-                            provider_tool_calls_persisted,
-                        )
-                        .await?
-                    }
-                    None => {
-                        self.execute_tool(session, session_id, inv, provider_tool_calls_persisted)
-                            .await?
-                    }
-                });
+                out.push(
+                    self.execute_tool(session, session_id, inv, provider_tool_calls_persisted)
+                        .await?,
+                );
             }
             return Ok(out);
         }
@@ -1688,17 +1491,11 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
 
             if !self.is_parallel_safe(&invocations[next].name, &invocations[next].arguments) {
                 let invocation = invocations[next].clone();
-                let early = invocation
-                    .id
-                    .as_ref()
-                    .and_then(|call_id| speculative.remove(call_id));
                 observations.push(
-                    self.execute_tool_with_before_and_speculative(
+                    self.execute_tool(
                         session,
                         session_id,
                         invocation,
-                        None,
-                        early,
                         provider_tool_calls_persisted,
                     )
                     .await?,
@@ -1744,27 +1541,13 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             for (index, preparation) in prepared {
                 match preparation {
                     crate::tool_pipeline::ToolPreparation::Ready(ready) => {
-                        let early = speculative.remove(&ready.call_id);
                         let pipeline = self.tool_pipeline(session_id);
                         futs.push(async move {
-                            let result = match early {
-                                Some(early) => match early.handle.await {
-                                    Ok((result, duration_ms)) => {
-                                        pipeline
-                                            .complete_prepared_deferred(ready, result, duration_ms)
-                                            .await
-                                    }
-                                    Err(_) => pipeline.execute_prepared_deferred(ready).await,
-                                },
-                                None => pipeline.execute_prepared_deferred(ready).await,
-                            };
+                            let result = pipeline.execute_prepared_deferred(ready).await;
                             (index, result)
                         });
                     }
                     crate::tool_pipeline::ToolPreparation::Blocked(blocked_result) => {
-                        if let Some(early) = speculative.remove(&blocked_result.call_id) {
-                            early.handle.abort();
-                        }
                         blocked.insert(index, blocked_result);
                     }
                 }
@@ -2002,63 +1785,15 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         invocation: deepagent_tools::ToolInvocation,
         provider_tool_calls_persisted: bool,
     ) -> Result<Observation> {
-        self.execute_tool_with_before_and_speculative(
-            session,
-            session_id,
-            invocation,
-            None,
-            None,
-            provider_tool_calls_persisted,
-        )
-        .await
-    }
-
-    async fn execute_tool_with_speculative(
-        &self,
-        session: &mut Session<'a, C>,
-        session_id: deepagent_core::id::SessionId,
-        invocation: deepagent_tools::ToolInvocation,
-        speculative: Option<SpeculativeToolExecution>,
-        provider_tool_calls_persisted: bool,
-    ) -> Result<Observation> {
-        self.execute_tool_with_before_and_speculative(
-            session,
-            session_id,
-            invocation,
-            None,
-            speculative,
-            provider_tool_calls_persisted,
-        )
-        .await
-    }
-
-    async fn execute_tool_with_before_and_speculative(
-        &self,
-        session: &mut Session<'a, C>,
-        session_id: deepagent_core::id::SessionId,
-        invocation: deepagent_tools::ToolInvocation,
-        before_override: Option<HookOutcome>,
-        speculative: Option<SpeculativeToolExecution>,
-        provider_tool_calls_persisted: bool,
-    ) -> Result<Observation> {
         let pipeline = self.tool_pipeline(session_id);
 
         if self.is_cancelled() {
-            if let Some(speculative) = speculative {
-                speculative
-                    .cancel
-                    .store(true, std::sync::atomic::Ordering::Release);
-                if let Some(token) = speculative.token.as_ref() {
-                    token.cancel();
-                }
-                speculative.handle.abort();
-            }
             return self
                 .record_cancelled_tool(session, invocation, provider_tool_calls_persisted)
                 .await;
         }
 
-        let prepared = pipeline.prepare(invocation, before_override).await?;
+        let prepared = pipeline.prepare(invocation, None).await?;
         let completion = match prepared {
             crate::tool_pipeline::ToolPreparation::Ready(prepared) => {
                 let requested = EventPayload::ToolCallRequested {
@@ -2074,35 +1809,9 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     session.append(requested)?;
                 }
                 self.metrics.incr(names::TOOL_CALLS, 1);
-                match speculative {
-                    Some(speculative) => match speculative.handle.await {
-                        Ok((result, duration_ms)) => {
-                            pipeline
-                                .complete_prepared_deferred(prepared, result, duration_ms)
-                                .await?
-                        }
-                        Err(error) => {
-                            tracing::debug!(
-                                call_id = %prepared.call_id,
-                                error = %error,
-                                "speculative read was unavailable; executing after commit"
-                            );
-                            pipeline.execute_prepared_deferred(prepared).await?
-                        }
-                    },
-                    None => pipeline.execute_prepared_deferred(prepared).await?,
-                }
+                pipeline.execute_prepared_deferred(prepared).await?
             }
             crate::tool_pipeline::ToolPreparation::Blocked(blocked) => {
-                if let Some(speculative) = speculative {
-                    speculative
-                        .cancel
-                        .store(true, std::sync::atomic::Ordering::Release);
-                    if let Some(token) = speculative.token.as_ref() {
-                        token.cancel();
-                    }
-                    speculative.handle.abort();
-                }
                 let requested = EventPayload::ToolCallRequested {
                     call: ToolCall {
                         id: blocked.call_id.clone(),
@@ -2986,17 +2695,15 @@ mod tests {
             tools.begin(1);
             tools.prepare(invocation.clone());
             for _ in 0..100 {
-                if self.calls.load(Ordering::Acquire) == 1 {
-                    break;
-                }
                 tokio::task::yield_now().await;
             }
             assert_eq!(
                 self.calls.load(Ordering::Acquire),
-                1,
-                "safe tool must begin before the model attempt commits"
+                0,
+                "preparation must not execute even a Safe tool"
             );
             tools.commit(1);
+            assert_eq!(self.calls.load(Ordering::Acquire), 0);
             Ok(AgentDecision::CallTool(invocation))
         }
     }
@@ -3030,13 +2737,11 @@ mod tests {
                 tools.prepare(invocation.clone());
             }
             for _ in 0..100 {
-                if self.calls.load(Ordering::Acquire) == 2 {
-                    break;
-                }
                 tokio::task::yield_now().await;
             }
-            assert_eq!(self.calls.load(Ordering::Acquire), 2);
+            assert_eq!(self.calls.load(Ordering::Acquire), 0);
             tools.commit(1);
+            assert_eq!(self.calls.load(Ordering::Acquire), 0);
             Ok(AgentDecision::CallTools(invocations))
         }
     }
@@ -3223,7 +2928,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn committed_streaming_read_executes_early_but_only_once() {
+    async fn committed_streaming_read_executes_after_acceptance_only_once() {
         let db = Database::open_in_memory().unwrap();
         let clock = FixedClock::new(1);
         let mut session = Session::create(&db, &clock, Some("streaming read")).unwrap();
@@ -3756,15 +3461,7 @@ mod tests {
     #[test]
     fn h259_cache_binds_original_input_and_deduplicates_preparation() {
         let registry = registry();
-        let mut attempt = StreamingToolAttempt::new(
-            &registry,
-            PermissionSet::read_only(),
-            Arc::new(AtomicBool::new(false)),
-            None,
-            ToolObservationScope::default(),
-            std::time::Duration::from_secs(1),
-            false,
-        );
+        let mut attempt = StreamingToolAttempt::new(&registry);
         let call = ToolInvocation::new("add", serde_json::json!({"a":1})).with_id("call");
         attempt.begin(1);
         attempt.prepare(call.clone());
@@ -3803,7 +3500,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn aborted_model_attempt_cancels_speculative_read() {
+    async fn aborted_model_attempt_never_starts_a_native_read() {
         let started = Arc::new(AtomicBool::new(false));
         let completed = Arc::new(AtomicBool::new(false));
         let mut registry = ToolRegistry::new();
@@ -3813,27 +3510,16 @@ mod tests {
                 completed: completed.clone(),
             }))
             .unwrap();
-        let mut attempt = StreamingToolAttempt::new(
-            &registry,
-            PermissionSet::read_only(),
-            Arc::new(AtomicBool::new(false)),
-            None,
-            ToolObservationScope::default(),
-            std::time::Duration::from_secs(60),
-            true,
-        );
+        let mut attempt = StreamingToolAttempt::new(&registry);
 
         attempt.begin(1);
         attempt.prepare(
             ToolInvocation::new("hanging_read", serde_json::json!({})).with_id("stale-call"),
         );
         for _ in 0..100 {
-            if started.load(Ordering::Acquire) {
-                break;
-            }
             tokio::task::yield_now().await;
         }
-        assert!(started.load(Ordering::Acquire));
+        assert!(!started.load(Ordering::Acquire));
 
         attempt.abort(1, "provider stream failed");
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -3996,7 +3682,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn committed_streaming_batch_reuses_all_early_read_results() {
+    async fn committed_streaming_batch_dispatches_each_read_once_after_acceptance() {
         let db = Database::open_in_memory().unwrap();
         let clock = FixedClock::new(1);
         let mut session = Session::create(&db, &clock, Some("streaming batch")).unwrap();

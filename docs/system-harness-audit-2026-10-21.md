@@ -157,7 +157,7 @@
 | MCP 延迟发现与分支恢复 | 正式搜索→真实 stdio 工具调用→续聊→干净重建的正常对照通过，新会话不继承发现；另实测 rewind 删除发现后旧内存仍公开工具，重新搜索并调用成功也未重新落盘发现，重建后隐藏工具 | 新增 H-232（P3）；普通恢复与保留发现的 rewind 对照正常。模型离线回放，不覆盖崩溃、压缩、fork、权限变更或供应商缓存命中 |
 | MCP 结果内容与客户端元数据 | 正式 MCP 返回公开文本、structuredContent 与仅位于顶层 _meta 的虚构 canary；第一次模型 wire 无 canary，工具返回后的下一请求包含它 | 已确认 H-138；仅本机 stdio + 离线模型；这是客户端/模型投影缺口，不宣称 2024-11-05 基础协议为所有 _meta 提供统一保密保证 |
 | 已执行工具与后置 hook 的结果提交 | 正式 write_file 已写入磁盘且 run_events 有成功 ToolCompleted；PostToolUse prompt 返回无效 JSON 后，session 没有真实结果，重开将动作标为进程重启失败，下一请求只有补造的结果缺失错误 | 已确认 H-139；正常 hook 对照通过；真实临时文件、文件数据库、正式启动恢复与离线模型，不含真实桌面或公网请求 |
-| 流失败前状态工具的预执行提交 | 公共无 hooks Runtime 在 todo 参数/item 完成后真实改共享列表，随后 failed 或断流自动重试成功，均无对应会话往返但状态残留 | 已确认 H-233（P3）；正常完成与 hooks 对照通过；主 AppCore 装配关闭预执行，嵌套子运行的失败流影响未实测；另见 H-234 的正常完成状态隔离实测 |
+| 流失败前状态工具的预执行提交 | 公共无 hooks Runtime 在 todo 参数/item 完成后真实改共享列表，随后 failed 或断流自动重试成功，均无对应会话往返但状态残留 | H-233（P3）已按E-H233-01～04修复并验收；原失败保留，现prepare仅验证、接纳后统一执行；完整嵌套失败工作流未验；H-234独立状态隔离另计 |
 | agent-hook 的工具状态隔离 | 正式主运行先写计划，PreToolUse agent-hook 正常调用共享 todo_write，允许/拒绝父读取后主 task_list 均返回 hook 列表，父无对应写入往返 | 已确认 H-234（P3）；两个只读对照通过；不是 H-233 的失败流问题，不外推无此 hook 的默认聊天或其他状态工具 |
 | 模型型 hook 的用量归属与预算 | prompt/多步 agent hook 正常 completed 并含完整 usage，允许或拒绝父工具都只结算主请求；合计费用已过本地预算但下一轮继续实际请求模型 | 已确认 H-235（P2）；无 hook、matcher 未命中和主费用已入账越限三项对照通过；用离线 usage 验证本地账本，不代表真实供应商消费或缓存命中实验 |
 | hook 取消上下文与 MCP 对端通知 | 正式停止后顺序工具前/后置 prompt/agent/MCP hook 仍等待；agent 首响应释放后还执行 task_list 并发下一请求；真实 stdio MCP 的输入/启动 hook 虽已本地 cancelled，对端仍未收到取消且释放后完成原请求 | 已确认 H-236（P2）；新增四个MCP位置与同服务普通工具取消对照，未增加缺陷编号；最终取消映射正确，无真实外部副作用或收费实验 |
@@ -9514,7 +9514,49 @@ source-check.json确认6份相关生产源码与最终测试文件全部匹配�
 
 ### H-233：无 hooks 的公共 Runtime 将并发安全等同于可丢弃预执行，失败响应留下未记录的 Todo 状态
 
-**级别：低（P3，条件性运行一致性缺陷）；状态：真实内置工具与正式模型解析/Runtime 链路已复现，未修复。范围仅为未挂 hooks 的公共 RuntimeEngine；默认 AppCore 两处运行装配均挂 hooks，不据此声称默认 Desktop/CLI/Harness 已触发。**
+> 当前状态：2026-11-05已修复并验收，仅E-H233-03～04所列Windows本机范围。接纳前不再执行native工具，统一既有pipeline；原失败/红测与限制全部保留。H233_FIX_COMMIT_PENDING。
+
+**E-H233-01（原探针变化与剩余根因红测，2026-11-05，未验收）**：起点d540fd4c，tracked干净，原五项用户未跟踪内容仅列名，不读改/暂存/删除。按code-audit核对授权、本仓库Rust调用链、原探针、Tool/ToolAttemptController、StreamingToolAttempt、ModelAgent/Responses终态与重试、ToolPipeline/事件和H46/H139/H259测试、Cargo/CI/格式配置。仅H233；不混修H234/H235/H236或H306。所有探针为离线transport、真实TodoStore/内置工具/公共Runtime、合成TempDir/文件SQLite与隔离HOME/APPDATA，不用真实供应商、凭据或用户数据。
+
+原命令`cargo test -p deepagent-app-core --test runtime_speculation_audit --offline -j 2 -- --include-ignored --nocapture --test-threads=1`真实exit0、6过/0败/0忽略、20.977秒。原failed/断流两组early=0、pending=false、原列表保留；正常completed唯一持久调用/结果各1。查证116823214c5a911f118f5621aa8b4be733ad9e3e（H259）已将Responses ToolCallCompleted从item/arguments.done推迟到终帧，这消除了原先failed/断流复现，不将该已有成果重计，也不直接改生产。
+
+当前公共Runtime的prepare仍以Safe/is_concurrency_safe/permissions直接spawn真实invoke；ToolAttemptController现有文档则明确commit前不得发布副作用。继续沿正式ModelAgent复核，发现response.incomplete会通知完整tool call，而max_output_tokens提升会abort该attempt后重试。新命令`cargo test -p deepagent-app-core --test runtime_speculation_audit h233_ --offline -j 2 -- --nocapture --test-threads=1`真实exit101、1过/1败/0忽略、9.300秒：完整合法incomplete终帧后transport遵守sink停止、不再发送事件，仅在返回前有界让出调度等待真实store/pending；无hooks组after_terminal=1、durable_calls/results=0、第二请求无调用/结果，重试Completed却残留canary/pending=true；挂hooks对照after_terminal=0、原列表/pending=false。不是超时或编译失败。说明H259只消除旧序列，Runtime将并发安全当可丢弃的根因仍存在，不归并/跳过H233。证据target/h233-repair-20261105，原始审计和本轮日志保留。
+
+**本地设计/架构复核**：状态/执行/观察证据的副作用边界已在H234/H46/H139等多次暴露，不再添加todo名称黑名单或第三种可漂移布尔分类。采用现有ToolAttemptController已经承诺的提交边界：流式prepare只做schema/value规范化与H259身份绑定，不实际invoke；工具统一在ModelAgent接纳attempt、Runtime持久化调用并通过既有权限/审批/取消后由ToolPipeline派发。移除Runtime提前执行/结果回灌的第二快路径，保留提交后批量并发、read字节缓存、现有超时和结果先于post-hook提交；不新增存储/权限/协议。代价是取消响应未提交时的只读预执行优化，而不是声称预取可回滚。DeepSeek Harness当前agent.ts:522–538亦先append assistant/message再executeToolCalls；Claude把isReadOnly/isConcurrencySafe分开且默认false，不能由此推断其discard可回滚。本轮仅源码查证参考，未运行参考工程或真实供应商。原有早执行优化测试将同步验证“prepare前0执行、接纳后只执行一次且正确配对”，H46上下文/H139后置提交覆盖保留，不删除断言取绿；实现与最终验收尚未完成。
+
+
+**E-H233-02（根因收敛与候选验证，2026-11-05，未最终验收）**：删除StreamingToolAttempt原生invoke/spawn及单个/批量结果回灌快路径，仅保留schema/value规范化、attempt数据与H259身份绑定；所有接纳的决策共用原ToolPipeline。保留提交后并发及非安全调用屏障、read缓存/owner generation、权限/审批/取消/超时和H139结果先于post-hook持久化。**澄清E01顺序描述**：不是所有custom batch均在原生I/O前逐项持久化ToolCallRequested；本项保留既有provider item/action/每组结果记录语义，不新增事务、回滚承诺或另修批量崩溃窗口。Safe/并发安全/只读权限不能证明任意native工具无应用状态或观察副作用，因此不做名称黑名单或再添能力布尔；代价是去掉接纳前执行优化，未测性能收益/回退幅度。
+
+候选`cargo test -p deepagent-app-core --test runtime_speculation_audit --offline -j 2 -- --include-ignored --nocapture --test-threads=1`为8/0/0、63.172秒；合法incomplete重试保持原Todo/pending=false。`cargo test -p deepagent-runtime --lib --offline -j 2 -- --nocapture --test-threads=1`为431/0/9、53.947秒，包含H46观察、H139后置提交、H259身份/归一化和批量/并发/取消对照。原早执行测试改为准备/commit时零调用、接纳后单次执行；H139真实文件/SQLite重开/并发结果和H46 generation断言保留，不再测试已删除的第二路径。
+
+新增独立公共Agent测试包裹真实TodoWrite并改为任意工具名：重复prepare、commit本身均零调用，拒绝/重试/取消/丢弃run future无状态变更，正常接纳恰好一次；关闭数据库后重开，实际ToolCallRequested/Completed各为正常1或未接纳0，无幽灵canary。默认组`cargo test -p deepagent-app-core --test runtime_speculation_audit --offline -j 2 -- --nocapture --test-threads=1`真实10/0/0、22.739秒，原两个缺陷探针取消ignore。随后加强ModelAgent每组pending及终帧前/后的零提前变更断言；5份Rust源码/测试SHA256冻结于target/h233-repair-20261105/final-sources.json，最终全仓/消费者/格式/lint/构建另列。候选不计新增验收、不冒称完整系统通过。
+
+
+**E-H233-03（冻结源码最终门禁，2026-11-05）**：以下为同一5份冻结Rust源码/测试的实际命令，SHA256复核无变化；采用隔离HOME/APPDATA/TEMP、清凭据环境与offline，证据和各门禁原始日志/JSON保留于target/h233-repair-20261105。所有失败均保留，不把全仓或lint说成通过。
+
+| 实际命令 | 实际结果（过/败/忽略；秒为含编译墙钟） |
+|---|---|
+| `cargo test -p deepagent-app-core --test runtime_speculation_audit --offline -j 2 -- --nocapture --test-threads=1` | 10/0/0，原探针默认执行，无本项忽略；20.776秒 |
+| `cargo test -p deepagent-runtime --offline -j 2 -- --test-threads=1` | 446/0/10，完整crate六个顶层target，含e2e/soak/文档；忽略为既有项；109.827秒 |
+| `cargo build -p deepagent-cli --offline -j 2` | exit0；64.331秒 |
+| `cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=1` | 138顶层target：4613/1/232；唯一旧H306失败；原始139结果块含嵌套子进程1项，不能重复加算；1617.366秒 |
+| `cargo fmt --all -- --check` | exit0；5.247秒 |
+| `cargo clippy --all-targets --all-features --offline -j 2 -- -D warnings` | exit101；25.122秒 |
+| `cargo clippy -p deepagent-runtime --all-targets --no-deps --offline -j 2 -- -D warnings` | exit101；15.633秒 |
+| `cargo clippy -p deepagent-app-core --lib --no-deps --offline -j 2 -- -D warnings` | exit101；32.591秒 |
+| `cargo clippy -p deepagent-runtime -p deepagent-app-core --all-targets --no-deps --offline -j 2 --message-format json` | exit101；72.086秒 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --offline -j 2` | exit0；40.837秒 |
+| `cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check` | exit1；0.389秒 |
+
+workspace唯一失败为deepagent-prompts的canvas_prompt::tests::every_node_kind_owns_exactly_one_profile：creative.video-edit.v1的defaultUserPrompt为空，即旧H306。全仓严格lint停于models/client.rs:385 clone_on_copy；Runtime严格no-deps停于model_agent.rs:294 clone_on_copy及workflow/canvas.rs:32 derivable_impls；AppCore严格lib为旧12项（context_runtime.rs的8处clone、http_runtime.rs needless_return、plugin_preparation.rs type_complexity、run_assembler.rs too_many_arguments、session_title.rs needless_borrow）。all-target JSON诊断为39 warning/1 error，error是旧kernel_v2_e2e/mcp_discovery_restore.rs:774/776 panicking_unwrap，5份本项源码/测试诊断为0；该命令exit101，不冒称完整严格lint通过。独立Tauri fmt仍为lib.rs:26/39/2302/3097四处原格式；根fmt、CLI build、独立Tauri check通过。上述失败文件相对起点HEAD均无修改，不混修、压制或绕过hook。全仓232个既有ignored未执行；本项10项全执行，不以默认跳过探针验收。
+
+**E-H233-04（本轮验收边界与交付，2026-11-05）**：在上述Windows本机、正式ModelAgent/Responses解析/Runtime、真实Todo及合成文件SQLite范围，H233已修复并验收。本地设计为在既有提交边界统一派发，不新建运行/状态/存储链；私有Runtime预执行结构和分支删除，公共Agent/Tool/协议/DTO/权限/schema保持，仍验证接纳后单次调用、取消、身份一致、正常并发及结果先提交。无新依赖、数据库迁移或真实用户数据操作。性能兼容性代价为接纳前预执行优化取消，未做性能基准，不能承诺延迟不变；不承诺任意工具事务回滚、批量崩溃exactly-once或OS隔离。原失败及本轮红测保留，不重计H259/H234/H46/H139。
+
+未执行真实供应商、真实远端MCP、其他OS、GUI/前端构建、进程强杀/断电、完整嵌套子Agent失败工作流或外部设备验收：本项未改Tauri桥接/前端DTO/UI，嵌套路径效果不能由公共Engine测试外推；SQLite重开不是进程崩溃恢复。5份Rust源码/测试与本轮双文档共7文件独立提交；H233_FIX_COMMIT_PENDING，取得真实hash后另做docs回填，不amend/推送/建PR。原五项用户未跟踪内容未读改/暂存/删除。
+
+台账核对306唯一编号/8列，其他305主行与d540fd4c不变；本轮新增验收1、历史跳过0、归并/撤销0；累计159验收、23历史跳过、7归并、3撤销、114待修、0在修，即114有效未关闭（含H180授权跳过，实际待处理113）。H180跳过不计修复成果。本项剩余0；下一项按写入前校验/执行一致性优先复核H240 once hook被不匹配调用消耗，尚未实施，不与独立H239根因合并。全部剩余200–400有效修复/验收小时仍为历史未逐项校准粗估，依据113项实际排队问题的跨层权限、运行/持久化与回归范围；不是精确排期。编译/测试/设备/依赖/环境等待单独计，命令墙钟不等于有效开发工时，未来等待上界不能可靠预测。整体goal保持active，绝非整个系统修复完成。
+
+**原审计级别与状态（历史证据）：低（P3，条件性运行一致性缺陷）；状态：真实内置工具与正式模型解析/Runtime 链路已复现，未修复。范围仅为未挂 hooks 的公共 RuntimeEngine；默认 AppCore 两处运行装配均挂 hooks，不据此声称默认 Desktop/CLI/Harness 已触发。**
 
 #### 首轮即时 Evidence（2026-10-24）
 

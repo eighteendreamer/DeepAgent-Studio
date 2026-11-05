@@ -1,5 +1,8 @@
 //! Public RuntimeEngine audit, not the hook-equipped AppCore default path.
 
+#[path = "runtime_speculation_audit/boundary.rs"]
+mod boundary;
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -37,6 +40,7 @@ enum Ending {
     Complete,
     Failed,
     Disconnect,
+    Incomplete,
 }
 
 struct Model {
@@ -44,6 +48,7 @@ struct Model {
     ending: Ending,
     expect_early: bool,
     early_observations: AtomicUsize,
+    terminal_observations: AtomicUsize,
     requests: Mutex<Vec<Value>>,
 }
 
@@ -135,8 +140,9 @@ impl HttpTransport for Model {
             ));
         }
         let failed = index == 0 && self.ending == Ending::Failed;
+        let incomplete = index == 0 && self.ending == Ending::Incomplete;
         let mut response = json!({"id":id,"object":"response","created_at":1,
-            "model":"deepseek-flash","status":if failed {"failed"} else {"completed"},
+            "model":"deepseek-flash","status":if failed {"failed"} else if incomplete {"incomplete"} else {"completed"},
             "output":output,"usage":{"input_tokens":8,"output_tokens":6,"total_tokens":14},
             "error":null,"incomplete_details":null});
         if failed {
@@ -145,13 +151,40 @@ impl HttpTransport for Model {
             response["error"] = json!({"code":"audit_controlled_failure",
                 "message":"controlled audit failure after tool item completion"});
         }
+        if incomplete {
+            response["incomplete_details"] = json!({"reason":"max_output_tokens"});
+        }
         assert!(emit(
             sink,
             &mut sequence,
             json!({
-            "type":if failed {"response.failed"} else {"response.completed"},
+            "type":if failed {"response.failed"} else if incomplete {"response.incomplete"} else {"response.completed"},
             "response":response})
         )?);
+        if incomplete {
+            // The sink requested stop: no more SSE events are delivered.
+            // Yield during transport cleanup before returning the terminal
+            // response, so real queued work can run before ModelAgent decides
+            // whether to commit or discard this incomplete attempt.
+            if self.expect_early {
+                let _observed = tokio::time::timeout(Duration::from_secs(2), async {
+                    while self.store.snapshot() != vec![todo(CANARY)]
+                        || !self.store.is_snapshot_pending()
+                    {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await;
+            } else {
+                for _ in 0..100 {
+                    tokio::task::yield_now().await;
+                }
+            }
+            self.terminal_observations.store(
+                usize::from(self.store.snapshot() == vec![todo(CANARY)]),
+                Ordering::Release,
+            );
+        }
         Ok(())
     }
 }
@@ -173,6 +206,7 @@ async fn observe(ending: Ending, attach_hooks: bool) -> Vec<TodoItem> {
         ending,
         expect_early: !attach_hooks,
         early_observations: AtomicUsize::new(0),
+        terminal_observations: AtomicUsize::new(0),
         requests: Mutex::new(Vec::new()),
     });
     let mut agent = ModelAgent::new(
@@ -268,8 +302,11 @@ async fn observe(ending: Ending, attach_hooks: bool) -> Vec<TodoItem> {
         assert!(!serde_json::to_string(&events).unwrap().contains(CANARY));
     }
     let actual = store.snapshot();
-    eprintln!("speculation audit: ending={ending:?} hooks={attach_hooks} early={} durable_calls={requested} durable_results={completed} pending={} live_todos={actual:?}",
-        transport.early_observations.load(Ordering::Acquire), store.is_snapshot_pending());
+    assert_eq!(store.is_snapshot_pending(), committed);
+    assert_eq!(transport.early_observations.load(Ordering::Acquire), 0);
+    assert_eq!(transport.terminal_observations.load(Ordering::Acquire), 0);
+    eprintln!("speculation audit: ending={ending:?} hooks={attach_hooks} early={} after_terminal={} durable_calls={requested} durable_results={completed} pending={} live_todos={actual:?}",
+        transport.early_observations.load(Ordering::Acquire), transport.terminal_observations.load(Ordering::Acquire), store.is_snapshot_pending());
     actual
 }
 
@@ -292,7 +329,6 @@ async fn hooked_failed_stream_does_not_mutate_real_todo() {
 }
 
 #[tokio::test]
-#[ignore = "audit: discarded provider attempt must not leave unrecorded TodoWrite state"]
 async fn audit_failed_stream_does_not_mutate_real_todo() {
     assert_eq!(
         observe(Ending::Failed, false).await,
@@ -309,10 +345,25 @@ async fn hooked_stream_retry_does_not_mutate_real_todo() {
 }
 
 #[tokio::test]
-#[ignore = "audit: a successful provider retry must not hide an earlier unrecorded TodoWrite"]
 async fn audit_stream_retry_does_not_mutate_real_todo() {
     assert_eq!(
         observe(Ending::Disconnect, false).await,
+        vec![todo("original task")]
+    );
+}
+
+#[tokio::test]
+async fn h233_incomplete_retry_does_not_publish_discarded_todo() {
+    assert_eq!(
+        observe(Ending::Incomplete, false).await,
+        vec![todo("original task")]
+    );
+}
+
+#[tokio::test]
+async fn h233_hooked_incomplete_retry_preserves_original_todo() {
+    assert_eq!(
+        observe(Ending::Incomplete, true).await,
         vec![todo("original task")]
     );
 }
