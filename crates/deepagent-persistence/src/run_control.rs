@@ -802,6 +802,46 @@ impl<'db> RunControlStore<'db> {
         next: &NewExecutionLease<'_>,
         reason: &str,
     ) -> Result<ExecutionLeaseRecord> {
+        self.replace_lease(
+            current_lease_id,
+            current_owner,
+            current_epoch,
+            next,
+            reason,
+            false,
+        )
+    }
+
+    /// Recover only the exact expired generation still owned by this caller.
+    /// Unlike an unconditional acquire, a delayed host cannot replace a newer
+    /// owner's lease, including a newer generation which has itself expired.
+    pub fn recover_expired_lease(
+        &self,
+        current_lease_id: &str,
+        current_owner: &str,
+        current_epoch: u64,
+        next: &NewExecutionLease<'_>,
+        reason: &str,
+    ) -> Result<ExecutionLeaseRecord> {
+        self.replace_lease(
+            current_lease_id,
+            current_owner,
+            current_epoch,
+            next,
+            reason,
+            true,
+        )
+    }
+
+    fn replace_lease(
+        &self,
+        current_lease_id: &str,
+        current_owner: &str,
+        current_epoch: u64,
+        next: &NewExecutionLease<'_>,
+        reason: &str,
+        expired: bool,
+    ) -> Result<ExecutionLeaseRecord> {
         if next.expires_at <= next.now {
             return Err(CoreError::invalid("lease expiry must be in the future"));
         }
@@ -816,7 +856,7 @@ impl<'db> RunControlStore<'db> {
                 if current.owner != current_owner
                     || current.epoch != current_epoch
                     || current.revoked_at.is_some()
-                    || current.expires_at <= next.now
+                    || (current.expires_at <= next.now) != expired
                     || current.resource_kind != next.resource_kind
                     || current.resource_id != next.resource_id
                 {
@@ -2009,6 +2049,159 @@ mod tests {
                 "stale",
             )
             .is_err());
+    }
+
+    fn h293_lease(id: &str, now: i64) -> NewExecutionLease<'_> {
+        NewExecutionLease {
+            lease_id: id,
+            resource_kind: "terminal_session",
+            resource_id: "h293-pty",
+            owner: "user",
+            fencing_token_hash: "synthetic",
+            expires_at: now + 100,
+            now,
+        }
+    }
+
+    #[test]
+    fn h293_expired_recovery_checks_full_generation_and_rolls_back_insert_failure() {
+        let db = database_with_run();
+        let store = RunControlStore::new(&db);
+        let old = store.acquire_lease(&h293_lease("old", 10)).unwrap();
+        let recover = |id: &str, owner: &str, epoch, next: &NewExecutionLease<'_>| {
+            store.recover_expired_lease(id, owner, epoch, next, "h293-recovery")
+        };
+        assert!(recover("old", "user", old.epoch, &h293_lease("next", 109)).is_err());
+        for (id, owner, epoch, kind, resource) in [
+            ("missing", "user", old.epoch, "terminal_session", "h293-pty"),
+            ("old", "runtime", old.epoch, "terminal_session", "h293-pty"),
+            ("old", "user", old.epoch + 1, "terminal_session", "h293-pty"),
+            ("old", "user", old.epoch, "run", "h293-pty"),
+            ("old", "user", old.epoch, "terminal_session", "other-pty"),
+        ] {
+            let mut next = h293_lease("next", 110);
+            next.resource_kind = kind;
+            next.resource_id = resource;
+            assert!(recover(id, owner, epoch, &next).is_err());
+        }
+        // Duplicate primary key fails after the transaction has revoked old.
+        // The rollback must leave the expired original recoverable, not orphaned.
+        assert!(recover("old", "user", old.epoch, &h293_lease("old", 110)).is_err());
+        db.with_conn(|conn| {
+            assert!(lease_from(conn, "old")?.unwrap().revoked_at.is_none());
+            Ok(())
+        })
+        .unwrap();
+        let next = recover("old", "user", old.epoch, &h293_lease("next", 110)).unwrap();
+        assert_eq!(next.epoch, old.epoch + 1);
+        assert!(recover("old", "user", old.epoch, &h293_lease("stale", 211)).is_err());
+        assert!(store
+            .renew_lease("old", "user", old.epoch, 400, 211)
+            .is_err());
+        // A newer generation being expired is not permission for old recovery.
+        assert!(recover("old", "user", old.epoch, &h293_lease("stale", 211)).is_err());
+        assert!(store
+            .renew_lease("next", "user", next.epoch, 400, 211)
+            .is_err());
+    }
+
+    #[test]
+    fn h293_two_connections_recover_exactly_one_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("h293.sqlite");
+        let db = Database::open(&path).unwrap();
+        let old = RunControlStore::new(&db)
+            .acquire_lease(&h293_lease("old", 10))
+            .unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let workers: Vec<_> = ["a", "b"]
+            .into_iter()
+            .map(|id| {
+                let connection = Database::open(&path).unwrap();
+                let barrier = barrier.clone();
+                let epoch = old.epoch;
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    RunControlStore::new(&connection).recover_expired_lease(
+                        "old",
+                        "user",
+                        epoch,
+                        &h293_lease(id, 110),
+                        "race",
+                    )
+                })
+            })
+            .collect();
+        assert_eq!(
+            workers
+                .into_iter()
+                .map(|worker| match worker.join().unwrap() {
+                    Ok(_) => 1,
+                    Err(CoreError::IllegalTransition { from, .. }) => {
+                        assert_eq!(from, "stale_or_mismatched_lease");
+                        0
+                    }
+                    Err(error) => panic!("race failed for a non-CAS reason: {error}"),
+                })
+                .sum::<usize>(),
+            1
+        );
+        db.with_conn(|conn| {
+            let rows: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM execution_leases WHERE revoked_at IS NULL AND resource_id='h293-pty'",
+                [], |row| row.get(0),
+            ).map_err(map_sqlite)?;
+            assert_eq!(rows, 1);
+            assert!(lease_from(conn, "old")?.unwrap().revoked_at.is_some());
+            Ok(())
+        }).unwrap();
+    }
+
+    #[test]
+    fn h293_renew_racing_transfer_never_revives_the_previous_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("renew-race.sqlite");
+        let db = Database::open(&path).unwrap();
+        let old = RunControlStore::new(&db)
+            .acquire_lease(&h293_lease("old", 10))
+            .unwrap();
+        let renew_db = Database::open(&path).unwrap();
+        let transfer_db = Database::open(&path).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let renew_barrier = barrier.clone();
+        let epoch = old.epoch;
+        let renew = std::thread::spawn(move || {
+            renew_barrier.wait();
+            RunControlStore::new(&renew_db).renew_lease("old", "user", epoch, 300, 50)
+        });
+        let transfer = std::thread::spawn(move || {
+            barrier.wait();
+            RunControlStore::new(&transfer_db).transfer_lease(
+                "old",
+                "user",
+                epoch,
+                &h293_lease("next", 50),
+                "race",
+            )
+        });
+        if let Err(error) = renew.join().unwrap() {
+            assert!(
+                matches!(error, CoreError::IllegalTransition { .. }),
+                "{error}"
+            );
+        }
+        let next = transfer.join().unwrap().unwrap();
+        let store = RunControlStore::new(&db);
+        assert_eq!(next.epoch, old.epoch + 1);
+        assert!(store
+            .renew_lease("old", "user", old.epoch, 300, 51)
+            .is_err());
+        assert!(!store
+            .validate_fence("terminal_session", "h293-pty", "user", old.epoch, 51)
+            .unwrap());
+        assert!(store
+            .validate_fence("terminal_session", "h293-pty", "user", next.epoch, 51)
+            .unwrap());
     }
 
     #[test]

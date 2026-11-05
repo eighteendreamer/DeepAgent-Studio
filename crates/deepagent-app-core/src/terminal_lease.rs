@@ -206,6 +206,41 @@ impl TerminalLeasePersistence for SqliteTerminalLeaseStore {
             .map_err(|error| TerminalError::Backend(error.to_string()))
     }
 
+    fn renew(&self, lease: &TerminalInputLease, now: i64) -> TerminalResult<()> {
+        SqliteTerminalLeaseStore::renew(self, lease, now)
+            .map_err(|error| TerminalError::Backend(error.to_string()))
+    }
+
+    fn recover(
+        &self,
+        current: &TerminalInputLease,
+        next: &TerminalInputLease,
+        now: i64,
+    ) -> TerminalResult<u64> {
+        RunControlStore::new(&self.db)
+            .recover_expired_lease(
+                &current.lease_id,
+                holder_name(current.holder),
+                current.epoch,
+                &NewExecutionLease {
+                    lease_id: &next.lease_id,
+                    resource_kind: TERMINAL_RESOURCE_KIND,
+                    resource_id: &resource_id(&current.run_id, &current.session_id),
+                    owner: holder_name(next.holder),
+                    fencing_token_hash: &lease_token_hash(
+                        &next.lease_id,
+                        &current.run_id,
+                        &current.session_id,
+                    ),
+                    expires_at: now.saturating_add(self.ttl_ms),
+                    now,
+                },
+                "terminal_expired_recovery",
+            )
+            .map(|record| record.epoch)
+            .map_err(|error| TerminalError::Backend(error.to_string()))
+    }
+
     fn record_cursor(&self, session_id: &str, cursor: u64) -> TerminalResult<()> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -275,6 +310,118 @@ fn to_terminal_lease(
 mod tests {
     use super::*;
     use deepagent_terminal::TerminalLeaseRegistry;
+
+    #[test]
+    fn h293_expired_registry_owner_can_recover_with_a_new_durable_epoch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lease.sqlite");
+        let db = Arc::new(Database::open(&path).unwrap());
+        let store = Arc::new(SqliteTerminalLeaseStore::new(db.clone(), 60_000).unwrap());
+        let registry = TerminalLeaseRegistry::with_persistence(store.clone());
+        let old = registry
+            .register("h293-pty", "h293-run", TerminalInputHolder::User)
+            .unwrap();
+        store.record_cursor(&old.session_id, 128).unwrap();
+        db.with_conn(|connection| {
+            connection
+                .execute(
+                    "UPDATE execution_leases SET expires_at=0 WHERE lease_id=?1",
+                    [&old.lease_id],
+                )
+                .unwrap();
+            Ok(())
+        })
+        .unwrap();
+        assert!(registry.validate(&old).is_err());
+        assert!(registry.renew(&old).is_err());
+        assert!(registry
+            .release(&old, TerminalInputHolder::Runtime)
+            .is_err());
+        let recovered = registry
+            .takeover(&old.session_id, TerminalInputHolder::Runtime)
+            .expect("the original host owner must retain an explicit expired-lease recovery path");
+        assert!(recovered.epoch > old.epoch);
+        assert_ne!(recovered.lease_id, old.lease_id);
+        assert!(registry.validate(&old).is_err());
+        assert!(registry.validate(&recovered).is_ok());
+        registry.renew(&recovered).unwrap();
+        assert!(registry.renew(&old).is_err());
+        drop(registry);
+        drop(store);
+        drop(db);
+        let reopened =
+            SqliteTerminalLeaseStore::new(Arc::new(Database::open(&path).unwrap()), 60_000)
+                .unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        assert!(reopened.validate(&recovered, now).unwrap());
+        assert!(!reopened.validate(&old, now).unwrap());
+        assert_eq!(reopened.last_cursor(&old.session_id).unwrap(), 128);
+    }
+
+    #[test]
+    fn h293_expired_registry_owner_cannot_overwrite_a_different_successor() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let store = Arc::new(SqliteTerminalLeaseStore::new(db.clone(), 60_000).unwrap());
+        let registry = TerminalLeaseRegistry::with_persistence(store.clone());
+        let old = registry
+            .register("h293-pty", "h293-run", TerminalInputHolder::User)
+            .unwrap();
+        db.with_conn(|connection| {
+            connection
+                .execute(
+                    "UPDATE execution_leases SET expires_at=0 WHERE lease_id=?1",
+                    [&old.lease_id],
+                )
+                .unwrap();
+            Ok(())
+        })
+        .unwrap();
+        // Another connection/store has already acquired the expired resource.
+        // A stale host map is not authority to steal its new generation.
+        let other = store
+            .acquire(
+                &old.session_id,
+                &old.run_id,
+                TerminalInputHolder::RemoteViewer,
+                1,
+            )
+            .unwrap();
+        assert!(registry
+            .takeover(&old.session_id, TerminalInputHolder::Runtime)
+            .is_err());
+        assert!(store.validate(&other, 2).unwrap());
+        assert!(!store.validate(&old, 2).unwrap());
+    }
+
+    #[test]
+    fn h293_registry_renewal_propagates_storage_failure_without_losing_owner() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let store = Arc::new(SqliteTerminalLeaseStore::new(db.clone(), 60_000).unwrap());
+        let registry = TerminalLeaseRegistry::with_persistence(store);
+        let lease = registry
+            .register("h293-pty", "run", TerminalInputHolder::User)
+            .unwrap();
+        db.with_conn(|conn| {
+            conn.execute_batch("CREATE TRIGGER h293_renew_fail BEFORE UPDATE OF expires_at ON execution_leases BEGIN SELECT RAISE(ABORT,'h293 renew fault'); END;").unwrap();
+            Ok(())
+        }).unwrap();
+        assert!(registry
+            .renew(&lease)
+            .unwrap_err()
+            .to_string()
+            .contains("h293 renew fault"));
+        registry.validate(&lease).unwrap();
+        db.with_conn(|conn| {
+            conn.execute_batch("DROP TRIGGER h293_renew_fail;").unwrap();
+            Ok(())
+        })
+        .unwrap();
+        registry.renew(&lease).unwrap();
+        registry.remove(&lease).unwrap();
+    }
 
     #[test]
     fn transfer_persists_fence_and_survives_store_recreation() {

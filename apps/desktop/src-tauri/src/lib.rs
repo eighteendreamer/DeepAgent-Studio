@@ -5040,6 +5040,19 @@ async fn terminal_session_write(
 }
 
 #[tauri::command]
+async fn terminal_session_renew(
+    state: State<'_, AppState>,
+    session: TerminalSession,
+    lease: TerminalInputLease,
+) -> Result<(), String> {
+    state
+        .terminal_sessions
+        .renew(&session, &lease)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn terminal_session_read(
     state: State<'_, AppState>,
     session: TerminalSession,
@@ -7604,6 +7617,7 @@ pub fn run() {
             terminal_session_open,
             coordinator_readiness,
             terminal_session_write,
+            terminal_session_renew,
             terminal_session_read,
             terminal_session_last_cursor,
             terminal_session_recovery_status,

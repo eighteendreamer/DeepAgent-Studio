@@ -2811,10 +2811,13 @@ export interface TerminalReadChunk {
 
 export interface TerminalRecoveryStatus {
   cursor: number;
+  /** The child is actually alive, not just retained in the host map. */
   available: boolean;
+  /** Input can use the current generation; false may require explicit takeover. */
+  controlAvailable: boolean;
 }
 
-/** Shared session/lease terminal API; legacy localPty* helpers remain compatible. */
+/** Shared session/lease terminal API; legacy localPty* helpers only control legacy PTYs. */
 export async function terminalSessionOpen(
   runId: string,
   cols: number,
@@ -2838,6 +2841,18 @@ export async function terminalSessionWrite(
   if (invoke) return invoke<void>("terminal_session_write", { session, lease, data });
 }
 
+/** Renew before expiry (production TTL: 30 minutes). Never revives an old token.
+ * After expiry, use terminalSessionTakeover and discard the old lease instead.
+ */
+export async function terminalSessionRenew(
+  session: TerminalSession,
+  lease: TerminalInputLease,
+): Promise<void> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("terminal sessions require the desktop app");
+  return invoke<void>("terminal_session_renew", { session, lease });
+}
+
 export async function terminalSessionRead(
   session: TerminalSession,
   afterCursor: number,
@@ -2858,7 +2873,7 @@ export async function terminalSessionRecoveryStatus(
   sessionId: string,
 ): Promise<TerminalRecoveryStatus> {
   const invoke = getInvoke();
-  if (!invoke) return { cursor: 0, available: false };
+  if (!invoke) return { cursor: 0, available: false, controlAvailable: false };
   return invoke<TerminalRecoveryStatus>("terminal_session_recovery_status", { sessionId });
 }
 

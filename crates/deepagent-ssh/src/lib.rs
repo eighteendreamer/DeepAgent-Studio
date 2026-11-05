@@ -108,6 +108,8 @@ impl SshTerminalSessionBackend {
         if session.backend != self.backend_kind() || !session.session_id.starts_with("ssh:") {
             return Err(TerminalError::SessionNotFound(session.session_id.clone()));
         }
+        self.leases
+            .validate_scope(&session.session_id, &session.run_id)?;
         Ok(SshServiceHandle::new(
             self.connection_id.clone(),
             self.token.clone(),
@@ -170,6 +172,16 @@ impl TerminalSessionBackend for SshTerminalSessionBackend {
             .pty_write(&handle, data)
             .await
             .map_err(|e| TerminalError::Backend(e.to_string()))
+    }
+
+    async fn renew(
+        &self,
+        session: &TerminalSession,
+        lease: &TerminalInputLease,
+    ) -> deepagent_terminal::TerminalResult<()> {
+        self.handle(session)?;
+        self.validate(session, lease)?;
+        self.leases.renew(lease)
     }
 
     async fn read(
@@ -511,6 +523,47 @@ mod tests {
             *self.0.lock().unwrap() = configs.to_vec();
             Ok(())
         }
+    }
+
+    #[tokio::test]
+    async fn h293_renew_and_takeover_keep_the_registered_run_scope_without_network() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = Arc::new(SshService::with_config_store(
+            dir.path().to_path_buf(),
+            Arc::new(MemoryConfigStore(Mutex::new(Vec::new()))),
+        ));
+        let backend = SshTerminalSessionBackend::new(service, "synthetic", "synthetic-token");
+        let session = TerminalSession {
+            session_id: "ssh:synthetic:synthetic-token".into(),
+            run_id: "h293-run".into(),
+            backend: "ssh".into(),
+            cols: 80,
+            rows: 24,
+        };
+        let old = backend
+            .leases
+            .register(
+                &session.session_id,
+                &session.run_id,
+                TerminalInputHolder::User,
+            )
+            .unwrap();
+        backend.renew(&session, &old).await.unwrap();
+        let mut wrong = session.clone();
+        wrong.run_id = "different-run".into();
+        assert!(backend.renew(&wrong, &old).await.is_err());
+        assert!(backend
+            .takeover(&wrong, TerminalInputHolder::Runtime)
+            .await
+            .is_err());
+        let next = backend
+            .takeover(&session, TerminalInputHolder::Runtime)
+            .await
+            .unwrap();
+        assert!(backend.renew(&session, &old).await.is_err());
+        backend.renew(&session, &next).await.unwrap();
+        backend.leases.remove(&next).unwrap();
+        // No SSH connection, agent, socket or remote process was opened.
     }
 
     #[tokio::test]

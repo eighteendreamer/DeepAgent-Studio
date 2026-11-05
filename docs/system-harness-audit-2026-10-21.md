@@ -136,7 +136,7 @@
 | 范围 | 当前证据 | 审查状态 |
 |---|---|---|
 | 画布场景声明变更后的绑定资格 | 正式 save_model/save_provider 撤销 Text 后重开文件 SQLite，旧绑定仍让 bridge 实际请求 formerly-text，合成 400 截断健康候选；清绑定后相同请求成功 | 新增 H-292（P2，旧 binding 条件）；未修复；默认有效/disabled/无绑定控制通过，参考工程仅静态对照，无真实供应商或 UI 实测 |
-| 共享终端租约过期后的存活 PTY | 注入 2 秒 TTL 的正式 DirectTerminalSessionBackend：租约过期后共享 write/resize/signal/takeover/release/close 全拒绝，真实 PTY 仍可用且 legacy host 写入成功 | 新增 H-293（P2，配置了共享 terminal_session 且超过 TTL）；未修复；真实 Windows ConPTY 与文件 SQLite，默认 30 分钟 TTL 未等待实钟 |
+| 共享终端租约过期后的存活 PTY | 注入 2 秒 TTL 的正式 DirectTerminalSessionBackend：租约过期后共享 write/resize/signal/takeover/release/close 全拒绝，真实 PTY 仍可用且 legacy host 写入成功 | H-293（P2）原反例保留；2026-11-06按E-H293-06修复并完成本机验收：显式renew/过期CAS换代与统一PTY owner清理；真实Windows ConPTY/文件SQLite，默认30分钟TTL未等待实钟 |
 | 计划模式的会话恢复与写入限制 | /plan 和 set_plan_mode 两入口的热续聊均阻止真实写入；关闭文件 SQLite/重建 ChatService 后同一会话 plan=false，正式 write_file 创建临时文件；/plan 历史仍进入 wire | 新增 H-288（P2，服务重建条件）；未修复；显式重设、退出和其他会话对照通过；离线模型及合成临时文件，不归入供应商缓存问题 |
 | CodeGraph 定义变更后的增量调用解析 | 正式 `CodeGraph::index_all/sync/callers` 先得到 caller→target；只改定义文件将旧边级联删除；定义恢复但 caller 未改时，调用边仍为 0 | 新增 H-289（P2，增量索引一致性）；未修复；临时 Rust fixture 与 SQLite，无模型/公网；触碰 caller 的对照恢复为 1，全量重建未单独复测 |
 | Windows 内容编辑的文件访问控制元数据 | 原正式 write_file/edit_file/multi_edit 成功写正文却丢失受保护DACL，重开恢复正文不恢复策略；2026-10-28原输入三工具写后及重开恢复策略均相等，正常对照与写前空staging保护通过 | H-287已修复并完成Windows本机验收，原失败证据保留，E-H287-01～14；仅合成临时文件，非其他账户/真实数据泄漏或跨平台承诺，旧无DACL元数据检查点的存在项恢复明确拒绝 |
@@ -13425,7 +13425,7 @@ E-H288-11（独立提交与回填，2026-10-29）：本项代码、默认回归�
 
 ### H-293：共享终端租约过期后真实 PTY 存活但没有续租、接管或清理路径
 
-**级别：中（P2，条件性共享终端生命周期缺口）；状态：正式 `DirectTerminalSessionBackend`、真实 Windows ConPTY、文件 SQLite 及短 TTL 故障注入已复现，未修复。** 生产构造器把共享终端租约 TTL 固定为 30 分钟；共享协议暴露 open/write/read/resize/signal/takeover/release/close，但没有 `renew` 或“过期租约重新取得当前 session 控制权”的入口。
+**级别：中（P2，条件性共享终端生命周期缺口）；状态：2026-11-06已修复并验收（限E-H293-06所列Windows本机离线范围），原失败证据保留。** 原始实现的正式 `DirectTerminalSessionBackend`、真实Windows ConPTY、文件SQLite及短TTL故障注入已复现；当时生产构造器把共享终端租约 TTL 固定为 30 分钟；共享协议暴露 open/write/read/resize/signal/takeover/release/close，但没有 `renew` 或“过期租约重新取得当前 session 控制权”的入口。
 
 #### Evidence 与登记过程（2026-10-25）
 
@@ -13467,6 +13467,54 @@ E-H288-11（独立提交与回填，2026-10-29）：本项代码、默认回归�
 #### 同轮静态排除
 
 - `question_bridge.rs` 的 `PendingGuard` 会在 wait 被 drop 时 abandon，`resolve` 同时核对 session 归属；已有 tests 覆盖 abandoned wait 和错误 session。未仅凭“人工等待无 timeout”登记缺陷，因为其契约明确由取消/回答结束；本轮没有为该边界新增动态证据，也不声称所有问答 UI/恢复路径已通过。
+
+**E-H293-01（原探针复现与本轮范围，2026-11-06，修复中）**：从035c5855开始，tracked干净、无未完成合并；原五项untracked只列名不读改。按本地源码修复授权，读取原H293、TerminalLeaseRegistry/Persistence、Direct/SSH适配器、SQLite RunControlStore、Tauri注册与TS API、既有PTY/游标/租约测试及manifest/rustfmt/CI，不访问真实SSH/内网/凭据/用户进程或数据。上一轮H268已独立交付，不重新修复；本轮只处理H293的共享控制租约与真实PTY生命周期脱节。
+
+隔离HOME/凭据类环境，使用新建仓库外合成TEMP，实际执行 `cargo test -p deepagent-app-core --test terminal_lease_liveness_audit --offline -j 2 -- --include-ignored --nocapture --test-threads=1`：原生exit101，**1 passed / 1 failed / 0 ignored**。默认显式store续租对照通过；原过期反例仍显示共享write/resize/signal/takeover/release/close拒绝、真实PTY存活且legacy写入可执行，测试自身独立回收后才断言。该测试不是默认UI路径，不外推默认TerminalPlugin必坏；生产30分钟TTL未改，测试2秒只加速同一状态机。原生退出码/完整日志保留target/h293-repair-20261106/original-expiry*，不提交构建产物。
+
+根因方案（本地设计，待TDD与验收）：复用execution_leases与现有原子租约替换，补带当前identity/epoch的renew；过期后由现有host session owner显式takeover取得新epoch，必须CAS匹配原代且拒绝其他已取得控制权的generation，不能简单忽略expires_at或延长TTL。统一Direct/SSH协议、Tauri与TS消费方；recovery status区分process与control，过期旧token仍拒绝输入。共享PTY需在既有TerminalService入口区分legacy与受控owner，不能把legacy写/close当恢复旁路；cleanup失败保留可重试owner。先补真实回归/正常对照，再改生产，相关完整组、workspace、严格lint、Tauri/前端与原生PTY门禁尚待执行，不以接口编译成功宣称修复。
+
+本轮新增验收0，306槽仍169验收/23历史跳过/7归并/3撤销，103待修+1修复中；104有效未关闭含H180授权跳过，实际队列103。本项暂估8–20有效小时，取决于原生cleanup/竞态与跨层验收；全部200–400有效小时仍为未逐项校准的低置信历史粗估，编译/设备/依赖/环境等待另计，不承诺日期。当前无H293 commit，整体目标继续active。
+
+**E-H293-02（仅测试红测与第一层候选，2026-11-06，未验收）**：新增Registry过期原代恢复及不同successor拒绝对照后，尚未改生产时执行 `cargo test -p deepagent-app-core --lib terminal_lease::tests::h293_ --offline -j 2 -- --nocapture --test-threads=1`，exit101、99.533秒、1 passed / 1 failed，原代恢复真实失败为stale_or_mismatched_lease→transferred。随后仅在RunControlStore既有immediate transaction内复用原子替换，补精确旧identity/owner/epoch/scope且未revoked的过期CAS恢复；Registry持锁renew、takeover选择transfer或recover，SQLite适配该契约，不改schema或生产TTL。候选同命令exit0、113.497秒、2/0/0；原生原探针完整命令exit0、50.807秒、2/0/0：旧write/resize/interrupt仍拒绝，新epoch的takeover/release/close成功，store显式续租对照保留。证据分别为target/h293-repair-20261106/test-only-registry*、candidate-registry*、candidate-original-expiry*。
+
+这是第一层候选而非最终修复：尚未接通Backend/Tauri/TS renew、统一真实PTY控制owner与cleanup失败重试、真实进程/控制状态区分及相关竞态；未执行最终fmt/lint、完整相关crate/workspace或前端构建。原探针仍ignore，显式绿色不计默认验收。下一步先验证SQLite故障回滚/独立连接竞争及共享PTY跨scope/legacy红测，再实现生命周期边界；状态、计数和估时沿E01，无H293 commit，不增加已验收数。
+
+**E-H293-03（原生owner/cleanup红绿与跨层候选，2026-11-06，未最终验收）**：追加真实PTY的错误run接管、legacy write/resize/close红测，生产未改时 `cargo test -p deepagent-app-core --test terminal_lease_liveness_audit h293_shared_owner --offline -j 2 -- --nocapture --test-threads=1` exit101、62.751秒、0/1/0，错误run仍能takeover；清理在断言前完成。真实portable Child仅注入首轮kill/wait错误后，`cargo test -p deepagent-app-core --lib terminal_service::tests::h293_ --offline -j 2 -- --nocapture --test-threads=1` 的有效test-only-cleanup-real为exit101、99.290秒、0/2/0，旧逻辑吞错并先删owner。此前同命令test-only-cleanup-retry在测试文件写入遭UTF-8读取错误后筛选到0项，该0/0不是红测或验收，保留日志不计通过。
+
+候选收敛到现有LocalPtyState的一把control gate，绑定Legacy或Shared(host backend id/run)；在同一blocking worker内做scope/epoch校验、write/resize/signal和takeover/renew/release/close，等待future被丢弃不能提前释放gate。kill失败不继续无限wait；kill/wait失败保留owner，成功reap但SQLite revoke失败也保留reaped owner供重试，不再允许输入。正常关闭才删除PTY map；状态以真实child.try_wait判定available，新增camelCase controlAvailable区分进程存活与当前输入可用。先取得durable lease才spawn，失败创建释放lease；host teardown的Drop仅best-effort兜底并记录失败，不作为正常清理成功证明。Registry release/remove持同一map锁检查原代再持久化，避免检查/动作间隙覆盖successor；执行租约仍是同一execution_leases表，无新存储、迁移、依赖或第二套终端。
+
+分层实际结果：candidate-persistence-recovery **2/0/0**（10.885秒；完整identity/epoch/scope/expiry/revocation、INSERT失败回滚与两个独立SQLite连接竞争恰一成功）；candidate-pty-owner-lib **2/0/0**（96.561秒），candidate-pty-owner-native **3/0/0**（50.600秒）；增加取消阻塞write仍持gate、真实child自然退出和revoke故障后，candidate-lifecycle-lib **5/0/0**（98.562秒），candidate-lifecycle-native **4/0/0**（56.490秒）。命令与日志保留target/h293-repair-20261106各独立*-result.json；不是用候选结果冒充最终冻结源码。原过期探针现已改为默认回归，并断言expired时process=true/control=false、原代write/resize/signal/renew/release/close拒绝、新epoch真实marker执行与最终回收；store续租正常对照仍保留，另加正式Backend renew正常对照，不等待真实30分钟。
+
+Direct/SSH共享renew契约已接通，外部旧trait实现默认UnsupportedCapability而非假成功；Tauri command及注册、TS API/DTO同步。`node --test apps/desktop/scripts/check-terminal-session.test.cjs` 实际4/0/0，执行生产TS函数，核对完整lease入参、拒绝/无transport错误传播、process/control状态与takeover后close新代；invoke用合成mock，不冒充真实WebView IPC。已做cargo fmt与Tauri fmt，完整相关组/最终fmt/lint/workspace/Tauri和pnpm build仍在进行或待做，不能标验收。SSH仅离线适配器测试，不连接真实远端；默认TerminalPlugin仍走legacy且正常legacy PTY兼容，共享PTY的legacy输入/resize/close现在有意拒绝。JSON新字段是兼容性增量，仓内Rust/TS初始化同步，外部Rust结构体字面量需补字段。计数/状态/工时沿E01，新增验收0、无本项commit。
+
+**E-H293-04（完整组暴露的夹具与旧门禁问题，2026-11-06，仍修复中）**：相关完整组 `cargo test -p deepagent-terminal -p deepagent-persistence -p deepagent-ssh --offline -j 2 -- --test-threads=2` exit0、43.368秒，**229/0/1**（Persistence单元200+session_control9，SSH单元4+host-key11，Terminal5；1项真实远端PTY仍ignore，不计通过）。AppCore候选terminal_筛选28/0/0、136.653秒；原生完整 `cargo test -p deepagent-app-core --test terminal_lease_liveness_audit --test terminal_audit --offline -j 2 -- --include-ignored --nocapture --test-threads=1` 两次5/0/0，71.727/67.023秒，其中H293默认4项、既有游标1项，不重复计数。`cd apps/desktop && pnpm build` exit0、143.858秒，包含新增TS生产函数契约4/0/0、既有脚本、tsc与Vite；原有browser externalization/chunk-size警告仍存在，无UI组件修改，不冒称真实窗口IPC验收。
+
+完整AppCore `cargo test -p deepagent-app-core --lib --offline -j 2 -- --test-threads=2` exit101、309.214秒：**顶层1540 passed / 1 failed / 49 ignored**（另1个嵌套child通过不重复计数）。唯一失败为本轮新增failed_spawn夹具：依赖portable-pty 0.8.1的cmdbuilder.rs::current_directory（本地560–568行）会把非目录cwd回退HOME，因此nonexistent cwd不构成原生创建错误；不是生产清理已成功的证据，也不通过修改生产路径强造失败。已改为零列原生PTY创建失败并改名failed_pty_creation；本地conpty.rs将尺寸直接传给API，[微软winconpty一手实现](https://github.com/microsoft/terminal/blob/main/src/winconpty/winconpty.cpp)明确在size.X或size.Y为0时返回E_INVALIDARG。另一“先durable owner后spawn”测试也使用零列输入，以区分acquire失败和真实创建错误。原失败日志保留；修正后真实回归、最终完整AppCore/workspace尚待结果，不先宣称夹具已验证。
+
+相关严格lint `cargo clippy -p deepagent-terminal -p deepagent-persistence -p deepagent-ssh --all-targets --all-features --offline -j 2 -- -D warnings` exit0、111.826秒。AppCore严格no-deps初次16项包含本轮两个测试PathBuf无谓借用；已仅修这两项，复验exit101、39.565秒，剩**14项旧问题**（Context Usage clone、HTTP return、plugin复杂类型、assembler参数、title借用及media测试），不添加allow抑制；全workspace all-features严格lint exit101、5.778秒仍是Models::client.rs:385 clone_on_copy。没有把旧lint当成本项新增，也不写全仓lint绿。
+
+workspace fmt exit0（4.203秒，测试借用修正后4.590秒）。Tauri整体fmt曾绿色，但diff复核发现它格式化了未相关的旧import/canvas/reasoning段落，已只逆转这些无关格式改动，仅保留renew command+注册14行。最小diff Tauri fmt因此exit1（0.331秒），差异均为未修改的旧段落；新增renew实际代码块（去掉提取器额外尾空行）rustfmt --check exit0。该提取器初次额外空行导致的exit1也保留，不假称生产新增块格式错。最小diff `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --target-dir target/h272-tauri-build --offline -j 2` 再验exit0、22.573秒（此前带无关格式37.053秒仅作候选）。冻结清单target/h293-repair-20261106/final-source-sha256.json在最小diff及测试借用修正后更新；失败夹具修正后仍需重新核对冻结源码，不沿用旧清单宣称最终验收。
+
+现有运行中的workspace第一轮可能仍编译到修正前的夹具；保留所有原生结果，待终态后按实际源码复验，不靠重命名隐藏失败。状态仍修复中，无本项commit、新增验收0；169验收/23历史跳过/7归并/3撤销/103待修+1修复中不变（104未关闭含H180授权跳过，实际队列103）。本项收尾暂估2–6有效小时，取决于原生异常/完整组复验；全部200–400有效小时仍为历史低置信粗估，已跑编译/测试耗时按各门禁日志单列，后续环境/设备/依赖等待不能精确预报。
+
+**E-H293-05（首轮workspace终态与冻结复验，2026-11-06，未关闭）**：首轮完整workspace原生exit101、1146.137秒，按140个顶层target去重为 **4712 passed / 3 failed / 218 ignored**（runner原始汇总额外含1个嵌套child通过，故不直接使用4713）。三项分别是修正前nonexistent-cwd夹具、verification_commands::lifecycle_tests::post_edit_default_timeout_stops_real_descendant在4秒fixture启动窗内未观测到compiler-started，以及旧H306 creative.video-edit.v1空默认提示词。该启动夹具输出native_exited_before_release=true/wrote=false，但没有到达必须的真实compiler-started，不能视为超时终止验收通过，也不能无证据说是H293行为回归。原日志保留，不混修其代码。
+
+采用实际零列输入后 `cargo test -p deepagent-app-core --lib terminal_service::tests::h293_ --offline -j 2 -- --nocapture --test-threads=1` **7/0/0**、exit0、360.519秒（含等待workspace构建锁，实际测试0.50秒），真实native创建失败释放预取得lease的两种失败顺序及其余生命周期对照均执行。增加过期后、接管前Backend renew/release/close拒绝断言后，原生组5/0/0、16.917秒；再补正常legacy PTY真实marker写入/resize/close，最终 `cargo test -p deepagent-app-core --test terminal_lease_liveness_audit --test terminal_audit --offline -j 2 -- --include-ignored --nocapture --test-threads=1` **6/0/0**、exit0、18.014秒（H293默认5项+旧cursor1项）。最终fmt **exit0/4.294秒**；当前源码Tauri check **exit0/10.204秒**；修正后AppCore严格lint **exit101/48.277秒**，仍仅14项旧问题，本项模块无报错，不把整crate lint写成绿。
+
+排队的第二轮workspace在首轮终态（本地04:21:14）至新增legacy对照的重新冻结（04:21:17）之间启动了源码身份检查，真实检测到terminal_lease_liveness_audit.rs改变后主动拒绝、未启动Cargo；该拒绝不是测试执行或产品失败，保留工具输出，不绕过hash检查。重新核对最终10个生产/测试文件SHA256后才启动verified-workspace，不再修改代码；最终6项原生结果对应此清单。两文H293证据与306唯一槽位已脚本核对一致，169/23/7/3/103待修+1修复中不变。verified-workspace完整终态尚待收，不先填写成功或commit；初次verification启动夹具的失败需复验后明确结果，首轮失败不删除。
+
+残余边界：本项支持仍持有该真实PTY的原host adapter显式续租或过期CAS换代，不承诺宿主重启后重新附着旧OS PTY，也不允许另一个adapter仅凭session id控制它；SQLite游标仍可冷重开。过期前已经获准进入blocking worker的操作由同一gate排在takeover之前完成，不把TTL理解为能撤销已写入OS的字节，不声称对任意外部直接改库/OS进程提供分布式I/O事务。没有自动后台心跳或第二套孤儿清理器；客户端须在TTL前renew，或显式takeover换新代再控制/close，默认legacy UI没有被强制迁移。正常清理故障可重试；最终host Drop兜底仍可能受OS拒绝影响并记录警告，不能作“任何OS故障均保证回收”的承诺。全部验收/计数/估时仍沿E04，整体目标active。
+
+**E-H293-06（最终冻结验收与本项关闭，2026-11-06）**：10个代码/测试文件冻结SHA256核对通过后，完整 `cargo test --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=2` verified-workspace终态为exit101、**998.857秒**；按140个顶层target去重为 **4715 passed / 1 failed / 218 ignored**，无不完整target。runner的4716含1个嵌套child通过，不重复计数。唯一失败仍为独立H306（creative.video-edit.v1空defaultUserPrompt），没有混修或降低标准；首轮的无效cwd夹具修正后通过，verification_commands::lifecycle_tests::post_edit_default_timeout_stops_real_descendant在此完整复验通过，保留原4秒启动失败且不声称所有负载下永不超时。完整AppCore **1541/0/58**，Kernel正式端到端 **297/0/27**，CLI **179/0/14**；Persistence单元 **200/0/0**、Terminal **5/0/0**、SSH单元 **4/0/0**，其他相关完整组及独立6项原生门禁、TS/Tauri/build、fmt与严格lint结果沿E03～05，不用ignore项代替已执行验收。
+
+冻结后再跑 `cargo clippy -p deepagent-app-core --all-targets --offline --no-deps -j 2 -- -D warnings` exit101、41.095秒，仍为上述14项旧问题（终端生产/测试模块无报错）；`node --test apps/desktop/scripts/check-terminal-session.test.cjs` exit0、0.515秒、4/0/0。所有已纳入清单的源码hash未变，不追加编译feature切换或更改最终产物后沿用旧验收。
+
+本轮修复日期2026-11-06：仍复用execution_leases的原子替换及现有TerminalService PTY map，不改schema、不迁移用户数据。Backend renew只延长未过期原代；过期原host显式takeover必须CAS匹配原lease id/holder/epoch/run-session scope且未revoked，产生新id/epoch。旧token继续拒绝write/resize/signal/renew/release/close；另一SQLite连接已取得successor时不能覆盖。真实PTY输入、换代、关闭在同一owner gate内串行；取消等待future不能释放仍在执行的worker gate；legacy输入/resize/close只能操作legacy PTY。kill/wait或durable revoke失败保留可重试owner，成功reap但release失败不再接纳输入；真实process退出和controlAvailable分开投影，冷重开cursor保持。Direct/SSH renew、Tauri command注册和TS消费契约同步，无第二套运行/租约/清理链。
+
+兼容性与未验收：正常legacy UI仍走原接口，新增共享续租由客户端显式调用，未自动迁移TerminalPlugin或增加后台心跳；共享PTY被legacy输入/resize/close拒绝是有意的边界收紧。controlAvailable为UI DTO增量并带serde缺省false；外部Rust结构体字面量需补字段，旧外部trait默认UnsupportedCapability。SSH只离线注册表/适配器及既有host-key本地测试，不据此宣称真实远端PTY/断线恢复验收；未连接真实SSH、内网、供应商/凭据或用户数据，未执行其他OS、真实WebView IPC/窗口、实际30分钟等待、断电/磁盘满或任意OS错误强制回收。原生共享接口/文件SQLite及TS真实生产函数mock invoke已执行，不混淆为UI点击。E05关于已准入OS写入、任意外部改库、宿主重启附着及Drop兜底的限制全部保留。
+
+据此H293标记**已修复并验收（仅上述Windows本机离线范围）**；不是全仓/全系统完成。代码、回归、两文只提交本项12文件，commit取得后另docs回填，不反复amend、不推送/PR。当前本项验收工作剩余0、提交收尾中；306槽核对为 **170验收 / 23历史跳过 / 7归并 / 3撤销 / 103待修 / 0修复中**，本轮新增1、历史跳过/归并/撤销新增0，103有效未关闭含H180授权跳过，实际队列102，不提供完成率。下一拟复核H84：gate决策前的审批投影与重复/不可响应通知，优先权限与执行一致性，先重跑原探针，不据旧报告直接改生产。全部余项200–400有效工作小时仍为未逐项校准的低置信历史粗估，依据跨层运行/权限/持久化/协议缺陷与真实TDD验收规模，不机械按数量扣减；编译/测试等待已分列于上述门禁耗时，不等于人工有效工时，后续设备/依赖/环境等待另计且尚不能量化，不承诺日期。整体目标继续active。
 
 ### 审计续查：单一 PreToolUse 参数改写的校验、审批与执行（2026-10-25，不新增 H 编号）
 

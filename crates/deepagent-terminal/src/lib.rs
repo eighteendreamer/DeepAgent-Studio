@@ -92,7 +92,11 @@ pub struct TerminalReadChunk {
 #[serde(rename_all = "camelCase")]
 pub struct TerminalRecoveryStatus {
     pub cursor: u64,
+    /// A real child process is still alive, not merely present in a host map.
     pub available: bool,
+    /// The current host generation can accept input without explicit takeover.
+    #[serde(default)]
+    pub control_available: bool,
 }
 
 /// Process-local input ownership with epoch fencing. A stale lease can never
@@ -113,6 +117,28 @@ pub trait TerminalLeasePersistence: Send + Sync {
     ) -> TerminalResult<u64>;
     fn validate(&self, lease: &TerminalInputLease, now: i64) -> TerminalResult<bool>;
     fn revoke(&self, lease: &TerminalInputLease, now: i64, reason: &str) -> TerminalResult<()>;
+
+    /// Extend the current, unexpired generation; never revive an old token.
+    fn renew(&self, _lease: &TerminalInputLease, _now: i64) -> TerminalResult<()> {
+        Err(TerminalError::UnsupportedCapability {
+            backend: "lease_store".into(),
+            capability: "renew".into(),
+        })
+    }
+
+    /// Atomically replace the exact expired generation, not an unrelated
+    /// successor. Stores without this guarantee must explicitly reject it.
+    fn recover(
+        &self,
+        _current: &TerminalInputLease,
+        _next: &TerminalInputLease,
+        _now: i64,
+    ) -> TerminalResult<u64> {
+        Err(TerminalError::UnsupportedCapability {
+            backend: "lease_store".into(),
+            capability: "expired_lease_recovery".into(),
+        })
+    }
 
     /// Persist the last output cursor observed for a session. Backends that
     /// cannot persist cursors may keep the compatibility no-op.
@@ -171,15 +197,32 @@ impl TerminalLeaseRegistry {
         Ok(lease)
     }
 
-    pub fn validate(&self, lease: &TerminalInputLease) -> TerminalResult<()> {
-        let leases = self.leases.lock().unwrap_or_else(|p| p.into_inner());
+    fn validate_identity(
+        leases: &HashMap<String, TerminalInputLease>,
+        lease: &TerminalInputLease,
+    ) -> TerminalResult<()> {
         if leases.get(&lease.session_id) != Some(lease) {
             return Err(TerminalError::InvalidLease);
         }
+        Ok(())
+    }
+
+    pub fn validate(&self, lease: &TerminalInputLease) -> TerminalResult<()> {
+        let leases = self.leases.lock().unwrap_or_else(|p| p.into_inner());
+        Self::validate_identity(&leases, lease)?;
         if let Some(durable) = &self.durable {
             if !durable.validate(lease, unix_now())? {
                 return Err(TerminalError::InvalidLease);
             }
+        }
+        Ok(())
+    }
+
+    pub fn renew(&self, lease: &TerminalInputLease) -> TerminalResult<()> {
+        let leases = self.leases.lock().unwrap_or_else(|p| p.into_inner());
+        Self::validate_identity(&leases, lease)?;
+        if let Some(durable) = &self.durable {
+            durable.renew(lease, unix_now())?;
         }
         Ok(())
     }
@@ -196,7 +239,12 @@ impl TerminalLeaseRegistry {
             .ok_or_else(|| TerminalError::SessionNotFound(session_id.to_string()))?;
         let mut next = new_lease(session_id, &current.run_id, holder, current.epoch + 1);
         if let Some(durable) = &self.durable {
-            next.epoch = durable.transfer(&current, &next, unix_now(), "takeover")?;
+            let now = unix_now();
+            next.epoch = if durable.validate(&current, now)? {
+                durable.transfer(&current, &next, now, "takeover")?
+            } else {
+                durable.recover(&current, &next, now)?
+            };
         }
         leases.insert(session_id.to_string(), next.clone());
         Ok(next)
@@ -207,20 +255,50 @@ impl TerminalLeaseRegistry {
         lease: &TerminalInputLease,
         next_holder: TerminalInputHolder,
     ) -> TerminalResult<TerminalInputLease> {
-        self.validate(lease)?;
-        self.takeover(&lease.session_id, next_holder)
+        let mut leases = self.leases.lock().unwrap_or_else(|p| p.into_inner());
+        Self::validate_identity(&leases, lease)?;
+        let mut next = new_lease(
+            &lease.session_id,
+            &lease.run_id,
+            next_holder,
+            lease.epoch + 1,
+        );
+        if let Some(durable) = &self.durable {
+            next.epoch = durable.transfer(lease, &next, unix_now(), "release")?;
+        }
+        leases.insert(lease.session_id.clone(), next.clone());
+        Ok(next)
     }
 
     pub fn remove(&self, lease: &TerminalInputLease) -> TerminalResult<()> {
-        self.validate(lease)?;
+        let mut leases = self.leases.lock().unwrap_or_else(|p| p.into_inner());
+        Self::validate_identity(&leases, lease)?;
         if let Some(durable) = &self.durable {
             durable.revoke(lease, unix_now(), "terminal_closed")?;
         }
-        self.leases
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&lease.session_id);
+        leases.remove(&lease.session_id);
         Ok(())
+    }
+
+    pub fn control_available(&self, session_id: &str) -> TerminalResult<bool> {
+        let leases = self.leases.lock().unwrap_or_else(|p| p.into_inner());
+        match leases.get(session_id) {
+            Some(lease) => self
+                .durable
+                .as_ref()
+                .map_or(Ok(true), |store| store.validate(lease, unix_now())),
+            None => Ok(false),
+        }
+    }
+
+    /// Check host/run ownership without accepting an expired input token.
+    /// Used before explicit takeover, which itself rotates the generation.
+    pub fn validate_scope(&self, session_id: &str, run_id: &str) -> TerminalResult<()> {
+        let leases = self.leases.lock().unwrap_or_else(|p| p.into_inner());
+        match leases.get(session_id) {
+            Some(lease) if lease.run_id == run_id => Ok(()),
+            _ => Err(TerminalError::InvalidLease),
+        }
     }
 
     pub fn record_cursor(&self, session_id: &str, cursor: u64) -> TerminalResult<()> {
@@ -276,6 +354,19 @@ pub trait TerminalSessionBackend: Send + Sync {
         data: &[u8],
     ) -> TerminalResult<()>;
 
+    /// Renew the same unexpired generation. Expired owners must explicitly
+    /// take over, obtain a new token and discard the old one.
+    async fn renew(
+        &self,
+        _session: &TerminalSession,
+        _lease: &TerminalInputLease,
+    ) -> TerminalResult<()> {
+        Err(TerminalError::UnsupportedCapability {
+            backend: self.backend_kind().into(),
+            capability: "renew".into(),
+        })
+    }
+
     async fn read(
         &self,
         session: &TerminalSession,
@@ -320,6 +411,39 @@ pub trait TerminalSessionBackend: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn h293_concurrent_old_release_and_remove_cannot_replace_a_successor() {
+        let registry = Arc::new(TerminalLeaseRegistry::default());
+        let old = registry
+            .register("pty", "run", TerminalInputHolder::User)
+            .unwrap();
+        let gate = Arc::new(std::sync::Barrier::new(8));
+        let workers: Vec<_> = (0..8)
+            .map(|index| {
+                let registry = registry.clone();
+                let gate = gate.clone();
+                let old = old.clone();
+                std::thread::spawn(move || {
+                    gate.wait();
+                    if index % 2 == 0 {
+                        registry.remove(&old).is_ok()
+                    } else {
+                        registry.release(&old, TerminalInputHolder::Runtime).is_ok()
+                    }
+                })
+            })
+            .collect();
+        assert_eq!(
+            workers
+                .into_iter()
+                .map(|worker| usize::from(worker.join().unwrap()))
+                .sum::<usize>(),
+            1
+        );
+        assert!(registry.validate(&old).is_err());
+        assert!(registry.renew(&old).is_err());
+    }
 
     #[test]
     fn takeover_fences_the_previous_lease() {
@@ -374,10 +498,12 @@ mod tests {
         let status = TerminalRecoveryStatus {
             cursor: 4096,
             available: false,
+            control_available: false,
         };
         let json = serde_json::to_value(status).unwrap();
         assert_eq!(json["cursor"], 4096);
         assert_eq!(json["available"], false);
+        assert_eq!(json["controlAvailable"], false);
         assert!(json.get("available_status").is_none());
     }
 }
