@@ -16,6 +16,35 @@ pub(crate) struct RunModelSelection {
     pub(crate) fallback_model: Option<String>,
 }
 
+/// Credential-free, immutable selection. Reading configuration never opens the
+/// secret store; an admitted worker binds a credential only when it executes.
+pub(crate) struct RunModelPlan {
+    pub(crate) model: String,
+    pub(crate) reasoning_effort: ReasoningEffort,
+    pub(crate) fallback_model: Option<String>,
+    pub(crate) override_applied: bool,
+    config: ModelConfig,
+}
+
+impl RunModelPlan {
+    pub(crate) fn bind(
+        self,
+        settings: &SettingsService,
+        transport: Arc<dyn HttpTransport>,
+    ) -> Result<RunModelSelection> {
+        let mut config = self.config;
+        config.api_key = settings
+            .api_key()?
+            .ok_or_else(|| CoreError::invalid("API key not set: initialize the project first"))?;
+        Ok(RunModelSelection {
+            client: Arc::new(ModelClient::new(transport, config)),
+            model: self.model,
+            reasoning_effort: self.reasoning_effort,
+            fallback_model: self.fallback_model,
+        })
+    }
+}
+
 pub(crate) fn build_model_client(
     settings: &SettingsService,
     transport: Arc<dyn HttpTransport>,
@@ -70,10 +99,27 @@ pub(crate) fn select_run_model(
     let loaded = settings
         .load()?
         .ok_or_else(|| CoreError::invalid("project not initialized: set an API key first"))?;
-    let api_key = settings
-        .api_key()?
-        .ok_or_else(|| CoreError::invalid("API key not set: initialize the project first"))?;
-    let reasoning_effort = resolve_reasoning_effort(&loaded, reasoning_effort_override)?;
+    resolve_run_model(
+        &loaded,
+        role,
+        fallback_role,
+        provider_override,
+        model_override,
+        reasoning_effort_override,
+    )?
+    .bind(settings, transport)
+}
+
+/// The sole model/default/fallback resolver used by both config/read and runs.
+pub(crate) fn resolve_run_model(
+    loaded: &crate::settings::AppSettings,
+    role: ModelRole,
+    fallback_role: ModelRole,
+    provider_override: Option<&str>,
+    model_override: Option<&str>,
+    reasoning_effort_override: Option<&str>,
+) -> Result<RunModelPlan> {
+    let reasoning_effort = resolve_reasoning_effort(loaded, reasoning_effort_override)?;
     // Scalar `model` from the config overlay (managed > run > local >
     // project > user > plugin) overrides the catalog's role default — but
     // only when this provider actually serves that model. Compat overlays
@@ -109,12 +155,12 @@ pub(crate) fn select_run_model(
         }
     }
     let wire_mode = WireMode::Responses;
-    let config = ModelConfig::from_catalog(api_key, &loaded.catalog, role)
+    let config = ModelConfig::from_catalog("", &loaded.catalog, role)
         .with_defaults(defaults)
         .with_wire_mode(wire_mode);
-    let client = Arc::new(ModelClient::new(transport, config));
-    Ok(RunModelSelection {
-        client,
+    Ok(RunModelPlan {
+        config,
+        override_applied: model_override.is_some_and(|id| loaded.catalog.has_model(id)),
         model,
         reasoning_effort,
         fallback_model,

@@ -12,11 +12,11 @@ use deepagent_core::clock::SystemClock;
 use deepagent_core::error::CoreError;
 use deepagent_core::id::SessionId;
 use deepagent_harness_protocol::{
-    project_runtime_event, EventContext, HarnessEvent, HarnessRequest, InitializeRequest,
-    RpcNotification, RpcRequest, RpcResponse, ThreadArchiveRequest, ThreadForkRequest,
-    ThreadListRequest, ThreadReadRequest, ThreadResumeRequest, ThreadStartRequest, ToolListRequest,
-    TurnInterruptRequest, TurnStartRequest, TurnSteerRequest, CONTROL_PROJECTION_VERSION,
-    JSONRPC_VERSION, PROTOCOL_VERSION,
+    project_runtime_event, ConfigReadRequest, EventContext, HarnessEvent, HarnessRequest,
+    InitializeRequest, RpcNotification, RpcRequest, RpcResponse, ThreadArchiveRequest,
+    ThreadForkRequest, ThreadListRequest, ThreadReadRequest, ThreadResumeRequest,
+    ThreadStartRequest, ToolListRequest, TurnInterruptRequest, TurnStartRequest, TurnSteerRequest,
+    CONTROL_PROJECTION_VERSION, JSONRPC_VERSION, PROTOCOL_VERSION,
 };
 use deepagent_persistence::event_store::EventStore;
 use deepagent_persistence::run_store::RunStore;
@@ -251,17 +251,7 @@ impl ServerState {
             HarnessRequest::ApprovalRespond(params) => self.approval_respond(request.id, params),
             HarnessRequest::EventAck(params) => self.event_ack(request.id, params.event_sequence),
             HarnessRequest::ToolList(params) => self.tool_list(request.id, params),
-            HarnessRequest::ConfigRead(_) => (
-                RpcResponse::success(
-                    request.id,
-                    serde_json::json!({
-                        "protocolVersion": PROTOCOL_VERSION,
-                        "transport": "stdio",
-                        "provider": "deepseek-official"
-                    }),
-                ),
-                None,
-            ),
+            HarnessRequest::ConfigRead(params) => self.config_read(request.id, params),
             HarnessRequest::SandboxStatus(_) => {
                 let mut status = serde_json::to_value(&self.capabilities)
                     .unwrap_or_else(|_| serde_json::json!({ "available": false }));
@@ -708,16 +698,25 @@ impl ServerState {
                 .permission_profile
                 .or(thread.overrides.permission_profile),
         };
-        let prepared = match thread.chat.admit_prepared_input(
+        let prepared = match thread.chat.admit_prepared_input_with_config(
             &turn_id,
             &params.thread_id,
             &params.input,
             overrides.clone(),
+            params.expected_config_snapshot_id.as_deref(),
         ) {
             Ok(prepared) => prepared,
             Err(error) => {
                 return (
-                    RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
+                    RpcResponse::error(
+                        id,
+                        if matches!(error, CoreError::ExecutionConfigStale) {
+                            ERR_INVALID_PARAMS
+                        } else {
+                            ERR_INTERNAL
+                        },
+                        error.to_string(),
+                    ),
                     None,
                 )
             }
@@ -1112,6 +1111,93 @@ impl ServerState {
             ),
             None,
         )
+    }
+
+    fn config_read(
+        &self,
+        id: serde_json::Value,
+        params: ConfigReadRequest,
+    ) -> (RpcResponse, Option<TurnLaunch>) {
+        if params.thread_id.is_some() && params.cwd.is_some() {
+            return (
+                RpcResponse::error(
+                    id,
+                    ERR_INVALID_PARAMS,
+                    "threadId and cwd are mutually exclusive",
+                ),
+                None,
+            );
+        }
+        let resolved = (|| -> Result<_, CoreError> {
+            let (workspace, overrides, scope) = if let Some(thread_id) = params.thread_id {
+                let session_id = thread_id.parse::<SessionId>()?;
+                let store = EventStore::new(&self.database);
+                let record = store
+                    .get_session(session_id)?
+                    .ok_or_else(|| CoreError::not_found("configuration thread"))?;
+                let overrides = store
+                    .session_execution_config(session_id)?
+                    .map(|config| config.overrides)
+                    .unwrap_or_default();
+                let workspace = self
+                    .resolve_workspace(record.project.as_deref())
+                    .map_err(CoreError::invalid)?;
+                (
+                    workspace,
+                    overrides,
+                    serde_json::json!({"kind":"thread","threadId":session_id.to_string(),"requiresThreadScope":false}),
+                )
+            } else {
+                let kind = if params.cwd.is_some() {
+                    "cwd"
+                } else {
+                    "global"
+                };
+                let workspace = self
+                    .resolve_workspace(params.cwd.as_deref())
+                    .map_err(CoreError::invalid)?;
+                (
+                    workspace,
+                    HarnessRunOverrides::default(),
+                    serde_json::json!({"kind":kind,"requiresThreadScope":true,"includesProjectLayers":true}),
+                )
+            };
+            let mut snapshot = self
+                .base_chat
+                .for_workspace(workspace)
+                .read_execution_config(&overrides)?;
+            snapshot["scope"] = scope;
+            snapshot["protocolVersion"] = PROTOCOL_VERSION.into();
+            snapshot["transport"] = "stdio".into();
+            Ok(snapshot)
+        })();
+        match resolved {
+            Ok(snapshot) => (RpcResponse::success(id, snapshot), None),
+            // Do not serialize parser/IO diagnostics containing private paths,
+            // raw policy fields or arbitrary untrusted project values.
+            Err(error) => {
+                let (code, kind) = match &error {
+                    CoreError::Invalid(_) => (ERR_INVALID_PARAMS, "invalid_configuration"),
+                    CoreError::NotFound(_) => (ERR_INVALID_PARAMS, "scope_not_found"),
+                    CoreError::Persistence(_) => (ERR_INTERNAL, "storage_failure"),
+                    CoreError::Serialization(_) => (ERR_INTERNAL, "decode_failure"),
+                    _ => (ERR_INTERNAL, "resolution_failure"),
+                };
+                tracing::warn!(
+                    operation = "config/read",
+                    error_kind = kind,
+                    "configuration resolution failed; private diagnostics redacted"
+                );
+                (
+                    RpcResponse::error(
+                        id,
+                        code,
+                        format!("configuration scope is unavailable or invalid ({kind})"),
+                    ),
+                    None,
+                )
+            }
+        }
     }
 
     fn resolve_workspace(&self, requested: Option<&str>) -> Result<PathBuf, String> {
@@ -2644,7 +2730,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit H-221: config/read must expose effective model and execution configuration"]
     fn audit_config_read_is_not_a_static_protocol_banner() {
         let temporary = tempfile::tempdir().unwrap();
         let workspace = temporary.path().join("workspace");

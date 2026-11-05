@@ -150,6 +150,13 @@ pub struct TurnStartRequest {
     #[serde(rename = "threadId")]
     pub thread_id: String,
     pub input: String,
+    /// Optional comparison guard from scoped config/read. Not an execution grant.
+    #[serde(
+        rename = "expectedConfigSnapshotId",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub expected_config_snapshot_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -226,7 +233,14 @@ pub struct ToolListRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct ConfigReadRequest {}
+pub struct ConfigReadRequest {
+    /// Omit both selectors for host-workspace defaults (including its project
+    /// layers), not the most recently created thread. Selectors are exclusive.
+    #[serde(rename = "threadId", default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct SandboxStatusRequest {}

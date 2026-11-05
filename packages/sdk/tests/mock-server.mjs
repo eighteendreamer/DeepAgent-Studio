@@ -164,6 +164,9 @@ input.on("line", (line) => {
       response(request.id, result);
       break;
     }
+    case "config/read":
+      response(request.id, {configSnapshotVersion: 1, configSnapshotId: "config-mock", request: request.params});
+      break;
     default:
       error(request.id, -32601, `unknown method ${request.method}`);
   }

@@ -2,6 +2,49 @@
 
 TypeScript client for the DeepAgent Harness app-server.
 
+## Effective execution configuration
+
+`await agent.readConfig()` reads defaults for the **host workspace, including
+its project layers**, not the last thread or machine-wide project-free settings.
+Use `readConfig({threadId})` for persistent thread overrides (also before resume),
+or `readConfig({cwd})` for another workspace's defaults; selectors are exclusive.
+The versioned result reports the resolved model/reasoning, permission profile,
+sandbox selection, source scopes, trust, MCP publication and plugin digest.
+It is a limited projection, not raw settings, prompts, paths or credentials.
+`resolutionStatus: "resolved"` does **not** mean execution is ready: credentials
+are deliberately unchecked, backend admission can still fail, and actual tools
+belong to the existing admitted `listTools` capability snapshot.
+
+```ts
+const config = await agent.readConfig({threadId: thread.id});
+const turn = await thread.run("inspect the project", {
+  expectedConfigSnapshotId: config.configSnapshotId
+});
+```
+
+The optional guard compares the exact prepared model/policy/tool-search and host
+publication inputs inside admission. Drift (including explicit different turn
+overrides) fails before publishing a run; read again rather than retrying blindly.
+Builtin slash controls have no model configuration snapshot: omit this guard.
+Accepted normal chat consumes the frozen model defaults and policy, even if
+settings change before the worker starts. Credentials are bound only at execution
+and are never frozen or exposed. This is not an all-settings/MVCC transaction or
+an authorization token. Config load warnings are counts, never raw diagnostics;
+unknown model overrides retain the existing catalog fallback and report whether
+the override applied. Cold reads do not resume, admit, refresh plugins or start MCP;
+legacy settings normalization remains owned by the existing Settings service.
+MCP publication identity changes across host restarts, so read a fresh snapshot
+after reconnecting; unchanged model/policy values alone do not preserve its ID.
+Uninitialized settings retain the existing `deepseek-official` provider banner
+but have null model/reasoning; invalid model configuration explicitly reports
+`resolutionStatus: "invalid"` and null provider/model rather than a usable plan.
+Rust callers retain `config_read()` and gain `config_read_scoped(ConfigReadRequest)`;
+request wire fields are additive, while Rust `TurnStartRequest` literals need the new
+`expected_config_snapshot_id: None` field when no comparison guard is desired.
+Use `ConfigReadRequest::default()` in place of old empty struct literals, or
+supply the new optional `thread_id`/`cwd` fields explicitly.
+The TS return type is a compile-time projection, not a new runtime schema validator.
+
 The default transport starts `deepagent server --transport stdio`. A custom
 binary can be supplied with `command`, `args`, and `cwd`.
 

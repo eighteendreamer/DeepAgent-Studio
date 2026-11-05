@@ -34,6 +34,14 @@ test("real CLI early failure is delivered once and reconciles after reconnect wi
   const agent = new DeepAgent({ command: isolatedBin, cwd: workspace, onEvent: (event) => raw.push(event) });
   try {
     const thread = await agent.startThread({ permissionProfile: "read_only", sandboxBackend: "direct" });
+    const config = await agent.readConfig({threadId: thread.id});
+    assert.equal(config.configSnapshotVersion, 1);
+    assert.equal(config.resolutionStatus, "uninitialized");
+    assert.equal(config.credentialChecked, false);
+    assert.equal(config.provider, "deepseek-official");
+    assert.equal(config.permissionProfile.sandboxMode, "read_only");
+    assert.equal(config.sandboxBackend, "direct");
+    await assert.rejects(() => thread.run("reject stale config", {expectedConfigSnapshotId: "stale-config"}), /stale execution configuration/u);
     const events = [];
     for await (const event of thread.runStreamed("Synthetic local failure: no provider settings are installed.")) events.push(event);
     const terminals = events.filter((event) => /^turn\.(completed|failed|interrupted)$/u.test(event.type));
@@ -43,6 +51,7 @@ test("real CLI early failure is delivered once and reconciles after reconnect wi
     const turnId = terminals[0].turnId;
     assert.ok(turnId);
     const capability = await agent.listTools({threadId: thread.id, runId: turnId});
+    assert.equal(capability.capabilitySnapshot.context.executionConfig.configSnapshotId, config.configSnapshotId);
     assert.ok(capability.snapshotId);
     assert.equal(capability.capabilitySnapshot.runId, turnId);
     assert.equal(capability.capabilitySnapshot.threadId, thread.id);
@@ -86,6 +95,16 @@ test("real CLI early failure is delivered once and reconciles after reconnect wi
     assert.deepEqual(collected.nodes, run.graph.nodes);
     await agent.reconnect();
     await agent.resumeThread(thread.id);
+    const reopenedConfig = await agent.readConfig({threadId: thread.id});
+    assert.equal(typeof reopenedConfig.mcpGeneration, "string");
+    assert.notEqual(reopenedConfig.mcpGeneration, config.mcpGeneration,
+      "a new host owns a new MCP publication, even with no configured servers");
+    assert.notEqual(reopenedConfig.configSnapshotId, config.configSnapshotId);
+    assert.deepEqual(reopenedConfig, {...config,
+      mcpGeneration: reopenedConfig.mcpGeneration, configSnapshotId: reopenedConfig.configSnapshotId},
+      "only host publication identity changes; all effective settings and input digests remain exact");
+    await assert.rejects(() => thread.run("reject prior host config", {expectedConfigSnapshotId: config.configSnapshotId}),
+      /stale execution configuration/u);
     const after = await agent.requestForTest("thread/read", { threadId: thread.id });
     assert.deepEqual(after, before, "the new connection reads the existing durable result, not a second run");
     assert.deepEqual(await agent.listTools({threadId: thread.id, runId: turnId,

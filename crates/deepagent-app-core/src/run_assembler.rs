@@ -73,6 +73,7 @@ use crate::tool_runtime::{
 
 mod prepared_tools;
 use prepared_tools::MainRunPreparationRequest;
+mod execution_config;
 mod prepared_chat;
 pub use prepared_chat::PreparedChatRun;
 use prepared_chat::{PreparedChatContents, PreparedChatTools};
@@ -455,7 +456,7 @@ impl<'a> RunAssembler<'a> {
                 })),
         );
 
-        let (prepared_environment, prepared_tools) = match prepared_run.take() {
+        let (mut prepared_environment, prepared_tools) = match prepared_run.take() {
             Some(prepared) => {
                 self.knowledge = prepared.knowledge;
                 let PreparedChatContents::Model(model) = prepared.contents else {
@@ -471,9 +472,10 @@ impl<'a> RunAssembler<'a> {
         };
         // The worker uses the admitted environment, never a second settings or
         // MCP lookup that could silently retarget the advertised registry.
-        let environment = &prepared_environment.environment;
+        let environment = prepared_environment.configuration.environment.clone();
         let run_config = environment.config.clone();
-        let effective_permission_rules = prepared_environment.permission_rules.clone();
+        let effective_permission_rules =
+            prepared_environment.configuration.permission_rules.clone();
         let project_trusted = prepared_environment.project_trusted;
         let plugin_projection = prepared_environment.plugin_projection.clone();
         let RunEnvironment {
@@ -567,7 +569,7 @@ impl<'a> RunAssembler<'a> {
                     effective_env_mode,
                     connection_id,
                     &prior_events,
-                    &prepared_environment,
+                    &mut prepared_environment,
                 )?;
                 deepagent_persistence::run_store::RunStore::new(self.db).bind_capability_snapshot(
                     &run_id,
@@ -588,15 +590,11 @@ impl<'a> RunAssembler<'a> {
         } = prepared;
         let capabilities = Arc::new(capabilities.consume(self.db.clone())?);
 
-        let run_model = select_run_model(
-            self.settings,
-            self.transport.clone(),
-            ModelRole::Chat,
-            ModelRole::Reasoner,
-            run_config.provider_override(),
-            run_config.model_override(),
-            run_config.reasoning_effort_override(),
-        )?;
+        let run_model = prepared_environment
+            .configuration
+            .model_plan?
+            .ok_or_else(|| CoreError::invalid("project not initialized: set an API key first"))?
+            .bind(self.settings, self.transport.clone())?;
         let client = run_model.client;
         let model = run_model.model;
         let reasoning_effort = run_model.reasoning_effort;

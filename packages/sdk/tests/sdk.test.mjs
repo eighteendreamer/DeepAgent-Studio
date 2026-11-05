@@ -17,6 +17,17 @@ function createAgent(options = {}) {
   });
 }
 
+test("reads host/thread/cwd configuration through the existing stdio transport", async () => {
+  const agent = createAgent();
+  try {
+    for (const scope of [{}, {threadId: "thread-mock"}, {cwd: process.cwd()}]) {
+      const config = await agent.readConfig(scope);
+      assert.equal(config.configSnapshotId, "config-mock");
+      assert.deepEqual(config.request, scope);
+    }
+  } finally { await agent.close(); }
+});
+
 test("reads one typed history page without automatic accumulation or retry", async () => {
   const agent = createAgent();
   try {

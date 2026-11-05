@@ -45,6 +45,7 @@ exit 7"#,
     let started = tokio::time::timeout(
         Duration::from_secs(5),
         client.turn_start(TurnStartRequest {
+            expected_config_snapshot_id: None,
             thread_id: "audit-thread".into(),
             input: "synthetic audit input".into(),
             provider: None,

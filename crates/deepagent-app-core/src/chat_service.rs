@@ -343,7 +343,7 @@ impl ChatService {
         session_id: &str,
         overrides: HarnessRunOverrides,
     ) -> Result<crate::run_assembler::PreparedChatRun> {
-        self.admit_prepared_chat(run_id, session_id, None, None, None, overrides)?
+        self.admit_prepared_chat(run_id, session_id, None, None, None, overrides, None)?
             .ok_or_else(|| CoreError::invalid("prepared chat admission was rejected"))
     }
 
@@ -357,8 +357,39 @@ impl ChatService {
         input: &str,
         overrides: HarnessRunOverrides,
     ) -> Result<crate::run_assembler::PreparedChatRun> {
-        self.admit_prepared_chat(run_id, session_id, Some(input), None, None, overrides)?
+        self.admit_prepared_chat(run_id, session_id, Some(input), None, None, overrides, None)?
             .ok_or_else(|| CoreError::invalid("prepared chat admission was rejected"))
+    }
+
+    /// Read-only host configuration for this workspace. No credential access,
+    /// run admission, tool preparation, plugin refresh or MCP startup occurs.
+    pub fn read_execution_config(
+        &self,
+        overrides: &HarnessRunOverrides,
+    ) -> Result<serde_json::Value> {
+        self.run_assembler().read_execution_config(overrides)
+    }
+
+    /// Compare inside the existing admission transaction, against the exact
+    /// environment/model and real registry frozen by normal preparation.
+    pub fn admit_prepared_input_with_config(
+        &self,
+        run_id: &str,
+        session_id: &str,
+        input: &str,
+        overrides: HarnessRunOverrides,
+        expected_config_snapshot_id: Option<&str>,
+    ) -> Result<crate::run_assembler::PreparedChatRun> {
+        self.admit_prepared_chat(
+            run_id,
+            session_id,
+            Some(input),
+            None,
+            None,
+            overrides,
+            expected_config_snapshot_id,
+        )?
+        .ok_or_else(|| CoreError::invalid("prepared chat admission was rejected"))
     }
 
     /// The existing continuation transaction owns both the prepared snapshot
@@ -378,9 +409,11 @@ impl ChatService {
             Some(old_run_id),
             None,
             overrides,
+            None,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn admit_prepared_chat(
         &self,
         run_id: &str,
@@ -389,6 +422,7 @@ impl ChatService {
         replaces: Option<&str>,
         scheduled: Option<&deepagent_persistence::run_store::ScheduledRunOrigin>,
         overrides: HarnessRunOverrides,
+        expected_config_snapshot_id: Option<&str>,
     ) -> Result<Option<crate::run_assembler::PreparedChatRun>> {
         let session_id = session_id
             .parse::<deepagent_core::id::SessionId>()?
@@ -402,6 +436,13 @@ impl ChatService {
                     overrides,
                 )?;
                 let snapshot = prepared.capability_snapshot().clone();
+                if let Some(expected) = expected_config_snapshot_id {
+                    if snapshot["context"]["executionConfig"]["configSnapshotId"].as_str()
+                        != Some(expected)
+                    {
+                        return Err(CoreError::ExecutionConfigStale);
+                    }
+                }
                 Ok((prepared, Some(snapshot)))
             })
     }

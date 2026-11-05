@@ -16,6 +16,11 @@ pub enum CoreError {
     #[error("invalid input: {0}")]
     Invalid(String),
 
+    /// A config/read guard no longer matches normal run preparation. Keep it
+    /// distinct so hosts preserve error codes for ordinary admission failures.
+    #[error("stale execution configuration; read thread configuration again")]
+    ExecutionConfigStale,
+
     /// A requested entity (session, task, event) was not found.
     #[error("not found: {0}")]
     NotFound(String),
@@ -164,6 +169,10 @@ mod tests {
 
     #[test]
     fn display_formats_are_stable() {
+        assert_eq!(
+            CoreError::ExecutionConfigStale.to_string(),
+            "stale execution configuration; read thread configuration again"
+        );
         let e = CoreError::IllegalTransition {
             from: "Completed".into(),
             to: "Running".into(),

@@ -112,6 +112,7 @@ async fn fixture(mode: &str, capacity: usize) -> (Child, HarnessClient) {
 
 fn request(thread: &str) -> TurnStartRequest {
     TurnStartRequest {
+        expected_config_snapshot_id: None,
         thread_id: thread.into(),
         input: "synthetic only".into(),
         provider: None,

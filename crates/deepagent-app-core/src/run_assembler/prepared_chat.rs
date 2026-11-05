@@ -7,8 +7,7 @@ use prepared_tools::PreparedMainRunTools;
 use std::collections::HashSet;
 
 pub(super) struct PreparedChatEnvironment {
-    pub(super) environment: RunEnvironment,
-    pub(super) permission_rules: deepagent_hooks::PermissionRules,
+    pub(super) configuration: super::execution_config::ResolvedExecutionConfig,
     pub(super) project_trusted: bool,
     pub(super) plugin_projection: Option<crate::plugin_runtime::PluginRuntimeProjection>,
     pub(super) plugin_registry: Option<Arc<deepagent_mcp::McpRegistry>>,
@@ -180,7 +179,7 @@ impl RunAssembler<'_> {
             .as_ref()
             .map(|knowledge| knowledge.for_project(&root))
             .transpose()?;
-        let environment = self.prepare_chat_environment(&root, run_id, &overrides)?;
+        let mut environment = self.prepare_chat_environment(&root, run_id, &overrides)?;
         let session = EventStore::new(self.db)
             .get_session(session_id.parse()?)?
             .ok_or_else(|| CoreError::not_found("prepared chat session"))?;
@@ -195,7 +194,7 @@ impl RunAssembler<'_> {
             effective_env_mode,
             None,
             &prior_events,
-            &environment,
+            &mut environment,
         )?;
         Ok(PreparedChatRun {
             run_id: run_id.to_owned(),
@@ -226,31 +225,15 @@ impl RunAssembler<'_> {
             .as_ref()
             .map(|(projection, _)| projection.clone());
         self.sync_plugin_skill_snapshot(plugin_projection.as_ref())?;
-        let legacy_sandboxie_executor = self
-            .sandbox_backend_registry
-            .is_none()
-            .then_some(self.sandboxie_executor.as_ref())
-            .flatten();
-        let project_trusted =
-            crate::trust_service::TrustService::new(self.db.clone()).is_trusted(root);
-        let environment = RunEnvironment::resolve(
-            RunConfigOverlay::load(root, serde_json::to_value(overrides)?),
-            self.settings.effective_permission_profile()?,
-            project_trusted,
-            self.runtime_logs,
-            legacy_sandboxie_executor,
-            self.sandbox_backend_registry
-                .as_ref()
-                .map(|registry| registry.default_kind()),
-            run_id,
+        let configuration = self.resolve_execution_config(
+            root,
+            overrides,
+            plugin_projection.as_ref(),
+            Some(run_id),
         )?;
-        let permission_rules = environment
-            .config
-            .merged_permission_rules(self.settings.permission_rules()?)?;
         Ok(PreparedChatEnvironment {
-            environment,
-            permission_rules,
-            project_trusted,
+            project_trusted: configuration.project_trusted,
+            configuration,
             plugin_projection,
             plugin_registry: plugin_snapshot.map(|(_, registry)| registry),
         })
@@ -266,18 +249,15 @@ impl RunAssembler<'_> {
         effective_env_mode: Option<&str>,
         connection_id: Option<&str>,
         prior_events: &[deepagent_core::event::Event],
-        prepared: &PreparedChatEnvironment,
+        prepared: &mut PreparedChatEnvironment,
     ) -> Result<PreparedChatTools> {
-        let environment = &prepared.environment;
+        let environment = &prepared.configuration.environment;
         let plan = self.plan_mode_for_session(session_id)?;
         plan.is_active()?;
         let (discovered_before_run, discovered) =
             self.service.discovered_tools_for_run(prior_events);
-        let search_mode = self.settings.tool_search_mode().unwrap_or_default();
-        let search_threshold = self
-            .settings
-            .tool_search_auto_threshold()
-            .unwrap_or(SettingsService::DEFAULT_TOOL_SEARCH_AUTO_THRESHOLD_CHARS);
+        let search_mode = prepared.configuration.search_mode;
+        let search_threshold = prepared.configuration.search_threshold;
         let executor = self.local_executor_for_run(
             root,
             environment.sandbox_mode,
@@ -324,7 +304,7 @@ impl RunAssembler<'_> {
         let mut context = capability_context(CapabilityContextRequest {
             root,
             profile: environment.profile,
-            permission_rules: &prepared.permission_rules,
+            permission_rules: &prepared.configuration.permission_rules,
             sandbox_backend: environment.sandbox_backend,
             backends: self.sandbox_backend_registry.as_deref(),
             tool_search_mode: search_mode,
@@ -356,11 +336,16 @@ impl RunAssembler<'_> {
         context["runConfigHash"] =
             crate::run_capabilities::capability_hash(&environment.config.value)?.into();
         context["mcpGeneration"] = tools.toolset.mcp_generation.clone().into();
+        let policy = environment.policy;
+        prepared
+            .configuration
+            .bind_mcp_generation(tools.toolset.mcp_generation.as_deref())?;
+        context["executionConfig"] = prepared.configuration.snapshot.clone();
         let capabilities = ResolvedRunCapabilities::resolve(
             context,
             &tools.toolset.registry,
             &tools.toolset.manifest.tools,
-            environment.policy,
+            policy,
         )?
         .prepare(run_id, session_id)?;
         Ok(PreparedChatTools {

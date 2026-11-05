@@ -2045,6 +2045,12 @@ impl SettingsService {
         // Coupled policy fields must come from one committed document, not
         // separate getters that can straddle another host's preset update.
         let settings = self.load()?;
+        Ok(Self::permission_profile_from_settings(settings.as_ref()))
+    }
+
+    pub(crate) fn permission_profile_from_settings(
+        settings: Option<&AppSettings>,
+    ) -> EffectivePermissionProfile {
         let policy = settings
             .as_ref()
             .map(|s| s.approval_policy)
@@ -2061,12 +2067,12 @@ impl SettingsService {
             LocalExecutionMode::SandboxiePreferred
         };
         let network_always_ask = matches!(policy, ApprovalPolicy::AlwaysAsk);
-        Ok(EffectivePermissionProfile {
+        EffectivePermissionProfile {
             approval_policy: policy,
             sandbox_mode: sandbox,
             local_execution_mode,
             network_always_ask,
-        })
+        }
     }
 
     /// Set the Thinking Mode depth, persisting it. Returns the redacted view.

@@ -138,11 +138,32 @@ export interface ThreadStartOptions {
 }
 
 export interface TurnStartOptions {
+  expectedConfigSnapshotId?: string;
   provider?: string;
   model?: string;
   reasoningEffort?: string;
   permissionProfile?: string;
   sandboxBackend?: string;
+}
+
+export interface ConfigReadOptions {
+  threadId?: string;
+  cwd?: string;
+}
+
+/** Limited host execution configuration, never raw settings or credentials. */
+export interface ExecutionConfigSnapshot {
+  configSnapshotVersion: 1;
+  configSnapshotId: string;
+  resolutionStatus: "resolved" | "uninitialized" | "invalid";
+  credentialChecked: false;
+  scope: { kind: "global" | "thread" | "cwd"; requiresThreadScope: boolean; threadId?: string };
+  provider: string | null;
+  model: string | null;
+  reasoningEffort: string | null;
+  permissionProfile: { approvalPolicy: string; sandboxMode: string; localExecutionMode: string; networkAlwaysAsk: boolean };
+  sandboxBackend: string | null;
+  [key: string]: unknown;
 }
 
 /** Local stream consumption options; signal is never serialized onto the wire. */
@@ -690,6 +711,11 @@ export class DeepAgent {
 
   async listTools(options: ToolListOptions = {}): Promise<ToolListResult> {
     return (await this.request("tool/list", options)) as ToolListResult;
+  }
+
+  /** Global means defaults for the host workspace, including project layers. */
+  async readConfig(options: ConfigReadOptions = {}): Promise<ExecutionConfigSnapshot> {
+    return (await this.request("config/read", options)) as ExecutionConfigSnapshot;
   }
 
   runJsonl(prompt: string): AsyncIterable<HarnessEvent> {

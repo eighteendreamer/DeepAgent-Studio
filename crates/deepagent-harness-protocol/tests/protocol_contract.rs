@@ -8,6 +8,28 @@ use deepagent_harness_protocol::{
 use deepagent_runtime::RuntimeEvent;
 
 #[test]
+fn h221_config_scope_is_additive_and_admission_guard_round_trips() {
+    assert_eq!(
+        serde_json::to_value(ConfigReadRequest::default()).unwrap(),
+        serde_json::json!({})
+    );
+    for params in [
+        serde_json::json!({"threadId":"thread-1"}),
+        serde_json::json!({"cwd":"synthetic-workspace"}),
+    ] {
+        let request: ConfigReadRequest = serde_json::from_value(params.clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), params);
+    }
+    let request: HarnessRequest = serde_json::from_value(serde_json::json!({
+        "method":"turn/start", "params":{"threadId":"thread-1","input":"hello","expectedConfigSnapshotId":"config-1"}
+    })).unwrap();
+    assert_eq!(
+        serde_json::to_value(request).unwrap()["params"]["expectedConfigSnapshotId"],
+        "config-1"
+    );
+}
+
+#[test]
 fn h212_response_constructors_own_the_same_wire_version_for_results_and_errors() {
     use deepagent_harness_protocol::{RpcResponse, JSONRPC_VERSION};
     assert_eq!(JSONRPC_VERSION, "2.0");
@@ -195,6 +217,7 @@ fn runtime_tool_approval_and_terminal_events_keep_correlation() {
 #[test]
 fn turn_start_request_serializes_provider_and_sandbox_overrides() {
     let request = HarnessRequest::TurnStart(TurnStartRequest {
+        expected_config_snapshot_id: None,
         thread_id: "thread-1".into(),
         input: "inspect the repository".into(),
         provider: Some("deepseek-official".into()),
@@ -248,6 +271,7 @@ fn every_harness_request_variant_has_a_stable_method_and_round_trips() {
             thread_id: "thread-1".into(),
         }),
         HarnessRequest::TurnStart(TurnStartRequest {
+            expected_config_snapshot_id: None,
             thread_id: "thread-1".into(),
             input: "hello".into(),
             provider: None,

@@ -49,6 +49,7 @@ impl ChatService {
                 None,
                 Some(&origin),
                 HarnessRunOverrides::default(),
+                None,
             )?
             .ok_or_else(|| CoreError::invalid("scheduled prepared admission was rejected"))?;
         Ok((

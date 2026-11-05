@@ -2,6 +2,9 @@
 use super::*;
 use deepagent_models::DEEPSEEK_OFFICIAL_PROVIDER;
 
+#[path = "config_read_tests.rs"]
+mod config_read_tests;
+
 fn configured_thread(state: &mut ServerState, workspace: &std::path::Path) -> Value {
     dispatch(
         state,

@@ -275,6 +275,14 @@ impl HarnessClient {
             .await
     }
 
+    /// Read thread or cwd configuration without changing the loaded thread.
+    pub async fn config_read_scoped(
+        &self,
+        request: ConfigReadRequest,
+    ) -> Result<RpcResponse, SdkError> {
+        self.call(HarnessRequest::ConfigRead(request)).await
+    }
+
     /// Query sandbox status.
     pub async fn sandbox_status(&self) -> Result<RpcResponse, SdkError> {
         self.call(HarnessRequest::SandboxStatus(

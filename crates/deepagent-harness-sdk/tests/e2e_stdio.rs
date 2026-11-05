@@ -10,8 +10,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use deepagent_harness_protocol::{
-    HarnessEvent, ThreadReadRequest, ThreadResumeRequest, ThreadStartRequest, TurnInterruptRequest,
-    TurnStartRequest,
+    ConfigReadRequest, HarnessEvent, ThreadReadRequest, ThreadResumeRequest, ThreadStartRequest,
+    TurnInterruptRequest, TurnStartRequest,
 };
 use deepagent_harness_sdk::{HarnessProcess, SdkError};
 
@@ -259,6 +259,7 @@ async fn h214_owned_real_cli_failure_is_unique_and_durable_after_reopen() {
     // selection fails before reading a credential or contacting a provider.
     let mut stream = client
         .turn_start_streamed(TurnStartRequest {
+            expected_config_snapshot_id: None,
             thread_id: thread.clone(),
             input: "Synthetic local failure without provider settings".into(),
             provider: None,
@@ -400,6 +401,10 @@ async fn introspection_methods_round_trip_without_a_model() {
 
     let config = client.config_read().await.expect("config/read");
     assert!(config.is_success(), "config/read succeeds");
+    assert_eq!(config.result()["configSnapshotVersion"], 1);
+    assert_eq!(config.result()["resolutionStatus"], "uninitialized");
+    assert_eq!(config.result()["credentialChecked"], false);
+    assert_eq!(config.result()["provider"], "deepseek-official");
 
     let sandbox = client.sandbox_status().await.expect("sandbox/status");
     assert!(
@@ -421,6 +426,17 @@ async fn introspection_methods_round_trip_without_a_model() {
         .as_str()
         .expect("threadId")
         .to_string();
+
+    let scoped = client
+        .config_read_scoped(ConfigReadRequest {
+            thread_id: Some(thread_id.clone()),
+            cwd: None,
+        })
+        .await
+        .expect("scoped config/read");
+    assert!(scoped.is_success());
+    assert_eq!(scoped.result()["scope"]["threadId"], thread_id);
+    assert_eq!(scoped.result()["configSnapshotVersion"], 1);
 
     let read = client
         .thread_read(ThreadReadRequest {

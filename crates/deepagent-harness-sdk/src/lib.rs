@@ -37,6 +37,7 @@
 //! }
 //! let mut turn = client
 //!     .turn_start_streamed(TurnStartRequest {
+//!         expected_config_snapshot_id: None,
 //!         thread_id,
 //!         input: "list the workspace".into(),
 //!         provider: None,
