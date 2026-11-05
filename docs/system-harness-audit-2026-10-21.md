@@ -8221,6 +8221,34 @@ H-82原探针显式0/1仍以content_filter触发3次请求/预算升级/续写�
 
 ### H-213：Harness SDK 忽略 notification method，任意通知可伪装成 Harness 事件
 
+**修复状态（2026-11-05）**：已修复并验收，限E-H213-03所列Windows本机离线范围；原始失败证据及E01～02的候选/环境反例保留，不代表全workspace或全平台通过。
+
+**E-H213-01（原探针与真实消费者红测，2026-11-05，修复中）**：从f62185e3开始，tracked干净、无未完成合并；五项既有未跟踪内容仅列名不读改。核对审计、Rust SDK transport/reader/owned stream、协议DTO、CLI event_outbox生产方、TS消费者、Cargo/CI/格式及本地DeepSeek/Codex method-owned dispatch。用户授权仅本仓库修复，隔离HOME/APPDATA/凭据环境，仅合成管道/临时SQLite；证据独立保存于target/h213-repair-20261105。原命令`cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_non_harness_notification_method_is_not_emitted_as_event --offline -j 2 -- --ignored --exact --nocapture --test-threads=1`真实exit101、0/1/0、33.215秒，仍收到t-wrong-method，不作历史跳过。新增真实双向管道回归，首轮因测试请求字段写错编译失败（regression-red，0个测试，不算产品红测）；按当前ApprovalRespondRequest改正测试后，`cargo test -p deepagent-harness-sdk --lib h213_ --offline -j 2 -- --nocapture --test-threads=1`真实exit101、0/2/0、11.110秒：伪终态先于合法started进入owned/raw订阅，300条未知通知导致EventLagged skipped=299。失败原始日志全部保留。
+
+根因位于Rust SDK通知投影丢弃外层method/版本；本轮只在现有transport→reader边界统一校验notification版本、精确方法及既有HarnessEvent schema，拒绝通知不进入broadcast、不终止连接或改变pending。诊断只用固定原因，不输出未知method/params/原始行。保留公开decode_line/WireMessage/RpcNotification及原始eventSequence；H205的公开游标丢失与H212的response校验独立待修，不以本轮顺手修复或重计。TS已有method过滤，暂不改其版本/schema独立能力，不声称TS具备本轮全部验证。尚无生产修复或验收commit；161验收/23历史跳过/7归并/3撤销/111待修/1修复中，112未关闭含H180授权跳过，实际待处理111。本项候选3–6有效小时粗估；总剩余200–400有效小时仍为未逐项校准的低置信历史估计，编译/设备/环境等待另计。
+
+**E-H213-02（候选通过与扩大验收反例，2026-11-05，未最终验收）**：Rust transport新增单一私有notification_event，依次验证2.0、精确harness/event、既有HarnessEvent schema；reader只经此投影广播，拒绝原因是固定字符串，不打印方法名/payload/身份。公开raw decode保留原方法与sequence，不把raw DTO当已授权事件；response分支不变。原探针取消ignore并补合法控制通知，用有序控制事件证明reader实际读过未知通知，不再靠300ms未收到猜成功。真实owned/raw回归以RPC响应作reader barrier，覆盖completed/failed/interrupted/approval伪通知、空/缺失/数值方法、错误版本/schema、300条洪泛、独立连接、合法审批/唯一终态及pending正常。candidate-sdk-lib实际26/0/10 ignored、exit0、20.700秒；该局部版本之后仅补更多伪终态/空方法，最终三份Rust哈希冻结于final-sources.json，后续验收以冻结版本为准。
+
+首次扩大`cargo test -p deepagent-harness-sdk -p deepagent-harness-protocol -p deepagent-cli --offline --no-fail-fast -j 2 -- --test-threads=1`为216/1/27 ignored（原始8个结果块，最终顶层计数另核对）、exit101、233.583秒。SDK26/0/10、真实CLI消费者8/0/0、协议14/0/0；唯一失败是CLI TUI原快照把TEMP前缀固定为C:\Users\32734，而本轮C:\h213不同，保留temp-prefix-snapshot.snap.new及日志，不接受/修改快照。还检测到cargo test特性组合重新生成CLI，使先前cargo build锁定的96538BB6…变为AF6153EC…；runner主动终止，后续lint/workspace尚未执行，不将排队命令当通过。根CLI与旧Tauri旁车453DF899…不同；仍须从当前cargo test --no-run的compiler-artifact确认可执行产物，分组合锁定后再跑相同组合。TEMP改用新建隔离C:\Users\32734\h213-68d095e2，仍不接触真实用户文件；不混修TUI路径脆弱性或旁车分发。
+
+TS未改生产代码：`pnpm -C packages/sdk test`32/0/0、exit0、8.018秒，typecheck exit0、2.379秒，test:stdio真实CLI重连/唯一失败终态/SQLite历史对照1/0/0、exit0、11.148秒。独立临时Node真实管道检查现有TS方法过滤，两次连接、600条未知通知、2次真实审批/终态，exit0、0.188秒（ts-notification-boundary3）；前两次脚本路径错误尚未启动产品测试，日志保留，不算产品失败/通过。此检查只证明TS已有method过滤，不扩称版本/schema校验。最终完整相关组、workspace、严格lint及锁定产物复核仍在进行，H213保持修复中、无修复commit；不改变E01计数和范围。
+
+**E-H213-03（最终冻结验收与残余限制，2026-11-05）**：三份SDK Rust实现/测试的SHA256与final-sources.json全部一致。复用原transport→spawn_reader→broadcast→RequestEvents，不新建事件库、审批或运行链。notification_event先核对版本/精确方法，再用现有HarnessEvent类型解码；拒绝通知只记录固定debug原因，不改变pending或连接生命周期。原H213探针及4项新增回归均默认执行，真实正常通知、审批响应、唯一终态/EOF/并发/重连对照仍通过。raw decode/WireMessage/RpcNotification外部契约及eventSequence保留；H205公开游标和H212响应版本未修、不归并。合法2.0+harness/event调用兼容；此前误接纳的其他方法/错误通知现在忽略，这是有意行为修正，无依赖、SQL、UI/DTO或权限/沙箱变更。
+
+最终实际命令、原生exit与耗时均保存在target/h213-repair-20261105，验收结果如下（过/败/忽略）：
+
+- `cargo fmt --all -- --check` exit0、5.382秒；`git diff --check`通过。
+- `cargo build -p deepagent-cli --message-format json --offline -j 2` exit0、4.317秒。随后相关组与workspace分别先以原test参数加`--no-run --message-format json`预编译（exit0、3.217/28.803秒），从compiler-artifact取当前非test CLI路径并分组合锁定，而非凭文件存在或旧sidecar判断。相关组AF6153EC…、workspace26383AE3…的各自执行前后SHA256严格一致；两组产生不同特性产物是可核对的构建事实，不把跨组合hash不同藏掉，也无Tauri写入并发。
+- `cargo test -p deepagent-harness-sdk -p deepagent-harness-protocol -p deepagent-cli --offline --no-fail-fast -j 2 -- --test-threads=1` exit0、125.305秒，8顶层target合计217/0/27；CLI167/0/16及隔离启动1/0/1，协议14/0/0，SDK lib26/0/10、真实CLI8/0/0、rustdoc1/0/0。本项5项全部默认通过且0 ignored；10项SDK旧ignored不算执行。正式CLI消费者验证合法事件、唯一失败终态/关闭重连及临时SQLite历史无redispatch，不只helper单测。
+- `cargo clippy -p deepagent-harness-sdk -p deepagent-harness-protocol --all-targets --all-features --no-deps --offline -j 2 -- -D warnings` exit0、7.783秒，无新增抑制。
+- `cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=1` exit101、1400.154秒，140顶层target为4649/1/227；原始141块的4650过含AppCore嵌套子进程额外1过，不重复计数，逐target及归约见final2-workspace-{targets,top-summary}.json。唯一失败仍H306：creative.video-edit.v1的defaultUserPrompt为空，canvas_prompt.rs:310；该crate与HEAD无diff，旧失败保留，不宣称全仓绿。
+- `cargo clippy --workspace --all-targets --all-features --offline -j 2 -- -D warnings` exit101、17.572秒，仍由models/client.rs:385旧clone_on_copy阻断，该文件与HEAD无diff。相关SDK/协议严格lint通过不替代全仓lint；不顺修基线或降低门禁。
+- `pnpm -C packages/sdk test`32/0/0、8.018秒（含build）；`pnpm -C packages/sdk typecheck` exit0、2.379秒（tsc --noEmit）。最终workspace锁定CLI上的`pnpm -C packages/sdk test:stdio`真实CLI重连/历史/唯一终态1/0/0、exit0、10.935秒，前后26383AE3…一致；此前11.148秒对照保留。TS现有method过滤的独立真实管道检查见E02，600条未知通知不进入回调/审批；TS生产未修改，不扩大声称其版本/schema入站校验已补强。
+
+以上只证明本机合成管道/文件、临时SQLite及无真实供应商范围；没有访问真实凭据/内网/用户数据。此边界是命名空间/schema路由，不认证对端真实性，不防止恶意对端用合法方法造假；不承诺单行大小/巨量stdout资源上限、全部语义校验、其他OS、OS重启或断电。未改UI/桥接，故未执行pnpm桌面build、Tauri窗口/截图或独立Tauri check，不把SDK/CLI测试当UI验收。H205/H212及其他pending/response问题保留独立排队，未执行的旧ignored不声称通过。
+
+两文E01～03同步、306唯一台账仅H213行改变；本轮新增验收1，历史跳过/归并/撤销各新增0，累计162验收/23历史跳过/7归并/3撤销/111待修/0修复中。111未关闭包含H180授权跳过，实际待处理110；H180原commit和跳过依据不变。五项既有未跟踪内容仅列名未读改；target证据、运行日志/构建产物不纳入提交。三份Rust与当时两文将独立提交，取得hash后另做文档回填，不amend/推送/建PR。本项余0，下一复核P1 H212的response版本与pending边界，先原探针再定范围；整体goal未完成。全部剩余仍暂估200–400有效小时，沿用未逐项校准的低置信历史区间，依据跨层执行/持久化/授权与大范围验收规模，不能按数量机械扣减或承诺日期；设备/依赖/编译及环境等待另计，目前无可靠总等待区间。
+
 **级别：高（P1，事件路由、状态污染与控制面可信边界）；触发条件：** stdio server 或同一 stdout 上的中间组件发送一个 JSON-RPC notification，其 `method` 不是 Harness 协议规定的 `harness/event`，但 `params` 恰好符合任一 `HarnessEvent` 结构。当前 SDK reader 忽略 method，只反序列化 params，因此会把该通知广播为正式 Harness 事件。
 
 #### 生产路径与正式复现

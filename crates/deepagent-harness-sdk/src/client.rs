@@ -30,7 +30,7 @@ use tokio::{
 use tracing::debug;
 
 use crate::error::SdkError;
-use crate::transport::{decode_line, request_line, WireMessage};
+use crate::transport::{decode_line, notification_event, request_line, WireMessage};
 use crate::RequestEvents;
 
 /// Shared pending-reply table keyed by request id.
@@ -427,8 +427,13 @@ fn spawn_reader(
                     }
                 }
                 Ok(WireMessage::Notification(notification)) => {
-                    if let Ok(event) = serde_json::from_value::<HarnessEvent>(notification.params) {
-                        let _ = events.send(event);
+                    match notification_event(notification) {
+                        Ok(event) => {
+                            let _ = events.send(event);
+                        }
+                        Err(reason) => {
+                            debug!(target: "harness_sdk::notification", reason, "ignored server notification");
+                        }
                     }
                 }
                 Err(error) => {
@@ -868,9 +873,8 @@ mod audit_tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: notifications from methods other than harness/event must not be exposed as Harness events"]
     async fn audit_non_harness_notification_method_is_not_emitted_as_event() {
-        let script = r#"[Console]::Out.WriteLine('{"jsonrpc":"2.0","method":"other/event","params":{"type":"thread.started","threadId":"t-wrong-method","title":null,"protocolVersion":1}}'); Start-Sleep -Seconds 30"#;
+        let script = r#"[Console]::Out.WriteLine('{"jsonrpc":"2.0","method":"other/event","params":{"type":"thread.started","threadId":"t-wrong-method","title":null,"protocolVersion":1}}'); [Console]::Out.WriteLine('{"jsonrpc":"2.0","method":"harness/event","params":{"type":"thread.started","threadId":"t-control","protocolVersion":1}}'); Start-Sleep -Seconds 30"#;
         let mut child = tokio::process::Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
             .stdin(std::process::Stdio::null())
@@ -887,7 +891,7 @@ mod audit_tests {
         spawn_reader(stdout, stderr, pending, events.clone());
 
         let observed =
-            tokio::time::timeout(std::time::Duration::from_millis(300), receiver.recv()).await;
+            tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv()).await;
 
         let _ = child.kill().await;
         let _ = tokio::time::timeout(std::time::Duration::from_secs(3), child.wait())
@@ -895,9 +899,13 @@ mod audit_tests {
             .expect("fixture should exit when terminated");
 
         assert!(
-            observed.is_err(),
+            matches!(observed, Ok(Ok(HarnessEvent::ThreadStarted { ref thread_id, .. })) if thread_id == "t-control"),
             "notification method other/event must not be exposed as a Harness event: observed={observed:?}"
         );
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
     }
 
     #[tokio::test]

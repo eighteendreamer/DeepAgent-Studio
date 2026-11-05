@@ -31,7 +31,28 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
     $terminal = Notify @{type='turn.completed';threadId=$thread;turnId=$turn;message='first terminal';reason='synthetic'}
     if ($mode -eq 'failed') { $terminal.params.type='turn.failed' }
     if ($mode -eq 'interrupted') { $terminal.params.type='turn.interrupted' }
-    if ($mode -eq 'rpc-error') {
+    if ($mode -eq 'notification-boundary') {
+      $noise = @()
+      foreach ($method in @('other/event','','harness/Event','harness/event ','prefix/harness/event')) {
+        foreach ($payload in @($terminal.params,@{type='turn.failed';threadId=$thread;turnId=$turn;reason='not harness'},@{type='turn.interrupted';threadId=$thread;turnId=$turn},@{type='approval.requested';threadId=$thread;turnId=$turn;approvalId='fake';reason='not harness'})) {
+          $noise += @{jsonrpc='2.0';method=$method;params=$payload}
+        }
+      }
+      foreach ($version in @('1.0','2.1','',2,$null)) {
+        $noise += @{jsonrpc=$version;method='harness/event';params=$terminal.params}
+      }
+      $noise += @{method='harness/event';params=$terminal.params}
+      $noise += @{jsonrpc='2.0';params=$terminal.params}
+      $noise += @{jsonrpc='2.0';method=17;params=$terminal.params}
+      $noise += @{jsonrpc='2.0';method=$null;params=$terminal.params}
+      foreach ($payload in @($null,'invalid',@(),@{type='future.event'},@{type='turn.started';turnId=17})) {
+        $noise += @{jsonrpc='2.0';method='harness/event';params=$payload}
+      }
+      Batch ($noise + @($started,$delta,(Notify @{type='approval.requested';threadId=$thread;turnId=$turn;approvalId='fixture-approval';reason='synthetic approval'}),$reply))
+    } elseif ($mode -eq 'notification-flood') {
+      $noise = @(1..300 | ForEach-Object { @{jsonrpc='2.0';method='other/event';params=$terminal.params} })
+      Batch ($noise + @($started,$delta,$terminal,$reply))
+    } elseif ($mode -eq 'rpc-error') {
       Send @{jsonrpc='2.0';id=$request.id;error=@{code=-32005;message='synthetic busy'}}
     } elseif ($mode -eq 'hold-start') {
       Send $started
@@ -298,5 +319,83 @@ async fn h214_raw_subscribe_remains_explicitly_from_now_not_a_replay_api() {
         Err(broadcast::error::TryRecvError::Empty)
     ));
     drop(late);
+    finish(child, &client).await;
+}
+
+#[tokio::test]
+async fn h213_real_pipe_routes_only_valid_harness_notifications_to_raw_and_owned_consumers() {
+    // A second independent connection proves filtering is not a one-shot startup gate.
+    for _ in 0..2 {
+        let (child, client) = fixture("notification-boundary", 64).await;
+        let mut raw = client.subscribe();
+        let mut stream = client.turn_start_streamed(request("A")).await.unwrap();
+        // The response is an ordered reader barrier, not a sleep-based absence assertion.
+        assert_eq!(client.tool_list().await.unwrap().result()["approvals"], 0);
+        assert!(client.pending.lock().unwrap().is_empty());
+        for index in 0..3 {
+            let event = receive(&mut stream).await.unwrap().unwrap();
+            assert_eq!(raw.try_recv().unwrap(), event);
+            match index {
+                0 => assert!(matches!(event, HarnessEvent::TurnStarted { .. })),
+                1 => assert!(matches!(event, HarnessEvent::ItemUpdated { .. })),
+                _ => assert!(matches!(
+                    event,
+                    HarnessEvent::ApprovalRequested { approval_id: Some(id), .. }
+                        if id == "fixture-approval"
+                )),
+            }
+        }
+        assert!(matches!(
+            raw.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+        client
+            .approval_respond(ApprovalRespondRequest {
+                approval_id: "fixture-approval".into(),
+                approved: true,
+                scope: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(client.tool_list().await.unwrap().result()["approvals"], 1);
+        let terminal = receive(&mut stream).await.unwrap().unwrap();
+        assert!(
+            matches!(&terminal, HarnessEvent::TurnCompleted { message, .. } if message == "approved fixture terminal")
+        );
+        assert_eq!(raw.try_recv().unwrap(), terminal);
+        assert!(receive(&mut stream).await.unwrap().is_none());
+        assert!(matches!(
+            raw.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+        drop(raw);
+        finish(child, &client).await;
+    }
+}
+
+#[tokio::test]
+async fn h213_real_pipe_unknown_notifications_do_not_consume_broadcast_capacity() {
+    let (child, client) = fixture("notification-flood", 4).await;
+    let mut raw = client.subscribe();
+    let mut stream = client.turn_start_streamed(request("A")).await.unwrap();
+    let receipt = client.tool_list().await.unwrap();
+    assert_eq!(receipt.result()["starts"], 1);
+    assert_eq!(receipt.result()["approvals"], 0);
+    for index in 0..3 {
+        let event = receive(&mut stream).await.unwrap().unwrap();
+        assert_eq!(raw.try_recv().unwrap(), event);
+        assert!(matches!(
+            (index, event),
+            (0, HarnessEvent::TurnStarted { .. })
+                | (1, HarnessEvent::ItemUpdated { .. })
+                | (2, HarnessEvent::TurnCompleted { .. })
+        ));
+    }
+    assert!(receive(&mut stream).await.unwrap().is_none());
+    assert!(matches!(
+        raw.try_recv(),
+        Err(broadcast::error::TryRecvError::Empty)
+    ));
+    drop(raw);
     finish(child, &client).await;
 }
