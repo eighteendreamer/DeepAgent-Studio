@@ -75,6 +75,26 @@ test("bound streams require both thread and turn identity and stop at the first 
   } finally { await p.close(); }
 });
 
+test("H84 tool gate diagnostic remains a runtime item, not a pending approval", { timeout: 10000 }, async () => {
+  const p = peer();
+  try {
+    const thread = await p.agent.startThread();
+    const output = [];
+    const task = (async () => {
+      for await (const event of thread.runStreamed("synthetic")) output.push(event);
+    })();
+    await p.started(thread.id);
+    const diagnostic = { type: "item.updated", threadId: thread.id, turnId: `turn-${thread.id}`,
+      item: { kind: "runtime", eventType: "tool_blocked",
+        data: { name: "read_file", reason: "hook ask", needs_approval: true } } };
+    await p.emit([diagnostic,
+      { type: "turn.completed", threadId: thread.id, turnId: `turn-${thread.id}`, message: "auto allowed" }]);
+    await task;
+    assert.deepEqual(output.map((event) => event.type), ["item.updated", "turn.completed"]);
+    assert.deepEqual(output[0], diagnostic);
+  } finally { await p.close(); }
+});
+
 for (const mode of ["burst", "large"]) {
   test(`owned stream fails explicitly on ${mode} before identity is known`, { timeout: 10000 }, async () => {
     const p = peer(mode);

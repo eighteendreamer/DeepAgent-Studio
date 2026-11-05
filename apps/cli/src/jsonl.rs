@@ -66,4 +66,38 @@ mod tests {
         assert_eq!(value["threadId"], "thread-1");
         assert_eq!(value["turnId"], "turn-1");
     }
+
+    #[test]
+    fn h84_jsonl_keeps_pre_gate_diagnostic_separate_from_actionable_approval() {
+        let context = EventContext::new(Some("thread-1".into()), Some("turn-1".into()));
+        let diagnostic = project_runtime_event_line(
+            &RuntimeEvent::ToolBlocked {
+                name: "delete_path".into(),
+                reason: "requires approval".into(),
+                needs_approval: true,
+            },
+            &context,
+        )
+        .unwrap()
+        .unwrap();
+        let approval = event_line(&HarnessEvent::ApprovalRequested {
+            approval_id: Some("registered-gate-id".into()),
+            thread_id: context.thread_id,
+            turn_id: context.turn_id,
+            tool_name: Some("delete_path".into()),
+            reason: "requires approval".into(),
+            scope: Some("tool".into()),
+        })
+        .unwrap();
+        let lines: Vec<HarnessEvent> = format!("{diagnostic}\n{approval}\n")
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert!(matches!(&lines[0], HarnessEvent::ItemUpdated {
+            item: ItemPayload::Runtime { event_type, data }, ..
+        } if event_type == "tool_blocked" && data["needs_approval"] == true));
+        assert!(matches!(&lines[1], HarnessEvent::ApprovalRequested {
+            approval_id: Some(id), ..
+        } if id == "registered-gate-id"));
+    }
 }

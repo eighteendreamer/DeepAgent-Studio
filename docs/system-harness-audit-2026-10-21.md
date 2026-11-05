@@ -3383,6 +3383,8 @@ E-H79-20261026-06（独立提交及真实hash回填）：修复提交`79519de6`�
 
 ### H-84：审批请求在 gate 决策前投影，造成重复发送或自动放行误报
 
+**当前状态：已修复并验收（2026-11-06，限E-H84-03本机范围）；以下原失败证据保留，独立提交待回填。**
+
 **级别：中（P2）；范围：stdio Harness 正式 `turn/start` 的工具审批事件。** 默认 `AlwaysAsk` 下，同一次 `delete_path` 请求会向客户端发出两条 `approval.requested`：一条带真实 `approvalId`，另一条没有 ID。`AutoReview` 下，外部 `BeforeToolUse` hook 对 `read_file` 返回 `ask` 时，也会先发出一条没有 ID 的审批请求；随后默认分类器将该 `read_file` 自动放行，工具实际成功执行。后者不是重复通知，而是 gate 决策前的误报。
 
 - 根因与生产路径：`deepagent-runtime/src/tool_pipeline.rs::ToolExecutionPipeline::request_approval` 在调用 gate 前发 `RuntimeEvent::ToolBlocked { needs_approval: true }`。`deepagent-harness-protocol/src/events.rs::project_runtime_event` 无条件把它投影成 `HarnessEvent::ApprovalRequested { approval_id: None }`。若 gate 随后进入 `ChannelApprovalGate::request`，其通知回调又会由 `apps/cli/src/app_server.rs::spawn_turn::on_approval` 投影出带 `approval_id: Some(call_id)` 的第二条事件，因此 `AlwaysAsk` 下会重复。`AutoReview` 的 `PolicyGate` 可能在调用 channel gate 前直接自动放行或拒绝；此时早发的无 ID 事件仍已到达客户端。默认分类器对 `read_file` 为 Allow，因此 hook Ask 会出现“审批提示已发出、实际没有待决审批且工具照常执行”的误报。
@@ -3392,6 +3394,36 @@ E-H79-20261026-06（独立提交及真实hash回填）：修复提交`79519de6`�
 - 成熟实现对照：Codex `借鉴/codex/codex-rs/app-server/src/bespoke_event_handling.rs` 对 `EventMsg::ExecApprovalRequest` / `ApplyPatchApprovalRequest` 建立权限等待保护后，分别通过单一 `send_request` 发出带 thread、turn、item/call 身份的审批请求并等待对应响应；`protocol/src/approvals.rs` 保留对应 call/approval 标识。本系统也应由现有 gate 作为通知所有者，不再把一个“被阻塞”运行事件解释成另一份待审批请求。参考仅用于事件所有权和关联身份设计，不声称 Codex 没有其他审批问题。
 - 影响及限制：客户端可能显示重复审批，或在工具已自动放行时显示一个无法响应的审批提示；无 ID 事件都不能与 `approval/respond` 的 pending approval 对应。本次已复现 `AlwaysAsk` 高风险调用和 `AutoReview` hook Ask/read_file 自动放行；尚未覆盖 AutoReview deny、已有 grant、子 Agent、桌面宿主及其他工具审批路径。
 - 收敛方向（尚未实施，本地设计）：协议层的 `approval.requested` 只由成功注册 pending 的现有 ApprovalGate 通知回调发布，并必须携带可响应的 call ID。`ToolBlocked(needs_approval=true)` 保留为运行时诊断/工具状态，不再被映射成第二个审批请求。回归覆盖 AlwaysAsk 一请求一 ID、自动放行/拒绝不伪造人工请求、session grant 不弹窗、hook Ask、取消清理、响应只解除对应 pending call，以及 stdio/桌面共享 AppCore 后的事件一致性。
+
+**E-H84-01（原探针与TDD，2026-11-06，未验收）**：起点15c5bde5，tracked干净，无未完成合并；五项既有untracked只列名、不读改。本轮仅H84的工具审批事件所有权，不修改权限决策、RuntimeEvent/SQLite结构、run级NeedsApproval语义、UI组件、H180或旧H306/lint。已核对现有gate注册/授权/回调、RunAssembler/工具pipeline、stdio/JSONL投影、Rust/TS SDK与桌面chat://approval消费者、原回归及Cargo/CI/格式配置；使用隔离HOME/APPDATA/仓库外合成TEMP、清凭据环境、离线Responses fixture和临时文件SQLite，不访问真实供应商/内网/凭据/用户数据。
+
+原命令 `cargo test -p deepagent-cli terminal_audit::audit_tool_approval_emits_one_correlated_event --offline -j 2 -- --ignored --nocapture --test-threads=1`：exit101、0/1/0、1.169秒，同一审批两通知，一条真实approval:v1 ID、一条无ID，取消后无副作用。`cargo test -p deepagent-cli terminal_audit::audit_auto_review_hook_ask_emits_before_auto_allow --offline -j 2 -- --ignored --nocapture --test-threads=1`：exit0、1/0/0、1.758秒；原探针是“缺陷存在”断言，真实记录无ID审批后read_file成功，不把它当通过验收。
+
+先补默认行为回归，再改生产：`cargo test -p deepagent-harness-protocol runtime_tool_diagnostics --offline -j 2 -- --nocapture`：exit101、0/1/0、18.557秒；`cargo test -p deepagent-cli h84_ --offline -j 2 -- --nocapture --test-threads=1`：exit101、0/3/0、28.167秒，FullAccess/AutoReview deny均伪提示、真实stdio批准出现双通知；`cargo test -p deepagent-cli audit_auto_review_hook_ask --offline -j 2 -- --nocapture --test-threads=1`：exit101、0/1/0、2.652秒。失败证据保留target/h84-repair-20261106，不把编译成功、ignored或缺陷观察成功当修复。
+
+本地设计复用已有ChannelApprovalGate：只在pending注册后的既有回调发送工具approval.requested；ToolBlocked(needs_approval=true)走既有item.updated/runtime通道保留完整诊断，不再伪造另一个人工请求；最终拒绝仍为tool_blocked错误。只移除协议mapper错误分支，不修改gate/权限/执行链、不新建审批中心。已有run级RunAwaitingApproval(scope=turn)属于AgentDecision旧契约，本项不改变/不声称其可通过工具approval/respond响应。正常批准/拒绝、scope授权、取消及SQLite重开仍待当前候选与完整门禁完成。当前170验收/23历史跳过/7归并/3撤销/102待修/1修复中，有效未关闭103含H180授权跳过，实际待处理102；尚无本项commit，不新增完成数。下一步仍H84验收。全部剩余200–400有效小时仍为历史未逐项校准粗估；H84初估2–5有效小时，依跨消费方与回归范围，机器编译/测试及设备依赖等待另计、不承诺日期。
+
+**E-H84-02（候选、正常对照与冻结，2026-11-06，未最终验收）**：唯一生产改动是events mapper：ToolBlocked(needs_approval=true)交给既有Runtime兜底投影，最终needs_approval=false错误保持原样。原工具审批探针转默认，改为观察真实pending而非等待第二条消息，取消后等worker收尾并核对合成canary正文、pending清空及唯一持久cancelled终态；AutoReview原观察型探针改为“无人工请求+诊断仍保留+读取成功”的默认契约。新增真实stdio读写管道/正式dispatcher/gate/文件SQLite回归，验证批准/拒绝、错误ID不解除pending、tool_session后二次工具无提示，以及新连接读取批准状态/scope和唯一succeeded终态。补充FullAccess、AutoReview deny正常/拒绝对照、JSONL序列化与双SDK消费测试，不复制生产审批逻辑。
+
+首候选protocol18/0（5.444秒）、原取消1/0（1.942秒）、原AutoReview1/0（1.886秒），CLI新增2/1（34.578秒）。其中deny测试错误地要求被阻止的tool preparation发出item.completed；现有pipeline只发最终tool_blocked错误并记录Denied action。读取实际代码后只修正测试以核对错误、未启动工具、无合成文件副作用及SQLite Denied，没有改生产执行逻辑来取绿。候选2 `cargo test -p deepagent-cli h84_ --offline -j 2 -- --nocapture --test-threads=1`为exit0、3/0/0、24.185秒；CLI/protocol严格no-deps all-targets/all-features clippy exit0、27.272秒。初始红测和候选失败均保留。
+
+随后补齐AutoReview实际人工批准/拒绝、JSONL及双SDK诊断消费，7份代码/测试已SHA256冻结为final-source-sha256.json。完整fmt/CLI build/相关全组/workspace/严格lint/Tauri check/TS SDK与桌面build按final.ps1串行执行，未取得终态前不沿用旧局部结果宣称新冻结全部通过。无新依赖、SQL迁移、UI/DTO/协议schema改动，不承诺run级NeedsApproval工具化；JSONL新增测试验证真实共享mapper和序列化，未把它说成完整JSONL人工交互实机验收。当前仍170验收/23历史跳过/7归并/3撤销/102待修/1修复中，未关闭103含H180授权跳过；本项无commit，下一步仍H84最终验收，整体目标active。全部200–400有效小时历史粗估未逐项校准；机器编译/测试等待另计。
+
+**E-H84-03（最终验收与本项关闭，2026-11-06，限本机范围）**：7份代码/测试冻结SHA256复核未变化。全部原始失败、TDD红测、首候选deny夹具纠错与后述旧sidecar失败记录均保留于target/h84-repair-20261106，不以ignored或编译成功代替验收。最终实跑命令及结果（过/败/忽略）如下：
+
+- `cargo fmt --all -- --check`：exit0、4.076秒；`git diff --check`通过。
+- `cargo test -p deepagent-cli -p deepagent-harness-protocol -p deepagent-harness-sdk --offline --no-fail-fast -j 2 -- --test-threads=1`：exit0、168.280秒，8个完整顶层target合计247/0/22；CLI185/0/12及启动隔离1/0/1、protocol18/0/0、Rust SDK33/0/9、真实CLI stdio9/0/0、SDK doc1/0/0。H84原两探针现在默认执行；新wire回归在正式run_stdio_with_io+Tokio duplex上跑真实dispatcher/ChatService/Kernel/gate，覆盖AlwaysAsk批准/拒绝、tool_session后的真实第二次删除免提示、AutoReview实际人工批准/拒绝、错误ID保留pending；取消保留现有合成文件正文、pending归零与唯一持久cancelled。不是把Tokio duplex冒称原生子进程；真实SDK子进程另列，不据此宣称其执行了人工审批工具。
+- `cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=2`：exit101、756.099秒；按140个顶层target末尾结果去重为4723/1/216，无不完整target（runner4724含一个嵌套child通过，不重复计数）。唯一失败是既有H306：creative.video-edit.v1空defaultUserPrompt；该文件与HEAD无diff，未混修。AppCore1541/0/58、Kernel正式E2E297/0/27、Runtime434/0/9，含原审批身份隔离、取消/迟到回答及桌面共享生产gate默认回归。此结果不是workspace全绿，其他ignored未执行。
+- `cargo clippy -p deepagent-cli -p deepagent-harness-protocol -p deepagent-harness-sdk --all-targets --all-features --no-deps --offline -j 2 -- -D warnings`：exit0、5.545秒；未新增lint抑制。全workspace `cargo clippy --all-targets --all-features --offline -j 2 -- -D warnings`：exit101、6.142秒，仍为与HEAD无diff的models/client.rs:385既有clone_on_copy；后续crate未完整lint，不宣称全部无诊断。
+- `cargo build -p deepagent-cli --offline -j 2`：首次exit0、71.029秒。`cargo check --target-dir target --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --offline -j 2`：exit0、47.206秒。Tauri随后触发旧sidecar覆盖：本仓tauri.conf.json的externalBin=binaries/deepagent，锁定tauri-build 2.6.2的copy_binaries会把sidecar复制到输出目录；当时target/debug/deepagent.exe与2026-09-29 sidecar的长度/时间/SHA256完全相等。随后TS实机stdio/jsonl均0/1、exit1（8.164/5.035秒），分别无configuration与无预期SQLite，不能算本版本验收。只纠正验证顺序、不改生产代码/打包配置：Tauri之后重新同命令build，exit0、16.344秒；主CLI与Cargo deps/deepagent.exe哈希相等且不同于旧sidecar，验前后均为ECF705BF9BCB5DFD074570FDA889A7F1BB7B82B3CEC60F9F506AF037ADA09EE5，verified-cli-identity-before/after.json保留。
+- 在`G:\Code_Warehouse\DeepAgent-Studio\packages\sdk`运行`pnpm test`：exit0、6.160秒、60/0/0（含新H84诊断消费）。校正二进制身份后`pnpm test:stdio`：exit0、10.230秒、1/0/0；`pnpm test:jsonl`：exit0、5.930秒、1/0/0，真实CLI子进程及临时SQLite、无设置的失败/重连与/help正常对照、JSONL关闭不重派发。不是完整JSONL人工审批或真实provider测试。
+- 在`G:\Code_Warehouse\DeepAgent-Studio\apps\desktop`运行`pnpm build`：exit0、126.314秒，配置内全部脚本、tsc与Vite通过，保留第三方浏览器externalized/大chunk既有告警；未把构建当UI手动验收。
+
+根因只在共享协议mapper，不是gate重复注册。工具请求只由成功注册pending的ChannelApprovalGate原通知回调产生，始终保留真实approval:v1关联ID；gate前ToolBlocked(true)仍走既有item.updated/runtime诊断，最终拒绝仍为tool_blocked错误，权限策略/会话grant/取消/执行/SQLite/审批中心均未重建。唯一生产文件events.rs，其他6份为测试；无新依赖、迁移、UI、DTO或协议schema变更。兼容影响是客户端不再收到无效的无ID工具审批提示；旧诊断仍可通过Runtime item消费，合法工具审批形状不变。AgentDecision的run级RunAwaitingApproval(scope=turn)仍是旧契约，不在本项修改范围，不声称它有可响应的工具pending ID。
+
+H84在上述Windows本机离线合成文件/临时SQLite/正式gate与两种SDK范围内标为已修复并验收。未验其他OS、真实供应商/内网/凭据/用户数据、完整Tauri窗口/截图、完整原生JSONL人工交互或所有子Agent工具组合；桌面仅共享AppCore生产回归、Tauri lib check与前端构建，不夸大实机UI效果。旧H306、旧workspace lint及Tauri输出目录sidecar污染事实不隐去；后者此次只调整验收顺序，未扩项修打包。
+
+306唯一台账行复核后本轮新增修复1，新增历史跳过/归并/撤销均0；累计171验收/23历史跳过/7归并/3撤销/102待修/0修复中。102未关闭含H180授权跳过，实际队列101；不提供完成率。代码、测试及当时两文将一并独立提交，取得真实hash后另做文档回填，不amend、不推送/PR/迁移。五项用户untracked原样保留、不读改、不暂存；构建产物/本地证据不提交。下一拟先复核P2 H70历史附件内容身份（静默输入漂移的数据完整性），不优先挑P3序号等易项；先核对原探针与现有附件边界再决定实现。全部剩余仍为200–400有效小时历史分组粗估，未逐项校准，依据101项中跨层输入/权限/持久化/恢复及客户端验收范围，低置信、不可按数量机械扣时。当前27个已记录门禁机器执行累计1476.223秒约24.60分钟，不混作人工有效工时；未来设备/依赖/冷构建等待单列、缺少可靠总区间，不承诺完工日期。整体goal继续active，本项验收不等于整个系统完成。
 
 ### H-85：模型目录与余额 GET 没有总时限，响应头或响应体停滞时请求可无限 pending（已修复）
 

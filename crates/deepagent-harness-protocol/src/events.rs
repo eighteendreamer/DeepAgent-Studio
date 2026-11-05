@@ -309,19 +309,15 @@ pub fn project_runtime_event(event: &RuntimeEvent, context: &EventContext) -> Op
                 meta: meta.clone(),
             },
         }),
+        // `needs_approval: true` is a pre-gate diagnostic, not a registered
+        // human waiter: policy or an existing grant may resolve it silently.
+        // Let the generic Runtime projection below preserve that diagnostic.
+        // Only the gate's pending-request callback owns tool approval prompts.
         RuntimeEvent::ToolBlocked {
             name,
             reason,
-            needs_approval,
-        } if *needs_approval => Some(HarnessEvent::ApprovalRequested {
-            approval_id: None,
-            thread_id,
-            turn_id,
-            tool_name: Some(name.clone()),
-            reason: reason.clone(),
-            scope: Some("tool".into()),
-        }),
-        RuntimeEvent::ToolBlocked { name, reason, .. } => Some(HarnessEvent::Error {
+            needs_approval: false,
+        } => Some(HarnessEvent::Error {
             code: "tool_blocked".into(),
             message: format!("tool '{name}' blocked: {reason}"),
             data: None,

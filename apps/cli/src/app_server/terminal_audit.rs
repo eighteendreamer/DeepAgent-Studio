@@ -9,6 +9,9 @@ mod configuration_tests;
 #[path = "start_exclusivity_tests.rs"]
 mod start_exclusivity_tests;
 
+#[path = "approval_tests.rs"]
+mod approval_tests;
+
 #[path = "backpressure_tests.rs"]
 mod backpressure_tests;
 
@@ -880,7 +883,6 @@ async fn audit_concurrent_turn_start_does_not_ack_two_independent_started_turns(
 }
 
 #[tokio::test]
-#[ignore = "audit: one tool approval must produce one correlated approval.requested event"]
 async fn audit_tool_approval_emits_one_correlated_event() {
     let call_id = "audit-approval-call";
     let fixture = Fixture::new(function_call(
@@ -889,6 +891,8 @@ async fn audit_tool_approval_emits_one_correlated_event() {
         json!({"path":"must-not-be-deleted"}),
     ))
     .await;
+    let canary = fixture.workspace.join("must-not-be-deleted");
+    std::fs::write(&canary, "unchanged before approval").unwrap();
     let (response, launch) = fixture.state.lock().unwrap().dispatch(
         rpc(
             "turn/start",
@@ -925,7 +929,8 @@ async fn audit_tool_approval_emits_one_correlated_event() {
                 .turns
                 .get(&turn_id)
                 .is_some_and(|turn| turn.active);
-            if count >= 2 || !active {
+            // Stop on the real registered waiter, not a duplicate-event count.
+            if chat.pending_approvals().pending_count() == 1 && count >= 1 || !active {
                 break count;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -933,14 +938,6 @@ async fn audit_tool_approval_emits_one_correlated_event() {
     })
     .await;
 
-    let requests: Vec<_> = fixture
-        .events
-        .lock()
-        .unwrap()
-        .iter()
-        .filter(|event| event["type"] == "approval.requested" && event["turnId"] == turn_id)
-        .cloned()
-        .collect();
     assert!(chat.request_cancel(&turn_id).unwrap().accepted);
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -960,7 +957,21 @@ async fn audit_tool_approval_emits_one_correlated_event() {
     .await
     .expect("cancel the approval wait and finish the run");
 
-    assert!(!fixture.workspace.join("must-not-be-deleted").exists());
+    // Collect after draining the worker, including late diagnostic projections.
+    let requests: Vec<_> = fixture
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|event| event["type"] == "approval.requested" && event["turnId"] == turn_id)
+        .cloned()
+        .collect();
+    assert_eq!(
+        std::fs::read_to_string(canary).unwrap(),
+        "unchanged before approval"
+    );
+    assert_eq!(chat.pending_approvals().pending_count(), 0);
+    assert_durable_terminal(&fixture.read(), &turn_id, "cancelled");
     eprintln!("approval event audit: observed={observed:?}, requests={requests:?}");
     assert!(
         observed.is_ok(),
@@ -982,7 +993,6 @@ async fn audit_tool_approval_emits_one_correlated_event() {
 }
 
 #[tokio::test]
-#[ignore = "audit: AutoReview hook ask publishes before the policy auto-allows"]
 async fn audit_auto_review_hook_ask_emits_before_auto_allow() {
     let call_id = "audit-auto-review-read";
     let fixture = Fixture::new_scripted(vec![
@@ -1041,17 +1051,17 @@ async fn audit_auto_review_hook_ask_emits_before_auto_allow() {
         fixture.terminals(&turn_id)
     );
     assert_eq!(fixture.terminals(&turn_id), ["turn.completed"]);
-    assert_eq!(
-        requests.len(),
-        1,
-        "the auto-allowed hook request should produce one early ToolBlocked projection"
-    );
-    assert_eq!(requests[0]["reason"], "audit hook asks for approval");
     assert!(
-        requests
-            .iter()
-            .all(|event| event.get("approvalId").is_none()),
-        "the default classifier should auto-allow read_file without entering ChannelApprovalGate"
+        requests.is_empty(),
+        "auto-allowed hook asks must not advertise a human approval"
+    );
+    assert!(
+        fixture.events.lock().unwrap().iter().any(|event| {
+            event["item"]["eventType"] == "tool_blocked"
+                && event["item"]["data"]["needs_approval"] == true
+                && event["item"]["data"]["reason"] == "audit hook asks for approval"
+        }),
+        "keep the pre-gate diagnostic without claiming a pending approval"
     );
     assert!(tool_result.is_some_and(|event| event["item"]["ok"] == true));
 }

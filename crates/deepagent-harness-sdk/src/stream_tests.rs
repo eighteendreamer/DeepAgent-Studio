@@ -95,6 +95,32 @@ async fn h214_turn_scope_filters_conflicting_ids_and_retains_v1_optional_thread_
 }
 
 #[tokio::test]
+async fn h84_diagnostic_is_streamed_without_becoming_an_actionable_approval() {
+    let (events, _) = broadcast::channel(4);
+    let (_closed, closed) = watch::channel(false);
+    let mut stream = RequestEvents::turn(
+        response(json!({"threadId":"A","turnId":"run"})),
+        events.subscribe(),
+        closed,
+        "A",
+    )
+    .unwrap();
+    let diagnostic = event(json!({"type":"item.updated","threadId":"A","turnId":"run",
+        "item":{"kind":"runtime","eventType":"tool_blocked",
+        "data":{"name":"read_file","reason":"hook ask","needs_approval":true}}}));
+    events.send(diagnostic.clone()).unwrap();
+    events
+        .send(complete("turn.completed", Some("A"), "run"))
+        .unwrap();
+    assert_eq!(stream.recv().await.unwrap(), Some(diagnostic));
+    assert!(matches!(
+        stream.recv().await.unwrap(),
+        Some(HarnessEvent::TurnCompleted { .. })
+    ));
+    assert!(stream.recv().await.unwrap().is_none());
+}
+
+#[tokio::test]
 async fn h214_each_terminal_wins_over_later_duplicates_and_eof() {
     for kind in ["turn.completed", "turn.failed", "turn.interrupted"] {
         let (events, _) = broadcast::channel(4);

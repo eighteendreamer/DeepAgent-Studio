@@ -176,7 +176,7 @@ fn content_event_matches_golden_json_shape() {
 }
 
 #[test]
-fn runtime_tool_approval_and_terminal_events_keep_correlation() {
+fn runtime_tool_diagnostics_and_terminal_events_keep_correlation() {
     let context = EventContext::new(Some("thread-1".into()), Some("turn-1".into()));
     let started = project_runtime_event(
         &RuntimeEvent::ToolStarted {
@@ -217,12 +217,14 @@ fn runtime_tool_approval_and_terminal_events_keep_correlation() {
     ));
     assert!(matches!(
         approval,
-        HarnessEvent::ApprovalRequested {
+        HarnessEvent::ItemUpdated {
             thread_id: Some(thread_id),
             turn_id: Some(turn_id),
-            tool_name: Some(tool_name),
+            item: ItemPayload::Runtime { event_type, data },
             ..
-        } if thread_id == "thread-1" && turn_id == "turn-1" && tool_name == "bash"
+        } if thread_id == "thread-1" && turn_id == "turn-1"
+            && event_type == "tool_blocked" && data["needs_approval"] == true
+            && data["name"] == "bash" && data["reason"] == "approval required"
     ));
     assert!(matches!(
         terminal,
@@ -232,6 +234,21 @@ fn runtime_tool_approval_and_terminal_events_keep_correlation() {
             ..
         } if thread_id == "thread-1" && turn_id == "turn-1"
     ));
+}
+
+#[test]
+fn h84_final_tool_denial_remains_an_error_not_an_approval() {
+    let event = project_runtime_event(
+        &RuntimeEvent::ToolBlocked {
+            name: "delete_path".into(),
+            reason: "denied by policy".into(),
+            needs_approval: false,
+        },
+        &EventContext::default(),
+    )
+    .unwrap();
+    assert!(matches!(event, HarnessEvent::Error { code, message, .. }
+        if code == "tool_blocked" && message.contains("denied by policy")));
 }
 
 #[test]
