@@ -162,7 +162,7 @@ async fn h214_real_pipe_retains_before_after_fast_failure_and_interruption_until
             _ => assert!(matches!(event, HarnessEvent::TurnCompleted { .. })),
         }
         assert!(receive(&mut stream).await.unwrap().is_none());
-        assert_eq!(client.events.receiver_count(), 0);
+        assert_eq!(client.event_receiver_count(), 0);
         finish(child, &client).await;
     }
 }
@@ -183,7 +183,7 @@ async fn h214_real_pipe_concurrent_requests_keep_their_own_events() {
         assert_eq!(events.len(), 3);
         assert!(events.iter().all(|event| event["threadId"] == thread));
     }
-    assert_eq!(client.events.receiver_count(), 0);
+    assert_eq!(client.event_receiver_count(), 0);
     assert_eq!(client.tool_list().await.unwrap().result()["starts"], 2);
     finish(child, &client).await;
 }
@@ -233,7 +233,7 @@ async fn h214_real_pipe_rpc_failure_and_overflow_release_without_redispatch() {
             ));
             assert!(receive(&mut stream).await.unwrap().is_none());
         }
-        assert_eq!(client.events.receiver_count(), 0);
+        assert_eq!(client.event_receiver_count(), 0);
         assert_eq!(client.tool_list().await.unwrap().result()["starts"], 1);
         finish(child, &client).await;
     }
@@ -277,7 +277,7 @@ async fn h214_real_pipe_eof_and_local_close_settle_owned_waits_without_claiming_
             receive(&mut stream).await,
             Err(SdkError::EventStreamClosed)
         ));
-        assert_eq!(client.events.receiver_count(), 0);
+        assert_eq!(client.event_receiver_count(), 0);
         tokio::time::timeout(Duration::from_secs(3), child.wait())
             .await
             .unwrap()
@@ -299,10 +299,10 @@ async fn h214_real_pipe_dropped_start_future_releases_its_subscription() {
             .event,
         HarnessEvent::TurnStarted { .. }
     ));
-    assert_eq!(client.events.receiver_count(), 2);
+    assert_eq!(client.event_receiver_count(), 2);
     request.abort();
     assert!(matches!(request.await, Err(error) if error.is_cancelled()));
-    assert_eq!(client.events.receiver_count(), 1);
+    assert_eq!(client.event_receiver_count(), 1);
     assert_eq!(client.tool_list().await.unwrap().result()["starts"], 1);
     drop(observer);
     // H-204 owns the same RPC registration: abandonment releases it before EOF.

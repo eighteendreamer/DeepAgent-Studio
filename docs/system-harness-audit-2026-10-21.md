@@ -12216,7 +12216,7 @@ E-H255-07（独立提交回填，2026-10-29）：修复代码、默认回归和�
 
 ### H-256：SDK reader 已确认 EOF，事件订阅仍无期限等待，断线后新订阅也无法得知生产者消失
 
-**级别：中（P2，Harness SDK 的连接生命周期与等待可终结性）；状态：生产 SDK reader/公开 client 方法和真实 Windows stdio 子进程已复现，未修复。** 触发条件是服务端在 turn 已接纳/已开始后退出或关闭 stdout、尚未交付 turn 终态，调用方仍保留 `HarnessClient`（例如为后续恢复使用）。这不是 H-214 的迟订阅：失败组在 initialize/turn_start 之前已经订阅；也不是 H-204 的在线静默 RPC：本项 producer 已退出，RPC 等待确实已经报错并释放。
+**级别：中（P2，Harness SDK 的连接生命周期与等待可终结性）；状态：已修复并验收（2026-11-07，限E-H256-03范围）；原审计未修复时的失败事实保留如下。** 触发条件是服务端在 turn 已接纳/已开始后退出或关闭 stdout、尚未交付 turn 终态，调用方仍保留 `HarnessClient`（例如为后续恢复使用）。这不是 H-214 的迟订阅：失败组在 initialize/turn_start 之前已经订阅；也不是 H-204 的在线静默 RPC：本项 producer 已退出，RPC 等待确实已经报错并释放。
 
 #### 首次即时 Evidence（2026-10-25）
 
@@ -12249,6 +12249,88 @@ E-H255-07（独立提交回填，2026-10-29）：修复代码、默认回归和�
 
 - 首次精确模块命令 **1 passed / 1 failed（预期）** 后立即追加本项；没有先修生产实现再反推证据。随后 `cargo test -p deepagent-harness-sdk --offline`：单元 **5 passed / 12 ignored**，正式 stdio e2e **6 passed**，doc-test **1 passed**；`cargo fmt --all -- --check`、`git diff --check` 均通过。e2e 只作为已有正常协议回归，不把它计作 H-256 的真实 server 故障注入。
 - 未运行真实 deepagent server/SDK 端到端、完整 ChatService/Kernel/RunStore、Desktop build/UI、真实供应商、参考工程、跨平台或 OS 杀进程实验；真实子进程故障由本机 producer 的显式 exit 实现。用户排除的 encrypted-content 问题未处理，全系统审计仍未完成。
+
+本轮仅H256（P2）Rust live订阅生产端所有权与连接关闭可观察性，不合并H265重连、H295审批、H91序号、H100 envelope或H180；初始化/方法回执仍复用H206/H207。基线bc2325b8，tracked原先干净；原五项用户untracked只列名、不读改/暂存。已核对原报告、reader/raw/owned/pending/frame writer/close及所有订阅消费和测试、Cargo/package/CI/格式配置；参考本地DeepSeek Harness排队通知先drain/late订阅born-failed行为，未运行参考工程。生产依赖锁定Tokio1.52.3源码明确WeakSender不保活、upgrade在strong归零后None；本地设计用其收拢单一producer所有权，不新建执行/事件store。
+
+**E-H256-01（2026-11-07，原探针与TDD红测）**：新建仓库外真正Cargo target、合成HOME/APPDATA/TEMP/data、清凭据/代理环境，离线执行`cargo test -p deepagent-harness-sdk --lib client::disconnect_audit --offline -j 2 --target-dir C:\Users\32734\AppData\Local\Temp\h256-repair-20261107 -- --include-ignored --nocapture --test-threads=1` exit101、1过1败0忽略、136.140秒含冷构建。原不终态组明确exit=7、pending=0、terminal=false、existing_settled=false、late_settled=false；正常terminal=true对照通过，但其新旧等待仍不结束。producer已真实退出、pending已结算，排除未发现EOF和活连接静默。随后仅新增真实stdio队列/lag/显式close测试，生产未改时`cargo test -p deepagent-harness-sdk --lib client::eof_tests --offline -j 2 --target-dir C:\Users\32734\AppData\Local\Temp\h256-repair-20261107 -- --nocapture --test-threads=1` exit101、0过3败：队列drain后未Closed、lag后未Closed、保留8克隆的parked/late订阅在close后不终结。
+
+**E-H256-02（候选修复与失败保留，最终验收中）**：原单一reader移入私有client_reader模块并独占唯一strong Sender，所有client仅WeakSender，不改公开subscribe/notification/RecvError类型；reader RAII owner在EOF、真实UTF-8读取错误、显式关闭/partial-frame退休信号或任务drop时释放strong sender、结算pending/原lifecycle并收回stderr drain任务。复用原watch与frame退休边界，不把局部RPC超时/普通future drop当成连接断线。subscribe在关闭状态或weak无法升级时返回空born-closed receiver；该终态句柄无live producer/历史，不是第二事件bus。原broadcast缓冲仍先drain，再Closed；lag照旧显式，不排序/补号/自动ACK，不把断线伪造成run失败/取消，也不自动重连/重派。
+
+新队列/lag/close首候选3/0。候选全SDK为69/1/4，唯一失败是原H205过滤测试在显式close/child退出后仍期待Empty而非Closed；保留失败，不放宽成Empty或Closed都算过。将在线“无第三条坏通知”Empty断言置于close前，关闭后精确断言Closed；原序号7/8连续及不泄漏坏通知值的断言完整保留。内部receiver_count测试仅随private weak所有权调整，公开消费类型不变。补上独立连接隔离、仍存活producer的实际非法UTF-8 read error、reader task未poll即abort及stderr owner回收、原partial-frame两路径raw关闭后，最新候选完整SDK71/0/5。
+
+新增补充真实CLI门禁`cargo test -p deepagent-harness-sdk --lib client::eof_tests::h256_real_cli_os_kill_closes_retained_clients_without_inventing_run_terminals_and_reopens --offline -j 2 --target-dir C:\Users\32734\AppData\Local\Temp\h256-repair-20261107 -- --ignored --exact --nocapture --test-threads=1`候选exit0、1/0/0：G固定CLI字节核对后复制空安装，合成home/data/workspace，实际建立线程并等待持久事实，再OS kill真实CLI；保留4克隆、队列事实drain后关闭、late立即Closed，冷重开SQLite线程events不变/runEvents仍空/线程数1，未凭断线新造run或重派。它没有启动活动provider turn，不能冒称验证活模型运行中的强杀；真实SDK正常失败run/终态/reopen对照在最终stdio组另验。原H256已去ignore、将默认及精确重跑；补充真实CLI显式门禁不靠默认ignored冒充验收。
+
+候选已进展但尚未最终冻结门禁/独立commit，不宣称完成。本项无新依赖/权限/DB/schema/UI/协议版本迁移；显式close会退休reader，已入队事实可drain，尚未读取的pipe字节不是承诺的重放缓存；子进程owner/关闭不等于远端cancel，仍须显式wait或durable核对。306行核对后182验收/24历史跳过/8归并/3撤销/88待修/1修复中，未关闭89含H180授权跳过，实际队列88；本项余2–5有效修复/验收小时暂估。全部200–400有效小时仍为未逐项校准低置信历史区间，依据剩余输入/权限/持久化/恢复/SDK跨层问题，机器构建/设备/依赖/环境等待另计，不承诺日期，goal仍active。
+
+**E-H256-02a（2026-11-07，首轮冻结停止与补齐验收）**：首轮final runner的fmt exit0/4.333秒、CLI build exit0/230.126秒，但补齐原条目要求的“进程仍活着、stdout确实关闭、审批/终态同批”Node真实管道门禁时修改了测试文件，冻结检查按设计抛出`frozen changed: crates/deepagent-harness-sdk/src/client_eof_tests.rs`并以exit1停止。该轮没有继续相关组/全仓，也未覆盖日志或将旧结果标为最终验收；当时G固定CLI尚未替换。不是行为测试失败，不把两项旧冻结通过冒充新样本已验证。
+
+新Node门禁复用本仓已有SDK fixture的`process.stdout.end()`，保持stdin/进程存活，检查同批turn.started/合法审批/原turn.completed在raw与owned的序号/内容完全一致，先drain后Closed，child.try_wait仍None、late born-closed、pending空，最后单独close stdin收回真实child。它是本机Node补充门禁，不是provider/RunStore成功执行，明确依赖本地Node且将在最终验收显式执行，不能靠默认ignore计通过。九份Rust文件重新冻结为final2-sources.json，final2 runner重跑全部门禁，日志使用独立final2名称保留首轮终态；尚未取得全部结果，不关闭本项。当前台账仍182验收/24历史跳过/8归并/3撤销/88待修/1修复中，未关闭89含H180授权跳过、实际队列88；无本项commit，整体goal active。工时仍沿E02暂估和低置信历史总区间，机器编译/设备/依赖等待另计。
+
+**E-H256-02b（2026-11-07，补充夹具失败、设计重审与原生EOF证据）**：final2的相关组/原探针/两项真实门禁/旧H204门禁及自身lint均exit101，根因为新增测试在两个独立if中移动同一`raw_event.event`的E0382借用编译错误，不是新增产品行为红测。TS typecheck/default117/stdio1/jsonl1当时通过，但不替代Rust验收。确认错误后以该工具session的Ctrl-C终止整轮（session终态exit1），对本轮target关联cargo/rustc/rustdoc进程核对无残留；workspace当时仍在编译，0个result块、没有最终聚合，不称全仓已执行通过/失败。final2原始日志/结果保留，未覆盖到final3。
+
+修正借用后，补充Node门禁实际0过1败，3秒仍未Closed；换PowerShell单个标准句柄关闭的探测同样0过1败，不能把它们写成“已确认真实EOF但SDK不响应”。这两种宿主夹具不足以证明stdout生产端已全部关闭，故停止微调超时/断言/生产实现，重新审查pipe所有权。中间一次临时生成脚本解析失败，随后新过滤名曾只执行0 tests，该exit0明确不是验收。没有以默认忽略、超时延长或多次重跑覆盖这些失败。
+
+按微软[GetStdHandle官方定义](https://learn.microsoft.com/en-us/windows/console/getstdhandle)确认标准句柄/uint32常量和[CloseHandle官方定义](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle)确认关闭语义后，将夹具替换为单独临时编译的最小原生Rust producer：只持有其自己的redirected stdout HANDLE，发送同批started/approval/terminal/response并flush，然后关闭自己的stdout，保留stdin等待读取以维持进程。源码固定嵌于测试、编译到仓库外合成TEMP，rustc离线、不用第二Cargo target/嵌套Cargo锁；无新生产依赖/宿主句柄操作。没有证明Node/PowerShell宿主内部的具体重复句柄数量或归属，不武断定性为其中某个系统bug。
+
+`cargo test -p deepagent-harness-sdk --lib client::eof_tests::h256_live_process_native_stdout_close_preserves_batch_approval_terminal_for_raw_and_owned --offline -j 2 --target-dir C:\Users\32734\AppData\Local\Temp\h256-repair-20261107 -- --exact --nocapture --test-threads=1`实际exit0、1过0败0忽略，0.95秒测试体：raw与owned三条通知/序号完全相同、审批ID与原终态内容不变，raw排空后Closed、late立即Closed、child仍存活、pending空，最后close stdin独立回收成功。此原生门禁现默认启用，不再依赖Node或ignore；旧Node/PowerShell夹具失败保留，不冒称已经修复它们。生产实现自E02未因这些失败修改，改动只在测试；最终九份Rust源码按final3-sources.json重新冻结，全部门禁重跑中。累计182验收/24历史跳过/8归并/3撤销/88待修/1修复中不变、无本项commit；整体goal active，工时/等待口径同E02。
+
+**E-H256-03（2026-11-07，最终冻结源码验收与本项关闭，限本机范围）**：final3九份Rust生产/测试文件逐门禁前后SHA256一致。原H256已去ignore，在默认SDK组及精确模块命令实际执行；原失败输出由existing/late=false变为true，正常原终态对照继续通过，不靠编译、默认忽略或drop全部client取绿。E01/E02原红、首候选H205旧Empty期待失败、E02a冻结停止、E02b编译错误/无效夹具及中止workspace均保留，未覆盖到第三轮结果。
+
+| 门禁 | 实际命令 | 结果（过/败/忽略或跳过）及耗时 |
+|---|---|---|
+| final3-fmt | `cargo fmt --all -- --check` | exit0；4.286秒 |
+| final3-cli-build | `cargo build -p deepagent-cli --offline -j 2 --target-dir C:\Users\32734\AppData\Local\Temp\h256-repair-20261107 --message-format=json` | exit0，实际compiler-artifact核对后发布G固定入口；17.497秒 |
+| final3-related | `cargo test -p deepagent-cli -p deepagent-harness-protocol -p deepagent-harness-sdk --offline --no-fail-fast -j 2 --target-dir C:\Users\32734\AppData\Local\Temp\h256-repair-20261107 -- --nocapture --test-threads=1` | exit0；9顶层target合计290/0/18：CLI185/0/12、启动隔离1/0/1、协议2+18/0、SDK72/0/5、真实stdio10/0、doc2/0；227.479秒 |
+| final3-original | `cargo test -p deepagent-harness-sdk --lib client::disconnect_audit --offline -j 2 --target-dir C:\Users\32734\AppData\Local\Temp\h256-repair-20261107 -- --nocapture --test-threads=1` | exit0；2/0/0，H256原失败与正常对照默认/精确执行，保留client时等待均终结；1.345秒 |
+| final3-h256-real | `cargo test -p deepagent-harness-sdk --lib client::eof_tests::h256_real_cli_os_kill_closes_retained_clients_without_inventing_run_terminals_and_reopens --offline -j 2 --target-dir C:\Users\32734\AppData\Local\Temp\h256-repair-20261107 -- --ignored --exact --nocapture --test-threads=1` | exit0；1/0/0，实际OS kill真实CLI、排队事实保留、临时SQLite冷重开无新run；3.926秒 |
+| final3-h256-native-stdout | `cargo test -p deepagent-harness-sdk --lib client::eof_tests::h256_live_process_native_stdout_close_preserves_batch_approval_terminal_for_raw_and_owned --offline -j 2 --target-dir C:\Users\32734\AppData\Local\Temp\h256-repair-20261107 -- --exact --nocapture --test-threads=1` | exit0；1/0/0，原生stdout真实关闭但进程仍存活、审批/terminal同批raw/owned一致；1.818秒 |
+| final3-h204-real | `cargo test -p deepagent-harness-sdk --lib client::request_lifecycle_tests::h204_real_cli_withheld_admission_reply_reconciles_once_and_survives_database_reopen --offline -j 2 --target-dir C:\Users\32734\AppData\Local\Temp\h256-repair-20261107 -- --ignored --exact --nocapture --test-threads=1` | exit0；1/0/0，真实CLI withheld admission/迟到response/readback/冷重开对照；4.976秒 |
+| final3-ts-typecheck | `pnpm -C packages/sdk typecheck` | exit0，未修改TS生产类型；1.591秒 |
+| final3-ts-default | `pnpm -C packages/sdk test` | exit0；117/0/0，现有兼容回归；5.537秒 |
+| final3-ts-stdio | `pnpm -C packages/sdk test:stdio` | exit0；1/0/0，真实CLI/临时SQLite；5.850秒 |
+| final3-ts-jsonl | `pnpm -C packages/sdk test:jsonl` | exit0；1/0/0，JSONL生命周期兼容对照（不是Rust广播订阅）；5.997秒 |
+| final3-own-clippy | `cargo clippy -p deepagent-harness-sdk --all-targets --all-features --no-deps --offline -j 2 --target-dir C:\Users\32734\AppData\Local\Temp\h256-repair-20261107 -- -D warnings` | exit0，SDK all-targets/all-features/no-deps严格lint；4.326秒 |
+| final3-workspace | `cargo test --workspace --offline --no-fail-fast -j 2 --target-dir C:\Users\32734\AppData\Local\Temp\h256-repair-20261107 -- --test-threads=2` | exit101；145顶层target去重4828/1/206，仅H306；1392.597秒 |
+| final3-root-clippy | `cargo clippy --all-targets --all-features --offline -j 2 --target-dir C:\Users\32734\AppData\Local\Temp\h256-repair-20261107 -- -D warnings` | exit101；旧models/client.rs:431 clone_on_copy；63.004秒 |
+
+全workspace原始146个result块含AppCore一个嵌套helper通过回显，去重145个顶层target合计4828/1/206，不能重复计4829。另stderr的tracing Running banner提前于tools stdout尾部，首个机械按banner归属的parser误记tools未完成、tracing两个结果/总4797；核对原日志5785行tools banner、running31、5808行tracing banner、5821行tools的31/0/0结果、随后tracing running11和11/0/0，纠正归属后无不完整target。首次解析JSON/逐target表及纠正元数据保留，raw总4829减唯一AppCore嵌套1与去重总4828一致；不是重跑某目标挑绿或改测试结果。
+
+唯一全仓失败仍为未修改`deepagent-prompts::canvas_prompt::tests::every_node_kind_owns_exactly_one_profile`：`creative.video-edit.v1 has an empty defaultUserPrompt`；全仓strict Clippy仍止于未修改models/client.rs:431 clone_on_copy，后续crate未完整lint，不能称无其他lint。SDK自身严格lint与fmt通过，没有顺手修H306/基线lint、降级或加allow。其他206 ignored不是本项验收：原H256与原生stdout同批回归已默认执行，实际CLI OS kill门禁和H204对照已显式各1/0，未因ignore而跳过验收。
+
+实现仍为既有单一bounded broadcast/reader与原watch/pending/frame退休边界：唯一strong Sender属于reader RAII owner，client仅weak；EOF/读取错误/显式close/部分帧退休使生产端终结，已经入队的事实按原序drain后Closed，已有lag依旧显式，不补号/重排。late订阅得到空born-closed句柄，无第二live bus/历史/执行路径。普通RPC等待超时/drop不退休整个连接（除写到一半必须退休），原H204回归与真实对照证明未改变未知结果/不重派契约。reader任务drop/abort清pending并关闭事件，stderr drainer由同owner停止；read错误日志只新增ErrorKind，不回显坏UTF-8或新任意数据。未新增Disconnected业务事件、run失败/取消回写、权限放行、自动ACK/恢复/重派。
+
+新增默认回归覆盖EOF有/无原terminal、真实非法UTF-8读取错误且producer仍活着、8个保留clone、新订阅立即Closed、已排队seq1～6事实、lag4后seq5/原terminal再Closed、parked receivers/取消recv/close幂等、双连接隔离、原生stdout关闭且child仍活着的started/审批/原terminal同批raw/owned内容与seq完全一致、reader未poll即取消及stderr owner结束；原H205 filtering的在线Empty与close后Closed分别精确断言，非二选一放宽。正常owned唯一终态、审批/取消、消息namespace/版本、序号/ACK与方法回执门禁保留原全组对照。stderr测试验证有诊断输出时不阻塞与owner回收，不声称捕获或完整保存所有尾部stderr行。
+
+实际CLI gate用本轮Cargo artifact核对源/G字节复制到空安装，81,808,384字节、SHA256=`C0023473E093B6526BE1D78F0ECB714DDDE8816251FD47ABF1196BB1A507BEB8`，门禁前后G固定入口不变。final2曾按已知H207归属hash接管为ED75F04A…，final3替换前再次核对该归属，非覆写不明用户二进制；workspace feature图后C源变为`0CBBF97B3F3F7A98C9D1DBF867F95EDFA726E2768FD376A018B4B2D1BBAC8F15`，不称最终两份仍同字节，也未与Tauri旁车写入并发。真实OS kill发生在线程事实已持久化后、未启动provider turn；排队thread.started仍可读，保留4clone的raw/late关闭，冷重开原events一致、runEvents空/线程1，无新增run。不能将它外推为活动provider执行中强杀恢复或所有RunStore崩溃一致性；本轮真实stdio组另保留既有失败run/唯一持久终态/冷重开对照。
+
+原失败摘录随双文保留，完整临时日志/脚本/编译夹具按授权验后清理、不提交：
+```text
+SDK EOF audit: exit=7 pending=0 terminal=false existing_settled=false late_settled=false
+test result: FAILED. 1 passed; 1 failed; 0 ignored
+TDD: eof, terminal=true: retained handles cannot keep stream open
+TDD: lag must not conceal stream closure
+TDD: explicit close must retire the sole producer, not only the RPC writer
+test result: FAILED. 0 passed; 3 failed; 0 ignored
+首候选：h205_rejected_notifications_never_advance_sequence_or_take_broadcast_capacity
+assertion failed: matches!(receiver.try_recv(), Err(broadcast::error::TryRecvError::Empty))
+test result: FAILED. 69 passed; 1 failed; 4 ignored
+final2: error[E0382]: use of partially moved value: raw_event.event
+Node及PowerShell宿主EOF夹具：0 passed / 1 failed；等待raw Closed断言失败，不计有效EOF验收
+```
+
+兼容性/残余：公开subscribe返回类型、notification/lag/原业务schema及wire v1不变，无新依赖/DB迁移/UI/协议版本变化，主要行为变化是断线/close后流现在会结束，消费者必须处理既有Closed分支，不再靠持有client模拟在线。显式close退休reader，已入队事实可drain；未读取pipe字节不承诺重放。关闭只说明本机transport不可用，不能当run完成/取消，应重新连接并以thread/read原durable游标核对；没有添加进程树监控，仍有其他进程持有写端时不等于已确认EOF。原HarnessProcess子进程所有权/必须wait文档未改为Drop自动kill，不将H305撤销项重新修复。H265 TypeScript代际握手、H295审批全局屏障、H91并发序号仍独立待修，未声称随本项消除。
+
+所有门禁离线、合成HOME/APPDATA/TEMP/data、清凭据/代理环境，仅本机stdio/原生夹具/临时SQLite，无真实provider/内网/凭据/用户数据。未验其他OS、活provider强杀、所有继承pipe/派生进程组合、完整长压/掉电/Tauri GUI及打包。无Tauri桥接/前端类型/UI或TS生产改动，本轮未跑桌面build/check/截图；实际SDK/CLI生产方与消费者门禁已执行，不冒称GUI实机通过。
+
+H256在上述范围已修复并验收，本轮新增1，历史跳过/归并/撤销新增0；306唯一8列台账复核后183验收/24历史跳过/8归并/3撤销/88待修/0修复中，未关闭88含H180授权跳过，实际队列87，不提供完成率。代码/测试/当时双文独立commit待生成，取得真实hash后另做docs回填，不amend、不推送/PR/迁移。下一拟H265（P2代际握手/运行状态，依赖本轮已有断线可观察性），先复核原fixture完整握手合同，再复现，不因旧fixture先被H206拒绝而误判已修。H256本机验收余0，清理/提交收尾待完成；全余200–400有效小时仍为未逐项校准低置信历史区间，依据87项输入/权限/持久化/恢复/客户端跨层风险，不能按条数机械扣时。14项final3机器门禁累计29.00分钟，之前失败/停止轮另计，不等同人工有效工时；未来设备/依赖/冷构建/环境/清理等待另计、无可靠总上界，不承诺日期。整体goal保持active。
+
+**E-H256-04（2026-11-07，验收后G/C产物清理与残余）**：先核对本轮真正Cargo target绝对路径`C:\Users\32734\AppData\Local\Temp\h256-repair-20261107`经Resolve-Path精确相等、根不是reparse point，九份Rust源码/测试在清理前仍与final3冻结SHA256一致。正规`cargo clean --target-dir C:\Users\32734\AppData\Local\Temp\h256-repair-20261107 --offline --dry-run` exit0，12307文件/22.5GiB；正式清理前完整枚举12307文件/24,121,694,738逻辑字节，仅涉及本轮可再生产物，未递归删除仓库、源码或用户文档。
+
+实际`cargo clean --target-dir C:\Users\32734\AppData\Local\Temp\h256-repair-20261107 --offline`原生exit101、7.571秒；失败路径`fixture-tmp\.tmpL7UQjh\destination\child`拒绝访问（os error5）。debug已不存在；最终完整枚举无错误，残余1777文件/1,430,553,652字节，逻辑减少22,691,141,086字节（不是物理空闲盘差值）。因此只称部分清理，不能称h256根已删；不修改DACL、提权、换工具/语言或循环重试绕过。单独native producer源码/二进制/编译缓存和各轮日志脚本都在本轮target/TEMP归属范围，不提交；具体是否残留以整体最终枚举为准，不宣称全部逐文件回收。
+
+G无新h256目录；SDK dist当前16文件/96,378字节，沿H200既有删除策略阻塞，不换方式重试。已核对身份的G固定CLI仍作为下一轮真实SDK门禁共享前置暂留，不称整个G target清空；旧G/C残余按既有E记录仍阻塞，不反复清理。原始审计失败、本轮TDD/候选/冻结/编译/无效EOF夹具失败及实际门禁/解析归属纠正均以双文保留必要摘录，完整临时日志/脚本/缓存不入Git；不承诺所有本机产物已删除。五项用户untracked始终只列名、不读改/暂存。
+
+本机修复验收余0，清理以上述部分结果交付，独立提交待生成。183验收/24历史跳过/8归并/3撤销/88待修（含H180授权跳过，实际队列87）、0修复中不变；下一H265先核对旧fixture的完整握手再复现。全余200–400有效小时仍为未逐项校准低置信历史估计，机器构建/设备/依赖/清理等待另计且无可靠总上界，整体goal保持active、不承诺精确日期。
 
 ### H-257：SSE 把确定非法的 UTF-8 当成未收齐字符，后续字节持续滞留且错误被误报为缺少终态
 

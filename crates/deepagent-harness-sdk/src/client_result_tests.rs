@@ -252,7 +252,7 @@ async fn h207_raw_and_owned_thread_turn_use_the_same_gate_and_release_receivers(
         };
         barrier(&mut events).await;
         let owned_error = owned.err();
-        assert_eq!(client.events.receiver_count(), 1);
+        assert_eq!(client.event_receiver_count(), 1);
         finish(child, &client).await;
         assert!(
             raw.is_err() && owned_error.is_some(),

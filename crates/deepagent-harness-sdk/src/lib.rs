@@ -17,6 +17,12 @@
 //! not guessing an ACK from counts or replaying a mutating request. No auto-ACK
 //! occurs. A reconnect starts a new sequence domain; `thread/read` uses separate
 //! durable cursors. Old event JSON is readable with unavailable wire metadata.
+//! The reader, not retained client handles, owns the live producer. EOF, stdout
+//! read failure, explicit client close or a retired partial request frame closes
+//! raw subscriptions after their already queued notifications are drained.
+//! Late subscriptions are immediately closed and never replay the old queue.
+//! `RecvError::Closed` is a transport fact, not proof of run completion/failure;
+//! reconnect explicitly and reconcile durable state before retrying mutations.
 //!
 //! ## Example
 //!

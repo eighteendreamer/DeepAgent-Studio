@@ -120,7 +120,6 @@ exit 7"#,
 }
 
 #[tokio::test]
-#[ignore = "audit H-256: SDK event consumers must observe producer EOF while the client is retained"]
 async fn audit_eof_settles_existing_and_late_event_subscribers() {
     let observed = observe(false).await;
     assert!(

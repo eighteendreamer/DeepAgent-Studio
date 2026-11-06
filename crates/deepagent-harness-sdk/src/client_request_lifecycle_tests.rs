@@ -192,6 +192,17 @@ async fn h204_write_deadline_and_explicit_close_retire_partial_frames_and_releas
         assert!(client.pending.lock().unwrap().is_empty());
         assert!(client.stdin.lock().await.is_none());
         assert!(*client.lifecycle.borrow());
+        assert!(
+            matches!(
+                timeout(Duration::from_secs(1), events.recv()).await,
+                Ok(Err(broadcast::error::RecvError::Closed))
+            ),
+            "retiring a partial frame must also retire the event producer"
+        );
+        assert!(matches!(
+            client.subscribe().try_recv(),
+            Err(broadcast::error::TryRecvError::Closed)
+        ));
         assert!(timeout(Duration::from_secs(1), client.tool_list())
             .await
             .unwrap()

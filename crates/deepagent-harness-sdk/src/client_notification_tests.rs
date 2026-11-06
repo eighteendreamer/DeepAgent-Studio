@@ -142,6 +142,10 @@ async fn h205_rejected_notifications_never_advance_sequence_or_take_broadcast_ca
     client.tool_list().await.unwrap();
     let first = serde_json::to_value(receiver.try_recv().unwrap()).unwrap();
     let second = serde_json::to_value(receiver.try_recv().unwrap()).unwrap();
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(broadcast::error::TryRecvError::Empty)
+    ));
     client.close().await;
     assert!(tokio::time::timeout(Duration::from_secs(3), child.wait())
         .await
@@ -156,7 +160,7 @@ async fn h205_rejected_notifications_never_advance_sequence_or_take_broadcast_ca
         .contains("PRIVATE"));
     assert!(matches!(
         receiver.try_recv(),
-        Err(broadcast::error::TryRecvError::Empty)
+        Err(broadcast::error::TryRecvError::Closed)
     ));
 }
 
