@@ -67,6 +67,10 @@ G:\Code_Warehouse\DeepAgent-Studio\packages\sdk\dist 本轮TS build后复核12�
 
 H205代码验收余0，但上述C/G清理仍为具体未解决事项，等待时间与90项有效修复工时分开、不能承诺解除时间或称所有产物已净/整个goal完成。提交真实hash待E05回填。
 
+**E-H205-05（提交回填，2026-11-07）**：修复commit `6604dcd373b8c00676c0ac102ee6410353043cd1`（【fix】保留SDK通知序号并暴露流完整性），仅16份本项相关文件（14份Rust实现/真实测试/消费者/公开注释及双文），提交前逐份hash与E03冻结一致，暂存白名单/diff检查通过。取得真实hash后在本证据与H205唯一台账回填，不为填写自身hash反复amend。E01原失败、E02候选编译/fixture/doc反例、E03最终门禁及E04清理阻塞全部保留。未提交target/dist/日志/一次性runner/临时SQLite/CLI副本或凭据，原五项用户untracked未读改；未推送、未建PR、未执行迁移或操作真实用户数据。
+
+当前180项本机范围验收/24历史跳过/8归并/3撤销，91未关闭含授权跳过H180，实际90项；本轮仅新增H205修复1，没有新增历史跳过/归并/撤销。H205代码验收余0，但C/G产物清理残余、H306/全仓旧lint及其他独立问题未消除，整体goal未完成。下一复核H206初始化result兼容性，工时与等待口径沿E03/E04，不提供未经核对完成率或精确完工日期。
+
 ## H-204 Rust SDK请求所有权与期限（已修复并验收，2026-11-06，限E04/E07范围）
 
 **E-H90-01（归并至H-204，2026-11-06）**：原H90关闭writer后pending=1的失败证据保留。E-H204-01～04已重新执行原探针真实0/1→1/0，并在同一call_unchecked用单一RAII registration覆盖None writer/写失败/期限/caller drop/EOF，newline归入同一完整帧，flush失败同owner收束；无法合理为H90再造独立清理分支。本轮开始前已说明同根关联，现将H90正式归并H204，唯一实现/测试/提交/残余限制与工时均见E-H204-04～09；不计历史已修复跳过或第二个新增修复，不作为独立问题再次实施。
@@ -6446,7 +6450,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-202：工作流图持久化不包含视口，重启后用户的画布导航状态无法恢复](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-203：Responses `message` 的公开字符串角色缺少 provider 边界校验](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-204：Harness SDK 对无响应但未断开的 RPC 无期限等待，调用取消后 pending 不回收](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E01～07原探针/TDD/真实CLI红绿与退出回执；H90同根归并 | Rust单一RAII registration/帧owner、独立initialize/普通期限，未知结果不重放 | SDK46/0/8+stdio9/0+doc2/0、真实CLI1/0；全仓4799/1仅H306、旧lint；命令/未验E04 | `5afa1b2ce9a5107bb9971527c03cc6861a79150f`；E09回填 | 本项验收余0；E05/08部分清理/残余阻塞；TS deadline/其他OS/flush注入未验，下一H205；全余200–400历史粗估，等待另计 |
-| [H-205：Rust Harness SDK 丢弃通知外层 `eventSequence`，无法可靠做 ACK 或缺口恢复](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E01～03原探针/TDD与真实CLI ACK/冷重开，非历史跳过/归并 | 原单一bus携信封/u64/完整性，owned过滤前失败；无重排/补号/自动ACK | SDK55/0/7、stdio10/0、doc2/0、TS60+1；全仓4809/1仅H306；自身lint/fmt过，全仓旧lint；E03命令/未验 | 待E05回填本项提交 | 本项验收余0，E04部分清理/残余阻塞；Rust subscribe源码迁移、H91/256独立、其他OS未验；下一H206；全余200–400历史粗估，等待另计 |
+| [H-205：Rust Harness SDK 丢弃通知外层 `eventSequence`，无法可靠做 ACK 或缺口恢复](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E01～03原探针/TDD与真实CLI ACK/冷重开，非历史跳过/归并 | 原单一bus携信封/u64/完整性，owned过滤前失败；无重排/补号/自动ACK | SDK55/0/7、stdio10/0、doc2/0、TS60+1；全仓4809/1仅H306；自身lint/fmt过，全仓旧lint；E03命令/未验 | `6604dcd373b8c00676c0ac102ee6410353043cd1`；E05回填 | 本项验收余0，E04部分清理/残余阻塞；Rust subscribe源码迁移、H91/256独立、其他OS未验；下一H206；全余200–400历史粗估，等待另计 |
 | [H-206：Harness SDK 接受协议版本不兼容的 initialize 结果并进入已初始化状态](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-207：Harness SDK 对 `thread/start` 成功结果缺少必填 `threadId` 校验](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-208：Responses `response.completed` 缺少必填 response 字段仍被当作成功](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 无跳过/归并；原探针/TDD真实红绿，E-H208-01～03 | 三终态统一私有envelope校验，坏输入先拒绝再状态/usage/工具提交；合法fixture同步 | 原探针1/0、矩阵5/0、Kernel2/0、models157/0+HTTP170/0；19项最终门禁与基线限制见E03 | `d3dff9f55666b8337f635b667869763303eb157d`；E-H208-04 | 本项本机余0；H-82/200/209/210、H-306/旧lint独立待修；真实provider/其他平台未验收 |
