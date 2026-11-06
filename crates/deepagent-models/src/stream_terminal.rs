@@ -3,6 +3,22 @@
 use deepagent_core::error::{CoreError, Result};
 use serde_json::Value;
 
+use crate::chat::FinishReason;
+
+/// A missing cause is not evidence of exhausted output tokens. Call after
+/// envelope validation and usage observation, before accepting the terminal.
+pub(super) fn incomplete_reason(event: &Value) -> Result<FinishReason> {
+    match event["response"]["incomplete_details"]["reason"].as_str() {
+        Some("max_output_tokens") => Ok(FinishReason::Length),
+        Some("content_filter") => Ok(FinishReason::ContentFilter),
+        _ => Err(CoreError::provider(
+            None,
+            Some("incomplete_reason_unknown".into()),
+            "Responses incomplete response has no supported reason; refusing output-limit recovery",
+        )),
+    }
+}
+
 pub(super) fn validate(event: &Value, kind: &str, status: &str) -> Result<()> {
     let invalid = |field: &str, expected: &str| {
         // Never include received values: response ids, models and extensions

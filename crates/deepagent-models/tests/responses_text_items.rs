@@ -43,6 +43,9 @@ fn terminal(output: Option<Vec<Value>>, incomplete: bool) -> Value {
     if let Some(output) = output {
         event["response"]["output"] = output.into();
     }
+    if incomplete {
+        event["response"]["incomplete_details"] = json!({"reason":"max_output_tokens"});
+    }
     event
 }
 

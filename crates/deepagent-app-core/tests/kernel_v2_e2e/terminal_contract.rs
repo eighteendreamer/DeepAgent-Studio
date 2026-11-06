@@ -1,4 +1,4 @@
-//! H-208: malformed model terminals must abort prepared calls before commit.
+//! H-208/H-82: terminal acceptance, not item completion, authorizes tool commit.
 use super::*;
 use deepagent_core::{event::EventPayload, response_item::ResponseItem};
 use deepagent_persistence::{
@@ -60,7 +60,15 @@ impl HttpTransport for TerminalModel {
     }
 }
 
-async fn observe(broken: Option<(&str, &str)>) {
+#[derive(Clone, Copy)]
+enum Ending {
+    Completed,
+    Malformed(&'static str, &'static str),
+    Incomplete(Option<&'static str>),
+}
+
+async fn observe(ending: Ending) {
+    let rejected = !matches!(ending, Ending::Completed);
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
@@ -84,7 +92,7 @@ async fn observe(broken: Option<(&str, &str)>) {
         ),
         Value::Null,
     );
-    if let Some((kind, field)) = broken {
+    if let Ending::Malformed(kind, field) = ending {
         let mut event: Value = serde_json::from_str(events.last().unwrap()).unwrap();
         event["type"] = json!(kind);
         event["response"]["status"] = json!(kind.strip_prefix("response.").unwrap());
@@ -92,12 +100,22 @@ async fn observe(broken: Option<(&str, &str)>) {
         event["response"].as_object_mut().unwrap().remove(field);
         *events.last_mut().unwrap() = event.to_string();
     }
+    if let Ending::Incomplete(reason) = ending {
+        let mut event: Value = serde_json::from_str(events.last().unwrap()).unwrap();
+        event["type"] = json!("response.incomplete");
+        event["response"]["status"] = json!("incomplete");
+        event["response"]["incomplete_details"] =
+            reason.map(|reason| json!({"reason":reason})).into();
+        event["response"]["usage"] = json!({"input_tokens":9,"output_tokens":2,"total_tokens":11});
+        *events.last_mut().unwrap() = event.to_string();
+    }
     let model = Arc::new(TerminalModel {
         events,
         workspace: workspace.clone(),
         calls: AtomicUsize::new(0),
     });
-    let chat = ChatService::new(db.clone(), settings, model.clone(), &workspace);
+    let chat = ChatService::new(db.clone(), settings, model.clone(), &workspace)
+        .with_cost(Arc::new(CostService::new(db.clone())));
     let live = Arc::new(Mutex::new(Vec::new()));
     let callback = live.clone();
     let result = tokio::time::timeout(
@@ -131,11 +149,7 @@ async fn observe(broken: Option<(&str, &str)>) {
     assert_eq!(terminal.len(), 1);
     assert_eq!(
         run.terminal_kind.as_deref(),
-        Some(if broken.is_some() {
-            "failed"
-        } else {
-            "succeeded"
-        })
+        Some(if rejected { "failed" } else { "succeeded" })
     );
     let actions = RunControlStore::new(&db).list_actions(RUN).unwrap();
     assert!(RunControlStore::new(&db)
@@ -145,16 +159,27 @@ async fn observe(broken: Option<(&str, &str)>) {
     let history = EventStore::new(&db)
         .load_session(run.session_id.parse().unwrap())
         .unwrap();
-    if let Some((kind, field)) = broken {
+    if rejected {
         let error = result
-            .expect_err("malformed terminal must abort prepared write")
+            .expect_err("rejected terminal must abort prepared write")
             .to_string();
-        assert!(
-            error.contains("malformed_response_terminal")
-                && error.contains(kind)
-                && error.contains(field),
-            "{error}"
-        );
+        match ending {
+            Ending::Malformed(kind, field) => assert!(
+                error.contains("malformed_response_terminal")
+                    && error.contains(kind)
+                    && error.contains(field),
+                "{error}"
+            ),
+            Ending::Incomplete(reason) => assert!(
+                error.contains(match reason {
+                    Some("content_filter") => "content_filter",
+                    None => "incomplete_reason_unknown",
+                    Some(_) => "malformed_response_terminal",
+                }),
+                "{error}"
+            ),
+            Ending::Completed => unreachable!(),
+        }
         assert!(!error.contains(CANARY));
         assert_eq!(terminal[0].data["kind"], "failed");
         assert_eq!(model.calls.load(Ordering::SeqCst), 1);
@@ -220,6 +245,14 @@ async fn observe(broken: Option<(&str, &str)>) {
     drop(chat);
     drop(db);
     let reopened = Database::open(&path).unwrap();
+    if let Ending::Incomplete(reason) = ending {
+        let totals = deepagent_persistence::cost_store::CostStore::new(&reopened)
+            .session_usage(&run.session_id)
+            .unwrap();
+        let valid_envelope = reason.is_none() || reason == Some("content_filter");
+        assert_eq!(totals.input_tokens, if valid_envelope { 9 } else { 0 });
+        assert_eq!(totals.output_tokens, if valid_envelope { 2 } else { 0 });
+    }
     assert_eq!(
         RunStore::new(&reopened).events_after(RUN, None).unwrap(),
         events
@@ -254,7 +287,7 @@ async fn observe(broken: Option<(&str, &str)>) {
     );
     assert_eq!(
         model.calls.load(Ordering::SeqCst),
-        if broken.is_some() { 1 } else { 2 },
+        if rejected { 1 } else { 2 },
         "reopen must not dispatch"
     );
 }
@@ -267,7 +300,7 @@ async fn h208_malformed_terminal_aborts_done_write_and_survives_sqlite_reopen() 
         "response.failed",
     ] {
         for field in ["id", "object", "created_at", "status", "model", "output"] {
-            observe(Some((kind, field))).await;
+            observe(Ending::Malformed(kind, field)).await;
         }
     }
     eprintln!("H-208 verified 18 malformed terminal/kernel/file/SQLite/cursor cases");
@@ -275,5 +308,12 @@ async fn h208_malformed_terminal_aborts_done_write_and_survives_sqlite_reopen() 
 
 #[tokio::test]
 async fn h208_valid_completed_terminal_commits_write_exactly_once_and_replays() {
-    observe(None).await;
+    observe(Ending::Completed).await;
+}
+
+#[tokio::test]
+async fn h82_filtered_or_unspecified_incomplete_aborts_done_write_and_reopens_failed() {
+    for reason in [Some("content_filter"), None, Some("PRIVATE_FUTURE_REASON")] {
+        observe(Ending::Incomplete(reason)).await;
+    }
 }

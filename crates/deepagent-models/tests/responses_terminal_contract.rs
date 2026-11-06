@@ -259,6 +259,13 @@ async fn h208_optional_objects_signed_timestamps_and_provider_aliases_stay_compa
                     assert!(
                         matches!(result, Err(CoreError::Provider {code:Some(code),..}) if code=="response_failed")
                     );
+                } else if kind == "response.incomplete" {
+                    // Nullable details are a valid envelope but not a cause
+                    // that authorizes output-limit recovery (H-82).
+                    assert!(
+                        matches!(result, Err(CoreError::Provider {code:Some(code),..})
+                        if code=="incomplete_reason_unknown")
+                    );
                 } else {
                     assert!(result.is_ok(), "{result:?}");
                 }
@@ -273,8 +280,20 @@ async fn h208_optional_objects_signed_timestamps_and_provider_aliases_stay_compa
             event["response"]["incomplete_details"]["reason"] = json!(reason);
         }
         let (result, _, _) = observe(event, true).await;
-        // H-82 owns reason-to-runtime recovery policy; H-208 only validates its shape.
-        assert_eq!(result.unwrap().finish_reason, Some(FinishReason::Length));
+        match reason {
+            None => assert!(
+                matches!(result, Err(CoreError::Provider {code:Some(code),..})
+                if code=="incomplete_reason_unknown")
+            ),
+            Some(reason) => assert_eq!(
+                result.unwrap().finish_reason,
+                Some(if reason == "content_filter" {
+                    FinishReason::ContentFilter
+                } else {
+                    FinishReason::Length
+                })
+            ),
+        }
     }
 }
 

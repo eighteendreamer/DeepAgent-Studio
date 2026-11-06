@@ -192,12 +192,13 @@ impl ResponseAccumulator {
             }
             "response.incomplete" => {
                 terminal::validate(&value, kind, "incomplete")?;
-                self.terminal = Some(FinishReason::Length);
-                self.saw_terminal = true;
                 self.observe_terminal_usage(value.get("response"), observer)?;
+                self.terminal = Some(terminal::incomplete_reason(&value)?);
+                self.saw_terminal = true;
                 self.complete_terminal_items(&value, observer)?;
                 // A truncated builder is not executable. Only explicit done
-                // identities may survive the existing length recovery path.
+                // identities may survive an incomplete terminal, regardless
+                // of whether its cause is length or content filtering.
                 for index in 0..self.tool_calls.len() {
                     if self.tool_calls[index].completed_arguments.is_some() {
                         self.emit_tool_completed(index, observer);
@@ -389,9 +390,7 @@ impl ResponseAccumulator {
                 if !seen.insert(index) {
                     return Err(tool_identity_conflict(index, "duplicate terminal call"));
                 }
-                if self.terminal == Some(FinishReason::Length)
-                    && self.tool_calls[index].completed_arguments.is_none()
-                {
+                if self.is_incomplete() && self.tool_calls[index].completed_arguments.is_none() {
                     continue;
                 }
                 self.complete_item(item, Some(output_index as u64), observer)?;
@@ -402,8 +401,7 @@ impl ResponseAccumulator {
         }
         if let Some(builder) = self.tool_calls.iter().find(|builder| {
             !seen.contains(&builder.index)
-                && (self.terminal != Some(FinishReason::Length)
-                    || builder.completed_arguments.is_some())
+                && (!self.is_incomplete() || builder.completed_arguments.is_some())
         }) {
             return Err(tool_identity_conflict(builder.index, "terminal output"));
         }
@@ -500,23 +498,31 @@ impl ResponseAccumulator {
         Ok(())
     }
 
+    fn is_incomplete(&self) -> bool {
+        matches!(
+            self.terminal,
+            Some(FinishReason::Length | FinishReason::ContentFilter)
+        )
+    }
+
     pub fn finish(mut self) -> Result<Response> {
         if !self.saw_terminal {
             return Err(CoreError::other(
                 "Responses stream ended without a terminal response event",
             ));
         }
+        let incomplete = self.is_incomplete();
         let mut fallback_items = Vec::new();
         for builder in self.tool_calls.drain(..) {
-            // Responses exposes explicit argument/item completion events.  A
-            // length terminal proves that any builder without one is only a
+            // Responses exposes explicit argument/item completion events. An
+            // incomplete terminal proves that any builder without one is only a
             // partial stream fragment, so it must not be synthesized into an
             // executable `{}`/partial JSON call.  For a completed response we
             // retain the historical fallback for providers that put the full
             // arguments on `output_item.added` but omit the separate done
             // event; that compatibility path cannot turn a truncated turn
             // into a call because it is disabled for `response.incomplete`.
-            if self.terminal == Some(FinishReason::Length) && !builder.completed_emitted {
+            if incomplete && !builder.completed_emitted {
                 continue;
             }
             fallback_items.push(builder.output_item());
@@ -1453,7 +1459,7 @@ mod tests {
         let mut rec = Rec::default();
         assert!(acc
             .push_sse_data_observed(
-                r#"{"type":"response.incomplete","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"incomplete","usage":{"input_tokens":4,"output_tokens":5,"input_tokens_details":{"cached_tokens":2},"output_tokens_details":{"reasoning_tokens":3},"total_tokens":9}}}"#,
+                r#"{"type":"response.incomplete","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":4,"output_tokens":5,"input_tokens_details":{"cached_tokens":2},"output_tokens_details":{"reasoning_tokens":3},"total_tokens":9}}}"#,
                 &mut rec,
             )
             .unwrap());
@@ -1512,7 +1518,8 @@ mod tests {
             let mut observer = TerminalUsageRecorder::default();
             let result = acc.push_sse_data_observed(
                 &json!({"type":kind,"response":{"id":"fixture-response","object":"response","created_at":1,"status":kind.strip_prefix("response.").unwrap(),"model":"deepseek-flash","output":[],"usage":raw,
-                    "error":{"code":"audit_failed","message":"controlled failure"}}})
+                    "error":{"code":"audit_failed","message":"controlled failure"},
+                    "incomplete_details":if kind=="response.incomplete" {json!({"reason":"max_output_tokens"})} else {serde_json::Value::Null}}})
                 .to_string(),
                 &mut observer,
             );
@@ -1569,6 +1576,9 @@ mod tests {
         ] {
             for present in [false, true] {
                 let mut response = json!({"id":"fixture-response","object":"response","created_at":1,"status":kind.strip_prefix("response.").unwrap(),"model":"deepseek-flash","output":[],"error":{"code":"audit_failed"}});
+                if kind == "response.incomplete" {
+                    response["incomplete_details"] = json!({"reason":"max_output_tokens"});
+                }
                 if present {
                     response["usage"] = Value::Null;
                 }
@@ -1608,7 +1618,7 @@ mod tests {
         );
         event(
             &mut acc,
-            r#"{"type":"response.incomplete","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"incomplete"}}"#,
+            r#"{"type":"response.incomplete","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}"#,
         );
 
         let response = acc.finish().unwrap();
@@ -1660,7 +1670,7 @@ mod tests {
         let mut accumulator = ResponseAccumulator::new();
         let error = accumulator
             .push_sse_data_observed(
-                r#"{"type":"response.incomplete","response":{"id":"fixture-response","object":"response","created_at":1,"status":"incomplete","model":"deepseek-flash","output":[],"usage":{"input_tokens":3,"input_tokens_details":{"cached_tokens":4}}}}"#,
+                r#"{"type":"response.incomplete","response":{"id":"fixture-response","object":"response","created_at":1,"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"model":"deepseek-flash","output":[],"usage":{"input_tokens":3,"input_tokens_details":{"cached_tokens":4}}}}"#,
                 &mut NoopObserver,
             )
             .unwrap_err();

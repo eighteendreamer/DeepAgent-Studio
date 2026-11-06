@@ -260,9 +260,15 @@ async fn output_limit_exhaustion_still_books_every_answered_attempt() {
 }
 
 #[tokio::test]
-#[ignore = "audit: content_filter must not trigger max-output escalation or an automatic continue request"]
 async fn audit_content_filter_does_not_retry_as_output_limit() {
-    let (_, _, _, used_length_recovery) = observe_incomplete_reason("content_filter", 2).await;
+    let (succeeded, requests, terminal, used_length_recovery) =
+        observe_incomplete_reason("content_filter", 2).await;
+    assert!(!succeeded);
+    assert_eq!(
+        requests, 1,
+        "the existing filter policy terminates without retry"
+    );
+    assert_eq!(terminal, "failed");
     assert!(
         !used_length_recovery,
         "content filtering must not use output-limit recovery"

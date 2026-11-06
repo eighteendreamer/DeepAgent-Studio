@@ -2523,6 +2523,19 @@ impl ModelAgent {
                         request_fingerprint,
                         request_surface,
                     );
+                    // Item/argument completion only prepares a tool call.
+                    // A filtered response cannot authorize commit or length
+                    // recovery, even if it contains fully completed calls.
+                    if response.finish_reason == Some(FinishReason::ContentFilter) {
+                        if let Some(tools) = tools.as_deref_mut() {
+                            tools.abort(attempt, "model stopped due to content filter");
+                        }
+                        return Err(CoreError::provider(
+                            None,
+                            Some("content_filter".into()),
+                            "model stopped due to content filter",
+                        ));
+                    }
                     if response.finish_reason == Some(FinishReason::Length)
                         && !max_output_escalated
                         && attempt < self.max_model_attempts
@@ -2835,9 +2848,6 @@ impl ModelAgent {
         }
 
         match response.finish_reason {
-            Some(FinishReason::ContentFilter) => {
-                Err(CoreError::other("model stopped due to content filter"))
-            }
             Some(FinishReason::Length) => Err(CoreError::other(
                 "model output reached max_tokens before completing the turn",
             )),
@@ -3155,7 +3165,7 @@ mod tests {
     }
 
     fn response_incomplete(output: serde_json::Value) -> String {
-        serde_json::json!({"type":"response.incomplete","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":output,"status":"incomplete"}})
+        serde_json::json!({"type":"response.incomplete","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":output,"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}})
             .to_string()
     }
 
@@ -3164,6 +3174,7 @@ mod tests {
             "type":"response.incomplete",
             "response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],
                 "status":"incomplete",
+                "incomplete_details":{"reason":"max_output_tokens"},
                 "usage":{
                     "input_tokens": input,
                     "input_tokens_details": {"cached_tokens": 1},
@@ -4157,6 +4168,7 @@ mod tests {
         let mut event: serde_json::Value = serde_json::from_str(terminal).unwrap();
         event["type"] = serde_json::json!("response.incomplete");
         event["response"]["status"] = serde_json::json!("incomplete");
+        event["response"]["incomplete_details"] = serde_json::json!({"reason":"max_output_tokens"});
         *terminal = event.to_string();
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
@@ -5648,6 +5660,50 @@ mod tests {
             vec!["begin:1", "prepare:c1:add", "commit:1"]
         );
         assert_eq!(attempt.calls.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn h82_content_filter_aborts_prepared_calls_even_at_last_attempt() {
+        let mut events = response_function_call_done("filtered", "add", r#"{"a":1,"b":2}"#);
+        let mut terminal: serde_json::Value = serde_json::from_str(events.last().unwrap()).unwrap();
+        terminal["type"] = serde_json::json!("response.incomplete");
+        terminal["response"]["status"] = serde_json::json!("incomplete");
+        terminal["response"]["incomplete_details"] = serde_json::json!({"reason":"content_filter"});
+        terminal["response"]["usage"] =
+            serde_json::json!({"input_tokens":12,"output_tokens":6,"total_tokens":18});
+        *events.last_mut().unwrap() = terminal.to_string();
+        let transport = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([events])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let client = Arc::new(ModelClient::new(
+            transport.clone(),
+            ModelConfig::deepseek("synthetic"),
+        ));
+        let mut agent = ModelAgent::new(client, "deepseek-flash", "rules", "synthetic", vec![])
+            .with_max_model_attempts(1)
+            .with_fallback_model(Some("deepseek-v4-pro".into()));
+        let mut controller = RecordingToolAttempt::default();
+        let error = agent
+            .think_streaming_cancelled(0, &[], None, Some(&mut controller))
+            .await
+            .unwrap_err();
+        assert!(matches!(&error, CoreError::Provider {code:Some(code),..}
+            if code=="content_filter"));
+        let failure = classify_model_error(&error);
+        assert!(!failure.retryable() && !failure.should_fallback());
+        assert_eq!(
+            controller.events,
+            ["begin:1", "prepare:filtered:add", "abort:1"]
+        );
+        assert!(controller.calls.is_empty());
+        assert_eq!(transport.requests.lock().unwrap().len(), 1);
+        assert_eq!(agent.cumulative_usage().unwrap().completion_tokens, 6);
+        assert!(!agent
+            .response_history
+            .items
+            .iter()
+            .any(|item| matches!(item, ResponseInputItem::FunctionCall { .. })));
     }
 
     #[tokio::test]

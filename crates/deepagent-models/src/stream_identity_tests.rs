@@ -152,7 +152,7 @@ fn h151_valid_calls_need_no_item_id_and_repeated_done_publishes_once() {
 #[test]
 fn h151_partial_length_and_provider_failure_do_not_synthesize_calls() {
     for terminal in [
-        json!({"type":"response.incomplete","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","status":"incomplete","output":[]}}),
+        json!({"type":"response.incomplete","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[]}}),
         json!({"type":"response.failed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","status":"failed","output":[],"error":{"code":"fixture_failure"}}}),
     ] {
         let mut acc = ResponseAccumulator::new();
@@ -370,7 +370,7 @@ fn h259_incomplete_terminal_checks_done_calls_but_never_promotes_partial_calls()
     conflicting["arguments"] = json!("{}");
     let incomplete = |items| {
         json!({"type":"response.incomplete",
-        "response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","status":"incomplete","output":items}})
+        "response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":items}})
     };
     assert_conflict(vec![
         added(&a, 0),
