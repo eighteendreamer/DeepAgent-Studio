@@ -167,7 +167,10 @@ impl HarnessClient {
         Ok(self)
     }
 
-    /// Handshake: announce the client and validate the protocol version.
+    /// Handshake: require the exact protocol version, nonblank server identity
+    /// and all six typed capability declarations before authorizing calls.
+    /// False capabilities and unknown extensions are valid. Validation does not
+    /// grant permissions or prove model/backend readiness. Raw response is retained.
     pub async fn initialize(
         &self,
         client_name: &str,
@@ -180,6 +183,11 @@ impl HarnessClient {
                 protocol_version: PROTOCOL_VERSION,
             }))
             .await?;
+        let result = response
+            .result
+            .as_ref()
+            .ok_or(SdkError::InvalidInitializeResult { field: "schema" })?;
+        crate::initialize::validate(result)?;
         let mut initialized = self
             .initialized
             .lock()
@@ -613,7 +621,6 @@ mod audit_tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: initialize must reject an incompatible protocol result"]
     async fn audit_initialize_rejects_incompatible_protocol_result() {
         let script = r#"$null = [Console]::In.ReadLine(); [Console]::Out.WriteLine('{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":999,"serverName":"future-server","serverVersion":"9.9.9"}}')"#;
         let mut child = tokio::process::Command::new("powershell.exe")
@@ -1001,7 +1008,7 @@ mod audit_tests {
 while (($line = [Console]::In.ReadLine()) -ne $null) {
   $index++
   if ($index -eq 1) {
-    [Console]::Out.WriteLine('{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"serverName":"audit","serverVersion":"1"}}')
+    [Console]::Out.WriteLine('{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"serverName":"audit","serverVersion":"1","capabilities":{"threadLifecycle":true,"streaming":true,"interrupt":true,"steer":true,"approval":true,"reconnect":true}}}')
   } elseif ($index -eq 2) {
     [Console]::Out.WriteLine('{"jsonrpc":"2.0","method":"harness/event","eventSequence":1,"params":{"type":"thread.started","threadId":"t-late","title":null,"protocolVersion":1}}')
     [Console]::Out.WriteLine('{"jsonrpc":"2.0","id":2,"result":{"threadId":"t-late","status":"ready"}}')
@@ -1151,7 +1158,7 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
 while (($line = [Console]::In.ReadLine()) -ne $null) {
   $index++
   if ($index -eq 1) {
-    [Console]::Out.WriteLine('{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"serverName":"audit","serverVersion":"1"}}')
+    [Console]::Out.WriteLine('{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"serverName":"audit","serverVersion":"1","capabilities":{"threadLifecycle":true,"streaming":true,"interrupt":true,"steer":true,"approval":true,"reconnect":true}}}')
   } else {
     [Console]::Out.WriteLine('{"jsonrpc":"2.0","id":2,"result":{}}')
   }
@@ -1213,3 +1220,7 @@ mod request_lifecycle_tests;
 #[cfg(all(test, windows))]
 #[path = "client_notification_tests.rs"]
 mod notification_tests;
+
+#[cfg(all(test, windows))]
+#[path = "client_initialize_tests.rs"]
+mod initialize_tests;

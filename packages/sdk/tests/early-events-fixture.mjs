@@ -17,7 +17,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   switch (request.method) {
     case "initialize":
       send([response(request.id, { protocolVersion: 1, serverName: "early-events-audit",
-        serverVersion: "1", capabilities: {} })]);
+        serverVersion: "1", capabilities: { threadLifecycle: true, streaming: true, interrupt: true, steer: true, approval: true, reconnect: true } })]);
       break;
     case "thread/start":
       send([response(request.id, { threadId, status: "ready" })]);

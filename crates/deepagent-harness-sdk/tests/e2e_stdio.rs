@@ -10,8 +10,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use deepagent_harness_protocol::{
-    ConfigReadRequest, HarnessEvent, ThreadReadRequest, ThreadResumeRequest, ThreadStartRequest,
-    TurnInterruptRequest, TurnStartRequest,
+    ConfigReadRequest, HarnessEvent, InitializeResult, ThreadReadRequest, ThreadResumeRequest,
+    ThreadStartRequest, TurnInterruptRequest, TurnStartRequest,
 };
 use deepagent_harness_sdk::{HarnessProcess, SdkError, SequenceStatus};
 
@@ -48,10 +48,18 @@ async fn spawn_server(tag: &str) -> (HarnessProcess, deepagent_harness_sdk::Harn
         .await
         .expect("spawn cli server");
     let client = process.client();
-    client
+    let handshake = client
         .initialize("deepagent-sdk-test", "0.1.0")
         .await
         .expect("initialize");
+    let identity: InitializeResult = serde_json::from_value(handshake.result().clone()).unwrap();
+    assert_eq!(identity.server_name, "deepagent");
+    assert_eq!(
+        identity.protocol_version,
+        deepagent_harness_protocol::PROTOCOL_VERSION
+    );
+    assert!(!identity.server_version.trim().is_empty());
+    assert!(identity.capabilities.thread_lifecycle && identity.capabilities.streaming);
     (process, client)
 }
 

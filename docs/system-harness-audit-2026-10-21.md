@@ -7739,7 +7739,59 @@ H205代码验收余0，但上述C/G清理仍为具体未解决事项，等待时
 - 触发后，SDK 会把不兼容服务标记为已初始化，后续 `thread/start`、`turn/start`、`approval/respond` 等请求可能进入一个字段/终态语义不同的对端。可确定的后果是兼容性错误被延迟到业务调用后，且 SDK 无法在连接建立处给出明确的版本错误；如果对端恰好复用相同方法名但改变参数或事件含义，调用方可能把错误 payload 当作正常 Harness 状态。该探针没有继续向 fixture 发送副作用请求，因此不把具体数据破坏或模型调用写成已发生事实。
 - 根因修复应留在现有 SDK handshake seam：解析 initialize result 的版本化 typed DTO，至少要求 `protocolVersion == PROTOCOL_VERSION`、非空 server identity 和必要 capability 字段；不兼容时保持 `initialized=false`，清理 pending，并返回带 expected/actual 的结构化协议错误。旧服务若需要兼容，应在协议版本协商中明确向后兼容范围，不应静默接受任意数字。回归需覆盖正确版本、未知更高/更低版本、缺字段、错误类型、RPC error、迟到 response，以及 initialize 失败后公开调用仍被 `NotInitialized` 拒绝；不能把此校验分散到每个业务方法。
 
-本轮 H-206 仅新增 opt-in SDK 审计探针与本报告，没有修改生产握手行为；版本协商和 typed result 解码尚未实施。
+原审计阶段仅新增 opt-in SDK 审计探针，没有修改生产握手；以下续接记录不覆盖原失败证据。
+
+本轮仅H-206（P2）握手result就绪门禁：Rust/TypeScript两个既有SDK同根；CLI生产方改为共享typed DTO序列化，wire字段保持不变。不并入H100 envelope、H207方法结果、H265重连/H295审批生命周期或H180。基线fb215ff5，tracked原先干净；五项用户untracked只列名、不读改/暂存。原探针在仓库外C盘真正Cargo target和合成HOME/APPDATA/TEMP中离线执行，无真实模型/内网/凭据/用户数据。
+
+**E-H206-01（2026-11-07，原探针与TDD红测）**：`cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_initialize_rejects_incompatible_protocol_result --offline -j 2 --target-dir C:\Users\32734\AppData\Local\Temp\h206-repair-20261107 -- --ignored --exact --nocapture --test-threads=1` exit101、0过1败0忽略、157.825秒含冷构建；明确观测999被Ok接受且initialized=true。新增真实PowerShell管道矩阵先运行`cargo test -p deepagent-harness-sdk --lib client::initialize_tests --offline -j 2 --target-dir C:\Users\32734\AppData\Local\Temp\h206-repair-20261107 -- --nocapture --test-threads=1`得到2过1败，case0 null被接受。TS先`pnpm -C packages/sdk build` exit0，再`node --test packages/sdk/tests/initialize-contract.test.mjs` exit1、2过36败0跳过；合法结果及RPC错误对照过，36个非法握手未拒绝。都是生产reader/真实本地stdio，不是替换SDK request方法的mock；失败日志/原生结果保留本轮target，未提交产物。
+
+**E-H206-02（候选、失败保留与范围）**：首候选TS38/0，但Rust2/1在result:null触发旧RpcResponse::result()的expect panic；保留失败而非改负例，改为在原initialize seam先安全检查Option再校验。后续Rust矩阵3/0，扩展超时/drop后迟到合法响应、便携数值错误检查与生产方合同后，候选SDK完整lib61/0/6。六项typed布尔声明必须存在，false是合法“不支持”声明、不是权限；非空身份不硬编码deepagent，未知扩展保留、Rust raw RpcResponse保持。结构化错误只含静态字段名与expected/actual数值，不回显任意peer JSON；不增加重试、版本降级、store/bus/执行链或每方法权限门禁。
+
+合法旧测试生产方只补齐原CLI已有的六声明与身份；错误JSON-RPC版本noise保持原样，不把H207/256探针挡在握手处冒称修复。Rust错误enum新增variant有源码兼容影响；无新依赖、协议版本变化、DB迁移或UI改动。原H206探针已去ignore，TS矩阵纳入默认pnpm test。最终冻结验收正在执行；当前不宣称已修复，无本项commit。306行核对后为180已验收/24历史跳过/8归并/3撤销/90待修/1修复中，未关闭91含H180授权跳过，实际队列90。当前H206余2–5有效小时暂估，依据双SDK握手门禁/跨层冷构建及门禁判读；全部剩余200–400有效小时仍为未逐项校准的低置信历史估计，构建/设备/依赖/环境等待另计，无精确日期承诺，goal保持active。
+
+**E-H206-03（2026-11-07，冻结源码最终验收与关闭，限本机范围）**：22份生产/测试/SDK文档配置文件SHA256在各门禁前后复核未变；原H206由opt-in改为默认真跑，并另显式精确执行，未以编译或ignored代替验收。离线、合成HOME/APPDATA/TEMP/data、清凭据/代理环境；只用本机stdio、临时SQLite及合成文件，没有真实模型/内网/凭据/用户数据。Rust五项新默认测试含37个非法结果管道子场景、结构化数值错误、RPC失败及合法迟到重复、timeout/drop后合法迟到结果不授权、合法身份/all-false声明/未知扩展/raw结果及重复initialize保留原一次语义；每个非法场景经过有序barrier后检查Ready=false、pending空及全部14业务method的统一门禁，无发送/重派副作用。TS36个非法结果+RPC对照+合法扩展对照共38项，真实pending清空，逐业务method尝试后对端计数仍0。已有正常流、审批、事件序号/ACK、失败及冷重开对照均保持。
+
+| 门禁 | 实际命令 | 结果与耗时 |
+|---|---|---|
+| final-fmt | `cargo fmt --all -- --check` | exit0；4.864秒 |
+| final-cli-build | `cargo build -p deepagent-cli --offline -j 2 --target-dir C:\Users\32734\AppData\Local\Temp\h206-repair-20261107 --message-format=json` | exit0；Cargo artifact核对后复制G固定入口；238.858秒 |
+| final-related | `cargo test -p deepagent-cli -p deepagent-harness-protocol -p deepagent-harness-sdk --offline --no-fail-fast -j 2 --target-dir C:\Users\32734\AppData\Local\Temp\h206-repair-20261107 -- --nocapture --test-threads=1` | exit0；8顶层target合计277过/0败/19忽略：CLI185/0/12、启动隔离1/0/1、protocol18/0、SDK61/0/6、真实stdio10/0、doc2/0；305.896秒 |
+| final-original | `cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_initialize_rejects_incompatible_protocol_result --offline -j 2 --target-dir C:\Users\32734\AppData\Local\Temp\h206-repair-20261107 -- --exact --nocapture --test-threads=1` | exit0；1过0败0忽略，原H206默认执行；1.183秒 |
+| final-ts-typecheck | `pnpm -C packages/sdk typecheck` | exit0；类型检查通过；1.614秒 |
+| final-ts-default | `pnpm -C packages/sdk test` | exit0；98过0败0跳过（新增H206矩阵38项）；5.670秒 |
+| final-ts-stdio | `pnpm -C packages/sdk test:stdio` | exit0；1过0败0跳过，真实CLI/SQLite冷重开；5.662秒 |
+| final-ts-jsonl | `pnpm -C packages/sdk test:jsonl` | exit0；1过0败0跳过，JSONL生命周期兼容对照（无stdio握手）；5.847秒 |
+| final-own-clippy | `cargo clippy -p deepagent-cli -p deepagent-harness-protocol -p deepagent-harness-sdk --all-targets --all-features --no-deps --offline -j 2 --target-dir C:\Users\32734\AppData\Local\Temp\h206-repair-20261107 -- -D warnings` | exit0；相关生产方/消费方严格no-deps lint通过；129.983秒 |
+| negative-h207 | `cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_thread_start_rejects_success_result_without_thread_id --offline -j 2 --target-dir C:\Users\32734\AppData\Local\Temp\h206-repair-20261107 -- --ignored --exact --nocapture --test-threads=1` | exit101；0过1败，握手成功后原缺threadId断言仍失败（独立待修）；1.205秒 |
+| negative-h256 | `cargo test -p deepagent-harness-sdk --lib client::disconnect_audit::audit_eof_settles_existing_and_late_event_subscribers --offline -j 2 --target-dir C:\Users\32734\AppData\Local\Temp\h206-repair-20261107 -- --ignored --exact --nocapture --test-threads=1` | exit101；0过1败，握手成功后原raw EOF断言仍失败（独立待修）；0.988秒 |
+| final-workspace | `cargo test --workspace --offline --no-fail-fast -j 2 --target-dir C:\Users\32734\AppData\Local\Temp\h206-repair-20261107 -- --test-threads=2` | exit101；144顶层target合计4815过/1败/207忽略，仅H306；1681.451秒 |
+| final-root-clippy | `cargo clippy --all-targets --all-features --offline -j 2 --target-dir C:\Users\32734\AppData\Local\Temp\h206-repair-20261107 -- -D warnings` | exit101；旧models/client.rs:431 clone_on_copy；77.757秒 |
+| final-h204-real | `cargo test -p deepagent-harness-sdk --lib client::request_lifecycle_tests::h204_real_cli_withheld_admission_reply_reconciles_once_and_survives_database_reopen --offline -j 2 --target-dir C:\Users\32734\AppData\Local\Temp\h206-repair-20261107 -- --ignored --exact --nocapture --test-threads=1` | exit0；1过0败0忽略，真实withheld admission/迟到响应/readback/冷重开；11.299秒 |
+
+全仓145个原始result块含AppCore一个嵌套helper回显，按144顶层target各取末尾结果去重为4815/1/207（无不完整target），不能计4816。唯一失败仍为未修改的`deepagent-prompts::canvas_prompt::tests::every_node_kind_owns_exactly_one_profile`：`creative.video-edit.v1 has an empty defaultUserPrompt`；全仓严格Clippy仍止于未修改models/client.rs:431的clone_on_copy，没有降lint、加allow或顺手修H306。相关严格lint单独通过；没有宣称workspace或系统全绿。默认其他207 ignored不是本项验收，H206已默认/精确真跑，H204真实CLI门禁另显式1/0。
+
+CLI由本轮Cargo实际compiler-artifact路径取得：81,808,384字节、SHA256=`27BB3A65253E1EE9663E8F26652AC7ECCA95CEF85E04C472AF6745D36163860D`，替换前G固定入口与H205已知归属hash一致，复制后源/目标hash一致。G入口门禁结束后仍相同；workspace feature图后C源hash变为`253929DE693EEE54C408ECFE81531DE116CCE43E33A0368F16B38457F2276BBC`，不声称最终两个文件仍同字节，也未与Tauri旁车写入并发。Rust真实SDK和TS门禁均使用已核对的G固定入口及其合成空安装副本，不把旧旁车当当前源码。
+
+兼容性/限制：wire版本仍1、生产结果字段不变、无新依赖/DB迁移/公共返回类型变化；Rust新增错误variant可能影响穷尽匹配，旧不完整mock/第三方peer现在按原合同早失败，需补齐身份和六布尔声明。false/未来字段仍合法，声明不是权限/执行就绪，未新增capability逐方法授权。未改Kernel/RunStore/审批/取消/事件store，也没有自动重试、降级、ACK或新连接恢复策略；H100 envelope、H207 raw方法结果、H265重连、H295审批生命周期及H256 raw EOF仍独立，不把新增初始化校验误计为这些问题的完成。未验其他OS、真实provider/内网/凭据/用户数据、长压/进程掉电、Tauri GUI/打包/完整桌面运行；本轮无Tauri桥接/前端类型/UI改动，实际跨层是CLI协议生产方与两套SDK，故未重跑桌面build/check或截图，不冒称已验UI。
+
+原始失败摘录随双文保留，临时全量日志仅作为本轮可再生产物，验收后按授权清理：
+```text
+incompatible protocol result must not authorize SDK calls: result=Ok(RpcResponse { jsonrpc: "2.0", id: Number(1), result: Some(Object {"protocolVersion": Number(999), "serverName": String("future-server"), "serverVersion": String("9.9.9")}), error: None }), initialized=true
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 61 filtered out; finished in 0.39s
+首候选：RPC response does not contain a result
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 62 filtered out; finished in 1.24s
+TS原红测：Missing expected rejection.；2 passed / 36 failed / 0 skipped
+```
+
+本轮H206在上述范围已修复并验收，新增1，历史跳过/归并/撤销新增均0；306唯一8列台账复核后累计181验收/24历史跳过/8归并/3撤销/90待修/0修复中，未关闭90含H180授权跳过，实际队列89，不提供完成率。代码/测试/当时双文独立commit待生成，取得真实hash后另做docs回填、不amend、不推送/PR/迁移。下一准备H207先核对本轮仍真实失败的thread/start方法结果边界，不直接推广成全部方法重写。H206本机验收余0，提交/清理与文档收尾待完成；全余200–400有效小时仍为未逐项校准的低置信历史区间，依据89项中输入/权限/持久化/恢复/客户端跨层风险，不能按条数机械扣时。14个最终门禁机器执行合计41.20分钟，不等同人工有效工时；未来设备/依赖/冷构建/环境等待另计、缺少可靠总上界，不承诺日历完工。整体goal保持active。
+
+**E-H206-04（2026-11-07，验收后G/C产物清理与残余）**：已先确认仓库外本轮唯一新建真正Cargo target绝对路径`C:\Users\32734\AppData\Local\Temp\h206-repair-20261107`，Resolve-Path精确相等且根不是reparse point；不递归删除仓库/源码或用户文件。先`cargo clean --target-dir C:\Users\32734\AppData\Local\Temp\h206-repair-20261107 --offline --dry-run` exit0、报告13678文件/22.3GiB；预扫时13676文件/23,977,211,882逻辑字节，随后写入三份cleanup元数据/日志。正式删除前重新全量枚举为13679文件/23,977,212,265字节，未将预扫数字冒充实际前值。
+
+正规`cargo clean --target-dir C:\Users\32734\AppData\Local\Temp\h206-repair-20261107 --offline`原生exit101、8.828秒，实际阻断为`fixture-tmp\.tmpXgExNa\destination\child`拒绝访问（os error5），不修改DACL、提权、换工具或循环重试来绕过。debug已不存在；最终完整枚举无枚举错误，仍1382文件/941,304,005字节，逻辑减少23,035,908,260字节（不是物理空闲盘差值）。因此只称部分清理，不能称已删除整个h206根；这些残余清理阻塞不改写H206代码验收为系统全绿。
+
+G盘仅本轮复用现有SDK dist和已核对归属的固定CLI，未创建G盘h206目录；dist当前12文件/87,246字节，沿H200既有工具删除策略阻塞，不重试或换方法绕过。固定CLI为后续真实SDK门禁的共享构建前置暂留、不是源码，不声称G target整体已删。旧H69/H71/H82/H209/H210/H200/H204/H205等已记载G/C残余同样不绕过拒绝；五项用户untracked从未读改或暂存。原始审计失败与本轮失败摘录、实际命令/结果已在双文保留；临时完整日志/脚本/缓存不提交，不能承诺本机所有测试产物都已回收。
+
+本项本机代码验收余0，清理以以上部分结果交付；独立提交待生成。181验收/24历史跳过/8归并/3撤销/90待修（含H180授权跳过，实际队列89）、0修复中不变；下一H207。全余200–400有效小时仍为未逐项校准低置信历史估计，等待设备/依赖/冷构建/旧清理阻塞另计且无可靠总上界；不承诺精确日期，goal仍active。
 
 ### H-207：Harness SDK 对 `thread/start` 成功结果缺少必填 `threadId` 校验
 

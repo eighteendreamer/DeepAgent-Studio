@@ -21,7 +21,7 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
   if ($request.method -eq 'initialize') {
     if ($mode -like 'initialize-*') { Noise $request.id; Barrier }
     if ($mode -ne 'initialize-eof') {
-      Send @{jsonrpc='2.0';id=$request.id;result=@{protocolVersion=1;serverName='valid-peer';serverVersion='1'}}
+      Send @{jsonrpc='2.0';id=$request.id;result=@{protocolVersion=1;serverName='valid-peer';serverVersion='1';capabilities=@{threadLifecycle=$true;streaming=$true;interrupt=$true;steer=$true;approval=$true;reconnect=$true}}}
     }
   } elseif ($request.method -eq 'thread/list') {
     $calls++

@@ -13,7 +13,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   switch (request.method) {
     case "initialize":
       reply(request.id, { protocolVersion: 1, serverName: "approval-isolation-audit",
-        serverVersion: "1", capabilities: { approval: true, streaming: true } });
+        serverVersion: "1", capabilities: { threadLifecycle: true, streaming: true, interrupt: true, steer: true, approval: true, reconnect: true } });
       break;
     case "thread/start":
       reply(request.id, { threadId: `thread-${++nextThread}`, status: "ready" });

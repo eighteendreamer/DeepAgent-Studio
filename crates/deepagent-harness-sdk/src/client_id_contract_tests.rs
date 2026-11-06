@@ -10,7 +10,7 @@ function Send($value) { [Console]::Out.WriteLine(($value | ConvertTo-Json -Compr
 while (($line = [Console]::In.ReadLine()) -ne $null) {
   $request = $line | ConvertFrom-Json
   if ($request.method -eq 'initialize') {
-    Send @{jsonrpc='2.0';id=$request.id;result=@{protocolVersion=1;serverName='id-contract';serverVersion='1'}}
+    Send @{jsonrpc='2.0';id=$request.id;result=@{protocolVersion=1;serverName='id-contract';serverVersion='1';capabilities=@{threadLifecycle=$true;streaming=$true;interrupt=$true;steer=$true;approval=$true;reconnect=$true}}}
   } elseif ($request.method -eq 'thread/list') {
     $listCalls++
     $held = $request

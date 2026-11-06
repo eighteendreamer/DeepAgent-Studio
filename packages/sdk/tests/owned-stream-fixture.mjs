@@ -27,7 +27,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   const request = JSON.parse(line);
   switch (request.method) {
     case "initialize": {
-      const reply = response(request.id, { protocolVersion: 1, serverName: "owned-stream-fixture", serverVersion: "1" });
+      const reply = response(request.id, { protocolVersion: 1, serverName: "owned-stream-fixture", serverVersion: "1",
+        capabilities: { threadLifecycle: true, streaming: true, interrupt: true, steer: true, approval: true, reconnect: true } });
       if (mode === "version-initialize") {
         withheld.push(reply);
         send([...versionNoise(request.id), ...versionNotifications(), versionBarrier()]);

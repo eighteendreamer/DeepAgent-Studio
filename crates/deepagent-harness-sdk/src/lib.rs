@@ -70,6 +70,7 @@
 
 pub mod client;
 mod error;
+mod initialize;
 mod notification;
 mod stream;
 mod transport;

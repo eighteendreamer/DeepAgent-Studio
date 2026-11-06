@@ -54,6 +54,29 @@ pub struct InitializeRequest {
     pub protocol_version: u32,
 }
 
+/// Versioned success result of `initialize`. Unknown extension fields are allowed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InitializeResult {
+    pub protocol_version: u32,
+    pub server_name: String,
+    pub server_version: String,
+    pub capabilities: InitializeCapabilities,
+}
+
+/// Required capability declarations, not grants or guarantees of execution readiness.
+/// A false value is a valid declaration of an unsupported capability.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InitializeCapabilities {
+    pub thread_lifecycle: bool,
+    pub streaming: bool,
+    pub interrupt: bool,
+    pub steer: bool,
+    pub approval: bool,
+    pub reconnect: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadStartRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]

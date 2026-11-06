@@ -320,6 +320,44 @@ export class HarnessTransportError extends Error {
   }
 }
 
+/** Safe handshake diagnostics; no arbitrary peer result is retained or echoed. */
+export class HarnessProtocolError extends Error {
+  constructor(readonly field: string, readonly expected?: number, readonly actual?: number) {
+    super(expected === undefined
+      ? `initialize result has an invalid ${field}; connection was not authorized`
+      : `incompatible initialize protocol version: expected ${expected}, actual ${actual}`);
+    this.name = "HarnessProtocolError";
+  }
+}
+
+function validateInitializeResult(value: unknown): void {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new HarnessProtocolError("schema");
+  }
+  const result = value as Record<string, unknown>;
+  const version = result.protocolVersion;
+  if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 0) {
+    throw new HarnessProtocolError("protocolVersion");
+  }
+  if (version !== PROTOCOL_VERSION) {
+    throw new HarnessProtocolError("protocolVersion", PROTOCOL_VERSION, version);
+  }
+  for (const field of ["serverName", "serverVersion"] as const) {
+    if (typeof result[field] !== "string" || !result[field].trim()) {
+      throw new HarnessProtocolError(field);
+    }
+  }
+  const capabilities = result.capabilities;
+  if (typeof capabilities !== "object" || capabilities === null || Array.isArray(capabilities)) {
+    throw new HarnessProtocolError("capabilities");
+  }
+  for (const field of ["threadLifecycle", "streaming", "interrupt", "steer", "approval", "reconnect"]) {
+    if (typeof (capabilities as Record<string, unknown>)[field] !== "boolean") {
+      throw new HarnessProtocolError(`capabilities.${field}`);
+    }
+  }
+}
+
 interface RpcResponse {
   jsonrpc: string;
   id?: number | string | null;
@@ -606,11 +644,12 @@ export class DeepAgent {
     if (this.initialized) {
       return;
     }
-    await this.ensureStdio().request("initialize", {
+    const result = await this.ensureStdio().request("initialize", {
       clientName: this.options.clientName ?? "@deepagent/sdk",
       clientVersion: this.options.clientVersion ?? "0.1.0",
       protocolVersion: PROTOCOL_VERSION
     });
+    validateInitializeResult(result);
     this.initialized = true;
   }
 

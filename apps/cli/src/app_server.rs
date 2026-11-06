@@ -13,10 +13,11 @@ use deepagent_core::error::CoreError;
 use deepagent_core::id::SessionId;
 use deepagent_harness_protocol::{
     project_runtime_event, ConfigReadRequest, EventContext, HarnessEvent, HarnessRequest,
-    InitializeRequest, RpcNotification, RpcRequest, RpcResponse, ThreadArchiveRequest,
-    ThreadForkRequest, ThreadListRequest, ThreadReadRequest, ThreadResumeRequest,
-    ThreadStartRequest, ToolListRequest, TurnInterruptRequest, TurnStartRequest, TurnSteerRequest,
-    CONTROL_PROJECTION_VERSION, JSONRPC_VERSION, PROTOCOL_VERSION,
+    InitializeCapabilities, InitializeRequest, InitializeResult, RpcNotification, RpcRequest,
+    RpcResponse, ThreadArchiveRequest, ThreadForkRequest, ThreadListRequest, ThreadReadRequest,
+    ThreadResumeRequest, ThreadStartRequest, ToolListRequest, TurnInterruptRequest,
+    TurnStartRequest, TurnSteerRequest, CONTROL_PROJECTION_VERSION, JSONRPC_VERSION,
+    PROTOCOL_VERSION,
 };
 use deepagent_persistence::event_store::EventStore;
 use deepagent_persistence::run_store::RunStore;
@@ -301,18 +302,18 @@ impl ServerState {
         (
             RpcResponse::success(
                 id,
-                serde_json::json!({
-                    "protocolVersion": PROTOCOL_VERSION,
-                    "serverName": "deepagent",
-                    "serverVersion": env!("CARGO_PKG_VERSION"),
-                    "capabilities": {
-                        "threadLifecycle": true,
-                        "streaming": true,
-                        "interrupt": true,
-                        "steer": true,
-                        "approval": true,
-                        "reconnect": true
-                    }
+                serde_json::json!(InitializeResult {
+                    protocol_version: PROTOCOL_VERSION,
+                    server_name: "deepagent".into(),
+                    server_version: env!("CARGO_PKG_VERSION").into(),
+                    capabilities: InitializeCapabilities {
+                        thread_lifecycle: true,
+                        streaming: true,
+                        interrupt: true,
+                        steer: true,
+                        approval: true,
+                        reconnect: true,
+                    },
                 }),
             ),
             None,
@@ -1617,6 +1618,11 @@ mod tests {
     #[test]
     fn accepts_initialize_once_and_rejects_duplicate() {
         let mut state = ServerState::new_for_test();
+        let incompatible = state.handle_request_for_test(rpc_request(
+            0, "initialize", serde_json::json!({"clientName":"test-client", "clientVersion":"1", "protocolVersion":999}),
+        ));
+        assert_eq!(incompatible.error_code(), Some(ERR_INVALID_PARAMS));
+        assert!(!state.initialized);
         let request = rpc_request(
             1,
             "initialize",
@@ -1629,6 +1635,17 @@ mod tests {
 
         let first = state.handle_request_for_test(request.clone());
         assert!(first.is_success());
+        let typed: InitializeResult = serde_json::from_value(first.result().clone()).unwrap();
+        assert_eq!(typed.protocol_version, PROTOCOL_VERSION);
+        assert_eq!(typed.server_name, "deepagent");
+        assert_eq!(typed.server_version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            first.result(),
+            &serde_json::json!({
+                "protocolVersion":PROTOCOL_VERSION,"serverName":"deepagent","serverVersion":env!("CARGO_PKG_VERSION"),
+                "capabilities":{"threadLifecycle":true,"streaming":true,"interrupt":true,"steer":true,"approval":true,"reconnect":true}
+            })
+        );
 
         let second = state.handle_request_for_test(request);
         assert_eq!(second.error_code(), Some(-32002));

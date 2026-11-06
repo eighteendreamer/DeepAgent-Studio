@@ -28,7 +28,7 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
     }
     $held.Clear()
   }
-  [Console]::Out.WriteLine((@{jsonrpc='2.0';id=$r.id;result=@{protocolVersion=1;starts=$starts}} | ConvertTo-Json -Compress))
+  [Console]::Out.WriteLine((@{jsonrpc='2.0';id=$r.id;result=@{protocolVersion=1;serverName='lifecycle-fixture';serverVersion='1';capabilities=@{threadLifecycle=$true;streaming=$true;interrupt=$true;steer=$true;approval=$true;reconnect=$true};starts=$starts}} | ConvertTo-Json -Compress -Depth 10))
 }"#
     } else {
         r#"[Console]::Out.WriteLine('{"jsonrpc":"2.0","method":"harness/event","params":{"type":"thread.started","threadId":"ready","protocolVersion":1}}'); $null=[Console]::In.Read(); [Console]::Out.WriteLine('{"jsonrpc":"2.0","method":"harness/event","params":{"type":"thread.started","threadId":"prefix-received","protocolVersion":1}}'); Start-Sleep -Seconds 30"#

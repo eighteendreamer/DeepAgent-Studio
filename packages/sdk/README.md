@@ -62,6 +62,22 @@ Use `ConfigReadRequest::default()` in place of old empty struct literals, or
 supply the new optional `thread_id`/`cwd` fields explicitly.
 The TS return type is a compile-time projection, not a new runtime schema validator.
 
+Both SDKs validate `initialize` before allowing business requests: the exact
+machine `protocolVersion` (currently 1), nonblank `serverName`/`serverVersion`,
+and six boolean declarations in `capabilities` (`threadLifecycle`, `streaming`,
+`interrupt`, `steer`, `approval`, `reconnect`) are required. Missing declarations
+or incompatible results now fail early, even if the JSON-RPC response reports
+success. A false declaration and unknown extension fields remain valid; these
+flags are not permission grants or proof of provider/backend readiness, and
+do not add per-method capability enforcement. Rust retains the raw `RpcResponse`
+and reports `InvalidInitializeResult`/`IncompatibleProtocolVersion`; TypeScript
+reports `HarnessProtocolError` with safe field names and numeric version details,
+not arbitrary peer JSON. Rejected or late duplicate replies do not authorize
+calls. There is no automatic retry, version downgrade or new connection recovery
+policy; reconnect explicitly when necessary. Existing incomplete mock peers must
+publish the complete v1 handshake contract. Rust error enum exhaustive matches
+may need updating. Business result validation and transport restart are separate.
+
 The default transport starts `deepagent server --transport stdio`. A custom
 binary can be supplied with `command`, `args`, and `cwd`.
 

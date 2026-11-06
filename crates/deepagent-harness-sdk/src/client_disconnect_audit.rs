@@ -12,7 +12,7 @@ struct Observation {
 async fn observe(emit_terminal: bool) -> Observation {
     let script = format!(
         r#"$null = [Console]::In.ReadLine()
-[Console]::Out.WriteLine('{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":1,"serverName":"audit","serverVersion":"1"}}}}')
+[Console]::Out.WriteLine('{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":1,"serverName":"audit","serverVersion":"1","capabilities":{{"threadLifecycle":true,"streaming":true,"interrupt":true,"steer":true,"approval":true,"reconnect":true}}}}}}')
 $null = [Console]::In.ReadLine()
 [Console]::Out.WriteLine('{{"jsonrpc":"2.0","method":"harness/event","eventSequence":1,"params":{{"type":"turn.started","threadId":"audit-thread","turnId":"audit-turn"}}}}')
 [Console]::Out.WriteLine('{{"jsonrpc":"2.0","id":2,"result":{{"threadId":"audit-thread","turnId":"audit-turn","status":"started"}}}}')

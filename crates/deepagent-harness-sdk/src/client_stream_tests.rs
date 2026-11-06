@@ -14,7 +14,7 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
   $request = $line | ConvertFrom-Json
   $reply = @{jsonrpc='2.0';id=$request.id;result=@{}}
   if ($request.method -eq 'initialize') {
-    $reply.result = @{protocolVersion=1;serverName='owned-fixture';serverVersion='1'}
+    $reply.result = @{protocolVersion=1;serverName='owned-fixture';serverVersion='1';capabilities=@{threadLifecycle=$true;streaming=$true;interrupt=$true;steer=$true;approval=$true;reconnect=$true}}
     Send $reply
   } elseif ($request.method -eq 'thread/start') {
     $threads++

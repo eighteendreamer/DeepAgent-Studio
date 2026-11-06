@@ -27,6 +27,20 @@ pub enum SdkError {
     /// A request was sent before the server was ready (e.g. before `initialize`).
     #[error("request rejected before initialize")]
     NotInitialized,
+    /// The peer's success result does not satisfy the initialize contract.
+    #[error("initialize result has an invalid {field}; connection was not authorized")]
+    InvalidInitializeResult {
+        /// Contract field name only, never arbitrary peer content.
+        field: &'static str,
+    },
+    /// The peer announced a different machine protocol (not JSON-RPC version).
+    #[error("incompatible initialize protocol version: expected {expected}, actual {actual}")]
+    IncompatibleProtocolVersion {
+        /// Locally supported version.
+        expected: u32,
+        /// Unsigned numeric version received from the peer.
+        actual: u64,
+    },
     /// A local request deadline must be positive and representable by the clock.
     #[error("request timeout must be positive and representable")]
     InvalidRequestTimeout,

@@ -9,11 +9,11 @@ mod requests;
 
 pub use events::{project_runtime_event, EventContext, HarnessEvent, ItemPayload};
 pub use requests::{
-    ApprovalRespondRequest, ConfigReadRequest, EventAckRequest, HarnessRequest, InitializeRequest,
-    RpcError, RpcNotification, RpcRequest, RpcResponse, SandboxStatusRequest, ThreadArchiveRequest,
-    ThreadForkRequest, ThreadListRequest, ThreadReadRequest, ThreadResumeRequest,
-    ThreadStartRequest, ToolListRequest, TurnInterruptRequest, TurnStartRequest, TurnSteerRequest,
-    JSONRPC_VERSION, PROTOCOL_VERSION,
+    ApprovalRespondRequest, ConfigReadRequest, EventAckRequest, HarnessRequest,
+    InitializeCapabilities, InitializeRequest, InitializeResult, RpcError, RpcNotification,
+    RpcRequest, RpcResponse, SandboxStatusRequest, ThreadArchiveRequest, ThreadForkRequest,
+    ThreadListRequest, ThreadReadRequest, ThreadResumeRequest, ThreadStartRequest, ToolListRequest,
+    TurnInterruptRequest, TurnStartRequest, TurnSteerRequest, JSONRPC_VERSION, PROTOCOL_VERSION,
 };
 
 /// Version of the durable run/action/approval projection returned by
