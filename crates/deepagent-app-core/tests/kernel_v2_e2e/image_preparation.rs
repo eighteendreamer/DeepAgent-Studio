@@ -8,6 +8,9 @@ use deepagent_runtime::InputAttachment;
 #[path = "image_integrity.rs"]
 mod integrity;
 
+#[path = "image_read_failure.rs"]
+mod read_failure;
+
 struct ImageAnswer {
     images_per_request: Arc<Mutex<Vec<usize>>>,
     request_bytes: Option<Arc<Mutex<Vec<usize>>>>,
@@ -364,6 +367,10 @@ async fn observe_imported_image(
             assert!(events.iter().any(
                 |event| event.event_type == "run_terminal" && event.data["kind"] == "succeeded"
             ));
+        } else {
+            assert!(events
+                .iter()
+                .any(|event| event.event_type == "run_terminal" && event.data["kind"] == "failed"));
         }
     }
     let counts = counts.lock().unwrap().clone();
@@ -608,14 +615,13 @@ async fn audit_retained_image_reuses_deepseek_file_id() {
 }
 
 #[tokio::test]
-#[ignore = "audit probe: a missing retained image must fail explicitly before sampling"]
 async fn audit_missing_retained_image_is_not_silently_dropped() {
     let readable = observe_imported_image(false, ImageMutation::Keep).await;
-    assert_eq!((readable.0, readable.1), (vec![0, 1], true));
+    assert_eq!((readable.0, readable.1), (vec![1, 1], true));
     let missing = observe_imported_image(false, ImageMutation::Remove).await;
     assert_eq!(
         (missing.0, missing.1),
-        (vec![0], false),
+        (vec![1], false),
         "a retained image that disappears must not become a successful text-only request"
     );
 }

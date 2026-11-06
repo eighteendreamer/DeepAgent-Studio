@@ -9,14 +9,53 @@
 | 状态 | 数量 | 含义 |
 |---|---|---|
 | 本阶段已修复并验收 | 172 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-70、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-84、H-87、H-88、H-92、H-96、H-97、H-125、H-130、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-147、H-148、H-149、H-150、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-178、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-196、H-197、H-198、H-199、H-208、H-212、H-213、H-214、H-218、H-219、H-221、H-222、H-223、H-224、H-225、H-226、H-227、H-229、H-233、H-234、H-235、H-236、H-237、H-239、H-240、H-241、H-242、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-259、H-260、H-261、H-267、H-268、H-270、H-271、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-290、H-293、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
-| 历史已修复跳过 | 23 | 17项原审计历史修复；H-77/H-83/H-238/H-246/H-301/H-232分别随H-78/H-143/H-260/H-245/H-164/H-219共享边界消除，验收另列，不重复记新生产修复 |
+| 历史已修复跳过 | 24 | 17项原审计历史修复；H-77/H-83/H-238/H-246/H-301/H-232/H-68分别随H-78/H-143/H-260/H-245/H-164/H-219/H-70共享边界消除，验收另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 3 | H-211/H-263/H-305，不作为缺陷或修复成果 |
 | 修复中 | 0 | 当前无正在修改的独立问题 |
-| 待修复 | 101 | 含H180授权跳过，实际总队列100项；目录清理阻塞另列 |
+| 待修复 | 100 | 含H180授权跳过，实际总队列99项；旧目录清理阻塞另列 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **101（其中H-180按用户要求跳过，实际待处理100项）**；不提供完成率。当前172项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301/H-232在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4/3cabd45f及真实复核单独列明，合计23项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。2026-11-05本轮H239新增验收1后，H287依据新D:继承控制位反例重新打开1，其后本轮H287按E21返修恢复验收，当前161，其后H213新增验收1，当前162，其后H212新增验收1，当前163，其后H221新增验收1，当前164，其后H222新增验收1为165，H150新增验收1为166，本轮H223新增验收1为167，其后H267按E03新增验收1为168；其后H268按E04新增验收1为169；其后H293按E06新增验收1为170；本轮H84按E03新增验收1为171；本轮H70按E07新增验收1为172；历史f2efc1b5与E-H287-01～20不删除。
+有效未关闭条目当前为 **100（其中H-180按用户要求跳过，实际待处理99项）**；不提供完成率。当前172项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301/H-232/H-68在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4/3cabd45f/f97db714及真实复核单独列明，合计24项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。2026-11-05本轮H239新增验收1后，H287依据新D:继承控制位反例重新打开1，其后本轮H287按E21返修恢复验收，当前161，其后H213新增验收1，当前162，其后H212新增验收1，当前163，其后H221新增验收1，当前164，其后H222新增验收1为165，H150新增验收1为166，本轮H223新增验收1为167，其后H267按E03新增验收1为168；其后H268按E04新增验收1为169；其后H293按E06新增验收1为170；本轮H84按E03新增验收1为171；本轮H70按E07新增验收1为172；本轮H68按E04新增历史跳过1，修复数仍172；历史f2efc1b5与E-H287-01～20不删除。
+
+## H-68 历史图片读取失败（历史已修复跳过，2026-11-06，限E03/04范围）
+
+**E-H68-01（复核范围与原探针，2026-11-06；修复中）**：从806e7a5f开始，tracked干净、无未完成合并，五项用户既有未跟踪内容仅列名不读改。上一轮H70已真实提交f97db714并验收。本轮仅复核H68：图片原件在持久化后不可读时，既有ChatService/Kernel是否在采样前明确失败、只落一次失败终态并保留引用，恢复原件后能否不重签而继续。读取审计/原探针、现有resolver与采样入口、序列化/存储调用方、配置/CI/格式及H70真实提交；当前FileAttachmentResolver::try_data_url的文件打开/metadata/受限读取错误已经返回Err，ModelAgent的唯一请求重建边界传播该错误，生产修复来源是H70，不新增第二套链路。
+
+原H68探针仍默认ignored，正常对照硬编码[0,1]、缺图期望[0]，其首轮0前提已被H67修复；尚不能凭源码据此关闭。先原样显式执行 `cargo test --target-dir G:\Code_Warehouse\DeepAgent-Studio\target\h68-validation-20261106 -p deepagent-app-core --test kernel_v2_e2e image_preparation::audit_missing_retained_image_is_not_silently_dropped --offline -j 2 -- --ignored --exact --nocapture --test-threads=1`，当前冷编译进行中，不提前采纳结果。最初runner准备将只读PowerShell HOME变量作普通变量赋值而失败，Cargo尚未启动；改名后才正式启动原探针，不能把准备失败当TDD红测。复核后的测试仅补正常基线、真实读失败/临时SQLite重开/引用不变/恢复和取消证据；原复现不成立时先定位原因，不直接修改生产代码。
+
+隔离HOME/USERPROFILE/APPDATA/LOCALAPPDATA和凭据类环境，仅使用本任务Cargo target内的合成TEMP/SQLite、recording transport；固定原有Cargo/Rustup缓存但不读凭据或真实用户数据、不下载、不访问内网/供应商。当前只新建一个独立真实Cargo输出目录，测试TEMP/日志也置于其中，终态/两文留存后按Cargo正规clean清理该编译根；不将旧被工具拒绝的普通目录伪装为Cargo目标删除。旧G/C普通H目录清理阻塞沿E-H70-08，不反复空跑或尝试旁路。H180继续按授权跳过，不混修其他媒体契约。
+
+本轮新增修复/历史跳过/归并/撤销均0；306唯一台账172验收/23历史跳过/7归并/3撤销/100待修/1修复中，101未关闭含H180授权跳过、实际队列100。H68暂估2–5有效小时（原探针对照维护、真实失败/恢复证据、完整相关验收与提交），冷编译和环境等待另计；全余200–400有效小时仍为未逐项校准低置信历史粗估，无精确日期承诺。
+
+**E-H68-02（原探针失效原因、共享修复确认与新增真实回归，2026-11-06；未最终验收）**：原样显式探针exit101、0/1/0、286.77秒（冷编译4分45秒、测试体0.76秒），在正常对照就因实际([1,1],true)不同于旧([0,1],true)而失败，尚未进入删除分支。依据H67现有实时输入修复，只将原正常计数改[1,1]、缺图仅首轮计数改[1]，不改生产或故障断言；`cargo test --target-dir <E01的唯一G盘target> -p deepagent-app-core --test kernel_v2_e2e image_preparation::audit_missing_retained_image_is_not_silently_dropped --offline -j 2 -- --ignored --exact --nocapture --test-threads=1` exit0、1/0/0、79.08秒（测试体1.74秒），正常[1,1]/true、缺图[1]/false。故缺陷已随f97db714的checked resolver/采样错误传播消除，本轮不再次修改生产代码；不是凭测试名或源码猜测已修复，也不把过期正常基线失败当H68红测。
+
+随后取消原H68探针ignore，保留正常场景并补唯一failed终态断言；新增image_read_failure.rs的两项默认测试：正式AttachmentService导入合法PNG→ChatService/Kernel首轮→落盘SQLite及两种原始引用→重开后真实删除/空文件/32MiB+1/Windows ReadData DACL拒绝→采样前明确attachment_integrity错误且实际transport仍只有首轮[1]→单failed终态和原始引用完整相等→再次重开读回失败→恢复原始字节/原DACL→普通续聊成功，wire摘要仍等于原导入值、总请求[1,1]、引用不重签。DACL夹具复用仓内H229/file_metadata已验证的本地.NET API，只作用合成TempDir文件，先真实File::open断言ERROR_ACCESS_DENIED=5，保留ReadControl/WriteDac，RAII恢复后逐字核对原DACL；SID/SDDL不入日志。该权限实测没有管理员提权、修改机器策略、操作用户文件或绕过工具拒绝，不是share-mode代替ACL。
+
+当前 `cargo test --target-dir <同target> -p deepagent-app-core --test kernel_v2_e2e image_preparation:: --offline -j 2 -- --nocapture --test-threads=1` exit0、10 passed / 0 failed / 2 ignored、100.73秒；原H68已默认真实执行，新两测试全部通过。两ignored仍为Files引用/MIME独立问题，不作成果。H70双协议字节、503重试/预取消和旧历史/SQLite摘要回归在此同组通过；取消证据是现有ModelAgent预取消测试，不夸大为任意时刻Kernel取消/文件读中断。未制作虚假红测：本轮生产没有待修根因，新增测试是对历史共享修复的真实验收而非新增生产修复。
+
+只冻结image_preparation.rs和image_read_failure.rs两份测试（frozen-tests.json）；attachment_service/run_assembler/ModelAgent和双协议序列化生产SHA256另锁，后续必须不变。完整默认Kernel组、runtimes图片组/resolver及AppCore严格与普通lint已在同唯一target串行执行，需终态后才登记历史已修复跳过。fmt包装器对空输出的记录曾两次失败，其他gate尚未启动；改用.NET读取空日志后真正取得 `cargo fmt --all -- --check` exit0、7.65秒，不把包装器错误当测试失败或通过。无UI/公共API/持久schema/权限生产改动；因此不重复运行未改前端/Tauri/整仓门禁，H70已有全仓及严格lint失败仍如实保留，不称全系统通过。计数仍沿E01，无新增修复或跳过，完整验收/提交/清理待完成。
+
+**E-H68-03（最终相称门禁与历史归属，2026-11-06）**：两份测试与frozen-tests.json逐份SHA256一致；FileAttachmentResolver/run_assembler/ModelAgent/双协议序列化五份生产文件与本轮冻结一致且没有Git diff。本轮仅测试与两文维护，不新增生产修复，不为让测试转绿改变原始字节、恢复条件、错误传播或权限。
+
+本轮真实终态（passed/failed/ignored）：
+
+- `cargo fmt --all -- --check` exit0、7.65秒，`git diff --check`通过。
+- `cargo test --target-dir G:\Code_Warehouse\DeepAgent-Studio\target\h68-validation-20261106 -p deepagent-app-core --test kernel_v2_e2e --offline -j 2 -- --quiet --test-threads=1` exit0、305/0/26、644.93秒；完整默认Kernel组，原H68及新增两项真实回归均默认执行，正常输入/分支/持久化/审批/恢复等同组消费方不回归。26 ignored仍各归独立项。
+- `cargo test --target-dir <同唯一target> -p deepagent-app-core --features runtimes --test kernel_v2_e2e image_ --offline -j 2 -- --nocapture --test-threads=1` exit0、15/0/5、345.48秒（含新特性组合编译，测试体23.87秒）；默认H68/H70原探针、DACL/缺失/空/超限/恢复、重试/预取消及正常控制通过。5 ignored属独立媒体问题，不算通过。
+- `cargo test --target-dir <同target> -p deepagent-app-core --features runtimes --lib attachment_service::tests:: --offline -j 2 -- --nocapture --test-threads=1` exit0、7/0/0、113.62秒；现有同buffer摘要/编码、丢失/空/超限/目录及正常对照通过。
+- `cargo clippy --target-dir <同target> -p deepagent-app-core --features runtimes --lib --test kernel_v2_e2e --no-deps --message-format=json --offline -j 2 -- -D warnings` exit101、127.43秒，仍为H70已记录的12个未改lib诊断：context_runtime.rs:407/429/496/516/545/557/567/576 clone_on_copy、http_runtime.rs:332 needless_return、plugin_preparation.rs:14 type_complexity、run_assembler.rs:1883原函数参数数、session_title.rs:54 needless_borrow。
+- 同一clippy命令去掉末尾 `-- -D warnings` 后exit101、41.33秒；上述12项变warning，另有原verification_build.rs:24 dead_code、responses_custom_tool.rs:58 bool_assert_comparison、kernel_v2_e2e.rs:1379 drop_non_drop三项warning，以及未改mcp_discovery_restore.rs:776默认deny panicking_unwrap错误。两份H68测试无primary span诊断；没有改无关代码、叠加allow或把普通lint写成严格通过。
+
+原始2026-10-22真实缺图反例继续保留；本次最初0/1是过期正常计数失败，不是H68再次红测。将其正常前提更新后真实故障分支已通过，来源为既有H70提交 `f97db714219a9bb8d5805658cedf7a814cab139e`：InputAttachment→持久MessageAttachment保留摘要，FileAttachmentResolver::try_data_url区分不适用与失败，ModelAgent采样/重建边界传播Err。本次新增证据覆盖公开ChatService、正式Kernel、实际transport计数/字节、唯一终态和临时SQLite重开，不仅是局部函数/编译或默认跳过探针。完成两文与清理/提交核对后应按“历史已修复跳过”登记，不重复计新生产修复，也不归并抹掉H68历史编号。
+
+范围限Windows本机、合成文件/临时SQLite/录制式Responses transport；现有H70双协议/预取消测试同组实际重跑，不扩称真实供应商、任意时刻取消同步文件读取、所有自定义AttachmentDataResolver或无resolver调用路径已验收。此共享修复的旧无摘要引用限制沿H70：可浏览但不可静默补签；原字节按原摘要恢复后可续聊，否则需新会话或分支至该引用前重新导入，不改旧事件/真实数据。无UI/桥接/公共API/存储schema/生产权限修改，未重复执行前端/Tauri/CLI构建、完整AppCore lib、整workspace或其他OS；本轮两特性组合测试编译已实际完成，不能称全仓或严格lint通过。H70旧workspace/H306等失败未被抹去。
+
+**E-H68-04（历史跳过验收、台账与本轮完整清理，2026-11-06）**：依据E02的原探针真实校准、E03完整默认Kernel与runtimes/真实DACL/SQLite恢复验收，H68登记“历史已修复跳过”，生产修复来源为H70 `f97db714219a9bb8d5805658cedf7a814cab139e`，不增加新的生产修复数、不另造运行/存储链。新增两项默认回归与原探针维护仅巩固该共享边界；E03未通过的lint和未执行范围均保留，不能称全仓、所有自定义resolver、真实供应商或全平台通过。
+
+所有门禁终结后确认本轮真实Cargo目标绝对路径 `G:\Code_Warehouse\DeepAgent-Studio\target\h68-validation-20261106` 位于workspace target、根非reparse、无运行exe/相关Cargo进程、Git跟踪0。`cargo clean --target-dir <该精确路径> --offline --dry-run --verbose` exit0，全部路径均在该根，预览7965文件、逻辑6.3GiB；去掉dry-run正规clean exit0、4.53秒，整个H68目标根（编译产物、合成TEMP/SQLite、日志、runner脚本和冻结JSON）实际已不存在，删除前后磁盘空闲差额为5.944GiB，最新G空闲约144.956GiB。先把命令、原生退出码、过/败/忽略、关键原始失败输出/观测及边界写入两文，再清理可再生产物，避免验收后继续按H堆积；源代码与两文不受影响。本轮未新建C盘独立target或合成TEMP；旧G/C普通目录的删除限制沿E-H70-08，未伪装其他目录为Cargo目标、未通过提权/换工具绕过，也不声称旧积累已全部清完。
+
+306唯一台账仅H68行由修复中改为历史已修复跳过；本轮新增生产修复0、历史跳过1、归并/撤销新增0。累计172验收/24历史跳过/7归并/3撤销/100待修/0修复中，100未关闭含H180授权跳过、实际有效队列99。两份测试和当时两文共4文件独立提交；取得真实验收commit后另做文档回填，不amend/推送/建PR/迁移真实数据。五项用户既有未跟踪内容仍仅列名不读改、不暂存；本项验收/本轮产物清理余0。下一先复核P2 H69多图完整请求预算（待修P1仅H180，继续授权跳过），不混修MIME/模态/Files等其他H。全部剩余200–400有效小时仍为99项跨层数据/持久化/执行/模型与媒体契约及大范围验收的未逐项校准低置信历史粗估，不按数量机械扣减；设备、依赖、编译及环境等待单列，暂无可靠总等待区间和精确日期承诺，整体goal仍active。
 
 ## H-70 历史图片内容身份（已修复并验收，2026-11-06，限E07范围）
 
@@ -5867,7 +5906,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-65：两处自动验证绕过已配置命令后端，显式构建被拒绝后仍可在宿主执行项目脚本并写出工作区](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-27，Windows所列本机范围；不合并H-64/H-03 | 两处共用已注册bash/ToolExecutionPipeline与Kernel canonical事件入口、同一action allocator | E-01～15保留失败；单元3/boundary5默认通过；最终workspace3471/1/324，独立取消窗口与H-46重开保留 | `1f5fbb084e2babe908fd6481f1a05e1231a5f5d0` | 真实OS沙箱/SSH、其他OS、H-64未验；H-46按E-22恢复验收，H-136待复核；229有效未关闭，总体200–400有效小时未校准，等待另计 |
 | [H-66：Flash 开启 DeepSeek 原生搜索后，本地搜索函数被替换为该模型会忽略的原生工具](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-67：当前轮图片未进入实时模型 Surface，原生镜像也丢附件，已有会话的图片在下一轮仍不出现](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H67-01～04；原失败保留，H-67默认探针现已通过 | 统一内容投影与同组接纳引用；旧源镜像只读恢复不重复，保持native序号/分叉 | 默认及runtimes image_各6/0；8项相关检查全仓通过；全仓3994/2/253，另H236返修/H306未修，严格lint/fmt基线仍阻断 | `db58e668b6c06a0c98d693b8da728a02825c1501` | 本机离线wire/真stdio/临时DB；无迁移或DTO破坏；本项0小时，下一项H236取消通知复核；总200–400有效小时粗估，等待另计 |
-| [H-68：历史图片文件丢失时静默退化为纯文字请求，续聊仍成功](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-68：历史图片文件丢失时静默退化为纯文字请求，续聊仍成功](system-harness-audit-2026-10-21.md) | P2 | 历史已修复跳过 | 生产来源H70 f97db714；E-H68-02校准过期首轮0基线后原缺图探针真实通过 | 既有checked FileAttachmentResolver/ModelAgent共享边界已显式传播读失败；本轮仅默认回归/验收，无新生产修复 | 原样0/1止于旧正常计数；校准原探针1/0，默认完整Kernel305/0/26、runtimes图片15/0/5、resolver7/0；DACL=5/SQLite重开/单终态/引用不变/原字节恢复通过；lint未改诊断失败见E03 | 生产f97db714219a9bb8d5805658cedf7a814cab139e；本轮验收提交待回填 | Windows本机离线；非任意取消/自定义resolver/真实provider/其他OS验收；H68完整产物根已正规clean释放5.944GiB，项余0，旧清理阻塞另列；下一H69 |
 | [H-69：只限制单张图片，缺少多图序列化后的请求体总预算](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-70：导入哈希未绑定模型历史引用，图片替换后同一附件 ID 静默发送新内容](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H70-01原替换探针成立；E02～07完整范围验收，无跳过或归并 | 持久引用携带导入SHA-256，现有checked resolver同buffer核对/编码，ModelAgent统一传播错误并拒绝同ID冲突 | 原0/1、TDD0/3红测；定向12/0/6、resolver7/0、相关738/0/41，完整AppCore1543/0/58、Kernel303/0/28；桌面build/Tauri/CLI、SDK9/0通过；workspace4722/10/217与严格lint失败原样保留，补验另列E07 | `f97db714219a9bb8d5805658cedf7a814cab139e` | 旧无摘要图片须新会话/前置分支重新导入，不重签；Windows本机离线，UI窗口/真实provider/其他OS未验；代码余0，清理策略拒绝待处理；下一H68 |
 | [H-71：发现目录丢弃官方输入模态，文字模型仍收到原生图片请求](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
