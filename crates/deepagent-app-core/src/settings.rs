@@ -2282,7 +2282,7 @@ impl SettingsService {
                 .catalog
                 .available
                 .iter()
-                .map(|m| capability_resolver.resolve_model_id(&m.id))
+                .map(|m| capability_resolver.resolve_model(m))
                 .collect(),
             chat_model: settings.catalog.chat_model.clone(),
             reasoner_model: settings.catalog.reasoner_model.clone(),
@@ -3310,6 +3310,7 @@ mod tests {
                 deepagent_models::DEEPSEEK_BASE_URL.to_string(),
                 vec![
                     deepagent_models::ModelInfo {
+                        input_modalities: None,
                         id: "deepseek-v4-flash".into(),
                         object: "model".into(),
                         owned_by: "deepseek".into(),
@@ -3317,6 +3318,7 @@ mod tests {
                         max_output_tokens: None,
                     },
                     deepagent_models::ModelInfo {
+                        input_modalities: None,
                         id: "deepseek-v4-pro".into(),
                         object: "model".into(),
                         owned_by: "deepseek".into(),

@@ -31,6 +31,10 @@ use crate::tool_manifest::{
 };
 
 #[cfg(test)]
+#[path = "subagent_modalities_tests.rs"]
+mod modalities_tests;
+
+#[cfg(test)]
 #[path = "subagent_deadline_tests.rs"]
 mod deadline_tests;
 

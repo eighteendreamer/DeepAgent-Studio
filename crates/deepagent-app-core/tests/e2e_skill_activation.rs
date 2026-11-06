@@ -160,6 +160,7 @@ fn settings_default() -> AppSettings {
             DEEPSEEK_BASE_URL.to_string(),
             vec![
                 ModelInfo {
+                    input_modalities: None,
                     id: "deepseek-v4-flash".into(),
                     object: "model".into(),
                     owned_by: "deepseek".into(),
@@ -167,6 +168,7 @@ fn settings_default() -> AppSettings {
                     max_output_tokens: None,
                 },
                 ModelInfo {
+                    input_modalities: None,
                     id: "deepseek-v4-pro".into(),
                     object: "model".into(),
                     owned_by: "deepseek".into(),

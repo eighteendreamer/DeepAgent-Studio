@@ -1,9 +1,8 @@
 //! Model capability resolution.
 //!
-//! DeepSeek's `/models` endpoint currently exposes the model ids but not the
-//! context window / max-output fields. This module keeps that fact contained in
-//! one place: callers still use dynamic model discovery for "what exists", then
-//! resolve the discovered id through a small, versioned official-doc snapshot.
+//! Provider metadata wins when present. Missing metadata is resolved here,
+//! through the existing official snapshot or conservative fallback; callers
+//! must not independently infer image support from model-name substrings.
 
 use serde::{Deserialize, Serialize};
 
@@ -32,6 +31,12 @@ pub struct ModelCapability {
     pub supports_tools: bool,
     pub supports_thinking: bool,
     pub supports_json_output: bool,
+    /// Effective input types, independently of context-capacity metadata.
+    /// None means unknown, not implicit permission to send images.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_modalities: Option<Vec<String>>,
+    /// Provenance of the existing context/output budgeting fields. Input
+    /// modalities are independently merged from metadata or the exact snapshot.
     pub capability_source: CapabilitySource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_reason: Option<String>,
@@ -61,21 +66,30 @@ impl ModelCapabilityResolver {
     /// Resolve by id when only the selected model name is available.
     pub fn resolve_model_id(&self, model_id: impl AsRef<str>) -> ModelCapability {
         let model_id = model_id.as_ref();
-        self.provider_metadata_capability(model_id, None, None)
+        let mut capability = self
+            .provider_metadata_capability(model_id, None, None)
             .or_else(|| self.official_snapshot_capability(model_id))
-            .unwrap_or_else(|| self.fallback(model_id))
+            .unwrap_or_else(|| self.fallback(model_id));
+        capability.input_modalities = official_input_modalities(model_id);
+        capability
     }
 
     /// Resolve from a provider model entry. Future `/models` extensions can
     /// fill the optional fields on [`ModelInfo`] and automatically win.
     pub fn resolve_model(&self, model: &ModelInfo) -> ModelCapability {
-        self.provider_metadata_capability(
-            &model.id,
-            model.context_window.map(|v| v as usize),
-            model.max_output_tokens.map(|v| v as usize),
-        )
-        .or_else(|| self.official_snapshot_capability(&model.id))
-        .unwrap_or_else(|| self.fallback(&model.id))
+        let mut capability = self
+            .provider_metadata_capability(
+                &model.id,
+                model.context_window.map(|v| v as usize),
+                model.max_output_tokens.map(|v| v as usize),
+            )
+            .or_else(|| self.official_snapshot_capability(&model.id))
+            .unwrap_or_else(|| self.fallback(&model.id));
+        capability.input_modalities = model
+            .input_modalities
+            .clone()
+            .or_else(|| official_input_modalities(&model.id));
+        capability
     }
 
     fn provider_metadata_capability(
@@ -87,6 +101,7 @@ impl ModelCapabilityResolver {
         let context_window = context_window?;
         let max_output_tokens = max_output_tokens.unwrap_or(self.fallback_max_output_tokens);
         Some(ModelCapability {
+            input_modalities: None,
             model_id: model_id.to_string(),
             context_window,
             max_output_tokens,
@@ -105,6 +120,7 @@ impl ModelCapabilityResolver {
             return None;
         }
         Some(ModelCapability {
+            input_modalities: None,
             model_id: model_id.to_string(),
             context_window: 1_000_000,
             max_output_tokens: 384_000,
@@ -118,6 +134,7 @@ impl ModelCapabilityResolver {
 
     fn fallback(&self, model_id: &str) -> ModelCapability {
         ModelCapability {
+            input_modalities: None,
             model_id: model_id.to_string(),
             context_window: self.fallback_context_window,
             max_output_tokens: self.fallback_max_output_tokens,
@@ -131,6 +148,17 @@ impl ModelCapabilityResolver {
             ),
         }
     }
+}
+
+/// Exact official declarations, checked 2026-11-06 against /api/list-models/
+/// and /guides/vision/. Do not extend capacity-name heuristics to modalities.
+fn official_input_modalities(model_id: &str) -> Option<Vec<String>> {
+    let values: &[&str] = match model_id {
+        "deepseek-flash" | "deepseek-v4-flash-vision-exp" => &["text", "image"],
+        "deepseek-v4-pro" => &["text"],
+        _ => return None,
+    };
+    Some(values.iter().map(|value| (*value).to_owned()).collect())
 }
 
 #[cfg(test)]
@@ -151,6 +179,7 @@ mod tests {
     #[test]
     fn provider_metadata_wins_when_present() {
         let model = ModelInfo {
+            input_modalities: None,
             id: "future-model".into(),
             object: "model".into(),
             owned_by: "deepseek".into(),

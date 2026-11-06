@@ -310,6 +310,8 @@ export interface ModelCapability {
   supports_tools: boolean;
   supports_thinking: boolean;
   supports_json_output: boolean;
+  /** Missing means unknown; never infer image support from the model name. */
+  input_modalities?: string[];
   capability_source: CapabilitySource;
   fallback_reason?: string;
 }

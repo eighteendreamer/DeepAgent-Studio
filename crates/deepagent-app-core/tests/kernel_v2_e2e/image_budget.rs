@@ -282,11 +282,17 @@ async fn retry_fallback_and_cancel_reenter_the_same_final_wire_gate() {
                 failure_status: status,
             });
             let make = |images| {
+                let mut config = ModelConfig::deepseek("synthetic").with_wire_mode(mode);
+                if status == 529 {
+                    // H-71 requires explicit vision capability for synthetic
+                    // model ids. Keep this H-69 probe about the final byte gate.
+                    let mut capability = deepagent_models::ModelCapabilityResolver::new()
+                        .resolve_model_id("f".repeat(LIMIT / 2));
+                    capability.input_modalities = Some(vec!["text".into(), "image".into()]);
+                    config.capabilities.push(capability);
+                }
                 ModelAgent::new_with_attachments(
-                    Arc::new(ModelClient::new(
-                        transport.clone(),
-                        ModelConfig::deepseek("synthetic").with_wire_mode(mode),
-                    )),
+                    Arc::new(ModelClient::new(transport.clone(), config)),
                     "deepseek-flash",
                     "rules",
                     "Inspect synthetic images",

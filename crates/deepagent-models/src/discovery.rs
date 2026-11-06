@@ -44,6 +44,10 @@ pub struct ModelInfo {
     /// Optional future provider metadata for max completion/output tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u64>,
+    /// Provider-declared input types. Missing is unknown; an explicit empty
+    /// list must not be replaced with a more permissive bundled declaration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_modalities: Option<Vec<String>>,
 }
 
 /// The raw `GET /models` response envelope.
@@ -288,6 +292,7 @@ mod tests {
     fn models(ids: &[&str]) -> Vec<ModelInfo> {
         ids.iter()
             .map(|id| ModelInfo {
+                input_modalities: None,
                 id: (*id).to_string(),
                 object: "model".into(),
                 owned_by: "deepseek".into(),
@@ -402,6 +407,10 @@ mod tests {
         assert_eq!(restored, catalog);
         assert_eq!(restored.available[0].context_window, Some(1_048_576));
         assert_eq!(restored.available[0].max_output_tokens, Some(393_216));
+        assert_eq!(
+            restored.available[0].input_modalities,
+            Some(vec!["text".into(), "image".into()])
+        );
         let capability =
             crate::ModelCapabilityResolver::new().resolve_model(&restored.available[0]);
         assert_eq!(capability.context_window, 1_048_576);

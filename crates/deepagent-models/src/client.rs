@@ -153,6 +153,44 @@ impl ModelClient {
             .unwrap_or_else(|| crate::ModelCapabilityResolver::new().resolve_model_id(model))
     }
 
+    /// Check the current native Surface without resolving attachment bytes.
+    /// Runtime preparation and final provider dispatch use this same gate.
+    /// A cached URL unreferenced by the current input is not an image input.
+    pub fn validate_response_input_modalities(&self, request: &ResponseRequest) -> Result<()> {
+        self.validate_image_input(
+            &request.model,
+            request.input.iter().any(|item| {
+                matches!(item, ResponseInputItem::InputMessage { attachments, .. }
+                if contains_image_reference(attachments))
+            }),
+        )
+    }
+
+    fn validate_chat_input_modalities(&self, request: &ChatCompletionRequest) -> Result<()> {
+        self.validate_image_input(
+            &request.model,
+            request
+                .messages
+                .iter()
+                .any(|message| contains_image_reference(&message.attachments)),
+        )
+    }
+
+    fn validate_image_input(&self, model: &str, has_image: bool) -> Result<()> {
+        if !has_image {
+            return Ok(());
+        }
+        match self.capability(model).input_modalities.as_deref() {
+            Some(modalities) if modalities.iter().any(|value| value == "image") => Ok(()),
+            Some(_) => Err(deepagent_core::error::CoreError::invalid(
+                "image_input_unsupported: effective model does not accept images; select a vision model or remove image references",
+            )),
+            None => Err(deepagent_core::error::CoreError::invalid(
+                "image_input_capability_unknown: effective model has no verified image capability; refresh discovery or select a declared vision model",
+            )),
+        }
+    }
+
     /// Send a Responses request and assemble the streamed response.
     ///
     /// The request is forced into streaming mode. Each SSE payload is parsed and
@@ -182,6 +220,7 @@ impl ModelClient {
         observer: &mut dyn crate::stream::DeltaObserver,
     ) -> Result<Response> {
         if matches!(self.config.wire_mode, WireMode::ChatCompletions) {
+            self.validate_response_input_modalities(&request)?;
             return self
                 .stream_chat_completion_observed(response_to_chat_completion(request)?, observer)
                 .await;
@@ -189,6 +228,7 @@ impl ModelClient {
         request.stream = true;
         self.apply_defaults(&mut request);
         request.validate()?;
+        self.validate_response_input_modalities(&request)?;
         log_response_input_pairs(&request);
         // Ask the provider to include a final usage chunk in the stream.
         let body = request_body::encode(&request)?;
@@ -225,6 +265,7 @@ impl ModelClient {
         cancel: Arc<AtomicBool>,
     ) -> Result<Response> {
         if matches!(self.config.wire_mode, WireMode::ChatCompletions) {
+            self.validate_response_input_modalities(&request)?;
             return self
                 .stream_chat_completion_observed_cancelled(
                     response_to_chat_completion(request)?,
@@ -236,6 +277,7 @@ impl ModelClient {
         request.stream = true;
         self.apply_defaults(&mut request);
         request.validate()?;
+        self.validate_response_input_modalities(&request)?;
         log_response_input_pairs(&request);
         let body = request_body::encode(&request)?;
         let transport_req = TransportRequest {
@@ -273,6 +315,7 @@ impl ModelClient {
         request.stream = true;
         self.apply_chat_defaults(&mut request);
         request.validate()?;
+        self.validate_chat_input_modalities(&request)?;
         let body = request_body::encode(&request)?;
         let transport_req = TransportRequest {
             url: self.config.chat_endpoint(),
@@ -313,6 +356,7 @@ impl ModelClient {
         request.stream = true;
         self.apply_chat_defaults(&mut request);
         request.validate()?;
+        self.validate_chat_input_modalities(&request)?;
         let body = request_body::encode(&request)?;
         let transport_req = TransportRequest {
             url: self.config.chat_endpoint(),
@@ -437,6 +481,12 @@ impl ModelClient {
     }
 }
 
+fn contains_image_reference(attachments: &[deepagent_core::message::MessageAttachment]) -> bool {
+    attachments
+        .iter()
+        .any(|attachment| attachment.kind == "image")
+}
+
 /// Emit a bounded, content-free summary of Responses tool pairing immediately
 /// before serialization.  Runtime/session logs contain the durable events, but
 /// this is the provider-boundary view and therefore catches projection bugs
@@ -539,6 +589,10 @@ fn response_to_chat_completion(request: ResponseRequest) -> Result<ChatCompletio
     chat.attachment_data_urls = request.attachment_data_urls;
     Ok(chat)
 }
+
+#[cfg(test)]
+#[path = "client_modalities_tests.rs"]
+mod modalities_tests;
 
 #[cfg(test)]
 #[path = "client_body_budget_tests.rs"]
@@ -1330,6 +1384,7 @@ mod tests {
             chat_model: "deepseek-flash".into(),
             reasoner_model: "deepseek-flash".into(),
             available: vec![crate::discovery::ModelInfo {
+                input_modalities: None,
                 id: "deepseek-flash".into(),
                 object: "model".into(),
                 owned_by: "deepseek".into(),

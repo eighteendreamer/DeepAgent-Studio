@@ -11,6 +11,9 @@ mod integrity;
 #[path = "image_read_failure.rs"]
 mod read_failure;
 
+#[path = "image_modalities.rs"]
+mod modalities;
+
 struct ImageAnswer {
     images_per_request: Arc<Mutex<Vec<usize>>>,
     request_bytes: Option<Arc<Mutex<Vec<usize>>>>,

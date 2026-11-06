@@ -12,6 +12,10 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+#[cfg(test)]
+#[path = "model_agent_modalities_tests.rs"]
+mod modalities_tests;
+
 use async_trait::async_trait;
 
 use deepagent_core::error::{CoreError, Result};
@@ -1001,6 +1005,7 @@ impl ModelAgent {
 
     fn request_for_current_history(&self) -> Result<ResponseRequest> {
         let mut request = self.response_history.request(self.model.clone());
+        self.client.validate_response_input_modalities(&request)?;
         if let Some(resolver) = self.attachment_resolver.as_ref() {
             let mut urls = std::collections::BTreeMap::new();
             let mut references = std::collections::BTreeMap::new();
@@ -1116,6 +1121,7 @@ impl ModelAgent {
             .prepare_response_request(self.response_history.request(self.model.clone()));
         let capability = if configured.model_id == self.model {
             deepagent_models::ModelCapability {
+                input_modalities: None,
                 model_id: self.model.clone(),
                 context_window: configured.context_window,
                 max_output_tokens: configured.max_output_tokens,
@@ -1385,6 +1391,13 @@ impl ModelAgent {
         request: &ResponseRequest,
     ) -> (u64, deepagent_context::SurfaceTokenBreakdown) {
         let request = self.client.prepare_response_request(request.clone());
+        // A pricing-only resolver may read/encode bytes. Unsupported images
+        // must not be materialized even while estimating a doomed request;
+        // the execution preflight reports the same authoritative gate's error.
+        let images_allowed = self
+            .client
+            .validate_response_input_modalities(&request)
+            .is_ok();
         let header = serde_json::json!({"model": request.model, "max_output_tokens": request.max_output_tokens,
             "reasoning_effort": request.reasoning_effort, "tool_choice": request.tool_choice, "text": request.text,
             "temperature": request.temperature, "top_p": request.top_p, "user": request.user});
@@ -1398,10 +1411,11 @@ impl ModelAgent {
             &request.input,
             &request.tools,
             |attachment| {
-                if self
-                    .attachment_resolver
-                    .as_ref()
-                    .is_some_and(|resolver| resolver.is_resolvable(attachment))
+                if images_allowed
+                    && self
+                        .attachment_resolver
+                        .as_ref()
+                        .is_some_and(|resolver| resolver.is_resolvable(attachment))
                 {
                     self.client.image_token_reserve(&request.model)
                 } else {
@@ -4174,6 +4188,7 @@ mod tests {
         window: usize,
     ) -> deepagent_context::ContextUsageSnapshot {
         let capability = deepagent_models::ModelCapability {
+            input_modalities: None,
             model_id: "test".into(),
             context_window: window,
             max_output_tokens: 8_192,
@@ -5026,6 +5041,7 @@ mod tests {
         ] {
             for fallback_limit in [32_768, 8_192] {
                 let primary = deepagent_models::ModelCapability {
+                    input_modalities: None,
                     model_id: "audit-primary".into(),
                     context_window: 1_000_000,
                     max_output_tokens: 32_768,

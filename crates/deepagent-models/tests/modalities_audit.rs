@@ -289,7 +289,6 @@ async fn supported_image_and_text_only_requests_reach_transport() {
 }
 
 #[tokio::test]
-#[ignore = "audit probe: declared text-only models must reject image requests before transport"]
 async fn audit_declared_input_modalities_constrain_requests() {
     let text_only = sample("deepseek-v4-pro", true).await;
     assert!(
