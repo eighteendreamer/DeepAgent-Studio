@@ -13,7 +13,7 @@ enum ReadFailure {
     PermissionDenied,
 }
 
-fn image_events(db: &Database, session: &str) -> Vec<Event> {
+pub(super) fn image_events(db: &Database, session: &str) -> Vec<Event> {
     EventStore::new(db)
         .load_session(session.parse().unwrap())
         .unwrap()

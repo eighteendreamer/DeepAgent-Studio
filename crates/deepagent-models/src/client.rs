@@ -16,6 +16,8 @@ use crate::responses::ResponseInputItem;
 use crate::stream::ResponseAccumulator;
 use crate::transport::{HttpTransport, TransportRequest};
 
+mod request_body;
+
 /// Stable provider identity exposed by the Harness layer.
 pub const DEEPSEEK_OFFICIAL_PROVIDER: &str = "deepseek-official";
 
@@ -189,7 +191,7 @@ impl ModelClient {
         request.validate()?;
         log_response_input_pairs(&request);
         // Ask the provider to include a final usage chunk in the stream.
-        let body = serde_json::to_string(&request)?;
+        let body = request_body::encode(&request)?;
         let transport_req = TransportRequest {
             url: self.config.endpoint(),
             api_key: self.config.api_key.clone(),
@@ -235,7 +237,7 @@ impl ModelClient {
         self.apply_defaults(&mut request);
         request.validate()?;
         log_response_input_pairs(&request);
-        let body = serde_json::to_string(&request)?;
+        let body = request_body::encode(&request)?;
         let transport_req = TransportRequest {
             url: self.config.endpoint(),
             api_key: self.config.api_key.clone(),
@@ -271,7 +273,7 @@ impl ModelClient {
         request.stream = true;
         self.apply_chat_defaults(&mut request);
         request.validate()?;
-        let body = serde_json::to_string(&request)?;
+        let body = request_body::encode(&request)?;
         let transport_req = TransportRequest {
             url: self.config.chat_endpoint(),
             api_key: self.config.api_key.clone(),
@@ -311,7 +313,7 @@ impl ModelClient {
         request.stream = true;
         self.apply_chat_defaults(&mut request);
         request.validate()?;
-        let body = serde_json::to_string(&request)?;
+        let body = request_body::encode(&request)?;
         let transport_req = TransportRequest {
             url: self.config.chat_endpoint(),
             api_key: self.config.api_key.clone(),
@@ -537,6 +539,10 @@ fn response_to_chat_completion(request: ResponseRequest) -> Result<ChatCompletio
     chat.attachment_data_urls = request.attachment_data_urls;
     Ok(chat)
 }
+
+#[cfg(test)]
+#[path = "client_body_budget_tests.rs"]
+mod body_budget_tests;
 
 #[cfg(test)]
 #[path = "client_input_presence_tests.rs"]
