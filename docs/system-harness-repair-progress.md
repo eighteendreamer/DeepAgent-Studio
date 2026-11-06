@@ -2,21 +2,21 @@
 
 ## 当前状态与计数口径（2026-11-07）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；当前185项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；该次只纠正汇总，不计为新增修复。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；当前186项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；该次只纠正汇总，不计为新增修复。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 185 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-69、H-70、H-71、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-82、H-84、H-87、H-88、H-92、H-96、H-97、H-125、H-130、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-147、H-148、H-149、H-150、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-178、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-196、H-197、H-198、H-199、H-200、H-204、H-205、H-206、H-207、H-208、H-209、H-210、H-212、H-213、H-214、H-218、H-219、H-221、H-222、H-223、H-224、H-225、H-226、H-227、H-229、H-233、H-234、H-235、H-236、H-237、H-239、H-240、H-241、H-242、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-256、H-259、H-260、H-261、H-265、H-266、H-267、H-268、H-270、H-271、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-290、H-293、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 186 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-69、H-70、H-71、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-82、H-84、H-87、H-88、H-92、H-96、H-97、H-125、H-130、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-147、H-148、H-149、H-150、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-178、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-196、H-197、H-198、H-199、H-200、H-204、H-205、H-206、H-207、H-208、H-209、H-210、H-212、H-213、H-214、H-218、H-219、H-221、H-222、H-223、H-224、H-225、H-226、H-227、H-229、H-233、H-234、H-235、H-236、H-237、H-239、H-240、H-241、H-242、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-256、H-259、H-260、H-261、H-265、H-266、H-267、H-268、H-270、H-271、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-290、H-293、H-295、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 24 | 17项原审计历史修复；H-77/H-83/H-238/H-246/H-301/H-232/H-68分别随H-78/H-143/H-260/H-245/H-164/H-219/H-70共享边界消除，验收另列，不重复记新生产修复 |
 | 归并 | 8 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 3 | H-211/H-263/H-305，不作为缺陷或修复成果 |
 | 修复中 | 0 | 当前无正在修改的独立问题 |
-| 待修复 | 86 | 含H180授权跳过，实际总队列85项；清理阻塞另列 |
+| 待修复 | 85 | 含H180授权跳过，实际总队列84项；清理阻塞另列 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **86（其中H-180按用户要求跳过，实际待处理85项）**；不提供完成率。当前185项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301/H-232/H-68在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4/3cabd45f/f97db714及真实复核单独列明，合计24项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。2026-11-05本轮H239新增验收1后，H287依据新D:继承控制位反例重新打开1，其后本轮H287按E21返修恢复验收，当前161，其后H213新增验收1，当前162，其后H212新增验收1，当前163，其后H221新增验收1，当前164，其后H222新增验收1为165，H150新增验收1为166，本轮H223新增验收1为167，其后H267按E03新增验收1为168；其后H268按E04新增验收1为169；其后H293按E06新增验收1为170；本轮H84按E03新增验收1为171；本轮H70按E07新增验收1为172；本轮H68按E04新增历史跳过1，修复数仍172；本轮H69按E06新增验收1为173；本轮H71按E06新增验收1为174；本轮H82按E04新增验收1为175；本轮H209按E04新增验收1为176；本轮H210按E05新增验收1为177；本轮H200按E04新增验收1为178；本轮H204按E04新增验收1为179，H90同根归并使归并数为8；11-07本轮H205按E03新增验收1为180；本轮H206按E03新增验收1为181；本轮H207按E03新增验收1为182；本轮H256按E03新增验收1为183；本轮H265按E03新增验收1为184；本轮H266按E03新增验收1为185；历史f2efc1b5与E-H287-01～20不删除。
+有效未关闭条目当前为 **85（其中H-180按用户要求跳过，实际待处理84项）**；不提供完成率。当前186项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301/H-232/H-68在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4/3cabd45f/f97db714及真实复核单独列明，合计24项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。2026-11-05本轮H239新增验收1后，H287依据新D:继承控制位反例重新打开1，其后本轮H287按E21返修恢复验收，当前161，其后H213新增验收1，当前162，其后H212新增验收1，当前163，其后H221新增验收1，当前164，其后H222新增验收1为165，H150新增验收1为166，本轮H223新增验收1为167，其后H267按E03新增验收1为168；其后H268按E04新增验收1为169；其后H293按E06新增验收1为170；本轮H84按E03新增验收1为171；本轮H70按E07新增验收1为172；本轮H68按E04新增历史跳过1，修复数仍172；本轮H69按E06新增验收1为173；本轮H71按E06新增验收1为174；本轮H82按E04新增验收1为175；本轮H209按E04新增验收1为176；本轮H210按E05新增验收1为177；本轮H200按E04新增验收1为178；本轮H204按E04新增验收1为179，H90同根归并使归并数为8；11-07本轮H205按E03新增验收1为180；本轮H206按E03新增验收1为181；本轮H207按E03新增验收1为182；本轮H256按E03新增验收1为183；本轮H265按E03新增验收1为184；本轮H266按E03新增验收1为185；本轮H295按E03新增验收1为186；历史f2efc1b5与E-H287-01～20不删除。
 
 ## H-205 Rust通知序号（已修复并验收，2026-11-07，限E03范围）
 
@@ -6540,7 +6540,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-292：画布场景声明撤销后旧绑定仍参与实际调用，非瞬时失败阻断健康候选](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-293：共享终端租约过期后真实 PTY 存活但没有续租、接管或清理路径](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E01～06；Windows本机离线真实PTY/文件SQLite，非历史跳过 | 既有execution_leases原子过期CAS+Backend renew，统一PTY owner gate，失败保留清理重试；旧token/legacy旁路拒绝 | 原生6/0、生命周期7/0、相关229/0/1、workspace4715/1旧H306/218；TS4/0、桌面build/Tauri check/workspace fmt通过；旧lint/旧Tauri格式和未验范围见E04～06 | `6911b00713339b404f4fead8df223d0a624bc65f`；E-H293-07 | 本项实施验收与代码提交余0；客户端显式renew/takeover，非后台心跳/宿主重启附着；SSH不连真实远端；下一H84；总200–400有效小时历史粗估，等待另计 |
 | [H-294：完成门把每次成功文件操作强制转换为最终净变化，临时创建后删除被误判未完成并额外请求模型](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-295：TypeScript SDK 以客户端全局审批屏障结束单个 turn，另一会话的待答审批会阻塞已完成流](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-295：TypeScript SDK 以客户端全局审批屏障结束单个 turn，另一会话的待答审批会阻塞已完成流](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E01当前2/1与TDD7/11留证；E03原探针默认执行及完整消费验收，非历史跳过 | 原局部view消费匹配terminal即收尾；审批留原显式snapshot owner，不join全局、不自动代答 | SDK177/0/0、原3/0、新18/0、owned21/0、代次16/0、真实stdio2/0+JSONL1/0；fmt/typecheck/3MJS过；E03命令与未验 | 本项fix提交待生成；取得hash后另做docs回填 | 本机验收余0、提交待完成；E04清理策略阻塞251,443,695字节；流自然结束不再隐式保证审批settled；下一H215；全余200–400历史粗估、等待另计 |
 | [H-296：模型能力解析以 context_window 是否存在决定整份元数据来源，单独公布的输出上限被 fallback 覆盖](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-297：默认字符密度计数低估官方离线文本，冷计量可漏过既定压缩压力阈值](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-298：Harness 超出存储表示域的读取游标回绕，错误重放全部旧 run events](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
@@ -7276,3 +7276,76 @@ H266本机修复/验收余0，代码提交与真实hash回填待完成，清理�
 **E-H266-05（2026-11-07，独立提交与真实hash回填）**：本项原CliProcessOwner退出结果边界、原探针默认化/17项真实回归/真实CLI消费验收、README及当时双文已独立提交为`a0e08334035817b98db5a75989e2b083d468a06c`（【fix】传播SDK JSONL原生进程失败结果），父提交401aa6c0fac11a0c721fdafe3ff18f5431949b2c，白名单9文件。提交前七份受测SDK实现/配置/README/测试SHA256仍与final冻结一致，306唯一编号/8列、顶部185验收成员与主行精确匹配，相对父提交只有H266台账主行变化；E01/02/03/04两文逐字一致，diff/staged白名单和新增内容敏感特征检查通过。未包含原五项用户untracked、target/dist、临时脚本/日志/合成记录或其他独立问题修复。提交后tracked干净，原五项用户untracked保留未读改/暂存；无amend、push、PR或迁移。取得真实fix hash后只回填两文并另做docs提交，不为填自身docs hash反复amend。
 
 H266本机修复、E03所列验收及代码提交余0；E04本轮C盘333,655,239逻辑字节及G dist清理策略阻塞保留，旧C盘阻塞沿各自条目，不宣称G/C全部产物清空。自然非零完整消费改typed拒绝、局部停止不保证业务取消/成功、raw stderr只沿onStderr、其他OS/Node20运行/活provider或工具强杀/完整Rust workspace与GUI本轮未验等限制原样保留；H295独立负对照仍真实红，不混计关闭。本轮新增修复1，历史跳过/归并/撤销新增0；累计185验收/24历史跳过/8归并/3撤销/86待修/0修复中，未关闭86含授权跳过H180，实际队列85。下一H295按原探针追查跨thread审批完成屏障。全余200–400有效小时仍为未逐项校准低置信历史粗估，依据剩余输入/权限/持久化/恢复/SDK跨层复杂度，不按条数线性扣时；构建/设备/依赖/环境及清理等待另计、无可靠总上界，不作日期承诺；整体goal继续active。
+
+## H-295局部终态与显式审批drain（2026-11-07，已修复并验收，限E03本机SDK范围）
+
+**E-H295-01（2026-11-07，当前原探针及TDD红，修复中）**：基线1d9d4bfd1e508a374e6fc1e4f6cdfac316bf3e28，tracked干净，原五项用户untracked只列名、不读改/暂存。核对原审计/台账、DeepAgent审批创建/捕获transport/显式drain、Thread.runStreamed与TurnEventStream所有权/早到事件/取消路径、全部仓内调用和测试、package/tsconfig/Cargo/CI/格式配置、Rust RequestEvents终态关闭与HarnessEvent可选身份、CLI spawn_turn真实审批/终态生产方及本地Codex thread-scoped pending边界。只按code-audit范围测试自有源码、本机stdio/合成审批与临时数据，不访问真实模型、内网、凭据或用户数据，不授予实际工具权限。
+
+本轮非Cargo隔离根C:\Users\32734\AppData\Local\Temp\h295-repair-20261107，合成HOME/APPDATA/TEMP/data且清凭据/代理环境。pnpm -C packages/sdk build：exit0、1.798秒；PowerShell设置$env:RUN_HARNESS_AUDIT='1'后node --test packages/sdk/tests/approval-isolation-audit.test.mjs：exit1、2过1败0跳过、0.327秒。none/answered正常；waiting组B已交付唯一turn.completed，finishedBeforeRelease=false、释放A后true，approvalsBefore=0/After=1。原输入/协议fixture完整可用，无H206夹具失配，确认为当前问题，未将“B已收到事件”误当其迭代已结束。
+
+生产未改时新增approval-lifetime.test.mjs及原fixture的独立受控模式（默认审计分支不放宽），node --test packages/sdk/tests/approval-lifetime.test.mjs：exit1、7过11败0跳过、1.209秒。失败覆盖completed/failed/interrupted与无关审批、同turn待答、缺thread/turn归属、同turn应答RPC receipt未回、早到审批+terminal batch及close/reconnect后旧callback拖住新流；return/abort、原无handler/异常/错误回执结算及显式snapshot对照通过。均为真实Node子进程/原transport与consumer，无mock生产请求/exit；新helper在释放自有callback、收齐迭代与close后还等待真实child exit并确认PID不存在。受控audit/emit只测客户端，不替代AppCore授权/终态策略。原失败日志与事实保留，不把编译成功或首次候选skip当验收。
+
+当前185验收/24历史跳过/8归并/3撤销/85待修/1修复中，未关闭86含H180授权跳过，实际总队列85。本项暂估余1–3有效验收/收尾小时；全部200–400有效小时仍未逐项校准低置信历史粗估，机器/设备/依赖/环境及清理等待另计，无日期承诺；整体goal active。
+
+**E-H295-02（2026-11-07，单一局部流完成边界与候选，尚未最终验收）**：选择原报告明确允许的“匹配终态结束局部流，client全局等待仅显式drain”契约，而非另建按scope复制审批状态或每turn新进程。依据本仓Rust RequestEvents在首个匹配terminal释放同一receiver、TS现有终态过滤及原协议生产方的身份边界。TurnEventStream在已验证admission匹配后，保留有界队列/顺序/首终态/early candidates；消费完该terminal后只收尾自身subscription和本地controller，不再调用实例全局Promise.all。删除原内部afterTerminal hook及finishing阶段，Thread.runStreamed移除该接线，未加超时/特殊thread白名单/自动回答来掩盖阻塞。
+
+DeepAgent原approvalTasks Set、resolveApproval和H265 captured-transport response gate仍是唯一审批owner/路由：本项不清空集合、不取消其他callback、不自动批准/拒绝。即便同turn callback/receipt未完成，服务器终态仍决定局部迭代结束；需要审批收尾的调用方显式await waitForPendingApprovals。该现有方法只等待调用时已注册任务快照，含其他turn/旧代；后续任务不在快照内。它是settlement不是成功授权回执：原handler抛错/拒绝转false、无handler不自动回、auto-response RPC/结果校验失败被原任务捕获而不重试。缺失thread/turn身份仍原样交给handler并由显式client owner保留，不猜测归属/污染流完成；这些既有策略未被本项重写。
+
+首次候选build通过，node --test approval-lifetime与原audit文件为20过0败1跳过、exit0、1.158秒（旧audit故障开关当时未开，不能计其验收）；随后原缺陷去skip并与新矩阵纳入pnpm test，当前候选默认177/0/0、exit0、6.673秒，精确两文件21/0/0、exit0、1.117秒。原fixture默认audit仍只允许running的B完成并保持同A审批语义，新增emit/receipt/error/early模式仅作真实stdio消费边界控制，全部decision为合成false，不授予真实权限。
+
+公开签名/wire/Node最低20/依赖/SQL/UI不变；**自然耗尽stream不再隐式保证所有自动审批任务settled**，README已写显式drain迁移及terminal/return/abort/close/reconnect与callback生命周期分离。任意永不返回的用户callback仍可能挂住显式drain并被原owner保留，本项不声称能取消任意Promise或证明晚到审批在真实服务端获准。旧callback不能跨代发送仍靠原H265边界，不重计H265。
+
+准备冻结七份SDK生产/配置/README/测试，重跑默认/原探针/18项新矩阵/原owned stream与H265代次回归、真实CLI stdio/JSONL/fmt/typecheck/三份变更MJS语法。本轮无Rust/Tauri/前端改动，真实CLI仅作为既有消费/终态/持久化兼容对照，不声称真实模型或AppCore授权审批被本fixture验证；不重跑完整workspace/全仓Clippy/GUI构建，旧H306/Models strict-Clippy基线保留。包无独立eslint/formatter脚本或依赖，不下载临时lint、不把tsc称专用lint。尚无最终验收/commit，不新增修复数；工时与等待沿E01。
+
+**E-H295-03（2026-11-07，最终冻结源码验收，限本机SDK范围）**：七份SDK生产/配置/README/测试SHA256在各门禁前后逐份一致，final-complete真实完成。原H295三项全去skip并纳入默认test；原fixture默认audit路径的A待答/B完成条件与原断言保留，未放宽身份/提前EOF/审批处理门禁。E01当前2过1败、新TDD7过11败及E02首候选20过1skip的事实保留；只使用之后去skip、冻结源完整执行的结果验收，不将编译/默认跳过或局部绿算修复。
+
+以下PowerShell仓库根，隔离环境同E01，Node v22.22.1 / pnpm 11.7.0；原探针已无需RUN_HARNESS_AUDIT，三项均默认真实执行。
+
+| 门禁 | 实际命令 | 退出、结果与耗时 |
+|---|---|---|
+| final-fmt | `cargo fmt --all -- --check` | exit0，全仓Rust格式检查；本轮无Rust变化；4.878秒 |
+| final-typecheck | `pnpm -C packages/sdk typecheck` | exit0，strict tsc --noEmit；1.390秒 |
+| final-default | `pnpm -C packages/sdk test` | exit0；177过0败0取消0跳过，含原H295三项和新18项，精确重复不累加；5.885秒 |
+| final-original | `node --test packages/sdk/tests/approval-isolation-audit.test.mjs` | exit0；3/0/0，原none/answered/waiting，缺陷探针默认执行；0.295秒 |
+| final-lifetime | `node --test packages/sdk/tests/approval-lifetime.test.mjs` | exit0；18/0/0，真实stdio与pipe barrier，无隐式drain；1.115秒 |
+| final-owned-stream | `node --test packages/sdk/tests/owned-stream.test.mjs` | exit0；21/0/0，原early/identity/bounded/cancel/terminal+EOF兼容；1.125秒 |
+| final-generation | `node --test packages/sdk/tests/generation-contract.test.mjs` | exit0；16/0/0，H265代次/握手/旧callback不跨代兼容；1.382秒 |
+| final-real-stdio | `pnpm -C packages/sdk test:stdio` | exit0；2/0/0，原生CLI失败/冷重开/代次/唯一持久化终态；5.786秒 |
+| final-real-jsonl | `pnpm -C packages/sdk test:jsonl` | exit0；1/0/0，6个原生CLI进程，H266/H267真实退出与owner兼容；5.923秒 |
+| syntax-approval-isolation-audit.test | `node --check packages/sdk/tests/approval-isolation-audit.test.mjs` | exit0，变更MJS语法检查；0.050秒 |
+| syntax-approval-isolation-fixture | `node --check packages/sdk/tests/approval-isolation-fixture.mjs` | exit0，变更MJS语法检查；0.047秒 |
+| syntax-approval-lifetime.test | `node --check packages/sdk/tests/approval-lifetime.test.mjs` | exit0，变更MJS语法检查；0.050秒 |
+
+当前原探针waiting组真实输出finishedBeforeRelease=true、finishedAfterRelease=true、approvalsBefore=0、approvalsAfter=1、terminalB=turn.completed；none/answered仍正常。释放A之前B已自然耗尽，A尚无任何approval/respond；释放后只回一次合成false，没有为B补第二terminal或取消/自动回答A。这直接验证原缺陷已消除，不是只让终态通知可见或缩短观察时间。
+
+根因修复只在既有TurnEventStream/Thread边界移除局部收尾的client全局join：保留validated admission、turn/thread匹配、early有界队列、顺序、首terminal与原return/abort/failure清理；消费完匹配终态即释放自身view。内部afterTerminal hook/finishing阶段删除，未加第二审批队列、按会话复制Set、超时特判、后台重发或新执行链。DeepAgent原approvalTasks与resolveApproval/H265 captured-transport gate原样保留，显式waitForPendingApprovals仍只等待调用时任务快照。公共签名/wire/v1/依赖/SQL/权限不变，但流自然结束不再隐含任何审批handler/RPC已settled；同turn也是服务器terminal决定局部迭代结束，需要额外审批收尾应显式调用现有drain。局部终态消费不是授权/操作成功回执。
+
+18项真实Node stdio新增回归覆盖：A待答时B分别completed/failed/interrupted自然结束且A继续等待；两个turn同时待答且各自terminal后完成、显式drain仍等两者；缺thread/turn/双缺身份仍原样交handler、不能拖住局部流；同turn应答RPC receipt尚未返回也不拖terminal、显式drain仍待真实ACK；审批和terminal同批早于admission仍完整投影；return/abort只结束本地消费而不代答callback；close/reconnect释放旧live stream、旧callback保留给显式drain且不能跨代发应答、新代即使复用合成ID也独立结束；无handler不代答、handler异常/Promise拒绝转false、RPC拒绝/非法receipt结算但不重试；显式snapshot不等待调用后新注册任务。新helper释放自己的gate并收齐流/回收已知Node直接child，实际等待exit及PID不存在，不把公开close本身扩大为通用进程树回执。所有审批都是合成false，fixture额外emit/held-receipt等模式只验证客户端消费，不认证真实服务端授权/终态后的grant策略。
+
+当前真实CLI作为相关入口/终态与持久化消费对照使用H256 accepted固定G入口，81,808,384字节、SHA256=C0023473E093B6526BE1D78F0ECB714DDDE8816251FD47ABF1196BB1A507BEB8。实际复制空安装的hash相同、最终G hash未变，本轮没有Rust/Cargo/protocol变化，未重新构建CLI，不冒称本轮Rust编译。stdio两项保留无provider失败run、早到终态、分页/冷重开、故障后旧代拒绝/显式reconnect/resume与唯一run/events/actions/approvals对照；JSONL沿H266/H267现有门禁，6个原生回执依次[0,null]、[1,null]、[2,null]、[1,null]、[null,SIGKILL]、[null,SIGTERM]，/help成功/业务failed/无事件参数及启动拒绝/持有合成SQLite写锁close/冷重开都符合原契约且无redispatch/伪造取消。它们不是“真实AppCore人工审批同时等待的端到端测试”，后者本轮未运行；H295的直接证据为正式SDK+真实stdio受控审批peer，不把不同门禁范围混称同一验收。
+
+本轮没有模型参数、服务端审批策略、Rust/Tauri/前端类型/GUI变更，未跑完整Rust workspace/全仓Clippy、desktop build/check或截图；旧H306与models/client.rs:431 strict-Clippy基线保留，不以本轮TS通过声称系统全绿。SDK包无独立eslint/formatter脚本或依赖，已执行strict typecheck/build、三份变更MJS node --check及Git diff检查，不下载临时lint/放宽配置，不把tsc称专用lint。未验其他OS/Node20实际运行、真实供应商/凭据/内网/用户数据、真实工具或人工授权流程、长压/掉电/GUI/任意派生树；没有执行真实数据库迁移或线上测试。
+
+原始失败摘录随双文保留；完整临时日志/脚本/合成记录验后按授权清理，不提交：
+```text
+mode=waiting
+terminalB=turn.completed; threadA=thread-1; threadB=thread-2
+finishedBeforeRelease=false; finishedAfterRelease=true
+approvalsBefore=0; approvalsAfter=1
+thread B already delivered its terminal, but unrelated thread A keeps its iterator open
+false !== true
+当前原探针：2 passed / 1 failed / 0 skipped
+新增TDD：7 passed / 11 failed / 0 skipped
+首候选：20 passed / 0 failed / 1 skipped（不是最终验收）
+最终原探针：3 passed / 0 failed / 0 skipped
+```
+
+兼容性/残余：流耗尽与自动审批任务生命周期显式分离；callback永不返回仍可能挂住显式全局drain并被原任务owner保留，本项不声称可取消任意Promise或新建资源上限。drain是已注册任务的settlement快照，不是成功授权、静止点或未来任务屏障；原handler拒绝/异常转false、auto-response错误被捕获并结算不重试，这些旧策略未重写。缺失身份仍归显式client owner而非猜给某流；close/reconnect不取消callback，旧response不跨代。无实际工具权限授予、自动取消远端或回滚副作用保证；未知结果仍需durable对账。
+
+本轮H295在上述范围已修复并验收，新增1，新增历史跳过/归并/撤销0。306唯一编号/8列及顶部成员将在提交前复核：186验收/24历史跳过/8归并/3撤销/85待修/0修复中，未关闭85含H180授权跳过，实际队列84，不提供完成率。代码/测试/当时双文独立提交待生成，取得实际fix hash后另做docs回填、不amend、不推送/PR/迁移。H295本机修复/验收余0，清理/提交待完成；下一H215（归档持久状态与活动列表/运行接纳不一致，按执行与持久化影响优先），先查当前原探针，不因历史报告直接改。全部200–400有效小时仍为未逐项校准低置信历史粗估，依据84项跨输入/权限/持久化/恢复/协议边界风险，不按条数线性扣时；12门禁机器累计27.926秒与人工有效工时分开，候选/失败轮另计。构建/设备/依赖/环境及清理等待另计，无可靠等待总上界，不作精确日期承诺；整体goal active。
+
+**E-H295-04（2026-11-07，提交前复核与清理策略阻塞）**：七份冻结SDK生产/配置/README/测试SHA256仍与final一致；原失败摘录、全部实际命令/结果/未验范围已保留双文。306唯一编号/每行8列与顶部186验收成员精确一致，相对1d9d4bfd只有H295主行变化，E01/02/03正文两文一致，git diff --check通过。原五项用户untracked只列名、不读改/暂存；无其他独立问题修复。
+
+清理范围仅本轮绝对根C:\Users\32734\AppData\Local\Temp\h295-repair-20261107，含合成HOME/data、临时真实CLI副本、日志/脚本与测试记录。Resolve-Path精确匹配，根及全部后代无reparse且均在该根内，无本轮关联Node/CLI进程。删除前实测140文件/139目录/251,443,695逻辑字节；单次原生PowerShell Remove-Item -LiteralPath <已核对根> -Recurse -Force被工具策略在执行前拒绝，随后只读复核根仍在、140文件/251,443,695字节，确认释放0。不换语言/工具/提权/改ACL绕过，不将非Cargo根交给cargo clean。G SDK dist现16文件/104,026字节，沿H200既有工具策略阻塞不重复删除；G固定CLI是共享真实门禁前置，保留且未称G target清空。旧C盘H266/H265/H256等残余沿各自条目追踪，本轮不重测/循环删除，也不编造全部残余或物理空闲盘增加量。
+
+H295本机修复/验收余0，独立代码提交与真实hash回填待完成，清理需允许的执行环境；业务问题与产物删除限制分开报告，不因删除阻塞掩盖其他可执行修复。186验收/24历史跳过/8归并/3撤销/85待修（含H180授权跳过、实际队列84）不变，下一H215归档持久状态与执行接纳一致性。全部200–400有效小时仍是未逐项校准低置信历史粗估，构建/设备/依赖/环境/清理等待另计且无可靠总上界，整体goal active。

@@ -12,7 +12,6 @@ type Hooks = {
   signal?: AbortSignal;
   start: (signal: AbortSignal) => Promise<string>;
   subscribe: (event: (value: HarnessEvent) => void, failure: (error: unknown) => void) => () => void;
-  afterTerminal: () => Promise<void>;
   error: (message: string) => Error;
 };
 const isTerminal = (event: HarnessEvent): boolean =>
@@ -27,7 +26,6 @@ export class TurnEventStream implements AsyncIterableIterator<HarnessEvent> {
   private started = false;
   private turnId?: string;
   private terminal = false;
-  private finishing = false;
   private ended = false;
   private failure?: unknown;
   private unsubscribe: () => void = () => {};
@@ -121,15 +119,13 @@ export class TurnEventStream implements AsyncIterableIterator<HarnessEvent> {
       this.bytes -= bytes;
       this.waiters.shift()!.resolve({ done: false, value: event });
     }
-    if (this.terminal && !this.values.length && !this.finishing) {
-      this.finishing = true;
-      // Keep the existing approval completion contract (H-295 is independent).
-      void this.hooks.afterTerminal().then(() => {
-        if (this.ended) return;
-        this.ended = true;
-        this.release();
-        this.drain();
-      }, (error) => this.fail(error));
+    if (this.terminal && !this.values.length) {
+      // The matched server terminal owns this view's completion. Arbitrary
+      // approval callbacks belong to the client's explicit drain, not this
+      // subscription, even when they name the same turn or omit its identity.
+      this.ended = true;
+      this.release();
+      this.drain();
     }
   }
 

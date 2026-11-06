@@ -260,6 +260,28 @@ bounded to 256 events and 4 MiB of serialized UTF-8 event data, including the
 pre-response window. Overflow and transport loss reject the stream explicitly;
 they do not mean the remote turn failed, completed, or never executed.
 
+After the matched terminal has been consumed, the local iterator ends without
+joining any auto-approval callback or response RPC. This includes callbacks
+for the same turn: the server terminal, not an arbitrary user Promise, owns
+stream completion. It replaces the former hidden client-global approval wait
+(H-295). This does not reorder, duplicate or manufacture terminal events.
+
+Use `await agent.waitForPendingApprovals()` when an explicit approval drain is
+needed. It waits for a **snapshot** of currently registered auto-approval tasks
+across turns and transport generations, not tasks that arrive later. Settlement
+does not certify approval success: the existing policy treats handler rejection
+as denial, and auto-response RPC/result errors settle that task without retry.
+No handler means no automatic response. Optional/missing thread/turn identities
+are still passed to the configured handler and retained by this explicit
+client-level owner; they are never guessed into a stream's completion scope.
+
+Terminal consumption, local return/abort, close and reconnect do not cancel an
+arbitrary user callback or automatically approve/deny another pending request.
+Each automatic response keeps its captured transport; an old callback cannot
+send on a replacement generation. A callback that never settles can still keep
+an explicit global drain pending. Stream completion is neither an approval
+grant receipt nor a substitute for server authorization or durable reconciliation.
+
 The returned iterator is lazy. `return()` releases parked local consumers,
 including while admission is unanswered, and does not start an unused iterator.
 An optional `{ signal: AbortSignal }` in `runStreamed` cancels local consumption;
@@ -342,8 +364,8 @@ durable history to reconcile any earlier request whose outcome is unknown. No
 turn, approval response, ACK or interrupted stream is replayed for you. Await
 reconnect before constructing an owned stream. Old replies/failure callbacks and
 approval handlers cannot authorize or send a response on the replacement
-transport. The existing global pending-approval completion barrier is separate
-(H-295); reconnect does not cancel arbitrary user approval callbacks.
+transport. Approval tasks have a separate explicit global drain (see above);
+reconnect does not cancel arbitrary user approval callbacks.
 
 `close()` leaves the current transport closed and supersedes a pending reconnect;
 it does not silently reopen on a later business request. A subsequent *explicit*

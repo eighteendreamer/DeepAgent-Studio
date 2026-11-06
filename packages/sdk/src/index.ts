@@ -666,6 +666,10 @@ export class DeepAgent {
     });
   }
 
+  /** Explicit snapshot of currently registered auto-approval tasks, across turns
+   * and transport generations. Settlement does not assert an approval succeeded;
+   * later arrivals need another drain. Local stream completion never calls this.
+   */
   async waitForPendingApprovals(): Promise<void> {
     await Promise.all([...this.approvalTasks]);
   }
@@ -877,6 +881,7 @@ export class Thread {
   /**
    * Subscribe before admission and retain a bounded pre-response event window.
    * return()/signal stop local consumption only; an admitted turn may still run.
+   * A matched terminal ends this view, independently of auto-approval callbacks.
    */
   runStreamed(input: string, options: RunStreamOptions = {}): AsyncIterableIterator<HarnessEvent> {
     const { signal, ...turnOptions } = options;
@@ -885,7 +890,6 @@ export class Thread {
       signal,
       start: async (localSignal) => (await this.agent.startTurn(this.id, input, turnOptions, localSignal)).id,
       subscribe: (event, failure) => this.agent.subscribeStream(event, failure),
-      afterTerminal: () => this.agent.waitForPendingApprovals(),
       error: (message) => new HarnessTransportError(message)
     });
   }

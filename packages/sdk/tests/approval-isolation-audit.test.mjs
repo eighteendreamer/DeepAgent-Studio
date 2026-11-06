@@ -101,7 +101,7 @@ for (const mode of ["none", "answered"]) {
 }
 
 test("a completed thread must not wait for another thread's unanswered approval", {
-  skip: process.env.RUN_HARNESS_AUDIT !== "1", timeout: 10000
+  timeout: 10000
 }, async () => {
   const result = await observe("waiting");
   assert.equal(result.finishedBeforeRelease, true,

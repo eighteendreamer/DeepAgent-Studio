@@ -14443,7 +14443,7 @@ workspace fmt exit0（4.203秒，测试借用修正后4.590秒）。Tauri整体f
 
 ### H-295：TypeScript SDK 以客户端全局审批屏障结束单个 turn，另一会话的待答审批会阻塞已完成流
 
-**级别：中（P2，条件性 SDK 并发会话隔离与收尾缺口）；状态：公开 TypeScript SDK API、真实 Node 子进程 stdio 已复现，未修复。** 需同一个 DeepAgent 实例服务两个会话，配置 onApproval，且会话 A 的 handler 尚未返回。会话 B 不需要审批，已独立收到 turn.completed；缺陷发生在 B 的下一个 iterator.next() / for-await 循环收尾，不是 B 的终态通知丢失，也没有证明宿主 turn B 未完成。
+**级别：中（P2，条件性 SDK 并发会话隔离与收尾缺口）；状态：已修复并验收（2026-11-07，限E-H295-03本机SDK范围）；原始失败事实保留。** 需同一个 DeepAgent 实例服务两个会话，配置 onApproval，且会话 A 的 handler 尚未返回。会话 B 不需要审批，已独立收到 turn.completed；缺陷发生在 B 的下一个 iterator.next() / for-await 循环收尾，不是 B 的终态通知丢失，也没有证明宿主 turn B 未完成。
 
 #### 首次即时 Evidence（2026-10-25）
 
@@ -14479,6 +14479,77 @@ workspace fmt exit0（4.203秒，测试借用修正后4.590秒）。Tauri整体f
 - `pnpm test` 成功：包含正式 `pnpm build`，现有 SDK **5 passed / 0 failed**；`pnpm typecheck` 成功。两个新 mjs 分别执行 `node --check` 均成功；新审计文件默认运行 **2 passed / 0 failed / 1 skipped，154.50ms**。故障测试仍以正确行为为期望，只有 RUN_HARNESS_AUDIT=1 才启用，不把默认跳过写成修复通过。
 - 在 SDK 目录显式列出全部六个 `*.test.mjs` 执行 `node --test`，未设置 RUN_HARNESS_AUDIT：**11 passed / 0 failed / 11 skipped，463.07ms**。运行的是各文件默认正常控制，既有已知故障探针全部跳过；没有重复旧探针申请新编号。原 `pnpm test` 只指定 sdk.test.mjs，所以不能声称新增控制已自动纳入该脚本或 CI。
 - 本轮仅新增两个测试文件及更新报告；未修改 SDK 生产逻辑、Rust、Tauri、公共协议、权限、沙箱或配置。没有执行 Rust workspace、Clippy、Desktop build/UI、真实 CLI/AppCore/DeepSeek 或参考工程动态测试；这些不在本轮仅 JS 夹具及文档的直接变更范围内。报告 diff 和 Markdown 表格/标题已核对，`git diff --check` 通过；提交仅包含报告与两个新测试文件，用户原有未跟踪文件保留、不读取、不暂存。
+
+**E-H295-01（2026-11-07，当前原探针及TDD红，修复中）**：基线1d9d4bfd1e508a374e6fc1e4f6cdfac316bf3e28，tracked干净，原五项用户untracked只列名、不读改/暂存。核对原审计/台账、DeepAgent审批创建/捕获transport/显式drain、Thread.runStreamed与TurnEventStream所有权/早到事件/取消路径、全部仓内调用和测试、package/tsconfig/Cargo/CI/格式配置、Rust RequestEvents终态关闭与HarnessEvent可选身份、CLI spawn_turn真实审批/终态生产方及本地Codex thread-scoped pending边界。只按code-audit范围测试自有源码、本机stdio/合成审批与临时数据，不访问真实模型、内网、凭据或用户数据，不授予实际工具权限。
+
+本轮非Cargo隔离根C:\Users\32734\AppData\Local\Temp\h295-repair-20261107，合成HOME/APPDATA/TEMP/data且清凭据/代理环境。pnpm -C packages/sdk build：exit0、1.798秒；PowerShell设置$env:RUN_HARNESS_AUDIT='1'后node --test packages/sdk/tests/approval-isolation-audit.test.mjs：exit1、2过1败0跳过、0.327秒。none/answered正常；waiting组B已交付唯一turn.completed，finishedBeforeRelease=false、释放A后true，approvalsBefore=0/After=1。原输入/协议fixture完整可用，无H206夹具失配，确认为当前问题，未将“B已收到事件”误当其迭代已结束。
+
+生产未改时新增approval-lifetime.test.mjs及原fixture的独立受控模式（默认审计分支不放宽），node --test packages/sdk/tests/approval-lifetime.test.mjs：exit1、7过11败0跳过、1.209秒。失败覆盖completed/failed/interrupted与无关审批、同turn待答、缺thread/turn归属、同turn应答RPC receipt未回、早到审批+terminal batch及close/reconnect后旧callback拖住新流；return/abort、原无handler/异常/错误回执结算及显式snapshot对照通过。均为真实Node子进程/原transport与consumer，无mock生产请求/exit；新helper在释放自有callback、收齐迭代与close后还等待真实child exit并确认PID不存在。受控audit/emit只测客户端，不替代AppCore授权/终态策略。原失败日志与事实保留，不把编译成功或首次候选skip当验收。
+
+当前185验收/24历史跳过/8归并/3撤销/85待修/1修复中，未关闭86含H180授权跳过，实际总队列85。本项暂估余1–3有效验收/收尾小时；全部200–400有效小时仍未逐项校准低置信历史粗估，机器/设备/依赖/环境及清理等待另计，无日期承诺；整体goal active。
+
+**E-H295-02（2026-11-07，单一局部流完成边界与候选，尚未最终验收）**：选择原报告明确允许的“匹配终态结束局部流，client全局等待仅显式drain”契约，而非另建按scope复制审批状态或每turn新进程。依据本仓Rust RequestEvents在首个匹配terminal释放同一receiver、TS现有终态过滤及原协议生产方的身份边界。TurnEventStream在已验证admission匹配后，保留有界队列/顺序/首终态/early candidates；消费完该terminal后只收尾自身subscription和本地controller，不再调用实例全局Promise.all。删除原内部afterTerminal hook及finishing阶段，Thread.runStreamed移除该接线，未加超时/特殊thread白名单/自动回答来掩盖阻塞。
+
+DeepAgent原approvalTasks Set、resolveApproval和H265 captured-transport response gate仍是唯一审批owner/路由：本项不清空集合、不取消其他callback、不自动批准/拒绝。即便同turn callback/receipt未完成，服务器终态仍决定局部迭代结束；需要审批收尾的调用方显式await waitForPendingApprovals。该现有方法只等待调用时已注册任务快照，含其他turn/旧代；后续任务不在快照内。它是settlement不是成功授权回执：原handler抛错/拒绝转false、无handler不自动回、auto-response RPC/结果校验失败被原任务捕获而不重试。缺失thread/turn身份仍原样交给handler并由显式client owner保留，不猜测归属/污染流完成；这些既有策略未被本项重写。
+
+首次候选build通过，node --test approval-lifetime与原audit文件为20过0败1跳过、exit0、1.158秒（旧audit故障开关当时未开，不能计其验收）；随后原缺陷去skip并与新矩阵纳入pnpm test，当前候选默认177/0/0、exit0、6.673秒，精确两文件21/0/0、exit0、1.117秒。原fixture默认audit仍只允许running的B完成并保持同A审批语义，新增emit/receipt/error/early模式仅作真实stdio消费边界控制，全部decision为合成false，不授予真实权限。
+
+公开签名/wire/Node最低20/依赖/SQL/UI不变；**自然耗尽stream不再隐式保证所有自动审批任务settled**，README已写显式drain迁移及terminal/return/abort/close/reconnect与callback生命周期分离。任意永不返回的用户callback仍可能挂住显式drain并被原owner保留，本项不声称能取消任意Promise或证明晚到审批在真实服务端获准。旧callback不能跨代发送仍靠原H265边界，不重计H265。
+
+准备冻结七份SDK生产/配置/README/测试，重跑默认/原探针/18项新矩阵/原owned stream与H265代次回归、真实CLI stdio/JSONL/fmt/typecheck/三份变更MJS语法。本轮无Rust/Tauri/前端改动，真实CLI仅作为既有消费/终态/持久化兼容对照，不声称真实模型或AppCore授权审批被本fixture验证；不重跑完整workspace/全仓Clippy/GUI构建，旧H306/Models strict-Clippy基线保留。包无独立eslint/formatter脚本或依赖，不下载临时lint、不把tsc称专用lint。尚无最终验收/commit，不新增修复数；工时与等待沿E01。
+
+**E-H295-03（2026-11-07，最终冻结源码验收，限本机SDK范围）**：七份SDK生产/配置/README/测试SHA256在各门禁前后逐份一致，final-complete真实完成。原H295三项全去skip并纳入默认test；原fixture默认audit路径的A待答/B完成条件与原断言保留，未放宽身份/提前EOF/审批处理门禁。E01当前2过1败、新TDD7过11败及E02首候选20过1skip的事实保留；只使用之后去skip、冻结源完整执行的结果验收，不将编译/默认跳过或局部绿算修复。
+
+以下PowerShell仓库根，隔离环境同E01，Node v22.22.1 / pnpm 11.7.0；原探针已无需RUN_HARNESS_AUDIT，三项均默认真实执行。
+
+| 门禁 | 实际命令 | 退出、结果与耗时 |
+|---|---|---|
+| final-fmt | `cargo fmt --all -- --check` | exit0，全仓Rust格式检查；本轮无Rust变化；4.878秒 |
+| final-typecheck | `pnpm -C packages/sdk typecheck` | exit0，strict tsc --noEmit；1.390秒 |
+| final-default | `pnpm -C packages/sdk test` | exit0；177过0败0取消0跳过，含原H295三项和新18项，精确重复不累加；5.885秒 |
+| final-original | `node --test packages/sdk/tests/approval-isolation-audit.test.mjs` | exit0；3/0/0，原none/answered/waiting，缺陷探针默认执行；0.295秒 |
+| final-lifetime | `node --test packages/sdk/tests/approval-lifetime.test.mjs` | exit0；18/0/0，真实stdio与pipe barrier，无隐式drain；1.115秒 |
+| final-owned-stream | `node --test packages/sdk/tests/owned-stream.test.mjs` | exit0；21/0/0，原early/identity/bounded/cancel/terminal+EOF兼容；1.125秒 |
+| final-generation | `node --test packages/sdk/tests/generation-contract.test.mjs` | exit0；16/0/0，H265代次/握手/旧callback不跨代兼容；1.382秒 |
+| final-real-stdio | `pnpm -C packages/sdk test:stdio` | exit0；2/0/0，原生CLI失败/冷重开/代次/唯一持久化终态；5.786秒 |
+| final-real-jsonl | `pnpm -C packages/sdk test:jsonl` | exit0；1/0/0，6个原生CLI进程，H266/H267真实退出与owner兼容；5.923秒 |
+| syntax-approval-isolation-audit.test | `node --check packages/sdk/tests/approval-isolation-audit.test.mjs` | exit0，变更MJS语法检查；0.050秒 |
+| syntax-approval-isolation-fixture | `node --check packages/sdk/tests/approval-isolation-fixture.mjs` | exit0，变更MJS语法检查；0.047秒 |
+| syntax-approval-lifetime.test | `node --check packages/sdk/tests/approval-lifetime.test.mjs` | exit0，变更MJS语法检查；0.050秒 |
+
+当前原探针waiting组真实输出finishedBeforeRelease=true、finishedAfterRelease=true、approvalsBefore=0、approvalsAfter=1、terminalB=turn.completed；none/answered仍正常。释放A之前B已自然耗尽，A尚无任何approval/respond；释放后只回一次合成false，没有为B补第二terminal或取消/自动回答A。这直接验证原缺陷已消除，不是只让终态通知可见或缩短观察时间。
+
+根因修复只在既有TurnEventStream/Thread边界移除局部收尾的client全局join：保留validated admission、turn/thread匹配、early有界队列、顺序、首terminal与原return/abort/failure清理；消费完匹配终态即释放自身view。内部afterTerminal hook/finishing阶段删除，未加第二审批队列、按会话复制Set、超时特判、后台重发或新执行链。DeepAgent原approvalTasks与resolveApproval/H265 captured-transport gate原样保留，显式waitForPendingApprovals仍只等待调用时任务快照。公共签名/wire/v1/依赖/SQL/权限不变，但流自然结束不再隐含任何审批handler/RPC已settled；同turn也是服务器terminal决定局部迭代结束，需要额外审批收尾应显式调用现有drain。局部终态消费不是授权/操作成功回执。
+
+18项真实Node stdio新增回归覆盖：A待答时B分别completed/failed/interrupted自然结束且A继续等待；两个turn同时待答且各自terminal后完成、显式drain仍等两者；缺thread/turn/双缺身份仍原样交handler、不能拖住局部流；同turn应答RPC receipt尚未返回也不拖terminal、显式drain仍待真实ACK；审批和terminal同批早于admission仍完整投影；return/abort只结束本地消费而不代答callback；close/reconnect释放旧live stream、旧callback保留给显式drain且不能跨代发应答、新代即使复用合成ID也独立结束；无handler不代答、handler异常/Promise拒绝转false、RPC拒绝/非法receipt结算但不重试；显式snapshot不等待调用后新注册任务。新helper释放自己的gate并收齐流/回收已知Node直接child，实际等待exit及PID不存在，不把公开close本身扩大为通用进程树回执。所有审批都是合成false，fixture额外emit/held-receipt等模式只验证客户端消费，不认证真实服务端授权/终态后的grant策略。
+
+当前真实CLI作为相关入口/终态与持久化消费对照使用H256 accepted固定G入口，81,808,384字节、SHA256=C0023473E093B6526BE1D78F0ECB714DDDE8816251FD47ABF1196BB1A507BEB8。实际复制空安装的hash相同、最终G hash未变，本轮没有Rust/Cargo/protocol变化，未重新构建CLI，不冒称本轮Rust编译。stdio两项保留无provider失败run、早到终态、分页/冷重开、故障后旧代拒绝/显式reconnect/resume与唯一run/events/actions/approvals对照；JSONL沿H266/H267现有门禁，6个原生回执依次[0,null]、[1,null]、[2,null]、[1,null]、[null,SIGKILL]、[null,SIGTERM]，/help成功/业务failed/无事件参数及启动拒绝/持有合成SQLite写锁close/冷重开都符合原契约且无redispatch/伪造取消。它们不是“真实AppCore人工审批同时等待的端到端测试”，后者本轮未运行；H295的直接证据为正式SDK+真实stdio受控审批peer，不把不同门禁范围混称同一验收。
+
+本轮没有模型参数、服务端审批策略、Rust/Tauri/前端类型/GUI变更，未跑完整Rust workspace/全仓Clippy、desktop build/check或截图；旧H306与models/client.rs:431 strict-Clippy基线保留，不以本轮TS通过声称系统全绿。SDK包无独立eslint/formatter脚本或依赖，已执行strict typecheck/build、三份变更MJS node --check及Git diff检查，不下载临时lint/放宽配置，不把tsc称专用lint。未验其他OS/Node20实际运行、真实供应商/凭据/内网/用户数据、真实工具或人工授权流程、长压/掉电/GUI/任意派生树；没有执行真实数据库迁移或线上测试。
+
+原始失败摘录随双文保留；完整临时日志/脚本/合成记录验后按授权清理，不提交：
+```text
+mode=waiting
+terminalB=turn.completed; threadA=thread-1; threadB=thread-2
+finishedBeforeRelease=false; finishedAfterRelease=true
+approvalsBefore=0; approvalsAfter=1
+thread B already delivered its terminal, but unrelated thread A keeps its iterator open
+false !== true
+当前原探针：2 passed / 1 failed / 0 skipped
+新增TDD：7 passed / 11 failed / 0 skipped
+首候选：20 passed / 0 failed / 1 skipped（不是最终验收）
+最终原探针：3 passed / 0 failed / 0 skipped
+```
+
+兼容性/残余：流耗尽与自动审批任务生命周期显式分离；callback永不返回仍可能挂住显式全局drain并被原任务owner保留，本项不声称可取消任意Promise或新建资源上限。drain是已注册任务的settlement快照，不是成功授权、静止点或未来任务屏障；原handler拒绝/异常转false、auto-response错误被捕获并结算不重试，这些旧策略未重写。缺失身份仍归显式client owner而非猜给某流；close/reconnect不取消callback，旧response不跨代。无实际工具权限授予、自动取消远端或回滚副作用保证；未知结果仍需durable对账。
+
+本轮H295在上述范围已修复并验收，新增1，新增历史跳过/归并/撤销0。306唯一编号/8列及顶部成员将在提交前复核：186验收/24历史跳过/8归并/3撤销/85待修/0修复中，未关闭85含H180授权跳过，实际队列84，不提供完成率。代码/测试/当时双文独立提交待生成，取得实际fix hash后另做docs回填、不amend、不推送/PR/迁移。H295本机修复/验收余0，清理/提交待完成；下一H215（归档持久状态与活动列表/运行接纳不一致，按执行与持久化影响优先），先查当前原探针，不因历史报告直接改。全部200–400有效小时仍为未逐项校准低置信历史粗估，依据84项跨输入/权限/持久化/恢复/协议边界风险，不按条数线性扣时；12门禁机器累计27.926秒与人工有效工时分开，候选/失败轮另计。构建/设备/依赖/环境及清理等待另计，无可靠等待总上界，不作精确日期承诺；整体goal active。
+
+**E-H295-04（2026-11-07，提交前复核与清理策略阻塞）**：七份冻结SDK生产/配置/README/测试SHA256仍与final一致；原失败摘录、全部实际命令/结果/未验范围已保留双文。306唯一编号/每行8列与顶部186验收成员精确一致，相对1d9d4bfd只有H295主行变化，E01/02/03正文两文一致，git diff --check通过。原五项用户untracked只列名、不读改/暂存；无其他独立问题修复。
+
+清理范围仅本轮绝对根C:\Users\32734\AppData\Local\Temp\h295-repair-20261107，含合成HOME/data、临时真实CLI副本、日志/脚本与测试记录。Resolve-Path精确匹配，根及全部后代无reparse且均在该根内，无本轮关联Node/CLI进程。删除前实测140文件/139目录/251,443,695逻辑字节；单次原生PowerShell Remove-Item -LiteralPath <已核对根> -Recurse -Force被工具策略在执行前拒绝，随后只读复核根仍在、140文件/251,443,695字节，确认释放0。不换语言/工具/提权/改ACL绕过，不将非Cargo根交给cargo clean。G SDK dist现16文件/104,026字节，沿H200既有工具策略阻塞不重复删除；G固定CLI是共享真实门禁前置，保留且未称G target清空。旧C盘H266/H265/H256等残余沿各自条目追踪，本轮不重测/循环删除，也不编造全部残余或物理空闲盘增加量。
+
+H295本机修复/验收余0，独立代码提交与真实hash回填待完成，清理需允许的执行环境；业务问题与产物删除限制分开报告，不因删除阻塞掩盖其他可执行修复。186验收/24历史跳过/8归并/3撤销/85待修（含H180授权跳过、实际队列84）不变，下一H215归档持久状态与执行接纳一致性。全部200–400有效小时仍是未逐项校准低置信历史粗估，构建/设备/依赖/环境/清理等待另计且无可靠总上界，整体goal active。
 
 ### H-296：模型能力解析以 context_window 是否存在决定整份元数据来源，单独公布的输出上限被 fallback 覆盖
 
