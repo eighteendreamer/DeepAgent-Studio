@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { DeepAgent, HarnessTransportError } from "../dist/index.js";
 
 const fixture = fileURLToPath(new URL("./jsonl-exit-fixture.mjs", import.meta.url));
-const auditOnly = { skip: process.env.RUN_HARNESS_AUDIT !== "1", timeout: 10000 };
+const regression = { timeout: 10000 };
 
 async function waitForRecord(recordPath) {
   const deadline = Date.now() + 6500;
@@ -85,21 +85,23 @@ test("CLI JSONL success preserves events and exits zero", { timeout: 10000 }, as
 });
 
 for (const mode of ["partial-failure", "empty-failure"]) {
-  test(`CLI JSONL ${mode} must reject a nonzero child exit`, auditOnly, async () => {
+  test(`CLI JSONL ${mode} must reject a nonzero child exit`, regression, async () => {
     const value = await observe(mode);
     assert.equal(value.exit.code, 23, "fixture exit hook must record the injected code");
     assert.deepEqual(value.events, mode === "partial-failure" ? ["item.updated"] : []);
     assert.deepEqual(value.stderr, ["audit fixture failure: code 23"]);
     assert.ok(value.failure instanceof HarnessTransportError,
       "SDK silently ended the iteration despite a nonzero child exit");
+    assert.deepEqual(value.failure.cause, { code: 23, signal: null, stderrPresent: true });
   });
 }
 
-test("CLI JSONL stdout EOF must not finish before the child exits", auditOnly, async () => {
+test("CLI JSONL stdout EOF must not finish before the child exits", regression, async () => {
   const value = await observe("early-eof");
   assert.equal(value.aliveBeforeRelease, true);
   assert.equal(value.exit.code, 23);
   assert.equal(value.completedBeforeRelease, false,
     "SDK finished while its test-owned CLI child was alive behind the release gate");
   assert.ok(value.failure instanceof HarnessTransportError);
+  assert.deepEqual(value.failure.cause, { code: 23, signal: null, stderrPresent: false });
 });

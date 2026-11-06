@@ -12694,7 +12694,7 @@ H265本机修复、E03所列验收及代码提交剩余0；E04的本轮C盘828,7
 
 ### H-266：TypeScript SDK 的 CLI JSONL 迭代忽略非零退出，部分输出或空输出均无错误结束
 
-**级别：中（P2，一次性自动化的失败传播）；状态：正式 TypeScript SDK 与真实本机 Node CLI 子进程已复现，未修复。** 触发条件是 `runJsonl()` 启动的进程输出零条或部分合法事件后以非零状态退出，没有交付业务终态；调用方依赖迭代正常结束判断传输成功。与 H-265 的 stdio 进程换代握手、H-256 的 Rust SDK 断线后订阅不结束不同：本项是独立 `cli-jsonl` 入口将失败进程作为无异常 EOF 交付，不重复登记同一现象。
+**级别：中（P2，一次性自动化的失败传播）；状态：已修复并验收（2026-11-07，限E-H266-03本机范围）；原审计失败事实保留。** 触发条件是 `runJsonl()` 启动的进程输出零条或部分合法事件后以非零状态退出，没有交付业务终态；调用方依赖迭代正常结束判断传输成功。与 H-265 的 stdio 进程换代握手、H-256 的 Rust SDK 断线后订阅不结束不同：本项是独立 `cli-jsonl` 入口将失败进程作为无异常 EOF 交付，不重复登记同一现象。
 
 #### 首次即时 Evidence（2026-10-25）
 
@@ -12711,6 +12711,68 @@ H265本机修复、E03所列验收及代码提交剩余0；E04的本轮C盘828,7
 - 触发后，一次性自动化可能把空结果或半截答案交给下游、把任务标记为正常消费结束、漏掉告警或失败重试；若下游另有严格终态检查，影响会受限。本次没有证明真实业务已经误提交、产生账单或丢失持久化数据。它是宿主 SDK 的进程结果边界，不是 DeepSeek 模型协议错误；不能靠修改 Responses/tool/cache 参数修复。
 - **本地治理建议，未实施**：在现有 `CliJsonlTransport` 单一边界记录 spawn/exit/close，读取完输出后验证退出结果，把非零状态及受控 stderr 上下文映射为稳定传输错误；明确与 `turn.failed`/`turn.interrupted` 等业务终态的关系，不凭 EOF 合成成功。后续回归至少覆盖零退出正常终态、空/部分输出后非零退出、已有失败事件的非零退出、启动失败、signal、取消和迭代提前结束。迭代器资源清理只列为后续检查，尚未动态登记为本项另一项已复现缺陷。
 - 验证收尾：`pnpm test`（含 build）**5 passed**；`pnpm typecheck` 通过；新探针默认 **1 passed / 3 skipped**；显式故障复核 **1 passed / 3 failed（预期），node 测试进程 exit=1**，与首次观测一致。`cargo fmt --all -- --check` 与 `git diff --check` 通过。本轮只增加测试与文档，未运行 workspace/Clippy/桌面构建/真实 DeepSeek/跨平台，也未实施生产修复；code-audit 要求的人工可达性及实际故障验证已经执行，不将未证实的提前 EOF 假设登记为另一缺陷。
+
+**E-H266-01（2026-11-07，当前原探针与TDD红，修复中）**：基线401aa6c0fac11a0c721fdafe3ff18f5431949b2c，tracked干净，原五项用户untracked只列名、不读改/暂存。已读原审计/台账、现有CliJsonlTransport/CliProcessOwner、公开runJsonl/close及所有仓内消费、H267默认owner与真实CLI测试、package/tsconfig/Cargo/CI/格式配置、CLI main/run/参数解析与build_chat_service及本地CodexExec原生exitPromise对照。原审计旧位置index.ts已由H267迁入cliJsonl.ts，先目录核对再定位，不误改不存在的旧文件。code-audit范围限本机源码/合成文件/Node子进程/真实CLI空安装/临时SQLite，不访问真实内网、凭据、模型或用户数据，不运行真实数据库迁移。
+
+隔离根C:\Users\32734\AppData\Local\Temp\h266-repair-20261107，合成HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP与data，清凭据/代理环境；它不是Cargo target。pnpm -C packages/sdk build：exit0、1.692秒；随后PowerShell设置$env:RUN_HARNESS_AUDIT='1'，node --test packages/sdk/tests/jsonl-exit-audit.test.mjs：exit1、1过3败0跳过、0.696秒。原fixture未改：success code0/两事件正常；partial-failure code23/[item.updated]和empty-failure code23/[]都无异常，stderr原失败行仍交付；early-eof在release前进程实际存活且completedBeforeRelease=false，release后code23仍未抛错。本机仍没有证实stdout.end本身使SDK提前返回，不扩大该假设。H267已等待真实exit/drain但没验code/signal，所以H266并非已历史消除。
+
+生产未改时新增真实Node gate矩阵node --test packages/sdk/tests/jsonl-result.test.mjs：exit1、7过9败0跳过、1.804秒。空/部分/成功/失败/中断事件后非零结果、terminal后gate释放、外部信号、自然失败后close、并发不同结果均缺少错误；零退出原始事件对照、解析/callback原cause及ENOENT对照通过。每次fixture仅操作私有临时文件，真实exit/close确认后才清理；失败不是编译错误或降低终态断言。原日志/结果先保留，本项未验收、无fix提交。184验收/24历史跳过/8归并/3撤销/86待修/1修复中，未关闭87含H180授权跳过，实际总队列86。本项暂估余1–3有效验收/收尾小时，全部200–400有效小时仍未逐项校准低置信历史粗估，机器/设备/依赖/环境/清理等待另计，无日期承诺；goal active。
+
+**E-H266-02（2026-11-07，唯一owner结果边界与候选，尚未最终验收）**：唯一生产文件原cliJsonl.ts在现有exit listener保存原生code/signal，沿既有finish等待真实退出及输出drain后判定，不增加reader/进程owner/运行或取消中心。非零code或外部signal抛原HarnessTransportError，即使已交付turn.completed/failed/interrupted；已yield事件不改、不增本地terminal、不重试。错误仅含code/signal及stderrPresent常量大小元数据，原onStderr继续处理全文，不复制参考实现的无界stderr缓存或把原文/路径/提示词塞进error。spawn/解析/pipe/callback/abort错误保留原cause，不覆盖成cleanup kill结果。
+
+本地设计的兼容性边界：有意return/throw/close仍走H267同一stop/reap契约，不将SDK主动kill当新业务失败；只在原生exit尚未观察到时记本地停止意图，已观察到的自然失败不能被随后的close抹去。零退出仅是进程回执，不保证业务成功/终态完整；runJsonl仍原样交付空/部分或失败事件，不伪造成功。公开签名/wire/最低Node20/依赖/SQL/UI/权限未变，但完整消费从“非零也无异常”改为typed拒绝，调用方须catch并结合原事件/持久化对账，不自动重复操作。
+
+依据当前[Node22.22.1 child_process官方文档](https://nodejs.org/download/release/v22.22.1/docs/api/child_process.html#event-exit)区分exit与close/信号回执、[readline文档](https://nodejs.org/download/release/v22.22.1/docs/api/readline.html#rlsymbolasynciterator)区分迭代结束与pipe错误，复用既有H267边界而非重写owner；只借鉴本地Codex的code/signal判定，不照搬其原文stderr异常。首候选build通过，新矩阵16+原H267 owner15实际31/0/0、exit0、3.493秒；默认SDK（含build，原H266四项已去skip并纳入）155/0/0、exit0、5.884秒；真实CLI扩展门禁1/0/0、exit0、5.920秒。后补stderr无callback/失败后新调用和原生信号回执观测后，新矩阵17+原探针4精确21/0/0、exit0、1.949秒，外部真实kill回执code=null/signal=SIGKILL。无生产修改去迎合fixture。
+
+真实CLI沿既有门禁增强，不建另一条调用链：/help成功/原failed run/持有合成SQLite写锁时close/stdio冷重开对照保留；业务error/run_failed后实际exit1须抛错且原failed/唯一terminal仍在；参数错误exit2与将合成data root设为普通文件的启动失败exit1在零事件时同样typed拒绝，原data/账本快照及合成文件内容不变。6个真实CLI进程没有自动重发、伪造取消或新增失败run。现有H267消费者从忽略自然非零改为验收typed错误并继续检查真实wire与DB，未放宽回收/close对照。使用已核对的H256 accepted当前G CLI字节相同副本；无Rust生产/协议变化，未重建CLI，不冒称本轮Rust编译。
+
+当前准备冻结七份SDK实现/配置/README/测试后重跑完整default/精确原探针/结果矩阵/H267 owner/真实stdio和JSONL/fmt/typecheck/四MJS语法及H295独立负对照；此包无独立eslint/formatter依赖或脚本，不下载临时lint、不将tsc称专用lint。无Rust/Tauri/UI变更，本轮不重跑完整workspace/Clippy/桌面构建，旧H306与Models strict-Clippy基线保留，未将旧结果计本轮通过。尚无最终验收/commit，不新增修复数；状态/总工时与等待口径同E01。
+
+**E-H266-03（2026-11-07，最终冻结源码验收，限本机范围）**：七份SDK生产/配置/README/测试SHA256在各门禁前后逐份复核一致，final-complete真实完成；源码未变化后才关闭本项。原H266 fixture保持原触发条件/退出钩子证据，三项缺陷探针取消skip且四项全纳入默认SDK；E01当前1过3败和新矩阵7过9败原始事实保留，未靠默认跳过、编译通过或局部绿计验收。以下PowerShell仓库根执行，隔离环境同E01，Node v22.22.1 / pnpm 11.7.0；negative-h295实际额外设置$env:RUN_HARNESS_AUDIT='1'，结束后清除。
+
+| 门禁 | 实际命令 | 退出、结果与耗时 |
+|---|---|---|
+| final-fmt | `cargo fmt --all -- --check` | exit0；全仓Rust格式检查（无Rust源码改动）；4.382秒 |
+| final-typecheck | `pnpm -C packages/sdk typecheck` | exit0；strict tsc --noEmit；1.291秒 |
+| final-default | `pnpm -C packages/sdk test` | exit0；156过0败0取消0跳过，含原H266四项及新17项，重复精确运行不累加；5.924秒 |
+| final-original | `node --test packages/sdk/tests/jsonl-exit-audit.test.mjs` | exit0；4/0/0，原fixture未改、原三项不再skip；0.653秒 |
+| final-results-matrix | `node --test packages/sdk/tests/jsonl-result.test.mjs` | exit0；17/0/0，真实gate/原生signal及安全元数据；1.902秒 |
+| final-owner | `node --test packages/sdk/tests/jsonl-owner.test.mjs` | exit0；15/0/0，H267原owner/取消/提前结束/树边界兼容回归；3.443秒 |
+| final-real-stdio | `pnpm -C packages/sdk test:stdio` | exit0；2/0/0，真实CLI旧代拒绝/显式恢复/持久化对照；5.792秒 |
+| final-real-jsonl | `pnpm -C packages/sdk test:jsonl` | exit0；1/0/0，6个真实CLI进程，成功/失败/无事件错误/close/冷重开；6.240秒 |
+| negative-h295 | `node --test packages/sdk/tests/approval-isolation-audit.test.mjs` | exit1；2过1败0跳过，独立全局审批屏障仍待修；0.259秒 |
+| syntax-jsonl-exit-audit.test | `node --check packages/sdk/tests/jsonl-exit-audit.test.mjs` | exit0；变更MJS语法检查；0.044秒 |
+| syntax-real-cli-jsonl-owner.test | `node --check packages/sdk/tests/real-cli-jsonl-owner.test.mjs` | exit0；变更MJS语法检查；0.045秒 |
+| syntax-jsonl-result-fixture | `node --check packages/sdk/tests/jsonl-result-fixture.mjs` | exit0；变更MJS语法检查；0.044秒 |
+| syntax-jsonl-result.test | `node --check packages/sdk/tests/jsonl-result.test.mjs` | exit0；变更MJS语法检查；0.043秒 |
+
+唯一生产修改为原packages/sdk/src/cliJsonl.ts：复用H267单一owner的exit/close/drain、stop/finally和本地abort边界，保存原生退出code/signal并在完整消费时判定；非零或外部signal即使先有业务terminal也必须typed拒绝，不修改已交付事件、不自动重派。只在尚未观察到exit时记本地stop意图，以保留return/close原契约，且自然失败后再close仍不能抹去结果。解析/pipe/callback/spawn/abort错误保持首因；cleanup未确认仍按H267原规则明确报错/保留owner供显式close重试，不新增执行/持久化/审批/取消链。
+
+默认17项新矩阵与真实gate覆盖：空/部分/turn.completed/failed/interrupted后分别code23拒绝、code0原样交付；有terminal但gate未释放时next不结束；stderr无尾换行也在drain后交付、错误仅含code/signal/stderrPresent且不含合成private canary；无onStderr回调也仅保留presence；外部真实SIGKILL得到code=null/signal=SIGKILL并拒绝；自然code23后close再消费仍拒绝；同transport并发成功与失败互不污染，失败后新调用仍可正常完成；malformed SyntaxError/callback原cause和真实ENOENT不被kill状态覆盖。没有替换production request/子进程exit或伪造wire来取绿，所有新result fixture真实运行Node stdio。H267的15项真实owner回归覆盖提前return/break/throw、parked read/显式close/abort、silent并发、lazy、kill拒绝重试、尾部stderr、detached继承pipe限制，仍不把其跨进程树残余说成本项已修。
+
+真实JSONL门禁沿原文件扩展，未新建真实CLI链：当前G固定入口81,808,384字节，SHA256=C0023473E093B6526BE1D78F0ECB714DDDE8816251FD47ABF1196BB1A507BEB8，来源H256 accepted；本轮无Rust/Cargo/protocol变更，未重建CLI，测试使用字节相同空安装副本且门禁前后G hash未变，不把复用binary冒称本轮Rust编译。六个原生回执依次[0,null]、[1,null]、[2,null]、[1,null]、[null,SIGKILL]、[null,SIGTERM]：/help仍有唯一completed和succeeded账本；无provider设置的业务error/run_failed保留且exit1抛错、原failed run/唯一durable terminal存在；真实参数拒绝exit2与合成data root为普通文件引起的真实启动拒绝exit1均零事件抛错，原data快照与合成文件内容不变；持有仅合成SQLite writer gate时close主动回收、未新增run/terminal，最后stdio冷resume/read保持原failed/唯一terminal/空actions且不重派。后两项是显式本地close的强制退出，不是成功退出或业务取消回执。未运行真实模型、未读取实际凭据或测试真实用户数据；未用损坏真实DB/迁移来触发故障。
+
+H295独立负对照仍2/1：none/answered组B终态后可完成，waiting组terminalB=turn.completed但finishedBeforeRelease=false，释放A审批后true。它是跨thread全局pending-approval完成屏障，不与本项process code合并；H265旧代握手/新代显式恢复对照通过但不重计修复。此包无独立eslint/formatter脚本或依赖，实际执行strict typecheck/build、四份变更MJS的node --check及Git diff检查，不下载临时lint或放宽配置、不把tsc称专用lint。无Rust/Tauri桥接/前端类型/UI修改，故本轮未跑完整Rust workspace/Clippy、desktop build/check或截图；旧H306与models/client.rs:431 strict-Clippy基线保留，不能把局部门禁当系统全绿。
+
+原始失败关键摘录保留，完整临时日志/脚本/合成数据验后按授权清理，不提交：
+```text
+partial-failure: exit.code=23; events=["item.updated"]; stderr=["audit fixture failure: code 23"]; no error
+empty-failure: exit.code=23; events=[]; stderr=["audit fixture failure: code 23"]; no error
+early-eof: aliveBeforeRelease=true; completedBeforeRelease=false; exit.code=23; no error
+原探针：1 passed / 3 failed / 0 skipped
+新增TDD：7 passed / 9 failed / 0 skipped
+SDK silently ended the iteration despite a nonzero child exit
+```
+
+兼容性及残余：公开签名/请求/事件/wire v1/依赖/Node最低20/SQL不变，但完整消费时自然非零或外部signal改为HarnessTransportError拒绝。cause仅安全原生code/signal及presence，不含原文stderr；全文仅按原onStderr显式回调，不提供自动脱敏保证。0退出不是业务成功、零/部分输出也不合成terminal；调用方应检查业务事件与durable状态。显式本地return/close表示放弃/收尾，不承诺任务取消或结果完整；若stop先于native receipt，原生结果未知，不能自动重试。未验其他OS/Node20实际运行、POSIX TERM升级、真实provider/活工具强杀、任意wrapper树、长压/掉电/完整GUI打包；H267已有owner限制不缩小也不扩大。
+
+本轮H266在上述范围已修复并验收，新增1，新增历史跳过/归并/撤销0。306唯一编号/8列及顶部成员将在提交前复核：185验收/24历史跳过/8归并/3撤销/86待修/0修复中，未关闭86含H180授权跳过，实际队列85，不提供完成率。代码/测试/当时双文独立提交待生成，取得真实fix hash后另做docs回填、不amend、不推送/PR/迁移。H266本机修复/验收余0，清理/提交待完成；下一H295（跨线程审批全局屏障阻塞无关终态），原探针本轮仍真实红且是执行完成一致性问题，待处理P1仅H180按授权跳过，不为追求数量挑容易项。全部200–400有效小时仍为未逐项校准低置信历史粗估，依据85项输入/权限/持久化/恢复/SDK跨层风险，不能按条数线性扣减；13门禁机器累计30.061秒不混作人工有效工时，候选/失败轮另计。未来构建/设备/依赖/环境及清理等待另计，无可靠等待总上界，不作精确日期承诺；整体goal active。
+
+**E-H266-04（2026-11-07，提交前复核与清理策略阻塞）**：七份冻结SDK实现/测试/配置/README逐份SHA256仍与final门禁一致；原失败摘录、实际命令/退出/原生回执和未验范围已入双文。306唯一编号/每行8列、顶部185验收成员与主行精确一致，相对401aa6c0只有H266主行变化，E01/02/03两文正文一致、git diff --check通过。原五项用户untracked继续只列名、不读改/暂存；无Rust生产/协议/迁移/GUI变更。
+
+只清理已确认本轮合成HOME/data、临时CLI副本、测试日志/脚本和记录的绝对根C:\Users\32734\AppData\Local\Temp\h266-repair-20261107。Resolve-Path精确匹配，根及全部后代无reparse且均在该根内，无本轮关联Node/CLI进程；删除前实测149文件/150目录/333,655,239逻辑字节。单次原生PowerShell Remove-Item -LiteralPath <已核对根> -Recurse -Force被工具策略在执行前拒绝；随后只读复核根仍在、149文件/333,655,239字节，确认本轮释放0。不换语言/工具/提权/改ACL绕过，也不把非Cargo根交给cargo clean。G SDK dist现16文件/103,920字节，沿H200既有工具策略阻塞不重复删除；G固定CLI作为共享真实门禁前置保留，不宣称G target清空。旧C盘H265/H256等清理阻塞按各自条目追踪，本轮不重复测量/尝试，亦不编造所有残余或物理空闲盘差值。
+
+H266本机修复/验收余0，代码提交与真实hash回填待完成，清理须在允许的执行环境处理；清理失败不冒充验收、也不因此把整个系统误标完成或停止其他可执行修复。185验收/24历史跳过/8归并/3撤销/86待修（含H180授权跳过、实际队列85）不变，下一H295。全部200–400有效小时仍为未逐项校准低置信历史粗估，构建/设备/依赖/环境/清理等待另计且无可靠总上界，goal active。
 
 ### H-267：TypeScript SDK 的 CLI JSONL 缺少进程 owner 收尾，停止迭代、解析失败和 close 后仍执行后台工作
 

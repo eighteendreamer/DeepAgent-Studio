@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -12,9 +12,9 @@ import { DatabaseSync } from "node:sqlite";
 import test, { mock } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { DeepAgent } from "../dist/index.js";
+import { DeepAgent, HarnessTransportError } from "../dist/index.js";
 
-test("H267 real CLI JSONL drain, forced startup close and durable reopen do not redispatch or invent cancellation", { timeout: 30000 }, async () => {
+test("H266/H267 real CLI exit results, owned drain and durable reopen do not redispatch or invent cancellation", { timeout: 30000 }, async () => {
   const source = fileURLToPath(new URL(`../../../target/debug/deepagent${process.platform === "win32" ? ".exe" : ""}`, import.meta.url));
   assert.ok(existsSync(source), "build the current real CLI first; no skipped fallback");
   const root = mkdtempSync(path.join(os.tmpdir(), "deepagent-h267-real-cli-"));
@@ -43,8 +43,8 @@ test("H267 real CLI JSONL drain, forced startup close and durable reopen do not 
   });
   syncBuiltinESMExports();
   const clients = [];
-  const agent = () => {
-    const value = new DeepAgent({ transport: "cli-jsonl", command: binary, cwd: workspace });
+  const agent = (extra = {}) => {
+    const value = new DeepAgent({ transport: "cli-jsonl", command: binary, cwd: workspace, ...extra });
     clients.push(value);
     return value;
   };
@@ -59,6 +59,19 @@ test("H267 real CLI JSONL drain, forced startup close and durable reopen do not 
         terminals: db.prepare("SELECT run_id, sequence, data FROM run_events WHERE event_type='run_terminal' ORDER BY run_id, sequence").all()
       };
     } finally { db.close(); }
+  };
+  const failedProcess = async (client, prompt, code) => {
+    const events = [];
+    await assert.rejects(async () => {
+      for await (const event of client.runJsonl(prompt)) events.push(event);
+    }, (error) => {
+      assert.ok(error instanceof HarnessTransportError);
+      assert.deepEqual(error.cause, { code, signal: null, stderrPresent: true });
+      return true;
+    });
+    assert.deepEqual(await launched.at(-1).closed, [code, null]);
+    await client.close();
+    return events;
   };
   let lock;
   try {
@@ -76,13 +89,10 @@ test("H267 real CLI JSONL drain, forced startup close and durable reopen do not 
     assert.equal(afterControl.terminals.length, 1);
 
     const failing = agent();
-    const failedEvents = [];
-    for await (const event of failing.runJsonl("Synthetic local input; no provider configuration is installed.")) failedEvents.push(event);
-    await failing.close();
-    const failed = launched.at(-1);
-    await failed.closed;
-    // H266 exit-code propagation remains independent: inspect the durable
-    // terminal, not EOF success or a fabricated local cancellation event.
+    const failedEvents = await failedProcess(failing,
+      "Synthetic local input; no provider configuration is installed.", 1);
+    // Business failure output and native process failure are distinct receipts.
+    // Both must survive; neither creates a local cancellation or another run.
     assert.equal(failedEvents.filter((event) => event.type === "error" && event.code === "run_failed").length, 1);
     assert.equal(failedEvents.filter((event) => event.type === "turn.interrupted").length, 0);
     const before = snapshot();
@@ -91,6 +101,22 @@ test("H267 real CLI JSONL drain, forced startup close and durable reopen do not 
     const { session_id: threadId, id: turnId } = newRuns[0];
     assert.equal(before.runs.filter((run) => run.id === turnId && run.terminal_kind === "failed").length, 1);
     assert.equal(before.terminals.filter((event) => event.run_id === turnId).length, 1);
+
+    // Actual parser rejection before Runtime/DB initialization: no fake wrapper
+    // or injected exit event, and no new persistent run to reconcile.
+    assert.deepEqual(await failedProcess(agent({ args: ["run", "--h266-unknown-option"] }), "/help", 2), []);
+    assert.deepEqual(snapshot(), before);
+    // Actual startup failure before runtime callbacks, confined to a synthetic
+    // file where a directory is required. Do not damage or migrate a real DB.
+    const dataRoot = process.env.DEEPAGENT_DATA_ROOT;
+    const notDirectory = path.join(root, "not-a-data-directory");
+    writeFileSync(notDirectory, "synthetic startup denial");
+    try {
+      process.env.DEEPAGENT_DATA_ROOT = notDirectory;
+      assert.deepEqual(await failedProcess(agent(), "/help", 1), []);
+    } finally { process.env.DEEPAGENT_DATA_ROOT = dataRoot; }
+    assert.equal(readFileSync(notDirectory, "utf8"), "synthetic startup denial");
+    assert.deepEqual(snapshot(), before, "native early failures must not invent a run or cancellation");
 
     lock = new DatabaseSync(database);
     // Existing native Database::open writes migration/maintenance metadata.
@@ -123,7 +149,8 @@ test("H267 real CLI JSONL drain, forced startup close and durable reopen do not 
     assert.deepEqual(run.actions, []);
     await reopened.close();
     assert.deepEqual(snapshot(), before, "reopening reconciles the original terminal without redispatch");
-    console.log(JSON.stringify({ root, binarySha256: hash(binary), events: events.map((event) => event.type), failed: { threadId, turnId }, nativeProcesses: launched.length }));
+    console.log(JSON.stringify({ root, binarySha256: hash(binary), events: events.map((event) => event.type), failed: { threadId, turnId }, nativeProcesses: launched.length,
+      nativeExitReceipts: await Promise.all(launched.map((entry) => entry.closed)) }));
   } finally {
     if (lock) { lock.exec("ROLLBACK"); lock.close(); }
     await Promise.allSettled(clients.map((client) => client.close()));

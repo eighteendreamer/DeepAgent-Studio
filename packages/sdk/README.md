@@ -147,16 +147,33 @@ detached jobs, remote effects, or a new durable cancellation mechanism. Native
 tool/MCP process owners retain their existing responsibilities. Reaping the CLI
 does not prove its run was cancelled, its session-memory pass completed, or
 earlier side effects rolled back. Reconcile persistent state before retrying;
-use stdio turn/interrupt when business cancellation is needed. CLI nonzero-exit
-result propagation (H-266) is still a separate outstanding issue: EOF without
-an exception is not sufficient evidence of a successful run.
+use stdio turn/interrupt when business cancellation is needed.
+
+On full consumption, a nonzero exit or an external termination signal rejects
+with `HarnessTransportError`, **even after a business terminal was delivered**.
+Already yielded events remain unchanged; the SDK never appends a synthetic
+success/failure/cancellation event or automatically retries the invocation.
+The error message records the native code/signal. Its `cause` contains only
+`{ code: number | null, signal: string | null, stderrPresent: boolean }`.
+Raw stderr is not retained in the error or a second buffer; opt into `onStderr`
+to handle it under your own redaction/logging policy. Spawn, parse, pipe and
+callback failures retain their original causes instead of being replaced by
+the exit status of cleanup's kill.
+
+Intentional local return/close preserves its existing completion contract and
+is not proof of process or business success. A close after an already observed
+natural failure cannot hide that failure from the invocation. A zero exit is
+only a process-level receipt: `runJsonl` is a raw event projection, so callers
+still need to inspect business terminal/error events and durable state. Empty
+or partial zero-exit output is not upgraded to a successful turn.
 
 `pnpm -C packages/sdk test:jsonl` is an explicit real-CLI gate (no skipped
 fallback), after `cargo build -p deepagent-cli --offline`. Its SQLite test
 helper needs Node >=22.13; production SDK still supports Node >=20 without
 that module. It runs in a fresh synthetic home/data/workspace with an identical
 executable copy and no provider settings: normal `/help`, uninitialized-model
-failure, forced close during a held synthetic SQLite writer gate, and durable
+failure plus native argument/startup nonzero failures before events, forced
+close during a held synthetic SQLite writer gate, and durable
 reopen without redispatch or invented cancellation. It does not test a real
 provider, an interrupted in-flight model/tool, packaged plugins or arbitrary
 descendant-tree cleanup. Default tests separately exercise real Node children,

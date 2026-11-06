@@ -5,6 +5,7 @@ import type { CliRunOptions, DeepAgentOptions, HarnessEvent } from "./index.js";
 
 type ErrorFactory = (message: string, cause?: unknown) => Error;
 type CliChild = ChildProcessByStdio<null, Readable, Readable>;
+type CliExitStatus = { code: number | null; signal: NodeJS.Signals | null };
 const TERMINATE_GRACE_MS = 1000;
 const REAP_GRACE_MS = 1000;
 
@@ -27,6 +28,9 @@ class CliProcessOwner {
   private readonly closed: Promise<void>;
   private readonly drained: Promise<void>;
   private hasExited = false;
+  private exitStatus?: CliExitStatus;
+  private stoppedLocally = false;
+  private stderrPresent = false;
   private disposal?: Promise<void>;
   private failure?: Error;
   private cleanupFailure?: unknown;
@@ -40,7 +44,11 @@ class CliProcessOwner {
     onStderr?: (line: string) => void
   ) {
     this.exited = new Promise((resolve) => {
-      child.once("exit", () => { this.hasExited = true; resolve(); });
+      child.once("exit", (code, signal) => {
+        this.exitStatus = { code, signal };
+        this.hasExited = true;
+        resolve();
+      });
       child.on("error", (cause) => {
         this.failure ??= error("CLI JSONL process error", cause);
         // A failed spawn has no native process and emits no exit event.
@@ -55,6 +63,7 @@ class CliProcessOwner {
       stream.on("error", (cause) => this.fail(error("CLI JSONL pipe failed", cause)));
     }
     this.stderr.on("line", (line) => {
+      this.stderrPresent = true;
       try { onStderr?.(line); }
       catch (cause) { this.fail(error("CLI stderr handler failed", cause)); }
     });
@@ -75,7 +84,19 @@ class CliProcessOwner {
     if (this.failure) throw this.failure;
     // Preserve trailing stderr delivery on normal completion. A descendant
     // retaining inherited pipes must not turn this root-exit edge into a hang.
-    // H-266 exit-code/result validation is independent of ownership.
+    // A local stop is not a process-success receipt. It keeps the existing
+    // return/close contract; errors that caused a stop remain primary above.
+    if (this.stoppedLocally) return;
+    const status = this.exitStatus;
+    if (!status) throw this.error("CLI JSONL process exit was not confirmed");
+    if (status.code !== 0 || status.signal !== null) {
+      // Keep only bounded metadata here. Raw stderr may contain credentials or
+      // model output, and is already routed through the opt-in onStderr seam.
+      throw this.error(
+        `CLI JSONL process exited unsuccessfully (code=${status.code}, signal=${status.signal}); stderr=${this.stderrPresent ? "present (see onStderr)" : "none"}`,
+        { ...status, stderrPresent: this.stderrPresent }
+      );
+    }
   }
 
   private fail(error: Error): void {
@@ -84,6 +105,8 @@ class CliProcessOwner {
   }
 
   stop(): Promise<void> {
+    // Do not let a later close erase an already observed natural failure.
+    if (!this.hasExited) this.stoppedLocally = true;
     this.disposal ??= this.dispose().catch((failure) => {
       this.cleanupFailure = failure;
       this.disposal = undefined; // Explicit close can retry an unconfirmed reap.
