@@ -23,7 +23,7 @@ use deepagent_harness_protocol::{
     TurnInterruptRequest, TurnStartRequest, TurnSteerRequest, PROTOCOL_VERSION,
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, BufReader},
     process::{Child, ChildStderr, ChildStdin, ChildStdout},
     sync::{broadcast, oneshot, watch},
 };
@@ -35,6 +35,10 @@ use crate::RequestEvents;
 
 /// Shared pending-reply table keyed by request id.
 type Pending = Arc<Mutex<HashMap<i64, oneshot::Sender<RpcResponse>>>>;
+
+#[path = "client_request.rs"]
+mod request;
+pub use request::RequestTimeouts;
 
 /// A running `deepagent-cli server` process plus its client handle.
 ///
@@ -63,6 +67,7 @@ pub struct HarnessClient {
     events: broadcast::Sender<HarnessEvent>,
     initialized: Arc<Mutex<bool>>,
     lifecycle: watch::Sender<bool>,
+    timeouts: RequestTimeouts,
 }
 
 impl HarnessProcess {
@@ -130,7 +135,34 @@ impl HarnessClient {
             events,
             initialized: Arc::new(Mutex::new(false)),
             lifecycle,
+            timeouts: RequestTimeouts::default(),
         }
+    }
+
+    /// Set finite local RPC deadlines on this handle (and its future clones).
+    /// Existing clones retain their policy; connection/pending ownership stays shared.
+    /// For a per-call override, configure a clone then invoke the normal typed method.
+    /// Zero/overflowing durations are rejected before any request is registered/sent.
+    /// Deadlines abandon only local waiting: do not automatically retry a mutating
+    /// request with an unknown result. Query `thread/read` to reconcile first.
+    /// Dropping a call during frame writing retires the pipe to avoid reusing a
+    /// partial JSON line; dropping it before writing or during reply wait does not.
+    ///
+    /// ```no_run
+    /// # use deepagent_harness_sdk::{HarnessClient, RequestTimeouts, SdkError};
+    /// # use std::time::Duration;
+    /// # async fn example(client: HarnessClient) -> Result<(), SdkError> {
+    /// let bounded = client.clone().with_request_timeouts(RequestTimeouts {
+    ///     initialize: Duration::from_secs(10),
+    ///     request: Duration::from_secs(20),
+    /// })?;
+    /// let response = bounded.thread_list().await?;
+    /// # let _ = response;
+    /// # Ok(()) }
+    /// ```
+    pub fn with_request_timeouts(mut self, timeouts: RequestTimeouts) -> Result<Self, SdkError> {
+        self.timeouts = timeouts.validate()?;
+        Ok(self)
     }
 
     /// Handshake: announce the client and validate the protocol version.
@@ -333,38 +365,61 @@ impl HarnessClient {
 
     /// Full send path without the initialized guard (used by the handshake).
     async fn call_unchecked(&self, request: HarnessRequest) -> Result<RpcResponse, SdkError> {
+        let duration = if matches!(&request, HarnessRequest::Initialize(_)) {
+            self.timeouts.initialize
+        } else {
+            self.timeouts.request
+        };
+        let deadline = RequestTimeouts::deadline(duration)?;
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
 
         let (method, params) = split_request(&request)?;
-        let line = request_line(id, &method, &params)?;
+        let line = format!("{}\n", request_line(id, &method, &params)?);
+        let timeout_error = |outcome_unknown| SdkError::RequestTimeout {
+            id,
+            method: method.clone(),
+            outcome_unknown,
+        };
+        if tokio::time::Instant::now() >= deadline {
+            return Err(timeout_error(false));
+        }
 
         // Register the in-flight reply BEFORE writing: the server can answer so
         // fast that the reader would otherwise find no pending entry.
-        let (reply, rx) = oneshot::channel();
-        self.pending
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(id, reply);
-
-        {
-            let mut guard = self.stdin.lock().await;
-            let stdin = guard.as_mut().ok_or_else(|| {
-                SdkError::Write(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
-            })?;
-            if let Err(error) = stdin.write_all(line.as_bytes()).await {
-                self.pending
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .remove(&id);
-                return Err(SdkError::Write(error));
+        let (_registration, rx) = request::Registration::new(&self.pending, id);
+        let mut closed = self.lifecycle.subscribe();
+        let mut outcome_unknown = false;
+        let operation = async {
+            let guard = self.stdin.lock().await;
+            if guard.is_none() || *self.lifecycle.borrow() {
+                return Err(SdkError::Write(std::io::Error::from(
+                    std::io::ErrorKind::BrokenPipe,
+                )));
             }
-            stdin.write_all(b"\n").await.map_err(SdkError::Write)?;
-            stdin.flush().await.map_err(SdkError::Write)?;
-        }
-
-        let response = rx
-            .await
-            .map_err(|_| SdkError::ResponseChannelClosed { id })?;
+            if tokio::time::Instant::now() >= deadline {
+                return Err(timeout_error(false));
+            }
+            // This flag is conservative: a partial write can be accepted by the
+            // server even if its response never arrives. No automatic replay.
+            outcome_unknown = true;
+            request::FrameWriter::new(guard, &self.pending, &self.lifecycle)
+                .send(line.as_bytes())
+                .await?;
+            rx.await.map_err(|_| SdkError::ResponseChannelClosed { id })
+        };
+        let result = tokio::time::timeout_at(deadline, async {
+            tokio::select! {
+                biased;
+                result = operation => result,
+                // wait_for returns a watch Ref/read lock. Release it inside
+                // this future before select drops a possibly active writer:
+                // that owner's cleanup also updates the lifecycle watch.
+                _ = async { drop(closed.wait_for(|closed| *closed).await); } =>
+                    Err(SdkError::ResponseChannelClosed { id }),
+            }
+        })
+        .await;
+        let response = result.map_err(|_| timeout_error(outcome_unknown))??;
 
         if let Some(error) = response.error {
             Err(SdkError::Rpc {
@@ -470,7 +525,6 @@ mod audit_tests {
     use super::*;
 
     #[tokio::test]
-    #[ignore = "audit H-90: a request after close must not leave a pending reply entry"]
     async fn audit_request_after_close_does_not_leak_pending_reply() {
         let mut child = tokio::process::Command::new("cmd.exe")
             .args(["/C", "timeout /t 30 /nobreak > nul"])
@@ -490,6 +544,7 @@ mod audit_tests {
             events,
             initialized: Arc::new(Mutex::new(true)),
             lifecycle,
+            timeouts: RequestTimeouts::default(),
         };
 
         client.close().await;
@@ -531,6 +586,7 @@ mod audit_tests {
             events,
             initialized: Arc::new(Mutex::new(false)),
             lifecycle,
+            timeouts: RequestTimeouts::default(),
         };
 
         let result = client.initialize("audit-fixture", "0.1.0").await;
@@ -570,6 +626,7 @@ mod audit_tests {
             events,
             initialized: Arc::new(Mutex::new(false)),
             lifecycle,
+            timeouts: RequestTimeouts::default(),
         };
 
         let result = client.initialize("audit-fixture", "0.1.0").await;
@@ -616,6 +673,7 @@ mod audit_tests {
             events,
             initialized: Arc::new(Mutex::new(false)),
             lifecycle,
+            timeouts: RequestTimeouts::default(),
         };
 
         let request_client = client.clone();
@@ -646,7 +704,6 @@ mod audit_tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: an unresponsive but connected server must not block SDK requests indefinitely"]
     async fn audit_unresponsive_server_request_has_a_bounded_wait() {
         let marker = std::env::temp_dir().join(format!(
             "deepagent-harness-sdk-audit-timeout-{}-{}.marker",
@@ -681,9 +738,17 @@ mod audit_tests {
             events,
             initialized: Arc::new(Mutex::new(true)),
             lifecycle,
+            timeouts: RequestTimeouts::default(),
         };
 
-        let request_client = client.clone();
+        // The original 300 ms is an observation window, not the product default.
+        let request_client = client
+            .clone()
+            .with_request_timeouts(RequestTimeouts {
+                request: std::time::Duration::from_millis(100),
+                ..RequestTimeouts::default()
+            })
+            .unwrap();
         let mut request = tokio::spawn(async move { request_client.thread_list().await });
         let marker_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
         while !marker.exists() && tokio::time::Instant::now() < marker_deadline {
@@ -694,10 +759,9 @@ mod audit_tests {
             "fixture must receive the valid SDK request"
         );
 
-        let completed_before_release =
-            tokio::time::timeout(std::time::Duration::from_millis(300), &mut request)
-                .await
-                .is_ok();
+        let observed =
+            tokio::time::timeout(std::time::Duration::from_millis(300), &mut request).await;
+        let completed_before_release = observed.is_ok();
         let caller_cancelled = !completed_before_release;
         let cancelled_join = if caller_cancelled {
             request.abort();
@@ -714,12 +778,15 @@ mod audit_tests {
         let request_result = if let Some(cancelled_join) = cancelled_join {
             format!("caller-abandoned: {cancelled_join:?}")
         } else {
-            format!(
-                "{:?}",
-                tokio::time::timeout(std::time::Duration::from_secs(3), &mut request)
-                    .await
-                    .expect("EOF should release the pending request")
-            )
+            let result = observed.unwrap().unwrap();
+            assert!(matches!(
+                result,
+                Err(SdkError::RequestTimeout {
+                    outcome_unknown: true,
+                    ..
+                })
+            ));
+            format!("{result:?}")
         };
         let _ = std::fs::remove_file(marker);
 
@@ -768,6 +835,7 @@ mod audit_tests {
             events,
             initialized: Arc::new(Mutex::new(true)),
             lifecycle,
+            timeouts: RequestTimeouts::default(),
         };
 
         let request_client = client.clone();
@@ -845,6 +913,7 @@ mod audit_tests {
             events,
             initialized: Arc::new(Mutex::new(true)),
             lifecycle,
+            timeouts: RequestTimeouts::default(),
         };
 
         let request_client = client.clone();
@@ -1126,3 +1195,7 @@ mod id_contract_tests;
 #[cfg(all(test, windows))]
 #[path = "client_version_contract_tests.rs"]
 mod version_contract_tests;
+
+#[cfg(all(test, windows))]
+#[path = "client_request_lifecycle_tests.rs"]
+mod request_lifecycle_tests;

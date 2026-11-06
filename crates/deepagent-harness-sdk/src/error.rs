@@ -27,6 +27,19 @@ pub enum SdkError {
     /// A request was sent before the server was ready (e.g. before `initialize`).
     #[error("request rejected before initialize")]
     NotInitialized,
+    /// A local request deadline must be positive and representable by the clock.
+    #[error("request timeout must be positive and representable")]
+    InvalidRequestTimeout,
+    /// Local wait ended; this is not a receipt of server cancellation or failure.
+    #[error("local RPC deadline exceeded for {method} (id {id}, outcome_unknown={outcome_unknown}); reconcile thread/read before retrying; no server cancellation was sent")]
+    RequestTimeout {
+        /// Host-generated request identifier, not the response payload.
+        id: i64,
+        /// Typed protocol method; request parameters are never included.
+        method: String,
+        /// True once writing may have begun; even partial writes can be accepted.
+        outcome_unknown: bool,
+    },
     /// A successful response cannot identify the operation's event scope.
     #[error("{method} result has an invalid or conflicting {field}")]
     InvalidStreamIdentity {

@@ -303,8 +303,8 @@ async fn h214_real_pipe_dropped_start_future_releases_its_subscription() {
     assert_eq!(client.events.receiver_count(), 1);
     assert_eq!(client.tool_list().await.unwrap().result()["starts"], 1);
     drop(observer);
-    // H-91 owns the raw pending-RPC table after caller abandonment. EOF clears
-    // that existing table; this test proves receiver ownership, not its repair.
+    // H-204 owns the same RPC registration: abandonment releases it before EOF.
+    assert!(client.pending.lock().unwrap().is_empty());
     finish(child, &client).await;
     assert!(client.pending.lock().unwrap().is_empty());
 }

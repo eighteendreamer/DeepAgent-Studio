@@ -64,7 +64,7 @@ mod error;
 mod stream;
 mod transport;
 
-pub use client::{HarnessClient, HarnessProcess};
+pub use client::{HarnessClient, HarnessProcess, RequestTimeouts};
 pub use error::SdkError;
 pub use stream::RequestEvents;
 pub use transport::{decode_line, request_line, WireMessage};

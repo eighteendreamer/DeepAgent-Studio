@@ -3812,6 +3812,8 @@ expanded-settings误用include-ignored，实际72过/1败/0忽略（193.723秒�
 - 影响与限制：关闭后请求仍会按预期失败，不会进入 CLI/AppCore 或调用模型；问题限于该 SDK client 实例及其克隆的待处理表，若调用方持续误用关闭后的句柄且 reader 尚未 EOF，内存会随失败次数增加。没有测量生产客户端长期内存影响，也没有证明正常 `HarnessProcess::wait()` 后仍会持续累积；server 通常会在 stdin EOF 后退出并由 reader 清表。
 - 收敛方向（尚未实施，本地设计）：在共享 writer 锁内先验证句柄仍开放，再登记/发送，或在统一发送错误出口无条件按 ID 清理 pending；newline 和 flush 失败也走相同清理路径。回归覆盖 close 后请求、close 与并发调用、JSON 行已部分写入后断管、flush 失败和 reader EOF 收尾，并保持原有 id 匹配与快速响应竞态保护。
 
+**E-H90-01（归并至H-204，2026-11-06）**：原H90关闭writer后pending=1的失败证据保留。E-H204-01～04已重新执行原探针真实0/1→1/0，并在同一call_unchecked用单一RAII registration覆盖None writer/写失败/期限/caller drop/EOF，newline归入同一完整帧，flush失败同owner收束；无法合理为H90再造独立清理分支。本轮开始前已说明同根关联，现将H90正式归并H204，唯一实现/测试/提交/残余限制与工时均见E-H204-04～09；不计历史已修复跳过或第二个新增修复，不作为独立问题再次实施。
+
 ### H-91：Harness 并发事件生产可使实时 eventSequence 倒退
 
 **级别：低（P3）；触发条件：同一 stdio 连接有多个并发事件生产者，并在某个生产者分配序号后、入队前发生调度切换。** 单生产者或分配与入队没有交错时，FIFO 通知顺序正常。本项不是持久化事件丢失。
@@ -7573,6 +7575,69 @@ G盘本轮前端/SDK产物经绝对路径与祖先核对后尝试原生PowerShel
 - 收敛方向（尚未实施，本地设计）：在现有 SDK call 层引入 request options / timeout，给 initialize 与普通 RPC 可分别配置 deadline；使用 RAII pending registration，成功匹配、写失败、deadline、调用 future drop、reader EOF 均由一个 owner 按 ID 只移除/完成一次。超时错误应携带安全的 method/id 和“请求结果可能未知”语义，不自动重放已写请求；协议若以后需要远端取消，应定义独立版本化 cancel contract，不能把丢弃 Rust future 误当成服务器取消。测试覆盖发送前取消、写入中失败、已发送未答、超时后迟到回复、EOF 竞争、重复取消以及副作用请求的读回恢复。
 
 本轮 H-204 仅新增 opt-in 审计探针与报告，没有改生产 SDK 行为；deadline 用例的 300ms 仅为测试观察窗，不是产品超时配置。
+
+**E-H204-01（原探针与TDD红，2026-11-06，修复中）**：起点858083d38d1a662163ea74b08a6618043931da19、tracked干净，无未完成合并，原五项untracked仅列名不读改。已核对现有Rust SDK typed call/initialize/writer/reader/pending、stream owner、TS现有abort处理、DeepSeek Harness本地requestTimeoutMs/transport abort参考、Cargo锁定Tokio1.52.3源码（write_all明确非取消安全，timeout丢弃inner future及非yield工作不受硬时限约束）、Cargo/CI/格式配置。当前报告H204原复现及根因在Rust共享call入口，本轮限定Rust SDK，不声称TS已拥有普通RPC deadline，TS生产接口不扩改；H101畸形行诊断、H205通知序号及其他独立问题保留。
+
+新建真正仓库外Cargo target `C:\Users\32734\AppData\Local\Temp\h204-repair-20261106`，隔离HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/TMP、清凭据/代理环境、只外层Cargo显式--target-dir，不继承给夹具子Cargo，复用离线工具链缓存；未绕过前轮清理拒绝。`cargo test --target-dir <上述根> -p deepagent-harness-sdk --lib client::audit_tests::audit_unresponsive_server_request_has_a_bounded_wait --offline -j 2 -- --ignored --exact --nocapture` exit101、0/1/0、247.133秒含冷编译，原样观测 `completed_before_release=false,pending_after_caller_cancel=1`。H90同入口缺pending owner，开始前已说明必然共享修改：原 `client::audit_tests::audit_request_after_close_does_not_leak_pending_reply`（同Cargo选项）exit101、0/1/0、80.161秒，close后pending实际1而期望0；不另堆重复清理链，计划通过原探针后归并H90→H204且不重复计修复数。新增默认 `client::request_lifecycle_tests::` 真实管道TDD（同Cargo选项，非ignored）exit101、0/3/0、16.279秒，已发送后drop/排队等待writer时drop/8MiB阻塞帧中drop均在pending残留断言红；此时生产未改。
+
+本轮本地设计是在原call_unchecked内采用单一RAII registration及有限可配置initialize/普通RPC期限，成功、写失败、timeout、caller future drop及EOF共同按ID收束，不引入第二套取消、运行/事件存储或自动重试。timeout只代表本地等待结束，已开始写入者结果可能未知，应显式thread/read对账；不是服务端取消。write_all被中途丢弃可能残留半帧，因此写入owner在未完整发送时关闭原pipe，防止后续RPC被拼接；只在排队/已整帧发送后放弃不误关其他writer。默认30秒initialize/60秒普通RPC，可配置正且可表示Duration、clone局部按调用覆写；不把审计300ms观察窗当产品默认。开始实现后3项候选已3/0/0、25.053秒；新增期限/EOF/迟到回复/副作用读回/双配置等测试首编译发现ThreadReadRequest没有Default，已按当前8字段定义显式填写None，未修改公共DTO来适应测试；全组候选尚待终态。
+
+当前仍178验收/24历史跳过/7归并/3撤销、93待修+H204修复中，94未关闭含授权跳过H180，实际总队列93；H90归并尚待验收，不提前关闭。最终相关与全仓测试、lint、提交、双文终验与产物清理未完成，不新增成果。本项暂估4–10有效小时，整体200–400有效小时仍是未逐项校准低置信历史粗估，设备/依赖/编译/锁及清理等待另计，无精确工期承诺。
+
+**E-H204-02（统一owner/期限实现与候选验收反例，2026-11-06，仍修复中）**：实现私有client_request模块，原Pending表由Registration按ID注册并在Drop回收，reader仍使用原匹配/EOF逻辑；原call_unchecked用同一timer覆盖序列化后的writer排队、完整带换行帧/flush和reply等待，不创建后台发送任务或第二套队列。FrameWriter只有完整frame写/flush成功才解除中断保护；写入错误/timeout/drop会关闭该pipe、唤醒原lifecycle并释放同连接等待者，防止将新请求追加到半帧。已完整发送后timeout/drop只删本请求pending，不关闭连接、不发远端取消、不重复派发。close/EOF竞争走同一watch+owner。新增RequestTimeouts（initialize默认30秒、普通请求60秒），with_request_timeouts仅修改当前handle及其后续克隆的本地政策；旧克隆保留政策但共享原连接/初始化/pending。允许显式clone单次覆写，拒绝0/时钟溢出；写前复核期限，避免同步编码已超时仍开始发送。Tokio为协作式timer，非yield同步编码/OS调度不具硬实时墙钟承诺。RequestTimeout只携本地产生id、typed method及保守outcome_unknown；不带params/凭据，已可能开始写为true，queued未写为false，无自动重试、rollback或服务器取消保证。SdkError增variants是Rust源兼容注意事项，公共wire/权限/SQL未改；TS生产未改。
+
+H204原探针去ignore并显式配置100ms请求期限，原300ms仍仅观察窗；原样失败保留E01。原探针原代码在成功观察task后会第二次await同一JoinHandle，现改为保留首次观察结果并断言RequestTimeout未知结果，不重复poll已完成JoinHandle；不改pending/300ms验收断言。H90原探针去ignore；旧H214 dropped-start回归现在在EOF前追加pending=0断言，纠正旧注释将该表误指H91，不改流语义。
+
+新增期限/迟到回复/两请求drop隔离/EOF/initialize无授权/不派发/合成副作用一次与显式readback等默认测试。首个全lib候选因测试误用不存在的ThreadReadRequest::Default编译exit101/4.408秒（没有实际测试结果块），按已读DTO显式填原8字段后全lib44/0/7、exit0/30.340秒；初3项生命周期候选3/0/0、exit0/25.053秒。随后增加真实pipe读到字节前缀后阻塞8MiB帧的timeout/close测试，首sdk-final runner PID41508（父48796、创建22:05:31）在 `h204_write_deadline_and_explicit_close_retire_partial_frames_and_release_all_waiters` 超过60秒无终态且子进程均已退出，源码复核锁顺序显示watch::wait_for返回Ref读锁可能在select丢弃FrameWriter时存活，而FrameWriter清理send_replace需同watch写锁。已查本地Tokio watch文档明确长持Ref会阻塞producer/死锁；对精确本轮测试进程身份核对后主动Stop-Process，不因工具观察超时盲目重启。原runner原生exit0xffffffff（wrapper=-1）、256.662秒，无完整test result块，不当作全绿或未执行。
+
+返修是修正同一owner的锁边界：watch等待分支内部先drop返回Ref再完成，使select可安全丢弃写owner；没有新特判或放宽期限。返修后 `cargo test --target-dir <本轮根> -p deepagent-harness-sdk --offline -j 2 -- --quiet --test-threads=2` exit0/40.627秒，lib46/0/7、原生stdio9/0/0、doc2/0/0（未包含嵌套helper重复计数）；写期限/close两场景真实前缀读取、caller drop/queued/drop前未poll/EOF和迟到ID全过。先前strict SDK no-deps lint exit0/63.016秒、fmt exit0/7.182秒，因随后返修需再次运行，不冒用旧lint为最终证据。另补必须显式执行的真实CLI relay验收，故旧候选仍非最终交付：仅拦截一条thread/start response、真实CLI实际接纳并落临时SQLite，再显式thread/read与冷重开，不用合成counter代替真实持久化；当前CLI构建、SDK整组与该验收、完整workspace/最终lint、清理/提交尚待终态。
+
+**E-H204-03（最终门禁进行中与真实CLI夹具修正，2026-11-06，未验收）**：E02锁边界返修后SDK完整候选exit0/40.627秒；新增真实CLI验收后冻结6份SDK实现/测试，`cargo test --target-dir <本轮根> -p deepagent-harness-sdk --offline -j 2 -- --quiet --test-threads=2` exit0/356.660秒含锁等待，46/0/8、stdio9/0/0、doc2/0/0。最后1个ignore是必须显式运行的真实CLI验收，不以默认跳过计通过。最新SDK严格all-targets/all-features/no-deps lint exit0/154.034秒，fmt exit0/7.822秒；完整workspace严格lint exit101/94.486秒仍为旧Models client.rs:431 clone_on_copy，未加allow或混修。
+
+当前源码CLI真实离线build exit0/329.393秒；接管G固定SDK路径前核对H200 hash `BE4704AA12CB4BA351803C1BC5F3A2E3A221447193B67915D4995AAEC32AF16F`，复制当时C源与G目的均为 `73AE1609DD9174B8011B3FA682B6C7E4C019869A3D9BB204ECCB4CEBF3C07094`，路径仍为G:\Code_Warehouse\DeepAgent-Studio\target\debug\deepagent.exe。真实CLI验收使用与其字节完全一致的空安装副本、独立HOME/凭据清理/临时SQLite、只拦截thread/start一条response，不拦CLI admission或notification、不调用模型/工具/内网。首显式验收exit101、0/1/0、91.960秒含锁等待：本地deadline已按未知结果返回，但等待真实thread.started通知超时。原因是测试专用顺序relay读到被扣留的response就等待下一条stdin，CLI的notification可在该response后入stdout，relay不会继续读，故未证明SDK事件丢失。源码/protocol thread/list结果字段已复核。
+
+仅修正该测试夹具消费顺序：先在空库确认thread/list为空；timeout后先断言pending=0/next_id未自动重试，再显式thread/list对账（这也让顺序relay继续消费真实notification与迟到reply），要求真实持久化thread恰好1、真实thread.started身份一致，再thread/read及冷重开精确比较，并复核重开列表仍1。未修改生产SDK或放宽任何期限/断言，也不伪造notification；这是正常主动查询对账，不将timeout当服务器未接纳/取消。首失败与夹具限制保留；新版显式验收待终态，完整workspace已在先前冻结测试上运行，后续至少重新执行改动的SDK整组/显式验收与最终lint，不能将旧快照冒称全部最新测试已验。
+
+**E-H204-04（最终本机验收，2026-11-06，限定Rust本项）**：最终6份Rust实现/测试SHA256复核与当前冻结一致；真实CLI夹具修正只改client_request_lifecycle_tests，生产实现及其他测试与workspace构建快照保持一致，最终SDK整组/显式验收/strict lint已在当前测试源重新运行，不冒用旧快照。H204及H90原探针都已转为默认回归，最终workspace SDK原生二进制 `deepagent_harness_sdk-05d94e1bf7dab635.exe` 逐条 `client::audit_tests::audit_unresponsive_server_request_has_a_bounded_wait --exact --nocapture` 与 `client::audit_tests::audit_request_after_close_does_not_leak_pending_reply --exact --nocapture` 各exit0、1/0/0，分别1.483/0.052秒；保留E01原样0/1与E02测试观察修正依据，不将旧300ms当默认配置。SDK完整默认也真实执行两探针，不靠ignored默认跳过认定完成。
+
+以下为实际最终命令/结果，PowerShell仓库根，`$Target='C:\Users\32734\AppData\Local\Temp\h204-repair-20261106'`；所有Rust门禁离线、本轮隔离HOME/凭据/TEMP政策沿E01，只有外层显式target，子进程不继承CARGO_TARGET_DIR。
+
+| 实际命令 | 退出、结果 | 墙钟秒（含编译/锁等待） |
+|---|---|---|
+| `cargo test --target-dir $Target -p deepagent-harness-sdk --offline -j 2 -- --quiet --test-threads=2` | 0；lib46/0/8、真实stdio9/0/0、doc2/0/0 | 25.576 |
+| `cargo test --target-dir $Target -p deepagent-harness-sdk --lib client::request_lifecycle_tests::h204_real_cli_withheld_admission_reply_reconciles_once_and_survives_database_reopen --offline -j 2 -- --ignored --exact --nocapture` | 0；1/0/0，实际测试5.37秒，不将ignore当未执行 | 870.953含长构建锁等待 |
+| `cargo test --target-dir $Target -p deepagent-harness-sdk --test e2e_stdio --offline -j 2 -- --quiet --test-threads=2`（当前构建CLI接管后） | 0；9/0/0 | 9.394 |
+| `cargo test --target-dir $Target --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=2` | 101；144顶层target，4799过/1败/209忽略，非全绿 | 2198.719 |
+| `cargo clippy --target-dir $Target -p deepagent-harness-sdk --all-targets --all-features --no-deps --offline -j 2 -- -D warnings` | 0；当前SDK源/测试严格通过 | 7.576 |
+| `cargo clippy --target-dir $Target --all-targets --all-features --offline -j 2 -- -D warnings` | 101；旧Models client.rs:431 clone_on_copy | 94.486 |
+| `cargo fmt --all -- --check` | 0；当前源码/测试 | 7.499 |
+| `cargo build --target-dir $Target -p deepagent-cli --offline -j 2` | 0；当前源码生产方CLI | 329.393 |
+| `pnpm test`（packages/sdk） | 0；TS现有消费者60/0/0，含tsc构建 | 7.452 |
+| `pnpm test:stdio`（packages/sdk） | 0；真实当前CLI消费1/0/0，含tsc构建 | 6.862 |
+
+完整workspace按running/result栈排除1个嵌套helper，再与stderr的144个顶层目标逐个对齐；不使用重复求和4800过。SDK46/0/8、stdio9/0/0、协议contract18/0/0、AppCore1544/0/58、Kernel313/0/24、CLI185/0/12、Runtime438/0/9、Models lib169/0/16。唯一失败Prompts `canvas_prompt::tests::every_node_kind_owns_exactly_one_profile` 为未改H306（creative.video-edit.v1空defaultUserPrompt，27/1/0）；不混修、不称完整workspace通过。全仓strict lint未绿，没有加allow/绕hook/改检查标准。
+
+真实CLI门禁：只在本轮合成root/空安装副本，复制当前CLI字节逐字核对、独立HOME/临时SQLite且无真实凭据；initialize与初始thread/list正常，服务端接纳thread/start但测试relay扣留response。500ms本地期限返回RequestTimeout/outcome_unknown=true，pending=0/next_id只增一次；显式thread/list恰有一个真实thread并收到真实thread.started，迟到原reply不错误完成后续请求；thread/read与关服重开后完整result一致，重开thread/list仍1。不是只测合成counter、编译或请求丢弃后假称服务端取消，未发turn/interrupt/重复thread/start。relay是测试专用顺序字节转发器，其E03消费顺序失败保留，不声称它覆盖任意并发传输。
+
+11项默认H204生命周期测试覆盖32次已发送drop后EOF前pending=0、排队drop/期限不误关writer、未poll/非法政策不派发、真实前缀+8MiB阻塞帧的drop/期限/close、两请求隔离、EOF竞争、initialize独立期限且不授权、8次超时/迟到reply/复用连接、合成mutation单次/readback与正常快速响应对照。另真实CLI1项显式通过，H90原关闭probe及H214既有drop回归默认通过。source frame现在包含换行一次写入，flush错误出口仍由同owner保护；未单独注入底层flush失败或量化RSS/长时间高并发峰值，不将有期限等同全局并发容量上限。
+
+兼容/未验：Rust typed方法签名与wire不变，新增可选配置方法和公开RequestTimeouts，旧调用默认从无界等待改为30/60秒；确有长耗时RPC者须显式调大正期限，stream/服务器run本身没有新增时间上限。SdkError增加variants，外部穷举match需同步；无新依赖、SQL迁移、权限/模型供应商变更。timeout/drop不是服务器取消或rollback，可能已写出的请求不能安全自动重试；部分帧被放弃会退役连接，须新连接/显式对账。Tokio协作timer非硬实时、同步序列化/OS阻塞无法保证精确墙钟上界；close/EOF保留既有错误语义，未新增远端cancel协议。H101畸形行即时诊断、H205事件外层sequence、H256旧raw广播EOF等仍独立，TS普通RPC deadline未改/未宣称解决。未验其他OS、真实供应商/凭据/内网/模型任务、真实网络断连、UI/Tauri交互、设备/重启断电；无UI/桥接改动故本轮未跑desktop build或Tauri检查，TS SDK编译及真实stdio消费已验。
+
+H204仅在上述本机范围已修复并验收。H90同一注册缺owner的写失败子路径已由统一RAII根因消除且原探针真实红→绿，正式归并H90→H204，不再独立修复/提交或重复计成果；H204新增1，累计179验收/24历史跳过/8归并/3撤销，92未关闭含H180授权跳过（实际91项）。下一复核H205；本项验收余0，提交/产物清理待E05/E06。全余200–400有效小时仍为未逐项校准低置信历史粗估（91项中跨层/真实进程/持久化验收差异大），设备/依赖/编译锁及清理等待另计，不能给可靠等待总上界或精确完工日期。
+
+**E-H204-05（产物归属与部分清理，2026-11-06）**：全部门禁终态后核对本轮真正Cargo target `C:\Users\32734\AppData\Local\Temp\h204-repair-20261106` 的绝对路径、祖先及内部均无reparse，无存活本轮Cargo/测试目标进程；原五项用户untracked未读改，源码/文档不在清理范围。清理前11815文件、22445355969逻辑字节。正规 `cargo clean --target-dir C:\Users\32734\AppData\Local\Temp\h204-repair-20261106 --dry-run` exit0、11815 files/20.9GiB；同根正式clean原生exit101，在 `fixture-tmp\.tmptj30Pr\destination\child` 因DACL拒绝访问（os error 5）。复查debug已不存在，残余1624文件、1541869772逻辑字节、枚举错误0/reparse0；逻辑文件大小减少20903486197字节。没有物理空闲盘差值测量，不混称实际回收物理空间；整个h204根未删净，仍可能含日志、一次性runner/测试relay副本、合成夹具及本轮h前缀子目录，不提交它们。重要原失败/命令/终验已落双文E01～04。
+
+G:\Code_Warehouse\DeepAgent-Studio\packages\sdk\dist 本轮TS SDK构建后只读复核12文件/83258字节、reparse0；同路径前轮H200原生删除已被工具策略拒绝，本轮没有重复尝试或换工具/语言/提权/改ACL绕过。G固定CLI同样保留删除策略阻塞。先核对上一轮BE4704AA…才由本轮源码构建接管，E03复制时C源/G目的一致；Rust/TS SDK及真实CLI relay实际使用的G副本最终SHA256仍为 `73AE1609DD9174B8011B3FA682B6C7E4C019869A3D9BB204ECCB4CEBF3C07094`。后续workspace feature图构建使清理前C源变为 `22583FFF227C0F96EA35142B3D1FF301F41EC4720F8CD0B98A78ED3AF4E8E0B1`，不声称两份最终hash仍相同，不使用未核对的旧旁车冒充本轮实现。未清理整个共享G target或node_modules以免删除无关产物；旧H69/H71/H82/H209/H210/H200等残余依各自证据继续阻塞。代码验收剩余0，上述C/G清理等待与91项有效修复工时分开，无法承诺解除时间，不宣称整套任务完成。
+
+**E-H204-06（提交前补强退出回执，2026-11-06，临时重开验收）**：提交前再次审查真实CLI测试，发现finish helper虽然等待或强制终止并reap了relay，但没有向调用者返回/断言ExitStatus，E04不能单凭该helper宣称每次真实CLI均正常退出后冷重开。仅测试补强：finish返回实际ExitStatus，真实CLI两次关闭均必须success后继续（relay本身finally等待底层CLI退出，若5秒超时kill则exit9）；原期限/单次接纳/真实SQLite/notification/完整读回一致断言全部保留，不修改生产实现或放宽3/5秒门限。因旧C debug已按E05清理，本轮为必要补验重新冷构建该真正target，不尝试绕过旧DACL或清理拒绝；补验后会再次正规cargo clean仅回收新产物。当前真实CLI/SDK整组/strict lint/fmt重新执行中，H204临时恢复修复中、不算已提交或最终验收，原E01～05证据及第一次清理结果不删除，H90同根归并依据仍成立。生产SDK源与E04未变，完整workspace原结果仍有效但不冒充这次测试退出补强已被执行；后续最终证据单列。
+
+**E-H204-07（退出回执补验通过，2026-11-06，恢复本机验收）**：E06仅测试的退出确认补强完成后，原E04明确命令（同本轮Target）重新实际执行：真实CLI显式验收exit0、1/0/0、167.012秒含清理后冷构建，测试本体4.80秒；两次relay实际ExitStatus.success均断言通过，relay finally又核对底层CLI退出码为0，才进行SQLite冷重开/完成，不将信号或kill_on_drop当回执。SDK完整默认exit0/23.073秒，lib46/0/8、真实stdio9/0/0、doc2/0/0；当前源码/测试SDK all-targets/all-features/no-deps严格clippy exit0/54.538秒，fmt exit0/5.225秒。六份交付Rust源重新冻结，只有client_request_lifecycle_tests相对E04增加ExitStatus断言，五份其他源与workspace/TS/生产CLI的验收快照一致；没有生产改动、API变动或门限放宽，故不冒称重新跑了完整workspace，原4799/1/209与全仓旧lint/H306限制仍如实保留。
+
+H204在E01～04、06～07所列完整本机范围恢复已修复并验收，H90继续同根归并；累计179验收/24历史跳过/8归并/3撤销，92未关闭含授权跳过H180，实际91项。E05第一次部分清理不是最终清理结论，必要补验新产物待E08再核对/正规清理，提交hash待E09回填。其他限制/未验与工时沿E04，不宣称整个任务完成。
+
+**E-H204-08（补验后最终部分清理，2026-11-06）**：E07必要补验的新构建产物再次按原根绝对路径/祖先/内部无reparse、无存活本轮cargo/测试进程核对；清理前4685文件、3356319327逻辑字节。只为回收补验新产物运行同一正规cargo clean --target-dir <E05本轮根> --dry-run（exit0、4685 files/3.1GiB）及正式clean（原生exit101），再次在E05同一 `fixture-tmp\.tmptj30Pr\destination\child` DACL拒绝访问（os error 5）。没有尝试修ACL、换工具/语言/提权删除，亦不继续循环重试既有残余。复查debug再次不存在，最终残余1703文件、1870463576逻辑字节，枚举错误0/reparse0，本次逻辑文件大小减少1485855751字节。E05第一次20.903GB逻辑减少与本次1.486GB分别记载，不冒充物理空闲盘差值；由于补验生成了新的合成CLI副本/数据/脚本，最终残余约1.87GB而不是E05当时1.54GB，整个h204根仍未删净。
+
+G固定CLI最终hash复核仍为73AE1609…C07094，G SDK dist与先前策略阻塞未改变，不重复失败删除或删共享target/node_modules。重要补验结果已记录E06/07；原五项untracked未读改，源码/双文未清理，无产物暂存。当前H204修复代码与本机验收完成，但C/G产物清理仍为具体阻塞；其等待与91项有效待修工时分开，不宣称整体完成。E09填写真实修复commit，不为自身hash反复amend。
 
 ### H-205：Rust Harness SDK 丢弃通知外层 `eventSequence`，无法可靠做 ACK 或缺口恢复
 
