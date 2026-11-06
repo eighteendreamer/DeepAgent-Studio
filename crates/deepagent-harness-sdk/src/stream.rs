@@ -48,12 +48,16 @@ impl RequestEvents {
     ) -> Result<Self, SdkError> {
         let thread = identity(&response, "turn/start", "threadId")?;
         let turn = identity(&response, "turn/start", "turnId")?;
-        if thread != requested_thread {
-            return Err(SdkError::InvalidStreamIdentity {
-                method: "turn/start",
-                field: "threadId",
-            });
-        }
+        deepagent_harness_protocol::control_result_identity(
+            response.result.as_ref().unwrap_or(&serde_json::Value::Null),
+            "turn/start",
+            "threadId",
+            Some(requested_thread),
+        )
+        .map_err(|_| SdkError::InvalidStreamIdentity {
+            method: "turn/start",
+            field: "threadId",
+        })?;
         Ok(Self {
             response,
             receiver: Some(receiver),
@@ -229,14 +233,14 @@ fn identity(
     method: &'static str,
     field: &'static str,
 ) -> Result<String, SdkError> {
-    response
-        .result
-        .as_ref()
-        .and_then(|result| result.get(field))
-        .and_then(serde_json::Value::as_str)
-        .filter(|id| !id.trim().is_empty())
-        .map(str::to_owned)
-        .ok_or(SdkError::InvalidStreamIdentity { method, field })
+    deepagent_harness_protocol::control_result_identity(
+        response.result.as_ref().unwrap_or(&serde_json::Value::Null),
+        method,
+        field,
+        None,
+    )
+    .map(str::to_owned)
+    .map_err(|_| SdkError::InvalidStreamIdentity { method, field })
 }
 
 #[cfg(test)]

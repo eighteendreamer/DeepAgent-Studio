@@ -177,7 +177,7 @@ impl HarnessClient {
         client_version: &str,
     ) -> Result<RpcResponse, SdkError> {
         let response = self
-            .call_unchecked(HarnessRequest::Initialize(InitializeRequest {
+            .call_unchecked(&HarnessRequest::Initialize(InitializeRequest {
                 client_name: client_name.to_string(),
                 client_version: client_version.to_string(),
                 protocol_version: PROTOCOL_VERSION,
@@ -377,12 +377,17 @@ impl HarnessClient {
     /// to have completed first.
     async fn call(&self, request: HarnessRequest) -> Result<RpcResponse, SdkError> {
         self.require_initialized().await?;
-        self.call_unchecked(request).await
+        let response = self.call_unchecked(&request).await?;
+        deepagent_harness_protocol::validate_control_result(
+            &request,
+            response.result.as_ref().unwrap_or(&serde_json::Value::Null),
+        )?;
+        Ok(response)
     }
 
     /// Full send path without the initialized guard (used by the handshake).
-    async fn call_unchecked(&self, request: HarnessRequest) -> Result<RpcResponse, SdkError> {
-        let duration = if matches!(&request, HarnessRequest::Initialize(_)) {
+    async fn call_unchecked(&self, request: &HarnessRequest) -> Result<RpcResponse, SdkError> {
+        let duration = if matches!(request, HarnessRequest::Initialize(_)) {
             self.timeouts.initialize
         } else {
             self.timeouts.request
@@ -390,7 +395,7 @@ impl HarnessClient {
         let deadline = RequestTimeouts::deadline(duration)?;
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
 
-        let (method, params) = split_request(&request)?;
+        let (method, params) = split_request(request)?;
         let line = format!("{}\n", request_line(id, &method, &params)?);
         let timeout_error = |outcome_unknown| SdkError::RequestTimeout {
             id,
@@ -1152,7 +1157,6 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
     }
 
     #[tokio::test]
-    #[ignore = "audit H-207: thread/start success results must validate the required threadId"]
     async fn audit_thread_start_rejects_success_result_without_thread_id() {
         let script = r#"$index = 0
 while (($line = [Console]::In.ReadLine()) -ne $null) {
@@ -1224,3 +1228,7 @@ mod notification_tests;
 #[cfg(all(test, windows))]
 #[path = "client_initialize_tests.rs"]
 mod initialize_tests;
+
+#[cfg(all(test, windows))]
+#[path = "client_result_tests.rs"]
+mod result_tests;

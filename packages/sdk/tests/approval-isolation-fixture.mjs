@@ -39,7 +39,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       if (request.params.approvalId !== "approval-A") throw new Error("wrong approval identity");
       approvalResponses++;
       turns.get("thread-1").state = "answered";
-      reply(request.id, { status: "resolved", approvalId: "approval-A" });
+      reply(request.id, { status: "resolved", approvalId: "approval-A", approved: request.params.approved });
       break;
     case "audit/finish": {
       const turn = turns.get(request.params.threadId);

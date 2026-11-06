@@ -13,7 +13,7 @@ async fn fixture(frames: Vec<Value>, capacity: usize) -> (Child, HarnessClient) 
         r#"$frames = @({frames})
 $null = [Console]::In.ReadLine()
 foreach ($frame in $frames) {{ [Console]::Out.WriteLine($frame) }}
-[Console]::Out.WriteLine('{{"jsonrpc":"2.0","id":1,"result":{{"threadId":"A","turnId":"run"}}}}')
+[Console]::Out.WriteLine('{{"jsonrpc":"2.0","id":1,"result":{{"threadId":"A","turnId":"run","status":"started"}}}}')
 while ($null -ne [Console]::In.ReadLine()) {{}}
 "#
     );

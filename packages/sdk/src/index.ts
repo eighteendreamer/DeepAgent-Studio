@@ -2,6 +2,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, type Interface } from "node:readline";
 import { TurnEventStream } from "./turnStream.js";
 import { CliJsonlTransport } from "./cliJsonl.js";
+import { validateControlResult } from "./controlResults.js";
+export { HarnessResultError } from "./controlResults.js";
 
 export const PROTOCOL_VERSION = 1;
 const JSONRPC_VERSION = "2.0";
@@ -656,7 +658,9 @@ export class DeepAgent {
   private async request(method: string, params: unknown, signal?: AbortSignal): Promise<unknown> {
     if (signal?.aborted) throw new HarnessTransportError("request cancelled locally before send");
     await this.initialize();
-    return this.ensureStdio().request(method, params, signal);
+    const result = await this.ensureStdio().request(method, params, signal);
+    validateControlResult(method, params, result);
+    return result;
   }
 
   /** @internal Used by the SDK contract tests and transport adapters. */
@@ -770,7 +774,6 @@ export class DeepAgent {
       input,
       ...options
     }, signal)) as TurnStartResult;
-    if (!result || result.threadId !== threadId) throw new HarnessTransportError("turn/start returned an invalid or conflicting threadId");
     return new Turn(this, threadId, result.turnId, result.snapshotId, result.capabilitySnapshot);
   }
 

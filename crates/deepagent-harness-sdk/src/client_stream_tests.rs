@@ -70,6 +70,7 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
     }
   } elseif ($request.method -eq 'approval/respond') {
     $approvals++
+    $reply.result = @{approvalId=$request.params.approvalId;approved=$request.params.approved;status='resolved'}
     Batch @($reply,(Notify @{type='turn.completed';threadId='A';turnId='turn-A';message='approved fixture terminal'}))
   } elseif ($request.method -eq 'tool/list') {
     $reply.result = @{starts=$starts;approvals=$approvals;threadId=$request.params.threadId;runId=$request.params.runId;expectedSnapshotId=$request.params.expectedSnapshotId}

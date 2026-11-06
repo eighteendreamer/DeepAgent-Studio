@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { DeepAgent, HarnessRpcError, HarnessTransportError } from "../dist/index.js";
+import { DeepAgent, HarnessRpcError, HarnessTransportError, HarnessResultError } from "../dist/index.js";
 
 const fixture = fileURLToPath(new URL("./owned-stream-fixture.mjs", import.meta.url));
 const bounded = (promise) => Promise.race([promise, delay(300).then(() => "parked")]);
@@ -318,7 +318,7 @@ for (const mode of ["invalid-thread", "invalid-turn"]) {
     try {
       const thread = await p.agent.startThread();
       const iterator = thread.runStreamed("synthetic");
-      await assert.rejects(iterator.next(), (error) => error instanceof HarnessTransportError &&
+      await assert.rejects(iterator.next(), (error) => error instanceof HarnessResultError &&
         !error.message.includes("PRIVATE_BAD_ID"));
       assert.equal((await p.barrier()).starts.length, 1);
       await iterator.return();

@@ -62,6 +62,10 @@ pub enum SdkError {
         /// The missing, invalid or conflicting identifier (never its received value).
         field: &'static str,
     },
+    /// A mutating RPC success receipt violated the typed v1 result contract.
+    /// This is not evidence that the remote mutation did not occur.
+    #[error(transparent)]
+    InvalidMethodResult(#[from] deepagent_harness_protocol::ControlResultError),
     /// The bounded live receiver lost events; durable reconciliation is required.
     #[error("event stream lagged by {skipped} records; reconcile thread/read before retrying")]
     EventLagged {

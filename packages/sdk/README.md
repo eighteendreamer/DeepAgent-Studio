@@ -78,6 +78,31 @@ policy; reconnect explicitly when necessary. Existing incomplete mock peers must
 publish the complete v1 handshake contract. Rust error enum exhaustive matches
 may need updating. Business result validation and transport restart are separate.
 
+Mutation receipts are also validated before a request resolves: `thread/start`,
+`thread/resume`, `thread/fork`, `thread/archive`, `turn/start`, `turn/interrupt`,
+`turn/steer`, `approval/respond` and `event/ack` require their typed v1 identity,
+status and control fields. Echoed identities/decisions/ACKs must match the request;
+steer identifies a new turn and the replaced turn. Both raw and owned APIs use
+this gate; read-only history/config/tool/sandbox projections keep their existing
+contracts. Unknown execution metadata and optional legacy configuration/snapshot
+fields remain untouched in the original successful response. Incomplete synthetic
+peers must publish the actual v1 receipt (including status); no wire field or
+protocol-version migration is introduced.
+
+Rust reports `SdkError::InvalidMethodResult(ControlResultError)` and TypeScript
+reports `HarnessResultError` (separate from transport/RPC errors). They carry safe
+method/field/expected-shape/received-type diagnostics, never arbitrary peer values.
+Owned admission failures now report this same error before constructing a stream;
+local stream-scope defense retains Rust's `InvalidStreamIdentity`. Rust exhaustive
+error matches and TS consumers catching only transport errors may need updating.
+An invalid success receipt does **not** prove the server performed no mutation:
+reconcile durable state before retrying. The SDK does not redispatch, interrupt,
+ACK, or reconstruct missing identities. Rust validates the full unsigned 64-bit
+ACK range; TS rejects non-safe-integer receipt fields (`acknowledgedEventSequence`
+and `forkedAt`) instead of claiming precision it cannot represent. Read-only
+projections are not made fully schema-
+validated by this change, and transport restart remains separate.
+
 The default transport starts `deepagent server --transport stdio`. A custom
 binary can be supplied with `command`, `args`, and `cwd`.
 

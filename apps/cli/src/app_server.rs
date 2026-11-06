@@ -193,7 +193,16 @@ impl ServerState {
 
     #[cfg(test)]
     fn handle_request_for_test(&mut self, request: RpcRequest) -> RpcResponse {
-        self.dispatch(request, None).0
+        let typed = serde_json::from_value::<HarnessRequest>(serde_json::json!({
+            "method": request.method, "params": request.params,
+        }))
+        .ok();
+        let response = self.dispatch(request, None).0;
+        if let (Some(request), Some(result)) = (typed, response.result.as_ref()) {
+            deepagent_harness_protocol::validate_control_result(&request, result)
+                .expect("production v1 mutation receipt matches the SDK contract");
+        }
+        response
     }
 
     fn dispatch(

@@ -74,10 +74,7 @@ export class TurnEventStream implements AsyncIterableIterator<HarnessEvent> {
     if (this.ended) { this.unsubscribe(); return; }
     void this.hooks.start(this.controller.signal).then((turnId) => {
       if (this.ended) return;
-      if (typeof turnId !== "string" || !turnId.trim()) {
-        this.fail(this.hooks.error("turn/start result lacks a valid turnId"));
-        return;
-      }
+      // Admission identities were validated by the shared request-result gate.
       this.turnId = turnId;
       const candidates = this.values.splice(0);
       this.bytes = 0;
