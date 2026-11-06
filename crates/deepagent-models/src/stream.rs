@@ -179,12 +179,13 @@ impl ResponseAccumulator {
             "response.completed" => {
                 terminal::validate(&value, kind, "completed")?;
                 self.terminal = Some(FinishReason::Stop);
-                self.saw_terminal = true;
                 self.observe_terminal_usage(value.get("response"), observer)?;
                 self.complete_terminal_items(&value, observer)?;
                 for index in 0..self.tool_calls.len() {
                     self.emit_tool_completed(index, observer);
                 }
+                // A terminal envelope alone does not accept its output items.
+                self.saw_terminal = true;
                 observer.on_event(ModelStreamEvent::Finished {
                     reason: self.terminal,
                 });
@@ -194,7 +195,6 @@ impl ResponseAccumulator {
                 terminal::validate(&value, kind, "incomplete")?;
                 self.observe_terminal_usage(value.get("response"), observer)?;
                 self.terminal = Some(terminal::incomplete_reason(&value)?);
-                self.saw_terminal = true;
                 self.complete_terminal_items(&value, observer)?;
                 // A truncated builder is not executable. Only explicit done
                 // identities may survive an incomplete terminal, regardless
@@ -204,6 +204,7 @@ impl ResponseAccumulator {
                         self.emit_tool_completed(index, observer);
                     }
                 }
+                self.saw_terminal = true;
                 observer.on_event(ModelStreamEvent::Finished {
                     reason: self.terminal,
                 });

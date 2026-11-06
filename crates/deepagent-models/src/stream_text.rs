@@ -92,6 +92,7 @@ impl TextItems {
         output_index: Option<u64>,
         output: &mut Vec<ResponseOutputItem>,
     ) -> Result<()> {
+        message_role(item)?;
         self.index(item.get("id").and_then(Value::as_str), output_index, output)?;
         Ok(())
     }
@@ -129,6 +130,7 @@ impl TextItems {
         output_index: Option<u64>,
         output: &mut Vec<ResponseOutputItem>,
     ) -> Result<()> {
+        let role = message_role(value)?;
         let index = self.index(
             value.get("id").and_then(Value::as_str),
             output_index,
@@ -136,11 +138,7 @@ impl TextItems {
         )?;
         let item = &mut self.0[index];
         output[item.slot] = ResponseOutputItem::Message {
-            role: value
-                .get("role")
-                .and_then(Value::as_str)
-                .unwrap_or("assistant")
-                .to_owned(),
+            role: role.to_owned(),
             // Explicit empty content is authoritative. An omitted content
             // field may only recover this item's own fragments, never a sibling.
             content: super::output_text_from_message_item(value)
@@ -180,6 +178,22 @@ impl TextItems {
             .collect();
         (output, first_fallback)
     }
+}
+
+fn message_role(value: &Value) -> Result<&str> {
+    value
+        .get("role")
+        .and_then(Value::as_str)
+        .filter(|role| *role == "assistant")
+        .ok_or_else(|| {
+            // Provider values may contain private text. Keep only the field
+            // path and expected contract in the diagnostic.
+            CoreError::provider(
+                None,
+                Some("malformed_response_message".into()),
+                "Responses output message.role must be the string assistant",
+            )
+        })
 }
 
 fn identity_error(detail: &str) -> CoreError {

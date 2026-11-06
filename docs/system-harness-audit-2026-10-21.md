@@ -8394,6 +8394,8 @@ H-82原探针显式0/1仍以content_filter触发3次请求/预算升级/续写�
 
 ### H-209：Responses 输出 `message` item 缺少 `role` 仍被静默补成 assistant
 
+**当前状态：已修复并验收（2026-11-06，限E-H209-04范围）；代码/测试/当时两文待独立提交，原始失败证据保留。**
+
 **级别：中（P2，输出协议保真与异常响应隔离）；触发条件：** Responses 流的 `response.output_item.done` 返回 `type=message`，但缺少官方输出 message 的 `role` 字段。当前 parser 将缺失值默认成 `assistant`，继续生成成功的 `ResponseOutputItem::Message`，没有保留“供应商输出不完整”的诊断。
 
 #### 官方契约、生产路径与正式复现
@@ -8418,6 +8420,40 @@ H-82原探针显式0/1仍以content_filter触发3次请求/预算升级/续写�
 - 回归应覆盖：合法 assistant message、缺失/空/非字符串 role、非法 role、缺失 content、delta+done、done-only（与 H-81 分开断言）、多个 message item、function/custom tool item 和正常完整终态；错误发生前不得发布错误的 `Finished` 或 durable 成功事件。
 
 本轮只新增审计探针和文档，未修改生产实现；H-81 的已有证据保持独立，正式 parser 修复和全链路回归尚未实施。
+
+**E-H209-01（原探针与TDD红，2026-11-06；修复中）**：从7edb7f15ca4e31571bcb61381c9163d1e0db6d33开始，tracked干净、无未完成合并，原五项用户未跟踪内容仅列名不读改。建立仓库外真正Cargo target `C:\Users\32734\AppData\Local\Temp\h209-repair-20261106`，隔离HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/TMP并清除凭据/代理环境，离线复用既有Cargo/Rustup缓存；原H82清理残余不绕过。原样 `cargo test --target-dir C:\Users\32734\AppData\Local\Temp\h209-repair-20261106 -p deepagent-models --test responses_output_item_contract_audit audit_output_message_without_role_is_rejected --offline -j 2 -- --ignored --exact --nocapture` exit101、0/1/0、81.133秒含冷编译，error=false、transport_calls=1、缺role被补成assistant，原复现成立，无需改写探针。当前错误源已随H81重构由stream.rs移到stream_text.rs::TextItems::complete，语义缺陷未消除，不误标历史跳过。
+
+新增 `cargo test --target-dir C:\Users\32734\AppData\Local\Temp\h209-repair-20261106 -p deepagent-models --test responses_message_role --offline -j 2 -- --nocapture --test-threads=1` 修前exit101、1/2/0、4.601秒；added/done/两终态角色矩阵与公开accumulator失败隔离均红，合法done-only/delta/缺content同item回退及function/custom对照通过。13种缺失/null/非字符串/空白/其他角色逐项验收计划已编码，当前首次断言失败不冒称矩阵已全跑。另已启动真实ChatService/Kernel/已prepare写文件/SQLite重开红测，尚未终态，不计通过。此时生产未改。
+
+已读当前TextItems/累加器、H81/H208/H82夹具和生产消费，实际打开[DeepSeek Responses API](https://api-docs.deepseek.com/api/create-response/)核对输出message.role恒为assistant，input role规则不混用；读取Codex ResponseItem::Message非Option role与process_responses_event。更正原参考表述：当前Codex是在typed decode失败后debug记录并不发布该OutputItemDone，不等于保证整条stream报错；本项目静态Provider错误拒绝策略是结合自身提交边界的本地设计，不声称照搬或运行了参考测试。
+
+本轮仅H209：统一在既有TextItems准入验证added/done/terminal内原生message角色，非法身份不得靠assistant默认值或终态成功掩盖；终态只在全部输出接受后标记可finish，不另造parser/运行链。保留无原生message的legacy delta-only兼容、合法role缺content时H81同item回退（用对照明确验证），不扩成所有id/status/content schema或混修H203输入角色/H210序号/H200元数据；未使用真实provider/内网/凭据。H209修复中、未验收/提交；175验收/24历史跳过/7归并/3撤销/96待修+1在修，97未关闭含授权跳过H180、实际总队列96。本项暂估3–8有效小时；全部剩余200–400有效小时仍为未逐项校准低置信历史粗估，设备/冷编译/依赖/环境/清理等待另计，无可靠等待上界或精确日期承诺。
+
+**E-H209-02（候选根因修复与定向验收，2026-11-06；尚未最终验收）**：真实Kernel红测 `cargo test --target-dir C:\Users\32734\AppData\Local\Temp\h209-repair-20261106 -p deepagent-app-core --test kernel_v2_e2e terminal_contract::h209_ --offline -j 2 -- --nocapture --test-threads=1` 修前exit101、0/1/0、341.043秒含冷编译，首次缺角色场景durable terminal_kind实际succeeded而非failed；未执行到后续零文件断言，不虚构已测副作用结论。随后在既有TextItems::start/complete共享message_role准入中检查精确assistant，缺失/null/非字符串/空白/其他角色都返回静态Provider(malformed_response_message)和message.role字段路径，不回显值/id/正文；legacy delta不带原生message，继续由原H81边界组装。completed/incomplete的saw_terminal推迟至全部输出接受后，避免终态内坏message报错后公开accumulator.finish仍成功。无新DTO/parser/重试器/依赖/运行链，未更改输入角色或其他输出字段政策。
+
+首版候选将局部let role误落到delta而非complete，三条串行检查均因同一E0425未进入测试（Models3.275秒、Kernel2.024秒、HTTP21.817秒，均exit101/0测试）；核对文件后一次纠正变量位置，未用编译失败当TDD红测或放松检查。修正后 `cargo test --target-dir C:\Users\32734\AppData\Local\Temp\h209-repair-20261106 -p deepagent-models --test responses_output_item_contract_audit --test responses_message_role --test responses_text_items --test responses_terminal_contract --offline -j 2 -- --nocapture --test-threads=1` exit0、19/0/0、14.550秒：原H209取消ignore默认执行，13种非法角色×4准入来源×2观察入口共104组合、两种终态公开accumulator失败隔离、合法role/缺content同item回退/function/custom正对照，以及H81十项/H208五项均完整执行。
+
+同名Kernel定向命令改过滤为terminal_contract::，exit0、4/0/0、134.631秒：坏message在added/done/两终态共4来源×缺角色/user/canary角色3种，正式ChatService→Kernel→已done写文件工具均零actions/零文件/零durable工具调用、唯一failed和SQLite重开/游标一致，错误不含canary；正常completed恰好一次写入及配对、H208的18坏终态和H82过滤/缺因对照保留。`cargo test --target-dir C:\Users\32734\AppData\Local\Temp\h209-repair-20261106 -p deepagent-models --features http --offline -j 2 -- --nocapture --test-threads=1` exit0、201/0/29 ignored、103.427秒，未把独立ignored项算通过。
+
+独立负对照 `cargo test --target-dir C:\Users\32734\AppData\Local\Temp\h209-repair-20261106 -p deepagent-models --test responses_sequence_audit audit_non_monotonic_responses_sequence_is_rejected --offline -j 2 -- --ignored --exact --nocapture` exit101、0/1/0、3.909秒，仍接受坏序号/按原断言失败，不因H209门禁提前拒绝；H210保持独立待修、不归并计功。已核对CI fmt/strict clippy/workspace与配置，下一将冻结5份Rust实现/测试并跑默认Models/Kernel、完整workspace(runtimes)、当前Tauri/CLI/SDK、fmt/严格lint与相关JSON诊断。当前H209仍修复中，无实现commit；E01计数及有效工时/等待口径不变。
+
+**E-H209-03（冻结后门禁与完整验收启动，2026-11-06；修复中）**：最终5份Rust实现/测试已按SHA256冻结，基线HEAD仍7edb7f15；`cargo fmt --all -- --check` exit0、4.790秒；`cargo check --manifest-path G:\Code_Warehouse\DeepAgent-Studio\apps\desktop\src-tauri\Cargo.toml --target-dir C:\Users\32734\AppData\Local\Temp\h209-repair-20261106 --lib --offline -j 2` exit0、361.728秒；`cargo build --target-dir C:\Users\32734\AppData\Local\Temp\h209-repair-20261106 -p deepagent-cli --features deepagent-app-core/runtimes --offline -j 2` exit0、200.902秒。SDK固定G盘target/debug/deepagent.exe先核对仍为H82的B4D75F9E…44B7B5B，再由本轮CLI复制接管；复制时C源/G目的同为F26804504D669136B7A823E9FA953555F283CD8847E19CDE4B035A299EDF93CB，避免用旧sidecar验收。覆盖不是删除，H69/H71/H82的清理残余仍按各项记录保留。
+
+完整 `cargo test --target-dir C:\Users\32734\AppData\Local\Temp\h209-repair-20261106 --workspace --features deepagent-app-core/runtimes --offline --no-fail-fast -j 2 -- --quiet --test-threads=1` 已启动并核实真实runner/cargo子进程正在编译，不因观察等待而重启；后续串行默认Models/Kernel、严格全仓lint与相关/AppCore JSON诊断。完整门禁尚无终态，不能称通过、关闭本项或提交实现。没有前端/Tauri command/DTO改动，本轮不重复pnpm/WebView交互；Tauri Rust消费者实际编译已过。其他OS、真实provider/凭据/内网未验；H209/台账/工时沿E01/02，整体goal仍active。
+
+**E-H209-04（最终冻结验收与限定结论，2026-11-06）**：最终9项final门禁全部终态，runner退出且stderr为空，5/5源码SHA256和SDK实际使用的G盘CLI在门禁后不变。完整workspace命令沿E03，exit101、2528.770秒；142顶层target去重后4768/1/212，原143结果块4769过含AppCore嵌套helper1过，不重复计数。AppCore lib1544/0/58、runtimes Kernel314/0/25、Models单元169/0/16及其全部集成、Runtime lib436/0/9、CLI185/0/12、SDK stdio9/0/0通过。唯一失败仍为未改Prompts canvas_prompt.rs:310的creative.video-edit.v1空defaultUserPrompt（27/1/0，H306）；原H209探针已取消ignore默认真实执行，不把独立ignored项一并关闭。
+
+`cargo test --target-dir C:\Users\32734\AppData\Local\Temp\h209-repair-20261106 -p deepagent-models --offline -j 2 -- --quiet --test-threads=1` exit0、186/0/27、105.931秒；`cargo test --target-dir C:\Users\32734\AppData\Local\Temp\h209-repair-20261106 -p deepagent-app-core --test kernel_v2_e2e --offline -j 2 -- --quiet --test-threads=1` exit0、310/0/25、500.409秒。HTTP201/0/29及定向19项/Kernel4项见E02，覆盖默认/runtimes、正常与坏message、工具准入与SQLite重开等真实消费者，不只新增辅助函数单绿。
+
+`cargo clippy --target-dir C:\Users\32734\AppData\Local\Temp\h209-repair-20261106 --workspace --all-targets --all-features --offline -j 2 -- -D warnings` exit101、90.685秒，既有client.rs:431 clone_on_copy。普通诊断 `cargo clippy --target-dir C:\Users\32734\AppData\Local\Temp\h209-repair-20261106 -p deepagent-models -p deepagent-runtime --all-targets --all-features --no-deps --offline -j 2 --message-format=json` exit0、54.297秒，既有Models/Runtime clone_on_copy与workflow/canvas derivable_impls三类共6 warning；`cargo clippy --target-dir C:\Users\32734\AppData\Local\Temp\h209-repair-20261106 -p deepagent-app-core --test kernel_v2_e2e --features runtimes --no-deps --offline -j 2 --message-format=json` exit101、156.567秒，15旧warning及mcp_discovery_restore.rs:776既有panicking_unwrap。两组JSON primary spans逐一对比5份新增/修改行，重叠0；未添加allow、降低严格门禁或顺手改旧问题。fmt/Tauri/CLI构建真实通过见E03；无前端/桥接类型变更，本项未重复pnpm/窗口交互，未宣称全仓全绿。
+
+验收限Windows本机离线：原生message的added/done/两终态均复用TextItems单一message_role准入，角色必须精确assistant；终态全部输出接受后才能公开finish成功、Runtime方可commit，坏身份错误静态脱敏、不重试/fallback，正式已prepare写文件在坏message到来后零提交且唯一failed重开一致。H81合法同item缺content回退、delta-only历史兼容、多item/part归属和function/custom工具不变，H82过滤与H208坏终态矩阵通过；H210独立负对照仍按原错误失败，不计解决。公开DTO/协议/SQL/权限/依赖不变，无迁移。旧原生message若省role/别的role现在明确失败，这是有意收紧；不是把所有未知output type/id/status/content schema一次性改为严格拒绝。只含legacy delta、没有原生message的兼容回退仍保留，不能说任何输出角色都已被供应商身份认证；已流出的partial展示不会回滚、prepare可有既有只读推测，不声称撤销先前合法副作用、任意同步回调间抢占或所有自定义直接transport行为。后续构建产生的C源CLI现D38A602798940D90E394767D1597FA27D38C199DF32707DD780DED1DFC0244D3，不是SDK受测G副本；G仍F2680450…9EDF93CB，不覆盖。其他OS/真实provider/用户凭据/内网/真实账单/外部设备/Desktop窗口/断电未测。
+
+H209在所列范围已修复并验收，本轮新增修复1、历史跳过/归并/撤销新增各0；306唯一台账累计176验收/24历史跳过/7归并/3撤销/96待修/0修复中，96未关闭含H180授权跳过，实际有效队列95。本项代码/验收余0，仍需清理本轮产物、精确7文件fix提交与hash回填；下一准备P2 H210序号完整性复核，不混修。全部剩余200–400有效修复与验收小时沿未逐项校准低置信历史粗估，依据剩余跨层/持久化及大范围验收规模，不按数量机械扣减；构建/设备/依赖/环境/清理等待另计，尚无可靠等待总区间/精确完工日，整体goal继续active。
+
+**E-H209-05（提交前核对与实际清理，2026-11-06）**：交付前5/5源码冻结不变，HEAD仍7edb7f15；306台账行/唯一编号/8列，仅H209一行变化，176/24/7/3/96与E04一致，E01～04双文逐字同步。确认真正Cargo目标C:\Users\32734\AppData\Local\Temp\h209-repair-20261106解析路径相符，祖先/内部无reparse、无目标存活进程。清理前21194文件/29,758,550,344逻辑字节，`cargo clean --target-dir C:\Users\32734\AppData\Local\Temp\h209-repair-20261106 --offline --dry-run` exit0（21194 files/27.7GiB）；正式去掉--dry-run后exit1，fixture-tmp\.tmpL6PkCS\destination\child拒绝访问（os error 5）。复核debug已不存在，整根仍1999文件/572,925,241逻辑字节，减少29,185,625,103逻辑字节；未记录空闲盘差值，不冒称对应物理释放或整根删除成功。大部分构建/final日志/一次性脚本由原生Cargo清理，关键命令/红绿/限制已落双文，原探针及部分候选日志/runner仍随拒绝点后残留，不提交生成物。
+
+不改DACL、不换工具/语言/提权绕过拒绝、不伪装Cargo目标继续清理；G盘SDK仍F2680450…9EDF93CB，原生删除在前轮已被策略拒绝，未重复绕过。H69/H71/H82旧G/C残余按各自记录继续披露；源码、文档和原五项用户内容未删除，未读改用户未跟踪项。代码验收余0，清理残余单独阻塞；将精确5份代码/测试+两文共7文件独立fix提交，取得真实hash后另做docs回填，不amend/推送/PR/迁移。计数、下一H210及总有效工时/等待口径沿E04。
 
 ### H-210：Responses 流非单调 `sequence_number` 被静默接受
 

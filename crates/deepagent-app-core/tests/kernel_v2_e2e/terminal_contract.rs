@@ -1,4 +1,4 @@
-//! H-208/H-82: terminal acceptance, not item completion, authorizes tool commit.
+//! Provider item/terminal acceptance, not preparation, authorizes tool commit.
 use super::*;
 use deepagent_core::{event::EventPayload, response_item::ResponseItem};
 use deepagent_persistence::{
@@ -65,6 +65,7 @@ enum Ending {
     Completed,
     Malformed(&'static str, &'static str),
     Incomplete(Option<&'static str>),
+    MessageRole(&'static str, Option<&'static str>),
 }
 
 async fn observe(ending: Ending) {
@@ -108,6 +109,33 @@ async fn observe(ending: Ending) {
             reason.map(|reason| json!({"reason":reason})).into();
         event["response"]["usage"] = json!({"input_tokens":9,"output_tokens":2,"total_tokens":11});
         *events.last_mut().unwrap() = event.to_string();
+    }
+    if let Ending::MessageRole(source, role) = ending {
+        let mut item = json!({"type":"message","id":"h209-message","status":"completed",
+            "content":[{"type":"output_text","text":"synthetic output"}]});
+        if let Some(role) = role {
+            item["role"] = json!(role);
+        }
+        let mut terminal: Value = serde_json::from_str(events.last().unwrap()).unwrap();
+        terminal["response"]["output"]
+            .as_array_mut()
+            .unwrap()
+            .push(item.clone());
+        if source == "incomplete" {
+            terminal["type"] = json!("response.incomplete");
+            terminal["response"]["status"] = json!("incomplete");
+            terminal["response"]["incomplete_details"] = json!({"reason":"max_output_tokens"});
+        }
+        *events.last_mut().unwrap() = terminal.to_string();
+        if source == "added" || source == "done" {
+            let position = events.len() - 1;
+            events.insert(
+                position,
+                json!({"type":format!("response.output_item.{source}"),
+                "output_index":1,"item":item})
+                .to_string(),
+            );
+        }
     }
     let model = Arc::new(TerminalModel {
         events,
@@ -176,6 +204,10 @@ async fn observe(ending: Ending) {
                     None => "incomplete_reason_unknown",
                     Some(_) => "malformed_response_terminal",
                 }),
+                "{error}"
+            ),
+            Ending::MessageRole(_, _) => assert!(
+                error.contains("malformed_response_message") && error.contains("message.role"),
                 "{error}"
             ),
             Ending::Completed => unreachable!(),
@@ -315,5 +347,14 @@ async fn h208_valid_completed_terminal_commits_write_exactly_once_and_replays() 
 async fn h82_filtered_or_unspecified_incomplete_aborts_done_write_and_reopens_failed() {
     for reason in [Some("content_filter"), None, Some("PRIVATE_FUTURE_REASON")] {
         observe(Ending::Incomplete(reason)).await;
+    }
+}
+
+#[tokio::test]
+async fn h209_bad_message_role_aborts_prepared_write_and_survives_sqlite_reopen() {
+    for source in ["added", "done", "completed", "incomplete"] {
+        for role in [None, Some("user"), Some(CANARY)] {
+            observe(Ending::MessageRole(source, role)).await;
+        }
     }
 }
