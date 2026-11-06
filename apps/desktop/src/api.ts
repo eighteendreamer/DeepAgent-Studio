@@ -1230,6 +1230,8 @@ export interface RuntimeEvent {
   /** Optional provider diagnostics; not the durable run-events cursor. */
   sequence_number?: number;
   sequence_gap?: number;
+    response_id?: string;
+    provider_model?: string;
   type:
     | "run_started"
     | "session_registered"

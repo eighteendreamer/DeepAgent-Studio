@@ -357,6 +357,7 @@ fn runtime_event_task_id(event: &RuntimeEvent) -> Option<String> {
 
 fn runtime_event_correlation_id(event: &RuntimeEvent) -> Option<String> {
     match event {
+        RuntimeEvent::ResponsesStreamEvent { response_id, .. } => response_id.clone(),
         RuntimeEvent::ToolStarted { call_id, .. } | RuntimeEvent::ToolCompleted { call_id, .. } => {
             Some(call_id.clone())
         }
@@ -411,13 +412,17 @@ fn runtime_event_message(event: &RuntimeEvent) -> String {
         }
         RuntimeEvent::ResponsesStreamEvent {
             event_type,
+            response_id,
+            provider_model,
             sequence_number,
             sequence_gap,
             item_id,
             item_type,
             delta_chars,
         } => format!(
-            "responses stream event type={event_type} item_id={} item_type={} delta_chars={} sequence_number={} sequence_gap={}",
+            "responses stream event type={event_type} response_id={} provider_model={} item_id={} item_type={} delta_chars={} sequence_number={} sequence_gap={}",
+            response_id.as_deref().unwrap_or("none"),
+            provider_model.as_deref().unwrap_or("none"),
             item_id.as_deref().unwrap_or("none"),
             item_type.as_deref().unwrap_or("none"),
             delta_chars.map_or_else(|| "none".to_string(), |value| value.to_string()),
@@ -593,6 +598,8 @@ mod tests {
             event_type: "response.output_text.delta".into(),
             sequence_number: Some(7),
             sequence_gap: Some(2),
+            response_id: Some("synthetic-response".into()),
+            provider_model: Some("synthetic-model".into()),
             item_id: None,
             item_type: None,
             delta_chars: Some(1),
@@ -608,6 +615,9 @@ mod tests {
             .find(|entry| entry.event == "responses_stream_event")
             .unwrap();
         assert_eq!(gap.level, "warn");
+        assert_eq!(gap.correlation_id.as_deref(), Some("synthetic-response"));
+        assert_eq!(gap.data["response_id"], "synthetic-response");
+        assert_eq!(gap.data["provider_model"], "synthetic-model");
         assert!(gap.message.as_deref().unwrap().contains("sequence_gap=2"));
     }
 
@@ -718,6 +728,8 @@ mod tests {
             tx.send(RuntimeEvent::ResponsesStreamEvent {
                 sequence_number: None,
                 sequence_gap: None,
+                response_id: Some("synthetic-response".into()),
+                provider_model: Some("synthetic-model".into()),
                 event_type: "response.output_text.delta".into(),
                 item_id: Some("msg_1".into()),
                 item_type: None,

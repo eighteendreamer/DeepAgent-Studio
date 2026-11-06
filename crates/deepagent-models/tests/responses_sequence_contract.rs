@@ -312,6 +312,14 @@ async fn h210_real_http_sequence_check_preserves_gap_and_rejects_replay() {
                 .0
                 .iter()
                 .any(|event| serde_json::to_value(event).unwrap()["sequence_gap"] == 2));
+            // H-200: real HTTP deframing must preserve terminal identity too.
+            assert!(seen.0.iter().any(|event| {
+                let event = serde_json::to_value(event).unwrap();
+                event["event_type"] == "response.completed"
+                    && event["response_id"] == "synthetic"
+                    && event["provider_model"] == "deepseek-flash"
+                    && event["sequence_number"] == 4
+            }));
         }
         timeout(Duration::from_secs(5), server)
             .await

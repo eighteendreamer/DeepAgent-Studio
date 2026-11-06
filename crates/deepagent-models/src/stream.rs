@@ -20,11 +20,15 @@ mod terminal;
 #[path = "stream_sequence.rs"]
 mod sequence;
 
+#[path = "stream_metadata.rs"]
+mod metadata;
+
 /// Responses API semantic SSE accumulator. DeepSeek sends an event object in
 /// each `data:` payload; the event's `type` selects the semantic delta.
 #[derive(Debug, Default)]
 pub struct ResponseAccumulator {
     sequence: sequence::Sequence,
+    metadata: metadata::Metadata,
     text_items: text::TextItems,
     reasoning: String,
     tool_calls: Vec<ToolCallBuilder>,
@@ -52,15 +56,29 @@ impl ResponseAccumulator {
             .get("type")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("");
+        let terminal_status = match kind {
+            "response.completed" => Some("completed"),
+            "response.incomplete" => Some("incomplete"),
+            "response.failed" => Some("failed"),
+            _ => None,
+        };
+        if let Some(status) = terminal_status {
+            // Validate before copying any terminal identity to observers. An
+            // invalid envelope must not leak its unaccepted provider metadata.
+            terminal::validate(&value, kind, status)?;
+        }
+        self.metadata.observe(kind, &value);
         observer.on_event(ModelStreamEvent::ResponseStreamEvent {
             sequence_number: Some(sequence_number),
             sequence_gap,
+            response_id: self.metadata.response_id.clone(),
+            provider_model: self.metadata.provider_model.clone(),
             event_type: kind.to_string(),
             item_id: value
                 .get("item_id")
                 .or_else(|| value.get("call_id"))
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string),
+                .or_else(|| value.get("item").and_then(|item| item.get("id")))
+                .and_then(metadata::diagnostic_identifier),
             item_type: value
                 .get("item")
                 .and_then(|item| item.get("type"))
@@ -184,7 +202,6 @@ impl ResponseAccumulator {
                 }
             }
             "response.completed" => {
-                terminal::validate(&value, kind, "completed")?;
                 self.terminal = Some(FinishReason::Stop);
                 self.observe_terminal_usage(value.get("response"), observer)?;
                 self.complete_terminal_items(&value, observer)?;
@@ -199,7 +216,6 @@ impl ResponseAccumulator {
                 return Ok(true);
             }
             "response.incomplete" => {
-                terminal::validate(&value, kind, "incomplete")?;
                 self.observe_terminal_usage(value.get("response"), observer)?;
                 self.terminal = Some(terminal::incomplete_reason(&value)?);
                 self.complete_terminal_items(&value, observer)?;
@@ -218,7 +234,6 @@ impl ResponseAccumulator {
                 return Ok(true);
             }
             "response.failed" => {
-                terminal::validate(&value, kind, "failed")?;
                 self.saw_terminal = true;
                 self.observe_terminal_usage(value.get("response"), observer)?;
                 let error = value
@@ -758,6 +773,12 @@ pub enum ModelStreamEvent {
     /// output text, reasoning text, or search query is included.
     ResponseStreamEvent {
         event_type: String,
+        /// Latest safe lifecycle snapshot for this physical response, if provided.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_id: Option<String>,
+        /// Observed server model, not the requested model or billing authority.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_model: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sequence_number: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]

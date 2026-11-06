@@ -1156,6 +1156,8 @@ mod tests {
                 events.emit(RuntimeEvent::ResponsesStreamEvent {
                     sequence_number: None,
                     sequence_gap: None,
+                    response_id: Some("synthetic-response".into()),
+                    provider_model: Some("synthetic-model".into()),
                     event_type: "response.output_text.delta".into(),
                     item_id: Some("msg_1".into()),
                     item_type: None,
@@ -1491,6 +1493,8 @@ mod tests {
             sink.emit(RuntimeEvent::ResponsesStreamEvent {
                 sequence_number: None,
                 sequence_gap: None,
+                response_id: Some("synthetic-response".into()),
+                provider_model: Some("synthetic-model".into()),
                 event_type: "response.output_text.delta".into(),
                 item_id: Some("msg_1".into()),
                 item_type: None,

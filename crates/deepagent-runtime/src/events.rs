@@ -144,6 +144,12 @@ pub enum RuntimeEvent {
     /// Sanitized metadata for one DeepSeek Responses SSE event.
     ResponsesStreamEvent {
         event_type: String,
+        /// Optional observed provider identity, not a durable run cursor.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_id: Option<String>,
+        /// Optional server snapshot; does not change requested/billed model.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_model: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sequence_number: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -808,11 +814,15 @@ mod tests {
             RuntimeEvent::ResponsesStreamEvent {
                 sequence_number: None,
                 sequence_gap: None,
+                response_id: None,
+                provider_model: None,
                 ..
             }
         ));
         let event = RuntimeEvent::ResponsesStreamEvent {
             event_type: "response.future_event".into(),
+            response_id: Some("response-1".into()),
+            provider_model: Some("server-model".into()),
             sequence_number: Some(u64::MAX),
             sequence_gap: Some(2),
             item_id: None,

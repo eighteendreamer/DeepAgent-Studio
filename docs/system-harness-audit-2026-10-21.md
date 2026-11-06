@@ -7439,6 +7439,55 @@ H-199验收：原探针已移出ignore，默认1过0败；branches默认5过0败
 
 本轮 H-200 只新增 `#[ignore]` 审计探针和报告，未修改生产事件 DTO 或解析行为。
 
+**E-H200-01（当前基线与TDD红，2026-11-06，未验收）**：基线b3d089e563d2731f4adadb0c8789ae77fb2ffb95，tracked干净、无未完成合并；原五项untracked仅列名不读改。当前H210已经保留sequence_number/gap，原H200探针不受缺号夹具阻断，故不能将本项整体当历史修复跳过。隔离HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/TMP与凭据/代理环境，离线复用工具链缓存，新建仓库外真正Cargo target `C:\Users\32734\AppData\Local\Temp\h200-repair-20261106`。原命令 `cargo test -p deepagent-app-core --test kernel_v2_e2e native_output_items::audit_responses_lifecycle_retains_provider_identity_and_sequence --offline -j 2 -- --ignored --exact --nocapture` exit101、0/1/0、475.481秒含冷构建，durable created/completed已含0/7序号，但仍无response_id/provider_model；run正常完成。新增默认 `cargo test -p deepagent-models --test responses_stream_identity --offline -j 2 -- --nocapture --test-threads=1` exit101、1/4/0、169.177秒含等待，四项均因身份字段缺失而红，旧JSON兼容对照通过；此时生产未改。新增默认 `cargo test -p deepagent-app-core --test kernel_v2_e2e stream_identity:: --offline -j 2 -- --nocapture --test-threads=1` exit101、0/1/0、93.646秒；实际完成一次EOF重试、写文件与正常终态后，在created身份缺失断言处红，尚未进入其余终态矩阵；生产仍未改。
+
+已重新浏览[官方Responses指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)及[response schema](https://api-docs.deepseek.com/zh-cn/api/create-response/)，核对嵌套response.id/model、created/in_progress及三个终态和顶层递增序号；本地Codex参考只用于身份投影，不照搬供应商协议。范围仅现有Accumulator→ModelStreamEvent→SinkObserver→RuntimeEvent→run_events/诊断日志及TS声明；不新建事件中心、不修改请求模型/费用归属、重试/工具审批/执行/终态政策，不恢复H180开发。普通delta保留现有批处理，不声称持久化逐token原SSE。本地设计：每物理请求缓存已观察生命周期身份；可选字段兼容旧事件/缺初始快照；身份仅投影有界标识符而不复制response正文/扩展，不用请求模型冒充服务端模型。最终测试、提交和清理未完成，不新增验收数。当前177验收、24历史跳过、7归并、3撤销、94待修+1修复中，95未关闭含授权跳过H180，实际总队列94。本项暂估4–10有效小时；全余200–400有效小时仍为未逐项校准的低置信历史粗估，编译/设备/依赖/环境/清理等待另计，无日期承诺。
+
+**E-H200-02（根因修复与候选红绿，2026-11-06，最终门禁进行中）**：原E01的缺失发生在Accumulator第一次语义投影，Runtime/持久化没有另一个可恢复来源。本轮仅此根因：私有stream_metadata按物理请求保存生命周期response.id/model快照，created重置、显式不可用值清空、ID变更不继承旧model；缺字段不编造值，不用请求model替代服务端值，未知扩展事件不改写快照。两个现有语义DTO各加默认/省略None的可选response_id/provider_model，原SinkObserver透传，现有run_events直接序列化；原日志data/message及correlation_id复用response_id。output_item added/done从嵌套item.id补齐原诊断item_id投影。没有第二套运行/事件存储、SQL迁移、新依赖、请求模型/费用归属或权限变更；Chat Completions保留原wire语义，新Responses身份字段为None。
+
+标识符投影是明确本地诊断政策：1–256字节ASCII字母数字及`-_.:/+@`，已知sk-前缀省略；response_id/provider_model和诊断item_id使用同一函数。不截断成另一个身份，不复制response正文/metadata/instructions/输出/推理/未知字段；不适合诊断的值省略而不使原本合法回答失败。该策略不是供应商强制schema或通用秘密检测器，不能保证供应商恶意把未知凭据编码成合法标识符时可识别；超长/非ASCII合法供应商标识可能无诊断值。已有H208终态必填验证不放宽，H210序号门禁仍先于元数据更新。普通无gap delta沿既有live投影/持久化与日志16KiB批处理；生命周期、item完成及gap保留身份与序号，不能声称逐token原SSE已全量落盘、供应商可resume，或只凭快照认证供应商/强制跨生命周期ID一致。
+
+首次批量补测试构造误将两字段写入既有match pattern，fmt解析退出1；移除误加pattern字段后恢复，未修改匹配/批处理规则。最初Models候选 `cargo test -p deepagent-models --test responses_stream_identity --offline -j 2 -- --nocapture --test-threads=1` exit0、5/0/0、9.483秒；Kernel同E01过滤候选exit0、1/0/0、162.808秒，实际覆盖EOF重试→合成write_file只执行一次→completed/incomplete/failed三场景、live/durable/诊断与SQLite冷重开所有游标一致。随后补齐新旧JSON兼容、诊断边界/新身份不继承旧model、Chat独立wire等对照，并冻结13份实现/测试/TS文件用于最终门禁。当前完整Models默认200/0/26、exit0/103.536秒；HTTP216/0/28、exit0/135.619秒（包含实际reqwest自建IPv4回环/no_proxy的终态身份/序号断言）；前端pnpm build exit0/162.636秒，tsc与Vite真实执行；fmt exit0/6.754秒。严格全仓clippy exit101/162.065秒，仍为未改client.rs:431 clone_on_copy，未加allow或降低标准。以上不是完整最终验收；Kernel最终整组、runtimes组、完整workspace、相关JSON lint、当前CLI/SDK消费及Tauri仍待终态，状态保持修复中，无commit/新增修复数。
+
+**E-H200-03（整组候选暴露的回归、因果对照与返修，2026-11-06，未验收）**：首个完整Kernel默认组exit101、308/5/24、707.249秒。五败不能忽略：H208 malformed-terminal的CANARY进入live元数据是本轮真实回归，根因是旧流程先发通用metadata再验证terminal，新增id投影暴露了该顺序缺陷。新增默认 `h200_rejected_terminal_cannot_publish_identity_before_envelope_validation` 在生产返修前exit101、0/1/0、273.027秒含锁等待，首次缺id终态仍投影provider_model；不是安全过滤字符就足以证明来源可接受。根因返修将原terminal::validate统一前移至序号门禁后、metadata.observe/任何observer前，移除三个终态分支内原重复调用；保留同一验证实现、错误类型/usage/工具commit政策。合法供应商失败/截断仍保留身份，畸形envelope不进入元数据。最终源码重新冻结13份；原失败保留，不把本轮返修计成第二个H。
+
+其余四败为build_boundary有限构建外层超时，以及verification_lifecycle三项准备cargo check在120000ms超时。本轮最初runner将CARGO_TARGET_DIR传给测试子进程，原生观察到Kernel子pwsh/cargo check与当时仍在编译的Tauri共用本轮target；准备发生在未放宽的4秒就绪断言之前。为分离环境与产品行为，冻结**同一首候选原生Kernel二进制**SHA256 `9EDACFDD68BD7EB7228A7EB7FC2C87569E65354BC7B22B17FF719877F8B22624`，副本hash一致；在无继承CARGO_TARGET_DIR、各合成项目自己的target且外层Tauri已终态时逐条原断言复验：`build_boundary::allowed_backend_still_executes_real_builds_and_post_edit_checks` 1/0/0、14.222秒；`verification_lifecycle::build_parent_exit_does_not_detach_worker_from_either_automatic_path` 1/0/0、26.760秒；`verification_lifecycle::completion_build_normal_and_active_cancellation` 1/0/0、13.975秒；`verification_lifecycle::post_edit_build_normal_and_active_cancellation` 1/0/0、14.532秒。均用 `candidate-kernel-v1.exe <完整名称> --exact --nocapture --test-threads=1`，未改fixture、超时、门限或生产边界；同一二进制的H208 CANARY对照仍0/1/0、1.047秒，证明不能将第五败归为环境。四项局部对照不替代完整终验，也不声称修复四个产品缺陷。
+
+最终runner改为仅给外层Cargo显式 `--target-dir C:\Users\32734\AppData\Local\Temp\h200-repair-20261106`，清除继承CARGO_TARGET_DIR，HOME/凭据/仓库外TEMP隔离不变；所有首次失败及旧runner仍待终态/清理，不因观察超时重启。最终Models/HTTP/Kernel双feature/CLI/SDK/全仓及相关lint/Tauri需要在返修后重新验证。前端TS源未变，其E02构建仍适用。当前状态仍修复中，不新增验收/commit。
+
+**E-H200-04（最终本机验收，2026-11-06；只关闭本项）**：E03返修后13份实现/测试/TS源码SHA256逐份复核未变。原H200探针已移除ignore；最终workspace所用原生Kernel二进制显式执行 `kernel_v2_e2e-028d6b1208d6698b.exe native_output_items::audit_responses_lifecycle_retains_provider_identity_and_sequence --exact --nocapture --test-threads=1` exit0、1/0/0、3.423秒，durable created/completed分别为 `{event_type:response.created,response_id:audit-response,provider_model:deepseek-flash,sequence_number:0}` 与相同身份/模型、sequence_number:7的completed，原E01缺失反例完整保留。它不是默认跳过后凭编译认定完成。旧runtimes首候选最终exit101、313/4/24、1204.241秒，仍为E03未返修CANARY及三个继承target准备超时；最终两feature整组均重新执行且全过，首轮原始失败不抹去。
+
+以下均为实际命令/原生退出结果，未忽略既有失败或放宽门限。PowerShell工作目录为仓库根，`$Target='C:\Users\32734\AppData\Local\Temp\h200-repair-20261106'`；最终仅外层显式target，测试子Cargo不继承CARGO_TARGET_DIR，HOME/凭据/代理/仓库外TEMP隔离沿E01/E03。
+
+| 实际命令（缩写Target仅替代上述绝对路径） | 退出码、实际结果 | 墙钟秒，含编译/锁等待 |
+|---|---|---|
+| `cargo test --target-dir $Target -p deepagent-models --offline -j 2 -- --quiet --test-threads=2` | 0；201过/0败/26忽略，18顶层结果块 | 122.945 |
+| 上条加 `--features http` | 0；217/0/28，含实际reqwest回环身份/序号对照 | 163.032 |
+| `cargo test --target-dir $Target -p deepagent-app-core --test kernel_v2_e2e --offline -j 2 -- --quiet --test-threads=2` | 0；313/0/24 | 634.946 |
+| 上条加 `--features runtimes` | 0；317/0/24 | 615.609 |
+| `cargo test --target-dir $Target --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=2` | 101；144顶层target，4785/1/210；唯一H306，非全绿 | 2198.413 |
+| `cargo fmt --all -- --check` | 0 | 10.643 |
+| `cargo clippy --target-dir $Target --all-targets --all-features --offline -j 2 -- -D warnings` | 101；旧client.rs:431 clone_on_copy | 887.559 |
+| `cargo clippy --target-dir $Target -p deepagent-models -p deepagent-runtime --all-targets --all-features --message-format=json --offline -j 2` | 0；6个既有warning消息 | 29.833 |
+| `cargo clippy --target-dir $Target -p deepagent-app-core --all-targets --features runtimes --message-format=json --offline -j 2` | 101；33既有warning消息、旧mcp_discovery_restore.rs:776 panicking_unwrap | 90.571 |
+| `cargo check --target-dir $Target --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --offline -j 2` | 0；返修后重新检查 | 309.601 |
+| `cargo build --target-dir $Target -p deepagent-cli --offline -j 2` | 0；最终当前源码CLI | 681.419 |
+| `pnpm build`（apps/desktop） | 0；tsc/Vite/既有脚本真实执行，原有buffer/大chunk提示保留 | 162.636 |
+| `pnpm test`（packages/sdk） | 0；60/0/0，含SDK构建 | 10.509 |
+| `pnpm test:stdio`（packages/sdk） | 0；真实当前源码CLI消费1/0/0，含SDK构建 | 11.803 |
+
+完整workspace的145个原始结果块含1个嵌套child；按running/result栈区分并与stderr的144个顶层目标逐个对齐，不把child再计一次。相关目标AppCore lib1544/0/58、Kernel313/0/24、CLI185/0/12、Runtime438/0/9、Context58/0/0、Rust SDK真实stdio9/0/0。唯一失败 `deepagent-prompts::canvas_prompt::tests::every_node_kind_owns_exactly_one_profile` 为 `creative.video-edit.v1 has an empty defaultUserPrompt`（27/1/0），代码/资源未改，保留H306独立排队；H210曾出现的冷compiler就绪反例本轮通过不表示修复该问题。两组最终JSON lint全部primary spans与13份新增/修改行对照，重叠0；没有新增allow、绕hook或降低全仓标准，不能称全仓lint通过。
+
+最终9项Models身份合同覆盖正常/三终态、跨reasoning/message item、合法gap、缺初始/部分快照、未知扩展不注入身份、边界/不安全值清旧状态、身份变更不继承旧model、两个公共入口逐物理请求重置、旧JSON与Chat独立wire、坏终态先拒绝；原序号合同还保留重复/逆序/缺失拒绝与失败流不能恢复。Kernel三场景走真实EOF重试→prepare/commit合成write_file一次→三个终态，live/durable/诊断SQL与全部游标/冷重开精确一致，reopen不重派发；正常输出、推理/工具与usage对照和全仓回归保留。Harness的既有Runtime通用JSON投影未另写过滤链；SDK门禁验证其离线启动/早失败/游标消费，不冒充真实供应商身份数据已通过外部SDK端到端测试。
+
+兼容性/未验：两个JSON DTO字段默认且None省略，旧JSON可读，TS字段可选；Rust公开enum的显式构造是源码级增字段，仓内构造/匹配已同步，外部穷举构造需补None，不承诺外部二进制ABI。无SQL迁移、权限/沙箱/请求模型/费用归属改变。E02的有界诊断政策、普通delta不逐token落盘、缺快照不逆向补造、非供应商认证/强制ID一致、序号非resume/持久化游标等限制仍有效。未使用真实供应商/凭据/账单/内网，未验其他OS、GUI交互、真实网络中断、OS重启/断电和JS超安全整数范围无损，因范围/环境限制不外推。H200仅在上述本机范围已修复并验收，整体任务未完成；本阶段新增1、累计178，历史跳过24、归并7、撤销3，94未关闭含H180授权跳过，实际剩余93。下一复核H204的SDK无界pending/取消回收；本项验收剩余0，提交/产物清理见后续证据。全余200–400有效小时仍是未逐项校准的低置信历史粗估（尚余93项、跨层/持久化/真实进程验收差异大）；设备/依赖/构建锁/清理等待另计，无法给可靠总上界或日期承诺。
+
+**E-H200-05（产物归属与部分清理，2026-11-06）**：清理前核对本轮真正Cargo target绝对路径 `C:\Users\32734\AppData\Local\Temp\h200-repair-20261106`、所有祖先及内部均无reparse，已无存活本轮cargo/测试目标进程；只处理已确认本轮产物，源码/两份文档/原五项用户untracked未读改。清理前23998文件、32030027899逻辑字节。正规 `cargo clean --target-dir C:\Users\32734\AppData\Local\Temp\h200-repair-20261106 --dry-run` exit0、23998 files/29.8GiB；随后同根正式clean原生exit101，在 `fixture-tmp\.tmpzKuTBk\destination\child` 因DACL拒绝访问（os error 5）。复查debug已不存在，残余2261文件、373880271逻辑字节，枚举错误0、reparse0；逻辑文件大小减少31656147628字节。没有采集物理空闲盘差值，不将逻辑字节混称实际回收物理空间；整个h200根未删净，不能宣称完整清理。
+
+G盘本轮前端/SDK产物经绝对路径与祖先核对后尝试原生PowerShell Remove-Item -LiteralPath -Recurse -Force，整条命令被工具策略拒绝，未执行删除；随后只读复核 `G:\Code_Warehouse\DeepAgent-Studio\apps\desktop\dist` 为3375文件/192921724字节、`G:\Code_Warehouse\DeepAgent-Studio\packages\sdk\dist` 为12文件/83258字节，内部reparse均0。未换语言/工具/提权/改ACL绕过拒绝。G固定SDK CLI同样保留先前删除策略阻塞：本轮先核对上一轮SHA256 `2EC6B8EBC69817126AFC80388E500750159274D4A51026F54B82AB58B371B243` 才由当前源码CLI首次构建（exit0/333.277秒）接管；复制当时C源与G目的同为 `BE4704AA12CB4BA351803C1BC5F3A2E3A221447193B67915D4995AAEC32AF16F`。Rust/TS真实SDK都使用此G副本，最终G hash未变；后续C端最终构建受feature图/构建变化为 `0A516C19DFE86BD484B58854CDF0E18B469BB16221D159E0B32D09A01319A5A4`，不声称两份最终仍同hash，也不把旧H210旁车当本轮实现。G路径为 `G:\Code_Warehouse\DeepAgent-Studio\target\debug\deepagent.exe`，不改源码/测试来避开其固定路径。
+
+重要原探针/TDD/首轮失败/最终命令与结果已落双文E01～04；本轮C残余可能含候选二进制、一次性脚本、合成夹具与日志，仅作清理阻塞，不提交它们。旧H69/H71/H82/H209/H210等残余继续依各项记录，不改权限或绕过原拒绝。H200代码验收余0，但上述C/G产物清理仍阻塞；其等待时间与93项有效修复工时分开，不编造解除时间或称整套任务完成。
+
 ### H-201：工作流画布缩放控件改变 zoom 却保留平移偏移，视口焦点随每次缩放跳动
 
 **级别：低（P3，桌面画布导航一致性）；触发条件：画布已平移到非原点后，使用底栏放大/缩小、底栏比例滑杆或小地图放大/缩小。** 问题仅影响视图定位；没有证据显示节点坐标、工作流定义、运行事件或模型请求因此变化。

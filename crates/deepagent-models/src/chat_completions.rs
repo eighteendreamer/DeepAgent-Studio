@@ -395,6 +395,8 @@ impl ChatCompletionAccumulator {
         })?;
         observer.on_event(ModelStreamEvent::ResponseStreamEvent {
             event_type: "chat.completion.chunk".to_string(),
+            response_id: None,
+            provider_model: None,
             sequence_number: None,
             sequence_gap: None,
             item_id: value

@@ -329,7 +329,6 @@ async fn h81_native_text_reopened_matrix_keeps_distinct_empty_and_fallback_items
 }
 
 #[tokio::test]
-#[ignore = "audit: durable Responses lifecycle events must retain provider response identity and sequence"]
 async fn audit_responses_lifecycle_retains_provider_identity_and_sequence() {
     let workspace = tempfile::tempdir().unwrap();
     let db = Arc::new(Database::open_in_memory().unwrap());

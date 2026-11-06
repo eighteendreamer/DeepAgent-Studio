@@ -2166,6 +2166,8 @@ impl DeltaObserver for SinkObserver<'_> {
         match event {
             ModelStreamEvent::ResponseStreamEvent {
                 event_type,
+                response_id,
+                provider_model,
                 sequence_number,
                 sequence_gap,
                 item_id,
@@ -2175,6 +2177,8 @@ impl DeltaObserver for SinkObserver<'_> {
                 if let Some(sink) = &self.sink {
                     sink.emit(RuntimeEvent::ResponsesStreamEvent {
                         event_type,
+                        response_id,
+                        provider_model,
                         sequence_number,
                         sequence_gap,
                         item_id,
