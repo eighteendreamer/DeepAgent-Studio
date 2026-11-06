@@ -398,6 +398,8 @@ class StdioTransport implements RpcTransport {
   >();
   private closed = false;
   private failure?: unknown;
+  private ready = false;
+  private initializeTask?: Promise<void>;
   private readonly failureHandlers = new Set<(error: unknown) => void>();
 
   constructor(options: DeepAgentOptions) {
@@ -411,6 +413,7 @@ class StdioTransport implements RpcTransport {
     if (this.closed) {
       throw new HarnessTransportError("stdio transport is closed");
     }
+    if (this.failure !== undefined) throw this.failure;
     if (this.child) {
       return this.child;
     }
@@ -423,6 +426,7 @@ class StdioTransport implements RpcTransport {
     this.lines = createInterface({ input: child.stdout });
     this.lines.on("line", (line) => this.handleLine(line));
     this.lines.once("close", () => this.failPending(new HarnessTransportError("app-server stdout closed")));
+    child.stdout.once("close", () => this.failPending(new HarnessTransportError("app-server stdout closed")));
     child.stderr.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
       if (this.onStderr) {
@@ -433,7 +437,18 @@ class StdioTransport implements RpcTransport {
         }
       }
     });
-    child.once("error", (error) => this.failPending(error));
+    child.stdin.on("error", (error) => this.failPending(
+      new HarnessTransportError("app-server stdin failed", { cause: error })
+    ));
+    child.stdout.on("error", (error) => this.failPending(
+      new HarnessTransportError("app-server stdout failed", { cause: error })
+    ));
+    child.stderr.on("error", (error) => this.failPending(
+      new HarnessTransportError("app-server stderr failed", { cause: error })
+    ));
+    child.once("error", (error) => this.failPending(
+      new HarnessTransportError("failed to start app-server", { cause: error })
+    ));
     child.once("exit", (code, signal) => {
       this.child = undefined;
       this.lines = undefined;
@@ -447,6 +462,7 @@ class StdioTransport implements RpcTransport {
   }
 
   private handleLine(line: string): void {
+    if (this.closed || this.failure !== undefined) return;
     if (!line.trim()) {
       return;
     }
@@ -496,12 +512,29 @@ class StdioTransport implements RpcTransport {
   }
 
   private failPending(error: unknown): void {
+    if (this.failure !== undefined) return;
+    this.failure = error;
+    this.ready = false;
     for (const request of this.pending.values()) {
       request.reject(error);
     }
     this.pending.clear();
-    this.failure = error;
     for (const handler of this.failureHandlers) handler(error);
+  }
+
+  get initialized(): boolean { return this.ready; }
+
+  /** One immutable physical generation, one shared validated handshake. */
+  initialize(params: unknown): Promise<void> {
+    if (this.closed) return Promise.reject(new HarnessTransportError("stdio transport is closed"));
+    if (this.failure !== undefined) return Promise.reject(this.failure);
+    this.initializeTask ??= this.request("initialize", params).then((result) => {
+      validateInitializeResult(result);
+      if (this.closed) throw new HarnessTransportError("stdio transport closed during initialize");
+      if (this.failure !== undefined) throw this.failure;
+      this.ready = true;
+    });
+    return this.initializeTask;
   }
 
   async request(method: string, params: unknown, signal?: AbortSignal): Promise<unknown> {
@@ -529,8 +562,7 @@ class StdioTransport implements RpcTransport {
       if (signal?.aborted) { aborted(); return; }
       child.stdin.write(line, (error) => {
         if (error) {
-          this.pending.get(id)?.reject(new HarnessTransportError("failed to write to app-server", { cause: error }));
-          this.pending.delete(id);
+          this.failPending(new HarnessTransportError("failed to write to app-server", { cause: error }));
         }
       });
     });
@@ -549,6 +581,7 @@ class StdioTransport implements RpcTransport {
 
   async close(): Promise<void> {
     this.closed = true;
+    this.ready = false;
     this.lines?.close();
     this.lines = undefined;
     const child = this.child;
@@ -570,7 +603,8 @@ export class DeepAgent {
   private readonly approvalTasks = new Set<Promise<void>>();
   private transport?: StdioTransport;
   private cliTransport?: CliJsonlTransport;
-  private initialized = false;
+  private reconnectTask?: Promise<void>;
+  private connectionChange = 0;
   private unsubscribeTransport?: () => void;
 
   constructor(options: DeepAgentOptions = {}) {
@@ -588,8 +622,10 @@ export class DeepAgent {
   }
 
   private createStdioTransport(): void {
-    this.transport = new StdioTransport(this.options);
-    this.unsubscribeTransport = this.transport.onNotification((notification) => {
+    const transport = new StdioTransport(this.options);
+    this.transport = transport;
+    this.unsubscribeTransport = transport.onNotification((notification) => {
+      if (this.transport !== transport) return;
       if (notification.method !== "harness/event") {
         return;
       }
@@ -598,14 +634,14 @@ export class DeepAgent {
         handler(event);
       }
       if (event.type === "approval.requested") {
-        const task = this.resolveApproval(event).catch(() => undefined);
+        const task = this.resolveApproval(event, transport).catch(() => undefined);
         this.approvalTasks.add(task);
         void task.then(() => this.approvalTasks.delete(task));
       }
     });
   }
 
-  private async resolveApproval(event: ApprovalRequestedEvent): Promise<void> {
+  private async resolveApproval(event: ApprovalRequestedEvent, transport: StdioTransport): Promise<void> {
     if (!this.approvalHandler || !event.approvalId) {
       return;
     }
@@ -622,7 +658,8 @@ export class DeepAgent {
     } catch {
       approved = false;
     }
-    await this.request("approval/respond", {
+    if (this.transport !== transport) return;
+    await this.requestOn(transport, "approval/respond", {
       approvalId: event.approvalId,
       approved,
       scope: event.scope
@@ -642,23 +679,23 @@ export class DeepAgent {
     return this.transport;
   }
 
-  private async initialize(): Promise<void> {
-    if (this.initialized) {
-      return;
-    }
-    const result = await this.ensureStdio().request("initialize", {
+  private initialize(transport: StdioTransport): Promise<void> {
+    return transport.initialize({
       clientName: this.options.clientName ?? "@deepagent/sdk",
       clientVersion: this.options.clientVersion ?? "0.1.0",
       protocolVersion: PROTOCOL_VERSION
     });
-    validateInitializeResult(result);
-    this.initialized = true;
   }
 
   private async request(method: string, params: unknown, signal?: AbortSignal): Promise<unknown> {
+    if (this.reconnectTask) await this.reconnectTask;
+    return this.requestOn(this.ensureStdio(), method, params, signal);
+  }
+
+  private async requestOn(transport: StdioTransport, method: string, params: unknown, signal?: AbortSignal): Promise<unknown> {
     if (signal?.aborted) throw new HarnessTransportError("request cancelled locally before send");
-    await this.initialize();
-    const result = await this.ensureStdio().request(method, params, signal);
+    await this.initialize(transport);
+    const result = await transport.request(method, params, signal);
     validateControlResult(method, params, result);
     return result;
   }
@@ -744,17 +781,34 @@ export class DeepAgent {
     return () => { offEvents(); offFailure(); };
   }
 
+  /** Explicitly replace a terminal stdio generation; no business request is replayed.
+   * Concurrent reconnects coalesce. Await this before creating a new owned stream;
+   * then resume the desired thread and reconcile durable state as appropriate.
+   */
   async reconnect(): Promise<void> {
     if (!this.transport) {
       throw new HarnessTransportError("reconnect requires the stdio transport");
     }
-    this.unsubscribeTransport?.();
-    await this.transport.close();
-    this.initialized = false;
-    this.createStdioTransport();
+    if (this.reconnectTask) return this.reconnectTask;
+    const previous = this.transport;
+    const change = ++this.connectionChange;
+    const task = Promise.resolve().then(async () => {
+      this.unsubscribeTransport?.();
+      this.unsubscribeTransport = undefined;
+      await previous.close();
+      if (this.connectionChange !== change) throw new HarnessTransportError("reconnect superseded by close");
+      this.createStdioTransport();
+    });
+    this.reconnectTask = task;
+    try { await task; }
+    finally { if (this.reconnectTask === task) this.reconnectTask = undefined; }
   }
 
   async close(): Promise<void> {
+    ++this.connectionChange;
+    // A later deliberate reconnect is a new intent, not another waiter on the
+    // superseded transition. Its finally must not clear a newer task either.
+    this.reconnectTask = undefined;
     this.unsubscribeTransport?.();
     this.unsubscribeTransport = undefined;
     if (this.transport) {

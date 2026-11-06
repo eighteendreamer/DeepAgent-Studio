@@ -37,7 +37,7 @@ for (const [index, value] of cases.entries()) {
         return true;
       });
       await barrier;
-      assert.equal(agent.initialized, false);
+      assert.equal(agent.transport.initialized, false);
       assert.equal(agent.transport.pending.size, 0);
       for (const method of ["thread/start", "thread/resume", "thread/list", "thread/read", "thread/fork", "thread/archive",
         "turn/start", "turn/interrupt", "turn/steer", "approval/respond", "event/ack", "tool/list", "config/read", "sandbox/status"]) {
@@ -53,7 +53,7 @@ test("H206 RPC rejection stays uninitialized after valid late duplicate", async 
     const barrier = new Promise((resolve) => agent.eventHandlers.add(resolve));
     await assert.rejects(() => agent.startThread(), HarnessRpcError);
     await barrier;
-    assert.equal(agent.initialized, false);
+    assert.equal(agent.transport.initialized, false);
     assert.equal(agent.transport.pending.size, 0);
     assert.deepEqual(await agent.transport.request("audit/count", {}), { business: 0 });
   } finally { await agent.close(); }
@@ -64,7 +64,7 @@ test("H206 valid identity, false boolean capability and future fields remain com
   const agent = peer(value);
   try {
     assert.equal((await agent.startThread()).id, "t");
-    assert.equal(agent.initialized, true);
+    assert.equal(agent.transport.initialized, true);
     assert.deepEqual(await agent.transport.request("audit/count", {}), { business: 1 });
   } finally { await agent.close(); }
 });

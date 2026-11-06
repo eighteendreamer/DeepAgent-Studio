@@ -73,8 +73,8 @@ do not add per-method capability enforcement. Rust retains the raw `RpcResponse`
 and reports `InvalidInitializeResult`/`IncompatibleProtocolVersion`; TypeScript
 reports `HarnessProtocolError` with safe field names and numeric version details,
 not arbitrary peer JSON. Rejected or late duplicate replies do not authorize
-calls. There is no automatic retry, version downgrade or new connection recovery
-policy; reconnect explicitly when necessary. Existing incomplete mock peers must
+calls. Handshake validation does not retry or downgrade versions; the explicit
+connection recovery policy is documented below. Existing incomplete mock peers must
 publish the complete v1 handshake contract. Rust error enum exhaustive matches
 may need updating. Business result validation and transport restart are separate.
 
@@ -306,6 +306,35 @@ failure terminates the connection with an error instead of silently continuing
 after dropping notifications. It requests cancellation through the existing
 runtime for that connection's active/queued turns and waits up to 10 seconds;
 a cleanup timeout is an error, not proof that the turns reached a terminal.
+### Explicit stdio recovery
+
+Each stdio transport owns one physical process generation and one shared,
+validated initialization promise. Concurrent first requests do not send duplicate
+`initialize` calls. Spawn, stdin/stdout/stderr stream errors, malformed stdout,
+stdout closure and child exit make that transport terminal. Subsequent requests
+reject with the recorded transport failure; they do **not** silently spawn a new
+process with the previous generation's handshake. This intentionally replaces
+the old implicit restart behavior. Spawn/pipe causes remain attached to
+`HarnessTransportError`; ordinary server RPC errors are still `HarnessRpcError`.
+A failed handshake stays unready and is not automatically retried on that process.
+
+Call `await agent.reconnect()` to explicitly create a fresh, lazy transport. Its
+first request performs a new validated handshake; concurrent reconnect calls
+coalesce. Resume the desired persisted thread before starting new work, and read
+durable history to reconcile any earlier request whose outcome is unknown. No
+turn, approval response, ACK or interrupted stream is replayed for you. Await
+reconnect before constructing an owned stream. Old replies/failure callbacks and
+approval handlers cannot authorize or send a response on the replacement
+transport. The existing global pending-approval completion barrier is separate
+(H-295); reconnect does not cancel arbitrary user approval callbacks.
+
+`close()` leaves the current transport closed and supersedes a pending reconnect;
+it does not silently reopen on a later business request. A subsequent *explicit*
+reconnect can deliberately reopen it. The stdio close path still requests direct
+child termination; it is not a new process-tree teardown or an exit receipt.
+Public request/result/wire types are unchanged. CLI JSONL lifecycle and exit-code
+semantics are not changed by this stdio policy.
+
 Never automatically resubmit a turn after a transport failure: its side effects
 may already have happened. Reconnect, then use `thread/read` to reconcile the
 durable run status and history via `readThreadPage`. Persist the

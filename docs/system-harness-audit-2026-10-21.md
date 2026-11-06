@@ -12591,7 +12591,7 @@ E-H260-09（独立提交回填，2026-10-29）：修复提交`0ba0f611a4496e4385
 
 ### H-265：TypeScript SDK 自动替换已退出进程，却沿用旧握手状态，新进程首条业务请求被拒绝
 
-**级别：中（P2，进程故障后的 SDK 恢复正确性）；状态：正式 TypeScript SDK 和真实本机 stdio 子进程已复现，未修复。** 触发条件是一个已经 initialize 成功的 SDK 子进程退出，调用方捕获传输错误后仍使用同一个 DeepAgent 对象发起下一请求，且没有先显式调用 reconnect()。H-263/H-264 是已撤销的重复登记，不复用其编号；本项不重复 H-256（Rust SDK 断线后事件等待不结束）或 H-04（server 恢复配置丢失）。
+**级别：中（P2，进程故障后的 SDK 恢复正确性）；状态：已修复并验收（2026-11-07，限E-H265-03）；原审计未修复时的失败事实保留如下。** 触发条件是一个已经 initialize 成功的 SDK 子进程退出，调用方捕获传输错误后仍使用同一个 DeepAgent 对象发起下一请求，且没有先显式调用 reconnect()。H-263/H-264 是已撤销的重复登记，不复用其编号；本项不重复 H-256（Rust SDK 断线后事件等待不结束）或 H-04（server 恢复配置丢失）。
 
 #### 首次即时 Evidence（2026-10-25）
 
@@ -12614,6 +12614,79 @@ E-H260-09（独立提交回填，2026-10-29）：修复提交`0ba0f611a4496e4385
 - DeepSeek Responses、reasoning 和 KV cache 发生在 provider 请求层，无法替本机 SDK 新进程完成 Harness initialize；本项是控制面恢复问题，不据此宣称 DeepSeek wire 不兼容。故障后也不应自动重发结果未知的 turn/start、approval/respond 等副作用操作；连接恢复与业务重试分别定义。
 - 后续验收应覆盖 initialize 前/后退出、spawn error、stdin/stdout 先关闭、显式 close、多个并发恢复请求、旧代迟到回调、thread resume、运行中退出的 durable 查询和未知副作用。当前未执行真实 Rust server、完整 Runtime/RunStore、Desktop UI、真实 DeepSeek、跨平台或压力测试；未修改生产逻辑。
 - 验证收尾：`packages/sdk` 的 `pnpm test`（包含 tsc build）**5 passed**；`node --test tests/restart-audit.test.mjs` 默认 **1 passed / 1 skipped**，显式开启故障探针时 **1 passed / 1 failed（预期）**。`cargo fmt --all -- --check` 和 `git diff --check` 通过。未运行全 workspace/Clippy/前端构建；本轮仅 test-only JavaScript 与 Markdown。code-audit 用于核对首个失效边界及真实进程顺序，不把“手工 reconnect 可用”当作自动恢复正确。
+
+本轮仅H265（P2）TypeScript stdio进程代次/握手所有权，H256已交付且不重计；不合并H295全局审批完成屏障、H266 JSONL退出码或H180。基线786b2523，tracked原先干净，原五项用户untracked只列名、不读改/暂存。已读当前审计/台账、DeepAgent/StdioTransport/owned流与回执门禁、所有相关生产/测试/配置/README、CLI dispatch初始化门禁及新代必须resume的生产逻辑，核对Cargo/package/CI/格式规则与本地DeepSeek Harness显式终结生命周期参考。无Rust、协议或UI变更；实际跨层验收使用已核对来源的现有真实CLI，不借此重建Kernel/RunStore/审批/执行链。
+
+**E-H265-01（2026-11-07，旧探针失配查明与原问题复现）**：隔离合成HOME/APPDATA/TEMP/data、清凭据/代理环境，`pnpm -C packages/sdk build` exit0后`$env:RUN_HARNESS_AUDIT='1'; node --test packages/sdk/tests/restart-audit.test.mjs`原样得到0过2败：旧合法夹具capabilities={}已被H206正确拒绝，尚未到原触发条件，不作为H265已修证据。只补齐CLI原有六bool声明，探针为1过1败，但出现真实write EPIPE未处理：H214已新增stdout-close提前failPending，所以旧“请求reject等于child exit”的barrier注释不成立。再仅在test中捕获并等待实际旧child exit（不改生产/故障断言），同命令仍1过1败，实际PID分组为故障[[initialize,thread/start,audit/exit],[thread/list]]、新server RPC -32001，正常显式reconnect为两代先initialize后业务、成功。原始三轮日志/结果保留；先查明失配，再确认当前原根因，未用初始化门禁掩盖重连缺陷。
+
+**E-H265-02（TDD、候选策略与失败保留，未最终验收）**：新增真实Node stdio代次矩阵，生产未改时`node --test packages/sdk/tests/generation-contract.test.mjs`为2过7败0跳过，覆盖并发首握手、初始化/就绪/接纳后退出、无隐藏新进程/副作用重派、旧callback/旧审批跨代、close/reconnect竞争。选择原报告明确允许且与既有reconnect/参考一致的“连接失败后永久failed，显式reconnect新建代次”策略，不是实现透明自动恢复或保证新server已加载线程。公共签名/wire v1不变，但旧隐式respawn行为有兼容性变化，README明确迁移；未知结果的turn/approval/ACK均不自动重派，恢复后调用者显式resume/read核对。
+
+根因收敛在原StdioTransport：每个实例只对应一个physical child，持有唯一共享initializeTask和ready；首次transport failure不可逆、pending清空/onFailure复用、后续请求不再ensureStarted重建child。DeepAgent不再持有脱离代次的initialized bool；每个请求捕获具体transport并走同一requestOn握手/结果门禁；reconnect并发coalesce、close可撤销尚未发布的新代次，旧回复/失败callback/审批handler不能授权或发往新transport。审批任务全局barrier仍H295，不重建审批路由。捕获stdin/stdout/stderr error及底层stdout close，真实EPIPE不再成为无监听error事件；Native spawn/pipe错误包装HarnessTransportError保留cause，业务RPC错误原类/码保留。
+
+首候选tsc因旧DeepAgent initialized private getter不再被生产读取而报TS6133，未冒充行为红测；移除旧状态，H206/H212测试仅改查实际transport owner的ready，不放宽负例。候选九项新矩阵9/0；扩展真实stdout reader销毁后发现只监听readline close不足，两项10秒测试超时且整组未收尾，已用该工具session Ctrl-C终止、确认终态exit1并核对本轮目标关联Node进程无残留，不循环等候取绿或扩大超时。将原生stream close纳入同一failure gate后默认133/0，补上held initialize换代/迟到旧结果/新pending隔离后最新默认134/0/0，原H265两项已默认化。新策略探针从旧“必须透明重建并握手”断言改为审计允许的“没有第二进程且typed transport拒绝”，正常显式reconnect对照和原失败原文均保留，不通过skip误计。
+
+候选`pnpm -C packages/sdk test:stdio`实际2/0/0：旧真实失败run/分页/冷重开对照保留；新增真实CLI进程kill后同agent八个并发请求均拒绝且无新child，显式reconnect触发新代一次握手，未resume的旧Thread.run以真实RPC -32003拒绝，显式resume后configuration与原一次失败run/events/actions/approvals不变、无重复run/伪造取消。它只在无provider设置的合成home/workspace与临时SQLite验证，未跑真实供应商或活provider强杀。
+
+当前候选有效但尚未最终冻结门禁/独立commit，不宣称完成。准备以TS严格构建/typecheck、默认/精确矩阵、双真实stdio/JSONL、真实配置冷fork对照及H295独立负对照验收；此包没有单独eslint/formatter脚本或依赖，不下载临时lint，另执行变更MJS的node --check与diff检查，不把tsc冒称专用lint。无Rust改动或桌面SDK依赖，计划不重跑不相关完整Rust workspace/Clippy/GUI构建，保留H256既有全仓H306/旧lint失败事实，不沿用其为本轮通过。306唯一台账核对后183验收/24历史跳过/8归并/3撤销/87待修/1修复中，未关闭88含H180授权跳过，实际队列87；本项暂估余1–3有效验收/收尾小时。全部200–400有效小时仍为未逐项校准低置信历史区间，依据剩余输入/权限/持久化/恢复/SDK跨层风险，设备/依赖/构建/环境等待另计，不承诺日期，goal继续active。
+
+**E-H265-02a（2026-11-07，交付前发现同根竞态及重冻结）**：首轮九文件冻结门禁已实际通过default134/0、原探针2/0、新代次15/0、真实stdio2/0、真实configuration/fork1/0、JSONL1/0、typecheck/fmt及六份MJS语法检查；H295独立负对照仍2/1，未计为本项修复。随后交付前增加“close已完成后立刻再次显式reconnect”的真实子进程边界测试：`node --test --test-name-pattern='H265 after close has completed' packages/sdk/tests/generation-contract.test.mjs`实际0过1败，得到reconnect superseded by close。已结束close之后的新操作仍拿到被撤销旧reconnectTask，是同一代次承诺所有权根因，不能将首轮绿测当已覆盖该边界。
+
+在close撤销代次时同步释放旧reconnectTask引用，旧操作finally只清理自身（不会清掉后来的新操作）；没有放宽断言/自动重放/新增开关。构建通过后相同精确测试1/0。首轮所有日志和新红绿均保留；源码/测试变化后九文件重新冻结final2-sources.json，全部门禁用独立final2/syntax2/negative2名称重跑，不沿用首轮结果、不覆盖失败。当前仍修复中、无本项fix提交；183验收/24历史跳过/8归并/3撤销/87待修/1修复中不变，整体goal active，工时与等待口径同E02。
+
+**E-H265-03（2026-11-07，最终冻结源码验收与关闭，限本机范围）**：final2九份TS生产/测试/package/README文件SHA256在全部门禁前后复核一致。原H265故障探针已默认启用并纳入pnpm test，明确按审计允许的“失败连接终结、显式恢复”策略验收；正常显式重连对照继续验证新进程第一条为initialize。E01原夹具失配/真实EPIPE/修正exit barrier后的原失败、E02 TDD2/7/编译错误/stdout close超时及终止、E02a交付前post-close旧承诺竞态0/1均保留，不以首轮绿覆盖后续反例，也不靠默认skip取绿。
+
+| 门禁 | 实际命令 | 结果与耗时 |
+|---|---|---|
+| final2-fmt | `cargo fmt --all -- --check` | exit0，全仓Rust格式检查（无Rust代码变化）；4.237秒 |
+| final2-typecheck | `pnpm -C packages/sdk typecheck` | exit0，SDK strict tsc --noEmit；1.304秒 |
+| final2-default | `pnpm -C packages/sdk test` | exit0；135过0败0取消0跳过，含原H265两项与新增16项代次回归；5.632秒 |
+| final2-original | `node --test packages/sdk/tests/restart-audit.test.mjs` | exit0；2/0/0，完整握手/实际exit barrier，显式新代对照与无隐藏respawn策略；0.314秒 |
+| final2-generation | `node --test packages/sdk/tests/generation-contract.test.mjs` | exit0；16/0/0，真实本机stdio与控制回调并发边界；1.433秒 |
+| final2-real-stdio | `pnpm -C packages/sdk test:stdio` | exit0；2/0/0，真实CLI故障/新代握手/显式resume/唯一durable run及既有分页冷重开；5.702秒 |
+| final2-real-configuration | `node --test packages/sdk/tests/server-configuration.test.mjs` | exit0；1/0/0，DEEPAGENT_TEST_BINARY指向已核对空安装副本，真实配置/冷fork/resume；2.133秒 |
+| final2-real-jsonl | `pnpm -C packages/sdk test:jsonl` | exit0；1/0/0，既有JSONL生命周期兼容对照；5.808秒 |
+| negative2-h295 | `node --test packages/sdk/tests/approval-isolation-audit.test.mjs` | exit1；2过1败0跳过，waiting组B终态已交付但迭代仍被A审批阻塞（独立待修）；0.272秒 |
+| syntax2-generation-contract.test | `node --check packages/sdk/tests/generation-contract.test.mjs` | exit0，MJS语法检查；0.048秒 |
+| syntax2-generation-fixture | `node --check packages/sdk/tests/generation-fixture.mjs` | exit0，MJS语法检查；0.050秒 |
+| syntax2-initialize-contract.test | `node --check packages/sdk/tests/initialize-contract.test.mjs` | exit0，MJS语法检查；0.048秒 |
+| syntax2-real-cli-generation.test | `node --check packages/sdk/tests/real-cli-generation.test.mjs` | exit0，MJS语法检查；0.045秒 |
+| syntax2-restart-audit.test | `node --check packages/sdk/tests/restart-audit.test.mjs` | exit0，MJS语法检查；0.047秒 |
+| syntax2-version-contract.test | `node --check packages/sdk/tests/version-contract.test.mjs` | exit0，MJS语法检查；0.050秒 |
+
+negative2-h295实际设置`$env:RUN_HARNESS_AUDIT='1'`，结束后清除；正常none/answered组finishedBeforeRelease=true，waiting组false且finishedAfterRelease=true，故H295原全局屏障仍确实复现，不把旧审批handler不能跨代发送这一必要代次隔离误计为H295修复。其他独立H266 JSONL非零退出传播未由本项修改/验收，不因JSONL正常门禁通过就称已修；H256 Rust断线已验收但不重计。此包无专门eslint/formatter脚本或依赖，实际执行strict typecheck/build与六份变更MJS的node --check、Git diff检查；没有临时下载lint、修改配置放宽检查或将tsc称独立lint。
+
+唯一生产改动在原`packages/sdk/src/index.ts`：StdioTransport是一代physical process的可信owner，共享initializeTask与ready，首次transport failure不可逆且保留首因；原pending/onFailure统一结算，stdin/stdout/stderr错误、readline/底层stream close、malformed stdout及child exit都不能使同实例偷偷spawn。DeepAgent移除跨代bool，普通请求与旧审批响应共用captured-transport的requestOn初始化/回执门禁；reconnect并发共用一个操作、close撤销旧承诺并使后来的显式reconnect成为新意图，旧finally不清新任务，旧callback/回复/审批handler不跨代。普通业务RPC错误及H206/H207结果校验仍走原错误分类，不因此透明重派或重建连接；局部取消也不是新远端cancel。
+
+16项代次默认回归覆盖：12并发首请求只有一次initialize、初始化前/后/接纳后退出、8/12并发后续失败不spawn/不重派、真实ENOENT的共享失败与cause/pending回收、原stdout-close报错早于exit时不再写EPIPE、真实parent stdout reader销毁在健康/握手等待两阶段均终结、malformed/受控stdin error、6个held握手等待者被close唤醒、旧exit/error/stdout callback的受控延迟投递不伤新代（旧进程已实际exit）、held握手换代/迟到旧结果与新pending隔离、8并发显式reconnect、old审批不发到新代、close/reconnect竞争及close完成后立即新显式reconnect。受控callback/error注入只用于难以稳定安排的迟到顺序，正常/退出/握手/并发/读取端关闭与未知接纳均经真实Node stdio；未替换production request为返回理想值的mock。原H206/H212测试只把私有状态观测从DeepAgent移到实际transport owner，原否定断言/正式wire噪声输入不变。
+
+真实CLI测试使用已知来源的当前G固定入口，81,808,384字节、SHA256=`C0023473E093B6526BE1D78F0ECB714DDDE8816251FD47ABF1196BB1A507BEB8`；本轮没有Rust/Cargo/protocol改动，未重新构建CLI，也不把复用binary冒充本轮Rust编译。复核原H256 accepted来源，复制到本轮empty-install-final2及门禁自建空安装后hash相等，验前后G hash不变；没有写G CLI或与Tauri旁车覆盖并发。全新合成home/data/workspace、无provider设置的真实一次失败run先落唯一durable terminal，再实际kill CLI；旧agent八并发list均typed失败、transport未替换/无新child。显式reconnect后新PID/新握手，未resume旧Thread.run得到生产ERR_INVALID_THREAD -32003，显式resume及配置冷fork对照通过，前后events/runEvents（含actions/approvals）完全一致，没有重复run或凭断线伪造取消。正常既有stdio分页/重连/唯一终态对照与JSONL /help/关闭对照另列，未冒称活动provider强杀或真实模型成功运行。
+
+原失败摘录随双文保留；完整临时日志/脚本/合成记录验后按授权清理，不提交：
+```text
+旧夹具：HarnessProtocolError: initialize result has an invalid capabilities.threadLifecycle
+0 passed / 2 failed / 0 skipped
+补齐合法声明但未修exit barrier：uncaughtException: write EPIPE；1 passed / 1 failed
+当前原问题：explicitReconnect=false
+generations=[["initialize","thread/start","audit/exit"],["thread/list"]]
+HarnessRpcError code=-32001: initialize must precede business requests
+1 passed / 1 failed
+新增TDD：2 passed / 7 failed / 0 skipped
+首编译候选：TS6133: initialized is declared but its value is never read
+真实stdout reader close候选：normal/hold-initialize两项test timed out after 10000ms；该轮人工终止，不计完整组验收
+交付前竞态：reconnect superseded by close；0 passed / 1 failed
+```
+
+兼容性/未验：公共签名/请求/回执/wire v1未变，无新依赖、数据库迁移或UI协议；**旧隐式重启行为改为显式恢复**，调用方须await reconnect并按需resume/read，不能把transport失败当作远端副作用未发生。初始化失败不自动重试、请求失败不重派；新的传输握手没有自动恢复已加载thread资格、旧stream、审批或ACK。公开close的既有直接child kill仍不是进程树退出回执，不将本项说成stdio完整owner重写；未处理H295全局pending-approval屏障。专门测试仅Node v22.22.1 / pnpm 11.7.0的本机Windows；未验其他OS/Node版本矩阵、真实provider/内网/凭据/用户数据、活provider强杀、长压/掉电、所有kill失败/继承pipe/派生树组合、完整GUI/打包。
+
+影响范围纯TS SDK和文档测试，已全局核对无桌面SDK依赖、无Rust/Tauri桥接/前端类型/Kernel/RunStore修改；故本轮未重跑完整Rust workspace/Clippy、desktop build/check或截图，不把旧H256的4828/1/206拿来当本轮结果。旧H306及models/client.rs:431 strict-Clippy基线失败事实仍在台账，未混修，也不声称系统全绿。真实CLI生产方/两种SDK入口消费、配置冷重开和默认协议矩阵提供本项跨层证据，未降低原探针验收标准。
+
+H265在上述范围已修复并验收，本轮新增1，历史跳过/归并/撤销新增0；306唯一8列台账复核后184验收/24历史跳过/8归并/3撤销/87待修/0修复中，未关闭87含H180授权跳过，实际队列86，不提供完成率。代码/测试/当时双文独立commit待生成，取得真实hash后另做docs回填、不amend、不推送/PR/迁移。下一H266（P2自动化失败传播/避免错误成功后的重复副作用），先复核当前JSONL owner及原探针，不凭历史报告直接改。H265本机验收余0，清理/提交收尾待完成；全余200–400有效小时仍为未逐项校准低置信历史区间，依据86项输入/权限/持久化/恢复/SDK跨层风险，不能按条数机械扣时。15个final2门禁机器累计27.121秒（不混为人工有效工时），早先候选/失败轮另计；未来设备/依赖/构建/环境/清理等待另计且无可靠总上界，不承诺日期。整体goal保持active。
+
+**E-H265-04（2026-11-07，提交前一致性及清理受阻）**：继续核对当前Git仅本项八份tracked改动/三份新增测试，原五项用户untracked只列名、不读改/暂存；九份受测源码/测试/package/README逐份SHA256仍与final2冻结一致，现存final2-complete/results及七组日志尾部与E03门禁结果相符。双文E01/02/02a/03正文逐字一致，306唯一编号/每行8列、顶部184验收成员与主台账精确相等，相对786b2523只有H265主行变化。一次性校验脚本最初git show触及Node默认maxBuffer而ENOBUFS，显式16MiB缓冲后发现其标题正则漏了既有“H-305 撤销”空格形式；修正校验器覆盖该合法标题后完整通过，未修改台账原标题或生产/测试断言。git diff --check通过；这些文档检查失败不充作产品测试红绿。
+
+按授权清理前将必要原始失败摘录、实际命令/结果及限制留存双文。绝对目录C:\Users\32734\AppData\Local\Temp\h265-repair-20261107经Resolve-Path精确匹配，根/全部后代无reparse且均位于该根；仅本轮合成HOME/data、临时CLI副本、测试记录/日志和脚本，无关联Node/CLI进程。实测342文件/359目录/828,734,379逻辑字节，单次原生PowerShell Remove-Item -LiteralPath <已核对根> -Recurse -Force被工具策略在执行前拒绝。随后只读复核根仍存在、342文件/828,734,379字节，确认释放0；不换语言/工具/提权/改ACL绕过，也不将非Cargo根交给cargo clean。清理阻塞是产物删除限制，不是验收通过或业务阻塞，未冒称C盘已清空。
+
+G盘SDK dist为16文件/102,060字节，沿H200既有工具策略阻塞不再尝试删除；共享固定CLI仍是后续真实门禁前置而保留，未宣称G target清空。旧H256等C盘DACL残余继续保留（H256为1,777文件/1,430,553,652逻辑字节），不循环重试。H265本机修复验收余0，独立提交/真实hash回填待完成，清理待允许的执行环境处理；累计184验收/24历史跳过/8归并/3撤销/87待修（含H180授权跳过，实际队列86），下一H266。全部200–400有效小时仍是未逐项校准低置信历史粗估；机器/设备/依赖/环境及清理等待另计，无可靠等待总上界；整体goal active。
 
 ### H-266：TypeScript SDK 的 CLI JSONL 迭代忽略非零退出，部分输出或空输出均无错误结束
 

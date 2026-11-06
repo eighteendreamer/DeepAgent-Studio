@@ -21,7 +21,7 @@ createInterface({input: process.stdin}).on("line", line => {
   let response;
   if (request.method === "initialize") {
     initialized = true;
-    response = {result:{protocolVersion:1, serverName:"strict-audit", serverVersion:"1", capabilities:{}}};
+    response = {result:{protocolVersion:1, serverName:"strict-audit", serverVersion:"1", capabilities:{threadLifecycle:true,streaming:true,interrupt:true,steer:true,approval:true,reconnect:true}}};
   } else if (!initialized) {
     response = {error:{code:-32001, message:"initialize must precede business requests"}};
   } else if (request.method === "thread/start") {
@@ -37,9 +37,12 @@ createInterface({input: process.stdin}).on("line", line => {
   const agent = new DeepAgent({command:process.execPath, args:[script,log]});
   try {
     assert.equal((await agent.startThread()).id, "audit-thread");
-    // This rejection is delivered by the production exit callback, so a new
-    // request starts only after it has cleared the dead child handle.
+    const child = agent.transport.child;
+    const exited = new Promise((resolve) => child.once("exit", resolve));
+    // H214 added stdout-close failure before child exit; a rejection alone is
+    // no longer an exit barrier. Await the actual old process event as well.
     await assert.rejects(agent.requestForTest("audit/exit", {}), HarnessTransportError);
+    await exited;
     if (explicitReconnect) await agent.reconnect();
     let result;
     let failure;
@@ -71,13 +74,11 @@ test("explicit reconnect reinitializes a fresh stdio generation", {timeout:10000
   assert.deepEqual(value.result, []);
 });
 
-test("automatic stdio replacement must not reuse a dead generation's handshake", {
-  skip: process.env.RUN_HARNESS_AUDIT !== "1", timeout:10000
+test("failed stdio generation stays failed until explicit reconnect, without hidden replacement", {
+  timeout:10000
 }, async () => {
   const value = await observe(false);
-  assert.equal(value.generations.length, 2, "fixture must observe a real new child");
-  assert.equal(value.generations[1][0], "initialize",
-    "new app-server received a business request without initialize");
-  assert.equal(value.failure, undefined);
-  assert.deepEqual(value.result, []);
+  assert.deepEqual(value.generations, [["initialize","thread/start","audit/exit"]]);
+  assert.ok(value.failure instanceof HarnessTransportError);
+  assert.equal(value.result, undefined);
 });

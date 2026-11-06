@@ -44,17 +44,17 @@ for (const release of [false, true]) {
       const result = agent.startThread().then((value) => ({ value }), (error) => ({ error }));
       await barrier;
       assert.deepEqual(raw.map((event) => event.type), ["thread.started"]);
-      assert.equal(agent.initialized, false);
+      assert.equal(agent.transport.initialized, false);
       assert.equal(agent.transport.pending.size, 1);
       if (release) {
         // Fixture control uses the same real transport while initialization waits.
         await agent.transport.request("audit/release", {});
         assert.equal((await result).value.id, "thread-1");
-        assert.equal(agent.initialized, true);
+        assert.equal(agent.transport.initialized, true);
       } else {
         await agent.close();
         assert.ok((await result).error instanceof HarnessTransportError);
-        assert.equal(agent.initialized, false);
+        assert.equal(agent.transport.initialized, false);
       }
       assert.equal(agent.transport.pending.size, 0);
     } finally { await agent.close(); }
