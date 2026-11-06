@@ -3,7 +3,6 @@
 use super::*;
 use deepagent_core::clock::FixedClock;
 use deepagent_hooks::HookRegistry;
-use deepagent_models::transport::MockTransport;
 use deepagent_models::{ModelClient, ModelConfig};
 use deepagent_persistence::{run_store::RunStore, Database};
 use deepagent_runtime::{
@@ -137,7 +136,7 @@ fn main() {
     let handle = kernel.handle();
     let mut agent = ModelAgent::new(
         Arc::new(ModelClient::new(
-            Arc::new(MockTransport::new([
+            Arc::new(crate::test_sequence::mock([
                 r#"{"type":"response.output_text.delta","delta":"Created answer.txt."}"#
                     .to_string(),
                 r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#.to_string(),

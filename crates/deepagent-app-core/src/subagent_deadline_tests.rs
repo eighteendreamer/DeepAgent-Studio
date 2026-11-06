@@ -42,6 +42,8 @@ struct ChildTransport {
 #[async_trait::async_trait]
 impl HttpTransport for ChildTransport {
     async fn stream(&self, _request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::test_sequence::sink(sink);
         let item = if self.call_tool {
             serde_json::json!({"type":"function_call","call_id":"child-probe","name":"deadline_probe","arguments":"{}"})
         } else {

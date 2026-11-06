@@ -46,6 +46,7 @@ where
                 // force-flush the 16 KiB delta metrics buffer.
                 RuntimeEvent::ResponsesStreamEvent {
                     delta_chars: Some(_),
+                    sequence_gap: None,
                     ..
                 } => {}
                 _ => {
@@ -315,6 +316,10 @@ fn runtime_event_category(event: &RuntimeEvent) -> &'static str {
 
 fn runtime_event_level(event: &RuntimeEvent) -> &'static str {
     match event {
+        RuntimeEvent::ResponsesStreamEvent {
+            sequence_gap: Some(_),
+            ..
+        } => "warn",
         RuntimeEvent::RunFailed { .. } => "error",
         RuntimeEvent::ToolCompleted { ok, .. } if !ok => "warn",
         RuntimeEvent::ToolBlocked { needs_approval, .. } => {
@@ -406,14 +411,18 @@ fn runtime_event_message(event: &RuntimeEvent) -> String {
         }
         RuntimeEvent::ResponsesStreamEvent {
             event_type,
+            sequence_number,
+            sequence_gap,
             item_id,
             item_type,
             delta_chars,
         } => format!(
-            "responses stream event type={event_type} item_id={} item_type={} delta_chars={}",
+            "responses stream event type={event_type} item_id={} item_type={} delta_chars={} sequence_number={} sequence_gap={}",
             item_id.as_deref().unwrap_or("none"),
             item_type.as_deref().unwrap_or("none"),
             delta_chars.map_or_else(|| "none".to_string(), |value| value.to_string()),
+            sequence_number.map_or_else(|| "none".to_string(), |value| value.to_string()),
+            sequence_gap.map_or_else(|| "none".to_string(), |value| value.to_string()),
         ),
         RuntimeEvent::ResponsesWebSearchCall {
             call_id,
@@ -569,6 +578,39 @@ fn runtime_event_message(event: &RuntimeEvent) -> String {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn sequence_gap_delta_is_logged_without_changing_ordinary_delta_batching() {
+        let logs = Arc::new(RuntimeLogStore::open_in_memory().unwrap());
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let forward = spawn_runtime_event_pump(
+            rx,
+            Some(logs.clone()),
+            "sequence-run".into(),
+            "sequence-session".into(),
+            |_| {},
+        );
+        tx.send(RuntimeEvent::ResponsesStreamEvent {
+            event_type: "response.output_text.delta".into(),
+            sequence_number: Some(7),
+            sequence_gap: Some(2),
+            item_id: None,
+            item_type: None,
+            delta_chars: Some(1),
+        })
+        .unwrap();
+        tx.send(RuntimeEvent::ContentDelta { text: "x".into() })
+            .unwrap();
+        drop(tx);
+        forward.await.unwrap();
+        let entries = logs.recent(10).unwrap();
+        let gap = entries
+            .iter()
+            .find(|entry| entry.event == "responses_stream_event")
+            .unwrap();
+        assert_eq!(gap.level, "warn");
+        assert!(gap.message.as_deref().unwrap().contains("sequence_gap=2"));
+    }
+
     #[test]
     fn redaction_removes_prompts_and_secrets() {
         let redacted = redact_runtime_log_value(serde_json::json!({
@@ -674,6 +716,8 @@ mod tests {
         );
         for _ in 0..100 {
             tx.send(RuntimeEvent::ResponsesStreamEvent {
+                sequence_number: None,
+                sequence_gap: None,
                 event_type: "response.output_text.delta".into(),
                 item_id: Some("msg_1".into()),
                 item_type: None,

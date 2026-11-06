@@ -1430,6 +1430,8 @@ mod tests {
             request: deepagent_models::transport::TransportRequest,
             sink: &mut dyn deepagent_models::transport::EventSink,
         ) -> Result<()> {
+            let sink: &mut dyn deepagent_models::transport::EventSink =
+                &mut crate::test_sequence::sink(sink);
             let body: serde_json::Value = serde_json::from_str(&request.body)?;
             self.instructions_seen.lock().unwrap().push(
                 body["instructions"]
@@ -2184,6 +2186,8 @@ mod tests {
             request: deepagent_models::transport::TransportRequest,
             sink: &mut dyn deepagent_models::transport::EventSink,
         ) -> Result<()> {
+            let sink: &mut dyn deepagent_models::transport::EventSink =
+                &mut crate::test_sequence::sink(sink);
             self.requests
                 .lock()
                 .unwrap()

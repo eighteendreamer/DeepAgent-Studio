@@ -425,10 +425,10 @@ fn extend_unique(dst: &mut Vec<String>, src: Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use deepagent_models::{MockTransport, ModelConfig};
+    use deepagent_models::ModelConfig;
 
     fn client(events: Vec<String>) -> Arc<ModelClient> {
-        let transport = Arc::new(MockTransport::new(events));
+        let transport = Arc::new(crate::test_sequence::mock(events));
         Arc::new(ModelClient::new(transport, ModelConfig::deepseek("test")))
     }
 
@@ -711,6 +711,8 @@ mod tests {
             _request: deepagent_models::TransportRequest,
             sink: &mut dyn deepagent_models::transport::EventSink,
         ) -> deepagent_core::error::Result<()> {
+            let sink: &mut dyn deepagent_models::transport::EventSink =
+                &mut crate::test_sequence::sink(sink);
             let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if call == 0 {
                 return Err(deepagent_core::error::CoreError::provider(

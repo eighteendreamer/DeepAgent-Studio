@@ -1,5 +1,7 @@
 //! Audit the model-specific reasoning metadata at the Responses request seam.
 
+#[path = "support/sequence.rs"]
+pub mod sequence_fixture;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -32,6 +34,7 @@ impl HttpTransport for AuditTransport {
     }
 
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let sink: &mut dyn EventSink = &mut sequence_fixture::sink(sink);
         self.requests
             .lock()
             .unwrap()

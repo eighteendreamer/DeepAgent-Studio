@@ -1,5 +1,7 @@
 //! Final-provider-seam audit for documented Responses text.format shapes.
 
+#[path = "support/sequence.rs"]
+pub mod sequence_fixture;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
@@ -18,6 +20,7 @@ struct RecordingTransport {
 #[async_trait]
 impl HttpTransport for RecordingTransport {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let sink: &mut dyn EventSink = &mut sequence_fixture::sink(sink);
         assert!(request.url.ends_with("/responses"));
         let wire: Value = serde_json::from_str(&request.body)?;
         let model = wire["model"].clone();

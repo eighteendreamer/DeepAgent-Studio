@@ -380,6 +380,7 @@ impl RuntimeEventSink for PersistentEventSink {
                 // suppressed.
                 RuntimeEvent::ResponsesStreamEvent {
                     delta_chars: Some(_),
+                    sequence_gap: None,
                     ..
                 } => {}
                 _ => {
@@ -1153,6 +1154,8 @@ mod tests {
             let events = self.events.as_ref().expect("kernel event sink");
             for _ in 0..100 {
                 events.emit(RuntimeEvent::ResponsesStreamEvent {
+                    sequence_number: None,
+                    sequence_gap: None,
                     event_type: "response.output_text.delta".into(),
                     item_id: Some("msg_1".into()),
                     item_type: None,
@@ -1486,6 +1489,8 @@ mod tests {
         );
         for _ in 0..100 {
             sink.emit(RuntimeEvent::ResponsesStreamEvent {
+                sequence_number: None,
+                sequence_gap: None,
                 event_type: "response.output_text.delta".into(),
                 item_id: Some("msg_1".into()),
                 item_type: None,

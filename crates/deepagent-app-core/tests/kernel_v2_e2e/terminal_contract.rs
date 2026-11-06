@@ -23,12 +23,12 @@ impl HttpTransport for TerminalModel {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
         if call == 0 {
             let last = self.events.len() - 1;
-            emit_responses_events(sink, &self.events[..last])?;
+            emit_raw_responses_events(sink, &self.events[..last])?;
             assert!(
                 !self.workspace.join("effect.txt").exists(),
                 "done is only preparation"
             );
-            emit_responses_events(sink, &self.events[last..])
+            emit_raw_responses_events(sink, &self.events[last..])
         } else {
             assert_eq!(
                 call, 1,
@@ -66,10 +66,11 @@ enum Ending {
     Malformed(&'static str, &'static str),
     Incomplete(Option<&'static str>),
     MessageRole(&'static str, Option<&'static str>),
+    Sequence(&'static str),
 }
 
 async fn observe(ending: Ending) {
-    let rejected = !matches!(ending, Ending::Completed);
+    let rejected = !matches!(ending, Ending::Completed | Ending::Sequence("gap"));
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
@@ -136,6 +137,36 @@ async fn observe(ending: Ending) {
                 .to_string(),
             );
         }
+        // This fixture inserts an event into an otherwise sequenced normal
+        // stream. Assign producer sequence before testing malformed roles.
+        for (sequence, event) in events.iter_mut().enumerate() {
+            let mut value: Value = serde_json::from_str(event).unwrap();
+            value["sequence_number"] = json!(sequence);
+            *event = value.to_string();
+        }
+    }
+    if let Ending::Sequence(case) = ending {
+        let last = events.len() - 1;
+        let mut terminal: Value = serde_json::from_str(&events[last]).unwrap();
+        match case {
+            "missing" => {
+                terminal.as_object_mut().unwrap().remove("sequence_number");
+            }
+            "type" => terminal["sequence_number"] = json!(CANARY),
+            "duplicate" => terminal["sequence_number"] = json!(last - 1),
+            "descending" => terminal["sequence_number"] = json!(0),
+            "gap" => {
+                terminal["sequence_number"] = json!(last + 3);
+                events.insert(
+                    last,
+                    json!({"type":"response.output_text.delta",
+                    "sequence_number":last+2,"delta":"synthetic gap text"})
+                    .to_string(),
+                );
+            }
+            _ => unreachable!(),
+        }
+        *events.last_mut().unwrap() = terminal.to_string();
     }
     let model = Arc::new(TerminalModel {
         events,
@@ -210,6 +241,7 @@ async fn observe(ending: Ending) {
                 error.contains("malformed_response_message") && error.contains("message.role"),
                 "{error}"
             ),
+            Ending::Sequence(_) => assert!(error.contains("invalid_response_sequence"), "{error}"),
             Ending::Completed => unreachable!(),
         }
         assert!(!error.contains(CANARY));
@@ -259,6 +291,23 @@ async fn observe(ending: Ending) {
                     .count(),
                 1
             );
+        }
+        if matches!(ending, Ending::Sequence("gap")) {
+            let diagnostics: Vec<_> = events
+                .iter()
+                .filter(|event| {
+                    event.event_type == "responses_stream_event" && event.data["sequence_gap"] == 2
+                })
+                .collect();
+            assert_eq!(
+                diagnostics.len(),
+                1,
+                "a delta gap is not dropped by ordinary token batching"
+            );
+            assert_eq!(diagnostics[0].data["sequence_number"], 7);
+            assert!(live.lock().unwrap().iter().any(|event| event["type"]
+                == "responses_stream_event"
+                && event["sequence_gap"] == 2));
         }
     }
     assert!(events
@@ -356,5 +405,12 @@ async fn h209_bad_message_role_aborts_prepared_write_and_survives_sqlite_reopen(
         for role in [None, Some("user"), Some(CANARY)] {
             observe(Ending::MessageRole(source, role)).await;
         }
+    }
+}
+
+#[tokio::test]
+async fn h210_bad_sequences_abort_prepared_write_while_gaps_are_durable_diagnostics() {
+    for case in ["missing", "type", "duplicate", "descending", "gap"] {
+        observe(Ending::Sequence(case)).await;
     }
 }

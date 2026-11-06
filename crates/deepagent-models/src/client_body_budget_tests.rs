@@ -29,8 +29,9 @@ impl HttpTransport for Recorder {
                 "[DONE]",
             ]
         };
+        let mut sequence = crate::test_sequence::FixtureSequence::default();
         for event in events {
-            if sink.on_event(event)? {
+            if sink.on_event(&sequence.event(event))? {
                 break;
             }
         }
@@ -263,7 +264,7 @@ async fn h69_real_http_transport_sees_only_the_small_control_on_each_route() {
             let key = if route == 0 { "input" } else { "messages" };
             assert_eq!(body[key][0]["content"], "HTTP normal control");
             let data = if route == 0 {
-                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"h69\",\"object\":\"response\",\"created_at\":1,\"model\":\"deepseek-flash\",\"output\":[],\"status\":\"completed\"}}\n\n"
+                "data: {\"type\":\"response.completed\",\"sequence_number\":0,\"response\":{\"id\":\"h69\",\"object\":\"response\",\"created_at\":1,\"model\":\"deepseek-flash\",\"output\":[],\"status\":\"completed\"}}\n\n"
             } else {
                 "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
             };

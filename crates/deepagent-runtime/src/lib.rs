@@ -18,6 +18,10 @@
 //! Model providers, planners, verification and reflection engines are layered
 //! in over later phases behind the traits defined in [`agent`].
 
+#[cfg(test)]
+#[path = "../../deepagent-models/tests/support/sequence.rs"]
+pub mod test_sequence;
+
 pub mod adversarial;
 pub mod agent;
 pub mod approval;

@@ -1227,6 +1227,9 @@ export async function setBudget(
 
 /** A live runtime event mirroring deepagent-runtime::RuntimeEvent. */
 export interface RuntimeEvent {
+  /** Optional provider diagnostics; not the durable run-events cursor. */
+  sequence_number?: number;
+  sequence_gap?: number;
   type:
     | "run_started"
     | "session_registered"

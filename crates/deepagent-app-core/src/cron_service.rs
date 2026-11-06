@@ -186,7 +186,7 @@ mod audit_tests {
             "type":"function_call", "id":"audit-cron-item", "call_id":"audit-cron-approval",
             "name":"bash", "arguments":r#"{"command":"npm install audit-no-execution"}"#
         });
-        let transport = MockTransport::new([
+        let transport = crate::test_sequence::mock([
             serde_json::json!({"type":"response.output_item.added","item":item}).to_string(),
             serde_json::json!({"type":"response.output_item.done","item":item}).to_string(),
             serde_json::json!({"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[item],"status":"completed"}})

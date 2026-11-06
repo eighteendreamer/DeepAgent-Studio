@@ -53,6 +53,8 @@ impl deepagent_models::transport::HttpTransport for WorkspaceTransport {
         request: deepagent_models::transport::TransportRequest,
         sink: &mut dyn deepagent_models::transport::EventSink,
     ) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::test_sequence::sink(sink);
         let body: Value = serde_json::from_str(&request.body)?;
         let input = body["input"].as_array().unwrap();
         // Count this attempt's settled outputs. A resumed context also contains

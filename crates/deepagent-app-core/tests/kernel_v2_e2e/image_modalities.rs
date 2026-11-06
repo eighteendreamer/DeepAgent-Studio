@@ -26,6 +26,8 @@ impl HttpTransport for Model {
         Ok(CATALOG.into())
     }
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::sequence_fixture::sink(sink);
         let index = {
             let mut requests = self.requests.lock().unwrap();
             requests.push(serde_json::from_str(&request.body)?);

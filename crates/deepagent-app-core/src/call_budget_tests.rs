@@ -320,6 +320,8 @@ impl deepagent_models::HttpTransport for SummaryTransport {
         _request: deepagent_models::TransportRequest,
         sink: &mut dyn deepagent_models::transport::EventSink,
     ) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::test_sequence::sink(sink);
         let index = self.calls.fetch_add(1, Ordering::AcqRel);
         for event in crate::responses_fixture::completed(
             &format!("summary-{index}"),

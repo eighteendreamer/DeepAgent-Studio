@@ -6,7 +6,6 @@ use crate::kernel_runtime::{build_kernel_runtime_config, KernelRuntimeConfigRequ
 use crate::settings::VerificationPolicy;
 use deepagent_builtins::{BashTool, PlanMode, SystemExecutor, TodoStore};
 use deepagent_core::clock::FixedClock;
-use deepagent_models::transport::MockTransport;
 use deepagent_models::{ModelClient, ModelConfig};
 use deepagent_persistence::run_control::{RunActionState, RunControlStore};
 use deepagent_persistence::{run_store::RunStore, Database};
@@ -114,7 +113,7 @@ async fn observe_fixture(
         .unwrap();
     let mut agent = ModelAgent::new(
         Arc::new(ModelClient::new(
-            Arc::new(MockTransport::new([
+            Arc::new(crate::test_sequence::mock([
                 r#"{"type":"response.output_text.delta","delta":"Created answer.txt."}"#.into(),
                 r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#.into(),
             ])),

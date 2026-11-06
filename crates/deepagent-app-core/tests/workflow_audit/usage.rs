@@ -843,6 +843,8 @@ impl HttpTransport for UsageThenPending {
         _request: TransportRequest,
         sink: &mut dyn deepagent_models::transport::EventSink,
     ) -> deepagent_core::error::Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::sequence_fixture::sink(sink);
         let report = json!({"choices":[], "usage": completion(100,20,80,12)["usage"]}).to_string();
         sink.on_event(&report)?;
         sink.on_event(&report)?;

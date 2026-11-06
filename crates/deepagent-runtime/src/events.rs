@@ -145,6 +145,10 @@ pub enum RuntimeEvent {
     ResponsesStreamEvent {
         event_type: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        sequence_number: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sequence_gap: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         item_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         item_type: Option<String>,
@@ -792,5 +796,34 @@ mod tests {
         assert_eq!(json["name"], "read_file");
         let back: RuntimeEvent = serde_json::from_value(json).unwrap();
         assert_eq!(back, ev);
+    }
+
+    #[test]
+    fn responses_sequence_diagnostics_are_additive_and_roundtrip_exactly() {
+        let old = serde_json::json!({"type":"responses_stream_event",
+            "event_type":"response.output_text.delta"});
+        let old: RuntimeEvent = serde_json::from_value(old).unwrap();
+        assert!(matches!(
+            old,
+            RuntimeEvent::ResponsesStreamEvent {
+                sequence_number: None,
+                sequence_gap: None,
+                ..
+            }
+        ));
+        let event = RuntimeEvent::ResponsesStreamEvent {
+            event_type: "response.future_event".into(),
+            sequence_number: Some(u64::MAX),
+            sequence_gap: Some(2),
+            item_id: None,
+            item_type: None,
+            delta_chars: None,
+        };
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(value["sequence_number"].as_u64(), Some(u64::MAX));
+        assert_eq!(
+            serde_json::from_value::<RuntimeEvent>(value).unwrap(),
+            event
+        );
     }
 }

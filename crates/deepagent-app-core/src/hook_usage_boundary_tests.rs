@@ -32,6 +32,8 @@ struct Transport {
 #[async_trait]
 impl HttpTransport for Transport {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::test_sequence::sink(sink);
         let index = self.calls.fetch_add(1, Ordering::AcqRel);
         tokio::task::yield_now().await;
         let fail = || CoreError::Provider {

@@ -17,10 +17,14 @@ mod text;
 #[path = "stream_terminal.rs"]
 mod terminal;
 
+#[path = "stream_sequence.rs"]
+mod sequence;
+
 /// Responses API semantic SSE accumulator. DeepSeek sends an event object in
 /// each `data:` payload; the event's `type` selects the semantic delta.
 #[derive(Debug, Default)]
 pub struct ResponseAccumulator {
+    sequence: sequence::Sequence,
     text_items: text::TextItems,
     reasoning: String,
     tool_calls: Vec<ToolCallBuilder>,
@@ -43,11 +47,14 @@ impl ResponseAccumulator {
     ) -> Result<bool> {
         let value: serde_json::Value = serde_json::from_str(data.trim())
             .map_err(|e| CoreError::Serialization(format!("bad Responses event: {e}")))?;
+        let (sequence_number, sequence_gap) = self.sequence.accept(&value)?;
         let kind = value
             .get("type")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("");
         observer.on_event(ModelStreamEvent::ResponseStreamEvent {
+            sequence_number: Some(sequence_number),
+            sequence_gap,
             event_type: kind.to_string(),
             item_id: value
                 .get("item_id")
@@ -507,6 +514,7 @@ impl ResponseAccumulator {
     }
 
     pub fn finish(mut self) -> Result<Response> {
+        self.sequence.ensure_valid()?;
         if !self.saw_terminal {
             return Err(CoreError::other(
                 "Responses stream ended without a terminal response event",
@@ -750,6 +758,10 @@ pub enum ModelStreamEvent {
     /// output text, reasoning text, or search query is included.
     ResponseStreamEvent {
         event_type: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sequence_number: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sequence_gap: Option<u64>,
         item_id: Option<String>,
         item_type: Option<String>,
         delta_chars: Option<usize>,
@@ -926,6 +938,7 @@ mod identity_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_sequence::NumberedAccumulator as ResponseAccumulator;
 
     fn event(acc: &mut ResponseAccumulator, json: &str) {
         acc.push_sse_data_observed(json, &mut NoopObserver).unwrap();

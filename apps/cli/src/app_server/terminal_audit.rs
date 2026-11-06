@@ -39,6 +39,8 @@ struct ScriptedTransport {
 #[async_trait::async_trait]
 impl HttpTransport for ScriptedTransport {
     async fn stream(&self, _request: TransportRequest, sink: &mut dyn EventSink) -> CoreResult<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::test_sequence::sink(sink);
         let index = self.next_response.fetch_add(1, Ordering::Relaxed);
         if let Some(response) = self.responses.get(index).or_else(|| self.responses.last()) {
             for event in response {
@@ -119,7 +121,7 @@ fn function_call(call_id: &str, name: &str, arguments: Value) -> Vec<String> {
 impl Fixture {
     async fn new(events: Vec<String>) -> Self {
         let transport = Arc::new(MockTransport {
-            events,
+            events: crate::test_sequence::numbered(events),
             get_response: Some(
                 json!({"data":[{"id":"deepseek-flash","object":"model",
                     "owned_by":"deepseek"}]})
@@ -312,6 +314,7 @@ impl HttpTransport for ConcurrentTurnTransport {
         sink: &mut dyn EventSink,
         cancel: Arc<std::sync::atomic::AtomicBool>,
     ) -> CoreResult<()> {
+        let sink: &mut dyn EventSink = &mut crate::test_sequence::sink(sink);
         self.requests.fetch_add(1, Ordering::SeqCst);
         self.entered.notify_waiters();
         loop {

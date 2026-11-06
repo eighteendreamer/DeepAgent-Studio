@@ -392,6 +392,8 @@ struct EffectTransport {
 #[async_trait::async_trait]
 impl HttpTransport for EffectTransport {
     async fn stream(&self, _: TransportRequest, sink: &mut dyn EventSink) -> CoreResult<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::test_sequence::sink(sink);
         let index = self.requests.fetch_add(1, Ordering::SeqCst);
         if index == 0 {
             self.release.notified().await;

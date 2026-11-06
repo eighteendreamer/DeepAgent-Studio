@@ -35,8 +35,9 @@ impl HttpTransport for Recorder {
                 "[DONE]",
             ]
         };
+        let mut sequence = crate::test_sequence::FixtureSequence::default();
         for event in events {
-            if sink.on_event(event)? {
+            if sink.on_event(&sequence.event(event))? {
                 break;
             }
         }
@@ -420,7 +421,7 @@ async fn h71_real_http_receives_only_a_declared_vision_request() {
             };
             assert_eq!(url, PIXEL);
             let data = if mode == WireMode::Responses {
-                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"h71\",\"object\":\"response\",\"created_at\":1,\"model\":\"fixture\",\"output\":[],\"status\":\"completed\"}}\n\n"
+                "data: {\"type\":\"response.completed\",\"sequence_number\":0,\"response\":{\"id\":\"h71\",\"object\":\"response\",\"created_at\":1,\"model\":\"fixture\",\"output\":[],\"status\":\"completed\"}}\n\n"
             } else {
                 "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
             };

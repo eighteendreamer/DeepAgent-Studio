@@ -22,6 +22,8 @@ impl HttpTransport for Recorder {
         _: deepagent_models::TransportRequest,
         sink: &mut dyn deepagent_models::transport::EventSink,
     ) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::test_sequence::sink(sink);
         self.0.fetch_add(1, Ordering::SeqCst);
         sink.on_event(r#"{"type":"response.completed","response":{"id":"fixture","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#)?;
         Ok(())

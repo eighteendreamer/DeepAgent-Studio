@@ -5603,10 +5603,10 @@ mod tests {
 
     #[tokio::test]
     async fn audit_run_level_workflow_model_preserves_deepseek_usage_buckets() {
-        use deepagent_models::{MockTransport, ModelClient, ModelConfig};
+        use deepagent_models::{ModelClient, ModelConfig};
         use deepagent_runtime::agent::{Agent, AgentDecision};
 
-        let transport = Arc::new(MockTransport::new([
+        let transport = Arc::new(crate::test_sequence::mock([
             json!({
                 "choices": [{
                     "delta": {

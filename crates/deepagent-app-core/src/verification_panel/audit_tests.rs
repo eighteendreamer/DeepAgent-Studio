@@ -2,7 +2,7 @@
 
 use super::*;
 use deepagent_core::clock::FixedClock;
-use deepagent_models::transport::{EventSink, HttpTransport, MockTransport, TransportRequest};
+use deepagent_models::transport::{EventSink, HttpTransport, TransportRequest};
 use deepagent_models::{ModelClient, ModelConfig};
 use deepagent_persistence::{run_store::RunStore, Database};
 use deepagent_runtime::{
@@ -65,6 +65,8 @@ struct WaitingTransport {
 #[async_trait]
 impl HttpTransport for WaitingTransport {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::test_sequence::sink(sink);
         self.plain_calls.fetch_add(1, Ordering::SeqCst);
         // Inspect the actual serialized auxiliary request, not a custom
         // verifier/classifier which ignores a supplied cancellation signal.
@@ -135,7 +137,7 @@ fn changed_file_checkpoint(
 fn main_agent() -> ModelAgent {
     ModelAgent::new(
         Arc::new(ModelClient::new(
-            Arc::new(MockTransport::new([
+            Arc::new(crate::test_sequence::mock([
                 r#"{"type":"response.output_text.delta","delta":"Created answer.txt."}"#
                     .to_string(),
                 r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed","usage":{"input_tokens":11,"output_tokens":3,"total_tokens":14}}}"#.to_string(),

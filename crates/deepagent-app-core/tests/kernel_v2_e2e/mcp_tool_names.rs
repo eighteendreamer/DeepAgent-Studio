@@ -63,6 +63,8 @@ struct WireCapture(Mutex<Vec<Value>>);
 #[async_trait]
 impl HttpTransport for WireCapture {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::sequence_fixture::sink(sink);
         let body: Value = serde_json::from_str(&request.body)?;
         let chat = body.get("messages").is_some();
         self.0.lock().unwrap().push(body);
@@ -198,6 +200,8 @@ struct KernelModel {
 #[async_trait]
 impl HttpTransport for KernelModel {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::sequence_fixture::sink(sink);
         let body: Value = serde_json::from_str(&request.body)?;
         let index = {
             let mut requests = self.requests.lock().unwrap();

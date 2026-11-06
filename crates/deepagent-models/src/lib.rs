@@ -21,6 +21,13 @@
 //! logic is tested offline via [`transport::MockTransport`]. The real
 //! `reqwest`-based transport is compiled only with `--features http`.
 
+#[cfg(test)]
+extern crate self as deepagent_models;
+
+#[cfg(test)]
+#[path = "../tests/support/sequence.rs"]
+pub mod test_sequence;
+
 pub mod balance;
 pub mod capability;
 pub mod chat;

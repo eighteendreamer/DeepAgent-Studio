@@ -13,6 +13,8 @@ pub(super) struct CountingTransport(pub(super) AtomicUsize);
 #[async_trait]
 impl HttpTransport for CountingTransport {
     async fn stream(&self, _request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::test_sequence::sink(sink);
         self.0.fetch_add(1, Ordering::SeqCst);
         for event in [
             r#"{"type":"response.output_text.delta","delta":"H96 done"}"#,

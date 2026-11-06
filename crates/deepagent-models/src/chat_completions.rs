@@ -395,6 +395,8 @@ impl ChatCompletionAccumulator {
         })?;
         observer.on_event(ModelStreamEvent::ResponseStreamEvent {
             event_type: "chat.completion.chunk".to_string(),
+            sequence_number: None,
+            sequence_gap: None,
             item_id: value
                 .get("id")
                 .and_then(serde_json::Value::as_str)

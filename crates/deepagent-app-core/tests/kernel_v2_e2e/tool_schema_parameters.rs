@@ -12,6 +12,8 @@ struct CountingModelTransport {
 #[async_trait]
 impl HttpTransport for CountingModelTransport {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::sequence_fixture::sink(sink);
         self.requests
             .lock()
             .unwrap()

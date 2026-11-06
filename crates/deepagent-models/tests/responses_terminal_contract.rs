@@ -1,4 +1,8 @@
 //! H-208: provider terminal envelopes are validated before any success projection.
+#[path = "support/sequence.rs"]
+pub mod sequence_fixture;
+use sequence_fixture::NumberedAccumulator as ResponseAccumulator;
+
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -10,7 +14,7 @@ use deepagent_core::{
 use deepagent_models::transport::{EventSink, HttpTransport, TransportRequest};
 use deepagent_models::{
     classify_model_error, DeltaObserver, FinishReason, ModelClient, ModelConfig, ModelStreamEvent,
-    Response, ResponseAccumulator, ResponseRequest, Usage,
+    Response, ResponseRequest, Usage,
 };
 use serde_json::{json, Value};
 
@@ -41,9 +45,9 @@ impl HttpTransport for Replay {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
         assert!(request.url.ends_with("/responses"));
         assert_eq!(self.calls.fetch_add(1, Ordering::SeqCst), 0);
-        for event in &self.events {
+        for event in sequence_fixture::numbered(self.events.clone()) {
             self.consumed.fetch_add(1, Ordering::SeqCst);
-            if sink.on_event(event)? {
+            if sink.on_event(&event)? {
                 break;
             }
         }

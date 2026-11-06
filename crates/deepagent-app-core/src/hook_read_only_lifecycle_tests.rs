@@ -85,6 +85,8 @@ impl Drop for Dropped {
 #[async_trait]
 impl HttpTransport for Attempt {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::test_sequence::sink(sink);
         let body: Value = serde_json::from_str(&request.body)?;
         assert!(!body["tools"]
             .as_array()
@@ -240,6 +242,8 @@ struct Observer;
 #[async_trait]
 impl HttpTransport for Observer {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::test_sequence::sink(sink);
         let body: Value = serde_json::from_str(&request.body)?;
         if let Some(output) = result(&body) {
             assert_eq!(output["status"], "ok");

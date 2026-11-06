@@ -1,3 +1,5 @@
+#[path = "../../deepagent-models/tests/support/sequence.rs"]
+pub mod sequence_fixture;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

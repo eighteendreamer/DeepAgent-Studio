@@ -42,8 +42,8 @@ impl HttpTransport for RoleImageTransport {
             .unwrap()
             .push(serde_json::from_str(&request.body).unwrap());
         for event in [
-            r#"{"type":"response.output_text.delta","delta":"Offline image-role audit."}"#,
-            r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#,
+            r#"{"type":"response.output_text.delta","sequence_number":0,"delta":"Offline image-role audit."}"#,
+            r#"{"type":"response.completed","sequence_number":1,"response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#,
         ] {
             if sink.on_event(event)? {
                 break;
@@ -75,8 +75,8 @@ impl HttpTransport for ModalityTransport {
             .unwrap()
             .push((body["model"].as_str().unwrap().into(), images));
         for event in [
-            r#"{"type":"response.output_text.delta","delta":"Offline modality audit."}"#,
-            r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#,
+            r#"{"type":"response.output_text.delta","sequence_number":0,"delta":"Offline modality audit."}"#,
+            r#"{"type":"response.completed","sequence_number":1,"response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#,
         ] {
             if sink.on_event(event)? {
                 break;

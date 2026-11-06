@@ -31,6 +31,8 @@ struct Model {
 #[async_trait::async_trait]
 impl HttpTransport for Model {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::test_sequence::sink(sink);
         let attempt = {
             let mut requests = self.requests.lock().unwrap();
             requests.push(serde_json::from_str(&request.body).unwrap());

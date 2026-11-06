@@ -1,6 +1,8 @@
 //! Explicit offline audit of two real hosts continuing one persisted session.
 //! Model responses are held at a filesystem barrier; no external API is used.
 
+#[path = "../../deepagent-models/tests/support/sequence.rs"]
+pub mod sequence_fixture;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -37,6 +39,8 @@ async fn wait_for_file(path: &Path, budget: Duration) -> bool {
 #[async_trait]
 impl HttpTransport for GatedModel {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::sequence_fixture::sink(sink);
         std::fs::write(
             self.root.join(format!("{}-request.json", self.label)),
             request.body,

@@ -34,6 +34,8 @@ struct TitleModel {
 #[async_trait]
 impl HttpTransport for TitleModel {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::sequence_fixture::sink(sink);
         let body: Value = serde_json::from_str(&request.body)?;
         let is_title = body["instructions"]
             .as_str()
@@ -79,7 +81,11 @@ impl HttpTransport for TitleModel {
         emit_responses_events(sink, &frames)?;
         if is_title {
             // Repeated final snapshots must still book one physical attempt.
-            sink.on_event(frames.last().unwrap())?;
+            // Give the distinct snapshot its own provider sequence; a replay
+            // of the original event is an H-210 integrity error.
+            let mut repeat: Value = serde_json::from_str(frames.last().unwrap()).unwrap();
+            repeat["sequence_number"] = json!(frames.len());
+            sink.on_event(&repeat.to_string())?;
             self.observed.notify_one();
             match behavior {
                 TitleBehavior::FailedMeasured => {

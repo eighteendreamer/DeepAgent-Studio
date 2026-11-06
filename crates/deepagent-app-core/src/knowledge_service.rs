@@ -1437,7 +1437,6 @@ mod tests {
     use deepagent_core::event::{Event, EventPayload};
     use deepagent_core::id::{EventId, SessionId, TaskId};
     use deepagent_core::task::TaskState;
-    use deepagent_models::transport::MockTransport;
     use deepagent_models::ModelConfig;
 
     fn ev(seq: u64, payload: EventPayload) -> Event {
@@ -1503,7 +1502,7 @@ mod tests {
             "type": "response.output_text.delta", "delta": content_json
         })
         .to_string();
-        let transport = Arc::new(MockTransport::new([
+        let transport = Arc::new(crate::test_sequence::mock([
             payload,
             r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#.to_string(),
         ]));
@@ -1524,6 +1523,8 @@ mod tests {
         #[async_trait::async_trait]
         impl HttpTransport for DelayedCapture {
             async fn stream(&self, _: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+                let sink: &mut dyn deepagent_models::transport::EventSink =
+                    &mut crate::test_sequence::sink(sink);
                 self.entered.notify_one();
                 self.release.notified().await;
                 sink.on_event(&serde_json::json!({"type":"response.output_text.delta", "delta":

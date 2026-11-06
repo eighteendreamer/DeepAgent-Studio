@@ -29,8 +29,9 @@ impl HttpTransport for Recorder {
                 "[DONE]",
             ]
         };
+        let mut sequence = crate::test_sequence::FixtureSequence::default();
         for event in events {
-            if sink.on_event(event)? {
+            if sink.on_event(&sequence.event(event))? {
                 break;
             }
         }

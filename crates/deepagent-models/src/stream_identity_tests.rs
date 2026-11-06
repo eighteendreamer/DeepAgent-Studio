@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_sequence::NumberedAccumulator as ResponseAccumulator;
 use serde_json::{json, Value};
 
 #[derive(Default)]

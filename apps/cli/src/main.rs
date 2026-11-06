@@ -3,6 +3,10 @@ mod args;
 mod jsonl;
 mod tui;
 
+#[cfg(test)]
+#[path = "../../../crates/deepagent-models/tests/support/sequence.rs"]
+pub mod test_sequence;
+
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

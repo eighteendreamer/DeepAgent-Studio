@@ -1,6 +1,6 @@
 //! Context replacement invalidates tool observations only after adoption.
 use super::*;
-use deepagent_models::{MockTransport, ModelConfig};
+use deepagent_models::ModelConfig;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 struct ImageResolver;
@@ -15,7 +15,7 @@ impl AttachmentDataResolver for ImageResolver {
 fn admitted_images_survive_history_replacement_compaction_and_metering() {
     use deepagent_core::message::MessageAttachment;
     let client = Arc::new(ModelClient::new(
-        Arc::new(MockTransport::new(vec![])),
+        Arc::new(crate::test_sequence::mock(vec![])),
         ModelConfig::deepseek("synthetic"),
     ));
     let per_image = client.image_token_reserve("deepseek-flash");
@@ -107,7 +107,7 @@ impl ContextSurfacePersistence for SurfaceStore {
 
 fn agent() -> (ModelAgent, Arc<AtomicUsize>) {
     let client = Arc::new(ModelClient::new(
-        Arc::new(MockTransport::new(vec![])),
+        Arc::new(crate::test_sequence::mock(vec![])),
         ModelConfig::deepseek("synthetic"),
     ));
     let mut agent = ModelAgent::new(client, "deepseek-flash", "rules", "current", vec![]);

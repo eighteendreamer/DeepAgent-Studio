@@ -11,6 +11,8 @@ struct Model(Mutex<Vec<Value>>);
 #[async_trait::async_trait]
 impl HttpTransport for Model {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::test_sequence::sink(sink);
         self.0
             .lock()
             .unwrap()

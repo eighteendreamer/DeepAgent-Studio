@@ -35,7 +35,6 @@ impl HttpTransport for RecordingTransport {
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: malformed Responses sequence numbers must be rejected"]
 async fn audit_non_monotonic_responses_sequence_is_rejected() {
     let transport = Arc::new(RecordingTransport::default());
     let client = ModelClient::new(

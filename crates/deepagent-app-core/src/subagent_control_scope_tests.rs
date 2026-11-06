@@ -2,7 +2,6 @@
 use super::tests::audit_child_runner_with_db;
 use super::*;
 use deepagent_builtins::SubagentRunner;
-use deepagent_models::transport::MockTransport;
 use deepagent_persistence::run_store::RunStore;
 use deepagent_persistence::subagent_store::{SubagentRunRecord, SubagentRunStore};
 use std::sync::atomic::Ordering;
@@ -19,7 +18,7 @@ impl Fixture {
         let db = Arc::new(Database::open(root.path().join("state.db")).unwrap());
         let runner = audit_child_runner_with_db(
             root.path(),
-            Arc::new(MockTransport::new(Vec::<String>::new())),
+            Arc::new(crate::test_sequence::mock(Vec::<String>::new())),
             db.clone(),
         );
         let runs = RunStore::new(&db);

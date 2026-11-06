@@ -3,6 +3,8 @@
 #[path = "runtime_speculation_audit/boundary.rs"]
 mod boundary;
 
+#[path = "../../deepagent-models/tests/support/sequence.rs"]
+pub mod sequence_fixture;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -61,6 +63,8 @@ fn emit(sink: &mut dyn EventSink, sequence: &mut usize, mut event: Value) -> Res
 #[async_trait]
 impl HttpTransport for Model {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::sequence_fixture::sink(sink);
         let index = {
             let mut requests = self.requests.lock().unwrap();
             requests.push(serde_json::from_str(&request.body).unwrap());

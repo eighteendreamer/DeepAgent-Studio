@@ -435,7 +435,7 @@ async fn h97_shutdown_while_a_real_tool_waits_uses_the_kernel_cancellation_flag(
         .set_sandbox_mode(crate::SandboxMode::WorkspaceWrite)
         .unwrap();
     let item = serde_json::json!({"type":"function_call","id":"h97-tool","call_id":"h97-tool","name":"bash","arguments":r#"{"command":"echo h97-synthetic"}"#});
-    let transport = Arc::new(MockTransport::new([
+    let transport = Arc::new(crate::test_sequence::mock([
         serde_json::json!({"type":"response.output_item.added","item":item}).to_string(),
         serde_json::json!({"type":"response.output_item.done","item":item}).to_string(),
         serde_json::json!({"type":"response.completed","response":{"id":"h97-offline","object":"response","created_at":1,"model":"deepseek-flash","output":[item],"status":"completed"}}).to_string(),

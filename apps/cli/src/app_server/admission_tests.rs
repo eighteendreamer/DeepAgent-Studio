@@ -263,6 +263,8 @@ impl HttpTransport for HeldFirstTransport {
         sink: &mut dyn EventSink,
         _: Arc<AtomicBool>,
     ) -> CoreResult<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::test_sequence::sink(sink);
         if self.requests.fetch_add(1, Ordering::SeqCst) == 0 {
             // Hold the real input lease until the queue/cancellation barrier
             // is observed; this models a provider slow to react to cancellation.

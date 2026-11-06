@@ -1091,6 +1091,7 @@ pub(crate) mod testing {
     #[async_trait]
     impl HttpTransport for ScriptedTransport {
         async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            let sink: &mut dyn EventSink = &mut crate::test_sequence::sink(sink);
             *self
                 .last_body
                 .lock()
@@ -1412,6 +1413,8 @@ mod tests {
             request: deepagent_models::transport::TransportRequest,
             sink: &mut dyn deepagent_models::transport::EventSink,
         ) -> Result<()> {
+            let sink: &mut dyn deepagent_models::transport::EventSink =
+                &mut crate::test_sequence::sink(sink);
             if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 2 {
                 // Both real pinned read/edit tools have finished, publication
                 // has not. This is not merely a lock-only unit test.

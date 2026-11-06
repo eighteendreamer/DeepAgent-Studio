@@ -21,7 +21,7 @@ impl HttpTransport for Counter {
             )?;
             sink.on_event("[DONE]")?;
         } else {
-            sink.on_event(r#"{"type":"response.completed","response":{"id":"r","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#)?;
+            sink.on_event(r#"{"type":"response.completed","sequence_number":0,"response":{"id":"r","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#)?;
         }
         Ok(())
     }

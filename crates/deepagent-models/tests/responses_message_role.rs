@@ -1,4 +1,8 @@
 //! H-209: native output message identity must not be defaulted from UI semantics.
+#[path = "support/sequence.rs"]
+pub mod sequence_fixture;
+use sequence_fixture::NumberedAccumulator as ResponseAccumulator;
+
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
@@ -8,8 +12,7 @@ use async_trait::async_trait;
 use deepagent_core::{error::CoreError, message::Message};
 use deepagent_models::{
     transport::{EventSink, HttpTransport, TransportRequest},
-    DeltaObserver, ModelClient, ModelConfig, ModelStreamEvent, ResponseAccumulator,
-    ResponseRequest,
+    DeltaObserver, ModelClient, ModelConfig, ModelStreamEvent, ResponseRequest,
 };
 use serde_json::{json, Value};
 
@@ -27,9 +30,9 @@ impl HttpTransport for Replay {
         sink: &mut dyn EventSink,
     ) -> deepagent_core::Result<()> {
         assert_eq!(self.calls.fetch_add(1, Ordering::SeqCst), 0);
-        for event in &self.events {
+        for event in sequence_fixture::numbered(self.events.iter().map(Value::to_string)) {
             self.delivered.fetch_add(1, Ordering::SeqCst);
-            if sink.on_event(&event.to_string())? {
+            if sink.on_event(&event)? {
                 break;
             }
         }

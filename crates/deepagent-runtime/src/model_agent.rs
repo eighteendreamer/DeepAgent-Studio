@@ -2166,6 +2166,8 @@ impl DeltaObserver for SinkObserver<'_> {
         match event {
             ModelStreamEvent::ResponseStreamEvent {
                 event_type,
+                sequence_number,
+                sequence_gap,
                 item_id,
                 item_type,
                 delta_chars,
@@ -2173,6 +2175,8 @@ impl DeltaObserver for SinkObserver<'_> {
                 if let Some(sink) = &self.sink {
                     sink.emit(RuntimeEvent::ResponsesStreamEvent {
                         event_type,
+                        sequence_number,
+                        sequence_gap,
                         item_id,
                         item_type,
                         delta_chars,
@@ -3035,7 +3039,7 @@ mod context_authority_tests;
 mod tests {
     use super::*;
     use deepagent_models::transport::{EventSink, HttpTransport, TransportRequest};
-    use deepagent_models::{MockTransport, ModelConfig};
+    use deepagent_models::ModelConfig;
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
@@ -3147,7 +3151,7 @@ mod tests {
     }
 
     fn client(events: Vec<String>) -> Arc<ModelClient> {
-        let transport = Arc::new(MockTransport::new(events));
+        let transport = Arc::new(crate::test_sequence::mock(events));
         Arc::new(ModelClient::new(transport, ModelConfig::deepseek("test")))
     }
 
@@ -3289,7 +3293,7 @@ mod tests {
                 .unwrap()
                 .pop_front()
                 .ok_or_else(|| CoreError::other("no attempt"))?;
-            for event in events {
+            for event in crate::test_sequence::numbered(events) {
                 if event == "__ERROR_TOTAL_DEADLINE__" {
                     return Err(CoreError::other("model stream total deadline exceeded"));
                 }
@@ -5037,7 +5041,7 @@ mod tests {
                         "[DONE]".into(),
                     ],
                 };
-                for event in events {
+                for event in crate::test_sequence::numbered(events) {
                     if sink.on_event(&event)? {
                         break;
                     }
@@ -5660,6 +5664,49 @@ mod tests {
             vec!["begin:1", "prepare:c1:add", "commit:1"]
         );
         assert_eq!(attempt.calls.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn h210_retry_resets_provider_sequence_but_integrity_errors_never_retry_or_fallback() {
+        for corrupt in [false, true] {
+            let mut first = response_text_completed("partial");
+            let mut first_delta: serde_json::Value = serde_json::from_str(&first[0]).unwrap();
+            first_delta["sequence_number"] = serde_json::json!(100);
+            first[0] = first_delta.to_string();
+            if corrupt {
+                let mut terminal: serde_json::Value =
+                    serde_json::from_str(first.last().unwrap()).unwrap();
+                terminal["sequence_number"] = serde_json::json!(100);
+                *first.last_mut().unwrap() = terminal.to_string();
+            } else {
+                first.pop();
+                first.push("__ERROR_EOF__".into());
+            }
+            let transport = Arc::new(AttemptTransport {
+                attempts: Mutex::new(VecDeque::from([
+                    first,
+                    response_text_completed("recovered"),
+                ])),
+                requests: Mutex::new(Vec::new()),
+            });
+            let client = Arc::new(ModelClient::new(
+                transport.clone(),
+                ModelConfig::deepseek("synthetic"),
+            ));
+            let mut agent = ModelAgent::new(client, "deepseek-flash", "rules", "synthetic", vec![])
+                .with_max_model_attempts(3)
+                .with_fallback_model(Some("deepseek-v4-pro".into()));
+            let result = agent.think(0, &[]).await;
+            if corrupt {
+                assert!(
+                    matches!(result,Err(CoreError::Provider{code:Some(code),..}) if code=="invalid_response_sequence")
+                );
+                assert_eq!(transport.requests.lock().unwrap().len(), 1);
+            } else {
+                assert!(result.is_ok(), "{result:?}");
+                assert_eq!(transport.requests.lock().unwrap().len(), 2);
+            }
+        }
     }
 
     #[tokio::test]

@@ -12,6 +12,9 @@ use deepagent_models::transport::{EventSink, HttpTransport, MockTransport, Trans
 use deepagent_persistence::Database;
 use deepagent_subagents::WorktreeProvider;
 
+#[path = "../../deepagent-models/tests/support/sequence.rs"]
+pub mod sequence_fixture;
+
 #[path = "kernel_v2_e2e/build_boundary.rs"]
 mod build_boundary;
 
@@ -243,11 +246,11 @@ impl ReplayTransport {
 }
 
 fn response_text(text: &str) -> Vec<String> {
-    vec![
+    sequence_fixture::numbered(vec![
         serde_json::json!({"type":"response.output_text.delta","delta":text}).to_string(),
         serde_json::json!({"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}})
             .to_string(),
-    ]
+    ])
 }
 
 fn response_function_call(call_id: &str, name: &str, arguments: serde_json::Value) -> Vec<String> {
@@ -273,10 +276,15 @@ fn response_function_calls(calls: Vec<(&str, &str, serde_json::Value)>) -> Vec<S
         }})
         .to_string(),
     );
-    events
+    sequence_fixture::numbered(events)
 }
 
 fn emit_responses_events(sink: &mut dyn EventSink, events: &[String]) -> Result<()> {
+    emit_raw_responses_events(sink, &sequence_fixture::numbered(events.iter().cloned()))
+}
+
+// Sequence-negative tests deliberately bypass producer-side numbering.
+fn emit_raw_responses_events(sink: &mut dyn EventSink, events: &[String]) -> Result<()> {
     for event in events {
         if sink.on_event(event)? {
             break;
@@ -299,6 +307,8 @@ fn request_contains_user_input(body: &serde_json::Value, expected: &str) -> bool
 #[async_trait]
 impl HttpTransport for ReplayTransport {
     async fn stream(&self, _request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::sequence_fixture::sink(sink);
         let events = self
             .turns
             .lock()
@@ -329,6 +339,8 @@ struct ResumeRoutingTransport {
 #[async_trait]
 impl HttpTransport for ResumeRoutingTransport {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::sequence_fixture::sink(sink);
         let call = self.calls.fetch_add(1, Ordering::AcqRel);
         let events = match call {
             0 => response_function_call(
@@ -584,6 +596,8 @@ async fn pending_host_mcp_initialization_does_not_block_conversations() {
     #[async_trait]
     impl HttpTransport for ObservedModel {
         async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            let sink: &mut dyn deepagent_models::transport::EventSink =
+                &mut crate::sequence_fixture::sink(sink);
             self.requests.lock().unwrap().push(request.body.clone());
             self.inner.stream(request, sink).await
         }
@@ -808,6 +822,8 @@ async fn audit_unrelated_read_does_not_move_reads_before_write_barrier() {
     #[async_trait]
     impl HttpTransport for CaptureReplay {
         async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            let sink: &mut dyn deepagent_models::transport::EventSink =
+                &mut crate::sequence_fixture::sink(sink);
             self.requests.lock().unwrap().push(request.body.clone());
             self.inner.stream(request, sink).await
         }
@@ -921,6 +937,8 @@ async fn audit_saved_tool_result_survives_turn_and_database_reopen() {
     #[async_trait]
     impl HttpTransport for InspectSavedResult {
         async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            let sink: &mut dyn deepagent_models::transport::EventSink =
+                &mut crate::sequence_fixture::sink(sink);
             let body: serde_json::Value = serde_json::from_str(&request.body)?;
             for item in body["input"].as_array().unwrap() {
                 if item["type"] == "function_call_output" && item["call_id"] == "audit-large-result"
@@ -2024,6 +2042,8 @@ struct FailingChildTransport {
 #[async_trait]
 impl HttpTransport for FailingChildTransport {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::sequence_fixture::sink(sink);
         let is_child = serde_json::from_str::<serde_json::Value>(&request.body)
             .ok()
             .is_some_and(|body| request_contains_user_input(&body, "child-must-fail"));
@@ -2179,6 +2199,8 @@ impl NotePassTransport {
 #[async_trait]
 impl HttpTransport for NotePassTransport {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::sequence_fixture::sink(sink);
         let events = if request.body.contains("session-memory.md") {
             let call = self.note_calls.fetch_add(1, Ordering::AcqRel);
             if call % 3 == 0 {
@@ -2482,6 +2504,8 @@ async fn audit_ready_mcp_name_collision_does_not_block_chat() {
     #[async_trait]
     impl HttpTransport for ObservedModel {
         async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            let sink: &mut dyn deepagent_models::transport::EventSink =
+                &mut crate::sequence_fixture::sink(sink);
             let body: serde_json::Value = serde_json::from_str(&request.body)?;
             *self.tools.lock().unwrap() = body["tools"]
                 .as_array()
@@ -2665,6 +2689,8 @@ async fn audit_mcp_instructions_survive_continuation_on_wire() {
     #[async_trait]
     impl HttpTransport for ObservedModel {
         async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            let sink: &mut dyn deepagent_models::transport::EventSink =
+                &mut crate::sequence_fixture::sink(sink);
             self.0.lock().unwrap().push(request.body);
             emit_responses_events(sink, &response_text("ordinary reply"))
         }
@@ -2773,6 +2799,8 @@ async fn audit_harness_reasoning_override_reaches_provider_request() {
     #[async_trait]
     impl HttpTransport for ObservedModel {
         async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            let sink: &mut dyn deepagent_models::transport::EventSink =
+                &mut crate::sequence_fixture::sink(sink);
             self.0
                 .lock()
                 .unwrap()
@@ -2848,6 +2876,8 @@ async fn audit_skill_catalog_survives_continuation_on_wire() {
     #[async_trait]
     impl HttpTransport for ObservedModel {
         async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            let sink: &mut dyn deepagent_models::transport::EventSink =
+                &mut crate::sequence_fixture::sink(sink);
             self.0.lock().unwrap().push(request.body);
             emit_responses_events(sink, &response_text("ordinary reply"))
         }
@@ -2976,6 +3006,8 @@ async fn responses_reasoning_effort_settings_reach_provider_wire() {
     #[async_trait]
     impl HttpTransport for ObservedModel {
         async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            let sink: &mut dyn deepagent_models::transport::EventSink =
+                &mut crate::sequence_fixture::sink(sink);
             self.0
                 .lock()
                 .unwrap()
@@ -3038,6 +3070,8 @@ async fn responses_user_identifier_is_validated_before_transport() {
     #[async_trait]
     impl HttpTransport for ObservedModel {
         async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            let sink: &mut dyn deepagent_models::transport::EventSink =
+                &mut crate::sequence_fixture::sink(sink);
             self.0
                 .lock()
                 .unwrap()
@@ -3131,6 +3165,8 @@ async fn audit_configured_output_limit_reaches_provider_request() {
     #[async_trait]
     impl HttpTransport for ObservedModel {
         async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            let sink: &mut dyn deepagent_models::transport::EventSink =
+                &mut crate::sequence_fixture::sink(sink);
             self.0
                 .lock()
                 .unwrap()
@@ -3233,6 +3269,8 @@ async fn context_projection_retains_turns_across_runs_and_database_reopen() {
     #[async_trait]
     impl HttpTransport for ObservedModel {
         async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            let sink: &mut dyn deepagent_models::transport::EventSink =
+                &mut crate::sequence_fixture::sink(sink);
             self.requests.lock().unwrap().push(request.body);
             let answer = self
                 .answers

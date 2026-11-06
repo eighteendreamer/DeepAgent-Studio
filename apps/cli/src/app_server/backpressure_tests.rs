@@ -131,6 +131,7 @@ impl HttpTransport for BurstTransport {
         sink: &mut dyn EventSink,
         cancel: Arc<AtomicBool>,
     ) -> CoreResult<()> {
+        let sink: &mut dyn EventSink = &mut crate::test_sequence::sink(sink);
         self.requests.fetch_add(1, Ordering::SeqCst);
         self.release.notified().await;
         let delta =

@@ -1578,7 +1578,7 @@ mod tests {
         // The mock streams its `events` for `stream`, and returns `get_response`
         // for discovery. We only need streaming here (settings are seeded
         // separately), so build one that completes immediately.
-        Arc::new(MockTransport::new([
+        Arc::new(crate::test_sequence::mock([
             r#"{"type":"response.output_text.delta","delta":"Hello from the agent."}"#.to_string(),
             r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#.to_string(),
         ]))
@@ -1592,6 +1592,8 @@ mod tests {
     #[async_trait::async_trait]
     impl HttpTransport for RecordingTransport {
         async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            let sink: &mut dyn deepagent_models::transport::EventSink =
+                &mut crate::test_sequence::sink(sink);
             *self.last_body.lock().unwrap() = Some(request.body);
             sink.on_event(r#"{"type":"response.output_text.delta","delta":"dynamic reply"}"#)?;
             sink.on_event(r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#)?;
@@ -1833,7 +1835,7 @@ mod tests {
                 }"#,
             )
             .unwrap();
-        let transport = Arc::new(MockTransport::new([
+        let transport = Arc::new(crate::test_sequence::mock([
             r#"{"type":"response.output_text.delta","delta":"{\"ok\":false,\"reason\":\"destructive request\"}"}"#.to_string(),
             r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#.to_string(),
         ]));
@@ -2056,7 +2058,7 @@ mod tests {
 
     #[tokio::test]
     async fn agent_hook_runs_isolated_runtime_and_honors_decision() {
-        let transport = Arc::new(MockTransport::new([
+        let transport = Arc::new(crate::test_sequence::mock([
             r#"{"type":"response.output_text.delta","delta":"{\"ok\":false,\"reason\":\"agent review denied\"}"}"#.to_string(),
             r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#.to_string(),
         ]));
@@ -2600,6 +2602,8 @@ mod tests {
         #[async_trait::async_trait]
         impl HttpTransport for RevokeDuringModel {
             async fn stream(&self, _: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+                let sink: &mut dyn deepagent_models::transport::EventSink =
+                    &mut crate::test_sequence::sink(sink);
                 self.projects.set_hooks_trusted(&self.root, false)?;
                 sink.on_event(r#"{"type":"response.output_text.delta","delta":"done"}"#)?;
                 sink.on_event(
@@ -2903,7 +2907,7 @@ mod tests {
                 )
                 .unwrap();
             let transport: Arc<dyn HttpTransport> = if api_failure {
-                Arc::new(MockTransport::new([serde_json::json!({
+                Arc::new(crate::test_sequence::mock([serde_json::json!({
                     "type": "response.failed",
                     "response": {"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],
                         "status": "failed",
@@ -3121,6 +3125,8 @@ mod tests {
     #[async_trait::async_trait]
     impl HttpTransport for PermissionWriteTransport {
         async fn stream(&self, _request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            let sink: &mut dyn deepagent_models::transport::EventSink =
+                &mut crate::test_sequence::sink(sink);
             let mut output = Vec::new();
             if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
                 let item = serde_json::json!({
@@ -3419,7 +3425,7 @@ mod tests {
     async fn continuing_a_session_appends_instead_of_creating() {
         let (db, settings, dir) = seeded().await;
         // A transport that can serve two streamed turns back to back.
-        let transport = Arc::new(MockTransport::new([
+        let transport = Arc::new(crate::test_sequence::mock([
             r#"{"type":"response.output_text.delta","delta":"first reply"}"#.to_string(),
             r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#.to_string(),
             r#"{"type":"response.output_text.delta","delta":"second reply"}"#.to_string(),

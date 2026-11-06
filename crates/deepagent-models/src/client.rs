@@ -618,13 +618,13 @@ mod tool_projection_tests;
 mod tests {
     use super::*;
     use crate::chat_completions::ChatCompletionRequest;
-    use crate::transport::{EventSink, HttpTransport, MockTransport, TransportRequest};
+    use crate::transport::{EventSink, HttpTransport, TransportRequest};
     use async_trait::async_trait;
     use deepagent_core::message::Message;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     fn client_with(events: Vec<String>) -> ModelClient {
-        let transport = Arc::new(MockTransport::new(events));
+        let transport = Arc::new(crate::test_sequence::mock(events));
         ModelClient::new(transport, ModelConfig::deepseek("test-key"))
     }
 
@@ -679,6 +679,8 @@ mod tests {
                 request: TransportRequest,
                 sink: &mut dyn EventSink,
             ) -> Result<()> {
+                let sink: &mut dyn deepagent_models::transport::EventSink =
+                    &mut crate::test_sequence::sink(sink);
                 *self.body.lock().unwrap() = Some(request.body);
                 for event in &self.events {
                     if sink.on_event(event)? {
@@ -736,6 +738,8 @@ mod tests {
                 _request: TransportRequest,
                 sink: &mut dyn EventSink,
             ) -> Result<()> {
+                let sink: &mut dyn deepagent_models::transport::EventSink =
+                    &mut crate::test_sequence::sink(sink);
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 for event in &self.events {
                     if sink.on_event(event)? {
@@ -791,6 +795,8 @@ mod tests {
                 request: TransportRequest,
                 sink: &mut dyn EventSink,
             ) -> Result<()> {
+                let sink: &mut dyn deepagent_models::transport::EventSink =
+                    &mut crate::test_sequence::sink(sink);
                 *self.body.lock().unwrap() = Some(request.body);
                 for event in &self.events {
                     if sink.on_event(event)? {
@@ -850,6 +856,8 @@ mod tests {
                 _request: TransportRequest,
                 sink: &mut dyn EventSink,
             ) -> Result<()> {
+                let sink: &mut dyn deepagent_models::transport::EventSink =
+                    &mut crate::test_sequence::sink(sink);
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 for event in &self.events {
                     if sink.on_event(event)? {
@@ -959,6 +967,8 @@ mod tests {
                 _request: TransportRequest,
                 sink: &mut dyn EventSink,
             ) -> Result<()> {
+                let sink: &mut dyn deepagent_models::transport::EventSink =
+                    &mut crate::test_sequence::sink(sink);
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 for event in &self.events {
                     if sink.on_event(event)? {
@@ -1027,6 +1037,8 @@ mod tests {
                 request: TransportRequest,
                 sink: &mut dyn EventSink,
             ) -> Result<()> {
+                let sink: &mut dyn deepagent_models::transport::EventSink =
+                    &mut crate::test_sequence::sink(sink);
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 *self.body.lock().unwrap() = Some(request.body);
                 for event in &self.events {
@@ -1108,6 +1120,8 @@ mod tests {
                 request: TransportRequest,
                 sink: &mut dyn EventSink,
             ) -> Result<()> {
+                let sink: &mut dyn deepagent_models::transport::EventSink =
+                    &mut crate::test_sequence::sink(sink);
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 *self.body.lock().unwrap() = Some(request.body);
                 for event in &self.events {
@@ -1205,7 +1219,7 @@ mod tests {
             "type": "function",
             "name": "read_file"
         }));
-        let client = ModelClient::new(Arc::new(MockTransport::new([])), config);
+        let client = ModelClient::new(Arc::new(crate::test_sequence::mock([])), config);
         let mut request = ChatCompletionRequest::new("deepseek-flash", Vec::new());
 
         client.apply_chat_defaults(&mut request);
@@ -1393,7 +1407,7 @@ mod tests {
             }],
         };
         let config = ModelConfig::from_catalog("test", &catalog, crate::discovery::ModelRole::Chat);
-        let client = ModelClient::new(Arc::new(MockTransport::new(vec![])), config);
+        let client = ModelClient::new(Arc::new(crate::test_sequence::mock(vec![])), config);
         let capability = client.capability("deepseek-flash");
         assert_eq!(capability.context_window, 128_000);
         assert_eq!(capability.max_output_tokens, 8_000);
@@ -1445,6 +1459,8 @@ mod tests {
                 _request: TransportRequest,
                 sink: &mut dyn EventSink,
             ) -> Result<()> {
+                let sink: &mut dyn deepagent_models::transport::EventSink =
+                    &mut crate::test_sequence::sink(sink);
                 self.0.fetch_add(1, Ordering::SeqCst);
                 sink.on_event(
                     r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#,
@@ -1595,7 +1611,7 @@ mod tests {
             "[DONE]".to_string(),
         ];
         let client = ModelClient::new(
-            Arc::new(MockTransport::new(events)),
+            Arc::new(crate::test_sequence::mock(events)),
             ModelConfig::deepseek_chat("test-key"),
         );
         let response = client
@@ -1623,7 +1639,7 @@ mod tests {
             "[DONE]".to_string(),
         ];
         let client = ModelClient::new(
-            Arc::new(MockTransport::new(events)),
+            Arc::new(crate::test_sequence::mock(events)),
             ModelConfig::deepseek_chat("test-key"),
         );
 
@@ -1647,7 +1663,7 @@ mod tests {
             "[DONE]".to_string(),
         ];
         let client = ModelClient::new(
-            Arc::new(MockTransport::new(events)),
+            Arc::new(crate::test_sequence::mock(events)),
             ModelConfig::deepseek_chat("audit-placeholder"),
         );
 
@@ -1670,7 +1686,7 @@ mod tests {
     #[ignore = "audit reproducer: preserve documented Chat aborted terminal"]
     async fn audit_chat_aborted_finish_is_not_rejected_as_unknown() {
         let client = ModelClient::new(
-            Arc::new(MockTransport::new([
+            Arc::new(crate::test_sequence::mock([
                 r#"{"choices":[{"index":0,"delta":{},"finish_reason":"aborted"}],"usage":{"prompt_tokens":9,"completion_tokens":0,"total_tokens":9}}"#.to_string(),
                 "[DONE]".to_string(),
             ])),
@@ -1694,7 +1710,7 @@ mod tests {
     #[ignore = "audit reproducer: preserve documented Chat insufficient-system-resource terminal"]
     async fn audit_chat_insufficient_system_resource_finish_is_not_rejected_as_unknown() {
         let client = ModelClient::new(
-            Arc::new(MockTransport::new([
+            Arc::new(crate::test_sequence::mock([
                 r#"{"choices":[{"index":0,"delta":{},"finish_reason":"insufficient_system_resource"}],"usage":{"prompt_tokens":9,"completion_tokens":0,"total_tokens":9}}"#.to_string(),
                 "[DONE]".to_string(),
             ])),
@@ -1728,6 +1744,8 @@ mod tests {
                 _request: TransportRequest,
                 sink: &mut dyn EventSink,
             ) -> Result<()> {
+                let sink: &mut dyn deepagent_models::transport::EventSink =
+                    &mut crate::test_sequence::sink(sink);
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 for event in [
                     r#"{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#,

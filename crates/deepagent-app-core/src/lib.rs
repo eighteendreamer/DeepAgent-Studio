@@ -11,6 +11,10 @@
 //! [`service::AppService`]; the UI never touches kernel internals, so the wire
 //! contract stays stable as the kernel evolves.
 
+#[cfg(test)]
+#[path = "../../deepagent-models/tests/support/sequence.rs"]
+pub mod test_sequence;
+
 pub mod approval_bridge;
 pub mod archive_service;
 pub(crate) mod atomic_file;

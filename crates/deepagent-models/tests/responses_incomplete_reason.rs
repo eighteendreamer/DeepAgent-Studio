@@ -1,6 +1,10 @@
 //! H-82: incompleteness is not synonymous with an exhausted output budget.
+#[path = "support/sequence.rs"]
+pub mod sequence_fixture;
+use sequence_fixture::NumberedAccumulator as ResponseAccumulator;
+
 use deepagent_core::error::CoreError;
-use deepagent_models::{DeltaObserver, FinishReason, ModelStreamEvent, ResponseAccumulator, Usage};
+use deepagent_models::{DeltaObserver, FinishReason, ModelStreamEvent, Usage};
 use serde_json::{json, Value};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -25,7 +29,8 @@ impl HttpTransport for Replay {
     ) -> deepagent_core::Result<()> {
         assert_eq!(self.calls.fetch_add(1, Ordering::SeqCst), 0);
         let delta = json!({"type":"response.output_text.delta","delta":"synthetic partial"});
-        if sink.on_event(&delta.to_string())? {
+        let mut sequence = sequence_fixture::FixtureSequence::default();
+        if sink.on_event(&sequence.event(&delta.to_string()))? {
             return Ok(());
         }
         if let Some(cancel) = &self.cancel_after_delta {
@@ -35,7 +40,7 @@ impl HttpTransport for Replay {
             std::future::pending::<()>().await;
         }
         let details = self.reason.map(|reason| json!({"reason":reason})).into();
-        sink.on_event(&terminal(details, vec![]).to_string())?;
+        sink.on_event(&sequence.event(&terminal(details, vec![]).to_string()))?;
         Ok(())
     }
 }

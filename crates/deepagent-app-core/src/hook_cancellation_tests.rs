@@ -64,6 +64,8 @@ struct CompletedToolCall {
 #[async_trait]
 impl HttpTransport for CompletedToolCall {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::test_sequence::sink(sink);
         let index = self.requests.fetch_add(1, Ordering::AcqRel);
         assert!(index <= usize::from(self.complete));
         let item = if index == 0 {

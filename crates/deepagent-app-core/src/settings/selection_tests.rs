@@ -62,6 +62,8 @@ impl HttpTransport for Discovery {
         Ok(body)
     }
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::test_sequence::sink(sink);
         let body: serde_json::Value = serde_json::from_str(&request.body)?;
         self.wire
             .lock()

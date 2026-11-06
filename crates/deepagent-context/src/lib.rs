@@ -16,6 +16,10 @@
 //!   request path is [`assembler`]'s `ContextAssembler` (source-ranked
 //!   manifest), not a separate five-layer pipeline.
 
+#[cfg(test)]
+#[path = "../../deepagent-models/tests/support/sequence.rs"]
+pub mod test_sequence;
+
 pub mod assembler;
 pub mod attachment;
 pub mod budget;

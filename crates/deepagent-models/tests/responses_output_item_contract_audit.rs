@@ -21,9 +21,9 @@ impl HttpTransport for RecordingTransport {
             .unwrap()
             .push(serde_json::from_str(&request.body)?);
         for event in [
-            r#"{"type":"response.output_text.delta","delta":"offline"}"#,
-            r#"{"type":"response.output_item.done","item":{"type":"message","content":[{"type":"output_text","text":"offline"}]}}"#,
-            r#"{"type":"response.completed","response":{"id":"resp-audit","object":"response","created_at":0,"status":"completed","model":"deepseek-flash","output":[]}}"#,
+            r#"{"type":"response.output_text.delta","sequence_number":0,"delta":"offline"}"#,
+            r#"{"type":"response.output_item.done","sequence_number":1,"item":{"type":"message","content":[{"type":"output_text","text":"offline"}]}}"#,
+            r#"{"type":"response.completed","sequence_number":2,"response":{"id":"resp-audit","object":"response","created_at":0,"status":"completed","model":"deepseek-flash","output":[]}}"#,
         ] {
             if sink.on_event(event)? {
                 break;

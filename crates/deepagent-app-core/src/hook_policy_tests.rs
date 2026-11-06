@@ -37,6 +37,8 @@ struct ForcedRead {
 #[async_trait]
 impl HttpTransport for ForcedRead {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::test_sequence::sink(sink);
         let body: Value = serde_json::from_str(&request.body)?;
         let index = {
             let mut requests = self.requests.lock().unwrap();

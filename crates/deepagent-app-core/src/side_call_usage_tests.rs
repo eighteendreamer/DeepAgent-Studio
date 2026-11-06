@@ -30,6 +30,8 @@ struct Transport {
 #[async_trait]
 impl HttpTransport for Transport {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::test_sequence::sink(sink);
         self.calls.fetch_add(1, Ordering::SeqCst);
         let body: serde_json::Value = serde_json::from_str(&request.body)?;
         assert_eq!(body["model"], "side-model");
@@ -55,7 +57,12 @@ impl HttpTransport for Transport {
                 sink.on_event(frame)?;
             }
             // A repeated terminal usage snapshot is not another physical call.
-            sink.on_event(frames.last().unwrap())?;
+            // It is still a distinct semantic event, not a replay of the same
+            // provider sequence (which H-210 must reject before accounting).
+            let mut repeat: serde_json::Value =
+                serde_json::from_str(frames.last().unwrap()).unwrap();
+            repeat["sequence_number"] = json!(frames.len());
+            sink.on_event(&repeat.to_string())?;
         }
         self.observed.notify_one();
         match self.reply {

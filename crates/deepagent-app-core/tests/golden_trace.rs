@@ -11,6 +11,8 @@
 //! run: exactly one terminal event, no orphan tool call/result pairing, no
 //! running subagent left behind, and gapless event sequences.
 
+#[path = "../../deepagent-models/tests/support/sequence.rs"]
+pub mod sequence_fixture;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -180,6 +182,8 @@ impl ReplayTransport {
 #[async_trait]
 impl HttpTransport for ReplayTransport {
     async fn stream(&self, _request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let sink: &mut dyn deepagent_models::transport::EventSink =
+            &mut crate::sequence_fixture::sink(sink);
         let events = self
             .turns
             .lock()

@@ -1,8 +1,11 @@
 //! H-81: display deltas and completed message items have different ownership.
 
+#[path = "support/sequence.rs"]
+pub mod sequence_fixture;
+use sequence_fixture::NumberedAccumulator as ResponseAccumulator;
+
 use deepagent_models::{
-    DeltaObserver, FinishReason, ModelStreamEvent, Response, ResponseAccumulator,
-    ResponseOutputItem,
+    DeltaObserver, FinishReason, ModelStreamEvent, Response, ResponseOutputItem,
 };
 use serde_json::{json, Value};
 
@@ -313,8 +316,9 @@ async fn h81_cancel_after_text_fragments_does_not_turn_fallback_into_a_successfu
     #[async_trait::async_trait]
     impl HttpTransport for PartialTransport {
         async fn stream(&self, _request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
-            sink.on_event(&added("a", 0).to_string())?;
-            sink.on_event(&delta("a", 0, 0, "visible partial").to_string())?;
+            let mut sequence = sequence_fixture::FixtureSequence::default();
+            sink.on_event(&sequence.event(&added("a", 0).to_string()))?;
+            sink.on_event(&sequence.event(&delta("a", 0, 0, "visible partial").to_string()))?;
             self.0.notify_one();
             std::future::pending().await
         }
