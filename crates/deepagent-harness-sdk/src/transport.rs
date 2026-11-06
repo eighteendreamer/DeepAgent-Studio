@@ -70,11 +70,17 @@ pub(crate) fn decode_server_line(line: &str) -> Result<WireMessage, serde_json::
 /// Errors are fixed diagnostic reasons: never include untrusted payload data.
 pub(crate) fn notification_event(
     notification: RpcNotification,
-) -> Result<HarnessEvent, &'static str> {
+) -> Result<crate::HarnessNotification, &'static str> {
     if notification.method != "harness/event" {
         return Err("unsupported notification method");
     }
-    serde_json::from_value(notification.params).map_err(|_| "invalid harness event payload")
+    let event = serde_json::from_value::<HarnessEvent>(notification.params)
+        .map_err(|_| "invalid harness event payload")?;
+    Ok(crate::HarnessNotification {
+        event,
+        event_sequence: notification.event_sequence,
+        sequence_status: crate::SequenceStatus::Unavailable,
+    })
 }
 
 #[cfg(test)]
@@ -133,7 +139,7 @@ mod tests {
                 assert_eq!(notification.event_sequence, Some(7));
                 let harness = notification_event(notification).unwrap();
                 assert!(matches!(
-                    harness,
+                    harness.event,
                     HarnessEvent::ThreadStarted { thread_id, .. } if thread_id == "t-1"
                 ));
             }
@@ -167,7 +173,10 @@ mod tests {
         };
         assert!(matches!(
             project(valid.clone()),
-            Ok(HarnessEvent::ThreadStarted { .. })
+            Ok(crate::HarnessNotification {
+                event: HarnessEvent::ThreadStarted { .. },
+                ..
+            })
         ));
         for method in [
             "",

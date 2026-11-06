@@ -63,13 +63,13 @@ exit 7"#,
         .await
         .unwrap()
         .unwrap();
-    assert!(matches!(first, HarnessEvent::TurnStarted { .. }));
+    assert!(matches!(first.event, HarnessEvent::TurnStarted { .. }));
     let terminal_delivered = if emit_terminal {
         let terminal = tokio::time::timeout(Duration::from_secs(3), existing.recv())
             .await
             .unwrap()
             .unwrap();
-        matches!(terminal, HarnessEvent::TurnCompleted { .. })
+        matches!(terminal.event, HarnessEvent::TurnCompleted { .. })
     } else {
         false
     };

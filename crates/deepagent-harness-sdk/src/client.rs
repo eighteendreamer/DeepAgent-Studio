@@ -17,10 +17,10 @@ use std::{
 };
 
 use deepagent_harness_protocol::{
-    ApprovalRespondRequest, ConfigReadRequest, EventAckRequest, HarnessEvent, HarnessRequest,
-    InitializeRequest, RpcResponse, SandboxStatusRequest, ThreadArchiveRequest, ThreadForkRequest,
-    ThreadListRequest, ThreadReadRequest, ThreadStartRequest, ToolListRequest,
-    TurnInterruptRequest, TurnStartRequest, TurnSteerRequest, PROTOCOL_VERSION,
+    ApprovalRespondRequest, ConfigReadRequest, EventAckRequest, HarnessRequest, InitializeRequest,
+    RpcResponse, SandboxStatusRequest, ThreadArchiveRequest, ThreadForkRequest, ThreadListRequest,
+    ThreadReadRequest, ThreadStartRequest, ToolListRequest, TurnInterruptRequest, TurnStartRequest,
+    TurnSteerRequest, PROTOCOL_VERSION,
 };
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -31,7 +31,9 @@ use tracing::debug;
 
 use crate::error::SdkError;
 use crate::transport::{decode_server_line, notification_event, request_line, WireMessage};
-use crate::RequestEvents;
+use crate::{HarnessNotification, RequestEvents};
+#[cfg(test)]
+use deepagent_harness_protocol::HarnessEvent;
 
 /// Shared pending-reply table keyed by request id.
 type Pending = Arc<Mutex<HashMap<i64, oneshot::Sender<RpcResponse>>>>;
@@ -64,7 +66,7 @@ pub struct HarnessClient {
     stdin: Arc<tokio::sync::Mutex<Option<ChildStdin>>>,
     next_id: Arc<AtomicI64>,
     pending: Pending,
-    events: broadcast::Sender<HarnessEvent>,
+    events: broadcast::Sender<HarnessNotification>,
     initialized: Arc<Mutex<bool>>,
     lifecycle: watch::Sender<bool>,
     timeouts: RequestTimeouts,
@@ -281,7 +283,10 @@ impl HarnessClient {
         self.call(HarnessRequest::ApprovalRespond(request)).await
     }
 
-    /// Acknowledge events consumed up to `event_sequence`.
+    /// Acknowledge events consumed up to a notification's outer `event_sequence`.
+    /// This number belongs only to this connection, not a provider or durable
+    /// run cursor. Do not guess from counts or ACK past a gap without explicit
+    /// durable reconciliation. The SDK never automatically ACKs or replays work.
     pub async fn event_ack(&self, event_sequence: u64) -> Result<RpcResponse, SdkError> {
         self.call(HarnessRequest::EventAck(EventAckRequest { event_sequence }))
             .await
@@ -326,7 +331,11 @@ impl HarnessClient {
     /// Subscribe only to future live events; this does not replay history.
     /// Subscribe before any event-producing request, or prefer the request-owned
     /// [`Self::thread_start_streamed`] / [`Self::turn_start_streamed`] methods.
-    pub fn subscribe(&self) -> broadcast::Receiver<HarnessEvent> {
+    /// Each value now preserves outer wire metadata; match `notification.event`
+    /// instead of matching a bare `HarnessEvent`. Broadcast lag is still explicit
+    /// as `RecvError::Lagged`; inspect `sequence_status` for connection gaps and
+    /// use durable `thread/read` cursors (not `event_sequence`) to reconcile.
+    pub fn subscribe(&self) -> broadcast::Receiver<HarnessNotification> {
         self.events.subscribe()
     }
 
@@ -456,7 +465,7 @@ fn spawn_reader(
     stdout: ChildStdout,
     stderr: ChildStderr,
     pending: Pending,
-    events: broadcast::Sender<HarnessEvent>,
+    events: broadcast::Sender<HarnessNotification>,
 ) -> watch::Sender<bool> {
     let (lifecycle, _) = watch::channel(false);
     let closed = lifecycle.clone();
@@ -477,6 +486,7 @@ fn spawn_reader(
 
     tokio::spawn(async move {
         let mut lines = BufReader::new(stdout).lines();
+        let mut sequences = crate::notification::SequenceTracker::default();
         while let Ok(Some(line)) = lines.next_line().await {
             match decode_server_line(&line) {
                 Ok(WireMessage::Response(response)) => {
@@ -491,7 +501,8 @@ fn spawn_reader(
                 }
                 Ok(WireMessage::Notification(notification)) => {
                     match notification_event(notification) {
-                        Ok(event) => {
+                        Ok(mut event) => {
+                            event.sequence_status = sequences.observe(event.event_sequence);
                             let _ = events.send(event);
                         }
                         Err(reason) => {
@@ -975,7 +986,7 @@ mod audit_tests {
             .expect("fixture should exit when terminated");
 
         assert!(
-            matches!(observed, Ok(Ok(HarnessEvent::ThreadStarted { ref thread_id, .. })) if thread_id == "t-control"),
+            matches!(observed, Ok(Ok(HarnessNotification { event: HarnessEvent::ThreadStarted { ref thread_id, .. }, .. })) if thread_id == "t-control"),
             "notification method other/event must not be exposed as a Harness event: observed={observed:?}"
         );
         assert!(matches!(
@@ -1062,7 +1073,7 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
                 HarnessEvent::ThreadStarted { thread_id, .. } => Some(thread_id),
                 _ => None,
             });
-        let early_thread_id = match early_event {
+        let early_thread_id = match early_event.event {
             HarnessEvent::ThreadStarted { thread_id, .. } => Some(thread_id),
             _ => None,
         };
@@ -1080,7 +1091,6 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
     }
 
     #[tokio::test]
-    #[ignore = "audit H-205: SDK notifications must preserve the wire event sequence used by event/ack and gap recovery"]
     async fn audit_sdk_notification_preserves_event_sequence_for_ack_and_gap_detection() {
         let script = r#"$lines = @(
 '{"jsonrpc":"2.0","method":"harness/event","eventSequence":7,"params":{"type":"thread.started","threadId":"t-7","title":null,"protocolVersion":1}}',
@@ -1199,3 +1209,7 @@ mod version_contract_tests;
 #[cfg(all(test, windows))]
 #[path = "client_request_lifecycle_tests.rs"]
 mod request_lifecycle_tests;
+
+#[cfg(all(test, windows))]
+#[path = "client_notification_tests.rs"]
+mod notification_tests;

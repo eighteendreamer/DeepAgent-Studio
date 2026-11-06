@@ -3,7 +3,13 @@ use super::*;
 use std::time::Duration;
 use tokio::time::timeout;
 
-async fn fixture(read_requests: bool) -> (Child, HarnessClient, broadcast::Receiver<HarnessEvent>) {
+async fn fixture(
+    read_requests: bool,
+) -> (
+    Child,
+    HarnessClient,
+    broadcast::Receiver<HarnessNotification>,
+) {
     let script = if read_requests {
         r#"$held = [System.Collections.Generic.List[object]]::new()
 $starts = 0
@@ -46,12 +52,12 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
     (child, client, receiver)
 }
 
-async fn received(receiver: &mut broadcast::Receiver<HarnessEvent>) {
+async fn received(receiver: &mut broadcast::Receiver<HarnessNotification>) {
     let event = timeout(Duration::from_secs(5), receiver.recv())
         .await
         .unwrap()
         .unwrap();
-    assert!(matches!(event, HarnessEvent::ThreadStarted { .. }));
+    assert!(matches!(event.event, HarnessEvent::ThreadStarted { .. }));
 }
 
 async fn finish(mut child: Child, client: &HarnessClient) -> std::process::ExitStatus {
@@ -552,7 +558,9 @@ async fn h204_real_cli_withheld_admission_reply_reconciles_once_and_survives_dat
     );
     let thread_id = timeout(Duration::from_secs(5), async {
         loop {
-            if let HarnessEvent::ThreadStarted { thread_id, .. } = events.recv().await.unwrap() {
+            if let HarnessEvent::ThreadStarted { thread_id, .. } =
+                events.recv().await.unwrap().event
+            {
                 break thread_id;
             }
         }

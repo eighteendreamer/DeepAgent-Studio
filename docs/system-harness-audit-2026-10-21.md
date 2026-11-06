@@ -7670,6 +7670,53 @@ G固定CLI最终hash复核仍为73AE1609…C07094，G SDK dist与先前策略阻
 
 本轮 H-205 仅新增 opt-in 审计探针与本报告，没有修改生产协议或 SDK API；缺口恢复的最终策略和版本兼容方案尚未实施。
 
+**E-H205-01（原探针与真实管道TDD红，2026-11-06，修复中）**：基线e3b8aab5c2f60496670a6cd80a97b77b7eb48425，tracked干净、无未完成合并；原五项用户untracked只列名不读改。已核对原审计/台账、Rust SDK reader/notification gate/单一broadcast/RequestEvents/ACK与全部仓内消费者、协议RpcNotification可选u64 eventSequence、CLI原EventOutbox与ACK边界、TS既有消费者、Cargo/CI/格式配置及本地DeepSeek Harness完整通知参考/Codex显式Lagged参考；不照搬对方协议。H91服务端并发分配/入队非原子仍待修，本轮不改变它、不在客户端排序掩盖；H256 raw广播EOF、H206初始化result及其他独立问题不归并。只补Rust通知信封/单一流投影与其生产消费验收，不复制bus/store或自动重放/ACK。
+
+新建真正Cargo target `C:\Users\32734\AppData\Local\Temp\h205-repair-20261106`，隔离HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/TMP并清凭据/代理环境，仅外层Cargo显式target，夹具子进程不继承CARGO_TARGET_DIR、离线复用工具链缓存，未绕过前轮删除拒绝。原 `cargo test --target-dir <上述根> -p deepagent-harness-sdk --lib client::audit_tests::audit_sdk_notification_preserves_event_sequence_for_ack_and_gap_detection --offline -j 2 -- --ignored --exact --nocapture` exit101、0/1/0、152.192秒含冷编译；仍实际丢外层7/9为None/None，非历史已修复跳过。新增默认 `client::notification_tests::`（同Cargo选项但--nocapture --test-threads=1、非ignored）exit101、0/2/0、27.432秒含等待；真实reader/broadcast对连续/7→8→10缺口/重复倒序/u64边界/缺序号及无效通知不应推进基线均因公开字段缺失失败，生产尚未改。
+
+明确本地设计：公开HarnessNotification携原HarnessEvent、外层event_sequence和reader观察的SequenceStatus，沿原单一有界broadcast投影；状态First/Continuous/Gap/NonMonotonic/Unavailable，按全部已验证通知在任何订阅scope过滤前计算，非递增不降低high-water、不重排、不合成序号；缺序号保持旧生产方兼容并重置可证明连续性基线。序号是物理连接live游标，不是run_events/thread-read/provider cursor；允许显式读取后ACK，但SDK不自动ACK或拿该数补读durable。subscribe返回载荷改为信封属于Rust源码兼容改变，仓内消费者逐一同步，外部改用notification.event；不保留第二套裸事件广播来掩盖元数据丢失。RequestEvents保留原recv业务返回，新增同路径recv_notification；任意connection gap/非递增先使scoped view明确失败，避免过滤掉其他scope缺口后误当完整终态。原wire/协议version/SQL/UI/TS生产字段不变。
+
+首次候选编译25个类型错误来自订阅payload改变后的原测试/消费者仍按HarnessEvent匹配（无测试执行结果块），已逐处改读event/向单一bus显式包裹旧fixture，不修改业务断言或放宽通知门禁。原探针准备移除ignore由默认组执行。最终回归/真实CLI ACK回退与冷重开/全仓/strict lint/清理/双文/提交未完成，不新增验收。当前179验收、24历史跳过、8归并、3撤销，91待修+H205修复中，92未关闭含授权跳过H180，实际总队列91；本项暂估4–10有效小时，整体200–400有效小时仍为未逐项校准低置信历史粗估，编译/设备/依赖/锁及清理等待另计，无精确完工承诺。
+
+**E-H205-02（单一通知投影实现与候选结果，2026-11-06，未最终验收）**：在Rust SDK单一reader/broadcast上携HarnessNotification，event保留原HarnessEvent，eventSequence可选u64原值、sequenceStatus为本地计算；serde flatten保持原业务JSON字段位置、旧业务JSON可读为Unavailable、旧HarnessEvent消费者可忽略新增JSON字段。notification_event仍在H212/H213现有版本/方法/类型门禁后才投影，业务payload中的同名伪造序号/status不能覆盖外层；无效/未知通知不改基线或占bus容量。每物理reader一个常量大小SequenceTracker，数值从u64原始高水位计算、重复/倒序不降低基线、缺号重置，首号任意、0/u64::MAX精确；不排序、不补号、不把H91服务器缺陷变成成功。原探针去ignore，真实7/9在默认组验收。
+
+RequestEvents沿同一receiver实现recv_notification，原recv只映射event；收到任何connection gap或非递增（包括无关scope）先明确返回EventSequenceGap/NonMonotonic并释放该view，raw订阅仍收到原信封可自行对账，不自动重放、ACK或第二套重连/store。原bounded broadcast lag错误保留，单stream无并行shadow bus、未新增依赖/协议version/SQL/UI/权限行为。subscribe返回类型改变与SdkError增variants是明确Rust源码兼容影响，仓内所有裸事件匹配/夹具改读.event或显式包裹；公开docs说明stream和raw迁移、metadata不等于durable cursor、connection重开序号独立，不能把事件计数当ACK。
+
+候选阶段原正常回归仍有反例并保留：第一全SDK候选49/0/7、stdio9/0通过，但doc0/2因rustdoc报extern rlib不存在整体exit101/22.845秒；当时源码/测试仍在变且同target另一次编译重叠，未取得足够因果证据将其武断归为产品或环境，后续冻结串行整组需重验。第二候选53/1/7、exit101/26.738秒，为新owned metadata测试误用terminal helper构造item.updated漏item，修正为当前实际ItemPayload形状，未放宽生产schema或断言。第三整组exit0/36.918秒、54/0/7、stdio9/0、doc2/0。随后新增真实reader→owned gap过滤验收、raw broadcast lag、旧JSON/u64 roundtrip/单bus混合recv等，最终14份Rust文件冻结后整组/lint/CLI构建在运行。
+
+真实CLI新增默认端到端：原单一生产通知连续seq1/2→按实际已交付sequence ACK最新→退回旧ACK与未发序号都拒绝→thread/read落库内容与关服冷重开一致→新connection序号重新从1。开始前已核对thread_resume生产只加载不通知，不凭记忆臆造额外sequence；首次测试编译因闭包借用thread后move报错，改为clone不改生产API。没有生成真实provider/model调用或工具副作用。预期由真实当前CLI配合已过序号TDD完成最终验收，不凭默认跳过原探针或局部绿声称完成。状态/工时/未验范围沿E01。
+
+**E-H205-03（最终本机验收，2026-11-07，仅关闭本项）**：本轮跨日执行，E01/E02开始于11-06，实际最终workspace终态为11-07；14份Rust实现/测试/调用方/公开注释逐份SHA256复核与最终门禁冻结一致。原H205探针已移除ignore，默认组真实执行；再次显式运行最终当前源码原生SDK binary `deepagent_harness_sdk-2030012324c48b5c.exe client::audit_tests::audit_sdk_notification_preserves_event_sequence_for_ack_and_gap_detection --exact --nocapture` exit0、1/0/0、0.253秒，真实7/9原序号已保留；E01原0/1与TDD0/2失败不抹除，不凭编译或默认跳过认定完成。额外原H204真实CLI timeout/readback/reopen显式回归 `同binary client::request_lifecycle_tests::h204_real_cli_withheld_admission_reply_reconciles_once_and_survives_database_reopen --ignored --exact --nocapture` exit0、1/0/0、6.240秒，既有request ownership/真实退出回执未回归。
+
+以下为实际最终门禁，PowerShell仓库根，`$Target='C:\Users\32734\AppData\Local\Temp\h205-repair-20261106'`。隔离HOME/USERPROFILE/APPDATA/LOCALAPPDATA/仓外TEMP，清凭据/代理环境；仅外层显式target，离线合成fixture/真实本地CLI/临时SQLite，不访问模型/供应商/真实内网或凭据。
+
+| 实际命令 | 退出、结果 | 墙钟秒（含编译/锁等待） |
+|---|---|---|
+| `cargo test --target-dir $Target -p deepagent-harness-sdk --offline -j 2 -- --quiet --test-threads=2`（当前CLI接管后） | 0；lib55/0/7、stdio10/0/0、doc2/0/0 | 89.947 |
+| `cargo test --target-dir $Target --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=2` | 101；144顶层target，4809过/1败/208忽略，非全绿 | 1926.494 |
+| `cargo clippy --target-dir $Target -p deepagent-harness-sdk --all-targets --all-features --no-deps --offline -j 2 -- -D warnings` | 0；当前SDK实现/测试严格通过 | 381.268 |
+| `cargo clippy --target-dir $Target --all-targets --all-features --offline -j 2 -- -D warnings` | 101；未改Models client.rs:431 clone_on_copy | 101.452 |
+| `cargo fmt --all -- --check` | 0 | 7.869 |
+| `cargo build --target-dir $Target -p deepagent-cli --offline -j 2` | 0；当前源码生产方CLI | 349.006 |
+| `pnpm test`（packages/sdk） | 0；TS既有消费者60/0/0，含tsc构建 | 9.599 |
+| `pnpm test:stdio`（packages/sdk） | 0；真实当前CLI消费1/0/0，含tsc构建 | 10.425 |
+
+workspace原145结果块含1个嵌套helper，按running/result栈区分并与stderr144顶层target逐个对齐，不重复计4810过。SDK55/0/7、真实stdio10/0/0、协议contract18/0/0、AppCore1544/0/58、Kernel313/0/24、CLI185/0/12、Runtime438/0/9；唯一失败Prompts `canvas_prompt::tests::every_node_kind_owns_exactly_one_profile` 是既有H306 `creative.video-edit.v1 has an empty defaultUserPrompt`（27/1/0），未混修。严格全仓lint旧失败不称绿，未加allow/绕hook/降低标准。
+
+真实CLI新增默认 `h205_real_cli_ack_uses_delivered_wire_sequence_and_reopen_uses_durable_identity` 已在完整SDK及workspace执行通过：两次thread/start先安装owned receiver，raw与owned收到完全相同信封，sequence1/2、First/Continuous；用实际交付序号ACK2成功，回退ACK1/未发ACK3都由原server拒绝。thread/read与正常关服/SQLite冷重开后完整result一致；新连接thread/resume只加载不通知，下一thread/start sequence1/First，实际ACK1成功/ACK2拒绝，旧connection ACK高水位未带入。两个进程均实际wait成功后退出，无模型/工具副作用，无另建event/store。该测试未人为制造真实CLI断线丢帧，gap/重排/lag及scope拒绝由下述真实管道/单bus测试证明，不能伪称已做真实网络丢包自动恢复。
+
+默认新增测试覆盖真实reader outer7→8→10 gap、重复10/倒序9不重排/u64::MAX、无序号兼容后新基线、无效版本/方法/payload不推进或占容量、payload伪造同名metadata不可覆盖、raw容量2溢出明确Lagged6且保留7/8原号；真实reader→RequestEvents在无关scope7→9缺口先明确失败，raw仍完整拿到7/9/10，不能被scope过滤当成功。原owned终态/EOF/lag/取消/审批隔离回归保留；mixed recv/recv_notification共用一个receiver且最后terminal释放订阅；旧payloadJSON默认Unavailable、u64精确roundtrip、旧HarnessEvent可忽略新增JSON字段及每physical reader tracker重置均已验。SequenceStatus是reader观察而不是每个订阅者的消费/ACK回执，late subscribe之前的事件无法恢复，首个已见序号不保证从1开始；缺序号不伪造连续性或ACK值。
+
+兼容/未验：公开subscribe返回 `Receiver<HarnessNotification>` 而非裸HarnessEvent，Rust源码调用须改notification.event（仓内已全同步）；公开SdkError新增两个完整性variants，外部穷举match需更新。JSON为原业务字段加可选eventSequence/默认sequenceStatus；wire/server协议version/SQL/TS/UI未改，旧JSON仍可读。RequestEvents::recv签名保留但发现gap/非递增现在明确失败而不静默成功；使用recv_notification才拿wire metadata；raw订阅原样交付异常状态，显式对账后自行决定ACK，无自动ACK、请求重放、remote cancel或恢复policy。通知eventSequence不能填thread/read任何durable/provider游标，SDK不把序号个数映射为存储行。H91服务端并发wire倒序、H256 raw广播EOF等独立，未因客户端能诊断就声称修复。未验其他OS、真实provider/账单/凭据/内网、真实网络丢包/OS断电重启、UI交互、外部二进制ABI及长期RSS；仅Rust SDK seam改动，无Tauri/桌面桥接变更故未执行desktop build/Tauri检查，TS SDK构建/真实stdio已验。
+
+H205在E01～03所列本机范围已修复并验收，本轮新增1，无新增历史跳过/归并/撤销；累计180验收/24历史跳过/8归并/3撤销，91未关闭含H180授权跳过（实际90项），下一复核H206。代码验收余0，提交/清理见后续证据，不能宣布整套goal完成。全余200–400有效小时仍为未逐项校准低置信历史粗估（90项跨层/持久化/真实进程验收差异大），设备/依赖/编译锁/清理等待另计，无法给可靠等待总上界或精确完工日期。
+
+**E-H205-04（产物归属与部分清理，2026-11-07）**：全部门禁终态后核对真正Cargo target `C:\Users\32734\AppData\Local\Temp\h205-repair-20261106` 绝对路径/祖先/内部均无reparse，无存活本轮Cargo/测试目标进程；原五项用户untracked未读改，源码/文档不属清理范围。清理前11841文件、22623703738逻辑字节。正规 `cargo clean --target-dir C:\Users\32734\AppData\Local\Temp\h205-repair-20261106 --dry-run` exit0、11841 files/21.1GiB；同根正式clean原生exit101，在 `fixture-tmp\.tmpmobJeR\destination\child` DACL拒绝访问（os error 5）。复查debug已不存在，最终残余1818文件、1794983259逻辑字节、枚举错误0/reparse0；逻辑文件大小减少20828720479字节。未测量物理空闲盘差值，不混称实际回收物理空间；整个h205根及其中日志/一次性runner/合成CLI副本/SQLite/本轮h前缀目录未全删净，不提交它们。重要原失败/候选反例/命令/终验已保留双文E01～03，不改ACL、不换工具/语言/提权绕过，不再循环重试此残余。
+
+G:\Code_Warehouse\DeepAgent-Studio\packages\sdk\dist 本轮TS build后复核12文件/83258字节、reparse0；同目录前轮H200原生删除已被策略拒绝，本轮不重复失败删除或换方式绕过，固定CLI同样保留既有删除策略阻塞。接管前核对H204旧hash `73AE1609DD9174B8011B3FA682B6C7E4C019869A3D9BB204ECCB4CEBF3C07094`，本轮当前源码CLI复制时C源/G目的同为 `A1E7354D7E6EEB6E5CDB7E9DD6A2D7CCDCF39371342EB6445CD4A92B2E626A77`；最终G副本仍此hash，Rust/TS真实SDK及H204回归实际使用它，不用未核对旧旁车冒充本轮实现。后续workspace feature图构建使清理前C源hash变为 `ACA5055B9B9808AAC3735B815F1827D704679DB9AA07C7BE5D271D8DBD9AAF53`，不称两份最终仍同hash。G固定路径为G:\Code_Warehouse\DeepAgent-Studio\target\debug\deepagent.exe。未删除整个共享G target或node_modules，旧H69/H71/H82/H209/H210/H200/H204残余继续依各自证据阻塞。
+
+H205代码验收余0，但上述C/G清理仍为具体未解决事项，等待时间与90项有效修复工时分开、不能承诺解除时间或称所有产物已净/整个goal完成。提交真实hash待E05回填。
+
 ### H-206：Harness SDK 接受协议版本不兼容的 initialize 结果并进入已初始化状态
 
 **级别：中（P2，条件性协议兼容与错误隔离缺口）；触发条件：SDK 对端返回合法 JSON-RPC response，`result` 存在且 `error` 为空，但结果中的 `protocolVersion` 与客户端支持版本不一致，或缺少本系统 initialize 结果所需的身份字段。** 正常的本系统 CLI app-server 返回版本 1，本项不是默认服务必然错误；风险在版本漂移、错误二进制、代理转发到其他 Harness 服务或第三方实现时。

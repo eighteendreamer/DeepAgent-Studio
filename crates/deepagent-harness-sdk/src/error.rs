@@ -57,6 +57,24 @@ pub enum SdkError {
     /// The connection closed before this owned stream reached its terminal.
     #[error("event stream closed before terminal; reconcile thread/read before retrying")]
     EventStreamClosed,
+    /// The live connection skipped wire sequence values; not durable row counts.
+    #[error("event sequence gap {previous} -> {received} ({missing} missing); reconcile thread/read using durable cursors, not this wire sequence")]
+    EventSequenceGap {
+        /// Previous wire high-water value.
+        previous: u64,
+        /// Received wire value after the gap.
+        received: u64,
+        /// Missing wire sequence count.
+        missing: u64,
+    },
+    /// The connection emitted a duplicate/descending sequence; no local reordering.
+    #[error("event sequence is not increasing: previous={previous}, received={received}; reconcile thread/read before ACK")]
+    EventSequenceNonMonotonic {
+        /// Previous wire high-water value.
+        previous: u64,
+        /// Received duplicate/descending value.
+        received: u64,
+    },
     /// The server responded with a JSON-RPC error.
     #[error("rpc error {code}: {message}")]
     Rpc {

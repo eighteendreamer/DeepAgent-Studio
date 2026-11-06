@@ -63,13 +63,13 @@ async fn fixture(mode: &str) -> (Child, HarnessClient) {
     (child, client)
 }
 
-async fn barrier(events: &mut broadcast::Receiver<HarnessEvent>) {
+async fn barrier(events: &mut broadcast::Receiver<HarnessNotification>) {
     let event = tokio::time::timeout(Duration::from_secs(5), events.recv())
         .await
         .unwrap()
         .unwrap();
     assert!(
-        matches!(event, HarnessEvent::ThreadStarted { thread_id, .. } if thread_id == "version-barrier")
+        matches!(event.event, HarnessEvent::ThreadStarted { thread_id, .. } if thread_id == "version-barrier")
     );
 }
 

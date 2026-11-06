@@ -2,7 +2,7 @@
 use deepagent_harness_protocol::{HarnessEvent, RpcResponse};
 use tokio::sync::{broadcast, watch};
 
-use crate::SdkError;
+use crate::{HarnessNotification, SdkError, SequenceStatus};
 
 enum Scope {
     Thread(String),
@@ -20,7 +20,7 @@ enum Scope {
 /// the server turn. Use `turn_interrupt` for explicit remote cancellation.
 pub struct RequestEvents {
     response: RpcResponse,
-    receiver: Option<broadcast::Receiver<HarnessEvent>>,
+    receiver: Option<broadcast::Receiver<HarnessNotification>>,
     closed: watch::Receiver<bool>,
     scope: Scope,
 }
@@ -28,7 +28,7 @@ pub struct RequestEvents {
 impl RequestEvents {
     pub(crate) fn thread(
         response: RpcResponse,
-        receiver: broadcast::Receiver<HarnessEvent>,
+        receiver: broadcast::Receiver<HarnessNotification>,
         closed: watch::Receiver<bool>,
     ) -> Result<Self, SdkError> {
         let thread = identity(&response, "thread/start", "threadId")?;
@@ -42,7 +42,7 @@ impl RequestEvents {
 
     pub(crate) fn turn(
         response: RpcResponse,
-        receiver: broadcast::Receiver<HarnessEvent>,
+        receiver: broadcast::Receiver<HarnessNotification>,
         closed: watch::Receiver<bool>,
         requested_thread: &str,
     ) -> Result<Self, SdkError> {
@@ -94,6 +94,18 @@ impl RequestEvents {
     /// threadId on turn events; a conflicting explicit thread never matches.
     /// Cancelling this receive future does not consume an event or drop the view.
     pub async fn recv(&mut self) -> Result<Option<HarnessEvent>, SdkError> {
+        Ok(self
+            .recv_notification()
+            .await?
+            .map(|notification| notification.event))
+    }
+
+    /// Receive the same scoped event with its exact wire sequence. Like `recv`,
+    /// any connection gap/nonmonotonic sequence fails this view even when the
+    /// offending event belongs to another scope. Never hide loss by filtering.
+    /// The raw `HarnessClient::subscribe` view retains offending notifications.
+    /// Unsequenced legacy events remain usable but cannot be safely ACKed by count.
+    pub async fn recv_notification(&mut self) -> Result<Option<HarnessNotification>, SdkError> {
         loop {
             let Some(receiver) = self.receiver.as_mut() else {
                 return Ok(None);
@@ -128,11 +140,31 @@ impl RequestEvents {
                     return Err(error);
                 }
             };
-            if !self.matches(&event) {
+            let discontinuity = match event.sequence_status {
+                SequenceStatus::Gap { previous, missing } => Some(SdkError::EventSequenceGap {
+                    previous,
+                    received: event.event_sequence.expect("reader gap has sequence"),
+                    missing,
+                }),
+                SequenceStatus::NonMonotonic { previous } => {
+                    Some(SdkError::EventSequenceNonMonotonic {
+                        previous,
+                        received: event
+                            .event_sequence
+                            .expect("reader nonmonotonic has sequence"),
+                    })
+                }
+                _ => None,
+            };
+            if let Some(error) = discontinuity {
+                self.close();
+                return Err(error);
+            }
+            if !self.matches(&event.event) {
                 continue;
             }
             if matches!(
-                event,
+                event.event,
                 HarnessEvent::ThreadStarted { .. }
                     | HarnessEvent::TurnCompleted { .. }
                     | HarnessEvent::TurnFailed { .. }
@@ -144,7 +176,7 @@ impl RequestEvents {
         }
     }
 
-    fn closed_error(&mut self) -> Result<Option<HarnessEvent>, SdkError> {
+    fn closed_error(&mut self) -> Result<Option<HarnessNotification>, SdkError> {
         self.close();
         Err(SdkError::EventStreamClosed)
     }

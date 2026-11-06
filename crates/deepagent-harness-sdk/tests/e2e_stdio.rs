@@ -13,7 +13,7 @@ use deepagent_harness_protocol::{
     ConfigReadRequest, HarnessEvent, ThreadReadRequest, ThreadResumeRequest, ThreadStartRequest,
     TurnInterruptRequest, TurnStartRequest,
 };
-use deepagent_harness_sdk::{HarnessProcess, SdkError};
+use deepagent_harness_sdk::{HarnessProcess, SdkError, SequenceStatus};
 
 fn cli_binary() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -82,7 +82,7 @@ async fn initialize_then_thread_start_streams_thread_started_event() {
         .expect("timed out waiting for thread.started")
         .expect("event channel closed");
     let is_match = matches!(
-        &event,
+        &event.event,
         HarnessEvent::ThreadStarted { thread_id: id, .. } if id == &thread_id
     );
     assert!(
@@ -612,4 +612,109 @@ fn cli_binary_path_resolves_for_platform() {
     } else {
         assert!(bin.ends_with("deepagent"));
     }
+}
+
+#[tokio::test]
+async fn h205_real_cli_ack_uses_delivered_wire_sequence_and_reopen_uses_durable_identity() {
+    let Some(bin) = isolated_cli(
+        "h205_real_cli_ack_uses_delivered_wire_sequence_and_reopen_uses_durable_identity",
+        "h205-sequence",
+    )
+    .await
+    else {
+        return;
+    };
+    let workspace = temp_workspace("h205-sequence-workspace");
+    let process = HarnessProcess::spawn(&bin, &workspace).await.unwrap();
+    let client = process.client();
+    client.initialize("h205", "1").await.unwrap();
+    let mut raw = client.subscribe();
+    let request = || ThreadStartRequest {
+        cwd: None,
+        provider: None,
+        model: None,
+        reasoning_effort: None,
+        permission_profile: None,
+        sandbox_backend: None,
+    };
+    let mut records = Vec::new();
+    for index in 0..2 {
+        let mut owned = client.thread_start_streamed(request()).await.unwrap();
+        let record = tokio::time::timeout(Duration::from_secs(5), owned.recv_notification())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            record,
+            raw.recv().await.unwrap(),
+            "raw and owned metadata use one bus"
+        );
+        assert_eq!(
+            record.sequence_status,
+            if index == 0 {
+                SequenceStatus::First
+            } else {
+                SequenceStatus::Continuous
+            }
+        );
+        assert_eq!(record.event_sequence, Some(index + 1));
+        assert!(owned.recv_notification().await.unwrap().is_none());
+        records.push((owned.thread_id().to_owned(), record));
+    }
+    let latest = records[1].1.event_sequence.unwrap();
+    let ack = client.event_ack(latest).await.unwrap();
+    assert_eq!(ack.result()["acknowledgedEventSequence"], latest);
+    assert!(matches!(
+        client.event_ack(records[0].1.event_sequence.unwrap()).await,
+        Err(SdkError::Rpc { code: -32602, .. })
+    ));
+    assert!(matches!(
+        client.event_ack(latest + 1).await,
+        Err(SdkError::Rpc { code: -32602, .. })
+    ));
+    let thread = records[0].0.clone();
+    let read = || ThreadReadRequest {
+        thread_id: thread.clone(),
+        page_size: None,
+        max_bytes: None,
+        cursor: None,
+        after_sequence: None,
+        session_after_sequence: None,
+        run_after_sequence: None,
+        run_after_sequences: None,
+    };
+    let before = client.thread_read(read()).await.unwrap();
+    assert!(process.wait().await.unwrap().success());
+    let reopened = HarnessProcess::spawn(&bin, &workspace).await.unwrap();
+    let current = reopened.client();
+    current.initialize("h205-reopen", "1").await.unwrap();
+    current
+        .thread_resume(ThreadResumeRequest {
+            thread_id: thread.clone(),
+        })
+        .await
+        .unwrap();
+    let after = current.thread_read(read()).await.unwrap();
+    assert_eq!(
+        before.result(),
+        after.result(),
+        "durable read is not indexed by live sequence"
+    );
+    let mut owned = current.thread_start_streamed(request()).await.unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(5), owned.recv_notification())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    // This is a fresh physical connection: the old ACK cursor is not carried.
+    let sequence = first.event_sequence.unwrap();
+    assert_eq!(sequence, 1); // thread/resume loads state without emitting a notification.
+    assert_eq!(first.sequence_status, SequenceStatus::First);
+    assert!(current.event_ack(sequence).await.is_ok());
+    assert!(matches!(
+        current.event_ack(sequence + 1).await,
+        Err(SdkError::Rpc { code: -32602, .. })
+    ));
+    assert!(reopened.wait().await.unwrap().success());
 }

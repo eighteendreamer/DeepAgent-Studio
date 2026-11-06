@@ -294,7 +294,8 @@ async fn h214_real_pipe_dropped_start_future_releases_its_subscription() {
         tokio::time::timeout(Duration::from_secs(3), observer.recv())
             .await
             .unwrap()
-            .unwrap(),
+            .unwrap()
+            .event,
         HarnessEvent::TurnStarted { .. }
     ));
     assert_eq!(client.events.receiver_count(), 2);
@@ -335,7 +336,7 @@ async fn h213_real_pipe_routes_only_valid_harness_notifications_to_raw_and_owned
         assert!(client.pending.lock().unwrap().is_empty());
         for index in 0..3 {
             let event = receive(&mut stream).await.unwrap().unwrap();
-            assert_eq!(raw.try_recv().unwrap(), event);
+            assert_eq!(raw.try_recv().unwrap().event, event);
             match index {
                 0 => assert!(matches!(event, HarnessEvent::TurnStarted { .. })),
                 1 => assert!(matches!(event, HarnessEvent::ItemUpdated { .. })),
@@ -363,7 +364,7 @@ async fn h213_real_pipe_routes_only_valid_harness_notifications_to_raw_and_owned
         assert!(
             matches!(&terminal, HarnessEvent::TurnCompleted { message, .. } if message == "approved fixture terminal")
         );
-        assert_eq!(raw.try_recv().unwrap(), terminal);
+        assert_eq!(raw.try_recv().unwrap().event, terminal);
         assert!(receive(&mut stream).await.unwrap().is_none());
         assert!(matches!(
             raw.try_recv(),
@@ -384,7 +385,7 @@ async fn h213_real_pipe_unknown_notifications_do_not_consume_broadcast_capacity(
     assert_eq!(receipt.result()["approvals"], 0);
     for index in 0..3 {
         let event = receive(&mut stream).await.unwrap().unwrap();
-        assert_eq!(raw.try_recv().unwrap(), event);
+        assert_eq!(raw.try_recv().unwrap().event, event);
         assert!(matches!(
             (index, event),
             (0, HarnessEvent::TurnStarted { .. })

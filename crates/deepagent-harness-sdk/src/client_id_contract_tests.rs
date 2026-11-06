@@ -68,7 +68,7 @@ async fn h211_actual_numeric_ids_match_without_coercing_foreign_string_ids() {
             .unwrap()
             .unwrap();
         assert!(
-            matches!(barrier, HarnessEvent::ThreadStarted { thread_id, .. } if thread_id == "id-barrier")
+            matches!(barrier.event, HarnessEvent::ThreadStarted { thread_id, .. } if thread_id == "id-barrier")
         );
         assert!(
             !list.is_finished(),
