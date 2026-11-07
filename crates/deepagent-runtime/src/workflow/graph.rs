@@ -117,6 +117,9 @@ pub fn compile(definition: WorkflowDefinition) -> Result<CompiledWorkflow> {
         outputs.push(output_names(node)?);
         handles.push(source_handles(node)?);
         validate_bindings(node)?;
+        if node.kind == "knowledge-retrieval" {
+            super::knowledge::KnowledgeScope::from_config(&node.config)?;
+        }
         if node.kind == "answer" {
             super::answer::AnswerConfig::parse(&node.config)?;
         }
@@ -413,7 +416,7 @@ fn output_contract(kind: &str) -> Result<(&'static [&'static str], Option<&'stat
         "llm" | "agent" => (&["text", "usage"], None),
         "question-classifier" => (&["class_name", "class_label", "usage"], None),
         "embeddings" => (&["count", "dimensions", "providerId", "modelId"], None),
-        "knowledge-retrieval" => (&["documents", "content"], None),
+        "knowledge-retrieval" => (&["documents", "content", "scope", "revision"], None),
         "http-request" => (&["body", "status_code", "headers"], None),
         "tool" => (&["text", "json"], None),
         "answer" => (&["answer"], None),
@@ -1256,7 +1259,10 @@ mod tests {
                 "embeddings",
                 &["count", "dimensions", "providerId", "modelId"],
             ),
-            ("knowledge-retrieval", &["documents", "content"]),
+            (
+                "knowledge-retrieval",
+                &["documents", "content", "scope", "revision"],
+            ),
             ("http-request", &["body", "status_code", "headers"]),
             ("tool", &["text", "json"]),
             ("answer", &["answer"]),

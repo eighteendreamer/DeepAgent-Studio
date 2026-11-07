@@ -47,9 +47,6 @@ pub struct Bm25Hit<Id> {
 pub struct Bm25Index<Id: Clone + Eq> {
     params: Bm25Params,
     docs: Vec<IndexedDoc<Id>>,
-    /// term -> number of documents containing it (for IDF).
-    doc_freq: HashMap<String, u32>,
-    total_len: u64,
 }
 
 impl<Id: Clone + Eq> Default for Bm25Index<Id> {
@@ -64,8 +61,6 @@ impl<Id: Clone + Eq> Bm25Index<Id> {
         Self {
             params,
             docs: Vec::new(),
-            doc_freq: HashMap::new(),
-            total_len: 0,
         }
     }
 
@@ -77,11 +72,6 @@ impl<Id: Clone + Eq> Bm25Index<Id> {
         for t in tokens {
             *term_freqs.entry(t).or_insert(0) += 1;
         }
-        // Update document frequency (count each distinct term once per doc).
-        for term in term_freqs.keys() {
-            *self.doc_freq.entry(term.clone()).or_insert(0) += 1;
-        }
-        self.total_len += len as u64;
         self.docs.push(IndexedDoc {
             id,
             term_freqs,
@@ -89,46 +79,49 @@ impl<Id: Clone + Eq> Bm25Index<Id> {
         });
     }
 
-    /// Average document length (in tokens).
-    fn avg_doc_len(&self) -> f32 {
-        if self.docs.is_empty() {
-            0.0
-        } else {
-            self.total_len as f32 / self.docs.len() as f32
-        }
-    }
-
-    /// Inverse document frequency for a term (Robertson-Sparck-Jones, the
-    /// non-negative variant used by SQLite FTS5's bm25()).
-    fn idf(&self, term: &str) -> f32 {
-        let n = self.docs.len() as f32;
-        let df = *self.doc_freq.get(term).unwrap_or(&0) as f32;
-        // ln(1 + (N - df + 0.5) / (df + 0.5)) — always >= 0.
-        ((n - df + 0.5) / (df + 0.5) + 1.0).ln()
-    }
-
     /// Score every document against `query` and return the top `k` by BM25,
     /// descending. Documents with score <= 0 are excluded.
+    #[cfg(test)]
     pub fn search(&self, query: &str, k: usize) -> Vec<Bm25Hit<Id>> {
-        if self.docs.is_empty() || k == 0 {
+        self.search_filtered(query, k, |_| true)
+    }
+
+    /// Restrict the scoring corpus before computing statistics or truncating
+    /// candidates. Ineligible documents cannot affect recall or ranking.
+    pub fn search_filtered(
+        &self,
+        query: &str,
+        k: usize,
+        eligible: impl Fn(&Id) -> bool,
+    ) -> Vec<Bm25Hit<Id>> {
+        let docs: Vec<_> = self.docs.iter().filter(|doc| eligible(&doc.id)).collect();
+        if docs.is_empty() || k == 0 {
             return Vec::new();
         }
         let query_terms = tokenize(query);
-        let avg = self.avg_doc_len();
+        let avg = docs.iter().map(|doc| doc.len as u64).sum::<u64>() as f32 / docs.len() as f32;
+        let idfs: Vec<_> = query_terms
+            .iter()
+            .map(|term| {
+                let df = docs
+                    .iter()
+                    .filter(|doc| doc.term_freqs.contains_key(term))
+                    .count() as f32;
+                ((docs.len() as f32 - df + 0.5) / (df + 0.5) + 1.0).ln()
+            })
+            .collect();
         let k1 = self.params.k1;
         let b = self.params.b;
 
-        let mut hits: Vec<Bm25Hit<Id>> = self
-            .docs
+        let mut hits: Vec<Bm25Hit<Id>> = docs
             .iter()
             .filter_map(|doc| {
                 let mut score = 0.0_f32;
-                for term in &query_terms {
+                for (term, idf) in query_terms.iter().zip(&idfs) {
                     let tf = *doc.term_freqs.get(term).unwrap_or(&0) as f32;
                     if tf == 0.0 {
                         continue;
                     }
-                    let idf = self.idf(term);
                     let denom = tf + k1 * (1.0 - b + b * (doc.len as f32 / avg.max(1.0)));
                     score += idf * (tf * (k1 + 1.0)) / denom;
                 }
@@ -165,6 +158,31 @@ pub fn tokenize(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn h176_filtered_corpus_matches_independent_index_before_top_k() {
+        let mut all = Bm25Index::default();
+        let mut selected = Bm25Index::default();
+        for (id, text) in [
+            (1, "needle with several extra words"),
+            (2, "needle needle secondary"),
+        ] {
+            all.add(id, text);
+            selected.add(id, text);
+        }
+        for id in 3..100 {
+            all.add(id, "needle");
+        }
+        assert_eq!(
+            all.search_filtered("needle", 1, |id| *id <= 2),
+            selected.search("needle", 1)
+        );
+        assert!(all.search_filtered("needle", 1, |_| false).is_empty());
+        assert_eq!(
+            all.search_filtered("needle", 200, |_| true),
+            all.search("needle", 200)
+        );
+    }
 
     fn index() -> Bm25Index<u32> {
         let mut idx = Bm25Index::default();

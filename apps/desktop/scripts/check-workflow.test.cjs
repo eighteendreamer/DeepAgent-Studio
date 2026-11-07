@@ -33,6 +33,23 @@ const {
   normalizeProfessionalNode,
 } = registry;
 
+test("H176 typed knowledge scope preserves legacy imports without widening new nodes", () => {
+  const schema = schemas.NODE_CONFIG_SCHEMAS["knowledge-retrieval"];
+  assert.deepEqual(schema.properties.knowledgeBaseId.enum, ["project", "global", "mixed", ""]);
+  assert.equal(createDefaultNodeData("knowledge-retrieval").knowledgeBaseId, "project");
+  assert.equal(normalizeProfessionalData({kind:"knowledge-retrieval"}).knowledgeBaseId, "mixed");
+  for (const scope of ["project", "global", "mixed", ""]) {
+    const data = normalizeProfessionalData({kind:"knowledge-retrieval", knowledgeBaseId:scope});
+    assert.equal(data.knowledgeBaseId, scope);
+    assert.deepEqual(validateSchemaValue(schema, data), []);
+  }
+  for (const invalid of ["other", " project ", "{{#start.scope#}}", null, 1, {}, []]) {
+    const data = normalizeProfessionalData({kind:"knowledge-retrieval", knowledgeBaseId:invalid});
+    assert.deepEqual(data.knowledgeBaseId, invalid, "migration must not hide invalid selectors");
+    assert.ok(validateSchemaValue(schema, data).length);
+  }
+});
+
 test("H-199 shared v1 branch catalog preserves singleton true/false and every multi-case fallback", () => {
   const { conditionBranchContract, conditionBranchView } = loadTypeScript("../src/canvas/workflow/utils/conditionBranches.ts");
   for (const ids of [["if"], ["true"], ["stable-uuid"], ["red", "blue"], ["red", "blue", "yellow"]]) {
@@ -219,7 +236,7 @@ for (const definition of getAllNodeDefinitions()) {
     assert.deepEqual(restored.position, legacy.position);
     assert.notEqual(createDefaultNodeData(definition.kind), fresh);
     for (const [key, value] of Object.entries(fresh)) {
-      if (key !== "label") assert.deepEqual(restored.data[key], value);
+      if (key !== "label") assert.deepEqual(restored.data[key], definition.kind === "knowledge-retrieval" && key === "knowledgeBaseId" ? "mixed" : value);
     }
   });
 }

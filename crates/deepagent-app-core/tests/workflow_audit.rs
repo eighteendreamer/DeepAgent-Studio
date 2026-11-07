@@ -34,6 +34,8 @@ mod http;
 mod inputs;
 #[path = "workflow_audit/iteration.rs"]
 mod iteration;
+#[path = "workflow_audit/knowledge.rs"]
+mod knowledge;
 #[path = "workflow_audit/output.rs"]
 mod output;
 #[path = "workflow_audit/reachability.rs"]
@@ -405,7 +407,6 @@ async fn audit_workflow_http_node_does_not_bypass_network_approval() {
 }
 
 #[tokio::test]
-#[ignore = "audit: workflow knowledge-retrieval must honor the selected knowledge base scope"]
 async fn audit_workflow_knowledge_base_id_is_honored() {
     let root = tempfile::tempdir().unwrap();
     let global_root = root.path().join("global");
@@ -511,11 +512,11 @@ async fn audit_workflow_knowledge_base_id_is_honored() {
         result.err()
     );
     assert!(
-        titles.iter().any(|title| *title == "Project-only runbook"),
+        titles.contains(&"Project-only runbook"),
         "selected project knowledge must be returned"
     );
     assert!(
-        !titles.iter().any(|title| *title == "Global-only runbook"),
+        !titles.contains(&"Global-only runbook"),
         "knowledgeBaseId=project must exclude the global vault"
     );
 }

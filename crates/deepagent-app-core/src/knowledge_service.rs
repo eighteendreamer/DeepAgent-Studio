@@ -1011,18 +1011,18 @@ impl deepagent_builtins::KnowledgeBackend for KnowledgeServiceBackend {
 }
 
 /// Adapts [`KnowledgeService`] to the workflow's [`KnowledgeRetriever`] trait so
-/// knowledge retrieval nodes can query the real vault. The service methods are
-/// synchronous (Mutex-backed); the trait is async, so each call simply forwards
-/// to the sync method.
+/// knowledge retrieval nodes query a single immutable, derived snapshot of the
+/// bound project and global vaults. No second store, filesystem read or live
+/// sidebar selection is consulted during a workflow node or retry.
 pub struct WorkflowKnowledgeRetriever {
-    service: std::sync::Arc<KnowledgeService>,
+    snapshot: KnowledgeBase<HashingEmbedder>,
 }
 
 impl WorkflowKnowledgeRetriever {
-    /// Wrap a shared knowledge service.
+    /// Copy the existing entries/index together under the service read lock.
     pub fn new(service: std::sync::Arc<KnowledgeService>) -> Self {
         Self {
-            service: service.bind_current(),
+            snapshot: service.read(Clone::clone),
         }
     }
 }
@@ -1031,19 +1031,56 @@ impl WorkflowKnowledgeRetriever {
 impl deepagent_runtime::workflow::KnowledgeRetriever for WorkflowKnowledgeRetriever {
     async fn search(
         &self,
-        query: &str,
-        limit: usize,
-    ) -> deepagent_core::error::Result<Vec<deepagent_runtime::workflow::KnowledgeDocument>> {
-        let hits = self.service.search(query, None, limit);
-        Ok(hits
+        request: deepagent_runtime::workflow::KnowledgeQuery<'_>,
+    ) -> deepagent_core::error::Result<deepagent_runtime::workflow::KnowledgeSearch> {
+        use deepagent_runtime::workflow::{KnowledgeDocument, KnowledgeScope, KnowledgeSearch};
+        use sha2::{Digest, Sha256};
+        let scope = match request.scope {
+            KnowledgeScope::Project => Some(Scope::Project),
+            KnowledgeScope::Global => Some(Scope::Global),
+            KnowledgeScope::Mixed => None,
+        };
+        // Domain-separated, length-framed logical active-entry content. Drafts
+        // and unselected scopes cannot change the revision or ranking. This is
+        // a snapshot identity, not a credential, filesystem path or resume token.
+        let mut digest = Sha256::new();
+        digest.update(b"deepagent-workflow-knowledge-v1\0");
+        digest.update(serde_json::to_vec(&request.scope)?);
+        for entry in self
+            .snapshot
+            .list()
             .into_iter()
-            .map(|h| deepagent_runtime::workflow::KnowledgeDocument {
-                id: h.id,
-                title: h.title,
+            .filter(|entry| scope.map_or(true, |scope| entry.scope == scope))
+        {
+            for part in [
+                format!("{}:{}", entry.scope.label(), entry.id),
+                entry.to_markdown(),
+            ] {
+                digest.update((part.len() as u64).to_le_bytes());
+                digest.update(part.as_bytes());
+            }
+        }
+        let revision = format!("{:x}", digest.finalize());
+        let documents = self
+            .snapshot
+            .search_scoped(request.query, None, scope, request.limit)
+            .into_iter()
+            .map(|h| KnowledgeDocument {
+                id: format!("{}:{}", h.entry.scope.label(), h.entry.id),
+                title: h.entry.title,
                 content: h.excerpt,
                 score: h.score,
+                scope: match h.entry.scope {
+                    Scope::Project => KnowledgeScope::Project,
+                    Scope::Global => KnowledgeScope::Global,
+                },
+                updated_at: h.entry.updated_at,
             })
-            .collect())
+            .collect();
+        Ok(KnowledgeSearch {
+            revision,
+            documents,
+        })
     }
 }
 

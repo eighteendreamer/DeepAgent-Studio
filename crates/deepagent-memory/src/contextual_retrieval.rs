@@ -100,6 +100,7 @@ impl ChunkReranker for ScoreReranker {
 }
 
 /// The end-to-end contextual retriever.
+#[derive(Clone)]
 pub struct ContextualRetriever<E: Embedder, C: Contextualizer, R: ChunkReranker> {
     embedder: E,
     contextualizer: C,
@@ -189,6 +190,17 @@ impl<E: Embedder, C: Contextualizer, R: ChunkReranker> ContextualRetriever<E, C,
 
     /// Retrieve the top-`k` chunks for `query` via hybrid retrieval + rerank.
     pub fn retrieve(&self, query: &str, k: usize) -> Vec<RetrievedChunk> {
+        self.retrieve_filtered(query, k, |_| true)
+    }
+
+    /// Apply document eligibility to both dense and sparse retrieval before
+    /// candidate truncation, fusion and reranking; reuse the same index.
+    pub fn retrieve_filtered(
+        &self,
+        query: &str,
+        k: usize,
+        eligible: impl Fn(&str) -> bool,
+    ) -> Vec<RetrievedChunk> {
         if k == 0 || self.chunks.is_empty() || query.trim().is_empty() {
             return Vec::new();
         }
@@ -199,6 +211,7 @@ impl<E: Embedder, C: Contextualizer, R: ChunkReranker> ContextualRetriever<E, C,
         let mut dense: Vec<(ChunkId, f32)> = self
             .chunks
             .iter()
+            .filter(|(_, c)| eligible(&c.doc_id))
             .filter_map(|(id, c)| {
                 let sim = cosine_similarity(&query_vec, &c.embedding);
                 if sim > 1e-4 {
@@ -208,14 +221,20 @@ impl<E: Embedder, C: Contextualizer, R: ChunkReranker> ContextualRetriever<E, C,
                 }
             })
             .collect();
-        dense.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        dense.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
         dense.truncate(pool);
         let dense_ids: Vec<ChunkId> = dense.into_iter().map(|(id, _)| id).collect();
 
         // Stage: Hybrid Retrieval — sparse (BM25).
         let sparse_ids: Vec<ChunkId> = self
             .bm25
-            .search(query, pool)
+            .search_filtered(query, pool, |id| {
+                self.chunks.get(id).is_some_and(|c| eligible(&c.doc_id))
+            })
             .into_iter()
             .map(|h| h.id)
             .collect();
@@ -275,6 +294,36 @@ mod tests {
     use super::*;
     use crate::contextualize::HeadingContextualizer;
     use crate::embedding::HashingEmbedder;
+
+    #[test]
+    fn h176_dense_and_sparse_eligibility_precedes_both_candidate_caps() {
+        let mut r = retriever();
+        r.add_document(
+            "project:a",
+            "Project",
+            "needle with many extra words in an eligible document",
+        );
+        for i in 0..100 {
+            r.add_document(&format!("global:{i}"), "Shared", "needle");
+        }
+        let hits = r.retrieve_filtered("needle", 1, |id| id.starts_with("project:"));
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].doc_id, "project:a");
+        assert!(r.retrieve_filtered("needle", 1, |_| false).is_empty());
+        assert!(r.retrieve_filtered("", 1, |_| true).is_empty());
+        for _ in 0..5 {
+            assert_eq!(
+                r.retrieve("needle", 5)
+                    .iter()
+                    .map(|h| h.doc_id.clone())
+                    .collect::<Vec<_>>(),
+                r.retrieve("needle", 5)
+                    .iter()
+                    .map(|h| h.doc_id.clone())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
 
     fn retriever() -> ContextualRetriever<HashingEmbedder, HeadingContextualizer, ScoreReranker> {
         ContextualRetriever::new(HashingEmbedder::default(), HeadingContextualizer)

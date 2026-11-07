@@ -39,6 +39,8 @@ use deepagent_core::error::{CoreError, Result};
 mod item_scheduler;
 #[cfg(test)]
 mod iteration_tests;
+#[cfg(test)]
+mod knowledge_tests;
 mod settlement;
 mod target;
 use item_scheduler::{IterationExecution, OutputLease};
@@ -1666,12 +1668,15 @@ impl WorkflowAgent {
     }
 
     async fn execute_knowledge_retrieval(&self, config: &Map<String, Value>) -> Result<Value> {
+        let scope = super::knowledge::KnowledgeScope::from_config(config)?;
         let retriever = match &self.knowledge_retriever {
             Some(r) => r,
             None => {
                 return Ok(serde_json::json!({
                     "documents": [],
                     "content": "",
+                    "scope": scope,
+                    "revision": Value::Null,
                     "__note": "no knowledge retriever configured"
                 }));
             }
@@ -1690,17 +1695,17 @@ impl WorkflowAgent {
             .and_then(Value::as_f64)
             .unwrap_or(0.0) as f32;
 
-        if query.is_empty() {
-            return Ok(serde_json::json!({
-                "documents": [],
-                "content": ""
-            }));
-        }
-
         let top_k = top_k.clamp(1, 20);
-        let docs = retriever.search(query, top_k).await?;
+        let result = retriever
+            .search(super::knowledge::KnowledgeQuery {
+                query,
+                limit: top_k,
+                scope,
+            })
+            .await?;
 
-        let filtered: Vec<_> = docs
+        let filtered: Vec<_> = result
+            .documents
             .into_iter()
             .filter(|d| d.score >= score_threshold)
             .collect();
@@ -1725,6 +1730,8 @@ impl WorkflowAgent {
                     "title": d.title,
                     "content": d.content,
                     "score": d.score,
+                    "scope": d.scope,
+                    "updatedAt": d.updated_at,
                 })
             })
             .collect();
@@ -1732,6 +1739,8 @@ impl WorkflowAgent {
         Ok(serde_json::json!({
             "documents": documents,
             "content": content,
+            "scope": scope,
+            "revision": result.revision,
         }))
     }
 

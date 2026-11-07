@@ -189,6 +189,15 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
         { id: "c", source: "entry", target: "body" },
         { id: "d", source: "iterate", sourceHandle: "done", target: "end" },
       ];
+    } else if (name.startsWith("knowledge-")) {
+      const selection = name.slice("knowledge-".length);
+      const retrieve = node("retrieve", "knowledge-retrieval", {queryVariable:"scope-needle", knowledgeTopK:10, scoreThreshold:0});
+      if (selection === "legacy") {
+        delete retrieve.data.knowledgeBaseId;
+        retrieve.data = registry.normalizeProfessionalData(retrieve.data);
+      } else if (selection !== "new") retrieve.data.knowledgeBaseId = selection === "empty" ? "" : selection;
+      nodes.splice(1, 0, retrieve);
+      edges = [{id:"a", source:"start", target:"retrieve"},{id:"b",source:"retrieve",target:"end"}];
     } else if (name === "embedding") {
       nodes.splice(1, 0, node("embedding", "embeddings", {
         embeddingModel: `${providerId}::audit-embedding-model`, texts: ["audit embedding"],
@@ -293,16 +302,17 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
 async function consumeKernelEvents(filename) {
   const { name, events, terminal, expected, workflow, branchCatalog } = JSON.parse(readFileSync(filename, "utf8"));
   const branchPorts = name.startsWith("branch-");
+  const knowledge = name.startsWith("knowledge-");
   const outputContract = name.startsWith("end-contract-");
   const conditionTruth = name.startsWith("condition-truth-");
-  const target = outputContract || conditionTruth || branchPorts ? undefined : name.slice("target-".length);
+  const target = outputContract || conditionTruth || branchPorts || knowledge ? undefined : name.slice("target-".length);
   const handlers = new Map();
   const state = { nodes: (outputContract ? ["start", "end"] : conditionTruth ? ["start", "decide", "yes", "no", "end"] : ["start", "source", "answer", "end", "unrelated"]).map((id) => ({
     id, data: { kind: id === "start" || id === "end" ? id : "answer", status: "idle" }, position: { x: 0, y: 0 },
   })), edges: [], updateNodeData(id, patch) {
     this.nodes = this.nodes.map((node) => node.id === id ? { ...node, data: { ...node.data, ...patch } } : node);
   } };
-  if (branchPorts) state.nodes = workflow.definition.nodes.map(node => ({ id: node.id, data: { ...node.config, kind: node.kind, status: "idle" }, position: { x: 0, y: 0 } }));
+  if (branchPorts || knowledge) state.nodes = workflow.definition.nodes.map(node => ({ id: node.id, data: { ...node.config, kind: node.kind, status: "idle" }, position: { x: 0, y: 0 } }));
   const executor = loadTypeScript("../src/canvas/workflow/utils/workflowExecutor.ts", {
     "../store/canvasStore": { useCanvasStore: { getState: () => ({ mode: "professional" }) } },
     "../store/professionalStore": { useProfessionalStore: { getState: () => state } },
@@ -320,7 +330,15 @@ async function consumeKernelEvents(filename) {
   for (const event of events) handlers.get("chat://event")({ payload: {
     run_id: "target-replay", payload: { type: "workflow_node", event },
   } });
-  if (branchPorts) {
+  if (knowledge) {
+    const actual = state.nodes.find(node => node.id === "retrieve").data;
+    assert.equal(actual.status, "completed");
+    assert.deepEqual(actual.result, {success:true, outputs:expected});
+    assert.ok(expected.documents.length);
+    assert.equal(expected.revision.length, 64);
+    assert.ok(expected.documents.every(doc => expected.scope === "mixed" || doc.scope === expected.scope));
+    handlers.get("session://completed")({payload:{run_id:"target-replay",status:"succeeded"}});
+  } else if (branchPorts) {
     const data = id => state.nodes.find(node => node.id === id).data;
     assert.equal(data("decide").status, "completed");
     assert.deepEqual(data("decide").result, { success: true, outputs: { branch: branchCatalog.expectedBranch } });
@@ -369,8 +387,10 @@ async function consumeKernelEvents(filename) {
 
 module.exports = { loadTypeScript };
 if (require.main === module) {
-  if (["--consume-target-events", "--consume-output-events", "--consume-condition-events", "--consume-branch-events"].includes(process.argv[2]) && process.argv[3]) {
+  if (["--consume-target-events", "--consume-output-events", "--consume-condition-events", "--consume-branch-events", "--consume-knowledge-events"].includes(process.argv[2]) && process.argv[3]) {
     consumeKernelEvents(process.argv[3]).catch((error) => { console.error(error); process.exitCode = 1; });
+  } else if (process.argv[2] === "--emit-knowledge-fixtures") {
+    emitFixtures(["project", "global", "mixed", "new", "legacy", "empty"].map(scope => `knowledge-${scope}`)).catch((error) => {console.error(error);process.exitCode = 1;});
   } else if (process.argv[2] === "--emit-branch-fixtures") {
     emitFixtures(["branch-single-if-true", "branch-single-if-false", "branch-single-legacy-true", "branch-single-uuid-true", ...[0, 1, 2, 3].map(index => `branch-multi-${index}`)]).catch((error) => { console.error(error); process.exitCode = 1; });
   } else if (process.argv[2] === "--emit-condition-truth-fixtures") {

@@ -331,6 +331,7 @@ impl KnowledgeScopeSnapshot {
 }
 
 /// The knowledge base: one or more vaults plus a derived retrieval index.
+#[derive(Clone)]
 pub struct KnowledgeBase<E: Embedder + Clone> {
     vaults: Vec<Vault>,
     config: KnowledgeConfig,
@@ -489,12 +490,29 @@ impl<E: Embedder + Clone> KnowledgeBase<E> {
     /// it is a valid threshold gate for passive injection (the retriever's own
     /// score is only relative within a single query and cannot be thresholded).
     pub fn search(&self, query: &str, kind: Option<EntryKind>, limit: usize) -> Vec<KnowledgeHit> {
+        self.search_scoped(query, kind, None, limit)
+    }
+
+    /// Search the selected vault using the original derived index. `None`
+    /// explicitly retains the existing project + global search behavior.
+    pub fn search_scoped(
+        &self,
+        query: &str,
+        kind: Option<EntryKind>,
+        scope: Option<Scope>,
+        limit: usize,
+    ) -> Vec<KnowledgeHit> {
         if limit == 0 || query.trim().is_empty() || self.entries.is_empty() {
             return Vec::new();
         }
         // Pull extra chunks so per-entry dedup still fills `limit` entries.
         let pool = (limit.saturating_mul(3)).max(10);
-        let chunks = self.retriever.retrieve(query, pool);
+        let chunks = self.retriever.retrieve_filtered(query, pool, |id| {
+            self.entries.get(id).is_some_and(|entry| {
+                scope.map_or(true, |scope| entry.scope == scope)
+                    && kind.map_or(true, |kind| entry.kind == kind)
+            })
+        });
 
         let query_vec = self.embedder.embed(query);
         let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -507,11 +525,6 @@ impl<E: Embedder + Clone> KnowledgeBase<E> {
             let Some(entry) = self.entries.get(key) else {
                 continue;
             };
-            if let Some(k) = kind {
-                if entry.kind != k {
-                    continue;
-                }
-            }
             seen.insert(key.clone());
             // Absolute relevance: cosine of query vs the matched excerpt,
             // clamped to [0,1] (hashing embeddings are non-negative so cosine
@@ -929,6 +942,48 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].entry.title, "PowerShell pipe interrupted");
         assert!(hits[0].score > 0.0);
+    }
+
+    #[test]
+    fn h176_scope_and_kind_are_candidate_eligibility_not_final_hit_filters() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut kb = base(tmp.path());
+        kb.write(
+            draft(
+                "Eligible",
+                "needle extra words",
+                EntryKind::Solution,
+                Scope::Project,
+            ),
+            1,
+        )
+        .unwrap();
+        for i in 0..70 {
+            kb.write(
+                draft(
+                    &format!("Ineligible {i}"),
+                    "needle",
+                    EntryKind::Note,
+                    if i % 2 == 0 {
+                        Scope::Project
+                    } else {
+                        Scope::Global
+                    },
+                ),
+                1,
+            )
+            .unwrap();
+        }
+        let hits = kb.search_scoped("needle", Some(EntryKind::Solution), Some(Scope::Project), 1);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].entry.title, "Eligible");
+        assert!(kb
+            .search_scoped("needle", Some(EntryKind::Solution), Some(Scope::Global), 1)
+            .is_empty());
+        assert!(!kb.search("needle", None, 1).is_empty());
+        assert!(kb
+            .search_scoped("needle", None, Some(Scope::Project), 0)
+            .is_empty());
     }
 
     #[test]

@@ -277,7 +277,7 @@ export const NODE_CONFIG_SCHEMAS: Record<ProfessionalNodeKind, NodeConfigSchema>
     texts: list("文本列表", text("文本"), [""]),
   }, "将文本转换为向量表示，结果仅暴露数量、维度和模型身份，不持久化向量正文。"),
   "knowledge-retrieval": nodeSchema("知识检索", {
-    knowledgeBaseId: text("知识库标识"),
+    knowledgeBaseId: choice("知识范围", { project: "当前项目", global: "全局共享", mixed: "当前项目与全局共享", "": "旧版：项目与全局共享" }, "project"),
     knowledgeTopK: { type: "integer", title: "召回数量", default: 3, minimum: 1, maximum: 20 },
     queryVariable: variable("查询变量", ["string"]),
     retrievalMode: RETRIEVAL_MODE,

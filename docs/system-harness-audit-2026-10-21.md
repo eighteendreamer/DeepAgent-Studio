@@ -5933,6 +5933,8 @@ E-H175-09（冻结版本最终验收）：HTTP节点改走原Kernel工具管线�
 
 ### H-176：工作流 `knowledgeBaseId` 是死字段，知识检索节点无条件混合 project/global vault
 
+**状态（2026-11-08）**：已修复并验收，限E-H176-03所列本机范围；原失败证据保留。
+
 **级别：中（P2，工作流上下文越权与配置失效）；触发条件：工作流定义使用 `knowledge-retrieval` 节点并声明某个 `knowledgeBaseId`，同时当前运行的 `KnowledgeService` 中存在 project 与 global 两个 vault 的相似命中。** 如果 global vault 被当作共享上下文，这仍然是“选择 project 但返回 global”的明确契约违约；如果调用者把该字段当作隔离边界，混入内容还可能造成跨作用域知识泄露。当前动态样本只证明两类文档同时进入节点输出，不把文档内容扩展解释为真实机密。
 
 #### 生产调用链与正式复现
@@ -5959,6 +5961,57 @@ E-H175-09（冻结版本最终验收）：HTTP节点改走原Kernel工具管线�
 - 恢复、重放、被取消的重试以及 CLI/SDK/Tauri 入口必须复用同一 scope snapshot；passive memory、`knowledge_search` 工具和 workflow 节点是否共享集合要显式定义，不能因为共用 `KnowledgeService` 就隐式获得全量可见性。回归需覆盖 project-only、global-only、explicit mixed、未知 base、空/旧字段迁移、跨项目运行、重启和命中排序，断言节点输出、事件与实际磁盘来源一致。
 
 本轮 H-176 只新增正式审计探针和文档，未修改生产检索行为；在 scope DTO、权限归属和兼容迁移规则明确前，不应把忽略 `knowledgeBaseId` 的现状标记为兼容行为。
+
+**E-H176-01（2026-11-08，原复现与TDD红，修复中）**：基线 `de14890633a0b9037b0f92938b6cd7fbc87b1752`，tracked干净、无未完成合并；五项用户untracked只列名，不读取、修改或暂存。逐层核对原报告/探针、Desktop schema/registry/serializer、Runtime graph/agent/trait、RunAssembler项目绑定、KnowledgeService单一mutex/派生索引、KnowledgeBase及Memory dense/BM25候选截断、原H51回归、Cargo/CI/rustfmt。H51仅固定项目身份，不解决scope字段丢失，未将本项算作历史已修复。
+
+本轮真实Cargo根 `C:\Users\32734\AppData\Local\Temp\h176-repair-20261108`；隔离合成HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/TMP/data并清凭据、代理和DEEPAGENT环境，离线复用工具链依赖；不读取真实凭据、用户资料或内网。冻结5份原生产源码后执行 `cargo test --target-dir <上述根> -p deepagent-app-core --test workflow_audit audit_workflow_knowledge_base_id_is_honored --offline -j 2 -- --ignored --exact --nocapture`：exit101、0/1/0、382.535秒含冷编译，实际仍输出Global-only及Project-only两文档，api_ok=true；源码哈希不变。新增默认 `knowledge::` 三项真实回归后按同Cargo选项（过滤knowledge::、--nocapture --test-threads=1、无ignored）执行：exit101、0/3/0，编译44.23秒、测试2.17秒；分别证实无scope provenance、未知scope仍成功、同一适配器内容受后续save影响。失败证据保留，不凭编译或空结果认定修复。
+
+明确本地v1设计（不是模型供应商协议）：knowledgeBaseId仅接受project/global/mixed；缺失和空字符串保留旧混合行为，新建Desktop节点默认project，任意其他字符串/类型/动态引用在graph compile前置拒绝。typed KnowledgeQuery贯穿原trait，由现有KnowledgeBase在dense/BM25候选截断及评分统计前过滤；不另建store/index/run链。Workflow适配器在构造时同锁复制既有绑定项目+global的派生快照；内容/修订在一次运行及内核重试期间不漂移。输出保留documents/content，增加实际scope、SHA256逻辑active-entry revision及每文档scope/updatedAt；无后端沿旧空输出但revision=null明确未检索。旧passive/tool/background入口保留原live mixed选择，不隐式套用workflow selector；该字段不是任意知识库ID授权系统。Rust trait为源码级变更，仓内调用方同步；无SQL/数据迁移。durable replay复用原事件，不重新检索；新run重新冻结，不声称跨进程恢复当前尚未实现的workflow快照。
+
+最终回归、真实Desktop生产消费、workspace/strict lint/build、清理、双文验收及独立提交尚未完成；当前192验收、25历史跳过、8归并、3撤销，77待修+H176修复中=78未关闭（含H180授权跳过，实际77）。本项暂估4–10有效小时；全余200–400有效小时仍为未逐项校准低置信历史粗估，编译/设备/依赖/环境与清理等待另计，不承诺精确完工日期。
+
+**E-H176-02（2026-11-08，候选修正与边界复审）**：原探针/TDD红不删除。第一候选默认knowledge三项2/1（92秒编译、2.22秒测试），失败来自新测试误把durable事件信封直接反序列化为NodeExecutionEvent，按既有持久化契约改读data.event；第二候选2/1（83.048秒含编译），差异为serde_json内存f64与一次十进制roundtrip的末位表示，按相同JSON roundtrip比较整事件，并仍对scope/文档来源/revision/终态/cursor精确断言，未放宽生产过滤。后续原正常对照分别暴露graph输出契约旧断言（123/1）及Desktop“新建默认等同旧缺字段”的旧断言（122/1），按明确新增scope/revision与旧mixed迁移语义同步，未改其他节点断言。最终Runtime workflow124/0、Desktop workflow123/0。
+
+候选lint发现本轮新增Option::is_none_or不满足声明MSRV1.80、前端完整build发现本轮Object.hasOwn不满足ES2020，均归属本轮并改为项目已用map_or/hasOwnProperty.call；没有升级工具链要求、放宽lint或归为历史。最终Memory/Knowledge全target全feature严格lint通过，Runtime/AppCore诊断中本轮Rust改动文件没有新增诊断，前端类型构建通过；原strict阻断单列E03，受影响旧文件均以git对象对基线核对未改。
+
+人工数据流复审确认唯一typed scope入口/同一派生检索索引；dense与BM25均在候选截断前限制集合，BM25统计也仅使用合格文档，不让未选scope通过词频改变排序。旧混合search/passive/tool/background入口保留选择语义，kind同样进入共同候选资格门禁，不新建旁路；同分dense按既有chunk ID稳定排序。Workflow构造同锁复制现有entries/files/index形成只读运行投影，不新建磁盘store；revision为带域分隔和长度帧的逻辑active-entry内容SHA256，不含路径/凭据，非授权或跨进程resume token。新Rust trait签名/返回结构的源码兼容影响与新增JSON输出明确保留，仓内消费者已同步。
+
+**E-H176-03（2026-11-08，已修复并验收，限下列本机范围）**：H176的Evidence→Finding→Path闭环：E01原真实混入和三项TDD红→唯一scope丢失/候选过滤根因→Desktop新建/旧迁移→graph准入→typed KnowledgeQuery→固定项目内容投影→原KnowledgeBase/ContextualRetriever/BM25→原Kernel事件/RunStore/replay。原审计失败证据和E01/E02候选失败完整保留。最终16份Rust/TS/测试/fixture逐份SHA256冻结，所有最终Cargo门禁前后核对无变化；本项生产修改仅现有三层检索边界与Desktop schema/registry，无第二store/run/审批/取消、无新依赖或SQL迁移。
+
+复现命令以下统一以 `T=C:\Users\32734\AppData\Local\Temp\h176-repair-20261108` 记本轮target；以下Cargo命令均实际带 `--target-dir T --offline -j 2`，不是指向旧结果的纸面命令。
+
+| 实际命令（补上述共同Cargo参数） | 本轮结果 |
+|---|---|
+| `cargo fmt --all -- --check`（fmt不带target/offline/j） | exit0，6.115秒 |
+| `cargo test -p deepagent-memory -- --nocapture` | exit0，42/0/0、doc0；2.149秒 |
+| `cargo test -p deepagent-knowledge -- --nocapture` | exit0，80/0/0、doc0；21.779秒 |
+| `cargo test -p deepagent-runtime --lib workflow:: -- --nocapture` | exit0，124/0/0；3.670秒 |
+| `cargo test -p deepagent-app-core --test workflow_audit -- --nocapture --test-threads=1` | exit0，136/0/29忽略；235.416秒含编译，原H176已去ignore真实执行 |
+| `cargo test -p deepagent-app-core --test workflow_audit knowledge::h176_desktop_producer_kernel_and_consumer_preserve_scope_and_provenance -- --ignored --exact --nocapture` | exit0，1/0/0，10.611秒；6种真实Desktop生产schema/serializer→Kernel→生产事件消费者 |
+| `cargo test -p deepagent-app-core --lib -- --quiet --test-threads=2` | exit0，1592/0/46忽略；362.243秒含编译，H51既有项目绑定对照通过 |
+| `cargo clippy -p deepagent-memory -p deepagent-knowledge --all-targets --all-features --no-deps -- -D warnings` | exit0，15.191秒 |
+| `cargo clippy -p deepagent-runtime -p deepagent-app-core --all-targets --all-features --no-deps -- -D warnings` | exit101，25.390秒；未改model_agent.rs:298 Usage.clone及workflow/canvas.rs:32 derivable_impls阻断，不能称strict全绿 |
+| 同上一行改为 `-- -W warnings` 的诊断门禁 | exit101，65.578秒；本轮Rust改动无新增诊断，既有kernel_v2_e2e/mcp_discovery_restore.rs:776 panicking_unwrap默认deny仍阻断；其余Usage clone、http return、plugin复杂度、assembler参数数、session title借用及workflow/usage三处last等原诊断逐处核对基线 |
+| `cargo build -p deepagent-cli` | exit0，74.618秒 |
+| `cargo test -p deepagent-harness-sdk -- --quiet --test-threads=2` | exit0，72/0/5忽略+真实CLI stdio12/0+doc2/0；73.333秒 |
+| `cargo test --workspace --no-fail-fast -- --quiet --test-threads=2` | exit101，1794.887秒；147结果块全部终态，**4923通过/1失败/198忽略**。唯一失败为未改H306：creative.video-edit.v1空defaultUserPrompt；AppCore1592/0/55（feature并集增加ignored），不是整个workspace通过 |
+| `cargo clippy --all-targets --all-features -- -D warnings` | exit101，56.709秒；未改models/client.rs:431 Option<ReasoningEffort>.clone阻断 |
+
+SDK前先对共享CLI原SHA256 `1776C31F691AEE170D2CD83AC02F39B2D43474B9B41159951A6ED47D06286DEE`、路径无reparse/零活进程核对，任务root备份再发布本轮真实构建到原 `G:\Code_Warehouse\DeepAgent-Studio\target\debug\deepagent.exe`（81,904,128字节，SHA256 `67BCBEE080D431C898D90D8DB93F5C18B79EB3DC71659719B7BF2C3474529660`），SDK消费的不是旧binary。此可再生共享CLI按既有集成用途保留，非本轮h命名缓存；不提交binary。
+
+再次显式执行本轮workspace真实 `workflow_audit-3e79cea4154255df.exe`（SHA256 `E35489E05E92651EDF819F4EA4B34F05C7532CD943FDB0584CA40249EFC72099`）：原 `audit_workflow_knowledge_base_id_is_honored --exact --nocapture` exit0、1/0/0、1.212秒，仅Project-only runbook；`knowledge:: --nocapture --test-threads=1` exit0、4/0/1显式Desktop项另跑、3.138秒；Desktop精确名加 `--ignored --exact --nocapture` exit0、1/0/0、3.723秒。不依靠默认忽略探针或只编译通过关闭本项。项目/全局/显式混合、空/缺失旧selector、7种未知或错误类型/动态值前置失败且零node事件、80条另scope候选饥饿、全局变化不影响project-only分数/revision、同project后改内容/activate另project不影响旧运行、新适配器取新revision、磁盘重开、空query/threshold/无backend、后端错误/取消前不dispatch均有真实默认回归；file SQLite live→durable→冷重开/cursor一致且唯一终态，不re-dispatch。
+
+前端在 `apps/desktop` 实际 `pnpm test:workflow` exit0、123/0、9.607秒测试；`pnpm run build --outDir T\desktop-dist` exit0、163.833秒，实际执行package完整prebundle/全部checks/tsc/Vite，未写回既有被拒绝清理dist；保留原第三方browser externalization与大chunk警告，未说零warning。Tauri实际 `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --target-dir T\tauri --offline -j 2` exit0、493.990秒，原桥接消费不变。完整启动真实用户Desktop未执行：避免访问用户配置/DB；替代的是实际生产SchemaConfigForm/CanvasSelect/shadcn及schema/registry的合成空stores页面、自建127.0.0.1:14761，所有非该loopback请求直接abort。CUA工具因assets path不存在未启动浏览器，未伪称成功；改用本机已装Playwright1.62.1及已缓存Chromium（不下载），执行 `node T\ui\accept.cjs T\ui` exit0：4个选项/切换global/旧缺字段mixed/旧空字符串/新建project均确认、pageerror0；查看生产表单截图global/legacy，原菜单动画瞬态截图不作为完整视觉证据。已按PID/命令行/创建时间核对停止本轮Vite及其esbuild子进程，不影响其他服务。
+
+**兼容与残余限制**：旧缺/空selector保持原mixed（Desktop导入时缺字段明确迁移mixed），新建默认project；未知selector不再静默混合，属有意收紧，任意base ID需显式迁移为本地支持的scope。scope/revision/document来源为新增输出，原documents/content保留，revision未配置后端时null；公开Rust trait/KnowledgeDocument源码调用需适配typed query/result，仓内全部同步。mixed不是跨项目检索或任意owner授权；服务绑定的既有当前项目/global可见性不扩张。运行快照一次clone成本与当前vault/index字节数线性，BM25按每次合格corpus计算统计；原chunk候选上限、同文档多chunk去重可能少于topK的既有限制未改变，未声称无限量规模性能。revision是逻辑active条目内容标识，非原始Markdown字节校验、唯一物理路径身份、秘密或resume凭证。durable replay复用原scope/provenance；未实现或验证跨进程继续执行旧workflow快照，不把新run重新采样叫resume。真实provider/凭据/内网、其他OS、Rust1.80实装编译、完整真实用户UI均未执行；MSRV依据现有声明和clippy检查，不虚报跨平台验收。
+
+193项本阶段验收、25历史跳过、8归并、3撤销；有效未关闭77（含H180授权跳过，实际后续76），本轮新增修复1/历史跳过0/归并撤销0。下一准备H174公开replace_messages的工具配对边界复核（未开始其生产修改），优先执行一致性而非挑容易项。本项行为验收剩余0，命名产物清理和白名单独立提交另列E04/E05；整体200–400有效小时仍为未逐项校准低置信历史粗估，机器编译/设备/依赖/环境及删除拒绝等待另计，不提供精确完工承诺，整体goal仍active。
+
+**E-H176-04（2026-11-08，命名产物清理与明确拒绝限制）**：E01～03原失败、最终命令/结果、生产/测试binary身份、源码freeze、UI证据和聚合JSON已写双文并保存在本轮工具聚合状态后，才执行清理。精确核对本轮根恰为 `C:\Users\32734\AppData\Local\Temp\h176-repair-20261108`，祖先及递归无reparse/越界/枚举错误，所有关联Cargo/rustc/rustdoc/Node/CLI/test活进程0，16份最终源码SHA256仍匹配；原五项用户untracked、源码/用户文档/其他h根不触碰。
+
+实际 `cargo clean --manifest-path apps/desktop/src-tauri/Cargo.toml --target-dir <本轮根>\tauri --offline --dry-run`→同命令去dry-run，均exit0，删除7,999文件、2,613,135,428逻辑字节，tauri根已不存在。随后 `cargo clean --target-dir <本轮根> --offline --dry-run` exit0（19,047文件、25,812,584,176逻辑字节）→去dry-run实际clean exit101，在 `fixture-tmp\.tmpLgOzdR\destination\child` 遇Windows拒绝访问（os error5）。**拒绝后立即停止删除**，不换工具、参数路线、改ACL、提权、改名搬移或重试；只读残余统计2,614文件、1,281,648,842逻辑字节、枚举错误0，任务根仍存在，明确记为清理阻塞，不假称清空。加上Tauri本轮共去除27,144,070,762逻辑字节；这是文件长度差，不冒称磁盘物理释放量。C余79,611,535,360、G余148,598,878,208字节为当时只读观测，不是净释放统计。
+
+未新建G盘h命名目录；Desktop完整build输出指向本轮C根并随上述clean处理，旧G/C拒绝路径及共享CLI按E03保留，不借新root绕过旧拒绝。该1,281,648,842字节残余需用户/环境处理权限后另行明确清理授权，小怪不自行降低删除边界。本项代码验收不依赖删除权限，H176保持E03本机验收，全部系统任务仍未完成。
 
 ### H-177：未知 `target_node_id` 被当作空工作流成功，重跑/恢复目标没有 admission 校验
 

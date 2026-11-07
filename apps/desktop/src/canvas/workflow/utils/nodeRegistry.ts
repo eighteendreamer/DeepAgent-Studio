@@ -204,10 +204,12 @@ register({
   outputs: [
     { name: "documents", type: "array", description: "检索到的文档列表" },
     { name: "content", type: "string", description: "合并后的文本内容" },
+    { name: "scope", type: "string", description: "实际知识范围" },
+    { name: "revision", type: "string", description: "知识快照修订标识；未配置后端时为空" },
   ],
   defaultData: () => ({
     label: "知识检索",
-    knowledgeBaseId: "",
+    knowledgeBaseId: "project",
     knowledgeTopK: 3,
     queryVariable: "",
     retrievalMode: "semantic",
@@ -584,6 +586,11 @@ export function normalizeProfessionalData(data: WorkflowNodeData, nodeType?: str
   const kind = data.kind ?? (nodeType?.startsWith("professional-") ? nodeType.slice(13) : undefined);
   if (!registry.has(kind as ProfessionalNodeKind)) return data;
   const defaults = createDefaultNodeData(kind as ProfessionalNodeKind);
+  // Migration is intentionally distinct from creation: old missing selectors
+  // meant both vaults, whereas new nodes start with least-scope project only.
+  if (kind === "knowledge-retrieval" && !Object.prototype.hasOwnProperty.call(data, "knowledgeBaseId")) {
+    defaults.knowledgeBaseId = "mixed";
+  }
   return { ...defaults, ...data, kind, status: data.status ?? defaults.status } as ProfessionalNodeData;
 }
 

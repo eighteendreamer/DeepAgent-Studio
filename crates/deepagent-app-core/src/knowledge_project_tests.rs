@@ -550,7 +550,15 @@ async fn delayed_background_and_workflow_adapters_keep_the_construction_project(
         .unwrap();
     assert!(fetched.iter().any(|hit| hit.block.contains("OWNER_ALPHA")));
     assert!(!fetched.iter().any(|hit| hit.block.contains("OWNER_BETA")));
-    let documents = workflow.search(query, 10).await.unwrap();
+    let documents = workflow
+        .search(deepagent_runtime::workflow::KnowledgeQuery {
+            query,
+            limit: 10,
+            scope: deepagent_runtime::workflow::KnowledgeScope::Mixed,
+        })
+        .await
+        .unwrap()
+        .documents;
     assert!(documents
         .iter()
         .any(|hit| hit.content.contains("OWNER_ALPHA")));
