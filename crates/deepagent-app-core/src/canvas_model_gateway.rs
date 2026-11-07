@@ -49,6 +49,9 @@ use deepagent_tools::{
 mod media_byte_limit;
 use media_byte_limit::{MediaByteLimit, MediaLimitKind};
 
+mod speech_output;
+use speech_output::{GatewayOutput, SpeechOutputPolicy, SpeechOutputTarget};
+
 /// Stable error codes surfaced to the UI, CLI and events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CanvasErrorCode {
@@ -684,6 +687,7 @@ pub struct CanvasModelGateway {
     public_http: Arc<PublicHttpClient>,
     video_download_limit: u64,
     image_output_limit: u64,
+    speech_output_policy: SpeechOutputPolicy,
 }
 
 #[derive(Debug, Clone)]
@@ -755,6 +759,8 @@ pub const DEFAULT_VIDEO_DOWNLOAD_LIMIT: u64 = 32 * 1024 * 1024;
 /// Local single generated-image limit, for both URLs and decoded inline data.
 /// Independent from user imports, input attachments and provider capabilities.
 pub const DEFAULT_IMAGE_OUTPUT_LIMIT: u64 = 32 * 1024 * 1024;
+/// Local per-synthesis audio output limit, independent from remote inputs.
+pub const DEFAULT_SPEECH_OUTPUT_LIMIT: u64 = 32 * 1024 * 1024;
 /// Finite room for the URL/metadata envelope around one requested image.
 const IMAGE_RESPONSE_ENVELOPE_BYTES: u64 = 1024 * 1024;
 /// Error bodies are diagnostic input, not model output. Keep their memory and
@@ -869,6 +875,7 @@ impl CanvasModelGateway {
             public_http: Arc::new(PublicHttpClient::default()),
             video_download_limit: DEFAULT_VIDEO_DOWNLOAD_LIMIT,
             image_output_limit: DEFAULT_IMAGE_OUTPUT_LIMIT,
+            speech_output_policy: SpeechOutputPolicy::default(),
         }
     }
 
@@ -888,6 +895,7 @@ impl CanvasModelGateway {
             public_http: self.public_http.clone(),
             video_download_limit: self.video_download_limit,
             image_output_limit: self.image_output_limit,
+            speech_output_policy: self.speech_output_policy.clone(),
         }))
     }
 
@@ -919,6 +927,26 @@ impl CanvasModelGateway {
     pub fn with_image_output_limit(mut self, max_bytes: u64) -> CoreResult<Self> {
         image_response_limit(max_bytes)?;
         self.image_output_limit = max_bytes;
+        Ok(self)
+    }
+
+    /// Set the default provider speech output limit before sharing the gateway.
+    pub fn with_speech_output_limit(mut self, max_bytes: u64) -> CoreResult<Self> {
+        self.speech_output_policy.set_default(max_bytes)?;
+        Ok(self)
+    }
+
+    /// Override speech bytes for one resolved provider/model, optionally a
+    /// format. Exact format wins over the model-wide override, then default.
+    pub fn with_speech_output_limit_for(
+        mut self,
+        provider_id: &str,
+        model_id: &str,
+        format: Option<&str>,
+        max_bytes: u64,
+    ) -> CoreResult<Self> {
+        self.speech_output_policy
+            .set_for(provider_id, model_id, format, max_bytes)?;
         Ok(self)
     }
 
@@ -1312,8 +1340,15 @@ impl CanvasModelGateway {
         model_id: &str,
         request: &CanvasModelRequest,
     ) -> CanvasResult<CanvasModelOutput> {
-        self.execute_on_observed(provider_id, model_id, request, None)
-            .await
+        self.execute_on_observed(
+            provider_id,
+            model_id,
+            request,
+            None,
+            SpeechOutputTarget::Bytes,
+        )
+        .await?
+        .into_model()
     }
 
     async fn execute_on_observed(
@@ -1322,7 +1357,8 @@ impl CanvasModelGateway {
         model_id: &str,
         request: &CanvasModelRequest,
         usage: Option<Arc<dyn CanvasUsageSink>>,
-    ) -> CanvasResult<CanvasModelOutput> {
+        target: SpeechOutputTarget,
+    ) -> CanvasResult<GatewayOutput> {
         let resolved = self
             .providers
             .resolve_model(provider_id, model_id)
@@ -1335,6 +1371,7 @@ impl CanvasModelGateway {
             request,
             usage.as_deref(),
             self.workspace_id.as_deref(),
+            target,
         )
         .await
     }
@@ -1346,7 +1383,9 @@ impl CanvasModelGateway {
         request: &CanvasModelRequest,
         workspace_id: Option<&str>,
     ) -> CanvasResult<CanvasModelOutput> {
-        self.execute_observed(request, workspace_id, None).await
+        self.execute_observed(request, workspace_id, None, SpeechOutputTarget::Bytes)
+            .await?
+            .into_model()
     }
 
     async fn execute_observed(
@@ -1354,7 +1393,8 @@ impl CanvasModelGateway {
         request: &CanvasModelRequest,
         workspace_id: Option<&str>,
         usage: Option<Arc<dyn CanvasUsageSink>>,
-    ) -> CanvasResult<CanvasModelOutput> {
+        target: SpeechOutputTarget,
+    ) -> CanvasResult<GatewayOutput> {
         let workspace_id = crate::canvas_scope::normalize_workspace_id(workspace_id)
             .map_err(|error| CanvasError::new(CanvasErrorCode::InvalidInput, error.to_string()))?;
         let workspace_id = workspace_id.as_deref();
@@ -1399,7 +1439,7 @@ impl CanvasModelGateway {
         let mut last_error = None;
         for candidate in candidates {
             match self
-                .call(&candidate, request, usage.as_deref(), workspace_id)
+                .call(&candidate, request, usage.as_deref(), workspace_id, target)
                 .await
             {
                 Ok(output) => return Ok(output),
@@ -1429,7 +1469,8 @@ impl CanvasModelGateway {
         request: &CanvasModelRequest,
         usage_sink: Option<&dyn CanvasUsageSink>,
         workspace_id: Option<&str>,
-    ) -> CanvasResult<CanvasModelOutput> {
+        target: SpeechOutputTarget,
+    ) -> CanvasResult<GatewayOutput> {
         let api_key = provider_api_key(candidate)?;
         let kind = request_kind(request.operation)?;
         let endpoint = endpoint_url(
@@ -1504,7 +1545,13 @@ impl CanvasModelGateway {
                 &String::from_utf8_lossy(&body?),
             ));
         }
-        // 语音合成回二进制，其余回 JSON，所以先按字节取再分流。
+        if kind == CanvasRequestKind::SpeechSynthesize {
+            return self
+                .consume_speech_response(resp, candidate, request, workspace_id, target)
+                .await;
+        }
+        // Image JSON has its own encoded envelope bound. Speech never enters
+        // this full-body JSON/materialization path.
         let bytes = if matches!(
             kind,
             CanvasRequestKind::ImageGenerate | CanvasRequestKind::ImageEdit
@@ -1512,7 +1559,7 @@ impl CanvasModelGateway {
             read_bounded_provider_body(
                 resp,
                 image_response_limit(self.image_output_limit)
-                    .map_err(to_canvas_image_size_error)?,
+                    .map_err(to_canvas_response_size_error)?,
                 VideoCancellation {
                     flag: None,
                     message: "image provider response read interrupted",
@@ -1534,22 +1581,6 @@ impl CanvasModelGateway {
         };
         let value = serde_json::from_slice::<Value>(&bytes);
         record_response_usage(candidate, kind, value.as_ref().ok(), usage_sink)?;
-        if kind == CanvasRequestKind::SpeechSynthesize {
-            if bytes.is_empty() {
-                return Err(CanvasError::new(
-                    CanvasErrorCode::ProviderFailure,
-                    "speech synthesis returned an empty body".to_string(),
-                ));
-            }
-            return Ok(CanvasModelOutput::Audio {
-                mime: sniff_audio_mime(&bytes)
-                    .or_else(|| request.audio.format.as_ref().map(|f| format!("audio/{f}")))
-                    .unwrap_or_else(|| "application/octet-stream".to_string()),
-                bytes: bytes.to_vec(),
-                provider_id: candidate.provider.id.clone(),
-                model_id: candidate.model.id.clone(),
-            });
-        }
         let value: Value = value.map_err(|e| {
             CanvasError::new(
                 CanvasErrorCode::ProviderFailure,
@@ -1562,7 +1593,9 @@ impl CanvasModelGateway {
         if let Some(err) = provider_error_message(&value) {
             return Err(CanvasError::new(CanvasErrorCode::ProviderFailure, err));
         }
-        parse_output(candidate, kind, &value, self.image_output_limit).await
+        parse_output(candidate, kind, &value, self.image_output_limit)
+            .await
+            .map(GatewayOutput::Model)
     }
 
     /// Send a small JSON control-plane request and return the parsed body.
@@ -1844,7 +1877,13 @@ impl CanvasModelGateway {
             timeout_ms: 30_000,
         };
         let result = self
-            .call(&resolved, &request, None, self.workspace_id.as_deref())
+            .call(
+                &resolved,
+                &request,
+                None,
+                self.workspace_id.as_deref(),
+                SpeechOutputTarget::Bytes,
+            )
             .await;
         let latency_ms = started.elapsed().as_millis() as u64;
         match result {
@@ -1882,6 +1921,12 @@ mod video_download_tests;
 
 #[cfg(test)]
 mod image_output_tests;
+
+#[cfg(test)]
+mod media_test_support;
+
+#[cfg(test)]
+mod speech_output_tests;
 
 // Media workflows retain the real AppCore/Kernel/provider consumers while
 // sharing the cfg(test)-only public DNS/local transport seam with the broker.
@@ -2553,7 +2598,7 @@ fn parse_embedding_vectors(value: &Value) -> CanvasResult<Vec<Vec<f32>>> {
         .ok_or_else(|| invalid("incomplete vector batch"))
 }
 
-fn to_canvas_image_size_error(error: deepagent_core::error::CoreError) -> CanvasError {
+fn to_canvas_response_size_error(error: deepagent_core::error::CoreError) -> CanvasError {
     CanvasError::new(CanvasErrorCode::ResponseBodyTooLarge, error.to_string())
 }
 
@@ -2597,7 +2642,7 @@ fn decode_provider_image(encoded: &str, max_bytes: u64) -> CanvasResult<Vec<u8>>
     let mut limit = MediaByteLimit::new(MediaLimitKind::Image, max_bytes);
     limit
         .check_declared(Some(estimated.saturating_sub(padding) as u64))
-        .map_err(to_canvas_image_size_error)?;
+        .map_err(to_canvas_response_size_error)?;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(encoded)
         .map_err(|error| {
@@ -2608,7 +2653,7 @@ fn decode_provider_image(encoded: &str, max_bytes: u64) -> CanvasResult<Vec<u8>>
         })?;
     limit
         .accept(bytes.len())
-        .map_err(to_canvas_image_size_error)?;
+        .map_err(to_canvas_response_size_error)?;
     Ok(bytes)
 }
 
@@ -3285,15 +3330,26 @@ impl CanvasModelGateway {
         validate_request(&model_request).map_err(to_core_error)?;
         let output = match parse_model_ref(&request.model_ref)? {
             Some((provider_id, model_id)) => self
-                .execute_on_observed(provider_id, model_id, &model_request, usage_sink)
+                .execute_on_observed(
+                    provider_id,
+                    model_id,
+                    &model_request,
+                    usage_sink,
+                    SpeechOutputTarget::Bytes,
+                )
                 .await
                 .map_err(to_core_error)?,
             None => self
-                .execute_observed(&model_request, self.workspace_id.as_deref(), usage_sink)
+                .execute_observed(
+                    &model_request,
+                    self.workspace_id.as_deref(),
+                    usage_sink,
+                    SpeechOutputTarget::Bytes,
+                )
                 .await
                 .map_err(to_core_error)?,
         };
-        match output {
+        match output.into_model().map_err(to_core_error)? {
             CanvasModelOutput::Text {
                 text,
                 reasoning,
@@ -3638,50 +3694,44 @@ impl CanvasModelBridge for CanvasModelGateway {
             },
         };
         validate_request(&model_request).map_err(to_core_error)?;
+        let target = if operation == CanvasOperation::SpeechSynthesize {
+            SpeechOutputTarget::Artifact
+        } else {
+            SpeechOutputTarget::Bytes
+        };
         let output = match parse_model_ref(&request.model_ref)? {
             Some((provider_id, model_id)) => self
-                .execute_on(provider_id, model_id, &model_request)
+                .execute_on_observed(provider_id, model_id, &model_request, None, target)
                 .await
                 .map_err(to_core_error)?,
             None => self
-                .execute(&model_request, self.workspace_id.as_deref())
+                .execute_observed(&model_request, self.workspace_id.as_deref(), None, target)
                 .await
                 .map_err(to_core_error)?,
         };
         match (operation, output) {
             (
                 CanvasOperation::SpeechSynthesize,
-                CanvasModelOutput::Audio {
-                    mime,
-                    bytes,
+                GatewayOutput::SpeechArtifact {
+                    stored,
                     provider_id,
                     model_id,
                 },
-            ) => {
-                let stored = self
-                    .artifact_store("store a synthesized voice")?
-                    .import_bytes(
-                        deepagent_persistence::artifact_store::ArtifactKind::Audio,
-                        Some(&mime),
-                        &bytes,
-                        self.workspace_id.as_deref(),
-                    )?;
-                Ok(CanvasAudioResponse {
-                    operation: "speech_synthesize".to_string(),
-                    audio_url: Some(stored.uri),
-                    text: None,
-                    provider_id,
-                    model_id,
-                })
-            }
+            ) => Ok(CanvasAudioResponse {
+                operation: "speech_synthesize".to_string(),
+                audio_url: Some(stored.uri),
+                text: None,
+                provider_id,
+                model_id,
+            }),
             (
                 CanvasOperation::SpeechTranscribe,
-                CanvasModelOutput::Text {
+                GatewayOutput::Model(CanvasModelOutput::Text {
                     text,
                     provider_id,
                     model_id,
                     ..
-                },
+                }),
             ) => Ok(CanvasAudioResponse {
                 operation: "speech_transcribe".to_string(),
                 audio_url: None,
@@ -3846,15 +3896,26 @@ impl CanvasModelGateway {
         };
         let output = match parse_model_ref(&request.model_ref)? {
             Some((provider_id, model_id)) => self
-                .execute_on_observed(provider_id, model_id, &model_request, usage_sink)
+                .execute_on_observed(
+                    provider_id,
+                    model_id,
+                    &model_request,
+                    usage_sink,
+                    SpeechOutputTarget::Bytes,
+                )
                 .await
                 .map_err(to_core_error)?,
             None => self
-                .execute_observed(&model_request, self.workspace_id.as_deref(), usage_sink)
+                .execute_observed(
+                    &model_request,
+                    self.workspace_id.as_deref(),
+                    usage_sink,
+                    SpeechOutputTarget::Bytes,
+                )
                 .await
                 .map_err(to_core_error)?,
         };
-        match output {
+        match output.into_model().map_err(to_core_error)? {
             CanvasModelOutput::Embedding {
                 vectors,
                 dimensions,
@@ -4246,7 +4307,7 @@ mod tests {
         }
     }
 
-    fn video_candidate() -> ResolvedCanvasModel {
+    pub(super) fn video_candidate() -> ResolvedCanvasModel {
         ResolvedCanvasModel {
             provider: crate::canvas_provider_service::CanvasProviderConfig {
                 id: "provider-1".to_string(),
@@ -6260,95 +6321,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&artifact_root);
     }
 
-    #[test]
-    #[ignore = "audit reproducer: speech synthesis output must obey an artifact byte budget"]
-    fn audit_speech_synthesis_output_rejects_oversized_artifact() {
-        use std::io::{Read, Write};
-        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = listener.local_addr().expect("addr").port();
-        let configured_input_limit = 32 * 1024 * 1024usize;
-        let audio = {
-            let mut bytes = Vec::with_capacity(configured_input_limit + 1);
-            bytes.extend_from_slice(b"ID3\x03\x00");
-            bytes.resize(configured_input_limit + 1, 0x41);
-            bytes
-        };
-        let response_audio = audio.clone();
-        std::thread::spawn(move || {
-            if let Some(Ok(mut stream)) = listener.incoming().next() {
-                let mut request = [0u8; 4096];
-                let _ = stream.read(&mut request);
-                let head = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    response_audio.len()
-                );
-                let _ = stream.write_all(head.as_bytes());
-                let _ = stream.write_all(&response_audio);
-                let _ = stream.flush();
-            }
-        });
-
-        let db = Arc::new(Database::open_in_memory().expect("db"));
-        let artifact_root = std::env::temp_dir().join(format!(
-            "deepagent-gateway-audio-limit-{}",
-            std::process::id()
-        ));
-        let artifacts = Arc::new(
-            crate::canvas_artifact_service::CanvasArtifactService::new(&artifact_root, db.clone())
-                .expect("artifact service"),
-        );
-        let providers = Arc::new(CanvasProviderService::new(
-            db,
-            Arc::new(crate::secret_store::MemorySecretStore::default()),
-        ));
-        let created = providers
-            .save_provider(CanvasProviderInput {
-                name: "Local".to_string(),
-                protocol: "openai".to_string(),
-                base_url: format!("http://127.0.0.1:{port}/v1"),
-                enabled: true,
-                models: vec![CanvasModelConfig {
-                    id: "local-voice".to_string(),
-                    name: "local-voice".to_string(),
-                    description: String::new(),
-                    enabled: true,
-                    scenarios: vec![CanvasScenario::TextToSpeech],
-                    priority: 0,
-                    max_reference_images: None,
-                }],
-                api_key: Some("sk-local".to_string()),
-                ..Default::default()
-            })
-            .expect("provider");
-        let gateway = CanvasModelGateway::new(providers).with_artifacts(artifacts.clone());
-        let spoken = rt
-            .block_on(gateway.run_audio(CanvasAudioRequest {
-                model_ref: format!("{}::local-voice", created.id),
-                operation: "speech_synthesize".to_string(),
-                text: "audit".to_string(),
-                audio_reference: None,
-                voice: None,
-                format: Some("mp3".to_string()),
-                timeout_ms: 5_000,
-            }))
-            .expect("current implementation accepts the oversized response");
-        let uri = spoken.audio_url.expect("artifact reference");
-        let id = uri.trim_start_matches("artifact://");
-        let artifact = artifacts
-            .read_bytes(id, None)
-            .expect("read")
-            .expect("bytes");
-        eprintln!(
-            "speech output audit: configured_input_limit={configured_input_limit}, response_bytes={}, artifact_bytes={}",
-            audio.len(),
-            artifact.len()
-        );
-        assert!(
-            artifact.len() <= configured_input_limit,
-            "speech synthesis output exceeded the configured comparable media budget"
-        );
-        let _ = std::fs::remove_dir_all(&artifact_root);
+    #[tokio::test]
+    async fn audit_speech_synthesis_output_rejects_oversized_artifact() {
+        super::speech_output_tests::assert_original_oversized_response_refused().await;
     }
 
     #[tokio::test]

@@ -4,128 +4,13 @@ use crate::canvas_artifact_service::CanvasArtifactService;
 use crate::canvas_provider_service::CanvasProviderInput;
 use crate::MemorySecretStore;
 use deepagent_persistence::Database;
-use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::atomic::AtomicUsize;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
-use tokio::sync::Notify;
 
 // Proposed local output policy, not an input-attachment or provider standard.
 const IMAGE_LIMIT: usize = 32 * 1024 * 1024;
 const PRIVATE_MARKER: &str = "H167_SYNTHETIC_PRIVATE_BODY";
 
-#[derive(Clone, Copy)]
-enum Framing {
-    Length(usize),
-    Chunked,
-    Close,
-}
-
-struct ImageWire {
-    address: SocketAddr,
-    sent: Arc<Notify>,
-    closed: Arc<Notify>,
-    requests: Arc<AtomicUsize>,
-    task: tokio::task::JoinHandle<()>,
-}
-
-impl ImageWire {
-    async fn start(body: Vec<u8>, framing: Framing, json_body: bool, stall: bool) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let sent = Arc::new(Notify::new());
-        let closed = Arc::new(Notify::new());
-        let requests = Arc::new(AtomicUsize::new(0));
-        let (ready, disconnected, count) = (sent.clone(), closed.clone(), requests.clone());
-        let task = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request = Vec::new();
-            let mut buffer = [0; 1024];
-            loop {
-                let n = socket.read(&mut buffer).await.unwrap();
-                assert_ne!(n, 0);
-                request.extend_from_slice(&buffer[..n]);
-                assert!(request.len() <= 65536);
-                if let Some(end) = request.windows(4).position(|s| s == b"\r\n\r\n") {
-                    let header = String::from_utf8_lossy(&request[..end]);
-                    let length = header
-                        .lines()
-                        .find_map(|line| {
-                            let (key, value) = line.split_once(':')?;
-                            key.eq_ignore_ascii_case("content-length")
-                                .then(|| value.trim().parse::<usize>().unwrap())
-                        })
-                        .unwrap_or(0);
-                    if request.len() >= end + 4 + length {
-                        break;
-                    }
-                }
-            }
-            count.fetch_add(1, Ordering::SeqCst);
-            let headers = match framing {
-                Framing::Length(n) => format!("Content-Length: {n}\r\n"),
-                Framing::Chunked => "Transfer-Encoding: chunked\r\n".into(),
-                Framing::Close => String::new(),
-            };
-            let mime = if json_body {
-                "application/json"
-            } else {
-                "image/png"
-            };
-            let _ = socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\n{headers}Connection: close\r\n\r\n").as_bytes()).await;
-            let write = async {
-                for chunk in body.chunks(16 * 1024) {
-                    if matches!(framing, Framing::Chunked) {
-                        socket
-                            .write_all(format!("{:x}\r\n", chunk.len()).as_bytes())
-                            .await?;
-                    }
-                    socket.write_all(chunk).await?;
-                    if matches!(framing, Framing::Chunked) {
-                        socket.write_all(b"\r\n").await?;
-                    }
-                }
-                ready.notify_one();
-                if stall {
-                    let _ = socket.read(&mut buffer).await;
-                } else if matches!(framing, Framing::Chunked) {
-                    socket.write_all(b"0\r\n\r\n").await?;
-                }
-                Ok::<(), std::io::Error>(())
-            }
-            .await;
-            let _ = write; // Early peer refusal may end a fixture write.
-            disconnected.notify_one();
-        });
-        Self {
-            address,
-            sent,
-            closed,
-            requests,
-            task,
-        }
-    }
-
-    fn url(&self) -> String {
-        format!(
-            "http://public.fixture.invalid:{}/image.png?signature=synthetic-h167",
-            self.address.port()
-        )
-    }
-
-    async fn close(&mut self) {
-        self.task.abort();
-        let result = (&mut self.task).await;
-        assert!(result.is_ok() || result.unwrap_err().is_cancelled());
-    }
-}
-
-impl Drop for ImageWire {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
+use super::media_test_support::{Framing, MediaWire as ImageWire};
 
 fn image_bytes(size: usize) -> Vec<u8> {
     let mut body = vec![b'I'; size];

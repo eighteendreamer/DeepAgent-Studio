@@ -170,6 +170,7 @@ async fn h304_small_errors_keep_status_classification_and_unicode_summary() {
                 &CanvasModelRequest::text("synthetic"),
                 None,
                 None,
+                SpeechOutputTarget::Bytes,
             )
             .await
             .unwrap_err();
@@ -192,6 +193,7 @@ async fn h304_exact_limit_and_chunked_overflow_are_distinguished() {
             &CanvasModelRequest::text("synthetic"),
             None,
             None,
+            SpeechOutputTarget::Bytes,
         )
         .await
         .unwrap_err();
@@ -210,6 +212,7 @@ async fn h304_exact_limit_and_chunked_overflow_are_distinguished() {
             &CanvasModelRequest::text("synthetic"),
             None,
             None,
+            SpeechOutputTarget::Bytes,
         )
         .await
         .unwrap_err();
@@ -273,7 +276,7 @@ async fn h304_all_shared_entry_points_reject_declared_overflow_without_reading_b
                 request.texts = vec!["synthetic".into()];
                 (
                     gateway
-                        .call(&candidate, &request, None, None)
+                        .call(&candidate, &request, None, None, SpeechOutputTarget::Bytes)
                         .await
                         .map(|_| ()),
                     path,
@@ -310,7 +313,13 @@ async fn h304_each_physical_error_response_reports_usage_or_unknown_once() {
             let mut request = CanvasModelRequest::text("synthetic").with_operation(operation);
             request.texts = vec!["synthetic".into()];
             let error = gateway
-                .call(&candidate, &request, Some(&sink), None)
+                .call(
+                    &candidate,
+                    &request,
+                    Some(&sink),
+                    None,
+                    SpeechOutputTarget::Bytes,
+                )
                 .await
                 .unwrap_err();
             if case == "truncated" {
@@ -393,6 +402,7 @@ async fn h304_overflow_does_not_fallback_but_small_transient_errors_still_do() {
                 &CanvasModelRequest::text("synthetic"),
                 None,
                 Some(sink.clone()),
+                SpeechOutputTarget::Bytes,
             )
             .await;
         assert_eq!(first.paths.lock().unwrap().len(), 1);
@@ -400,7 +410,7 @@ async fn h304_overflow_does_not_fallback_but_small_transient_errors_still_do() {
         assert_eq!(sink.0.lock().unwrap().len(), if fallback { 2 } else { 1 });
         if fallback {
             assert!(
-                matches!(result.unwrap(), CanvasModelOutput::Text { provider_id, text, .. }
+                matches!(result.unwrap().into_model().unwrap(), CanvasModelOutput::Text { provider_id, text, .. }
                 if provider_id == healthy.id && text == "answer")
             );
         } else {

@@ -3250,22 +3250,32 @@ fn assert_failed_image_and_reopen(
     run_id: &str,
     result: deepagent_core::error::Result<String>,
 ) {
+    assert_failed_media_and_reopen(fixture, run_id, result, "image", "ImageArtifactTooLarge");
+}
+
+fn assert_failed_media_and_reopen(
+    fixture: MediaFixture,
+    run_id: &str,
+    result: deepagent_core::error::Result<String>,
+    node_id: &str,
+    error_code: &str,
+) {
     let error = result.unwrap_err().to_string();
-    assert!(error.contains("ImageArtifactTooLarge"), "{error}");
+    assert!(error.contains(error_code), "{error}");
     assert!(
         !error.contains("budget"),
-        "image limit must settle as failed"
+        "media limit must settle as failed"
     );
     let live = fixture.live.lock().unwrap().clone();
     assert_eq!(
         live.iter()
-            .filter(|event| event.node_id == "image" && event.status == NodeExecutionStatus::Failed)
+            .filter(|event| event.node_id == node_id && event.status == NodeExecutionStatus::Failed)
             .count(),
         1
     );
     assert!(live
         .iter()
-        .filter(|event| event.node_id == "image")
+        .filter(|event| event.node_id == node_id)
         .all(|event| event.status != NodeExecutionStatus::Completed
             && event.outputs.is_none()
             && event.artifacts.is_empty()));
@@ -3312,6 +3322,25 @@ fn assert_failed_image_and_reopen(
             .unwrap()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn h248_speech_limit_fails_once_without_output_and_replays_after_reopen() {
+    use super::media_test_support::{Framing, MediaWire};
+    let limit = super::DEFAULT_SPEECH_OUTPUT_LIMIT as usize;
+    for framing in [Framing::Length(limit + 1), Framing::Chunked, Framing::Close] {
+        let mut bytes = vec![b'A'; limit + 1];
+        bytes[..3].copy_from_slice(b"ID3");
+        let mut wire = MediaWire::media(bytes, framing, "audio/mpeg", true).await;
+        let fixture = MediaFixture::new_audio_at(&format!("http://{}/v1", wire.address)).await;
+        let run_id = "h248-speech-capacity";
+        let mut run = fixture.spawn(run_id);
+        let result = finish_run(&mut run).await;
+        wire.close().await;
+        assert_eq!(wire.requests.load(Ordering::SeqCst), 1);
+        assert_eq!(fixture.approvals.load(Ordering::SeqCst), 0);
+        assert_failed_media_and_reopen(fixture, run_id, result, "audio", "SpeechArtifactTooLarge");
+    }
 }
 
 #[tokio::test]

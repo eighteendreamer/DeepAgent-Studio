@@ -6,6 +6,7 @@ pub(super) enum MediaLimitKind {
     Image,
     Video,
     AudioInput,
+    SpeechOutput,
 }
 
 impl MediaLimitKind {
@@ -14,6 +15,7 @@ impl MediaLimitKind {
             Self::Image => "ImageArtifactTooLarge",
             Self::Video => "VideoArtifactTooLarge",
             Self::AudioInput => "RemoteAudioTooLarge",
+            Self::SpeechOutput => "SpeechArtifactTooLarge",
         }
     }
 }
@@ -71,6 +73,10 @@ impl MediaByteLimit {
                     "VideoArtifactTooLarge: provider video exceeds the {}-byte download limit",
                     self.max_bytes
                 ),
+                MediaLimitKind::SpeechOutput => format!(
+                    "SpeechArtifactTooLarge: provider speech exceeds the {}-byte output limit",
+                    self.max_bytes
+                ),
                 // Preserve the existing remote-audio-input contract, not the
                 // independent provider speech-synthesis output policy.
                 MediaLimitKind::AudioInput => {
@@ -93,6 +99,7 @@ mod tests {
             MediaLimitKind::Image,
             MediaLimitKind::Video,
             MediaLimitKind::AudioInput,
+            MediaLimitKind::SpeechOutput,
         ] {
             let mut limit = MediaByteLimit::new(kind, 64);
             limit.check_declared(None).unwrap();
