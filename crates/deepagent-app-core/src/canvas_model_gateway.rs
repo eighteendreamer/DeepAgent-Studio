@@ -46,8 +46,8 @@ use deepagent_tools::{
     Permission, PermissionSet, RiskLevel, Tool, ToolDescriptor, ToolExecutionContext, ToolOutput,
 };
 
-mod video_download_limit;
-use video_download_limit::VideoDownloadLimit;
+mod media_byte_limit;
+use media_byte_limit::{MediaByteLimit, MediaLimitKind};
 
 /// Stable error codes surfaced to the UI, CLI and events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -683,6 +683,7 @@ pub struct CanvasModelGateway {
     pending_artifacts: Arc<Mutex<HashMap<String, PendingArtifact>>>,
     public_http: Arc<PublicHttpClient>,
     video_download_limit: u64,
+    image_output_limit: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -751,6 +752,11 @@ const MAX_REMOTE_AUDIO_BYTES: usize = 32 * 1024 * 1024;
 /// Local default for a provider-generated video, independent of user imports
 /// and provider capabilities. Trusted Rust hosts can configure a different limit.
 pub const DEFAULT_VIDEO_DOWNLOAD_LIMIT: u64 = 32 * 1024 * 1024;
+/// Local single generated-image limit, for both URLs and decoded inline data.
+/// Independent from user imports, input attachments and provider capabilities.
+pub const DEFAULT_IMAGE_OUTPUT_LIMIT: u64 = 32 * 1024 * 1024;
+/// Finite room for the URL/metadata envelope around one requested image.
+const IMAGE_RESPONSE_ENVELOPE_BYTES: u64 = 1024 * 1024;
 /// Error bodies are diagnostic input, not model output. Keep their memory and
 /// provider-send budget independent from successful media payload limits.
 const MAX_PROVIDER_ERROR_BODY_BYTES: usize = 64 * 1024;
@@ -862,6 +868,7 @@ impl CanvasModelGateway {
             pending_artifacts: Arc::new(Mutex::new(HashMap::new())),
             public_http: Arc::new(PublicHttpClient::default()),
             video_download_limit: DEFAULT_VIDEO_DOWNLOAD_LIMIT,
+            image_output_limit: DEFAULT_IMAGE_OUTPUT_LIMIT,
         }
     }
 
@@ -880,6 +887,7 @@ impl CanvasModelGateway {
             pending_artifacts: Arc::new(Mutex::new(HashMap::new())),
             public_http: self.public_http.clone(),
             video_download_limit: self.video_download_limit,
+            image_output_limit: self.image_output_limit,
         }))
     }
 
@@ -902,6 +910,15 @@ impl CanvasModelGateway {
             ));
         }
         self.video_download_limit = max_bytes;
+        Ok(self)
+    }
+
+    /// Set the provider-image raw byte limit before sharing the gateway.
+    /// Both URL downloads and inline data use it; local imports are unaffected.
+    /// The derived base64/JSON bound must also fit the host address space.
+    pub fn with_image_output_limit(mut self, max_bytes: u64) -> CoreResult<Self> {
+        image_response_limit(max_bytes)?;
+        self.image_output_limit = max_bytes;
         Ok(self)
     }
 
@@ -1048,21 +1065,19 @@ impl CanvasModelGateway {
             )));
         }
         let kind = pending.output.kind();
-        let mut video_limit = (kind == ArtifactFetchKind::Video)
-            .then(|| VideoDownloadLimit::new(self.video_download_limit));
-        if let Some(limit) = &video_limit {
-            limit.check_declared(response.content_length())?;
-        }
+        let mut limit = match kind {
+            ArtifactFetchKind::Image => {
+                MediaByteLimit::new(MediaLimitKind::Image, self.image_output_limit)
+            }
+            ArtifactFetchKind::Video => {
+                MediaByteLimit::new(MediaLimitKind::Video, self.video_download_limit)
+            }
+            ArtifactFetchKind::AudioInput => {
+                MediaByteLimit::new(MediaLimitKind::AudioInput, MAX_REMOTE_AUDIO_BYTES as u64)
+            }
+        };
+        limit.check_declared(response.content_length())?;
         let audio = kind == ArtifactFetchKind::AudioInput;
-        if audio
-            && response
-                .content_length()
-                .is_some_and(|size| size > MAX_REMOTE_AUDIO_BYTES as u64)
-        {
-            return Err(CoreError::invalid(
-                "remote audio exceeds the 32 MiB download budget",
-            ));
-        }
         let mut prefix = Vec::new();
         // Resolve remote audio from actual bytes, not a filename or untrusted
         // Content-Type. At most the first transport chunks are buffered.
@@ -1074,11 +1089,7 @@ impl CanvasModelGateway {
                 else {
                     break;
                 };
-                if chunk.len() > MAX_REMOTE_AUDIO_BYTES - prefix.len() {
-                    return Err(CoreError::invalid(
-                        "remote audio exceeds the 32 MiB download budget",
-                    ));
-                }
+                limit.accept(chunk.len())?;
                 prefix.extend_from_slice(&chunk);
             }
         }
@@ -1115,21 +1126,10 @@ impl CanvasModelGateway {
                 self.workspace_id.as_deref(),
             )?;
         stream.write_chunk(&prefix)?;
-        let mut size = prefix.len();
         while let Some(chunk) = response.chunk().await.map_err(|error| {
             CoreError::other(format!("read media artifact: {}", error.without_url()))
         })? {
-            if let Some(limit) = &mut video_limit {
-                limit.accept(chunk.len())?;
-            }
-            if audio && chunk.len() > MAX_REMOTE_AUDIO_BYTES - size {
-                return Err(CoreError::invalid(
-                    "remote audio exceeds the 32 MiB download budget",
-                ));
-            }
-            if audio {
-                size += chunk.len();
-            }
+            limit.accept(chunk.len())?;
             stream.write_chunk(&chunk)?;
         }
         // Let the enclosing cancellation/deadline guard observe readiness before publication.
@@ -1505,15 +1505,33 @@ impl CanvasModelGateway {
             ));
         }
         // 语音合成回二进制，其余回 JSON，所以先按字节取再分流。
-        let bytes = resp.bytes().await.map_err(|e| {
-            CanvasError::new(
-                CanvasErrorCode::TransientFailure,
-                format!(
-                    "reading {} response: {e}",
-                    candidate.provider.protocol.as_str()
-                ),
+        let bytes = if matches!(
+            kind,
+            CanvasRequestKind::ImageGenerate | CanvasRequestKind::ImageEdit
+        ) {
+            read_bounded_provider_body(
+                resp,
+                image_response_limit(self.image_output_limit)
+                    .map_err(to_canvas_image_size_error)?,
+                VideoCancellation {
+                    flag: None,
+                    message: "image provider response read interrupted",
+                },
+                "provider image response",
             )
-        })?;
+            .await?
+            .into()
+        } else {
+            resp.bytes().await.map_err(|e| {
+                CanvasError::new(
+                    CanvasErrorCode::TransientFailure,
+                    format!(
+                        "reading {} response: {e}",
+                        candidate.provider.protocol.as_str()
+                    ),
+                )
+            })?
+        };
         let value = serde_json::from_slice::<Value>(&bytes);
         record_response_usage(candidate, kind, value.as_ref().ok(), usage_sink)?;
         if kind == CanvasRequestKind::SpeechSynthesize {
@@ -1544,7 +1562,7 @@ impl CanvasModelGateway {
         if let Some(err) = provider_error_message(&value) {
             return Err(CanvasError::new(CanvasErrorCode::ProviderFailure, err));
         }
-        parse_output(candidate, kind, &value).await
+        parse_output(candidate, kind, &value, self.image_output_limit).await
     }
 
     /// Send a small JSON control-plane request and return the parsed body.
@@ -1861,6 +1879,9 @@ mod error_body_tests;
 #[cfg(test)]
 #[path = "canvas_model_gateway/video_download_tests.rs"]
 mod video_download_tests;
+
+#[cfg(test)]
+mod image_output_tests;
 
 // Media workflows retain the real AppCore/Kernel/provider consumers while
 // sharing the cfg(test)-only public DNS/local transport seam with the broker.
@@ -2532,10 +2553,70 @@ fn parse_embedding_vectors(value: &Value) -> CanvasResult<Vec<Vec<f32>>> {
         .ok_or_else(|| invalid("incomplete vector batch"))
 }
 
+fn to_canvas_image_size_error(error: deepagent_core::error::CoreError) -> CanvasError {
+    CanvasError::new(CanvasErrorCode::ResponseBodyTooLarge, error.to_string())
+}
+
+fn image_response_limit(max_bytes: u64) -> CoreResult<usize> {
+    let limit = max_bytes
+        .checked_add(2)
+        .map(|size| size / 3)
+        .and_then(|size| size.checked_mul(4))
+        .and_then(|size| size.checked_add(IMAGE_RESPONSE_ENVELOPE_BYTES));
+    if max_bytes == 0 || max_bytes > i64::MAX as u64 {
+        return Err(deepagent_core::error::CoreError::invalid(
+            "image output limit must be positive and fit the artifact index",
+        ));
+    }
+    limit
+        .and_then(|size| usize::try_from(size).ok())
+        .ok_or_else(|| {
+            deepagent_core::error::CoreError::invalid(
+                "image response envelope limit cannot fit host memory addressing",
+            )
+        })
+}
+
+fn decode_provider_image(encoded: &str, max_bytes: u64) -> CanvasResult<Vec<u8>> {
+    let encoded = encoded.trim();
+    // STANDARD base64 has four encoded bytes per three raw bytes. Padding is
+    // included in the estimate so an exact valid image is not refused.
+    let estimated = encoded.len().div_ceil(4).checked_mul(3).ok_or_else(|| {
+        CanvasError::new(
+            CanvasErrorCode::ResponseBodyTooLarge,
+            "ImageArtifactTooLarge: base64 length overflow",
+        )
+    })?;
+    let padding = encoded
+        .as_bytes()
+        .iter()
+        .rev()
+        .take_while(|byte| **byte == b'=')
+        .take(2)
+        .count();
+    let mut limit = MediaByteLimit::new(MediaLimitKind::Image, max_bytes);
+    limit
+        .check_declared(Some(estimated.saturating_sub(padding) as u64))
+        .map_err(to_canvas_image_size_error)?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|error| {
+            CanvasError::new(
+                CanvasErrorCode::ProviderFailure,
+                format!("image payload is not valid base64: {error}"),
+            )
+        })?;
+    limit
+        .accept(bytes.len())
+        .map_err(to_canvas_image_size_error)?;
+    Ok(bytes)
+}
+
 async fn parse_output(
     candidate: &ResolvedCanvasModel,
     kind: CanvasRequestKind,
     value: &Value,
+    image_output_limit: u64,
 ) -> CanvasResult<CanvasModelOutput> {
     let provider_id = candidate.provider.id.clone();
     let model_id = candidate.model.id.clone();
@@ -2576,7 +2657,6 @@ async fn parse_output(
                 .get("data")
                 .and_then(Value::as_array)
                 .and_then(|items| items.first())
-                .cloned()
                 .or_else(|| {
                     // Gemini returns images inline in the content parts.
                     value
@@ -2588,9 +2668,7 @@ async fn parse_output(
                         .and_then(Value::as_array)
                         .and_then(|parts| {
                             parts.iter().find_map(|part| {
-                                part.get("inlineData")
-                                    .or_else(|| part.get("inline_data"))
-                                    .cloned()
+                                part.get("inlineData").or_else(|| part.get("inline_data"))
                             })
                         })
                 })
@@ -2606,14 +2684,7 @@ async fn parse_output(
                 .and_then(Value::as_str)
                 .filter(|value| !value.trim().is_empty());
             if let Some(b64) = inline {
-                let bytes = base64::engine::general_purpose::STANDARD
-                    .decode(b64.trim())
-                    .map_err(|e| {
-                        CanvasError::new(
-                            CanvasErrorCode::ProviderFailure,
-                            format!("image payload is not valid base64: {e}"),
-                        )
-                    })?;
+                let bytes = decode_provider_image(b64, image_output_limit)?;
                 return Ok(CanvasModelOutput::Image {
                     mime: sniff_image_mime(&bytes).unwrap_or_else(|| "image/png".to_string()),
                     bytes,
@@ -2730,7 +2801,9 @@ async fn read_bounded_provider_body(
             {
                 return Err(too_large());
             }
-            let mut body = Vec::with_capacity(limit);
+            // A URL response is usually tiny even when the inline image limit
+            // is large. Grow from actual chunks, not the full configured cap.
+            let mut body = Vec::new();
             while let Some(chunk) = response.chunk().await.map_err(|error| {
                 CanvasError::new(
                     CanvasErrorCode::TransientFailure,
@@ -2789,7 +2862,7 @@ async fn fetch_video_artifact(
             "video artifact download failed",
         ));
     }
-    let mut limit = VideoDownloadLimit::new(max_bytes);
+    let mut limit = MediaByteLimit::new(MediaLimitKind::Video, max_bytes);
     limit
         .check_declared(response.content_length())
         .map_err(|error| {
@@ -4873,6 +4946,7 @@ mod tests {
             &resolved,
             CanvasRequestKind::ImageGenerate,
             &payload,
+            DEFAULT_IMAGE_OUTPUT_LIMIT,
         ))
         .expect_err("empty b64 and empty url must not produce an image");
         assert!(error.message.contains("b64_json"));
@@ -4927,6 +5001,7 @@ mod tests {
             &resolved,
             CanvasRequestKind::Embeddings,
             &payload,
+            DEFAULT_IMAGE_OUTPUT_LIMIT,
         ))
         .expect("vector");
         match out {
@@ -4948,6 +5023,7 @@ mod tests {
             &resolved,
             CanvasRequestKind::ImageGenerate,
             &image_payload,
+            DEFAULT_IMAGE_OUTPUT_LIMIT,
         ))
         .expect("image");
         match out {

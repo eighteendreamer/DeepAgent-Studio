@@ -367,42 +367,73 @@ impl LocalImageProvider {
     }
 
     async fn start_with_image_bytes(image_bytes: Vec<u8>) -> Self {
+        Self::start_image_response(image_bytes, false).await
+    }
+
+    async fn start_with_approved_image_bytes(image_bytes: Vec<u8>) -> Self {
+        Self::start_image_response(image_bytes, true).await
+    }
+
+    async fn start_image_response(image_bytes: Vec<u8>, approved_download: bool) -> Self {
+        let image_bytes = Arc::new(image_bytes);
         let private_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let private_address = private_listener.local_addr().unwrap();
         let private_requests = Arc::new(Mutex::new(Vec::new()));
         let private_captured = private_requests.clone();
+        let private_bytes = image_bytes.clone();
         let private_server = tokio::spawn(async move {
             let (mut socket, _) = private_listener.accept().await.unwrap();
             let (line, _) = read_request(&mut socket).await;
             private_captured.lock().unwrap().push(line);
             let header = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                image_bytes.len()
+                private_bytes.len()
             );
             socket.write_all(header.as_bytes()).await.unwrap();
-            socket.write_all(&image_bytes).await.unwrap();
+            socket.write_all(&private_bytes).await.unwrap();
         });
 
         let provider_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let provider_address = provider_listener.local_addr().unwrap();
         let provider_requests = Arc::new(Mutex::new(Vec::new()));
         let provider_captured = provider_requests.clone();
+        let download_captured = private_requests.clone();
         let provider_server = tokio::spawn(async move {
-            let (mut socket, _) = provider_listener.accept().await.unwrap();
-            let (line, body) = read_request(&mut socket).await;
-            provider_captured.lock().unwrap().push((line, body));
-            let payload = json!({
-                "data": [{
-                    "url": format!("http://{private_address}/host-private.png")
-                }]
-            })
-            .to_string();
-            let header = format!(
+            // The approved branch uses the existing cfg(test)-only public DNS
+            // seam. The private branch remains the H165 negative control.
+            for _ in 0..if approved_download { 2 } else { 1 } {
+                let (mut socket, _) = provider_listener.accept().await.unwrap();
+                let (line, body) = read_request(&mut socket).await;
+                if approved_download && line.starts_with("GET /approved-provider.png ") {
+                    download_captured.lock().unwrap().push(line);
+                    let header = format!("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", image_bytes.len());
+                    if socket.write_all(header.as_bytes()).await.is_ok() {
+                        let _ = socket.write_all(&image_bytes).await;
+                    }
+                    continue;
+                }
+                provider_captured.lock().unwrap().push((line, body));
+                let url = if approved_download {
+                    format!(
+                        "http://public.fixture.invalid:{}/approved-provider.png",
+                        provider_address.port()
+                    )
+                } else {
+                    format!("http://{private_address}/host-private.png")
+                };
+                let payload = json!({
+                    "data": [{
+                        "url": url
+                    }]
+                })
+                .to_string();
+                let header = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 payload.len()
             );
-            socket.write_all(header.as_bytes()).await.unwrap();
-            socket.write_all(payload.as_bytes()).await.unwrap();
+                socket.write_all(header.as_bytes()).await.unwrap();
+                socket.write_all(payload.as_bytes()).await.unwrap();
+            }
         });
 
         Self {
@@ -3147,104 +3178,139 @@ async fn audit_denied_provider_image_url_is_not_fetched_or_persisted() {
 }
 
 #[tokio::test]
-#[ignore = "audit: provider image downloads must enforce a bounded artifact size"]
 async fn audit_provider_image_download_rejects_oversized_artifact() {
-    const MAX_INPUT_IMAGE_BYTES: usize = 32 * 1024 * 1024;
-    let mut oversized_image = vec![b'x'; MAX_INPUT_IMAGE_BYTES + 1];
-    oversized_image[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
-    let mut provider = LocalImageProvider::start_with_image_bytes(oversized_image.clone()).await;
+    let limit = super::DEFAULT_IMAGE_OUTPUT_LIMIT as usize;
+    let mut image = vec![b'x'; limit + 1];
+    image[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+    let mut provider = LocalImageProvider::start_with_approved_image_bytes(image).await;
     let fixture = MediaFixture::new_image(&provider).await;
     let run_id = "audit-image-provider-size-limit";
     let mut run = fixture.spawn(run_id);
     let result = finish_run(&mut run).await;
     provider.close().await;
-    result.unwrap();
-
-    let events = RunStore::new(&fixture.db)
-        .events_after(run_id, None)
-        .unwrap();
-    let terminals: Vec<_> = events
-        .iter()
-        .filter(|event| event.event_type == "run_terminal")
-        .collect();
-    let live = fixture.live.lock().unwrap();
-    let image = live
-        .iter()
-        .find(|event| event.node_id == "image" && event.status == NodeExecutionStatus::Completed)
-        .expect("the production image node must complete before checking its artifact");
-    let artifact_uri = image
-        .artifacts
-        .first()
-        .expect("the image node must publish its stored artifact");
-    let stored = fixture
-        .artifacts
-        .read_bytes(artifact_uri.trim_start_matches("artifact://"), None)
-        .unwrap()
-        .unwrap();
-    let private_requests = provider.private_requests.lock().unwrap();
-    eprintln!(
-        "provider image size audit: private_requests={}, configured_input_limit={MAX_INPUT_IMAGE_BYTES}, response_bytes={}, artifact_bytes={}, terminal={}",
-        private_requests.len(),
-        oversized_image.len(),
-        stored.len(),
-        terminals[0].data["kind"]
-    );
-    assert_eq!(private_requests.len(), 1);
-    assert_eq!(terminals.len(), 1);
-    assert_eq!(terminals[0].data["kind"], "succeeded");
-    assert!(
-        stored.len() <= MAX_INPUT_IMAGE_BYTES,
-        "provider image response larger than the established single-image budget must not be completely stored"
-    );
+    assert_eq!(provider.provider_requests.lock().unwrap().len(), 1);
+    assert_eq!(provider.private_requests.lock().unwrap().len(), 1);
+    assert_eq!(fixture.approvals.load(Ordering::SeqCst), 1);
+    assert_failed_image_and_reopen(fixture, run_id, result);
 }
 
 #[tokio::test]
-#[ignore = "audit: inline provider image payloads must enforce a bounded artifact size"]
+async fn h167_approved_image_download_preserves_normal_small_result() {
+    let mut provider =
+        LocalImageProvider::start_with_approved_image_bytes(PRIVATE_IMAGE_BYTES.to_vec()).await;
+    let fixture = MediaFixture::new_image(&provider).await;
+    let run_id = "h167-approved-small-image";
+    let mut run = fixture.spawn(run_id);
+    let result = finish_run(&mut run).await;
+    provider.close().await;
+    result.unwrap();
+    let records = fixture.artifacts.list(None, None).unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        fixture
+            .artifacts
+            .read_bytes(&records[0].id, None)
+            .unwrap()
+            .unwrap(),
+        PRIVATE_IMAGE_BYTES
+    );
+    let terminals: Vec<_> = RunStore::new(&fixture.db)
+        .events_after(run_id, None)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.event_type == "run_terminal")
+        .collect();
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(terminals[0].data["kind"], "succeeded");
+    assert_eq!(provider.provider_requests.lock().unwrap().len(), 1);
+    assert_eq!(provider.private_requests.lock().unwrap().len(), 1);
+    assert_eq!(fixture.approvals.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn audit_provider_inline_image_rejects_oversized_artifact() {
-    const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
-    let response_bytes = MAX_IMAGE_BYTES + 1;
-    let mut oversized_image = vec![b'x'; response_bytes];
-    oversized_image[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
-    let mut provider = LocalInlineImageProvider::start(oversized_image).await;
+    let limit = super::DEFAULT_IMAGE_OUTPUT_LIMIT as usize;
+    let mut image = vec![b'x'; limit + 1];
+    image[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+    let mut provider = LocalInlineImageProvider::start(image).await;
     let fixture = MediaFixture::new_inline_image(&provider).await;
     let run_id = "audit-inline-image-size-limit";
     let mut run = fixture.spawn(run_id);
     let result = finish_run(&mut run).await;
     provider.close().await;
+    assert_eq!(provider.requests.lock().unwrap().len(), 1);
+    assert_eq!(fixture.approvals.load(Ordering::SeqCst), 0);
+    assert_failed_image_and_reopen(fixture, run_id, result);
+}
 
-    let events = RunStore::new(&fixture.db)
-        .events_after(run_id, None)
-        .unwrap();
-    let terminal = events
-        .iter()
-        .find(|event| event.event_type == "run_terminal")
-        .and_then(|event| event.data["kind"].as_str())
-        .unwrap_or("missing");
-    let image = fixture
-        .live
-        .lock()
-        .unwrap()
-        .iter()
-        .find(|event| event.node_id == "image" && event.status == NodeExecutionStatus::Completed)
-        .cloned();
-    let artifact_bytes = image
-        .as_ref()
-        .and_then(|event| event.artifacts.first())
-        .and_then(|uri| {
-            fixture
-                .artifacts
-                .read_bytes(uri.trim_start_matches("artifact://"), None)
-                .ok()
-        })
-        .flatten()
-        .map(|bytes| bytes.len());
-    eprintln!(
-        "inline image size: response_bytes={response_bytes}, artifact_bytes={artifact_bytes:?}, terminal={terminal}, result_ok={}",
-        result.is_ok()
-    );
+/// Both original probes prove the same production failure contract, including
+/// durable replay. This is not a separate state/approval/artifact path.
+fn assert_failed_image_and_reopen(
+    fixture: MediaFixture,
+    run_id: &str,
+    result: deepagent_core::error::Result<String>,
+) {
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("ImageArtifactTooLarge"), "{error}");
     assert!(
-        result.is_err() && artifact_bytes.is_none() && terminal != "succeeded",
-        "inline provider image payloads must be rejected before artifact persistence"
+        !error.contains("budget"),
+        "image limit must settle as failed"
+    );
+    let live = fixture.live.lock().unwrap().clone();
+    assert_eq!(
+        live.iter()
+            .filter(|event| event.node_id == "image" && event.status == NodeExecutionStatus::Failed)
+            .count(),
+        1
+    );
+    assert!(live
+        .iter()
+        .filter(|event| event.node_id == "image")
+        .all(|event| event.status != NodeExecutionStatus::Completed
+            && event.outputs.is_none()
+            && event.artifacts.is_empty()));
+    assert!(fixture.artifacts.list(None, None).unwrap().is_empty());
+    assert_eq!(
+        std::fs::read_dir(fixture._root.path().join("artifacts"))
+            .unwrap()
+            .count(),
+        0
+    );
+    let MediaFixture {
+        _root: root,
+        db,
+        chat,
+        artifacts,
+        providers,
+        ..
+    } = fixture;
+    drop(chat);
+    drop(artifacts);
+    drop(providers);
+    drop(db);
+    let db = Arc::new(Database::open(root.path().join("media.db")).unwrap());
+    let durable = RunStore::new(&db).events_after(run_id, None).unwrap();
+    assert!(durable
+        .windows(2)
+        .all(|pair| pair[0].sequence < pair[1].sequence));
+    let replay: Vec<NodeExecutionEvent> = durable
+        .iter()
+        .filter(|event| event.event_type == "workflow_node")
+        .map(|event| serde_json::from_value(event.data["event"].clone()).unwrap())
+        .collect();
+    assert_eq!(replay, live);
+    let terminals: Vec<_> = durable
+        .iter()
+        .filter(|event| event.event_type == "run_terminal")
+        .collect();
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(terminals[0].data["kind"], "failed");
+    assert!(
+        CanvasArtifactService::new(root.path().join("artifacts"), db)
+            .unwrap()
+            .list(None, None)
+            .unwrap()
+            .is_empty()
     );
 }
 

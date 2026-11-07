@@ -2,21 +2,21 @@
 
 ## 当前状态与计数口径（2026-11-07）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；当前189项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；该次只纠正汇总，不计为新增修复。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；当前190项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；该次只纠正汇总，不计为新增修复。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 189 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-69、H-70、H-71、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-82、H-84、H-87、H-88、H-92、H-96、H-97、H-125、H-126、H-130、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-147、H-148、H-149、H-150、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-178、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-196、H-197、H-198、H-199、H-200、H-204、H-205、H-206、H-207、H-208、H-209、H-210、H-212、H-213、H-214、H-215、H-216、H-218、H-219、H-221、H-222、H-223、H-224、H-225、H-226、H-227、H-229、H-233、H-234、H-235、H-236、H-237、H-239、H-240、H-241、H-242、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-256、H-259、H-260、H-261、H-265、H-266、H-267、H-268、H-270、H-271、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-290、H-293、H-295、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 190 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-69、H-70、H-71、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-82、H-84、H-87、H-88、H-92、H-96、H-97、H-125、H-126、H-130、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-147、H-148、H-149、H-150、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-167、H-175、H-178、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-196、H-197、H-198、H-199、H-200、H-204、H-205、H-206、H-207、H-208、H-209、H-210、H-212、H-213、H-214、H-215、H-216、H-218、H-219、H-221、H-222、H-223、H-224、H-225、H-226、H-227、H-229、H-233、H-234、H-235、H-236、H-237、H-239、H-240、H-241、H-242、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-256、H-259、H-260、H-261、H-265、H-266、H-267、H-268、H-270、H-271、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-290、H-293、H-295、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 24 | 17项原审计历史修复；H-77/H-83/H-238/H-246/H-301/H-232/H-68分别随H-78/H-143/H-260/H-245/H-164/H-219/H-70共享边界消除，验收另列，不重复记新生产修复 |
 | 归并 | 8 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 3 | H-211/H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | H126按E03完成限定本机验收；其原失败与全仓限制保留 |
-| 待修复 | 82 | 含H180授权跳过，实际后续队列81项；清理阻塞另列 |
+| 修复中 | 0 | H167按E03完成限定本机验收，原失败/全仓限制保留 |
+| 待修复 | 81 | 含H180授权跳过，实际后续队列80项；清理阻塞另列 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **82（其中H-180按用户要求跳过，实际待处理81项）**；不提供完成率。当前189项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301/H-232/H-68在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4/3cabd45f/f97db714及真实复核单独列明，合计24项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。2026-11-05本轮H239新增验收1后，H287依据新D:继承控制位反例重新打开1，其后本轮H287按E21返修恢复验收，当前161，其后H213新增验收1，当前162，其后H212新增验收1，当前163，其后H221新增验收1，当前164，其后H222新增验收1为165，H150新增验收1为166，本轮H223新增验收1为167，其后H267按E03新增验收1为168；其后H268按E04新增验收1为169；其后H293按E06新增验收1为170；本轮H84按E03新增验收1为171；本轮H70按E07新增验收1为172；本轮H68按E04新增历史跳过1，修复数仍172；本轮H69按E06新增验收1为173；本轮H71按E06新增验收1为174；本轮H82按E04新增验收1为175；本轮H209按E04新增验收1为176；本轮H210按E05新增验收1为177；本轮H200按E04新增验收1为178；本轮H204按E04新增验收1为179，H90同根归并使归并数为8；11-07本轮H205按E03新增验收1为180；本轮H206按E03新增验收1为181；本轮H207按E03新增验收1为182；本轮H256按E03新增验收1为183；本轮H265按E03新增验收1为184；本轮H266按E03新增验收1为185；本轮H295按E03新增验收1为186；本轮H215按E03新增验收1为187；本轮H216按E03新增验收1为188；本轮H126按E03新增验收1为189；历史f2efc1b5与E-H287-01～20不删除。
+有效未关闭条目当前为 **81（其中H-180按用户要求跳过，实际待处理80项）**；不提供完成率。当前190项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301/H-232/H-68在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4/3cabd45f/f97db714及真实复核单独列明，合计24项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。2026-11-05本轮H239新增验收1后，H287依据新D:继承控制位反例重新打开1，其后本轮H287按E21返修恢复验收，当前161，其后H213新增验收1，当前162，其后H212新增验收1，当前163，其后H221新增验收1，当前164，其后H222新增验收1为165，H150新增验收1为166，本轮H223新增验收1为167，其后H267按E03新增验收1为168；其后H268按E04新增验收1为169；其后H293按E06新增验收1为170；本轮H84按E03新增验收1为171；本轮H70按E07新增验收1为172；本轮H68按E04新增历史跳过1，修复数仍172；本轮H69按E06新增验收1为173；本轮H71按E06新增验收1为174；本轮H82按E04新增验收1为175；本轮H209按E04新增验收1为176；本轮H210按E05新增验收1为177；本轮H200按E04新增验收1为178；本轮H204按E04新增验收1为179，H90同根归并使归并数为8；11-07本轮H205按E03新增验收1为180；本轮H206按E03新增验收1为181；本轮H207按E03新增验收1为182；本轮H256按E03新增验收1为183；本轮H265按E03新增验收1为184；本轮H266按E03新增验收1为185；本轮H295按E03新增验收1为186；本轮H215按E03新增验收1为187；本轮H216按E03新增验收1为188；本轮H126按E03新增验收1为189；本轮H167按E03新增验收1为190；历史f2efc1b5与E-H287-01～20不删除。
 
 ## H-205 Rust通知序号（已修复并验收，2026-11-07，限E03范围）
 
@@ -6412,7 +6412,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-164：画布文本请求不在运行取消树内，节点完成态可与运行取消终态分裂](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H164-01保留原 text 失败证据；E-H164-03完成 text/image/audio 本机动态验收；embedding 正式链被独立 H-300 图注册缺陷阻断 | 复用既有 `think_cancelled`/`await_cancelled` 取消边界，活动节点只发布一次 `Cancelled`，晚到 provider 输出不得发布 `Completed` | text/image/audio 取消、正常 text 对照、media 默认组、Runtime workflow 组、两 crate check/fmt/diff check通过；严格clippy被未改动models/client.rs:355基线阻断，限制见E-H164-04 | `63cfffa4` | 仅所列Windows本机/离线/loopback范围；embedding未动态验证，远端provider撤销、workspace、Desktop/真实Tauri、真实供应商及其他OS未验；H-119/H-165/H-167/H-300独立；214有效未关闭 |
 | [H-165：图片供应商可令宿主下载任意私网 URL，并把响应作为成功 artifact 保存](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H165-01原探针已复现；E-H165-03完成本机范围验收；不归并其他下载/预算问题 | E-H165-02的run-scoped opaque handle、统一PublicHttpClient与Kernel高风险工具管线已落地 | 原生专项与相关回归均通过；完整workspace未执行，严格clippy在既有models/client.rs:355基线处阻断，Desktop/真实供应商未执行，限制见E-H165-03/04 | `88274ae8` | H-167/H-249/H-303/H-164独立；214有效未关闭；总体200–400有效小时历史粗估，等待另计 |
 | [H-166：DeepSeek Responses 思考模式下 top_p 会被忽略或规范化，设置值不等于有效采样值](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-167：画布图片下载无响应字节上限，超预算数据被完整缓冲并持久化](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-167：画布图片下载无响应字节上限，超预算数据被完整缓冲并持久化](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E01～03原红/旧URL被H165提前拒绝及校正真红保留，非历史跳过 | 单一provider-image输出策略覆盖URL/inline及原始JSON，复用媒体计数/原broker/staging/发布 | 专项13/0、原2/0、AppCore1575/0/47，workspace4885/1/201仅H306；CLI/SDK/Tauri过，旧strict失败保留 | 本项独立fix提交后回填E05 | 限E03本机；C产物残余权限阻塞见E04，无新DTO/SQL；默认32MiB兼容收紧，其他OS/真实服务/极限压力未验；下一H248；全余200–400有效小时低置信，等待另计 |
 | [H-168：易变 instructions 位于历史之前，动态变化截断多轮 KV cache 前缀](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-169：桌面接受任意 `image/*`，不支持的 SVG 被原样发送给 DeepSeek Responses](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-170：历史图片每轮重发完整 base64，未接入 DeepSeek Files API 的持久引用](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
@@ -7554,3 +7554,91 @@ H126代码行为限E03本机范围已验收，但上述C/G残余清理是明确�
 **E-H126-05（2026-11-07，独立fix提交与hash回填）**：实际修复commit为 `c58ceb743fcbfa165cbca9a3c9bf5a5d856ee4dc`（【fix】修复H126 MCP读取前响应预算），父提交2bca830ba9df91a01cbc1cfd836d317f41ced1d6。提交后逐项核对32文件白名单（30实现/测试/配置/README及双文），无用户五项untracked、target/dist/cache/日志/临时脚本或其他编号代码；30份工作区文件SHA256仍与最终受测冻结完全一致，tracked干净。受测结果仅限E01～03、清理成果/明确拒绝仅限E04，不因完成commit把workspace/strict失败改写为通过，也未因清理残余重试其他工具。没有迁移真实数据库、push、PR、改Git配置、amend或绕过hook。
 
 本次仅在双文回填已取得的fix hash、验收状态与本段，另作文档commit，不为了写自身hash反复amend。复核306唯一编号、8列、顶部189成员、H126主行及原报告证据一致，本轮新增修复1；历史跳过/归并/撤销未增加，H180继续按授权跳过，实际队列81，下一H167。C/G清理残余仍明确未完成，200–400有效小时低置信历史估计与不确定环境等待仍分开，整体goal active。
+
+## H-167 图片输出字节边界（已修复并验收，2026-11-07，限E03本机范围）
+
+**E-H167-01（2026-11-07，原复现核对与校正后的真实TDD红，修复中）**：基线37bd6df0b61b0bf9dcea9921e77165d66dfc0c93，tracked干净、无未完成合并；原五项用户untracked只列名不读改/暂存。已核对原H167及H165/H164/H302/H303/H248边界、现有gateway/provider adapter、one-shot批准工具/PublicHttpClient、scoped_for_run固定策略、ArtifactStream staging/Drop/原子发布/SQLite、Kernel节点与run终态、所有parse_output生产/测试调用方、Cargo/CI/格式配置及本地DeepSeek Harness输入图片限额参考。参考输入限额不是供应商输出契约；不访问真实供应商/内网/凭据/用户数据，不迁移/推送/创建PR。
+
+真实Cargo根 `C:\Users\32734\AppData\Local\Temp\h167-repair-20261107` 初始不存在，本项独立新建；不是重试/改名绕过此前删除拒绝。隔离HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/TMP/data、清凭据/代理/DEEPAGENT环境、只显式外层target-dir，离线复用工具链；只用合成本机provider、临时SQLite/制品与cfg(test)固定DNS/回环接缝。原报告旧workflow_audit集成测试命令因H303等既有重构已不再指向这两测试；当前真实入口为lib的canvas_model_gateway::workflow_media_audit。首次 `cargo test --target-dir <该根> -p deepagent-app-core --lib oversized_artifact --offline -j 2 -- --ignored --nocapture --test-threads=1` exit101、0过3败、358.179秒含冷编译；过滤器另选中H248旧speech探针0/1，不归并、不修复或计为本项证据。随后对同一原生AppCore binary（SHA256 E644ABA18074993C8A031860872C95AD5BDF9F443226CC8F90D0E0C47A762CB5）分别以两测试全名加--exact --ignored --nocapture --test-threads=1执行，URL/inline各exit101、0/1/0，0.299/2.893秒，四份源码/夹具SHA256前后不变。
+
+原URL失败已不是容量断言：H165先返回NetworkDenied: non-public IP destination，未取回/持久化该URL；不能把此失败冒称容量复现。原inline仍真实收到33,554,433字节、artifact_bytes=Some(33554433)、terminal=succeeded，说明H167未被历史修复。当前URL下载已由H303复用流式ArtifactStream，不再先全量Vec缓冲，但Image分支没有累计输出上限，仍可能无限增长staging/最终制品；Video有H302独立计数、AudioInput有32MiB旧控制，均不能替Image限额。Image provider成功JSON仍resp.bytes全量物化，再clone image字段/解码inline并导入，必须同根因覆盖URL和inline，而不宣称H248语音输出已修复。
+
+只改测试夹具：保留LocalImageProvider原private URL分支作为H165负对照，另加获授权的合成public.fixture.invalid URL，经既有cfg(test) DNS固定/本机route在同一合成服务下载；生产网络校验、审批与broker未改。校正后的原URL精确Cargo命令 `cargo test --target-dir <根> -p deepagent-app-core --lib canvas_model_gateway::workflow_media_audit::audit_provider_image_download_rejects_oversized_artifact --offline -j 2 -- --ignored --exact --nocapture --test-threads=1` exit101、0/1/0、109.845秒：真实批准一次、下载请求1、response_bytes=33554433、artifact_bytes=33554433、terminal=succeeded，容量缺口已重新成立。对该编译得到的同binary执行新增默认小图对照 `canvas_model_gateway::workflow_media_audit::h167_approved_image_download_preserves_normal_small_result --exact --nocapture --test-threads=1` exit0、1/0/0、0.363秒，原字节/单制品/唯一succeeded/一次审批和下载保持。其binary SHA256 987B513368DB599F9BD2D87D96DD22C3EACC9215E758094852A401B6F14F0CA3。测试夹具首fmt check只因缩进exit1，随后cargo fmt --all修正；未改生产行为、未据此验收。
+
+候选本地设计：在既有gateway建立独立provider-image默认32MiB输出限额，可信Rust宿主可在共享前显式设置有限正数并由run scope继承；不是输入附件、MCP、视频限额或供应商标准推导。URL在同一批准下载/ArtifactStream边界检查声明与实际chunk，拒绝块不写staging；泛化既有Video计数器供媒体下载统一使用，保留Video/AudioInput原数值与错误兼容，不为image另建网络/审批/持久化链。inline成功JSON须先按编码输出加固定envelope余量流式有界读取，再在base64解码前估算、解码后硬性复核同一image原始字节限额，不只补URL或解码后的检查；消除不必要的image字段clone。仅ImageGenerate/Edit使用新增成功正文边界，Chat/Embedding/Speech输出等独立问题不混修。错误明确不可fallback、不得因文本含budget误映为budget_exceeded；原取消/deadline、one-shot不重派及原staging清理/发布继续唯一可信。数值/余量、合法边界/格式兼容、自定义较大正常场景须经后续真实测试确认后再定验收。
+
+后续尚须默认真实下载framing/无EOF/边界/base64/成功正文、网络取消/超时/截断、写入失败/并发、无超限artifact/part、正式Kernel单failed与关闭句柄后SQLite重开，以及正常图片/视频/音频输入/网络授权对照和相称整组/构建/strict门禁；目前不得关闭H167。当前189验收、24历史跳过、8归并、3撤销、81待修/1修复中，未关闭82含H180授权跳过，实际总队列81；本轮新增验收0，无本项fix提交。本项暂估余5–12有效工作小时（读取/解码/存储/跨层真实验收与提交），全余200–400有效小时仍为未逐项校准低置信历史粗估；机器构建/锁等待、设备/依赖/环境与清理等待另计、无可靠总上界，旧G/C拒绝路径不重试，整体goal active。
+
+**E-H167-02（2026-11-07，根因候选与跨层回归；未最终验收）**：生产未改时新增默认 `canvas_model_gateway::image_output_tests::` 四条真实HTTP探针，`cargo test --target-dir <E01根> -p deepagent-app-core --lib canvas_model_gateway::image_output_tests:: --offline -j 2 -- --nocapture --test-threads=1` exit101、0/4/0、115.193秒；声明超限但扣住body/EOF、32MiB+1 chunked、无长度扣EOF、图片成功JSON超过派生raw正文上限扣EOF四场景均超时，非mock。首生产候选同命令exit0、4/0/0、103.671秒。红/首候选尚未使用的sent/closed夹具字段曾报dead_code，后续取消/deadline真实门禁使用这两信号；没有用allow隐藏。
+
+单一输出政策已落在现有CanvasModelGateway，默认32MiB图片原字节，可信Rust builder with_image_output_limit拒0/越索引/派生JSON地址空间溢出，scoped_for_run复制不可变限额；无前端/DTO/SQL字段或配置迁移。派生图片成功JSON上限为4×ceil(raw/3)+1MiB固定envelope余量，ImageGenerate/Edit先走原read_bounded_provider_body实际chunk计数及声明快拒绝、后JSON解析；其他模态成功正文仍原路径，不冒称H248已修。helper改从实际块增长而非先分配整个上限；不证明其capacity、网络栈chunk与解析对象没有额外内存。inline借用原Value不clone字段，STANDARD base64含padding解码前长度估算、解码后同一原始字节计数硬校验。超限为非transient ResponseBodyTooLarge/ImageArtifactTooLarge，不含budget字样误归类，不自动fallback/重派，不回显远端body/URL/query。
+
+URL复用原批准工具/PublicHttpClient/ArtifactStream及staging Drop/原子发布/摘要/SQLite，没有第二套下载/审批/持久化链。将旧私有video_download_limit.rs的计数器泛化为media_byte_limit.rs，Image/Video/AudioInput各自数值保持独立，Video原消息/兼容下载入口、AudioInput原32MiB错误文本保持；同一声明/checked_add/chunk计数拒绝前不写staging。共享泛化必须验证Video与AudioInput消费方，不把它们重新算作修复。通用本地导入不增加provider限制，输入附件不变。
+
+真实回归扩充中保留准备失败：candidate2测试编译exit101、33.151秒，SQLite trigger fixture误用Into要求CoreError:From<rusqlite::Error>，实际trait不存在；按现有artifact测试用CoreError::other(error.to_string())保留原因后修正，生产未为它加转换。candidate3同image专项9/0/0、116.521秒；同Cargo选项的media_byte_limit:: 2/0/0、1.952秒，video_download_tests::6/0/0、3.390秒，audio_input_tests::12/0/0、4.312秒，均exit0。9条覆盖声明/chunked/无长度无EOF拒绝、精确字节/自定义较大33,554,433正常/作用域与重开、base64 padding/非法/超限估算、OpenAI/Gemini两种inline字段shape、HTTP实际provider→bridge存储、半正文取消/deadline/截断清理，以及真实目录冲突不能创建staging和SQLite拒绝INSERT后的发布回滚。目录冲突/SQL失败不是物理磁盘耗尽或真实mid-write设备故障；不改ACL、不填满用户磁盘。
+
+两原探针去ignore并复用同一assert_failed_image_and_reopen：candidate4分别按E01全名Cargo精确运行（不再--ignored）exit0，各1/0/0，123.506/3.092秒。原URL批准/下载各1，inline无第二跳审批/提交1；均无Completed/outputs/artifacts、唯一image Failed及run failed、无part，显式drop原Chat/Artifact/Provider/Database后SQLite重开，sequence递增、原live/replay相同且无制品。原始0/1红与提前网络拒绝仍在E01，不把新探针名称保留误称仍在assert完整成功。
+
+再增真实非transient候选fallback未触发与并发下载staging所有权：candidate5因测试临时tool借用E0716编译失败exit101、40.648秒，无行为验收；绑定原tool生命周期后candidate6同image专项11/0/0，shared2/0/0、video6/0/0、audio12/0/0均exit0。双候选真实HTTP只第一provider收到1次、fallback0；并发在另一图片仍有真实part/等待EOF时拒绝超限并保留其part，随后仅取消其原owner清理，不证明总并发配额或整套多节点调度压力。最后又加入exact派生JSON envelope与+1、32MiB默认到界以及通用本地大图导入/多格式base64正常对照，不能拿candidate6旧结果冒称新增测试已验；合成PNG/JPEG/GIF/WebP签名前缀/编码字节验证不代表完整图片codec解码或像素上限。
+
+新增公开docs/canvas-image-output-limits.md说明本地数值、可信builder/run scope、URL/inline/原始JSON不同层次、1MiB余量有限兼容取舍、旧本地导入不变、unknown不重派及实际命令。现已冻结5份相关源码/测试/说明（删除旧私有计数器文件另核对）逐份SHA256，串行运行fmt、最终扩充image组、两原probe、完整AppCore lib、affected strict/诊断及CLI build；随后仍需当前CLI/SDK生产消费、完整workspace/全仓strict/Tauri check、清理/双文与独立提交。无GUI/真实第三方供应商/其他OS/极端RSS/OOM/磁盘耗尽/强杀断电验收，默认32MiB与1MiB余量不是官方通用协议规格。
+
+当前仍189验收/24历史跳过/8归并/3撤销/81待修/1修复中，本轮新增验收0，无fix提交。H167后准备H248语音输出资源边界，尚未改其生产代码；全余200–400有效小时为未逐项校准低置信历史粗估，机器编译/锁等待与设备/依赖/环境及已拒绝清理等待另计，无可靠总上界，整体goal active。
+
+**E-H167-02b（2026-11-07，冻结源码focused终态及严格lint核对）**：最终5份实现/测试/说明文件SHA256冻结，另核对旧video_download_limit.rs已删、由同一media_byte_limit.rs承接而无第二计数链；每个门禁前后比对，不在受测源码上边测边改。以下以E01真实Cargo根为Target、相同隔离环境执行，秒数取runner保存的后置记录前快照，不与输出含后置记录时间混用。
+
+| 实际命令 | 退出与结果 | 墙钟秒 |
+|---|---|---|
+| `cargo fmt --all -- --check` | 0 | 5.864 |
+| `cargo test --target-dir $Target -p deepagent-app-core --lib canvas_model_gateway::image_output_tests:: --offline -j 2 -- --nocapture --test-threads=1` | 0；13过/0败/0忽略 | 156.862 |
+| `cargo test --target-dir $Target -p deepagent-app-core --lib canvas_model_gateway::workflow_media_audit::audit_provider_image_download_rejects_oversized_artifact --offline -j 2 -- --exact --nocapture --test-threads=1` | 0；1/0/0，非ignored | 3.437 |
+| 同上，测试全名改为 `canvas_model_gateway::workflow_media_audit::audit_provider_inline_image_rejects_oversized_artifact` | 0；1/0/0，非ignored | 2.357 |
+| `cargo test --target-dir $Target -p deepagent-app-core --lib --offline -j 2 -- --quiet --test-threads=2` | 0；完整默认lib1575过/0败/47忽略；1个嵌套helper不重复计 | 205.179 |
+| `cargo clippy --target-dir $Target -p deepagent-app-core --all-targets --all-features --no-deps --offline -j 2 -- -D warnings` | 101；既有lib12项，未称strict通过 | 235.033 |
+| 同范围Clippy，末参数改为 `-W warnings`，仅补充诊断 | 101；旧Kernel测试panicking_unwrap默认deny；不是降低验收门槛后的通过 | 56.677 |
+| `cargo build --target-dir $Target -p deepagent-cli --offline -j 2` | 0；本轮当前生产CLI | 174.042 |
+
+13条冻结专项覆盖E02的11条及新增的exact派生JSON/+1和格式/通用本地导入对照；默认32MiB URL到界成功、可信配置实际接受33,554,433正常且重开读回相同、inline小限额到界/超一原字节拒绝、base64 padding/非法输入、raw JSON上限到界成功/+1拒绝、不同图片签名前缀不改变字节、通用本地Image导入33,554,433仍正常。无EOF声明/实际chunk提前拒绝、原typed错误无body/URL、并发隔离、取消/deadline/截断/staging-create与SQL发布失败、候选不fallback/句柄不重派均为真实本机门禁。完整默认lib也执行了共享计数/Video两入口/AudioInput、错误正文、原始正常图片与正式Kernel两个原probe，不拿局部13条替代这些消费者。
+
+strict旧诊断：context_runtime Usage clone8、http_runtime needless_return、plugin_preparation type_complexity、run_assembler too_many_arguments、session_title needless_borrow，共lib12项；libtest另media冗余video_bytes/!is_ok两项。补充诊断还报告未改Kernel mcp_discovery_restore.rs:776 panicking_unwrap默认deny、fixture/Responses custom工具旧告警。没有本项gateway/media_byte_limit/image_output_tests新诊断，未加allow/改全仓门槛。实际涉及10份诊断文件：除media.rs本轮改过外，其余9份逐份与37bd6df0 CRLF归一化全文相同；media.rs两旧诊断及其定义的7行上下文在基线均唯一匹配，line158/146原位、当前3129对应基线3098，均在本项修改段之外。未导出HEAD另跑基线lint；上下文比对不是独立基线门禁，更不能把“整个media文件没改”当事实。
+
+确认旧G共享CLI SHA256 92937E44…、无该binary活进程，另存任务备份后发布本轮81,888,768字节CLI；源/目标均297D4820966AED0F89CA6B322C9E564A4AA267DF1708486ABF6474043FBEF933。随后在同冻结/隔离环境，`cargo test --target-dir $Target -p deepagent-cli --offline -j 2 -- --quiet --test-threads=2` exit0、198/0/11（main197/0/10+startup1/0/1，236.489秒）；Rust SDK同Cargo选项换包deepagent-harness-sdk，exit0、86/0/5（lib72/0/5、真实stdio12/0/0、doc2/0/0，122.836秒）。`pnpm -C packages/sdk test`、`test:stdio`、`test:jsonl`均exit0（8.564/7.130/6.297秒），默认180/0/0、真实stdio4/0/0、真实JSONL1/0/0；使用本轮当前G CLI，不沿用旧binary或把默认skip算通过。秒数均取本轮final-results.json快照，不复用前轮时长。
+
+当前完整workspace正在同一runner串行编译/执行，接着全仓strict与独立Tauri check，均未取得终态；还须显式重验H165原拒绝/拒审批与H164原取消opt-in对照，不以其仍ignore默认跳过称成功。此轮无UI/TypeScript DTO/IPC契约改动，未重跑完整Desktop pnpm build、GUI或签名打包，前轮H126构建不冒充本轮结果；Tauri共享Rust消费方须实跑本轮check。当前仍189验收、24历史跳过、8归并、3撤销、81待修+H167修复中，无fix提交/本轮新增验收0，整体goal active；全部余200–400有效小时低置信历史粗估，机器/环境等待分开、无精确交付日期。
+
+**E-H167-03（2026-11-07，最终限定本机验收；非整仓全绿）**：最终5份相关源码/测试/公开说明逐份SHA256与focused、完整workspace、Tauri及显式控制探针前后冻结一致，清单SHA256为593AD09432945B40A5209A72AD1D534F19F9E5EB446FDDAAD5CA405D7756E37F；旧video_download_limit.rs确已删除，没有同时保留第二套计数实现。E01原inline红、H165导致旧URL提前拒绝、获授权测试接缝校正后URL真红与E02默认0/4及两次测试编译失败均保留。最终原两probe不再ignore，在E02b精确组和完整默认AppCore及workspace实际执行，不能凭编译或跳过探针称完成。
+
+最终后续实际命令均在仓库根、E01合成环境执行，Target为E01真实Cargo绝对目录；跨层真实CLI身份沿E02b，每步前后校验冻结及当前G binary，均已终态：
+
+| 实际命令 | 退出与结果 | 墙钟秒 |
+|---|---|---|
+| `cargo test --target-dir $Target --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=2` | 101；147顶层target，4885过/1败/201忽略，非全绿 | 2014.007 |
+| `cargo clippy --target-dir $Target --all-targets --all-features --offline -j 2 -- -D warnings` | 101；Models client.rs:431旧clone_on_copy | 68.463 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --target-dir $Target\tauri --offline -j 2` | 0；当前共享gateway与Tauri Rust消费者 | 419.280 |
+
+workspace原148个结果块含1个嵌套helper，按running/result栈排除，与147个Running/Doc-tests顶层目标逐一对齐，未重复计多1过。唯一失败为未改H306 `creative.video-edit.v1 has an empty defaultUserPrompt`（Prompts27/1/0）；AppCore1575/0/56、Kernel313/0/24、Runtime438/0/9，冷编译生命周期本轮通过，不把前轮失败写成本轮失败或声称本项修了它。默认AppCore1575/0/47与workspace同1575通过、不同feature统一后多9个ignore，二者都不冒称all-features行为全测；shared计数/Video/AudioInput及原正常消费者由默认组和workspace覆盖。Models client.rs与Prompts canvas_prompt.rs逐份相对37bd6df0 CRLF归一化全文相同；没有另导出HEAD整套复跑基线。affected strict仍E02b的旧12项lib与2项libtest诊断，补充-W warnings不是严格通过，也未修改旧上下文或顺手消除其他编号问题。
+
+等待上述runner终态后，以其workspace原AppCore `$Target\debug\deps\deepagent_app_core-32f391e263e6c0fa.exe`（SHA256 CBE69DD447803A2ABD6D70CD1E1F315AE0FE71475A93C5E3289E4A273FFACF18）分别执行下表全名加 `--ignored --exact --nocapture --test-threads=1`，不是默认skip。每条1过0败0忽略，原H165/H164仅做回归，不重记新增修复：
+
+| 全名（前缀canvas_model_gateway::workflow_media_audit::） | 结果与证据 | 墙钟秒 |
+|---|---|---|
+| `audit_provider_image_url_cannot_fetch_loopback_resource` | exit0；provider POST1、私网GET0、审批1、唯一failed、image Failed/无制品 | 1.422 |
+| `audit_denied_provider_image_url_is_not_fetched_or_persisted` | exit0；拒审批后无GET/制品，原节点/run失败断言保持 | 0.277 |
+| `audit_image_cancel_does_not_wait_for_provider_response` | exit0；接受取消后86ms退出、300ms窗口内、无Completed、Cancelled/单cancelled；fixture result_ok=true只是原取消返回契约，不解释为成功生成 | 0.244 |
+
+Finding F-H167（E01～03）：provider-image输出在URL和inline分支共同缺失类型级累计上限的根因已修复。Path P-H167为原gateway策略→图片成功JSON有界读取→借用Value/base64前后限制，或原one-shot批准工具/PublicHttpClient→同一媒体计数器→ArtifactStream staging→原子发布/SQLite；拒绝不派生成功、不自动重发/切换模型、不留超限制品/part。原URL失败断言经E01先查明旧网络门禁原因后才校正夹具，生产网络门禁未降低。默认32MiB、JSON编码余量1MiB为明确本地策略，默认到界及可信自定义33,554,433正常、格式字节/本地导入对照证明没有用“全拒绝图片”获得通过。
+
+兼容性：新增additive Rust常量/builder，现有构造签名、wire DTO/command、前端类型、配置schema、SQL和依赖不变。默认超过32MiB图片现在明确失败；可信宿主可在共享前配置有限正数，run scope继承，不新增未接线的桌面开关。整个图片成功JSON受编码上限+余量约束，过大的metadata/多图/转义也可能明确拒绝；无需称本地数值为DeepSeek/其他供应商标准。Video原VideoArtifactTooLarge、AudioInput原32MiB文本与一般本地导入行为保持；泛化共享计数器不是宣布H248语音输出已修复。配置限额不保证可用内存，底层chunk、Vec容量、JSON/解码对象和并发额外开销仍存在。
+
+未验范围：真实第三方供应商/大语料、真实内网/凭据/用户数据、其他OS/最低Node、完整codec/解码像素/压缩bomb、极端并发/RSS/OOM/磁盘耗尽或mid-write设备故障、强杀断电/跨进程崩溃恢复；同时下载隔离不等于完整多节点调度压力验收，SQLite显式重开不等于OS崩溃。无前端/IPC变更，未重跑完整Desktop pnpm build、真实GUI/签名包；本轮Tauri check是真实共享Rust消费者检查，既有sidecar未覆盖，不说已打包最新安装包。全部测试只触合成数据，未执行真实迁移/push/PR。
+
+仅H167按上述Windows本机范围验收：本轮新增1，本阶段190验收、24历史跳过、8归并、3撤销、81待修、0修复中；未关闭81含H180按授权跳过，实际后续队列80。下一项准备H248语音输出资源边界，尚未修其代码。公开说明见docs/canvas-image-output-limits.md；双文保持原始失败与strict/全仓限制。尚须E04清理/E05独立提交hash回填，不反复amend。全部余200–400有效小时仍为未逐项校准低置信历史粗估（复现、共享根因、跨层验收与提交），机器构建/锁等待及设备/依赖/环境/清理阻塞等待另计、无可靠总上界，整体goal active，不宣布全系统完成。
+
+**E-H167-04（2026-11-07，命名产物清理与明确残余）**：E01～03原失败、实际命令结果、5份冻结/CLI/binary身份已同步双文并留存本轮工具状态后才清理；没有删证据再假称全绿。先核对命名C盘root/独立Tauri root的解析绝对路径在本轮Temp边界内，逐层祖先及递归无reparse point/越界/枚举错误，关联Cargo/rustc/rustdoc/Node/测试/CLI进程为0。只清理本轮真实Cargo产物/合成HOME/临时文件/日志，不碰源码、用户文档/五项untracked、工具链或依赖缓存。清理路线预定为两个原生Cargo clean，不在拒绝后换工具。
+
+- 独立 `C:\Users\32734\AppData\Local\Temp\h167-repair-20261107\tauri`：7999文件、2,611,890,180逻辑字节。`cargo clean --manifest-path apps/desktop/src-tauri/Cargo.toml --target-dir <该绝对路径> --offline --dry-run` exit0（2.4GiB），去--dry-run实际exit0，确认target不存在。
+- 主root `C:\Users\32734\AppData\Local\Temp\h167-repair-20261107`：Tauri清后14788文件、25,915,284,242逻辑字节。`cargo clean --target-dir <该绝对路径> --offline --dry-run` exit0（24.1GiB）；去--dry-run实际exit101，测试DACL夹具 `fixture-tmp\.tmpqK938z\destination\child` OS5拒绝访问。仅只读统计残余2187文件、1,662,133,405逻辑字节、枚举错误0；root仍存在，未完成清空。立即停止，不换PowerShell/Node/cmd/另一Cargo参数路线、不改ACL、提权、改名搬移后重删。两个命名target合计减少26,865,041,017逻辑字节，不把逻辑差值冒称实测物理磁盘释放量。
+- G盘本轮未创建独立h167目录或Desktop dist，仅保留供后续真实验收的81,888,768字节共享CLI，SHA256仍297D4820966AED0F89CA6B322C9E564A4AA267DF1708486ABF6474043FBEF933。SDK dist沿原已拒绝路径不重试；前轮Desktop dist、H126/H215/H216及其他已拒绝G/C路径均不重试、不另建删除通道。既有Tauri sidecar未覆盖/删除，未独立认定归属的预打包resources不碰。
+- 清后C/G可用空间快照86,649,843,712/149,605,830,656字节，关联进程0；不从快照推算精确物理回收。C root残余为环境权限限制，需条件改变后另行受控处理，本轮不再尝试；不把单项行为验收称G/C全部清理完成。
+
+复核306唯一编号/每行8列、顶部190验收成员和H167双文证据一致；只白名单提交本项gateway、旧计数器替换、新真实测试、原探针及公开说明与双文（8个路径含旧文件删除）。fix hash取得后再回填E05并另作文档commit，不反复amend、不推送；整体goal active。
