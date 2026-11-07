@@ -5875,6 +5875,8 @@ Finding F-H167（E01～03）：provider-image输出在URL和inline分支共同�
 
 ### H-174：公开 `replace_messages` 绕过 Responses 工具调用配对修复
 
+**状态（2026-11-08）**：历史已修复跳过，生产追溯6bc2d660（H05），本轮独立验收见E-H174-02，原失败证据保留。
+
 **级别：中（P2，条件性 Harness/SDK 会话续接阻断）；触发条件：外部调用者先构造 `ResponseRequest`，再通过公开 `replace_messages()` 写入含未完成 `function_call` 的消息投影。** 当前 `ModelAgent::ResponseHistory::request()` 主要走 `from_response_items()`，因此本项不是默认桌面路径已必现的结论；风险在公开模型客户端、SDK 或未来 Harness 适配器复用该 mutator 时暴露。
 
 #### 官方契约、生产路径与正式复现
@@ -5895,6 +5897,44 @@ Finding F-H167（E01～03）：provider-image输出在URL和inline分支共同�
 - 修复应收敛到一个 provider-boundary invariant：`replace_messages()` 复用 `from_response_items()` 的 repair，或改为返回 `Result` 并在 `ModelClient` 发送前统一校验；不能只在一个公开构造器修补。校验应保留 call/item 位置和 native kind，不能静默删除调用、改成 `unknown_tool` 或仅依赖 provider 400。若运行时需要保留未完成调用，应写入既有持久化/恢复边界的结构化失败 output，并让所有重试、压缩、恢复和 SDK 路径复用同一实现。
 - 回归需覆盖正常成对调用、未完成调用、孤立 output、空/重复 `call_id`、function/custom 混用、`replace_messages` 与 `from_response_items` 两入口、Chat/Responses 分路及 transport 调用数；H-148/H-149 关注空/重复身份，本项关注**公开消息替换入口绕过 repair**，不与其重复。
 - 本轮只新增审计测试和文档，未修改生产修复；默认桌面 `ResponseHistory::request()` 的正常路径仍由 `from_response_items()` 负责 repair，触发面限定为公开 mutator/未来 Harness 或 SDK 复用。
+
+**E-H174-01（2026-11-08，历史修复复核中）**：上轮H176已独立修复/验收提交 `1fc591993bafba88657aff2624ea1d12094a5b0f`，文档回填HEAD `9e0a9d7438b2cf3e7b9efe9178d6648fc9e2bd9b`，属于实质进展。本轮tracked干净、无未完成合并；原五项用户untracked仅列名，不读、改或暂存；旧G/C删除拒绝路径全部保留不重试，包括H176余1,281,648,842字节。逐项核对原报告、原response_repair_audit探针、ResponseRequest构造/replace_messages/replace_history_from、唯一repair/身份门禁、ModelClient两协议及cancel-aware发送、原H148/H149/H261回归、ModelAgent::ResponseHistory和retry/compaction消费路径、Cargo/CI/rustfmt，未先改生产。
+
+新建真正Cargo根 `C:\Users\32734\AppData\Local\Temp\h174-review-20261108`，隔离HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/TMP/data并清凭据、代理、DEEPAGENT环境，offline复用工具链依赖，未访问真实凭据/内网/用户数据。冻结chat.rs/responses.rs/client.rs及runtime/model_agent.rs四份生产SHA256，实际 `cargo test --target-dir <上述根> -p deepagent-models --test response_repair_audit audit_replace_messages_repairs_dangling_responses_calls_before_transport --offline -j 2 -- --ignored --exact --nocapture` exit0、1/0/0、74.946秒含冷编译；真实recording transport wire为has_call=true、has_output=true，输出为显式missing-result error，生产哈希不变。原审计0/1失败证据不删；当前原复现不成立，故不直接修改生产、也不人为撤销已有修复制造TDD红。
+
+git blame与历史diff已精确定位 `6bc2d66013c6116a8b2ea2c454fa29f3c854090d`（2026-10-27，【fix】修复H-05 Chat工具响应投影归属）：它将replace_messages的self.input=input改为同一repair_tool_call_pairs(&input)，同时更新保留Chat原始顺序的projection及replace_history_from；当前457行repair正来自此提交，非本轮H148/H149新增。H148/H149后续身份前置拒绝、H261乱序真结果保留各有独立已验收根因，不再次计新修复或归并；H174准备按历史已修复跳过登记，但须先完成独立正常/异常、双协议与消费回归。
+
+本轮只把原探针转默认，并补纯离线recording传输回归：8种成对/缺结果/孤立结果/早到真结果/function+custom并行及部分结果，两协议×普通/cancel-aware×from_response_items/replace_messages/replace_history_from；断言一次真实transport、原call/native kind/真结果保留、失败output显式、旧seed历史不混入、retry参数不丢、调用者历史不改；空/重复身份在transport前拒绝且合法替换可恢复，复用原身份门禁不改生产。新增测试完成不等于已验收，最终Models默认/http、Runtime正常消费者、fmt/strict与诊断lint、双文/清理/提交仍待真实终态。
+
+当前193验收、25历史跳过、8归并、3撤销；76待修+H174复核中=77未关闭（H180授权跳过、实际队列76），本轮尚未新增历史跳过。此历史复核暂估1–3有效小时，整体200–400有效小时仍为未逐项校准低置信历史粗估，编译/设备/依赖/环境及清理权限等待另计，不作精确完工承诺。
+
+**E-H174-02（2026-11-08，历史已修复跳过的独立验收）**：E01原probe当前通过原因已经历史diff/blame和运行验证双重确认，历史生产实现为 `6bc2d66013c6116a8b2ea2c454fa29f3c854090d`（H05，2026-10-27），且已用git merge-base验证它是当前HEAD祖先。本轮不修改任何生产文件；原四份生产SHA256从原probe前到最终始终一致，仅两个测试文件及双文。不是本轮新增生产修复、归并或撤销，也没有把H148/H149身份、H261乱序结果独立根因再次计数。
+
+原H174探针去ignore，在默认组真实执行，增加一次transport/唯一显式error output断言；原H261早到真结果对照不改。新增replacement两测试的8种历史×3个公开构造/更替入口×两协议×普通/cancel-aware共96个成功发送组合，以及16个坏身份transport前拒绝+16个合法替换恢复组合。全部经过真实ModelClient/ResponseRequest/同一repair和序列化到recording HttpTransport，非独立影子配对器；每次成功恰1个transport调用，拒绝0个，既有call native kind/真实结果/参数777和温度/更新的instructions及seed排除均断言。caller消息不变；缺失结果是显式error，孤立output沿既有placeholder语义保留真内容，不伪称恢复出了真实原调用身份。transport只返回合成SSE，工具名仅作为输入历史，不执行read_file/apply_patch或真实副作用；本机HTTP feature测试仅沿已有自建loopback与合成凭据夹具，未访问真实服务。
+
+六份生产/测试文件最终冻结后实际执行（以下 `T=C:\Users\32734\AppData\Local\Temp\h174-review-20261108`，各test/clippy命令实际带 `--target-dir T --offline -j 2`）：
+
+| 实际命令（补上述共同Cargo参数） | 本轮实际结果 |
+|---|---|
+| `cargo fmt --all -- --check`（不带共同target/offline/j参数） | exit0，4.316秒 |
+| `cargo test -p deepagent-models --test response_repair_audit -- --nocapture --test-threads=1` | exit0，4/0/0，5.846秒含编译 |
+| `cargo test -p deepagent-models -- --quiet --test-threads=2` | exit0，18结果块全部终态，共204通过/0失败/25忽略；unit154/0/14，41.508秒 |
+| 同上一行加 `--features http` | exit0，18结果块全部终态，共220通过/0失败/27忽略；unit169/0/16，48.491秒 |
+| `cargo clippy -p deepagent-models --all-targets --all-features --no-deps -- -D warnings` | exit101，4.713秒，未改client.rs:431 Option<ReasoningEffort>.clone阻断，不能称strict通过 |
+| 同上一行改 `-- -W warnings` | exit0，5.071秒，唯一为上述既有生产warning，本轮测试无新增诊断 |
+| `cargo test -p deepagent-runtime --lib model_agent::tests:: -- --quiet --test-threads=2` | exit0，73/0/3忽略、374其他过滤，3.922秒；原ResponseHistory/正常工具多轮/压缩/重试消费者对照通过 |
+
+第一候选回归及上述两组Models/Runtime也通过，但诊断lint指出本轮新增测试pairs返回元组的type_complexity；待该轮所有进程终态后，以测试内IdentifiedPayloads类型别名明确同一payload结构，未放宽lint/改生产，再重新冻结执行整套表中门禁；不把新增诊断当历史。最终strict失败的client.rs与基线9e0a9d74文件对象及原SHA256一致。
+
+另从本轮http组真实测试binary再次精确运行 `audit_replace_messages_repairs_dangling_responses_calls_before_transport --exact --nocapture`，exit0、1/0/0；实际has_call=true/has_output=true，缺失结果status=error。binary为本轮target下debug/deps/response_repair_audit-8ffa5d647307e179.exe，SHA256为6F91356F05D0A2E5C4A4FBCDFAF99E92840F0A211CB730DB43F3627E748E3F21，另随本轮证据聚合保存，原审计0/1失败保留，不因默认组曾经忽略probe或仅编译通过就关闭。Runtime 3个ignored分别是total-deadline部分文本（H131）、fallback上限（H49）、memory去重压缩（H53/H243）独立问题，本轮不借复核改这些生产行为，不将其忽略当验收。
+
+**兼容与未验边界**：本轮无生产/依赖/API/协议/配置/UI/SQL变化，不做数据库迁移，不新增修复链或副作用恢复机制；公开mutator修复是已存在的历史行为。Models两feature组都已完整执行；本轮未重跑workspace、CLI/SDK、Tauri/pnpm/真实UI，原因是只补Models测试、生产签名/共享行为均未改，Runtime真实消费者已覆盖；不能引用上轮4923/1/198当成本轮全仓结果。真实DeepSeek、真实工具、用户持久化数据、跨OS、跨进程session恢复未执行，不以recording fixture成功声称provider接受或实际副作用可恢复。任意手工改public input的配对自愈不是本项mutator核验结论；身份拒绝仍沿既有边界，媒体投影等独立问题不归并。
+
+306唯一编号/8列，193本阶段验收、26历史已修复跳过、8归并、3撤销，76未关闭（H180授权跳过，实际75）；本轮新增生产修复0/历史跳过1/归并撤销0。下一准备H228会话搜索可见性候选截断复核，优先可见性与结果一致性，不以探针数量排序；尚未开始其生产修改。本项本机核验剩余0，命名root清理与独立测试提交另列E03/E04。全余200–400有效小时仍为未逐项校准低置信历史粗估，设备/依赖/编译/环境及删除权限等待另计，不能估出可靠等待区间或精确完工承诺，整体goal active。
+
+**E-H174-03（2026-11-08，命名产物完整清理）**：E01原失败/当前probe通过、E02历史提交归因、全部实际命令/结果/未验与最终生产/测试binary身份已同步双文并保存在本轮工具聚合状态后，才删除本轮可再生产物。精确核对根为 `C:\Users\32734\AppData\Local\Temp\h174-review-20261108`，祖先及递归均无reparse/越界/枚举错误，关联Cargo/rustc/rustdoc/Node/CLI/测试活进程0，六份受测/引用文件SHA256仍匹配；未另建Tauri target或G盘h命名产物。
+
+原生 `cargo clean --target-dir <上述根> --offline --dry-run` exit0，3,209文件、4,422,300,880逻辑字节；随后去dry-run实际clean exit0，根已不存在，包含本轮target、日志、一次性证据JSON与临时夹具，不留h174缓存。不把逻辑文件长度说成精确物理释放；C余79,131,353,088、G余148,592,660,480字节仅为当时观测。未删除源码/用户文档，原五项用户untracked未读改；H176等旧G/C拒绝路径不重试。本轮两个测试文件及双文待白名单独立提交，行为验收和历史跳过已按E02成立，不反复跑被删缓存。
 
 ### H-175：工作流 `http-request` 节点绕过统一网络权限与审批边界
 

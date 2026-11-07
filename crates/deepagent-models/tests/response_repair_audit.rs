@@ -1,5 +1,7 @@
 //! Audit that every public Responses history mutation keeps tool-call pairs valid.
 
+#[path = "response_repair_audit/replacement.rs"]
+mod replacement;
 #[path = "support/sequence.rs"]
 pub mod sequence_fixture;
 use std::sync::{Arc, Mutex};
@@ -24,10 +26,18 @@ impl HttpTransport for RecordingTransport {
             .lock()
             .unwrap()
             .push(serde_json::from_str(&request.body)?);
-        for event in [
-            r#"{"type":"response.output_text.delta","delta":"offline"}"#,
-            r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#,
-        ] {
+        let events = if request.url.ends_with("/responses") {
+            vec![
+                r#"{"type":"response.output_text.delta","delta":"offline"}"#,
+                r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#,
+            ]
+        } else {
+            vec![
+                r#"{"choices":[{"delta":{"content":"offline"},"finish_reason":"stop"}]}"#,
+                "[DONE]",
+            ]
+        };
+        for event in events {
             if sink.on_event(event)? {
                 break;
             }
@@ -48,7 +58,6 @@ fn dangling_tool_messages() -> Vec<Message> {
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: public replace_messages must preserve Responses tool-call repair"]
 async fn audit_replace_messages_repairs_dangling_responses_calls_before_transport() {
     let transport = Arc::new(RecordingTransport::default());
     let client = ModelClient::new(
@@ -64,6 +73,11 @@ async fn audit_replace_messages_repairs_dangling_responses_calls_before_transpor
     client.stream_response(request).await.unwrap();
 
     let requests = transport.requests.lock().unwrap();
+    assert_eq!(
+        requests.len(),
+        1,
+        "history repair must not redispatch a tool or model"
+    );
     let input = requests[0]["input"].as_array().unwrap();
     let has_call = input
         .iter()
@@ -78,6 +92,14 @@ async fn audit_replace_messages_repairs_dangling_responses_calls_before_transpor
         has_call && has_output,
         "dangling calls must be repaired before transport"
     );
+    let outputs: Vec<_> = input
+        .iter()
+        .filter(|item| item["type"] == "function_call_output")
+        .collect();
+    assert_eq!(outputs.len(), 1);
+    let failure: serde_json::Value =
+        serde_json::from_str(outputs[0]["output"].as_str().unwrap()).unwrap();
+    assert_eq!(failure["status"], "error");
 }
 
 #[test]
