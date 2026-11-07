@@ -3344,6 +3344,151 @@ async fn h248_speech_limit_fails_once_without_output_and_replays_after_reopen() 
 }
 
 #[tokio::test]
+async fn h292_revoked_workflow_selection_never_dispatches_and_replays_one_failure() {
+    for explicit in [false, true] {
+        let mut provider = LocalTextProvider::start().await;
+        let mut fixture = MediaFixture::new_text(&provider).await;
+        let listed = fixture.providers.list_providers().unwrap().remove(0);
+        let saved = fixture.providers.provider(&listed.id).unwrap();
+        fixture
+            .providers
+            .save_bindings(
+                None,
+                vec![crate::canvas_provider_service::CanvasScenarioBinding {
+                    scenario: "text".into(),
+                    provider_id: saved.id.clone(),
+                    model_id: "deepseek-flash".into(),
+                    enabled: true,
+                }],
+            )
+            .unwrap();
+        fixture
+            .providers
+            .save_model(
+                &saved.id,
+                CanvasModelConfig {
+                    scenarios: vec![CanvasScenario::Embedding],
+                    ..saved.models[0].clone()
+                },
+            )
+            .unwrap();
+        if !explicit {
+            fixture
+                .workflow
+                .definition
+                .nodes
+                .iter_mut()
+                .find(|node| node.id == "text")
+                .unwrap()
+                .config["model"] = json!("");
+        }
+        let run_id = "h292-revoked-workflow";
+        let mut run = fixture.spawn(run_id);
+        let result = finish_run(&mut run).await;
+        assert!(provider.requests.lock().unwrap().is_empty());
+        provider.server.abort();
+        assert!((&mut provider.server).await.unwrap_err().is_cancelled());
+        assert_failed_media_and_reopen(
+            fixture,
+            run_id,
+            result,
+            "text",
+            if explicit {
+                "not declared for scenario"
+            } else {
+                "NoCandidateModel"
+            },
+        );
+    }
+}
+
+#[tokio::test]
+async fn h292_video_scope_uses_current_qualified_workspace_priority_without_second_hop() {
+    use crate::canvas_provider_service::CanvasScenarioBinding;
+    use deepagent_runtime::workflow::{
+        CanvasModelBridge, CanvasVideoPreparation, CanvasVideoRequest,
+    };
+    let mut global = LocalVideoProvider::start_with_task_id("Succeed", "h292-global").await;
+    let mut scoped = LocalVideoProvider::start_with_task_id("Succeed", "h292-scoped").await;
+    let fixture = MediaFixture::new(&global).await;
+    let listed = fixture.providers.list_providers().unwrap().remove(0);
+    let first = fixture.providers.provider(&listed.id).unwrap();
+    let second = fixture
+        .providers
+        .save_provider(CanvasProviderInput {
+            name: "H292 scoped video".into(),
+            protocol: "openai".into(),
+            base_url: scoped.base_url.clone(),
+            enabled: true,
+            models: first.models.clone(),
+            api_key: Some("synthetic-h292-key".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    let second = fixture.providers.provider(&second.id).unwrap();
+    let binding = |id: &str| {
+        vec![CanvasScenarioBinding {
+            scenario: "video_generation".into(),
+            provider_id: id.into(),
+            model_id: "audit-video-model".into(),
+            enabled: true,
+        }]
+    };
+    fixture
+        .providers
+        .save_bindings(None, binding(&first.id))
+        .unwrap();
+    fixture
+        .providers
+        .save_bindings(Some("h292-workspace"), binding(&second.id))
+        .unwrap();
+    let gateway = Arc::new(CanvasModelGateway::new(fixture.providers.clone()))
+        .scoped_for_run(Some("h292-workspace"))
+        .unwrap();
+    for selected_scoped in [true, false, true] {
+        fixture
+            .providers
+            .save_model(
+                &second.id,
+                CanvasModelConfig {
+                    scenarios: if selected_scoped {
+                        vec![CanvasScenario::VideoGeneration]
+                    } else {
+                        Vec::new()
+                    },
+                    ..second.models[0].clone()
+                },
+            )
+            .unwrap();
+        let selected = if selected_scoped { &scoped } else { &global };
+        selected.release_poll.notify_one();
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            gateway.prepare_video(CanvasVideoRequest {
+                model_ref: String::new(),
+                prompt: "synthetic scoped video".into(),
+                image_url: None,
+                size: None,
+                resume_task_id: None,
+                resume_fingerprint: None,
+                timeout_ms: 3000,
+                cancel: None,
+                on_progress: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(matches!(result, CanvasVideoPreparation::Deferred { .. }));
+    }
+    global.close().await;
+    scoped.close().await;
+    assert_eq!(global.requests.lock().unwrap().len(), 2);
+    assert_eq!(scoped.requests.lock().unwrap().len(), 4);
+    assert!(fixture.artifacts.list(None, None).unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn audit_video_node_events_survive_database_reopen() {
     let mut provider = LocalVideoProvider::start("Succeed").await;
     let fixture = MediaFixture::new(&provider).await;

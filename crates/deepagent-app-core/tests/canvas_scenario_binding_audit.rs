@@ -14,6 +14,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+#[path = "canvas_scenario_binding/eligibility.rs"]
+mod eligibility;
+
 const PROVIDER: &str = "scenario-audit";
 const FORMER: &str = "formerly-text";
 const HEALTHY: &str = "healthy-text";
@@ -22,6 +25,9 @@ struct Fixture {
     base_url: String,
     reject_former: Arc<AtomicBool>,
     seen: Arc<Mutex<Vec<(String, String)>>>,
+    hold: Arc<AtomicBool>,
+    arrived: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -35,6 +41,10 @@ impl Fixture {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let reject = reject_former.clone();
         let sink = seen.clone();
+        let hold = Arc::new(AtomicBool::new(false));
+        let arrived = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let (held, received, released) = (hold.clone(), arrived.clone(), release.clone());
         let task = tokio::spawn(async move {
             loop {
                 let (mut socket, _) = listener.accept().await.expect("accept");
@@ -68,24 +78,44 @@ impl Fixture {
                         assert!(n > 0, "request ended before body");
                         bytes.extend_from_slice(&chunk[..n]);
                     }
-                    let body: Value = serde_json::from_slice(&bytes[body_start..body_start + length])
-                        .expect("request JSON");
-                    let model = body["model"].as_str().expect("wire model").to_owned();
+                    let raw = &bytes[body_start..body_start + length];
+                    let body: Value = serde_json::from_slice(raw).unwrap_or(Value::Null);
+                    let model = if path.starts_with("POST /v1/audio/transcriptions ") {
+                        String::from_utf8_lossy(raw).split_once("name=\"model\"\r\n\r\n").unwrap().1.split("\r\n").next().unwrap().to_owned()
+                    } else if path.starts_with("POST /v1/video/status ") {
+                        body["requestId"].as_str().unwrap().trim_start_matches("h292-job-").to_owned()
+                    } else { body["model"].as_str().expect("wire model").to_owned() };
                     sink.lock().expect("seen").push((path, model.clone()));
+                    received.notify_one();
+                    if held.swap(false, Ordering::SeqCst) { released.notified().await; }
+                    let path = String::from_utf8_lossy(&bytes[..body_start]);
                     let (status, payload) = if model == FORMER && reject.load(Ordering::SeqCst) {
                         (
                             "400 Bad Request",
                             json!({"error":{"message":"synthetic unsupported text operation"}}),
                         )
+                    } else if path.starts_with("POST /v1/embeddings ") {
+                        ("200 OK", json!({"data":[{"index":0,"embedding":[1.0,2.0]}]}))
+                    } else if path.starts_with("POST /v1/images/generations ") {
+                        use base64::Engine as _;
+                        ("200 OK", json!({"data":[{"b64_json":base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\nh292")}]}))
+                    } else if path.starts_with("POST /v1/audio/transcriptions ") {
+                        ("200 OK", json!({"text":"synthetic transcription"}))
+                    } else if path.starts_with("POST /v1/video/submit ") {
+                        ("200 OK", json!({"requestId":format!("h292-job-{model}")}))
+                    } else if path.starts_with("POST /v1/video/status ") {
+                        ("200 OK", json!({"status":"Succeed","results":{"videos":[{"url":"https://public.fixture.invalid/h292.mp4"}]}}))
                     } else {
                         (
                             "200 OK",
                             json!({"choices":[{"message":{"content":format!("ok:{model}")}}]}),
                         )
                     };
-                    let payload = payload.to_string();
+                    let speech = path.starts_with("POST /v1/audio/speech ") && status == "200 OK";
+                    let payload = if speech { "ID3h292-synthetic-speech".into() } else { payload.to_string() };
+                    let mime = if speech { "audio/mpeg" } else { "application/json" };
                     let response = format!(
-                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                        "HTTP/1.1 {status}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
                         payload.len()
                     );
                     socket.write_all(response.as_bytes()).await.expect("response");
@@ -98,6 +128,9 @@ impl Fixture {
             base_url,
             reject_former,
             seen,
+            hold,
+            arrived,
+            release,
             task,
         }
     }
@@ -226,7 +259,6 @@ async fn current_scenario_controls_accept_valid_and_skip_disabled_or_unbound_mod
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: revoked scenarios must invalidate old binding eligibility"]
 async fn audit_revoked_scenario_is_not_dispatched_through_stale_binding() {
     let mut failures = Vec::new();
     for update_provider in [false, true] {

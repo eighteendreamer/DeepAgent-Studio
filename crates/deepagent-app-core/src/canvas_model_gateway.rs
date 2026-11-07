@@ -1359,9 +1359,18 @@ impl CanvasModelGateway {
         usage: Option<Arc<dyn CanvasUsageSink>>,
         target: SpeechOutputTarget,
     ) -> CanvasResult<GatewayOutput> {
+        let scenario = request.operation.scenario().ok_or_else(|| {
+            CanvasError::new(
+                CanvasErrorCode::UnsupportedOperation,
+                format!(
+                    "operation `{}` has no model scenario and must run locally",
+                    request.operation.as_str()
+                ),
+            )
+        })?;
         let resolved = self
             .providers
-            .resolve_model(provider_id, model_id)
+            .resolve_model_for_scenario(provider_id, model_id, scenario)
             .map_err(|e| CanvasError::new(CanvasErrorCode::InvalidInput, e.to_string()))?;
         // An explicit model is not swapped out, so exceeding its declared limit
         // is the user's error to see rather than a silent reroute.
@@ -3379,10 +3388,17 @@ impl CanvasModelGateway {
             ));
         }
         let candidate = match parse_model_ref(&request.model_ref)? {
-            Some((provider_id, model_id)) => self.providers.resolve_model(provider_id, model_id)?,
+            Some((provider_id, model_id)) => self.providers.resolve_model_for_scenario(
+                provider_id,
+                model_id,
+                CanvasScenario::VideoGeneration,
+            )?,
             None => self
                 .providers
-                .candidates_for_scenario(CanvasScenario::VideoGeneration, None)?
+                .candidates_for_scenario(
+                    CanvasScenario::VideoGeneration,
+                    self.workspace_id.as_deref(),
+                )?
                 .into_iter()
                 .next()
                 .ok_or_else(|| {

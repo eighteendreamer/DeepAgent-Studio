@@ -8,15 +8,15 @@
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 191 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-69、H-70、H-71、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-82、H-84、H-87、H-88、H-92、H-96、H-97、H-125、H-126、H-130、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-147、H-148、H-149、H-150、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-167、H-175、H-178、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-196、H-197、H-198、H-199、H-200、H-204、H-205、H-206、H-207、H-208、H-209、H-210、H-212、H-213、H-214、H-215、H-216、H-218、H-219、H-221、H-222、H-223、H-224、H-225、H-226、H-227、H-229、H-233、H-234、H-235、H-236、H-237、H-239、H-240、H-241、H-242、H-244、H-245、H-247、H-248、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-256、H-259、H-260、H-261、H-265、H-266、H-267、H-268、H-270、H-271、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-290、H-293、H-295、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 192 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-69、H-70、H-71、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-82、H-84、H-87、H-88、H-92、H-96、H-97、H-125、H-126、H-130、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-147、H-148、H-149、H-150、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-167、H-175、H-178、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-196、H-197、H-198、H-199、H-200、H-204、H-205、H-206、H-207、H-208、H-209、H-210、H-212、H-213、H-214、H-215、H-216、H-218、H-219、H-221、H-222、H-223、H-224、H-225、H-226、H-227、H-229、H-233、H-234、H-235、H-236、H-237、H-239、H-240、H-241、H-242、H-244、H-245、H-247、H-248、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-256、H-259、H-260、H-261、H-265、H-266、H-267、H-268、H-270、H-271、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-290、H-292、H-293、H-295、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 24 | 17项原审计历史修复；H-77/H-83/H-238/H-246/H-301/H-232/H-68分别随H-78/H-143/H-260/H-245/H-164/H-219/H-70共享边界消除，验收另列，不重复记新生产修复 |
 | 归并 | 8 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 3 | H-211/H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | 本轮H248按E03完成本机验收；清理与提交另记 |
-| 待修复 | 80 | 含H180授权跳过；实际后续队列79项，清理阻塞另列 |
+| 修复中 | 0 | 本轮H292按E03完成本机验收；清理与提交另记 |
+| 待修复 | 79 | 含H180授权跳过；实际后续队列78项，清理阻塞另列 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **80（其中H-180按用户要求跳过，实际待处理79项）**；不提供完成率。当前191项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301/H-232/H-68在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4/3cabd45f/f97db714及真实复核单独列明，合计24项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。2026-11-05本轮H239新增验收1后，H287依据新D:继承控制位反例重新打开1，其后本轮H287按E21返修恢复验收，当前161，其后H213新增验收1，当前162，其后H212新增验收1，当前163，其后H221新增验收1，当前164，其后H222新增验收1为165，H150新增验收1为166，本轮H223新增验收1为167，其后H267按E03新增验收1为168；其后H268按E04新增验收1为169；其后H293按E06新增验收1为170；本轮H84按E03新增验收1为171；本轮H70按E07新增验收1为172；本轮H68按E04新增历史跳过1，修复数仍172；本轮H69按E06新增验收1为173；本轮H71按E06新增验收1为174；本轮H82按E04新增验收1为175；本轮H209按E04新增验收1为176；本轮H210按E05新增验收1为177；本轮H200按E04新增验收1为178；本轮H204按E04新增验收1为179，H90同根归并使归并数为8；11-07本轮H205按E03新增验收1为180；本轮H206按E03新增验收1为181；本轮H207按E03新增验收1为182；本轮H256按E03新增验收1为183；本轮H265按E03新增验收1为184；本轮H266按E03新增验收1为185；本轮H295按E03新增验收1为186；本轮H215按E03新增验收1为187；本轮H216按E03新增验收1为188；本轮H126按E03新增验收1为189；本轮H167按E03新增验收1为190；本轮H248按E03新增验收1为191；历史f2efc1b5与E-H287-01～20不删除。
+有效未关闭条目当前为 **79（其中H-180按用户要求跳过，实际待处理78项）**；不提供完成率。当前192项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301/H-232/H-68在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4/3cabd45f/f97db714及真实复核单独列明，合计24项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。2026-11-05本轮H239新增验收1后，H287依据新D:继承控制位反例重新打开1，其后本轮H287按E21返修恢复验收，当前161，其后H213新增验收1，当前162，其后H212新增验收1，当前163，其后H221新增验收1，当前164，其后H222新增验收1为165，H150新增验收1为166，本轮H223新增验收1为167，其后H267按E03新增验收1为168；其后H268按E04新增验收1为169；其后H293按E06新增验收1为170；本轮H84按E03新增验收1为171；本轮H70按E07新增验收1为172；本轮H68按E04新增历史跳过1，修复数仍172；本轮H69按E06新增验收1为173；本轮H71按E06新增验收1为174；本轮H82按E04新增验收1为175；本轮H209按E04新增验收1为176；本轮H210按E05新增验收1为177；本轮H200按E04新增验收1为178；本轮H204按E04新增验收1为179，H90同根归并使归并数为8；11-07本轮H205按E03新增验收1为180；本轮H206按E03新增验收1为181；本轮H207按E03新增验收1为182；本轮H256按E03新增验收1为183；本轮H265按E03新增验收1为184；本轮H266按E03新增验收1为185；本轮H295按E03新增验收1为186；本轮H215按E03新增验收1为187；本轮H216按E03新增验收1为188；本轮H126按E03新增验收1为189；本轮H167按E03新增验收1为190；本轮H248按E03新增验收1为191；本轮H292按E03新增验收1为192；历史f2efc1b5与E-H287-01～20不删除。
 
 ## H-205 Rust通知序号（已修复并验收，2026-11-07，限E03范围）
 
@@ -6537,7 +6537,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-289：CodeGraph 定义文件变更后不会重新连接未修改 caller 的调用边](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-290：画布供应商保存先提交配置、后写密钥，密钥持久化失败后发布新配置与旧凭据的混合身份](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H290-01～04；仅本项，不归并H88/H122/H292；原始失败保留 | 原SecretStore不可变版本准备/回读，单次文档CAS发布配置、generation与引用，统一gate/消费快照 | 专项21/0/1＋原默认1/0/0＋provider10/0/0；全仓4529/2/241，保留H306/历史夹具超时；lint/build/限制见E03 | `d514045d3a33ff3ad6118bf0c4a4502adf77adb1` | 无自动孤儿GC/安全擦除；同版本协调/可写gate；下一项H96复核，总200–400有效小时历史粗估，等待另计 |
 | [H-291：重复编号撤销，归并 H-126（2026-10-25 更正）](system-harness-audit-2026-10-21.md) | — | 归并 | 唯一有效项 H-126 | 只关联原证据，不新增修复任务 | 验收由 H-126 统一记录 | 无独立修复提交 | 不独立计数或估时 |
-| [H-292：画布场景声明撤销后旧绑定仍参与实际调用，非瞬时失败阻断健康候选](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-292：画布场景声明撤销后旧绑定仍参与实际调用，非瞬时失败阻断健康候选](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E01原probe0/1及E02六场景TDD0/3保留；仅E03本机范围 | 同一资格集合+provider gate快照，绑定只排序；显式/视频scope共用当前声明，旧偏好不清删 | 默认场景8/0、正式workflow2/0、H290事务21/0、AppCore1592/0/46忽略；全仓4909/1旧H306/199忽略；CLI/SDK/Tauri/fmt过，strict旧失败 | 本项fix待生成，取得hash后另docs提交回填 | 显式失格调用改拒绝；已准备快照不取消，非沙箱权限；本项0，后续实际78、下一H177；总200–400低置信有效小时，等待另计 |
 | [H-293：共享终端租约过期后真实 PTY 存活但没有续租、接管或清理路径](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E01～06；Windows本机离线真实PTY/文件SQLite，非历史跳过 | 既有execution_leases原子过期CAS+Backend renew，统一PTY owner gate，失败保留清理重试；旧token/legacy旁路拒绝 | 原生6/0、生命周期7/0、相关229/0/1、workspace4715/1旧H306/218；TS4/0、桌面build/Tauri check/workspace fmt通过；旧lint/旧Tauri格式和未验范围见E04～06 | `6911b00713339b404f4fead8df223d0a624bc65f`；E-H293-07 | 本项实施验收与代码提交余0；客户端显式renew/takeover，非后台心跳/宿主重启附着；SSH不连真实远端；下一H84；总200–400有效小时历史粗估，等待另计 |
 | [H-294：完成门把每次成功文件操作强制转换为最终净变化，临时创建后删除被误判未完成并额外请求模型](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-295：TypeScript SDK 以客户端全局审批屏障结束单个 turn，另一会话的待答审批会阻塞已完成流](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E01当前2/1与TDD7/11留证；E03原探针默认执行及完整消费验收，非历史跳过 | 原局部view消费匹配terminal即收尾；审批留原显式snapshot owner，不join全局、不自动代答 | SDK177/0/0、原3/0、新18/0、owned21/0、代次16/0、真实stdio2/0+JSONL1/0；fmt/typecheck/3MJS过；E03命令与未验 | `3becdf8547d2715632c23486d4443fe12986c3f6`；文档回填另提交，不amend | 本机修复/验收/提交余0；E04清理策略阻塞251,443,695字节；流自然结束不再隐式保证审批settled；下一H215；全余200–400历史粗估、等待另计 |
@@ -7745,3 +7745,88 @@ Finding F-H248（E01～03）：SpeechSynthesize成功体缺乏独立字节边界
 提交后9份实际受测文件SHA256仍与最终冻结一致，tracked干净，原五项用户untracked保留，只列名未读改/暂存。两份文档本次只回填实际fix hash和E05，另作文档commit，不反复amend填写自身hash。306唯一编号/每行8列/顶部191验收成员与原报告证据一致，仅H248主行相对基线改变；全仓唯一H306失败/严格lint旧失败、C盘1,188,166,888字节残余均沿E03/E04，不因提交成功改写为全绿或清空。
 
 本轮新增1，累计191验收、24历史跳过、8归并、3撤销、80未关闭含H180授权跳过，实际后续79。下一准备H292绑定资格与执行不一致，尚未改其代码；全余200–400有效小时仍是未逐项校准低置信历史粗估，机器/设备/依赖/环境/清理等待另计，无精确完工承诺，整体goal active。
+
+## H-292 当前场景资格与旧绑定（已修复并验收，2026-11-07，限E03范围）
+
+**E-H292-01（2026-11-07，原探针真红与修复范围，修复中）**：基线40ed575dc14e016f4aea821c29a0d9ed7f31b490，tracked干净、无未完成合并，原五项用户untracked只列名不读改/暂存。上轮H248已提交/验收，属于实质进展，不重复修复；其C盘删除拒绝残余及旧G/C拒绝路径不重试。核对原H292/唯一台账、CanvasProviderService场景/绑定/模型CRUD、H290既有provider_gate与credential快照、gateway自动/显式/视频/连接探针/使用量与所有消费者，以及原回归/Cargo/CI/rustfmt、Desktop store→Tauri保存静态调用方。本轮只处理旧绑定越过当前场景声明的根因，不处理H180、模型协议/参数/动态目录等其他编号。
+
+新建真正Cargo根 `C:\Users\32734\AppData\Local\Temp\h292-repair-20261107`（开始前不存在），隔离合成HOME/USERPROFILE/APPDATA/LOCALAPPDATA/仓外TEMP/TMP/data，清凭据/代理/DEEPAGENT环境，外层显式target-dir、离线复用工具链缓存。冻结provider_service/原commit边界/gateway三份生产源码SHA256前后不变时执行 `cargo test --target-dir $Target -p deepagent-app-core --test canvas_scenario_binding_audit audit_revoked_scenario_is_not_dispatched_through_stale_binding --offline -j 2 -- --ignored --exact --nocapture`：exit101、0过1败0忽略、317.907秒含冷编译；两种撤销[]/[Embedding]在SQLite重开后候选仍为formerly-text/healthy-text，真实wire仍只向formerly-text POST，400后未调健康模型；仅清binding后成功调healthy-text。不是历史修复，也不是服务未启动；无真实供应商/内网/凭据/用户数据或真实迁移。
+
+根因仍是同一候选方法的binding分支只查enabled，extras分支查enabled+scenario；save_bindings校验声明但不与已存在provider gate协作，且每行重读state，无法把列表验证固定在同一配置快照。显式execute_on与video bridge也只查enabled、未查场景；视频自动候选另未消费当前run workspace。预定复用原CanvasProviderService的声明/资格边界和稳定provider gate，binding只表达优先级、不能扩权；自动和显式执行按同代次当前声明解析，视频作为共享消费者使用相同资格+run scope，不复制路由/registry/审批/store。保留旧binding偏好不主动清删用户配置，不改HTTP400/401为可fallback；已准备/in-flight调用冻结快照，后续新调用观察已提交撤销，场景选择不是沙箱权限撤销或取消已发请求。
+
+本地参考查证DeepSeek Harness adapter prepareCall读取一次connection并绑定该代次stream的原则；不照搬其协议、未运行参考工程或声称官方供应商替宿主保证场景资格。新增测试先扩原合成HTTP fixture支持六场景实际wire（含视频submit/status，不下载结果URL）、保留原Text控制/失败；第一次TDD仅编译exit101/4.718秒，因integration测试误用pub(crate) scoped_for_run，没有行为result，不能算根因真红。未扩宽生产可见性，改为公开bytes入口显式scope/公开视频全局，视频run scope留给内部正式workflow补验，再冻结重跑真实TDD。后续还需完整真实TDD、六场景/两CRUD/作用域/旧数据/恢复/排序与fallback、配置快照并发、正式Kernel重开、全部受影响测试和跨层构建/strict、清理与独立提交；未取得结果前不报通过。
+
+当前191验收、24历史跳过、8归并、3撤销、79待修+H292修复中，80未关闭含授权跳过H180，实际总队列79；本轮新增验收0、无fix提交。H292暂估余4–10有效小时（共享资格、显式兼容、并发/跨层验证），全余200–400有效小时仍为未逐项校准低置信历史粗估；机器构建/锁及设备/依赖/环境/清理等待另计，无可靠总上界，整体goal active。
+
+**E-H292-02（2026-11-07，六场景真实TDD与统一资格实现，未最终验收）**：修正测试私有可见性后，生产未改时执行 `cargo test --target-dir $Target -p deepagent-app-core --test canvas_scenario_binding_audit eligibility:: --offline -j 2 -- --nocapture --test-threads=1`：exit101、0过3败0忽略、17.754秒。六场景×两CRUD路径的12组真实wire均仍向撤销模型发请求，显式选撤销模型也全部成功；另一组旧alias/global/workspace/多provider同名/去重断言仍纳入失格模型；在途响应快照可完成，但提交撤销后的新调用仍选旧模型。全部失败来自行为断言而非启动失败，原1个ignored探针失败另保留。首个根因候选同target整组exit0、4过0败1忽略、57.674秒，ignored当时未验，不据此关闭。
+
+实现：原CanvasModelConfig集中声明谓词；自动候选先从同一次provider/binding快照建立enabled+声明资格集合，再按已保存绑定顺序从集合取出，重复/未知/缺失旧行不能新增身份；剩余沿原priority/provider-name排序。save_bindings整列表在原provider_gate下读一次state并验证/写入，不逐行混用新旧代次，不清删已有全局/workspace偏好。新增additive resolve_model_for_scenario复用同一enabled/声明/credential快照，声明校验在凭据物化前；gateway execute_on及所有正式bridge共用它，video自动分支也消费run workspace；原resolve_model保留诊断身份解析，不猜执行场景。无新锁/registry/dispatch/SQL/依赖、无400/401回退扩张，已准备请求冻结旧快照、新请求读取已提交撤销，HTTP await不持配置锁；不声称跨任意raw SQLite写入的通用事务。
+
+原探针去ignore进入默认组；新增正常HTTP400仍阻断、不合格候选为空则wire0、跨数据库句柄真实credential读取暂停期间binding writer必须等待同一gate，放行后新绑定顺序可见。第二候选默认整integration exit0、7过0败0忽略、73.101秒，含原探针实际只发healthy-text；其中一个六场景matrix含12组循环，并非12个独立测试数量。随后正式Kernel补强编译exit101/36.574秒，3个E0308来自测试把CanvasModelDto当Config，不是生产逻辑失败，也不能算工作流通过；改从真实provider后端配置取Config，不放宽DTO或断言。第三候选在跑，尚需结果。
+
+新增正式工作流验证目标：自动/显式失格text在HTTP前失败、唯一Failed/failed、无output/artifact/part，释放句柄后SQLite重开/live与replay相同；内部run-scoped视频全局与workspace优先相反时选workspace，撤销其声明后选合格global、恢复后还原优先，prepare仅submit/status不下载结果URL。公开说明docs/canvas-scenario-selection.md解释绑定优先不是权限、显式资格兼容收紧、scope与冻结语义；示例/意图不充当已执行结果。仍待完整gateway/跨crate/CLI/SDK/Tauri、strict核对、清理与独立提交，计数沿E01，不提前关闭。
+
+**E-H292-02b（2026-11-07，候选工作流通过与跨消费者反例保留）**：第三候选真实门禁（同E01 Target/隔离、cargo test --offline -j2，末参数--nocapture --test-threads=1）为：lib过滤canvas_model_gateway::workflow_media_audit::h292_，exit0、2/0/0、104.978秒；lib过滤canvas_provider_service::，exit0、10/0/0、1.403秒；lib过滤canvas_model_gateway::，exit0、146过0败10忽略、45.155秒。两项新正式workflow实际通过，不用编译代替：text自动/显式在撤销后wire0、唯一Failed/failed、无outputs/artifact/part，关闭句柄后重开replay相等；video scoped→撤销fallback global→恢复scoped共6次submit/status，无下载或制品，未修改生产网络门禁。
+
+随后补先查声明再读凭据、六场景global/workspace下disabled/removed模型与disabled provider对照，并冻结6份Rust/公开说明开始第一套final。fmt exit0/4.332秒；默认场景integration8/0/0、19.396秒；原probe显式默认1/0/0、1.747秒。H290原凭据事务组exit101、20过1败1忽略、18.311秒，唯一wire::h290_video_resume_uses_committed_identity_and_never_polls_another_accounts_job在真实请求前被新门禁拒绝，因原测试复用仅声明Text的模型发视频，不是任意HTTP失败，也不能当历史噪音跳过。门禁停止，未继续跑AppCore/strict/build。
+
+只在该视频测试本地增加video_input，保留Text并明确声明VideoGeneration，初始与更新都使用同一夹具构造；不改其他H290夹具、生产资格或endpoint/key/task-id断言。改后fmt check发现新push布局差异，下一套final2在首个fmt门禁exit1/4.236秒即停止，无行为结果，不抹去格式失败；执行cargo fmt --all后检查通过，重新冻结包含该真实消费者共7份Rust/说明开始final3，原命名日志不充当最终结果。待全门禁终态、strict逐处核对与真实CLI/SDK/全仓/Tauri、清理/双文/独立commit前，本项仍修复中，计数沿E01。
+
+**E-H292-03（2026-11-07，最终本机验收，仅关闭本项）**：最终7份实现/测试/公开说明逐份SHA256冻结，所有门禁前后及最终复核一致；provider_service.rs为61D87295FD0BD85FBA03A9DF6A04B8B3EDDD79DB73C66B01C98B997271174585，gateway.rs为7B1319E6E038F7136EB034FB4DC029E36334575067EBC389B604C55A025FBACA。E01原探针0/1、E02六场景TDD0/3、测试可见性/DTO编译失败、H290正常消费者失败与格式失败全部保留，不用编译成功、默认skip或局部绿宣称修复。只修H292，H290夹具声明补齐是新增资格门禁的必要消费者适配，不重复记为H290生产修复。
+
+以下PowerShell仓库根实际命令，`$Target='C:\Users\32734\AppData\Local\Temp\h292-repair-20261107'`，沿E01合成HOME/USERPROFILE/APPDATA/LOCALAPPDATA/仓外TEMP/data、清凭据/代理环境、外层显式target、离线工具链缓存。主target串行门禁；独立Tauri target同冻结源码可与全仓同时检查，不共用输出目录。只使用合成回环HTTP、临时SQLite/内存或合成加密凭据、本地CLI/测试子进程，无真实供应商/内网/用户凭据/用户数据/真实迁移。
+
+| 实际命令 | 退出与结果 | 墙钟秒（含构建/锁等待） |
+|---|---|---|
+| `cargo fmt --all -- --check` | 0 | 4.270 |
+| `cargo test --target-dir $Target -p deepagent-app-core --test canvas_scenario_binding_audit --offline -j 2 -- --nocapture --test-threads=1` | 0；默认8过0败0忽略，含原探针 | 2.770 |
+| `cargo test --target-dir $Target -p deepagent-app-core --test canvas_scenario_binding_audit audit_revoked_scenario_is_not_dispatched_through_stale_binding --offline -j 2 -- --exact --nocapture` | 0；原probe显式默认1/0/0 | 1.055 |
+| `cargo test --target-dir $Target -p deepagent-app-core --test canvas_provider_transaction_tests --offline -j 2 -- --nocapture --test-threads=1` | 0；21过0败1子进程helper忽略，父测试实际执行子进程 | 24.690 |
+| `cargo test --target-dir $Target -p deepagent-app-core --lib --offline -j 2 -- --quiet --test-threads=2` | 0；完整默认lib1592过0败46忽略；嵌套helper不重复计数 | 214.147 |
+| `cargo clippy --target-dir $Target -p deepagent-app-core --all-targets --all-features --no-deps --offline -j 2 -- -D warnings` | 101；旧lib12项、旧media测试2项 | 231.036 |
+| `cargo clippy --target-dir $Target -p deepagent-app-core --all-targets --all-features --no-deps --offline -j 2 -- -W warnings` | 101；旧Kernel测试panicking_unwrap默认deny，仅诊断 | 47.104 |
+| `cargo build --target-dir $Target -p deepagent-cli --offline -j 2` | 0；当前源码CLI | 124.663 |
+| `cargo test --target-dir $Target -p deepagent-harness-sdk --offline -j 2 -- --quiet --test-threads=2` | 0；lib72/0/5、真实stdio12/0/0、doc2/0/0 | 113.386 |
+| `cargo test --target-dir $Target --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=2` | 101；147顶层target，4909过1败199忽略，唯一H306 | 1771.525 |
+| `cargo clippy --target-dir $Target --all-targets --all-features --offline -j 2 -- -D warnings` | 101；旧Models client.rs:431 clone_on_copy | 62.824 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --target-dir $Target\tauri --offline -j 2` | 0；真实特性Tauri共享Rust消费者编译通过 | 435.488 |
+| `cargo clippy --target-dir $Target -p deepagent-app-core --lib --test canvas_scenario_binding_audit --test canvas_provider_transaction_tests --all-features --no-deps --offline -j 2 -- -W warnings` | 0；仅补充诊断、旧lib12 warnings仍在，不是strict通过 | 13.812 |
+
+strict上下文逐处核对：未改context_runtime的8处Usage clone、http_runtime needless_return、plugin_preparation type_complexity、run_assembler arity、session_title borrow；media.rs虽新增本项工作流测试，但158行video_bytes冗余局部、3129行!is_ok上下文与40ed575d基线完全相同，不能说整文件没改。Kernel panicking_unwrap所在测试也未变。针对新integration与H290消费者另执行上表targeted诊断，只出现旧lib12 warnings，新资格/夹具无新诊断；该-Wwarnings仅补充诊断，不替代已失败的-Dwarnings门禁。全仓strict旧Models源码未改；全仓唯一失败canvas_prompt::tests::every_node_kind_owns_exactly_one_profile实际报creative.video-edit.v1空defaultUserPrompt，H306源码/资源未动，仍独立待修，不顺手消除或静默ignore。147顶层target按各自最后result汇总，嵌套helper不重复计，AppCore统一feature后1592/0/55，199忽略不计通过。
+
+发布当前CLI前核对G盘旧81,894,400字节、SHA256 9A70A2DC4D7DC4E618037AA904C7162BF1E46E1088E21B850C0B88B99A0D20F5，无相同源/目标活进程，源/目标全部祖先无reparse；C任务root备份后发布到G:\Code_Warehouse\DeepAgent-Studio\target\debug\deepagent.exe。新81,890,304字节、SHA256 1776C31F691AEE170D2CD83AC02F39B2D43474B9B41159951A6ED47D06286DEE；源/共享hash一致，SDK/全仓消费者前后均核对该hash。未覆盖既有Tauri sidecar，不称最新安装包已打包。
+
+全仓结束后，以该次当前AppCore原生binary `$Target\debug\deps\deepagent_app_core-32f391e263e6c0fa.exe`（SHA256 764AE12673D51935F5734E76C9FF742D1453E6A621A5DCE2C1272E3F22647179）逐条加 `--exact --nocapture --test-threads=1` 执行下表；标注旧ignored的四条再加--ignored，均前后binary/source hash相同、每条1过0败0忽略，不算默认skip。H164/H165仅回归、不重复记新修复。
+
+| 原生binary测试全名 | 实际结果 | 墙钟秒 |
+|---|---|---|
+| `canvas_model_gateway::workflow_media_audit::h292_revoked_workflow_selection_never_dispatches_and_replays_one_failure` | exit0、1/0/0，默认执行 | 1.556 |
+| `canvas_model_gateway::workflow_media_audit::h292_video_scope_uses_current_qualified_workspace_priority_without_second_hop` | exit0、1/0/0，默认执行 | 0.253 |
+| `canvas_model_gateway::workflow_media_audit::audit_audio_cancel_does_not_wait_for_provider_response` | exit0、1/0/0，默认执行 | 0.265 |
+| `canvas_model_gateway::workflow_media_audit::audit_image_cancel_does_not_wait_for_provider_response` | exit0、1/0/0，显式--ignored | 0.262 |
+| `canvas_model_gateway::workflow_media_audit::audit_text_cancel_does_not_wait_for_provider_response` | exit0、1/0/0，显式--ignored | 0.239 |
+| `canvas_model_gateway::workflow_media_audit::audit_provider_image_url_cannot_fetch_loopback_resource` | exit0、1/0/0，显式--ignored | 0.260 |
+| `canvas_model_gateway::workflow_media_audit::audit_denied_provider_image_url_is_not_fetched_or_persisted` | exit0、1/0/0，显式--ignored | 0.264 |
+
+真实覆盖：六场景Text/ImageGeneration/VideoGeneration/SpeechToText/TextToSpeech/Embedding各经save_model撤销空声明、save_provider保留其他非空声明撤销目标场景两路径，共12组公开API与实际wire循环；关闭原service/gateway后SQLite重开仍保留旧绑定但只派合格healthy模型，显式失格请求无wire、恢复声明后可用。视频仅prepare submit/status，不下载结果URL；其他模态检查真实typed结果/字节，非只看候选列表。global/workspace下aliases、重复/未知/缺失旧行、多provider同名模型、disabled/removed模型与disabled provider均按资格排除，不清删原偏好；绑定顺序/剩余原priority排序代码保留，不把禁用priority行误当禁用模型。新资格错误在凭据物化前，专门计数断言reads0；原诊断resolve_model仍读取凭据而不猜场景。
+
+配置一致性实证：在既有credential read处暂停候选准备、另一Database句柄binding writer已开始而100ms内不能完成；放行后旧prepared结果保持原顺序，新候选观察已提交顺序，未另建第二锁。HTTP在途时save_model可完成、旧响应仍属原快照，提交撤销后的新请求选健康模型；不在HTTP await持配置锁，不宣称撤销会取消远端已发请求。正常有资格模型的HTTP400仍只请求一次并失败、无资格集合为空则NoCandidateModel/wire0，不扩张非瞬时回退。H290完整实际正常/故障/跨进程/接管/视频续跑凭据归属断言已重验，不靠保留不合法Text-only视频夹具获取兼容。
+
+正式Kernel对自动无候选与显式失格text都证明wire0、节点恰一Failed、无Completed/outputs/artifacts/part、run恰一failed；释放chat/provider/artifact/DB句柄后重开SQLite，durable sequence递增、workflow replay与live一致、无制品。内部run-scoped video的全局/工作区优先相反时确实选工作区；撤销目标场景后选另一个合格provider，恢复后回到原优先，submit/status合计6次，无第二跳/制品。H164音频96ms、图片106ms、文本83ms退出均在300ms窗口；唯一cancelled且无Completed，result_ok=true是原取消控制流契约，不是成功生成。H165私有IP/拒审批都无下载/制品，原网络边界未因路由改动放宽。
+
+Finding F-H292（E01～03）：保存的priority binding能够越过当前模型声明、不同候选来源使用不同资格规则的根因已修复。Path P-H292为原provider/model/绑定保存→同一provider commit gate固定配置→唯一声明谓词形成eligible集合→仅在集合内应用旧优先顺序，或显式scenario解析→原gateway/Kernel/审批/usage/取消/持久化；撤销不产生不合格请求、HTTP400不成为跨provider转发借口。共享资格适配覆盖视频run scope是同一选型边界消费者收敛，未扩成另一个独立任务或新增路由链。
+
+兼容性：新增additive Rust resolver，原构造/公开execute/execute_on/输出形状、wire DTO/IPC/TS、配置schema/SQL与依赖不变；显式模型现在必须声明所请求场景，旧空/不匹配声明的调用会在网络前明确拒绝，需要用户如实补齐配置。原resolve_model仍为enabled身份/连接诊断解析，不用于正式模型执行资格；场景不是沙箱权限。旧bindings不自动删除，恢复声明可恢复偏好，disabled binding只撤销优先行而非deny模型；别名/排序/去重契约保持。没有改secret存储或给予额外权限、没有真实迁移。
+
+残余与未验：仅所列Windows本机合成OpenAI-compatible六模态/本地数据库范围；未验真实供应商/DeepSeek、真实内网/凭据/用户数据、其他OS、真实GUI/WebView/签名包、极端并发或OOM/磁盘耗尽/断电。原H290跨进程生命周期仅作本轮回归，不声称任意raw SQLite写入、不同锁路径或非协作进程也受gate约束；已准备/在途snapshot不受后续撤销取消，不能保证远端未执行/未计费，场景声明也不证明供应商真实能力。无前端/IPC类型变更，未重跑完整Desktop pnpm build/手动UI，Tauri check只证明实际Rust消费者构建；完整workspace及strict基线失败明确保留，不宣布全系统通过。
+
+仅H292按此范围验收，本轮新增1，累计192验收、24历史跳过、8归并、3撤销、79待修、0修复中；79未关闭含H180授权跳过，实际后续78。下一准备H177未知workflow目标被当空图成功的admission一致性，优先于纯显示问题，本轮未改它。还须E04受控清理和E05独立fix提交后hash回填，不反复amend。全部剩余200–400有效小时仍为未逐项校准低置信历史粗估（复现、根因、兼容/跨层验收与提交），机器构建/锁及设备/依赖/环境/清理阻塞等待另计、暂无可靠总上界，不承诺精确完成时间；整体goal active。
+
+**E-H292-04（2026-11-07，G/C受控清理与明确残余）**：E01～03命令/实际结果/红绿失败/冻结与binary身份已同步双文并在本轮工具状态保存聚合记录，之后才清理。核对本轮C root恰为 `C:\Users\32734\AppData\Local\Temp\h292-repair-20261107`，所有祖先/递归无reparse、越界或枚举错误；关联Cargo/rustc/rustdoc/Node/CLI/测试进程0，最终7份受测源码/说明SHA256仍匹配。只用预定原生cargo clean清命名产物，dry-run后实际执行，不碰源码、用户文档/五项untracked、工具链/依赖缓存，也不重试旧G/C拒绝路径。
+
+- 独立 `$Target\tauri`：7999文件、2,612,635,292逻辑字节。`cargo clean --manifest-path apps/desktop/src-tauri/Cargo.toml --target-dir <该绝对路径> --offline --dry-run` exit0；去--dry-run实际exit0，确认target不存在。
+- 主root（Tauri清后）：14456文件、24,923,148,592逻辑字节。`cargo clean --target-dir <该绝对路径> --offline --dry-run` exit0（23.2GiB）；去--dry-run实际exit101，在合成DACL测试夹具 `fixture-tmp\.tmp5D8uZ5\destination\child` OS5拒绝访问。立即停止，不换PowerShell/Node/cmd/另一Cargo路线、不改ACL/提权/改名搬移重删；仅只读统计残余2758文件、1,456,759,656逻辑字节、枚举错误0，root仍存在，不称全部清空。两个命名target合计减少26,079,024,228逻辑字节，不冒称实测物理磁盘精确释放。
+- G盘未新增h292目录或SDK/Desktop dist，只保留后续真实消费者需要的共享CLI81,890,304字节，SHA256仍1776C31F691AEE170D2CD83AC02F39B2D43474B9B41159951A6ED47D06286DEE；旧CLI临时备份在C命名root中属于本轮可再生成测试产物。前轮SDK/Desktop dist、H248/H167/H126等旧拒绝路径均不重试，原sidecar和未确认归属resources不碰。
+- 清后C/G可用快照83,121,246,208/148,737,953,792字节。权限残余需外部条件改变后另行受控处理，本轮不继续尝试，不将H292行为验收说成G/C全清理完成。
+
+台账306唯一编号/每行8列/顶部192验收成员一致，H292双文E01～04完全一致，相对基线40ed575d只有H292主行变化。只准备9个白名单路径（6份Rust实现/测试/必要消费者、公开说明、双文）独立fix提交，取得hash后另docs回填，不amend/push/PR；旧失败和清理阻塞不改写，整体goal active。

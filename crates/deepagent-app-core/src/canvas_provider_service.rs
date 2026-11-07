@@ -154,6 +154,12 @@ pub struct CanvasModelConfig {
     pub max_reference_images: Option<u32>,
 }
 
+impl CanvasModelConfig {
+    fn declares_scenario(&self, scenario: CanvasScenario) -> bool {
+        self.scenarios.contains(&scenario)
+    }
+}
+
 /// Persisted provider entry with its nested model list.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanvasProviderConfig {
@@ -754,14 +760,17 @@ impl CanvasProviderService {
         workspace_id: Option<&str>,
         bindings: Vec<CanvasScenarioBinding>,
     ) -> Result<Vec<CanvasScenarioBinding>> {
+        // Validate the entire priority list against one generation, serialized
+        // with provider/model edits and candidate preparation by the same gate.
+        let _gate = self.provider_gate()?;
+        let state = self.read_state()?;
         for binding in &bindings {
             let scenario = CanvasScenario::from_label(&binding.scenario).ok_or_else(|| {
                 CoreError::invalid(format!("unknown canvas scenario `{}`", binding.scenario))
             })?;
-            let provider = self
-                .read_state()?
+            let provider = state
                 .providers
-                .into_iter()
+                .iter()
                 .find(|p| p.id == binding.provider_id)
                 .ok_or_else(|| {
                     CoreError::not_found(format!("canvas provider `{}`", binding.provider_id))
@@ -773,7 +782,7 @@ impl CanvasProviderService {
                 .ok_or_else(|| {
                     CoreError::not_found(format!("canvas model `{}`", binding.model_id))
                 })?;
-            if !model.scenarios.contains(&scenario) {
+            if !model.declares_scenario(scenario) {
                 return Err(CoreError::invalid(format!(
                     "model `{}` is not declared for scenario `{}`",
                     model.id,
@@ -799,13 +808,32 @@ impl CanvasProviderService {
     /// pair, with its api key attached for backend-internal use.
     pub fn resolve_model(&self, provider_id: &str, model_id: &str) -> Result<ResolvedCanvasModel> {
         let _gate = self.provider_gate()?;
-        self.resolve_from_provider(&self.ensure_provider(provider_id)?, model_id)
+        self.resolve_from_provider(&self.ensure_provider(provider_id)?, model_id, None)
+    }
+
+    /// Prepare an explicitly selected execution model from one configuration
+    /// generation. Explicit identity bypasses priority, never declaration.
+    /// The returned snapshot remains fixed for the already prepared call;
+    /// later calls observe subsequent committed configuration edits.
+    pub fn resolve_model_for_scenario(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+        scenario: CanvasScenario,
+    ) -> Result<ResolvedCanvasModel> {
+        let _gate = self.provider_gate()?;
+        self.resolve_from_provider(
+            &self.ensure_provider(provider_id)?,
+            model_id,
+            Some(scenario),
+        )
     }
 
     fn resolve_from_provider(
         &self,
         provider: &CanvasProviderConfig,
         model_id: &str,
+        scenario: Option<CanvasScenario>,
     ) -> Result<ResolvedCanvasModel> {
         if !provider.enabled {
             return Err(CoreError::invalid(format!(
@@ -826,6 +854,13 @@ impl CanvasProviderService {
                 "canvas model `{model_id}` is disabled"
             )));
         }
+        if let Some(scenario) = scenario.filter(|scenario| !model.declares_scenario(*scenario)) {
+            return Err(CoreError::invalid(format!(
+                "canvas model `{model_id}` in provider `{}` is not declared for scenario `{}`",
+                provider.id,
+                scenario.as_str()
+            )));
+        }
         let api_key = self.credential_for(provider)?;
         Ok(ResolvedCanvasModel {
             provider: provider.clone(),
@@ -844,49 +879,33 @@ impl CanvasProviderService {
         let _gate = self.provider_gate()?;
         let state = self.read_state()?;
         let bindings = self.bindings(workspace_id)?;
-        let mut ordered: Vec<ResolvedCanvasModel> = Vec::new();
-        for binding in bindings
-            .iter()
-            .filter(|b| b.enabled && CanvasScenario::from_label(&b.scenario) == Some(scenario))
-        {
-            if let Some(provider) = state
-                .providers
-                .iter()
-                .find(|p| p.id == binding.provider_id && p.enabled)
-                .filter(|p| {
-                    p.models
-                        .iter()
-                        .any(|m| m.id == binding.model_id && m.enabled)
-                })
-            {
-                let found = self.resolve_from_provider(provider, &binding.model_id)?;
-                if !ordered
-                    .iter()
-                    .any(|r| r.model.id == found.model.id && r.provider.id == found.provider.id)
-                {
-                    ordered.push(found);
-                }
-            }
-        }
+        // Establish eligibility exactly once before applying saved priority.
+        // Old/missing/duplicate bindings cannot add candidates to this set.
         let mut extras: Vec<ResolvedCanvasModel> = Vec::new();
         for provider in state.providers.iter().filter(|p| p.enabled) {
             for model in provider
                 .models
                 .iter()
-                .filter(|m| m.enabled && m.scenarios.contains(&scenario))
+                .filter(|m| m.enabled && m.declares_scenario(scenario))
             {
-                if ordered
-                    .iter()
-                    .any(|r| r.provider.id == provider.id && r.model.id == model.id)
-                {
-                    continue;
-                }
                 let api_key = self.credential_for(provider)?;
                 extras.push(ResolvedCanvasModel {
                     provider: provider.clone(),
                     model: model.clone(),
                     api_key,
                 });
+            }
+        }
+        let mut ordered = Vec::new();
+        for binding in bindings
+            .iter()
+            .filter(|b| b.enabled && CanvasScenario::from_label(&b.scenario) == Some(scenario))
+        {
+            if let Some(index) = extras.iter().position(|candidate| {
+                candidate.provider.id == binding.provider_id
+                    && candidate.model.id == binding.model_id
+            }) {
+                ordered.push(extras.remove(index));
             }
         }
         extras.sort_by(|a, b| {

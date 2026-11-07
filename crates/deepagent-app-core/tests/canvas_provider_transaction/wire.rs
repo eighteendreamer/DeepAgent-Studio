@@ -89,13 +89,20 @@ async fn h290_video_resume_uses_committed_identity_and_never_polls_another_accou
     use deepagent_runtime::workflow::{
         CanvasJobProgressSink, CanvasModelBridge, CanvasVideoRequest,
     };
+    let video_input = |url: &str, key: Option<&str>| {
+        let mut provider = input("first", url, key);
+        provider.models[0]
+            .scenarios
+            .push(CanvasScenario::VideoGeneration);
+        provider
+    };
     for case in ["replace", "before", "after", "preserve", "same"] {
         let old = Server::new();
         let new = Server::new();
         let fixture = Fixture::new();
         fixture
             .service
-            .save_provider(input("first", &old.url, Some(OLD)))
+            .save_provider(video_input(&old.url, Some(OLD)))
             .unwrap();
         let gateway = CanvasModelGateway::new(Arc::new(fixture.reopen()));
         let reports = Arc::new(Mutex::new(Vec::new()));
@@ -132,7 +139,7 @@ async fn h290_video_resume_uses_committed_identity_and_never_polls_another_accou
             "same" => (&old.url, Some(OLD)),
             _ => (&new.url, Some(NEW)),
         };
-        let saved = fixture.service.save_provider(input("first", url, key));
+        let saved = fixture.service.save_provider(video_input(url, key));
         assert_eq!(saved.is_ok(), case != "before" && case != "after");
         assert_eq!(
             fixture
