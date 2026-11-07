@@ -274,23 +274,21 @@ impl AppService {
             deepagent_persistence::event_store::SessionSearchScope::All,
             deepagent_persistence::event_store::SessionSearchScope::Project,
         );
-        let report = store.search_with_status(query, scope, limit)?;
-        let visible = |id: &SessionId, project: Option<&str>| {
-            !archived.contains(&id.to_string())
-                && project
-                    .map(|path| registered_projects.contains(path))
-                    .unwrap_or(true)
-        };
+        let report = store.search_with_control_filtered(
+            query,
+            scope,
+            limit,
+            &deepagent_persistence::event_store::SessionSearchControl::default(),
+            Some(deepagent_persistence::event_store::SessionSearchFilter {
+                excluded_sessions: Some(&archived),
+                allowed_projects: Some(&registered_projects),
+            }),
+        )?;
         let mut unavailable = Vec::new();
         for issue in report.unavailable {
-            // Unknown orphan ownership cannot be presented as a visible
-            // conversation. Its health is retained by the persistence owner.
-            let Some(record) = store.get_session(issue.session_id)? else {
-                continue;
-            };
-            if !visible(&record.id, record.project.as_deref()) {
-                continue;
-            }
+            // The selected report already excludes orphan health records.
+            // Retain a selected source's transient issue even if its metadata
+            // is removed concurrently; dropping it would falsely say complete.
             unavailable.push(SessionSearchIssueDto {
                 session_id: issue.session_id.to_string(),
                 kind: match issue.kind {
@@ -314,7 +312,6 @@ impl AppService {
         let results = report
             .hits
             .into_iter()
-            .filter(|hit| visible(&hit.session.id, hit.session.project.as_deref()))
             .map(|hit| {
                 let project = hit.session.project.as_deref().map(|path| {
                     project_names

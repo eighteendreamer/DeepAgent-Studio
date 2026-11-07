@@ -30,11 +30,16 @@ use crate::{map_sqlite, Database};
 
 mod plan_mode;
 mod search_health;
+mod search_selection;
 pub use search_health::{
     SessionSearchControl, SessionSearchIssue, SessionSearchIssueKind, SessionSearchReport,
 };
+use search_selection::SearchSelection;
+pub use search_selection::SessionSearchFilter;
 #[cfg(test)]
 mod search_repair_tests;
+#[cfg(test)]
+mod search_selection_tests;
 pub use crate::session_files::page::{SessionEventPage, SessionPageBudget, SessionPageCursor};
 pub use plan_mode::SessionPlanMode;
 
@@ -760,12 +765,6 @@ impl<'db> EventStore<'db> {
             .with_conn(|connection| Self::read_session_record(connection, session_id, max_bytes))
     }
 
-    fn get_session_for_search(&self, session_id: SessionId) -> Result<Option<SessionRecord>> {
-        self.db.with_maintenance_conn(|connection| {
-            Self::read_session_record(connection, session_id, None)
-        })
-    }
-
     fn read_session_record(
         connection: &rusqlite::Connection,
         session_id: SessionId,
@@ -1032,97 +1031,38 @@ impl<'db> EventStore<'db> {
         limit: usize,
         control: &SessionSearchControl<'_>,
     ) -> Result<SessionSearchReport> {
+        self.search_with_control_filtered(query, scope, limit, control, None)
+    }
+
+    /// Apply caller-owned visibility before maintenance, ranking/limit and
+    /// health reporting. Legacy/tool callers keep their unfiltered semantics.
+    pub fn search_with_control_filtered(
+        &self,
+        query: &str,
+        scope: SessionSearchScope<'_>,
+        limit: usize,
+        control: &SessionSearchControl<'_>,
+        filter: Option<SessionSearchFilter<'_>>,
+    ) -> Result<SessionSearchReport> {
         control.check_cancelled()?;
         let started = std::time::Instant::now();
+        let selection = SearchSelection::new(scope, filter)?;
         let deadline = started + control.timeout;
         let query = query.trim();
         if query.is_empty() {
             return Ok(SessionSearchReport::default());
         }
-        // Reserve the final third for authoritative snippets. Exhausting
-        // maintenance alone must not discard already healthy matching files.
-        self.repair_search_indexes(scope, control, started + control.timeout * 2 / 3)?;
+        // Retain the existing cooperative maintenance/snippet budgets.
+        self.repair_search_indexes(&selection, control, started + control.timeout * 2 / 3)?;
         control.check_cancelled()?;
         let limit = limit.clamp(1, 100) as i64;
-        let char_count = query.chars().count();
-        let is_cjk_bigram = char_count == 2 && query.chars().all(is_cjk);
-        let (project, no_project) = match scope {
-            SessionSearchScope::All => (None, false),
-            SessionSearchScope::Project(project) => (Some(project), false),
-            SessionSearchScope::NoProject => (None, true),
-        };
-        let candidates: Vec<(SessionId, Sequence, Option<Role>, Timestamp)> =
-            self.db.with_maintenance_conn(|c| {
-                let sql = if is_cjk_bigram {
-                    "SELECT d.session_id, d.sequence, d.role, d.timestamp
-                     FROM session_search_cjk_bigrams b
-                     JOIN session_search_docs d ON d.id = b.doc_id
-                     JOIN sessions s ON s.id = d.session_id
-                     WHERE b.gram = ?1 AND (?2 IS NULL OR s.project = ?2)
-                       AND (?4 = 0 OR s.project IS NULL)
-                       AND NOT EXISTS (SELECT 1 FROM documents h
-                           WHERE h.collection='session_file_health_v1' AND h.id=d.session_id)
-                     ORDER BY d.timestamp DESC LIMIT ?3"
-                } else if char_count >= 3 {
-                    "SELECT d.session_id, d.sequence, d.role, d.timestamp
-                     FROM session_search_fts f
-                     JOIN session_search_docs d ON d.id = CAST(f.doc_id AS INTEGER)
-                     JOIN sessions s ON s.id = d.session_id
-                     WHERE session_search_fts MATCH ?1
-                       AND (?2 IS NULL OR s.project = ?2)
-                       AND (?4 = 0 OR s.project IS NULL)
-                       AND NOT EXISTS (SELECT 1 FROM documents h
-                           WHERE h.collection='session_file_health_v1' AND h.id=d.session_id)
-                     ORDER BY bm25(session_search_fts), d.timestamp DESC LIMIT ?3"
-                } else {
-                    "SELECT d.session_id, d.sequence, d.role, d.timestamp
-                     FROM session_search_fts f
-                     JOIN session_search_docs d ON d.id = CAST(f.doc_id AS INTEGER)
-                     JOIN sessions s ON s.id = d.session_id
-                     WHERE f.content LIKE ?1 ESCAPE '\\'
-                       AND (?2 IS NULL OR s.project = ?2)
-                       AND (?4 = 0 OR s.project IS NULL)
-                       AND NOT EXISTS (SELECT 1 FROM documents h
-                           WHERE h.collection='session_file_health_v1' AND h.id=d.session_id)
-                     ORDER BY d.timestamp DESC LIMIT ?3"
-                };
-                let search_term = if is_cjk_bigram {
-                    query.to_owned()
-                } else if char_count >= 3 {
-                    format!("\"{}\"", query.replace('"', "\"\""))
-                } else {
-                    format!("%{}%", escape_like(query))
-                };
-                let mut stmt = c.prepare(sql).map_err(map_sqlite)?;
-                let rows = stmt
-                    .query_map(params![search_term, project, limit, no_project], |row| {
-                        let id: String = row.get(0)?;
-                        let sequence: i64 = row.get(1)?;
-                        let role: Option<String> = row.get(2)?;
-                        let timestamp: i64 = row.get(3)?;
-                        Ok((id, sequence, role, timestamp))
-                    })
-                    .map_err(map_sqlite)?;
-                let mut candidates = Vec::new();
-                for row in rows {
-                    let (id, sequence, role, timestamp) = row.map_err(map_sqlite)?;
-                    candidates.push((
-                        id.parse::<SessionId>()
-                            .map_err(|error| CoreError::Persistence(error.to_string()))?,
-                        sequence as Sequence,
-                        role.as_deref().and_then(parse_role),
-                        Timestamp::from_millis(timestamp),
-                    ));
-                }
-                Ok(candidates)
-            })?;
+        let candidates = self.search_candidates(query, limit, &selection, control)?;
 
         let mut hits = Vec::with_capacity(candidates.len());
-        for (session_id, sequence, role, timestamp) in candidates {
+        let mut deferred = std::collections::BTreeSet::new();
+        for (session, sequence, role, timestamp) in candidates {
             control.check_cancelled()?;
-            let Some(session) = self.get_session_for_search(session_id)? else {
-                continue;
-            };
+            let session_id = session.id;
             let Some(events) = self.read_search_context(
                 session_id,
                 sequence.saturating_sub(2),
@@ -1130,6 +1070,10 @@ impl<'db> EventStore<'db> {
                 &control.file_read(deadline),
             )?
             else {
+                // A valid source can be recycled after maintenance/selection.
+                // Keep that request explicitly partial without persisting a
+                // false missing/corrupt marker for intentional recycle.
+                deferred.insert(session_id);
                 continue;
             };
             let Some(event) = events.iter().find(|event| event.sequence == sequence) else {
@@ -1140,6 +1084,7 @@ impl<'db> EventStore<'db> {
                 continue;
             };
             let Some((_, content)) = search_document(event) else {
+                deferred.insert(session_id);
                 continue;
             };
             hits.push(SessionSearchHit {
@@ -1152,9 +1097,22 @@ impl<'db> EventStore<'db> {
             });
         }
         control.check_cancelled()?;
+        let mut unavailable: std::collections::BTreeMap<_, _> = self
+            .search_file_issues_selected(&selection)?
+            .into_iter()
+            .map(|issue| (issue.session_id, issue))
+            .collect();
+        for session_id in deferred {
+            // Preserve a more specific health cause (corrupt/busy/etc.). The
+            // transient fallback belongs only to this report, not the store.
+            unavailable.entry(session_id).or_insert(SessionSearchIssue {
+                session_id,
+                kind: SessionSearchIssueKind::Deferred,
+            });
+        }
         Ok(SessionSearchReport {
             hits,
-            unavailable: self.search_file_issues(scope)?,
+            unavailable: unavailable.into_values().collect(),
         })
     }
 

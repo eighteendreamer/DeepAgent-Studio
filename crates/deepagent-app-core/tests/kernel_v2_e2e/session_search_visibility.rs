@@ -104,7 +104,6 @@ fn observe_app(mode: Hidden, limit: usize) -> Vec<usize> {
 }
 
 #[test]
-#[ignore = "audit: hidden candidates consume the visible session search limit"]
 fn audit_app_search_fills_limit_after_visibility_filter() {
     let mut counts = Vec::new();
     for mode in [Hidden::Archived, Hidden::Deleted, Hidden::RemovedProject] {
@@ -118,6 +117,7 @@ fn audit_app_search_fills_limit_after_visibility_filter() {
 struct SearchModel {
     query: &'static str,
     limit: usize,
+    cross_project: bool,
     calls: AtomicUsize,
     output: Mutex<Option<String>>,
 }
@@ -136,6 +136,9 @@ impl HttpTransport for SearchModel {
                 let mut arguments = serde_json::json!({"query":self.query});
                 if self.limit != 10 {
                     arguments["limit"] = serde_json::json!(self.limit);
+                }
+                if self.cross_project {
+                    arguments["cross_project"] = serde_json::json!(true);
                 }
                 response_function_call("audit-search-visibility", "session_search", arguments)
             }
@@ -162,14 +165,35 @@ impl HttpTransport for SearchModel {
 }
 
 async fn observe_tool(query: &'static str, limit: usize, deleted: bool) -> bool {
+    observe_tool_visibility(query, limit, deleted.then_some(Hidden::Deleted)).await
+}
+
+async fn observe_tool_visibility(
+    query: &'static str,
+    limit: usize,
+    visibility: Option<Hidden>,
+) -> bool {
     let workspace = tempfile::tempdir().unwrap();
     let db = Arc::new(Database::open(workspace.path().join("state.sqlite")).unwrap());
+    let projects = Arc::new(ProjectService::new(db.clone()));
+    let closed_project = "G:/synthetic/h228/tool-closed-project";
+    let cross_project = matches!(visibility, Some(Hidden::RemovedProject));
+    if cross_project {
+        projects.add_project(closed_project).unwrap();
+    }
+    let deleted = matches!(visibility, Some(Hidden::Deleted));
     let live = seed(&db, None, 100);
     let hidden: Vec<_> = (0..limit)
-        .map(|index| seed(&db, None, 200 + index as i64 * 10))
+        .map(|index| {
+            seed(
+                &db,
+                cross_project.then_some(closed_project),
+                200 + index as i64 * 10,
+            )
+        })
         .collect();
-    if deleted {
-        hide(&db, &hidden, Hidden::Deleted, "unused");
+    if let Some(visibility) = visibility {
+        hide(&db, &hidden, visibility, closed_project);
     }
     let settings = Arc::new(SettingsService::new(
         db.clone(),
@@ -191,14 +215,14 @@ async fn observe_tool(query: &'static str, limit: usize, deleted: bool) -> bool 
     let model = Arc::new(SearchModel {
         query,
         limit,
+        cross_project,
         calls: AtomicUsize::new(0),
         output: Mutex::new(None),
     });
-    let projects = Arc::new(ProjectService::new(db.clone()));
     let chat =
         ChatService::new(db, settings, model.clone(), workspace.path()).with_projects(projects);
     chat.run_in_session(
-        "Look up the earlier decision.",
+        "Look up the earlier decision; include all projects when requested by this synthetic fixture.",
         None,
         None,
         None,
@@ -235,6 +259,7 @@ async fn observe_tool(query: &'static str, limit: usize, deleted: bool) -> bool 
     };
     let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
     assert_eq!(parsed["status"], "ok");
+    assert_eq!(parsed["result"]["complete"], true);
     let results = parsed["result"]["results"]
         .as_array()
         .expect("structured search results");
@@ -251,7 +276,72 @@ async fn observe_tool(query: &'static str, limit: usize, deleted: bool) -> bool 
 }
 
 #[tokio::test]
-#[ignore = "audit: deleted search hits must not starve live history in the model request"]
+async fn h228_formal_model_tool_keeps_archived_and_explicit_cross_project_semantics() {
+    for visibility in [Hidden::Archived, Hidden::RemovedProject] {
+        for query in QUERIES {
+            assert!(observe_tool_visibility(query, 1, Some(visibility)).await);
+        }
+    }
+}
+
+#[test]
+fn h228_inflight_owner_snapshot_is_stable_and_next_app_search_refreshes_visibility() {
+    use deepagent_persistence::event_store::{
+        SessionSearchControl, SessionSearchFilter, SessionSearchScope,
+    };
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let older = seed(&db, None, 100);
+    let newest = seed(&db, None, 200);
+    let excluded = ArchiveService::new(db.clone()).archived_ids().unwrap();
+    let projects = ProjectService::new(db.clone()).registered_paths().unwrap();
+    let (go_tx, go_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let done_rx = Mutex::new(done_rx);
+    let first = std::sync::atomic::AtomicBool::new(true);
+    std::thread::scope(|scope| {
+        let worker_db = db.clone();
+        scope.spawn(move || {
+            go_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            ArchiveService::new(worker_db)
+                .archive_session(&newest.to_string())
+                .unwrap();
+            done_tx.send(()).unwrap();
+        });
+        let cancelled = || {
+            if first.swap(false, Ordering::SeqCst) {
+                go_tx.send(()).unwrap();
+                done_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+            }
+            false
+        };
+        let report = EventStore::new(&db)
+            .search_with_control_filtered(
+                "检",
+                SessionSearchScope::All,
+                1,
+                &SessionSearchControl::new(std::time::Duration::from_secs(5), &cancelled),
+                Some(SessionSearchFilter {
+                    excluded_sessions: Some(&excluded),
+                    allowed_projects: Some(&projects),
+                }),
+            )
+            .unwrap();
+        assert!(report.unavailable.is_empty());
+        assert_eq!(report.hits[0].session.id, newest);
+    });
+    let app = AppService::from_shared(db);
+    let fresh = app.search_sessions_with_status("检", None, 1).unwrap();
+    assert!(fresh.complete);
+    assert_eq!(fresh.results[0].session.id, older.to_string());
+}
+
+#[tokio::test]
 async fn audit_deleted_candidates_do_not_starve_tool_search() {
     let mut observations = Vec::new();
     for query in QUERIES {
@@ -271,4 +361,143 @@ async fn visible_search_candidates_reach_next_model_request() {
             assert!(found);
         }
     }
+}
+
+#[test]
+fn h228_interleaved_visibility_refresh_and_file_reopen_keep_the_visible_limit() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("visibility.sqlite");
+    let db = Arc::new(Database::open(&path).unwrap());
+    let projects = ProjectService::new(db.clone());
+    let open = "G:/synthetic/h228/open'[]";
+    let closed = "G:/synthetic/h228/closed' OR 1=1 --";
+    projects.add_project(open).unwrap();
+    projects.add_project(closed).unwrap();
+    let live = seed(&db, None, 100);
+    let project_live = seed(&db, Some(open), 300);
+    let archived = seed(&db, None, 200);
+    let mut hidden = vec![archived];
+    let archive = ArchiveService::new(db.clone());
+    archive.archive_session(&archived.to_string()).unwrap();
+    for i in 0..24 {
+        let id = seed(
+            &db,
+            Some(if i % 2 == 0 { open } else { closed }),
+            400 + i * 10,
+        );
+        hidden.push(id);
+        if i % 2 == 0 {
+            archive.archive_session(&id.to_string()).unwrap();
+        }
+    }
+    projects.remove_project(closed).unwrap();
+    let app = AppService::from_shared(db.clone());
+    for query in QUERIES {
+        for limit in [1, 2, 50] {
+            let report = app.search_sessions_with_status(query, None, limit).unwrap();
+            assert!(report.complete);
+            let ids = report
+                .results
+                .iter()
+                .map(|h| h.session.id.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                ids,
+                [project_live, live]
+                    .into_iter()
+                    .take(limit.min(2))
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+            );
+            assert!(report.unavailable.is_empty());
+            assert!(ids
+                .iter()
+                .all(|id| !hidden.iter().any(|hidden| hidden.to_string() == *id)));
+        }
+        assert_eq!(app.search_sessions(query, Some(open), 50).unwrap().len(), 1);
+        assert!(app
+            .search_sessions(query, Some(closed), 50)
+            .unwrap()
+            .is_empty());
+    }
+    archive.archive_session(&project_live.to_string()).unwrap();
+    assert_eq!(
+        app.search_sessions("检", None, 1).unwrap()[0].session.id,
+        live.to_string()
+    );
+    archive
+        .unarchive_session(&project_live.to_string())
+        .unwrap();
+    projects.remove_project(open).unwrap();
+    assert_eq!(
+        app.search_sessions("检", None, 1).unwrap()[0].session.id,
+        live.to_string()
+    );
+    projects.add_project(open).unwrap();
+    assert_eq!(
+        app.search_sessions("检", None, 1).unwrap()[0].session.id,
+        project_live.to_string()
+    );
+    let authority = EventStore::new(&db).load_session(live).unwrap();
+    drop(app);
+    drop(archive);
+    drop(projects);
+    drop(db);
+    let db = Arc::new(Database::open(&path).unwrap());
+    let app = AppService::from_shared(db.clone());
+    for query in QUERIES {
+        let report = app.search_sessions_with_status(query, None, 50).unwrap();
+        assert!(report.complete);
+        assert_eq!(report.results.len(), 2);
+    }
+    assert_eq!(EventStore::new(&db).load_session(live).unwrap(), authority);
+}
+
+#[test]
+fn h228_hidden_corrupt_authority_does_not_consume_visible_maintenance_or_health() {
+    let root = tempfile::tempdir().unwrap();
+    let db = Arc::new(Database::open(root.path().join("health.sqlite")).unwrap());
+    let live = seed(&db, None, 100);
+    let hidden = seed(&db, None, 200);
+    ArchiveService::new(db.clone())
+        .archive_session(&hidden.to_string())
+        .unwrap();
+    let file = std::fs::read_dir(db.session_transcript_dir(hidden))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.to_string_lossy().ends_with(".v1.jsonl.zst"))
+        .unwrap();
+    let mut corrupt = std::fs::read(&file).unwrap();
+    corrupt.extend_from_slice(&[0xff]);
+    std::fs::write(&file, &corrupt).unwrap();
+    let app = AppService::from_shared(db.clone());
+    let report = app.search_sessions_with_status("检", None, 1).unwrap();
+    assert!(report.complete);
+    assert_eq!(report.results[0].session.id, live.to_string());
+    let health:usize=db.with_conn(|c|c.query_row("SELECT count(*) FROM documents WHERE collection='session_file_health_v1' AND id=?1",[hidden.to_string()],|r|r.get(0)).map_err(|e|deepagent_core::CoreError::Persistence(e.to_string()))).unwrap();
+    assert_eq!(
+        health, 0,
+        "ineligible authority must not be visited by the visible search's maintenance budget"
+    );
+    let raw = EventStore::new(&db)
+        .search_with_status(
+            "检",
+            deepagent_persistence::event_store::SessionSearchScope::All,
+            10,
+        )
+        .unwrap();
+    assert!(raw
+        .unavailable
+        .iter()
+        .any(|issue| issue.session_id == hidden));
+    assert!(
+        app.search_sessions_with_status("检", None, 1)
+            .unwrap()
+            .complete
+    );
+    assert_eq!(
+        std::fs::read(&file).unwrap(),
+        corrupt,
+        "search may not rewrite authority bytes"
+    );
 }

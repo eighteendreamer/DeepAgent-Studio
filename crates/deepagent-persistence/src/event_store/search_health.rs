@@ -79,13 +79,13 @@ impl SessionSearchReport {
 impl EventStore<'_> {
     // File failures are isolated only at a file boundary. SQLite/schema,
     // cursor parsing and projection transaction failures still propagate.
-    pub(crate) fn repair_search_indexes(
+    pub(super) fn repair_search_indexes(
         &self,
-        scope: SessionSearchScope<'_>,
+        selection: &SearchSelection<'_>,
         control: &SessionSearchControl<'_>,
         deadline: std::time::Instant,
     ) -> Result<()> {
-        self.repair_session_projections(scope, true, control, deadline)
+        self.repair_session_projections(selection, true, control, deadline)
     }
 
     /// Startup reconciles authority metadata, not optional search indexes.
@@ -93,7 +93,7 @@ impl EventStore<'_> {
     pub(crate) fn repair_metadata_on_open(&self) -> Result<()> {
         let control = SessionSearchControl::default();
         self.repair_session_projections(
-            SessionSearchScope::All,
+            &SearchSelection::new(SessionSearchScope::All, None)?,
             false,
             &control,
             std::time::Instant::now() + control.timeout,
@@ -102,17 +102,12 @@ impl EventStore<'_> {
 
     fn repair_session_projections(
         &self,
-        scope: SessionSearchScope<'_>,
+        selection: &SearchSelection<'_>,
         include_search: bool,
         control: &SessionSearchControl<'_>,
         deadline: std::time::Instant,
     ) -> Result<()> {
         control.check_cancelled()?;
-        let (project, no_project) = match scope {
-            SessionSearchScope::All => (None, false),
-            SessionSearchScope::Project(project) => (Some(project), false),
-            SessionSearchScope::NoProject => (None, true),
-        };
         let states: Vec<(SessionId, u64, u64)> = self.db.with_maintenance_conn(|c| {
             // A derived round-robin position prevents repeated short searches
             // from always spending their maintenance budget on the first files.
@@ -125,15 +120,17 @@ impl EventStore<'_> {
             } else { None };
             let mut stmt = c
                 .prepare(
-                    "SELECT f.session_id, f.generation, f.byte_size
+                    &format!("SELECT f.session_id, f.generation, f.byte_size
                  FROM session_file_state f
                  JOIN sessions s ON s.id=f.session_id
-                 WHERE (?1 IS NULL OR s.project=?1) AND (?2=0 OR s.project IS NULL)
-                 ORDER BY CASE WHEN ?3 IS NULL OR f.session_id > ?3 THEN 0 ELSE 1 END, f.session_id",
+                 WHERE {predicate}
+                 ORDER BY CASE WHEN :after IS NULL OR f.session_id > :after THEN 0 ELSE 1 END, f.session_id", predicate=SearchSelection::PREDICATE),
                 )
                 .map_err(map_sqlite)?;
+            let mut bindings = selection.bindings();
+            bindings.push((":after", &after));
             let rows = stmt
-                .query_map(params![project, no_project, after], |row| {
+                .query_map(bindings.as_slice(), |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, i64>(1)?,
@@ -436,27 +433,30 @@ impl EventStore<'_> {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn search_file_issues(
         &self,
         scope: SessionSearchScope<'_>,
     ) -> Result<Vec<SessionSearchIssue>> {
-        let (project, no_project) = match scope {
-            SessionSearchScope::All => (None, false),
-            SessionSearchScope::Project(p) => (Some(p), false),
-            SessionSearchScope::NoProject => (None, true),
-        };
+        self.search_file_issues_selected(&SearchSelection::new(scope, None)?)
+    }
+
+    pub(super) fn search_file_issues_selected(
+        &self,
+        selection: &SearchSelection<'_>,
+    ) -> Result<Vec<SessionSearchIssue>> {
         self.db.with_maintenance_conn(|c| {
             let mut stmt = c
-                .prepare(
+                .prepare(&format!(
                     "SELECT h.body FROM documents h LEFT JOIN sessions s ON s.id=h.id
-                 WHERE h.collection=?1 AND (?2 IS NULL OR s.project=?2)
-                    AND (?3=0 OR (s.id IS NOT NULL AND s.project IS NULL)) ORDER BY h.id",
-                )
+                 WHERE h.collection=:health AND {predicate} ORDER BY h.id",
+                    predicate = SearchSelection::PREDICATE
+                ))
                 .map_err(map_sqlite)?;
+            let mut bindings = selection.bindings();
+            bindings.push((":health", &HEALTH_COLLECTION));
             let rows = stmt
-                .query_map(params![HEALTH_COLLECTION, project, no_project], |row| {
-                    row.get::<_, String>(0)
-                })
+                .query_map(bindings.as_slice(), |row| row.get::<_, String>(0))
                 .map_err(map_sqlite)?;
             let mut issues = Vec::new();
             for row in rows {
