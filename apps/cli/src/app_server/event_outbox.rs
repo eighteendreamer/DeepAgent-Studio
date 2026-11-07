@@ -7,11 +7,6 @@ use std::sync::Arc;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, watch, Mutex};
 
-pub(super) struct QueuedEvent {
-    pub(super) sequence: u64,
-    pub(super) event: HarnessEvent,
-}
-
 pub(super) struct OutputState {
     failure: watch::Sender<Option<String>>,
     pub(super) delivered_sequence: AtomicU64,
@@ -66,19 +61,17 @@ impl OutputState {
 }
 
 pub(super) struct EventOutbox {
-    tx: mpsc::Sender<QueuedEvent>,
-    next_sequence: AtomicU64,
+    tx: mpsc::Sender<HarnessEvent>,
     pub(super) output: Arc<OutputState>,
 }
 
 impl EventOutbox {
     // Also used by deterministic tests without a writer, not a second queue.
-    pub(super) fn channel(capacity: usize) -> (Arc<Self>, mpsc::Receiver<QueuedEvent>) {
+    pub(super) fn channel(capacity: usize) -> (Arc<Self>, mpsc::Receiver<HarnessEvent>) {
         let (tx, rx) = mpsc::channel(capacity);
         (
             Arc::new(Self {
                 tx,
-                next_sequence: AtomicU64::new(1),
                 output: Arc::new(OutputState::default()),
             }),
             rx,
@@ -105,15 +98,24 @@ impl EventOutbox {
 
     async fn write_events<W: AsyncWrite + Unpin>(
         stdout: Arc<Mutex<W>>,
-        mut rx: mpsc::Receiver<QueuedEvent>,
+        mut rx: mpsc::Receiver<HarnessEvent>,
         output: &OutputState,
     ) -> Result<(), String> {
-        while let Some(queued) = rx.recv().await {
+        while let Some(event) = rx.recv().await {
+            // Only this connection's existing writer assigns wire sequence.
+            // Producer scheduling can change queue order, but can no longer
+            // separate sequence reservation from that order. The previous
+            // value remains the flushed ACK high-water until write succeeds.
+            let sequence = output
+                .delivered_sequence
+                .load(Ordering::Acquire)
+                .checked_add(1)
+                .ok_or_else(|| "app-server event sequence exhausted".to_owned())?;
             let notification = RpcNotification {
                 jsonrpc: JSONRPC_VERSION.into(),
                 method: NOTIFICATION_METHOD.into(),
-                event_sequence: Some(queued.sequence),
-                params: serde_json::to_value(queued.event)
+                event_sequence: Some(sequence),
+                params: serde_json::to_value(event)
                     .map_err(|error| format!("serialize app-server event: {error}"))?,
             };
             let line = serde_json::to_string(&notification)
@@ -129,27 +131,16 @@ impl EventOutbox {
                 .map_err(|error| format!("flush app-server notification: {error}"))?;
             output
                 .delivered_sequence
-                .fetch_max(queued.sequence, Ordering::Release);
+                .fetch_max(sequence, Ordering::Release);
         }
         Ok(())
     }
 
     pub(super) fn emit(&self, event: HarnessEvent) {
-        if self.output.failure_reason().is_none() {
-            self.enqueue(self.allocate_sequence(), event);
-        }
-    }
-
-    // H-91 (concurrent allocation/enqueue order) remains a separate defect.
-    pub(super) fn allocate_sequence(&self) -> u64 {
-        self.next_sequence.fetch_add(1, Ordering::Relaxed)
-    }
-
-    pub(super) fn enqueue(&self, sequence: u64, event: HarnessEvent) {
         if self.output.failure_reason().is_some() {
             return;
         }
-        if let Err(error) = self.tx.try_send(QueuedEvent { sequence, event }) {
+        if let Err(error) = self.tx.try_send(event) {
             let reason = match error {
                 mpsc::error::TrySendError::Full(_) => "event outbox capacity exceeded",
                 mpsc::error::TrySendError::Closed(_) => "event outbox writer closed",

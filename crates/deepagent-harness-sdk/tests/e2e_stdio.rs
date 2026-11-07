@@ -978,3 +978,115 @@ async fn h205_real_cli_ack_uses_delivered_wire_sequence_and_reopen_uses_durable_
     ));
     assert!(reopened.wait().await.unwrap().success());
 }
+
+#[tokio::test]
+async fn h91_real_cli_parallel_local_turns_keep_raw_owned_and_ack_sequences_consistent() {
+    let Some(bin) = isolated_cli(
+        "h91_real_cli_parallel_local_turns_keep_raw_owned_and_ack_sequences_consistent",
+        "h91-sequence",
+    )
+    .await
+    else {
+        return;
+    };
+    let process = HarnessProcess::spawn(&bin, &temp_workspace("h91-sequence-workspace"))
+        .await
+        .unwrap();
+    let client = process.client();
+    client.initialize("h91", "1").await.unwrap();
+    let mut raw = client.subscribe();
+    let mut threads = Vec::new();
+    for _ in 0..8 {
+        let response = client
+            .thread_start(
+                serde_json::from_value(serde_json::json!({
+                    "permissionProfile":"read_only", "sandboxBackend":"direct"
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        threads.push(response.result()["threadId"].as_str().unwrap().to_owned());
+    }
+    let mut workers = Vec::new();
+    for thread in threads {
+        let client = client.clone();
+        workers.push(tokio::spawn(async move {
+            // Local /help exercises the real run/terminal path but never
+            // initializes a model, reads a credential or contacts a provider.
+            let mut owned = client
+                .turn_start_streamed(
+                    serde_json::from_value(serde_json::json!({
+                        "threadId":thread,"input":"/help"
+                    }))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            let turn = owned.turn_id().unwrap().to_owned();
+            let mut terminals = 0;
+            while let Some(record) =
+                tokio::time::timeout(Duration::from_secs(5), owned.recv_notification())
+                    .await
+                    .unwrap()
+                    .unwrap()
+            {
+                assert_eq!(record.sequence_status, SequenceStatus::Continuous);
+                if matches!(record.event, HarnessEvent::TurnCompleted { .. }) {
+                    terminals += 1;
+                }
+            }
+            assert_eq!(terminals, 1);
+            (thread, turn)
+        }));
+    }
+    let mut turns = Vec::new();
+    for worker in workers {
+        turns.push(worker.await.unwrap());
+    }
+    let mut previous = 0;
+    let mut terminals = 0;
+    while terminals < turns.len() {
+        let record = tokio::time::timeout(Duration::from_secs(5), raw.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let sequence = record.event_sequence.unwrap();
+        assert_eq!(sequence, previous + 1);
+        assert_eq!(
+            record.sequence_status,
+            if previous == 0 {
+                SequenceStatus::First
+            } else {
+                SequenceStatus::Continuous
+            }
+        );
+        let result = client.event_ack(sequence).await.unwrap();
+        assert_eq!(result.result()["acknowledgedEventSequence"], sequence);
+        previous = sequence;
+        if matches!(record.event, HarnessEvent::TurnCompleted { .. }) {
+            terminals += 1;
+        }
+    }
+    for (thread, turn) in turns {
+        let page = client
+            .thread_read(serde_json::from_value(serde_json::json!({"threadId":thread})).unwrap())
+            .await
+            .unwrap();
+        let runs = page.result()["runEvents"].as_array().unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0]["runId"], turn);
+        assert_eq!(runs[0]["terminalKind"], "succeeded");
+        assert_eq!(
+            runs[0]["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|e| e["event_type"] == "run_terminal")
+                .count(),
+            1
+        );
+    }
+    eprintln!("H-91 real CLI + SDK: eight parallel local turns, wire events={previous}, raw/owned continuous, each ACK accepted, one durable terminal per run");
+    assert!(process.wait().await.unwrap().success());
+}

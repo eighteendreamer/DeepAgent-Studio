@@ -51,6 +51,9 @@ mod history_page_tests;
 #[cfg(test)]
 #[path = "app_server/history_test_support.rs"]
 mod history_test_support;
+#[cfg(test)]
+#[path = "app_server/sequence_tests.rs"]
+mod sequence_tests;
 
 use crate::args::RunOptions;
 
@@ -1541,7 +1544,7 @@ mod tests {
         }
         let terminal_received = received
             .iter()
-            .any(|queued| matches!(queued.event, HarnessEvent::TurnCompleted { .. }));
+            .any(|queued| matches!(queued, HarnessEvent::TurnCompleted { .. }));
         outbox.emit(HarnessEvent::TurnStarted {
             thread_id: Some("audit-thread".into()),
             turn_id: "next-turn".into(),
@@ -1561,37 +1564,12 @@ mod tests {
         );
     }
 
-    #[test]
-    #[ignore = "audit H-91: event sequence must match concurrent enqueue order"]
-    fn audit_concurrent_event_producers_keep_sequences_in_wire_order() {
-        let (outbox, mut rx) = EventOutbox::channel(2);
-
-        // Model a producer being descheduled after reserving its sequence but
-        // before enqueueing; another producer can complete both steps first.
-        let earlier = outbox.allocate_sequence();
-        let later = outbox.allocate_sequence();
-        outbox.enqueue(
-            later,
-            HarnessEvent::TurnStarted {
-                thread_id: Some("audit-thread".into()),
-                turn_id: "later-producer".into(),
-                step: None,
-            },
-        );
-        outbox.enqueue(
-            earlier,
-            HarnessEvent::TurnStarted {
-                thread_id: Some("audit-thread".into()),
-                turn_id: "earlier-producer".into(),
-                step: None,
-            },
-        );
-
-        let observed: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
-            .map(|queued| queued.sequence)
-            .collect();
-        eprintln!("reserved=[{earlier},{later}] enqueued={observed:?}");
-        assert_eq!(observed, vec![earlier, later]);
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn audit_concurrent_event_producers_keep_sequences_in_wire_order() {
+        // The split producer-side allocator no longer exists. Keep this
+        // original probe entry point, now exercising real concurrent emit,
+        // the production writer and monotonically accepted ACKs by default.
+        super::sequence_tests::concurrent_wire_with_ack(2, 64).await;
     }
 
     #[test]

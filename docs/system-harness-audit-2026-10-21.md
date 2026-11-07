@@ -3816,6 +3816,8 @@ expanded-settings误用include-ignored，实际72过/1败/0忽略（193.723秒�
 
 ### H-91：Harness 并发事件生产可使实时 eventSequence 倒退
 
+> **2026-11-08 已修复并验收，仅E-H91-04所列Windows本机范围。** 复用原有界outbox及唯一writer，未编号事件入队后按串行写出顺序编号，flush后发布原ACK高水位；无第二队列/store/取消/客户端排序。原probe与真实wire/ACK红、隔离复审及作废批次保留。当前原probe默认1过、真实并发组3过、真实SDK8并发本地run/48wire逐ACK过；CLI/SDK/TS/协议/build/fmt及CLI/SDK严格lint过，全仓147目标4940过/1败/194忽略，仅旧H306，全仓lint旧阻断，不能称全仓全绿。兼容、未验、清理及独立提交见末尾E04及后续记录；以下原审计事实/当时建议不是当前未修状态。
+
 **级别：低（P3）；触发条件：同一 stdio 连接有多个并发事件生产者，并在某个生产者分配序号后、入队前发生调度切换。** 单生产者或分配与入队没有交错时，FIFO 通知顺序正常。本项不是持久化事件丢失。
 
 - 根因与生产路径：`EventOutbox::emit` 先以 `AtomicU64::fetch_add` 分配序号，再调用 Tokio mpsc 的 `try_send`。原子操作只保证序号唯一，不会把序号分配和发送入队做成同一临界区；多个生产者可先后取得 1、2，却按 2、1 的顺序入队。writer 按队列顺序写出，因此真实 wire 上可能先看到 `eventSequence=2`，再看到 `eventSequence=1`。服务端 `event_ack` 明确拒绝小于已确认值的序号，消费者若逐事件确认，在确认 2 后确认迟到的 1 会得到 invalid params。
@@ -3823,6 +3825,88 @@ expanded-settings误用include-ignored，实际72过/1败/0忽略（193.723秒�
 - 成熟实现对照：Codex app-server 将连接通知交由每连接 worker/writer 串行发送；其对应实现没有本系统的 `eventSequence`/`event_ack` 契约，因此这里只能对照“单连接拥有一个 outbound writer”的结构，不能声称 Codex 直接证明了本系统序号规则。
 - 影响及限制：实时消费者可能收到不单调的事件序号；使用序号作确认游标的消费者会遇到确认回退错误，或需要额外容错处理。当前证据没有表明底层 `run_events`/session 事件被删除、持久化补读丢失，亦没有证明某个 SDK 已因此漏处理事件。H-01 仍单独描述 outbox 满队列丢通知及其恢复边界，不能与本项合并。
 - 收敛方向（尚未实施，本地设计）：将未编号事件送入现有有界队列，由唯一 writer 在实际串行化输出时分配 `eventSequence`；或在同一短临界区内完成序号分配与入队。保留现有 writer 和协议，不新增队列/存储。补充两个生产者的确定性交错、完整 wire 顺序及 ack 递增回归；队列满导致的丢通知和序号缺口仍由 H-01 独立验收。
+
+**E-H91-01（2026-11-08，原探针与真实并发TDD红，修复中）**：基线9e7f15d49880f18cdfc44b961b124cc61efac3a1，tracked干净、无未完合并，仍只原五项用户untracked，仅读名称不读改/暂存。上轮H228已有独立fix与docs交付，属实质进展。核对306行剩余队列：除用户授权跳过的H180外无P1待修；本项虽原P3，但直接关联合并后的H01输出失败/ACK边界、已验H205客户端序号诊断和运行实时事件顺序，先于剩余视图/参数适配处理运行一致性，不为挑容易项；不把H01/H205再次计为本项修复。
+
+逐层读取原报告/probe、EventOutbox分配/try_send/唯一writer/flush高水位、connection的ACK输出锁屏障与EOF收尾、所有发射方及ACK分派、Rust SDK reader/SequenceTracker/真实stdio验收、TS SDK协议消费及Cargo/CI/rustfmt。本机锁定Tokio1.52.3 bounded.rs:117～122说明多Sender单Receiver及发送顺序，try_send:924起确认容量检查与实际发送；原子fetch_add并不包住后续入队。借鉴Codex app-server原OutgoingEnvelope/单连接writer结构，不照搬其不存在的eventSequence/event_ack契约。当前H91生产注释仍明确未修，不因既有H01失败处理或H205诊断就历史跳过。
+
+本轮真正Cargo/证据根C:\Users\32734\AppData\Local\Temp\h91-repair-20261108，新建前确认不存在；隔离合成HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/TMP/data，清继承凭据/代理/DEEPAGENT变量，offline复用工具链依赖，不读取真实配置、凭据、用户历史或网络。冻结8份原生产/消费源码哈希，实际 cargo test --target-dir <本轮绝对根> -p deepagent-cli app_server::tests::audit_concurrent_event_producers_keep_sequences_in_wire_order --offline -j 2 -- --ignored --exact --nocapture --test-threads=1，exit101、0/1/0、324.660秒含冷编译，原始reserved=[1,2] enqueued=[2,1]如期失败；冻结源码均未变。该原探针仍只是分配/入队步骤的确定性交错，不冒充真实线程/wire。
+
+只新增默认sequence_tests及cfg(test)入口、未改生产outbox时，再实际 cargo test --target-dir <本轮绝对根> -p deepagent-cli app_server::sequence_tests::h91_actual_emitters_keep_wire_sequence_and_ack_order --offline -j 2 -- --exact --nocapture --test-threads=1，exit101、0/1/0、33.362秒含编译。16个真实OS线程通过原emit入口、原256有界队列及唯一生产AsyncWrite writer，每批16条/64批，共1024个唯一合成事件；批次屏障只安排生产并发、不插生产钩子或拆原子窗口，不改变接收顺序、不sleep、不靠多次重跑。实际first_wire_mismatch=Some((2,Some(5)))，同原flush锁屏障后逐条经现有ServerState event/ack，31个ACK被拒绝。所有callback身份齐全且连接无容量/写故障，区分H01；这是实际emit/wire与ACK分派失败，不是SDK或真实OS stdio端到端证据。断言在停止并join全部线程、关闭原writer之后执行，不遗留线程。初次fmt检查只指出新增夹具格式，cargo fmt --all后仅新夹具及3行测试入口变化；不是产品红测。
+
+本地根因方案：未编号HarnessEvent继续进入同一原有界队列，由已有唯一writer按实际输出次序从其已flush高水位checked_add取得下一个u64，再序列化/write/flush并发布，移除生产者侧独立计数器和可拆分分配/入队API。同步emit仍不等待容量，H01 overflow/closed/write/flush失败和H92收尾不变；序号耗尽明确失败，不回绕0。不新增队列/store/锁中心，不在SDK排序或自动ACK；connection-local序号不是durable读取游标。随后补反向调度正常对照、重连归1、完整wire/ACK、失败/取消/EOF及Rust/TS消费者验收；原probe随内部拆分API移除改为同名默认真实并发/写出断言，原红测本文和Git历史保留，不保留废弃测试专用分配链。
+
+当前194验收、26历史跳过、8归并、3撤销、74待修+H91修复中=75未关闭，含H180授权跳过，实际74。本项尚未完成生产修改/最终验收/提交，新增修复0。本项暂估4–8有效分析/修复/验收小时，编译、机器和依赖等待另计；全部200–400有效小时仍为未逐项校准低置信历史粗估，无精确完工承诺。旧H228/H176/H292/H248/H167/H126等G/C清理拒绝路径不重试，新root只承载本轮真正Cargo/合成夹具，并非绕路删除旧残余，整体goal active。
+
+**E-H91-02（2026-11-08，根因候选及冻结专项通过，全仓门禁中）**：沿既有EventOutbox移除QueuedEvent/生产者next_sequence及可拆分allocate/enqueue；原tx/rx仍为同一个256有界通道，仅承载未编号HarnessEvent。原唯一writer从其delivered_sequence（唯一生产写方）checked_add分配，再按队列顺序序列化/write/flush，在原stdout锁内发布ACK高水位；未增第二计数器/队列/锁/取消/store，不在SDK排序、自动ACK或重放。满队列、closed、write/flush错误继续原H01明确失败，原H92 owner/10秒收尾及connection ACK屏障不变。u64耗尽明确失败，不回绕0；该有限域边界只用原高水位种子作测试，没有新增生产测试hook。
+
+真实16线程回归未改判据，再执行E01同一模块（增加正常对照及u64边界）exit0、3/0/0、38.064秒含编译：1024个唯一事件first_wire_mismatch=None、rejected_acks=0。正常对照确定性延迟较早启动的线程，让较晚线程先入队，wire身份仍为后者→前者、编号1→2，不按producer身份排序；新连接又归1。原probe依E01预告去掉已不存在的内部两步骤，保留原完整测试名改为默认真实2线程128事件/writer/逐事件ACK；冻结门禁再次1/0/0，不靠保留ignore/废弃分配链或弱化顺序断言假绿。
+
+新增Rust SDK真实stdio消费者回归h91_real_cli_parallel_local_turns_keep_raw_owned_and_ack_sequences_consistent，复用原隔离子测试owner：父执行完全相同新CLI字节，空安装/新合成HOME及SQLite；8个并发本地/help turn不初始化模型/读取凭据/访问网络。独立及全组子日志均实际48条wire，raw/owned SequenceStatus连续，逐条event/ack成功，各run重读仅1条succeeded终态。父helper成功后返回None不是跳过，子测试真实1/0；不重复计为两个唯一用例。SDK本次完整72/0/5、真实stdio13/0/0、doc2/0/0，未修改SDK生产检测/容错逻辑。
+
+9份修改或引用Rust源码已冻结（app_server/outbox/sequence_tests、原connection/backpressure、协议requests、SDK reader/notification/e2e），下面专项前后hash一致：fmt通过；原probe默认1/0/0，真实emit模块3/0/0；CLI全target全feature201/0/9、startup隔离1/0/1；协议23/0/0；CLI和SDK全target全feature no-deps严格lint均exit0，CLI诊断也0；CLI实际build由Cargo compiler-artifact唯一解析。专项完整命令/耗时均在本轮root focused-results.json/sdk-results.json，最终文档需继续附全仓真实终态，当前不关闭本项。独立SDK新回归17.099秒、SDK全组52.555秒、SDK严格21.028秒；CLI全组67.831秒、协议63.687秒、CLI严格136.686秒/诊断31.472秒、build101.106秒。
+
+发布前核对原共享CLI SHA256 ED619FA2E902F7C4513D3286F50BE0F3FAABCC4FA6CB9AA3A49203005705D03F、路径无reparse且零活进程，备份在本轮root后将Cargo实际artifact发布到原G:\Code_Warehouse\DeepAgent-Studio\target\debug\deepagent.exe，新82,063,872字节、SHA256 A2C0509C2F4A5FA57C533A8B3B3D3BBF9AB99C44DF992E67BCE2D29F69296E86。真实Rust/TS消费的都是该新字节，不是仅编译库或使用旧CLI。
+
+TS无源码/类型变更。为不写入旧G盘dist及不重试旧清理拒绝，只在本轮C根ts-stage复现原packages/sdk/tests、package.json与共享协议fixture的相对目录，所有复制输入逐一核对SHA256，tsc仍读原src/tsconfig并输出新stage/dist，真实CLI在stage/target/debug也逐字节相同，原测试脚本/断言未改。实际pnpm --dir packages/sdk exec tsc -p tsconfig.json --outDir <本轮绝对根>\ts-stage\packages\sdk\dist exit0（2.505秒）。首次单元列表因隔离布局漏复制原跨包control_results_v1.json，Node ENOENT使该文件未开始，158过/1败；不当产品失败。核对原result-contract.test.mjs:6相对路径后补原始同hash fixture，生产/测试均未修改，完整同scripts.test列表node --test再次exit0，180/0/0（4.251秒）。真实scripts.test:stdio原4文件node --test exit0，4/0/0（9.096秒）；scripts.test:jsonl原1文件exit0，1/0/0（4.822秒）；pnpm --dir packages/sdk typecheck exit0（1.764秒）。原始布局失败日志未覆盖，不将新stage布局当成产品修复，也不删除/改ACL或另路清理旧dist。
+
+无DTO/协议version/方法/权限/沙箱、持久化格式或迁移变化；原工具/模型执行链未改。当前只确认上述本机专项，未执行其他OS、真实供应商、用户数据、完整桌面build/UI、长期压力或强杀掉电保证。全仓test --workspace --offline --no-fail-fast -j2与strict clippy已启动，exec session 2061活句柄待取得真实终态；不拿H228旧全仓结果代替。C/G h编号目录元数据在broad前另存快照，后续只清新root且拒绝即停。当前仍194验收、26历史跳过、8归并、3撤销、74待修+H91修复中=75未关闭含H180授权跳过，实际74；本轮新增验收0，无commit，不提前进入下一独立问题。
+
+**E-H91-03（2026-11-08，夹具隔离复审、作废未完成全仓批次，仍修复中）**：E02后静态复审发现新ACK回归沿用ServerState::new_for_test，它把包当前工作目录传入with_headless_knowledge，继而KnowledgeService::open/build_base/load_all可能打开该目录的知识库；ACK本身不需要此能力。隔离HOME不能证明project输入也合成，E01/E02先前对该新夹具输入边界的描述不充分，以此修正；没有追读真实知识目录/文件来判断是否含数据，也不把没有看到内容当作没有访问的证明。原确定性无ServerState探针及实际wire/ACK红的观察仍保留，但旧夹具绿组不冒充最后源码验收。
+
+明确核对当前活句柄2061、对应runner pwsh PID55016（命令含本轮绝对root、创建时间匹配）、Cargo shim53184/子58456及仅该runner派生的合成测试子树后，用本机taskkill /?确认参数，实际taskkill /PID 55016 /T /F exit0，仅停止这个不完整批次；随后CIM确认整棵已识别子树剩余PID为0，exec句柄返回exit1终态。此前AppCore已开始但尚无完整workspace结果；完整原输出保存为本轮candidate-workspace-interrupted.log，进程树及原因记录在interrupted-process-tree.json/orchestration-interruption.json，不将本次主动中止算产品失败或完整全仓结果，不是因观察超时/看不到输出而重启。未停止用户应用、其他任务或改ACL/删除产物。
+
+仅把新增sequence_tests的ACK fixture改为显式tempfile workspace及原new_for_test_with_database+内存DB，原临时全局根仍由runner提供。顺序/身份/ACK判据、16线程1024事件及原2线程probe、生产outbox均未改，没有复制另一ServerState/权限/知识链。旧9份freeze只有这一个测试文件变更，生产/协议/SDK输入不变；重新生成final2-sources.json并从fmt、原probe、真实并发/正常对照、CLI/协议/严格lint/build及真实SDK开始重跑，旧focused/首全仓输出不覆盖，不以旧hash继续宣称冻结一致。当前新focused进程已启动；全仓必须随后在新freeze下重新取得真实终态才可关闭本项。
+
+仍194验收、26历史跳过、8归并、3撤销、74待修+H91修复中=75未关闭含H180授权跳过，实际74；新增验收0、无commit。不进入下一问题，不重试任何旧G/C清理拒绝路径。
+
+E-H91-03续接（2026-11-08，最终输入重新验证，未关闭）：final2仅新增ACK测试workspace隔离变更，其余8个冻结输入与E02相同。根fmt、3项真实并发/正常/有限域组、同名默认原probe、CLI201/0/9+startup1/0/1、协议23/0/0、CLI严格/诊断lint均再次exit0。重链后实际CLI仍82,063,872字节但SHA256变为3D27848493C7F678D34328659A9588CE326736CDD40A14C1F7BA2E2E7ADC7B4B；第一次SDK2前置身份核对主动拒绝使用E02的A2C050…字节，测试尚未开始，不算产品失败。核对9源、Cargo实际artifact、旧共享A2C050完整hash/无reparse/零活进程并另存上一候选备份后，重新发布本次真实新字节，不推测哈希差异的编译器内部原因，不拿旧CLI冒充最后产物。
+
+新字节下实际独立H91真实SDK1/0、SDK全组72/0/5+stdio13/0/0+doc2/0/0、SDK严格lint均再次通过；TS原4项stdio/1项jsonl及typecheck也已再次通过，均未改原脚本、断言、DTO或SDK生产实现。原TS单元180项的原始源/测试/共享fixture未变，仍保留E02完整执行记录；真实TS消费已换为最新字节复验。原workspace活句柄2061已明确终止，当前仅新final2 freeze下的workspace+strict批次活句柄91310运行，最终终态尚未取得，不能新增验收/提交或进入下一问题。
+
+**E-H91-04（2026-11-08，最后冻结验收通过，仅所列Windows本机范围）**：E01原探针及真实wire/ACK红、E02旧候选、E03隔离纠正/主动中止/身份核对拒绝完整保留。以下Rust门禁及末尾显式probe均在final2-sources的9个修改/引用源hash前后一致时执行，ACK新夹具使用明确临时project workspace，不再借用包cwd知识库；生产只有原EventOutbox编号归属改变。原H01测试仅将已删私有QueuedEvent.event访问适配为原事件本身，满队列/故障判据未改，不作为另一个修复。TS单元/编译输入与E02相同且逐项hash不变；真实TS再次使用最终CLI，不拿候选二进制冒充验收。$Target为E01所列C盘绝对root；下表node测试在$Target\ts-stage\packages\sdk运行，保留原相对布局/脚本完整测试列表，隔离合成环境及offline边界同E01/E03。
+
+| 实际命令 | 实际结果（通过/失败/忽略） | 用时秒 |
+|---|---|---|
+| `cargo fmt --all -- --check` | 0，通过 | 4.363 |
+| `cargo test --target-dir $Target -p deepagent-cli app_server::sequence_tests:: --offline -j 2 -- --nocapture --test-threads=1` | 0；3/0/0 | 58.757 |
+| `cargo test --target-dir $Target -p deepagent-cli app_server::tests::audit_concurrent_event_producers_keep_sequences_in_wire_order --offline -j 2 -- --exact --nocapture --test-threads=1` | 0；1/0/0，默认执行 | 1.367 |
+| `cargo test --target-dir $Target -p deepagent-cli --all-targets --all-features --offline -j 2 -- --quiet --test-threads=2` | 0；CLI201/0/9，startup隔离1/0/1 | 70.300 |
+| `cargo test --target-dir $Target -p deepagent-harness-protocol --offline -j 2 -- --quiet --test-threads=2` | 0；协议23/0/0，doc0 | 3.159 |
+| `cargo clippy --target-dir $Target -p deepagent-cli --all-targets --all-features --no-deps --offline -j 2 -- -D warnings` | 0；CLI严格lint通过 | 34.316 |
+| `cargo clippy --target-dir $Target -p deepagent-cli --all-targets --all-features --no-deps --offline -j 2 -- -W warnings` | 0；CLI诊断无新增项 | 30.369 |
+| `cargo build --target-dir $Target -p deepagent-cli --offline -j 2 --message-format=json` | 0；Cargo真实artifact | 16.265 |
+| `cargo test --target-dir $Target -p deepagent-harness-sdk --test e2e_stdio h91_real_cli_parallel_local_turns_keep_raw_owned_and_ack_sequences_consistent --offline -j 2 -- --exact --nocapture --test-threads=1` | 0；父1/0/0，隔离子实际1/0，非跳过 | 10.357 |
+| `cargo test --target-dir $Target -p deepagent-harness-sdk --offline -j 2 -- --quiet --test-threads=2` | 0；lib72/0/5，stdio13/0/0，doc2/0/0 | 41.231 |
+| `cargo clippy --target-dir $Target -p deepagent-harness-sdk --all-targets --all-features --no-deps --offline -j 2 -- -D warnings` | 0；SDK严格lint通过 | 11.690 |
+| `cargo test --target-dir $Target --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=2` | 101；147目标/147终态，4940/1/194，仅旧H306 | 1141.172 |
+| `cargo clippy --target-dir $Target --all-targets --all-features --offline -j 2 -- -D warnings` | 101；旧models/client.rs:431 clone_on_copy | 69.109 |
+| `pnpm --dir packages/sdk exec tsc -p tsconfig.json --outDir $Target\ts-stage\packages\sdk\dist` | 0；原src/tsconfig输出新stage/dist | 2.505 |
+| `node --test tests/sdk.test.mjs tests/early-events-audit.test.mjs tests/owned-stream.test.mjs tests/version-contract.test.mjs tests/initialize-contract.test.mjs tests/result-contract.test.mjs tests/restart-audit.test.mjs tests/generation-contract.test.mjs tests/jsonl-lifecycle-audit.test.mjs tests/jsonl-owner.test.mjs tests/jsonl-exit-audit.test.mjs tests/jsonl-result.test.mjs tests/approval-isolation-audit.test.mjs tests/approval-lifetime.test.mjs` | 0；180/0/0，原完整列表 | 4.251 |
+| `node --test tests/real-cli-stream.test.mjs tests/real-cli-generation.test.mjs tests/real-cli-archive.test.mjs tests/real-cli-fork.test.mjs` | 0；4/0/0，本轮最终CLI | 5.390 |
+| `node --test tests/real-cli-jsonl-owner.test.mjs` | 0；1/0/0，本轮最终CLI | 4.634 |
+| `pnpm --dir packages/sdk typecheck` | 0，通过 | 1.798 |
+
+全仓唯一失败为prompts的canvas_prompt::tests::every_node_kind_owns_exactly_one_profile，位置crates/deepagent-prompts/src/canvas_prompt.rs:310，creative.video-edit.v1 has an empty defaultUserPrompt；全仓严格lint止于crates/deepagent-models/src/client.rs:431。已再次git diff核对两处来源未由本项修改；CLI/SDK自己的严格lint真实通过，不能由此宣称全仓严格lint通过。194个默认忽略不算通过，H91原probe已默认，以下又明确核对实际通过数排除0项过滤假绿。原workspace主动中止批次没有算入此147终态或当作已验收结果。
+
+从本轮最后workspace的Running记录唯一解析真实binary，再显式执行，binary与9源hash前后均一致：
+- $CliTest=$Target\debug\deps\deepagent-4cd4c0a85fe5724b.exe，SHA256 8D079FEE55269D5CC0893E78E037C234F4E37C88034D41F419B2A30671190F24。实际 & $CliTest app_server::tests::audit_concurrent_event_producers_keep_sequences_in_wire_order --exact --nocapture，exit0、1/0/0、0.091秒：真实2线程128事件，first_wire_mismatch=None、拒绝ACK0；同binary实际 app_server::sequence_tests:: --nocapture --test-threads=1，exit0、3/0/0、0.067秒：16线程1024唯一事件、全部逐条ACK接受、反向调度保持payload入队顺序、重连归1及u64::MAX后明确失败且没有回绕通知。
+- $SdkTest=$Target\debug\deps\e2e_stdio-40602f1c262b28ef.exe，SHA256 2DB64224E283937FFC204DA8946A7174EC2D3A3F83250F681B2F920CC0CD5545。实际 & $SdkTest h91_real_cli_parallel_local_turns_keep_raw_owned_and_ack_sequences_consistent --exact --nocapture，exit0、1/0/0、4.597秒；真实隔离子日志明确8个并发本地/help run、48条wire，raw/owned连续、每条ACK成功、每run重读唯一succeeded终态。实际同binary参数 h205_real_cli_ack_uses_delivered_wire_sequence_and_reopen_uses_durable_identity --exact --nocapture，exit0、1/0/0、3.642秒，原拒绝倒退/未发送ACK、进程重开durable identity和新物理连接归1仍成立。父/子只算一个唯一用例，不将helper成功返回None解释为跳过。
+- 最终生产CLI由Cargo实际artifact取得并按E03续接重新发布，82,063,872字节、SHA256 3D27848493C7F678D34328659A9588CE326736CDD40A14C1F7BA2E2E7ADC7B4B。真实Rust/TS均消费相同新字节，旁置资源未移动/删除；空安装的隔离子范围不冒充整套打包插件或沙箱验收。
+
+根因闭环：原生产者原子分配与入队不是同一边界；现生产者仅往既有256有界通道try_send未编号事件，唯一writer按收到的先后从自己最后flush高水位checked_add编号，真实write/flush成功后才在原stdout锁内发布ACK值。无生产者预留序号，故不能再产生预留1/2却写出2/1；不按事件身份/模型序号排序，不新增队列/store/取消中心，也不在SDK容错掩盖。失败继续H01显式poison/既有H92取消与有界收尾，不制造durable终态或承诺任意传输故障下所有通知送达。连接序号仍不等于持久化游标。
+
+兼容与未验：无公共DTO/方法/version/协议形状、新依赖、权限/沙箱/模型/数据库格式或迁移变更；同步回调仍不等待队列容量，满队列、closed、写/flush故障、正常EOF及原10秒预算在CLI全组通过。原H01/H92/H205不是本轮归并/历史跳过或第二份成果。未验其他OS、真实provider/凭据/内网/用户数据、完整打包插件/MCP/沙箱、桌面Tauri/pnpm build/UI、长期压力、强杀/掉电；本项未改桌面桥接/TS UI，故未运行桌面整套构建，不拿TS SDK检查冒充它。Root fmt通过，无新生产测试hook或取消/权限旁路。
+
+仅上述本机范围下H91验收成立，本轮新增修复1、历史跳过0、归并/撤销0；306唯一编号/8列复核后195验收、26历史跳过、8归并、3撤销、74未关闭（含H180授权跳过，实际后续73）。本项所列代码验收剩余0，命名产物清理、双文检查及独立commit/真实hash回填随后记录，不把验收等同已提交或全部清理。下一准备核查H95恢复时同session不同run原因的一致性，先确认原probe与当前H44等历史改动，不预认定仍需生产修改。全余200–400有效小时仍为未逐项校准低置信历史粗估，依据剩余73项跨层TDD/回归/验收而非简单数量；本轮最后workspace纯门禁1141.172秒及严格lint等待69.109秒不当编码工时。设备/编译/依赖/环境及删除权限等待另计，无可靠等待总区间、完成率或精确完工承诺，整体goal active。
+
+**E-H91-05（2026-11-08，本轮产物清理：部分完成，拒绝后停止）**：先将原红测、隔离纠正/中止、最后9源/真实binary/CLI身份、完整实际命令及结果保存到E01～04与本轮工具证据，再清本轮C:\Users\32734\AppData\Local\Temp\h91-repair-20261108。分别对照第一次及final2开始前的C Temp/G target顶层h编号目录快照，两处均无额外新增h目录，未漏算主动中止批次；不把旧目录当作本轮产物删除。最终9源与共享CLI hash未变，绝对根及所有祖先/子项无reparse，所有ExecutablePath或CommandLine关联root的活进程为0（覆盖实际CLI、kernel、SDK、compiler-wrapper等，不仅旧进程名正则）。
+
+初始15,524文件、26,906,044,233逻辑字节。实际先在当前cargo clean --help核对target-dir/dry-run/offline参数，再 cargo clean --target-dir <本轮绝对root> --offline --dry-run，exit0，15,524文件/25.1GiB；随后去--dry-run实际exit101，failed to remove file C:\Users\32734\AppData\Local\Temp\h91-repair-20261108\fixture-tmp\.tmp4NPycs\destination\child，拒绝访问(os error5)。立刻停止删除，没有改ACL/提权、改名搬移、换工具/参数路线或重试。只读残余统计3,651文件、3,602,011,301逻辑字节，枚举错误0；本轮共减少11,873文件、23,304,032,932逻辑字节，不冒称精确物理回收量。清后C/G可用快照68,825,620,480/148,579,835,904字节，不声称所有历史G/C残余已清空。残余需用户/环境处理删除权限后另行明确清理授权，小怪不自行重试。
+
+删除只针对本轮可再生target、合成数据、复制的测试输入、日志/临时脚手架，未删除仓库权威源码/用户文档、原五项用户untracked或工具链/依赖缓存，未访问真实凭据/内网/用户数据。G未新增h91目录/dist，共享CLI按E04真实消费者用途保留82,063,872字节、SHA256仍3D27848493C7F678D34328659A9588CE326736CDD40A14C1F7BA2E2E7ADC7B4B，不提交二进制；旧H228/H176/H292/H248/H167/H126等与旧SDK/Desktop dist拒绝路径不重试，原sidecar及未知resources不碰。E03停止进程是经身份核对的本轮未完门禁纠正，不是绕过本次删除拒绝；清理权限不影响E04代码验收，但清理没有全部完成。
+
+双文脚本核对实际通过：306唯一主行、每行8列、仅H91主行变化；195验收、26历史跳过、8归并、3撤销、74未关闭含H180授权跳过，实际后续73；两文H91 E证据相同、顶部成员/数量与主行匹配，git diff --check通过。仅白名单本项outbox、既有AppServer测试适配、新sequence_tests、SDK真实stdio测试及双文共6文件独立提交；取得hash后另docs回填，不amend/推送，提交动作不消除清理残余或未验边界。
 
 ### H-92：stdio EOF 直接退出运行时，活动 turn 没有有界收尾
 
