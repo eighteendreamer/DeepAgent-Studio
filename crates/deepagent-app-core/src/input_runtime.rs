@@ -369,7 +369,7 @@ pub(crate) fn sequence_of_message(
 
 /// Migrate only the legacy prefix. Once native events start, those events own
 /// the Surface and the compatibility Message/Tool events are not appended again.
-fn indexed_response_items(
+pub(crate) fn indexed_response_items(
     events: &[Event],
 ) -> Vec<(deepagent_core::event::Sequence, ResponseInputItem)> {
     let first_native = events

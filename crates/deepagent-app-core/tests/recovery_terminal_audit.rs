@@ -13,6 +13,9 @@ use deepagent_persistence::run_store::RunStore;
 use deepagent_persistence::Database;
 use deepagent_session::Session;
 
+#[path = "recovery_terminal_audit/interruption.rs"]
+mod interruption;
+
 fn add_run(db: &Database, id: SessionId, run: &str, now: i64) -> TaskId {
     let mut session = Session::recover(db, &SystemClock, id).unwrap();
     session
@@ -767,7 +770,6 @@ fn audit_startup_recovery_preserves_one_replayable_terminal() {
 }
 
 #[test]
-#[ignore = "audit H-95: startup interruption classification must follow each run's task boundary"]
 fn audit_recovery_classifies_each_run_from_its_own_task_turn() {
     let db = Arc::new(Database::open_in_memory().unwrap());
     let session_id;

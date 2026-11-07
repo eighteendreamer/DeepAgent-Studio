@@ -16,6 +16,113 @@ impl Drop for ChildGuard {
     }
 }
 
+#[test]
+fn h95_real_cli_startup_keeps_each_runs_reason_and_reopen_is_idempotent() {
+    use deepagent_core::{clock::SystemClock, task::TaskState};
+    use deepagent_session::Session;
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("data")).unwrap();
+    let path = root.path().join("data/state.sqlite");
+    let id = {
+        let db = Database::open(&path).unwrap();
+        let mut session = Session::create(&db, &SystemClock, None).unwrap();
+        let id = session.id();
+        for (run, tool, now) in [("older-tool", true, 200), ("later-prompt", false, 100)] {
+            session
+                .append(EventPayload::MessageAppended {
+                    message: Message::user(run),
+                })
+                .unwrap();
+            let task = session.create_task(run).unwrap();
+            session.transition_task(task, TaskState::Running).unwrap();
+            RunStore::new(&db)
+                .create(run, &id.to_string(), Some(&task.to_string()), now)
+                .unwrap();
+            RunStore::new(&db)
+                .transition(run, "running_turn", now + 1)
+                .unwrap();
+            if tool {
+                session
+                    .append(EventPayload::ToolCallRequested {
+                        call: deepagent_core::message::ToolCall {
+                            id: "synthetic-call".into(),
+                            name: "read_file".into(),
+                            arguments: json!({}),
+                        },
+                    })
+                    .unwrap();
+            }
+        }
+        id
+    };
+    let mut previous = None;
+    for _ in 0..2 {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_deepagent"));
+        isolated(&mut command, root.path());
+        // EOF still traverses the real startup recovery boundary, but never
+        // admits a turn, invokes a provider, or executes the synthetic tool.
+        let mut child = ChildGuard(
+            command
+                .args(["server", "--transport", "stdio"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let end = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                assert!(status.success(), "CLI startup failed: {status}");
+                break;
+            }
+            assert!(std::time::Instant::now() < end, "CLI startup timed out");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let db = Database::open(&path).unwrap();
+        let history = EventStore::new(&db).load_session(id).unwrap();
+        let mut ledgers = Vec::new();
+        for (run, reason) in [
+            ("older-tool", "interrupted_turn"),
+            ("later-prompt", "interrupted_prompt"),
+        ] {
+            let store = RunStore::new(&db);
+            let record = store.get(run).unwrap().unwrap();
+            assert_eq!(record.terminal_kind.as_deref(), Some("failed"));
+            let events = store.events_after(run, None).unwrap();
+            let markers: Vec<_> = events
+                .iter()
+                .filter(|e| e.event_type == "run_recovered_after_startup")
+                .collect();
+            assert_eq!(markers.len(), 1);
+            assert_eq!(markers[0].data["interruption"], reason, "{run}");
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|e| e.event_type == "run_terminal")
+                    .count(),
+                1
+            );
+            assert_eq!(
+                history
+                    .iter()
+                    .filter(|e| matches!(&e.payload,
+                        EventPayload::RunTerminal { run_id: Some(found), .. } if found == run
+                    ))
+                    .count(),
+                1
+            );
+            ledgers.push(events);
+        }
+        let snapshot = serde_json::to_value((ledgers, history)).unwrap();
+        if let Some(previous) = &previous {
+            assert_eq!(&snapshot, previous, "cold restart rewrote durable recovery");
+        }
+        previous = Some(snapshot);
+    }
+}
+
 fn isolated(command: &mut Command, root: &Path) {
     let environment: Vec<_> = ["PATH", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT"]
         .into_iter()

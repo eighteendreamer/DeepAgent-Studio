@@ -4021,6 +4021,62 @@ E-H91-03续接（2026-11-08，最终输入重新验证，未关闭）：final2�
 - 影响及限制：错误分类被写入 `run_recovered_after_startup` 事件并返回 `RunRecoveryDto.interruption`。当前源码搜索没有发现该字段驱动续跑、模型请求或 run/task 终态；因此已证实影响是旧 run 的恢复原因诊断可能归错，不能据此声称会改变执行行为或用户可见 UI。终态写入和任务失败处理属于既有恢复路径，本探针不评估 H-44 的终态投影问题。
 - 收敛方向（尚未实施，本地设计）：在现有事件流中用明确的 run/task 身份确定各 turn 的分类范围；若需要把位于 `TaskCreated` 前的 user prompt 归属到 task，应由统一投影按现有 task/run 关系处理，不能简单截断后遗漏 prompt。补充同 session 多 run 的旧工具中断、新 prompt 中断、已完成旧 turn、无决定性事件，以及重放后身份稳定的测试；保留现有 RunStore、session event log 和恢复入口。
 
+- 修复状态（2026-11-08）：已修复并验收，限E-H95-01～05实际本机证据；原失败/候选反例保留，旧marker不追改。提交及清理结果随后回填。
+
+**E-H95-01（2026-11-08，原探针及扩展TDD红，修复中）**：基线599229af75892d0dd29ce5410064173279667dc3，上轮H91已独立验收/提交属实质进展；tracked干净、无未完成合并，原五项用户untracked仅读名称不读改/暂存。原306主行中H95仍待修；核对H44提交3d247d1afd83276a0bbee85c0ce33a62440ebef8只统一恢复终态/投影事务，当前recover_unfinished_runs仍对每run调用整个session的classify_interruption，不能历史跳过或与H44归并。优先运行状态/持久化诊断一致性，不因原P3而选纯视图参数问题；H180仍授权跳过，所有旧G/C清理拒绝路径不重试。
+
+逐层核对原探针、AppService恢复/所有权/控制面及正常分类测试、RunStore/task绑定/终态事件、Session及source/native投影规则、核心typed Event/ResponseItem、会话UI按TaskCreated绑定turn的既有投影、原run_assembler的“user输入及其native投影→TaskCreated→bind_task”生产顺序、CLI/Tauri启动消费和全仓interruption字段搜索、Cargo/CI/rustfmt。当前字段仅作RunRecoveryDto/恢复marker与桌面启动日志诊断，不控制执行或终态。借鉴Codex具体turn_id恢复用例仅为身份范围原则，未运行参考工程，也不把其rollout语义套入本系统。
+
+真正Cargo/证据根C:\Users\32734\AppData\Local\Temp\h95-repair-20261108，新建前确认不存在；隔离合成HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/TMP/data，清继承凭据/代理/DEEPAGENT环境，offline复用已装工具链依赖，仅合成authority/SQLite，无模型/工具执行、真实用户数据/凭据/内网。冻结9份原生产/消费/测试源hash后，实际 cargo test --target-dir <本轮绝对root> -p deepagent-app-core --test recovery_terminal_audit audit_recovery_classifies_each_run_from_its_own_task_turn --offline -j 2 -- --ignored --exact --nocapture --test-threads=1，exit101、0/1/0、286.364秒含冷编译；实际old=Some(interrupted_prompt)、latest=Some(interrupted_prompt)，旧run预期interrupted_turn未成立，9源hash不变。原失败证据保留。
+
+生产未改时仅增加recovery_terminal_audit子模块，4个默认真实回归：12组（6种旧/新prompt、tool、reply、无决定性事件×两种run创建时间排序）及file SQLite冷重开/marker持久化/唯一终态与幂等；native-only InputMessage/FunctionCall、无prompt任务、无task run及未绑定后来输入；同task被多个run占用时不伪造归属；无效或缺失绑定task仍严格报错且不落假终态。实际 cargo test --target-dir <本轮绝对root> -p deepagent-app-core --test recovery_terminal_audit interruption::h95_ --offline -j 2 -- --nocapture --test-threads=1，exit101、1/3/0、15.270秒含编译：旧工具run被最新prompt覆盖、native旧工具同样误归prompt、共享task两个run都借到interrupted_turn而不是未知；原无效/缺失task严格拒绝对照已通过。service生产hash前后未变，不把夹具编译问题或默认ignore当产品红/绿。
+
+本地设计方案：沿原session恢复保留门禁、事件源、Session任务校验及RunStore.finish_recovered，不新建run/event/store/取消/执行或UI DTO依赖链。按既有run.task_id且唯一run-owner证据定位该TaskCreated的诊断片段，把其前最近未被先前task占用的user输入（legacy/native均按现有typed角色）纳入，遇下一user输入/TaskCreated结束，不借用别的run的session尾部；沿原decisive-event分类规则，不改变prompt/tool/reply含义。无task、重复task创建或多run共享task等不能唯一归属时保持原Option未知None，不按created_at、goal或文本猜身份；实际绑定task语法/存在性仍由原严格路径验证。该片段只是本次只读诊断投影，不是第二套会话索引或UI渲染器，不依赖费用/附件等UI转换，也不修改持久化格式或补写旧错误诊断。
+
+完整原probe、正常对照、恢复/H32/H44边界、AppCore/Persistence/Session、CLI与Tauri启动消费、fmt/lint/build/全仓及双文/清理/独立提交仍未完成，新增验收0。当前195验收、26历史跳过、8归并、3撤销、73待修+H95修复中=74未关闭（含H180授权跳过，实际73）。本项暂估4–8有效分析/修复/验收小时；全部200–400有效小时仍为未逐项校准低置信历史粗估，编译/设备/依赖/环境及删除权限等待另计，无可靠等待区间或精确完工承诺，整体goal active。
+
+**E-H95-02（2026-11-08，候选反例与统一投影，尚未最终验收）**：第一候选按原始user/task事件截取，完整recovery_terminal_audit实际exit0、19/0/0、64.610秒含编译，但复审发现Session支持“native user→TaskCreated→append_without_response_projection的UI兼容镜像→native工具调用”。新增真实native-first回归后第一候选exit101、0/1/0、15.356秒；兼容镜像误被当下一输入，工具中断漏掉。保留mirror-red原证据，不以先前19项通过结案。
+
+根因方案收敛到既有input_runtime::indexed_response_items（仅扩大crate内可见性，函数体不变），复用其legacy/native归一、native优先与镜像消重，不另造镜像特判或第二索引。在原session recovery scope内一次读取authority与canonical完整历史投影（不施加UI/model compaction/snip过滤），按唯一run-owner的TaskId及唯一TaskCreated界定user/task序列片段；无身份或歧义未知None，实际task语法/存在性保持原严格报错。原唯一终态、Session任务失败、H32门禁/H44补偿不变。DTO仅注释明确未知含义，字段/序列化/协议/模型请求/权限/沙箱不变，不追改旧marker。
+
+第二候选完整恢复组exit0、20/0/0、59.427秒（测试6.54秒）；随后把歧义身份回归扩展到重复TaskCreated，与共享task两个run分别验证。最后版本再跑 cargo test --target-dir <本轮绝对root> -p deepagent-app-core --test recovery_terminal_audit --offline -j 2 -- --nocapture --test-threads=1，exit0、20/0/0、29.087秒（测试6.43秒）。原probe实际old=interrupted_turn/latest=interrupted_prompt；5个新默认测试含12组合、native、无task/无prompt、共享/重复身份、缺失/无效task严格报错及native-first镜像反例全部执行且无ignore。最终跨层门禁、全仓旧失败核对、双文台账、清理及提交仍待完成，新增验收0。
+
+**E-H95-03（2026-11-08，核心及生产入口门禁，尚未最终验收）**：冻结13份相关生产/消费/测试源码（final-sources），各gate前后逐hash核对；隔离root与offline不变。实际fmt通过；原probe去ignore后精确执行1/0/0（1.236秒）；AppCore --lib 1592/0/46（305.713秒含编译，测试199.05秒），包括原decisive-item分类/input_runtime现有对照；Persistence 203/0/0及其integration 9/0/0、Session 21/0/0（65.535秒合计），两个doc目标均0项，绝不把它们算正向验收。cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --target-dir <本轮root>/tauri --offline -j 2实际exit0、389.365秒；覆盖真实桌面恢复DTO/日志生产消费编译，不等于Wry/UI启动或真实进程崩溃验收。CLI生产build实际exit0、119.695秒（实际日志计时），compiler-artifact明确deepagent.exe。
+
+AppCore cargo clippy --target-dir <本轮root> -p deepagent-app-core --all-targets --no-deps --offline -j 2 -- -D warnings实际exit101（149.471秒）：既有context_runtime的Usage clone、config_resolver的return、run_assembler参数数、session_title借用等阻断；改为-W warnings诊断仍exit101（45.183秒），因为原kernel_v2_e2e/mcp_discovery_restore.rs:776 guaranteed-panic unwrap为deny级。另有原workflow_audit/media冗余绑定/布尔断言。对应文件均无本轮diff，不顺手修复、加allow或把诊断退出视为通过；仍须对本轮lib/recovery target定向核对完整lint结果。
+
+补充同一H95的真实生产CLI启动回归，复用session_startup_isolation原隔离环境及子进程清理边界：仅合成file SQLite/session/TaskCreated及native镜像，两run创建时间与事件先后相反，启动真实server并EOF（不admit turn、不调用模型/工具），核对各自持久化原因/唯一终态，第二次冷启动完整run/session日志不变。实际精确测试1/0/0、exit0、101.466秒含编译（测试6.27秒）；随后只更新该test的冻结hash为final2-sources，其余12源保持相同。生产DTO字段/序列化未变，不引入TS/UI行为变更。
+
+发布给既有SDK真实stdio测试使用的共享CLI前检查源/目标及所有祖先无reparse、无活进程；原共享sha256=3D27848493C7F678D34328659A9588CE326736CDD40A14C1F7BA2E2E7ADC7B4B，先在本轮root备份核对，再复制实际Cargo产物。当前共享G:\Code_Warehouse\DeepAgent-Studio\target\debug\deepagent.exe为82,073,600字节、SHA256=8ECE51B5FA5C279FEA48F6F72ADB81AEFB69EE2EE2AEB013B27BE7D78465CFB7；不动sidecar。完整消费方/全仓、显式最后二进制、双文台账、清理及提交仍待完成，不能新增验收。
+
+**E-H95-04（2026-11-08，首轮全仓失败保留、最后二进制显式验收，复验中）**：最终13源冻结且共享CLI身份不变，实际 cargo test --target-dir <本轮root> --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=2，exit101、1719.991秒；按147个Running/Doc-tests目标与147个结果块逐项配对，4946通过/2失败/193忽略，不把0项目标或忽略当验收。失败一为原H306 canvas_prompt::tests::every_node_kind_owns_exactly_one_profile（creative.video-edit.v1空defaultUserPrompt）；另一为未改动verification_commands::lifecycle_tests::dropping_active_verification_future_stops_real_descendant：warm段真实子孙已退出/未写canary，但cold段在4014ms内未到compiler-started，cargo_lock=false、无target/debug/build或compiler阶段标记；不能把该失败直接称为H95产品缺陷、环境已解决或整个workspace通过。其fixture直接构造VerificationCommands/BashTool/HookRegistry，不调用AppService恢复；相关源码/夹具无diff。AppCore该轮1591/1/55。全仓strict clippy实际exit101、67.763秒，仍由原models/client.rs:431 Option<ReasoningEffort> clone_on_copy阻断。
+
+消费方完整回归实际：fmt0；恢复20/0/0；AppCore --lib --test recovery_terminal_audit --no-deps -W warnings exit0（原lib12条告警，逐诊断核对本轮service/input_runtime/dto/run_interruption及恢复test无新增诊断）；CLI session_startup_isolation 2/0/1（忽略的原H229 Wry专用例未假称执行）；CLI --all-targets --all-features --no-deps -D warnings exit0；SDK 72/0/5、真实stdio13/0/0、doc2/0，exit0。原AppCore全target strict/diagnostic失败仍按E03保留，不因定向lint成功改称整crate lint通过。
+
+从本次workspace真实Running记录定位二进制并核对hash/测试数，而非猜target路径：recovery_terminal_audit实际完整身份由SHA256=55E0EF35BD463B781C53AA55B98366EDDF50A7F6FEB4C8DA85D6581F96666680确定；原probe精确1/0/0、新H95组5/0/0、完整恢复20/0/0均真实默认执行。AppCore单元binary SHA256=CE142B2FB44C4E55D4F60FCFA713B097E860AE669D124108BB464663F17F8729，原分类精确1/0/0、先--list确认非零的input_runtime整组32/0/0。CLI startup测试binary SHA256=A28ADDE32CD34EF1F07E8C12EA507BFD3A8AFE3071BE161060C164446746DEB8，H95真实冷启/幂等精确1/0/0。各命令均--nocapture且相关整组--test-threads=1；每次校验源码/二进制/共享CLI未变。workspace实际CLI生产产物SHA256=206330976F542C9B28C4140B6DDE4CB87BDEF50B81EA4E1C7F77335CF294D347（该冷启例使用）；SDK使用E03已发布8ECE...原生产源一致的先前产物，二者不混称同一文件hash。
+
+不调整生产代码、夹具或4秒阈值，使用同一最后AppCore binary及相同隔离环境显式精确复跑额外失败测试两次（--exact --nocapture --test-threads=1）：均1/0/0，5.707秒/4.802秒，warm/cold真实子孙均停止且无canary；只能说明两次未复现，未证实首次readiness失败根因。完整相同Cargo参数全仓第二轮仍在运行，待核对该轮/最终身份、保留首轮失败及残余再决定本项范围验收；新增验收仍0。
+
+**E-H95-05（2026-11-08，限定本机范围修复验收通过）**：未改代码、夹具或readiness阈值的第二轮全仓，实际相同 cargo test --target-dir <本轮root> --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=2，exit101、917.697秒；147目标/147结果，4947通过/1失败/193忽略。仅旧H306目录空默认提示词失败；AppCore完整1592/0/55（此前默认特性1592/0/46）、Kernel v2 319/0/22、owned_recovery7/0/0、完整恢复20/0/0、CLI201/0/9及startup2/0/1、Persistence203/0/0及其integration9/0/0、Session21/0/0均执行。首轮额外readiness失败证据保留，后续两次精确复跑及第二轮整组未复现，根因未证实，不称“已修复”或断言环境导致；旧H306/全仓lint失败也未降格或忽略。
+
+再次从最后final3-workspace Running记录定位真实binary，显式执行原probe1/0/0、新H95组5/0/0、完整恢复20/0/0、原正常分类1/0/0、input_runtime32/0/0及真实CLI冷启/幂等1/0/0；所有结果匹配非零预期通过数且0失败/0忽略。测试binary hash与E04完全相同、13源和两种CLI身份均一致，正常对照及H32/H44恢复门禁/终态补偿未退化。最后fmt、双文/台账及diff检查随提交前再验，不以编译、过滤0项或默认ignore替代行为验收。
+
+旧实现用完整session尾部覆盖多个run；现在在既有recovery scope内复用canonical完整历史索引，以唯一run.task_id/TaskCreated及逻辑输入/task边界只读归属。复审ModelAgent::push_message及LoopEngine持久化边界确认运行期reminder/verification反馈并非持久化用户输入，不将其误当下一run边界，不增加文本标签特判。无task/歧义保持Option未知，缺失/无效task仍严格失败；不新建执行/store/审批/取消链。只影响新恢复marker/RunRecoveryDto及原桌面诊断日志；不改变字段形状、模型请求、权限、沙箱、运行终态或数据格式，无迁移，不追改已有错误marker。
+
+验收范围为本机合成file authority/SQLite、真实CLI冷启动和现有SDK真实stdio。未执行真实进程崩溃、实际Wry/Tauri整应用启动、真实模型/用户数据/真实内网、Linux/macOS及全部193个默认忽略项。无TS/UI或桥接形状改动，未跑pnpm build/UI截图；桌面生产消费编译按E03实测，不冒称桌面运行验收。清理及独立提交随后执行，取得hash另docs回填，不amend/推送。
+
+306唯一主行/每行8列核对后，本轮新增验收1、历史跳过0、归并/撤销0；累计196验收、26历史跳过、8归并、3撤销、73未关闭含H180授权跳过，实际待处理72。下一准备H47：无关MCP配置变更取消未变服务初始化并缓存宿主取消为失败；因其影响服务运行状态且关联H48/目录刷新路径，先复核原probe/历史提交，不把其他编号并入本轮。
+
+剩余有效工时按72个未关闭有效项标题粗分（估算分组不代表允许合并修复）：模型/输入/流适配36项×3–7小时；Hook契约/生命周期17×2–4；MCP状态3×4–8；Harness读取/协议5×3–6；UI/投影4×3–6；工作流目录/执行2×3–7；验证/完成门3×2–5；CodeGraph1×4–8；周期提醒1×2–4，脚本核对覆盖72且无重复。合计约200–450有效分析/修复/验收/文档提交小时，为未逐项代码复核的低置信区间，不是完工承诺；反例、协议决策或真实平台验收可能扩展。冷编译/测试设备、依赖/环境/删除权限等待单独计，不计入有效工时，暂无可靠总等待区间或精确完工日期。整体goal仍active，不宣称整个修复任务完成。
+
+**E-H95-06（2026-11-08，验收后清理与提交前复核）**：最后fmt/check及diff-check exit0，13源hash与最后验收一致，双文E-H95证据逐字相同，306唯一行/8列、顶部成员及计数实际脚本核对一致，只有H95主行相对599229af变化。原五项用户untracked继续仅读名称、未读改/暂存；交付前另发现.claude/，仅列出settings.local.json名称与2026-10-07旧元数据，未读文件内容，来源不足以确认归属本轮，按用户文件保留，不清理或提交。
+
+已先将最后冻结源/测试命令、各轮实际结果、全仓目标配对计数、二进制hash及原红/镜像候选失败结论保存为本轮证据摘要，原审计失败证据与真实回归源码保留，不提交临时日志/二进制。对pre-broad及pre-broad2两份快照核对G盘target和C盘Temp顶层h+数字目录，新增集合均为空；既有拒绝目录无重试。共享CLI按E03保留供后续真实SDK测试，未清掉仍需的生产测试依赖，不动sidecar或整个G盘target。
+
+清理根严格限定C:\Users\32734\AppData\Local\Temp\h95-repair-20261108，递归前核对绝对路径/祖先/所有子项均在根内、无reparse、零关联活进程；25,123文件、29,154,077,467逻辑字节。先查本机cargo clean --help，再 cargo clean --target-dir <本轮绝对root> --offline --dry-run，exit0，确认25,123文件；实际同命令去--dry-run后exit101，拒绝访问fixture-tmp\.tmp9qJmck\destination\child（os error5）。立即停止，未改ACL/提权/改名搬移/换工具参数路线或重试。只读残余核对12,656文件、4,504,908,776字节、枚举错误0，逻辑减少24,649,168,691字节；C/G可用空间63,463,538,688/148,572,508,160字节仅为当时快照。该H95根自此列为禁止重试的清理残余，等待明确人工/权限决策，不冒称全部清理完成，也不因此掩盖E05的功能范围验收或把整个goal完成。
+
+白名单仅H95 service/dto/input_runtime、新run_interruption、原恢复probe适配/新子模块、既有CLI startup文件新增真实回归及双文共9文件；独立fix提交后另docs回填hash，不amend，不推送/PR，不做真实数据迁移。
+
 ### H-96：定时任务已派发但落账失败，重启后会再次派发且调度循环退出
 
 > 2026-11-05 已修复并验收，限Windows本机合成/离线验收：见[修复进度 E-H96-01～04](system-harness-repair-progress.md#h-96-定时派发接纳与落账已修复并验收2026-11-05限e04本机范围)。稳定occurrence经原RunStore事务共写run/能力快照/schedule.accepted，仅新owner走原Kernel；已接纳则只对账，落账失败有界退避，暂存发布并保留Windows DACL。原默认探针及18项本项验收通过；最终全仓4547过/2败/241忽略（保留既有H306与build夹具失败），严格lint/Tauri格式既有阻断另列，非全仓全绿。修复提交`240d29d89cf2416dbbce630f247b3f662657bff5`，E05回填；不与H97合并，不宣称外部exactly-once或跨平台完成。以下保留原审计失败事实与证据，不代表修复后行为。
