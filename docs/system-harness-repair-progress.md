@@ -9,14 +9,14 @@
 | 状态 | 数量 | 含义 |
 |---|---|---|
 | 本阶段已修复并验收 | 192 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-69、H-70、H-71、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-82、H-84、H-87、H-88、H-92、H-96、H-97、H-125、H-126、H-130、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-147、H-148、H-149、H-150、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-167、H-175、H-178、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-196、H-197、H-198、H-199、H-200、H-204、H-205、H-206、H-207、H-208、H-209、H-210、H-212、H-213、H-214、H-215、H-216、H-218、H-219、H-221、H-222、H-223、H-224、H-225、H-226、H-227、H-229、H-233、H-234、H-235、H-236、H-237、H-239、H-240、H-241、H-242、H-244、H-245、H-247、H-248、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-256、H-259、H-260、H-261、H-265、H-266、H-267、H-268、H-270、H-271、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-290、H-292、H-293、H-295、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
-| 历史已修复跳过 | 24 | 17项原审计历史修复；H-77/H-83/H-238/H-246/H-301/H-232/H-68分别随H-78/H-143/H-260/H-245/H-164/H-219/H-70共享边界消除，验收另列，不重复记新生产修复 |
+| 历史已修复跳过 | 25 | 17项原审计历史修复；H-77/H-83/H-238/H-246/H-301/H-232/H-68/H-177分别随H-78/H-143/H-260/H-245/H-164/H-219/H-70/H-196共享边界消除，验收另列，不重复记新生产修复 |
 | 归并 | 8 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 3 | H-211/H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | 本轮H292按E03完成本机验收；清理与提交另记 |
-| 待修复 | 79 | 含H180授权跳过；实际后续队列78项，清理阻塞另列 |
+| 修复中 | 0 | H177按E02历史修复核验通过，无本轮生产修改 |
+| 待修复 | 78 | 含H180授权跳过；实际后续队列77项，清理阻塞另列 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **79（其中H-180按用户要求跳过，实际待处理78项）**；不提供完成率。当前192项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301/H-232/H-68在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4/3cabd45f/f97db714及真实复核单独列明，合计24项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。2026-11-05本轮H239新增验收1后，H287依据新D:继承控制位反例重新打开1，其后本轮H287按E21返修恢复验收，当前161，其后H213新增验收1，当前162，其后H212新增验收1，当前163，其后H221新增验收1，当前164，其后H222新增验收1为165，H150新增验收1为166，本轮H223新增验收1为167，其后H267按E03新增验收1为168；其后H268按E04新增验收1为169；其后H293按E06新增验收1为170；本轮H84按E03新增验收1为171；本轮H70按E07新增验收1为172；本轮H68按E04新增历史跳过1，修复数仍172；本轮H69按E06新增验收1为173；本轮H71按E06新增验收1为174；本轮H82按E04新增验收1为175；本轮H209按E04新增验收1为176；本轮H210按E05新增验收1为177；本轮H200按E04新增验收1为178；本轮H204按E04新增验收1为179，H90同根归并使归并数为8；11-07本轮H205按E03新增验收1为180；本轮H206按E03新增验收1为181；本轮H207按E03新增验收1为182；本轮H256按E03新增验收1为183；本轮H265按E03新增验收1为184；本轮H266按E03新增验收1为185；本轮H295按E03新增验收1为186；本轮H215按E03新增验收1为187；本轮H216按E03新增验收1为188；本轮H126按E03新增验收1为189；本轮H167按E03新增验收1为190；本轮H248按E03新增验收1为191；本轮H292按E03新增验收1为192；历史f2efc1b5与E-H287-01～20不删除。
+有效未关闭条目当前为 **78（其中H-180按用户要求跳过，实际待处理77项）**；不提供完成率。当前192项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301/H-232/H-68/H-177在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4/3cabd45f/f97db714/416df3e9及真实复核单独列明，合计25项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。2026-11-05本轮H239新增验收1后，H287依据新D:继承控制位反例重新打开1，其后本轮H287按E21返修恢复验收，当前161，其后H213新增验收1，当前162，其后H212新增验收1，当前163，其后H221新增验收1，当前164，其后H222新增验收1为165，H150新增验收1为166，本轮H223新增验收1为167，其后H267按E03新增验收1为168；其后H268按E04新增验收1为169；其后H293按E06新增验收1为170；本轮H84按E03新增验收1为171；本轮H70按E07新增验收1为172；本轮H68按E04新增历史跳过1，修复数仍172；本轮H69按E06新增验收1为173；本轮H71按E06新增验收1为174；本轮H82按E04新增验收1为175；本轮H209按E04新增验收1为176；本轮H210按E05新增验收1为177；本轮H200按E04新增验收1为178；本轮H204按E04新增验收1为179，H90同根归并使归并数为8；11-07本轮H205按E03新增验收1为180；本轮H206按E03新增验收1为181；本轮H207按E03新增验收1为182；本轮H256按E03新增验收1为183；本轮H265按E03新增验收1为184；本轮H266按E03新增验收1为185；本轮H295按E03新增验收1为186；本轮H215按E03新增验收1为187；本轮H216按E03新增验收1为188；本轮H126按E03新增验收1为189；本轮H167按E03新增验收1为190；本轮H248按E03新增验收1为191；本轮H292按E03新增验收1为192；本轮H177按E02历史跳过1，修复数仍192；历史f2efc1b5与E-H287-01～20不删除。
 
 ## H-205 Rust通知序号（已修复并验收，2026-11-07，限E03范围）
 
@@ -6422,7 +6422,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-174：公开 `replace_messages` 绕过 Responses 工具调用配对修复](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-175：工作流 `http-request` 节点绕过统一网络权限与审批边界](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H175-01～10原始/候选/legacy失败保留，仅所列Windows本机与受控消费方范围；非归并项 | typed HTTP进入原Kernel权限/规则/审批/取消/action；受控公网broker；backend与legacy fail-closed；Canvas复用原审批通道 | HTTP12/0/0、broker11/0/0、builtins2/0/0、runtime333/0/11、workflow21/0/38；前端82/0/0及build、Tauri/fmt/builtins严格lint通过；workspace3633/1既有H-306/311 ignored，严格lint旧阻断详E09 | `2c7871df87afbc16df9fb443f1761a3a56ea90bf` | H-165/H-249/H-164独立；真实Tauri/供应商/OS设备及其他平台未验；214有效未关闭；200–400有效小时历史未校准粗估，等待另计 |
 | [H-176：工作流 `knowledgeBaseId` 是死字段，知识检索节点无条件混合 project/global vault](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-177：未知 `target_node_id` 被当作空工作流成功，重跑/恢复目标没有 admission 校验](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-177：未知 `target_node_id` 被当作空工作流成功，重跑/恢复目标没有 admission 校验](system-harness-audit-2026-10-21.md) | P2 | 历史已修复跳过 | E01原probe已1/0，E02追溯H196准入生产416df3e9并独立验收，不新增生产修复 | 既有WorkflowAgent::new先查目标身份，错误走原唯一failed；本轮只转默认/补回归 | 原probe1/0、新默认2/0、完整workflow131/0/29忽略、Runtime workflow121/0、真实Desktop seam1/0；fmt过、strict旧失败，未验项见E02 | 历史生产416df3e9885cec1c3b16caf62e66ccc3cf49c222；本次测试/文档提交待生成 | v1 fresh recompute非resume，原失败保留；本项0，后续实际77，下一H176；总200–400低置信有效小时，等待另计 |
 | [H-178：专业画布 `code` 节点标记为 enabled，但脚本从未执行且错误被伪造成成功](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H178-M01～05；原red保留，限所列Windows受管Node范围 | 集成ede16557本项30文件；一次性私有句柄接通既有Kernel/Broker/严格LPAC SandboxBackend，保留主线即时计费 | Runtime工作流85/0；工作流41/0/27；真实八门禁各1/0/0；全仓4135/1/253仅H306；CLI/Tauri/前端/SDK/fmt过，严格lint旧诊断未过见M04 | `a51cab3c100af581c69196476de42d1c3bce7dfe`（源实现ede16557） | 无包身份宿主+Node24.21.0本机范围；Python/其他OS/GUI未验，其他后端无typed profile明确拒绝；无迁移；本项剩0，下一H-181；154有效未关闭含H180授权跳过，总200–400有效小时未校准，等待另计 |
 | [H-179：专业画布 `document-extractor` 标记为 enabled，但正式运行没有 executor](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-180：专业画布 `human-input` 节点不进入统一人工输入/审批生命周期](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 2026-11-02 用户明确要求提交后跳过；不是历史已修复、归并或撤销 | C盘现有实现已提交；本次合并源止于85d858af，不包含该实现，不继续开发 | 未完整验收；本轮不追加H-180测试，不把提交当验收 | C盘既有实现 `53a03f9bdfa2ebf797de7e8e465d6c6e055bbc97`，不在本次main合并中 | 保留未关闭事实并退出当前修复队列；后续恢复或删除功能须另行明确范围；本轮安排0小时 |
@@ -7836,3 +7836,52 @@ Finding F-H292（E01～03）：保存的priority binding能够越过当前模型
 本次只在双文回填实际fix hash与E05，另docs提交，不为填写自身hash反复amend。306唯一编号/每行8列/顶部192成员/双文证据一致，仅H292主行相对40ed575d变动；全仓唯一H306失败、strict既有诊断和C盘1,456,759,656字节残余沿E03/E04保留，不因提交成功改写为全绿或清空。
 
 本轮新增1，累计192验收、24历史跳过、8归并、3撤销、79未关闭含H180授权跳过，实际后续78。下一准备H177未知workflow目标的admission一致性，本轮未改其代码。全余200–400有效小时仍是未逐项校准低置信历史粗估，机器/设备/依赖/环境及清理等待另计，无精确完工承诺，整体goal active。
+
+## H-177 未知目标准入（历史已修复跳过，2026-11-08，限E02范围）
+
+**E-H177-01（2026-11-07开始、11-08复核，历史修复核验中）**：基线766299d6dd87ffe2d6c167bc42546bb4828258c0，tracked干净、无未完成合并；五项用户untracked只列名不读改/暂存。上轮H292已有实际提交/验收，是实质进展。本轮按顺序查H177原报告/台账、WorkflowRequest v1/compile/WorkflowAgent构造与target过滤、RunAssembler原准入/唯一失败结算、原H196/条件/iteration与SQLite回归、Desktop serializer/Tauri调用链，以及Cargo/CI/rustfmt；不因报告仍待修就直接再改生产。旧G/C删除拒绝路径全部保留不重试。
+
+新真实Cargo root `C:\Users\32734\AppData\Local\Temp\h177-review-20261107` 开始前不存在；隔离合成HOME/USERPROFILE/APPDATA/LOCALAPPDATA/仓外TEMP/TMP/data，清凭据/代理/DEEPAGENT环境，外层显式target-dir，离线复用工具链缓存。三份原生产agent/agent-target/run_assembler源码SHA256前后不变时执行 `cargo test --target-dir $Target -p deepagent-app-core --test workflow_audit audit_workflow_unknown_target_node_is_rejected --offline -j 2 -- --ignored --exact --nocapture`：exit0、1过0败0忽略、382.688秒含冷编译。实际api_ok=false、InvalidWorkflowTarget: target node does not exist、completed_nodes=[]、run_terminal=failed。原审计成功空跑失败证据仍保留；当前探针不再复现，不把它改写成新红测或新生产修复。
+
+定位依据为真实git blame/show：`416df3e9885cec1c3b16caf62e66ccc3cf49c222`（H196）已引入target::admit，在WorkflowAgent::new最先检查compiled.ancestors中存在目标，且item-local目标无上下文拒绝；随后才组装共享agent与能力。AppCore仍由原错误结算落failed，未启动Kernel节点执行。H196当时明示未知ID是其闭包构造前置校验但不在当轮关闭H177；现在应按独立原探针和实际验收事实补核历史跳过，不重复加TargetPlan/路由/store或改业务语义。
+
+当前v1类型注释与H196已确认契约是fresh recompute到目标及其祖先，不是缓存输出/图快照resume；None表示全图，显式空/未知字符串拒绝。旧报告关于下游/恢复revision的建议是原设计方向，不能盖过当前已验证v1契约；请求没有旧图revision/resume-token字段，不编造字段或宣称已验证不存在的恢复协议。现有H196 current-revision/branch/iteration/取消/失败/重开及真实Desktop serializer→Kernel→consumer是本轮正常对照入口，CLI/SDK当前无workflow方法，不新增未请求的入口来补齐报告推测。
+
+本轮只把原probe转默认并强化结构化错误、零node事件、failed断言；新增test-only文件SQLite准入回归，覆盖缺失/删除/显式空/空白不匹配目标、零真实write_file副作用/审批/节点派发、同session拒绝后可正常全图运行、唯一终态及释放句柄后重开/cursor重放；None/start/answer/end正常路径对照。生产不改，尚待实际结果、相称workflow/runtime/格式/strict与Desktop seam复核、清理和独立测试/文档提交。当前192验收、24历史跳过、8归并、3撤销、78待修+H177复核中，79未关闭含H180按授权跳过，实际总队列78；新增生产修复0，不提前把复核当关闭。
+
+H177后续核验暂估1–3有效小时；全余200–400有效小时仍是未逐项校准低置信历史粗估（逐项复现/根因/真实跨层验收与提交），机器构建/锁、设备/依赖/环境及清理阻塞等待另计，不承诺精确完工时间。此前全仓/strict旧失败不因本轮暂时窄验自动转绿，整体goal active。
+
+**E-H177-02（2026-11-08，历史已修复跳过的独立验收）**：E01原probe当前已通过的原因已定位并验证，不再修改生产；历史生产修复为 `416df3e9885cec1c3b16caf62e66ccc3cf49c222`（2026-11-03，H196）。真实git blame核对target::admit存在检查和构造器前置调用均来自该提交，本轮原三份生产SHA256从复核前到最终保持不变；仅测试与双文更新。H196当时没有计数关闭H177，现在是补充独立历史核验，不是本轮新增根因修复或归并成果。
+
+候选实测：原probe去ignore并加强断言后默认1/0/0、exit0/49.834秒；target_admission新2/0/0、exit0/2.429秒；H196 target模块7过0败1忽略、exit0/8.388秒。之后冻结7份相关测试/原生产/实际Desktop seam源码，各门禁前后及最后核对不变；测试binary `$Target\debug\deps\workflow_audit-b729316f9ef72272.exe` SHA256=4D7A89582E7D4A28F285168523B3A8C90006E9371DC86783AC7727A11141F4FD。原agent/target/run_assembler SHA256分别AEADEC6CE87EEFF29F049556DCA722765DD0731079BE9ABF2DF8F46EE581014E、6B5A4E19D0635A35087E4C2B92EFABC7B36B2B2EB1D8332E96A01AE35C1A524C、53FB5B99EBB6A396679DB0B1F4C8F28EC159BEF8E96A468458E9DC247933B7D0。
+
+以下实际命令在仓库根，`$Target='C:\Users\32734\AppData\Local\Temp\h177-review-20261107'`（11-07创建，跨日最终验收11-08），沿E01合成HOME/USERPROFILE/APPDATA/LOCALAPPDATA/仓外TEMP/data、清凭据/代理、离线依赖/显式target，串行执行。无真实供应商/内网/用户凭据或真实迁移，Runtime回归没有使用外部服务。
+
+| 实际命令 | 退出与结果 | 墙钟秒（含编译/等待） |
+|---|---|---|
+| `cargo fmt --all -- --check` | 0 | 5.191 |
+| `cargo test --target-dir $Target -p deepagent-app-core --test workflow_audit target_admission:: --offline -j 2 -- --nocapture --test-threads=1` | 0；新增默认2/0/0，含四种失格target及四种有效入口循环 | 2.737 |
+| `cargo test --target-dir $Target -p deepagent-app-core --test workflow_audit audit_workflow_unknown_target_node_is_rejected --offline -j 2 -- --exact --nocapture` | 0；原probe默认1/0/0，零node事件、唯一failed | 1.033 |
+| `cargo test --target-dir $Target -p deepagent-app-core --test workflow_audit target::h196_desktop_target_request_and_real_kernel_events_reach_the_production_consumer --offline -j 2 -- --ignored --exact --nocapture --test-threads=1` | 0；1/0/0，原ignored显式实际运行三组生产serializer/consumer夹具 | 2.928 |
+| `cargo test --target-dir $Target -p deepagent-app-core --test workflow_audit --offline -j 2 -- --quiet --test-threads=1` | 0；完整workflow131过0败29忽略，不以忽略当通过 | 110.916 |
+| `cargo test --target-dir $Target -p deepagent-runtime --lib workflow:: --offline -j 2 -- --quiet --test-threads=2` | 0；workflow模块121/0/0，另326非本过滤范围 | 75.434 |
+| `cargo clippy --target-dir $Target -p deepagent-app-core --test workflow_audit --no-deps --offline -j 2 -- -D warnings` | 101；未改lib12处既有诊断 | 134.480 |
+| `cargo clippy --target-dir $Target -p deepagent-app-core --test workflow_audit --no-deps --offline -j 2 -- -W warnings` | 0；仅补充诊断，旧lib12和旧workflow5 warnings仍在，不是strict通过 | 37.249 |
+
+strict12处实核为context_runtime 8处Usage clone、http_runtime needless_return、plugin_preparation type_complexity、run_assembler arity、session_title borrow，生产源码相对766299d6未变。workflow5处为usage.rs三处DoubleEndedIterator.last及主workflow_audit原knowledge探针两处manual_contains，实际diff确认这些上下文未改，不能笼统声称整测试文件不变。新增target_admission与原probe加强断言没有新增诊断；-Wwarnings只是补充诊断而非降低-Dwarnings标准后的通过。未顺手改其他编号或隐藏警告。
+
+独立实证：四个失格身份missing-node、从当前合法图删除的removed-node、显式空字符串、带空白的错误ID都返回InvalidWorkflowTarget: target node does not exist；真实ChatService/RunAssembler同一准入链没有任何WorkflowNode、tool_started或审批，真实write_file canary始终不存在，每个run只有一个failed终态且保存错误原因。拒绝后同session可正常完整执行并到达end，证明原lease释放/后续接纳未被测试绕开；随后drop原chat/DB，文件SQLite真实重开，所有事件序号递增、全文replay一致、按cursor续读一致，没有通过重启重派来制造成功。删除目标是请求携旧ID而当前definition已删除节点的样本，不冒称编辑过真实用户的持久化图。
+
+正常None/start/answer/end均实际成功，Completed集合分别保持当前v1全图/只start/到answer/到end契约；H196 target模块另外覆盖分支两侧目标必须实际完成、iteration owner/item scope、当次revision重新计算输入、真实model/tool、审批拒绝/失败/取消/重开与排除副作用。原H196 Desktop seam本轮显式--ignored执行，实际Node v22.22.1（E:\Nvm\nodejs\node.exe），生产TS serializer三种target请求→真实Kernel→原事件consumer通过；不是默认skip，也不是GUI截图或原生WebView。无前端/IPC/协议变化，未新增不必要的UI或路由。
+
+Finding F-H177（原失败与E01～02）：原“未知target空跑succeeded”缺陷在当前代码已不存在，H196既有准入已修复；本轮新增生产修复0、历史已修复跳过1。Path P-H177是原ChatService接纳run→compile当前图→WorkflowAgent::new先做既有target::admit→未知身份返回既有结构化Invalid错误→原AppCore失败结算/唯一failed；没有Kernel节点dispatch，不为无效node伪造Failed节点。原先成功空跑的审计证据保留，当前不再成立的失败原因由实际历史提交和原生探针解释。
+
+契约与残余：WorkflowRequest v1明确为fresh recompute到目标及其祖先，None全图、显式空/未知ID拒绝，不是缓存输出resume；原审计关于“目标及下游/恢复revision”的方向已由H196明确v1契约取代。请求没有旧revision/resume-token或item上下文，本轮不编造它们，也不称已有跨版本快照恢复验收。Duplicate IDs/不支持definition version仍由原compile校验，当前目标准入不绕过它；不新增第二套TargetPlan/store/取消或协议字段。未验真实用户图、真实供应商、真实WebView/签名包、其他OS、断电/极端压力。无生产修改，未再跑全workspace、完整AppCore lib、CLI/SDK/Tauri构建或完整pnpm build；用本轮完整workflow/Runtime相关模块及真实TS→Kernel→consumer验证测试改动影响，不能外推这些未执行项为通过。当前CLI/SDK无workflow协议方法，未为了报告建议虚构入口；上轮全仓H306及strict失败仍保留，不冒称全系统全绿。
+
+只将H177记录为历史跳过，不增加192个本阶段修复；累计192验收、25历史跳过、8归并、3撤销、78待修、0修复中。78未关闭含H180按授权跳过，实际后续77。下一准备复核H176 knowledgeBaseId与知识scope一致性，优先数据来源/隔离语义，本轮未改其生产。还需E03命名产物清理、E04独立测试/文档提交后回填hash，不反复amend。全余200–400有效小时仍为未逐项校准低置信历史粗估，依据逐项复现/共享根因/兼容与真实验收；机器构建/锁、设备/依赖/环境及清理等待另计、无可靠总上界，不承诺精确日期。整体goal active。
+
+**E-H177-03（2026-11-08，命名产物完整清理）**：E01～02原审计失败、当前原probe通过、全部实际命令/退出/正常对照/限制与生产/测试binary身份已写双文并保存在本轮工具聚合状态后，才清理。显式核对root恰为 `C:\Users\32734\AppData\Local\Temp\h177-review-20261107`，祖先及全部递归无reparse/越界/枚举错误、关联Cargo/rustc/rustdoc/Node/CLI/测试进程0；最终7份受测/引用文件SHA256仍匹配。未创建独立Tauri target，未为清理造额外目录。
+
+本轮root统计6517文件、4,276,948,098逻辑字节。`cargo clean --target-dir <该绝对路径> --offline --dry-run` exit0（4.0GiB）；去--dry-run实际exit0，确认root不存在。只清理本轮可再生target/合成HOME/测试日志/临时文件，没有删除源码/用户文档、五项用户untracked、依赖工具链缓存或用户数据；这是逻辑文件量，不冒称精确物理回收量。G盘没有新增h177目录/dist，只保留原共享CLI，未覆盖sidecar。此前H292/H248/H167/H126等及旧SDK/Desktop dist拒绝路径均不重试，不改ACL/提权/换路线。清后C/G可用快照82,875,150,336/148,731,994,112字节，不据此声明所有历史G/C残余已清空。
+
+台账306唯一编号/8列、顶部192验收成员、25历史跳过与原报告/进度E01～03一致，相对766299d6只有H177主行变更。只提交两个测试路径和双文共4个白名单文件；历史生产仍是416df3e9，不计本轮新修复。取得测试/文档commit hash后另docs回填，不反复amend、不push/PR。下一H176尚未开始生产修改，全余200–400有效小时低置信粗估及机器/环境等待分离沿E02，整体goal active。

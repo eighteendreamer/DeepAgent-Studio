@@ -42,6 +42,8 @@ mod reachability;
 mod settlement;
 #[path = "workflow_audit/target.rs"]
 mod target;
+#[path = "workflow_audit/target_admission.rs"]
+mod target_admission;
 #[path = "workflow_audit/usage.rs"]
 mod usage;
 
@@ -519,7 +521,6 @@ async fn audit_workflow_knowledge_base_id_is_honored() {
 }
 
 #[tokio::test]
-#[ignore = "audit: an unknown workflow target node must fail admission instead of succeeding empty"]
 async fn audit_workflow_unknown_target_node_is_rejected() {
     let (_root, db, chat, session) = workflow_fixture().await;
     let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
@@ -576,6 +577,12 @@ async fn audit_workflow_unknown_target_node_is_rejected() {
         Some("succeeded"),
         "an unknown target cannot produce a successful run"
     );
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("InvalidWorkflowTarget"));
+    assert!(events.is_empty(), "admission must precede every node event");
+    assert_eq!(run.terminal_kind.as_deref(), Some("failed"));
 }
 
 #[tokio::test]
