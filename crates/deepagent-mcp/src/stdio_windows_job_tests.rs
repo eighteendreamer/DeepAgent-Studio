@@ -522,6 +522,7 @@ async fn pending_member_wait_times_out_without_forgetting_handles_and_can_be_ret
 
 fn fixture_transport(mode: &str, root: &Path) -> crate::StdioTransport {
     let config = crate::McpServerConfig {
+        response_limit_bytes: None,
         transport: None,
         command: Some(
             std::env::current_exe()

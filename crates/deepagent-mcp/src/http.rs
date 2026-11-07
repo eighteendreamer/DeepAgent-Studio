@@ -38,6 +38,7 @@ pub struct HttpTransport {
     /// than a configured credential, so it must be captured from initialize
     /// responses and replayed on subsequent requests.
     session_id: Mutex<Option<String>>,
+    response_limit: usize,
 }
 
 impl HttpTransport {
@@ -65,6 +66,7 @@ impl HttpTransport {
             url,
             headers,
             session_id: Mutex::new(None),
+            response_limit: config.response_limit()?,
         })
     }
 
@@ -80,6 +82,7 @@ impl HttpTransport {
             url: url.into(),
             headers,
             session_id: Mutex::new(None),
+            response_limit: crate::DEFAULT_MCP_RESPONSE_LIMIT_BYTES,
         })
     }
 }
@@ -93,15 +96,8 @@ impl McpTransport for HttpTransport {
             .await
             .map_err(|e| CoreError::other(format!("MCP HTTP request failed: {e}")))?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let detail = response.text().await.unwrap_or_default();
-            return Err(CoreError::other(format!(
-                "MCP server returned {status}: {detail}"
-            )));
-        }
-        self.capture_session_id(response.headers());
-
+        let status = response.status();
+        let headers = response.headers().clone();
         let content_type = response
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
@@ -109,17 +105,27 @@ impl McpTransport for HttpTransport {
             .unwrap_or("")
             .to_lowercase();
 
-        let body = response
-            .text()
-            .await
-            .map_err(|e| CoreError::other(format!("reading MCP response body failed: {e}")))?;
+        let bytes = self.read_body(response).await?;
+        if !status.is_success() {
+            return Err(CoreError::other(format!(
+                "MCP server returned {status}; response body omitted"
+            )));
+        }
+        self.capture_session_id(&headers);
+        let body = String::from_utf8(bytes)
+            .map_err(|_| CoreError::other("invalid UTF-8 in MCP response body"))?;
 
         if content_type.contains("text/event-stream") {
             parse_sse_response(&body, request.id)
         } else {
             // Plain JSON-RPC response.
             let resp: JsonRpcResponse = serde_json::from_str(body.trim()).map_err(|e| {
-                CoreError::other(format!("invalid JSON-RPC response: {e}; body={body}"))
+                CoreError::other(format!(
+                    "invalid JSON-RPC response: {:?} at line {} column {}; body omitted",
+                    e.classify(),
+                    e.line(),
+                    e.column()
+                ))
             })?;
             Ok(resp)
         }
@@ -150,21 +156,36 @@ impl McpTransport for HttpTransport {
             .send()
             .await
             .map_err(|e| CoreError::other(format!("MCP HTTP notification failed: {e}")))?;
-        if !response.status().is_success() {
+        let status = response.status();
+        let headers = response.headers().clone();
+        self.read_body(response).await?;
+        if !status.is_success() {
             return Err(CoreError::other(format!(
                 "MCP server rejected notification with {}",
-                response.status()
+                status
             )));
         }
-        self.capture_session_id(response.headers());
-        response.bytes().await.map_err(|e| {
-            CoreError::other(format!("reading MCP notification response failed: {e}"))
-        })?;
+        self.capture_session_id(&headers);
         Ok(())
     }
 }
 
 impl HttpTransport {
+    async fn read_body(&self, mut response: reqwest::Response) -> Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        // Count actual chunks, including absent/forged Content-Length and all
+        // JSON/SSE/error/notification bodies. Never drain an exceeded response.
+        while let Some(chunk) = response.chunk().await.map_err(|error| {
+            CoreError::other(format!(
+                "reading MCP response body failed: {}",
+                error.without_url()
+            ))
+        })? {
+            crate::response_budget::append(&mut bytes, &chunk, self.response_limit)?;
+        }
+        Ok(bytes)
+    }
+
     fn post_json<T: serde::Serialize + ?Sized>(&self, body: &T) -> reqwest::RequestBuilder {
         let mut builder = self
             .client
@@ -413,6 +434,7 @@ mod tests {
     #[test]
     fn connect_requires_url() {
         let cfg = McpServerConfig {
+            response_limit_bytes: None,
             transport: Some(crate::config::TransportType::Http),
             command: None,
             args: vec![],
@@ -427,6 +449,7 @@ mod tests {
     #[test]
     fn connect_rejects_insecure_url() {
         let cfg = McpServerConfig {
+            response_limit_bytes: None,
             transport: Some(crate::config::TransportType::Http),
             command: None,
             args: vec![],

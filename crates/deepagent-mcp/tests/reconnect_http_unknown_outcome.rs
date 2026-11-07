@@ -81,6 +81,7 @@ async fn http_lost_reply_is_unknown_and_only_a_new_call_is_dispatched_after_reco
         (methods, effects)
     });
     let config = McpServerConfig {
+        response_limit_bytes: None,
         transport: Some(TransportType::Http),
         url: Some(url.clone()),
         command: None,

@@ -25,6 +25,14 @@ pub enum CoreError {
     #[error("session is archived; explicitly unarchive before resuming or starting work")]
     SessionArchived,
 
+    /// A raw MCP response exceeded its finite, configured transport budget.
+    /// observed_bytes is a lower bound: the peer body is deliberately not drained.
+    #[error("McpResponseTooLarge: observed_bytes={observed_bytes} limit_bytes={limit_bytes}; response rejected before parsing")]
+    McpResponseTooLarge {
+        limit_bytes: usize,
+        observed_bytes: usize,
+    },
+
     /// A requested entity (session, task, event) was not found.
     #[error("not found: {0}")]
     NotFound(String),

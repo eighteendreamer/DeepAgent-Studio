@@ -86,7 +86,31 @@ const STDIO_BASE_ENV: &[&str] = &[
     "TZ",
 ];
 
-type ResponseSender = oneshot::Sender<std::result::Result<JsonRpcResponse, String>>;
+type ResponseSender = oneshot::Sender<std::result::Result<JsonRpcResponse, DispatchFailure>>;
+
+#[derive(Clone, Debug)]
+enum DispatchFailure {
+    Connection(String),
+    ResponseTooLarge {
+        limit_bytes: usize,
+        observed_bytes: usize,
+    },
+}
+
+impl DispatchFailure {
+    fn into_error(self) -> CoreError {
+        match self {
+            Self::Connection(reason) => CoreError::other(reason),
+            Self::ResponseTooLarge {
+                limit_bytes,
+                observed_bytes,
+            } => CoreError::McpResponseTooLarge {
+                limit_bytes,
+                observed_bytes,
+            },
+        }
+    }
+}
 
 #[derive(Default)]
 struct ResponseDispatcher {
@@ -96,7 +120,7 @@ struct ResponseDispatcher {
 #[derive(Default)]
 struct DispatchState {
     pending: HashMap<u64, PendingResponse>,
-    terminal_error: Option<String>,
+    terminal_error: Option<DispatchFailure>,
 }
 
 struct PendingResponse {
@@ -108,7 +132,7 @@ impl ResponseDispatcher {
     fn register(&self, id: u64, sender: ResponseSender) -> Result<PendingRequest<'_>> {
         let mut state = self.state.lock().expect("MCP dispatcher poisoned");
         if let Some(reason) = &state.terminal_error {
-            return Err(CoreError::other(reason));
+            return Err(reason.clone().into_error());
         }
         if state.pending.contains_key(&id) {
             return Err(CoreError::invalid("duplicate pending MCP request id"));
@@ -134,7 +158,7 @@ impl ResponseDispatcher {
     fn check_open(&self) -> Result<()> {
         let state = self.state.lock().expect("MCP dispatcher poisoned");
         match &state.terminal_error {
-            Some(reason) => Err(CoreError::other(reason)),
+            Some(reason) => Err(reason.clone().into_error()),
             None => Ok(()),
         }
     }
@@ -153,16 +177,20 @@ impl ResponseDispatcher {
     }
 
     fn finish(&self, reason: &str) {
+        self.finish_with_failure(DispatchFailure::Connection(reason.to_owned()));
+    }
+
+    fn finish_with_failure(&self, failure: DispatchFailure) {
         let pending = {
             let mut state = self.state.lock().expect("MCP dispatcher poisoned");
             if state.terminal_error.is_some() {
                 return;
             }
-            state.terminal_error = Some(reason.to_string());
+            state.terminal_error = Some(failure.clone());
             std::mem::take(&mut state.pending)
         };
         for (_, pending) in pending {
-            let _ = pending.sender.send(Err(reason.to_string()));
+            let _ = pending.sender.send(Err(failure.clone()));
         }
     }
 }
@@ -208,20 +236,61 @@ impl Drop for MessageWrite<'_> {
     }
 }
 
-async fn dispatch_responses(stdout: ChildStdout, dispatcher: Arc<ResponseDispatcher>) {
+async fn dispatch_responses(
+    stdout: ChildStdout,
+    dispatcher: Arc<ResponseDispatcher>,
+    limit: usize,
+) {
     let mut reader = BufReader::new(stdout);
     loop {
-        let mut line = String::new();
-        match reader.read_line(&mut line).await {
-            Ok(0) => {
+        let mut line = Vec::new();
+        let read = async {
+            loop {
+                let available = reader.fill_buf().await.map_err(|error| {
+                    CoreError::other(format!("read from MCP server failed: {error}"))
+                })?;
+                if available.is_empty() {
+                    return Ok(!line.is_empty());
+                }
+                let end = available.iter().position(|byte| *byte == b'\n');
+                let count = end.map_or(available.len(), |end| end + 1);
+                crate::response_budget::append(&mut line, &available[..count], limit)?;
+                reader.consume(count);
+                if end.is_some() {
+                    return Ok(true);
+                }
+            }
+        }
+        .await;
+        match read {
+            Ok(false) => {
                 dispatcher.finish("MCP server closed the connection");
                 return;
             }
+            Err(CoreError::McpResponseTooLarge {
+                limit_bytes,
+                observed_bytes,
+            }) => {
+                tracing::warn!(
+                    limit_bytes,
+                    observed_bytes,
+                    "MCP stdout frame exceeds budget; connection isolated"
+                );
+                dispatcher.finish_with_failure(DispatchFailure::ResponseTooLarge {
+                    limit_bytes,
+                    observed_bytes,
+                });
+                return; // Never drain or resynchronize an untrusted partial frame.
+            }
             Err(error) => {
-                dispatcher.finish(&format!("read from MCP server failed: {error}"));
+                dispatcher.finish(&error.to_string());
                 return;
             }
-            Ok(_) => {
+            Ok(true) => {
+                let Ok(line) = String::from_utf8(line) else {
+                    dispatcher.finish("read from MCP server failed: invalid UTF-8");
+                    return;
+                };
                 if let Ok(response) = serde_json::from_str::<JsonRpcResponse>(line.trim()) {
                     dispatcher.deliver(response);
                 }
@@ -247,6 +316,7 @@ pub struct StdioTransport {
 impl StdioTransport {
     /// Spawn the server described by `config` (must be a stdio config).
     pub fn spawn(config: &McpServerConfig) -> Result<Self> {
+        let response_limit = config.response_limit()?;
         let command = config
             .command
             .as_deref()
@@ -323,7 +393,11 @@ impl StdioTransport {
         secrets.dedup();
 
         let dispatcher = Arc::new(ResponseDispatcher::default());
-        let reader_task = tokio::spawn(dispatch_responses(stdout, dispatcher.clone()));
+        let reader_task = tokio::spawn(dispatch_responses(
+            stdout,
+            dispatcher.clone(),
+            response_limit,
+        ));
         Ok(Self {
             child: Mutex::new(child),
             #[cfg(windows)]
@@ -352,6 +426,15 @@ impl StdioTransport {
             },
             None => diagnostic.await,
         }
+    }
+
+    async fn retire_response_limit(&self, error: CoreError) -> CoreError {
+        // Reuse the existing owner/job teardown, without appending peer stderr
+        // to a policy error. No waiting request may keep the poisoned pipe alive.
+        if let Err(cleanup) = self.close().await {
+            tracing::error!(%cleanup, "failed to close oversized MCP connection");
+        }
+        error
     }
 
     async fn collect_disconnect_error(&self, reason: &str) -> CoreError {
@@ -535,9 +618,17 @@ impl StdioTransport {
             Err(CoreError::Other(reason)) => {
                 return Err(self.disconnect_error(&reason, None).await)
             }
+            Err(error @ CoreError::McpResponseTooLarge { .. }) => {
+                return Err(self.retire_response_limit(error).await)
+            }
             Err(error) => return Err(error),
         };
-        let cleanup_deadline = self.write_message(&wire_request, Some(&context)).await?;
+        let cleanup_deadline = match self.write_message(&wire_request, Some(&context)).await {
+            Err(error @ CoreError::McpResponseTooLarge { .. }) => {
+                return Err(self.retire_response_limit(error).await)
+            }
+            result => result?,
+        };
         let deadline = match cleanup_deadline {
             Some(deadline) => deadline,
             None => tokio::select! {
@@ -549,7 +640,8 @@ impl StdioTransport {
                             response.id = request.id;
                             Ok(response)
                         }
-                        Ok(Err(reason)) => Err(self.disconnect_error(&reason, Some(&context)).await),
+                        Ok(Err(DispatchFailure::Connection(reason))) => Err(self.disconnect_error(&reason, Some(&context)).await),
+                        Ok(Err(failure)) => Err(self.retire_response_limit(failure.into_error()).await),
                         Err(_) => Err(CoreError::other(
                             "MCP response dispatcher closed the connection",
                         )),
@@ -647,6 +739,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
         )
         .unwrap();
         let config = McpServerConfig {
+            response_limit_bytes: None,
             transport: None,
             command: Some("node".into()),
             args: vec![script.to_string_lossy().into_owned()],
@@ -704,6 +797,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     #[test]
     fn spawn_requires_command() {
         let cfg = McpServerConfig {
+            response_limit_bytes: None,
             transport: Some(crate::config::TransportType::Stdio),
             command: None,
             args: vec![],

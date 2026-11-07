@@ -60,6 +60,9 @@ impl Default for McpState {
 /// A UI-facing MCP server entry (the add/edit form binds to this).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpServerDto {
+    /// Optional finite raw MCP response budget; omitted uses the transport default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_limit_bytes: Option<usize>,
     /// Server name (unique key).
     pub name: String,
     /// Transport type: "stdio" | "sse" | "http" | "ws".
@@ -136,6 +139,7 @@ impl McpServerDto {
             .unwrap_or("stdio");
         Self {
             name: name.to_string(),
+            response_limit_bytes: cfg.response_limit_bytes,
             transport: transport.to_string(),
             enabled,
             command: cfg.command.clone(),
@@ -174,6 +178,7 @@ impl McpServerDto {
 
     fn to_config(&self) -> Result<McpServerConfig> {
         let cfg = McpServerConfig {
+            response_limit_bytes: self.response_limit_bytes,
             transport: Some(Self::parse_transport(&self.transport)?),
             command: self.command.clone().filter(|c| !c.trim().is_empty()),
             args: self.args.clone(),
@@ -954,6 +959,7 @@ mod tests {
 
     fn stdio_dto(name: &str) -> McpServerDto {
         McpServerDto {
+            response_limit_bytes: None,
             name: name.to_string(),
             transport: "stdio".into(),
             enabled: true,
@@ -971,6 +977,100 @@ mod tests {
             read_only: false,
             conflict: None,
         }
+    }
+
+    #[tokio::test]
+    async fn h126_persisted_budget_reaches_real_resilient_registry_without_business_replay() {
+        let root = tempfile::tempdir().unwrap();
+        let script = root.path().join("synthetic-budget.cjs");
+        let calls = root.path().join("explicit-calls");
+        std::fs::write(&script, r#"
+const fs=require('node:fs'),rl=require('node:readline').createInterface({input:process.stdin});
+rl.on('line',line=>{
+ const r=JSON.parse(line);if(r.id===undefined)return;
+ let result={};
+ if(r.method==='initialize')result={protocolVersion:r.params.protocolVersion,
+ capabilities:{tools:{}},serverInfo:{name:'synthetic-budget',version:'1'}};
+ if(r.method==='tools/list')result={tools:[{name:'burst',inputSchema:{type:'object',properties:{large:{type:'boolean'}}}}]};
+ if(r.method==='tools/call'){
+  fs.appendFileSync(process.env.H126_CALLS,'once\n');
+  result={content:[{type:'text',text:r.params.arguments.large?'x'.repeat(4096):'small'}]};
+ }
+ process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result})+'\n');
+});
+"#).unwrap();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let original = McpService::new(db.clone());
+        let mut dto = stdio_dto("bounded");
+        dto.command = Some("node".into());
+        dto.args = vec![script.to_string_lossy().into_owned()];
+        dto.env
+            .insert("H126_CALLS".into(), calls.to_string_lossy().into_owned());
+        dto.response_limit_bytes = Some(512);
+        original.upsert(dto).unwrap();
+        let reopened = McpService::new(db);
+        let (registry, failures) =
+            tokio::time::timeout(Duration::from_secs(5), reopened.connect_enabled())
+                .await
+                .expect("synthetic MCP handshake deadline")
+                .unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+        assert_eq!(registry.server_count(), 1);
+        let small = registry
+            .invoke("mcp__bounded__burst", serde_json::json!({"large":false}))
+            .await;
+        assert!(small.is_ok());
+        let large = registry
+            .invoke("mcp__bounded__burst", serde_json::json!({"large":true}))
+            .await;
+        registry.close_all().await.unwrap();
+        assert!(
+            matches!(large,Err(CoreError::RemoteOutcomeUnknown{source,..})
+            if matches!(*source,CoreError::McpResponseTooLarge{limit_bytes:512,..}))
+        );
+        assert_eq!(std::fs::read_to_string(calls).unwrap(), "once\nonce\n");
+    }
+
+    #[test]
+    fn h126_response_budget_survives_dto_persistence_enabled_overlay_and_edit() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let service = McpService::new(db.clone());
+        let mut dto = stdio_dto("bounded");
+        dto.response_limit_bytes = Some(4096);
+        service.upsert(dto).unwrap();
+        let reopened = McpService::new(db);
+        let listed = reopened.list().unwrap().remove(0);
+        assert_eq!(listed.response_limit_bytes, Some(4096));
+        let wire = serde_json::to_value(&listed).unwrap();
+        assert_eq!(wire["response_limit_bytes"], 4096);
+        let mut edited: McpServerDto = serde_json::from_value(wire).unwrap();
+        edited.args.push("synthetic-edit".into());
+        reopened.upsert(edited).unwrap();
+        assert_eq!(
+            reopened.enabled_config().unwrap().servers["bounded"]
+                .response_limit()
+                .unwrap(),
+            4096
+        );
+        let overlay = deepagent_mcp::McpConfig::parse(
+            r#"{"mcpServers":{"plugin-budget":{"command":"node","response_limit_bytes":8192}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            reopened
+                .enabled_config_with_overlay(overlay)
+                .unwrap()
+                .servers["plugin-budget"]
+                .response_limit_bytes,
+            Some(8192)
+        );
+        let mut invalid = reopened.list().unwrap().remove(0);
+        invalid.response_limit_bytes = Some(0);
+        assert!(reopened.upsert(invalid).is_err());
+        assert_eq!(
+            reopened.enabled_config().unwrap().servers["bounded"].response_limit_bytes,
+            Some(4096)
+        );
     }
 
     #[test]
@@ -1018,6 +1118,7 @@ mod tests {
 
     fn stdio_config(command: &str) -> McpServerConfig {
         McpServerConfig {
+            response_limit_bytes: None,
             transport: None,
             command: Some(command.into()),
             args: Vec::new(),
@@ -1622,6 +1723,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     async fn connects_to_everything_reference_server() {
         let svc = service();
         let dto = McpServerDto {
+            response_limit_bytes: None,
             name: "everything".into(),
             transport: "stdio".into(),
             enabled: true,

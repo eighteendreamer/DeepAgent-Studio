@@ -1,6 +1,6 @@
-//! Explicit audit probes for unbounded MCP transport responses.
-//! These are ignored by default and intentionally fail when a response above
-//! the audit threshold is accepted by the production transport.
+//! Original H126 probes, now using their explicit 1 MiB configured boundary.
+//! The original pre-fix failures are retained in the audit/repair documents;
+//! this audit threshold is not the default or an MCP protocol limit.
 
 use std::time::Duration;
 
@@ -21,7 +21,6 @@ fn payload_len(response: &deepagent_mcp::protocol::JsonRpcResponse) -> usize {
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: stdio MCP responses must have a transport-level byte limit"]
 async fn audit_stdio_transport_accepts_oversized_response_line() {
     let dir = tempfile::tempdir().unwrap();
     let script = dir.path().join("large-response-server.cjs");
@@ -40,6 +39,7 @@ rl.on('line', line => {
     )
     .unwrap();
     let config = McpServerConfig {
+        response_limit_bytes: Some(AUDIT_RESPONSE_LIMIT),
         transport: None,
         command: Some("node".into()),
         args: vec![script.to_string_lossy().into_owned()],
@@ -61,24 +61,29 @@ rl.on('line', line => {
         transport.send(&JsonRpcRequest::new(2, "large", None)),
     )
     .await
-    .expect("oversized stdio response should complete in the current implementation")
-    .unwrap();
+    .expect("oversized stdio response must terminate without draining the body");
     transport.close().await.unwrap();
 
     let small_bytes = payload_len(&small);
-    let large_bytes = payload_len(&large);
+    assert_eq!(small_bytes, 16);
+    let error = large.unwrap_err();
     eprintln!(
-        "audit MCP stdio response: small_payload_bytes={small_bytes}, accepted_payload_bytes={large_bytes}, audit_limit_bytes={AUDIT_RESPONSE_LIMIT}"
+        "audit MCP stdio response: small_payload_bytes={small_bytes}, refusal={error}, configured_limit_bytes={AUDIT_RESPONSE_LIMIT}"
     );
     assert!(
-        large_bytes <= AUDIT_RESPONSE_LIMIT,
-        "stdio transport accepted a {large_bytes}-byte response payload without a transport-level limit"
+        matches!(
+            error,
+            deepagent_core::CoreError::McpResponseTooLarge {
+                limit_bytes: AUDIT_RESPONSE_LIMIT,
+                ..
+            }
+        ),
+        "stdio transport must reject before parsing the oversized payload"
     );
 }
 
 #[cfg(feature = "http")]
 #[tokio::test]
-#[ignore = "audit reproducer: HTTP MCP response bodies must have a transport-level byte limit"]
 async fn audit_http_transport_accepts_oversized_response_body() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -124,7 +129,7 @@ async fn audit_http_transport_accepts_oversized_response_body() {
                 "result": { "payload": "x".repeat(response_size) }
             })
             .to_string();
-            socket
+            let sent = socket
                 .write_all(
                     format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -133,16 +138,19 @@ async fn audit_http_transport_accepts_oversized_response_body() {
                     .as_bytes(),
                 )
                 .await
-                .unwrap();
-            socket.shutdown().await.unwrap();
-            observations.push((request_bytes, body.len()));
+                .is_ok();
+            let _ = socket.shutdown().await;
+            observations.push((request_bytes, body.len(), sent));
         }
         observations
     });
 
-    let transport =
-        deepagent_mcp::HttpTransport::with_url(format!("http://{address}/mcp"), Vec::new())
-            .unwrap();
+    let config = serde_json::from_value(serde_json::json!({
+        "type":"http", "url":format!("http://localhost:{}/mcp",address.port()),
+        "response_limit_bytes":AUDIT_RESPONSE_LIMIT
+    }))
+    .unwrap();
+    let transport = deepagent_mcp::HttpTransport::connect(&config).unwrap();
     let small = tokio::time::timeout(
         Duration::from_secs(5),
         transport.send(&JsonRpcRequest::new(1, "small", None)),
@@ -155,20 +163,26 @@ async fn audit_http_transport_accepts_oversized_response_body() {
         transport.send(&JsonRpcRequest::new(2, "large", None)),
     )
     .await
-    .expect("oversized HTTP response should complete in the current implementation")
-    .unwrap();
+    .expect("oversized HTTP response must terminate without draining the body");
     let observations = tokio::time::timeout(Duration::from_secs(5), server)
         .await
         .unwrap()
         .unwrap();
 
     let small_bytes = payload_len(&small);
-    let large_bytes = payload_len(&large);
+    assert_eq!(small_bytes, 16);
+    let error = large.unwrap_err();
     eprintln!(
-        "audit MCP HTTP response: requests={observations:?}, small_payload_bytes={small_bytes}, accepted_payload_bytes={large_bytes}, audit_limit_bytes={AUDIT_RESPONSE_LIMIT}"
+        "audit MCP HTTP response: fixture_planned_bodies={observations:?}, small_payload_bytes={small_bytes}, refusal={error}, configured_limit_bytes={AUDIT_RESPONSE_LIMIT}"
     );
     assert!(
-        large_bytes <= AUDIT_RESPONSE_LIMIT,
-        "HTTP transport accepted a {large_bytes}-byte response payload without a transport-level limit"
+        matches!(
+            error,
+            deepagent_core::CoreError::McpResponseTooLarge {
+                limit_bytes: AUDIT_RESPONSE_LIMIT,
+                ..
+            }
+        ),
+        "HTTP transport must reject before parsing the oversized payload"
     );
 }

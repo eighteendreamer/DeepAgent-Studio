@@ -35,6 +35,7 @@ async fn installed_rea_cache_recovers_and_completes_mcp_handshake() {
     let entry = data.join("runtime/node_modules/rea-agents/scripts/rea.mjs");
     assert!(entry.is_file());
     let config = deepagent_mcp::McpServerConfig {
+        response_limit_bytes: None,
         command: Some(node.to_string_lossy().into_owned()),
         args: vec![entry.to_string_lossy().into_owned(), "mcp".into()],
         cwd: Some(data.join("runtime")),

@@ -140,6 +140,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     )
     .unwrap();
     let config = McpServerConfig {
+        response_limit_bytes: None,
         transport: None,
         command: Some("node".into()),
         args: vec![script.to_string_lossy().into_owned()],

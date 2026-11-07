@@ -75,6 +75,7 @@ async fn ping_probe_recovers_real_crashed_stdio_server() {
         marker.to_string_lossy().into_owned(),
     );
     let config = McpServerConfig {
+        response_limit_bytes: None,
         transport: None,
         command: Some("node".to_string()),
         args: vec![script.to_string_lossy().into_owned()],
@@ -136,6 +137,7 @@ async fn reconnect_factory_spawns_real_ready_transport() {
         marker.to_string_lossy().into_owned(),
     );
     let config = McpServerConfig {
+        response_limit_bytes: None,
         transport: None,
         command: Some("node".to_string()),
         args: vec![script.to_string_lossy().into_owned()],

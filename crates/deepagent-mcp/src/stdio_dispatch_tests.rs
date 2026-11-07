@@ -8,6 +8,7 @@ fn spawn_server(script: &str) -> (tempfile::TempDir, Arc<StdioTransport>) {
     let path = dir.path().join("server.cjs");
     std::fs::write(&path, script).unwrap();
     let config = McpServerConfig {
+        response_limit_bytes: None,
         transport: None,
         command: Some("node".into()),
         args: vec![path.to_string_lossy().into_owned()],
@@ -309,6 +310,7 @@ async fn assert_cancellable_write_diagnostics(payload_bytes: usize, expected_sta
     drop(child);
     drop(call);
     transport.close().await.unwrap();
+    let stage = stage.into_error().to_string();
     eprintln!("write diagnostics cancellation: stage={stage}, result={result:?}");
     assert!(stage.starts_with(expected_stage), "{stage}");
     assert_eq!(

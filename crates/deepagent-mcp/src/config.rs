@@ -33,14 +33,14 @@ impl McpConfig {
     /// Parse from JSON, accepting either `{ "mcpServers": {...} }` or a bare
     /// `{ name: config }` map.
     pub fn parse(json: &str) -> Result<Self> {
-        // Try the wrapped form first.
-        if let Ok(cfg) = serde_json::from_str::<McpConfig>(json) {
-            if !cfg.servers.is_empty() {
-                return Ok(cfg);
-            }
-        }
-        // Fall back to a bare map of name -> config, ignoring `_comment` keys.
         let raw: BTreeMap<String, serde_json::Value> = serde_json::from_str(json)?;
+        // Once the explicit wrapper is present, a malformed budget (or other
+        // field) is not a bare map. Preserve the decode failure instead of
+        // dropping `mcpServers` and silently installing an empty configuration.
+        if raw.contains_key("mcpServers") {
+            return serde_json::from_str(json).map_err(CoreError::from);
+        }
+        // Bare map of name -> config, ignoring `_comment` keys.
         let mut servers = BTreeMap::new();
         for (name, value) in raw {
             if name.starts_with('_') || name == "mcpServers" {
@@ -69,6 +69,10 @@ impl McpConfig {
 /// absent (matching Claude Code).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpServerConfig {
+    /// DeepAgent extension: finite raw response envelope/body byte budget.
+    /// Omitted means 16 MiB; overrides must be 1 byte through 64 MiB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_limit_bytes: Option<usize>,
     /// Explicit transport type. Optional for stdio (inferred from `command`).
     #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
     pub transport: Option<TransportType>,
@@ -113,6 +117,13 @@ pub enum TransportType {
 }
 
 impl McpServerConfig {
+    /// Resolve the one transport-level budget before opening a connection.
+    pub fn response_limit(&self) -> Result<usize> {
+        crate::response_budget::validate_limit(
+            self.response_limit_bytes
+                .unwrap_or(crate::DEFAULT_MCP_RESPONSE_LIMIT_BYTES),
+        )
+    }
     /// The effective transport type (inferred when `type` is omitted).
     pub fn effective_type(&self) -> Result<TransportType> {
         if let Some(t) = self.transport {
@@ -133,6 +144,7 @@ impl McpServerConfig {
     /// Validate that required fields for the (effective) type are present, and
     /// that network URLs use secure schemes.
     pub fn validate(&self) -> Result<()> {
+        self.response_limit()?;
         match self.effective_type()? {
             TransportType::Stdio => {
                 if self.command.as_deref().unwrap_or("").is_empty() {
@@ -270,6 +282,7 @@ mod tests {
     #[test]
     fn infers_stdio_and_http() {
         let stdio = McpServerConfig {
+            response_limit_bytes: None,
             transport: None,
             command: Some("node".into()),
             args: vec![],
@@ -284,6 +297,7 @@ mod tests {
     #[test]
     fn validates_secure_urls() {
         let mut cfg = McpServerConfig {
+            response_limit_bytes: None,
             transport: Some(TransportType::Sse),
             command: None,
             args: vec![],
@@ -303,6 +317,7 @@ mod tests {
     #[test]
     fn ws_requires_wss() {
         let cfg = McpServerConfig {
+            response_limit_bytes: None,
             transport: Some(TransportType::Ws),
             command: None,
             args: vec![],
@@ -317,6 +332,7 @@ mod tests {
     #[test]
     fn expands_env_vars() {
         let mut cfg = McpServerConfig {
+            response_limit_bytes: None,
             transport: Some(TransportType::Http),
             command: None,
             args: vec![],

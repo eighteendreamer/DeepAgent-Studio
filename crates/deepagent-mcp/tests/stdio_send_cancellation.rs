@@ -50,6 +50,7 @@ async fn cancelled_partial_write_recovers_for_new_calls_without_replaying_the_ca
     let script = dir.path().join("server.cjs");
     std::fs::write(&script, SERVER).unwrap();
     let config = McpServerConfig {
+        response_limit_bytes: None,
         transport: None,
         command: Some("node".into()),
         args: vec![script.to_string_lossy().into_owned()],

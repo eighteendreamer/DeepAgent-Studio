@@ -44,6 +44,7 @@ mod tests {
 
     fn network_cfg(t: TransportType, url: &str) -> McpServerConfig {
         McpServerConfig {
+            response_limit_bytes: None,
             transport: Some(t),
             command: None,
             args: vec![],

@@ -39,6 +39,7 @@ fn config(script: &std::path::Path, mode: &str) -> McpServerConfig {
     let mut env = BTreeMap::new();
     env.insert("AUDIT_MODE".to_string(), mode.to_string());
     McpServerConfig {
+        response_limit_bytes: None,
         transport: None,
         command: Some("node".to_string()),
         args: vec![script.to_string_lossy().into_owned()],

@@ -83,6 +83,7 @@ async fn assert_unknown_outcome(with_context: bool) {
         effects.to_string_lossy().into_owned(),
     );
     let config = McpServerConfig {
+        response_limit_bytes: None,
         transport: None,
         command: Some("node".to_string()),
         args: vec![script.to_string_lossy().into_owned()],

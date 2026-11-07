@@ -4331,6 +4331,8 @@ E-H125-07（独立提交与完整性）：本项实现、默认回归与当时�
 
 ### H-126：MCP stdio 与 HTTP transport 在完整读取/解析前没有响应字节上限
 
+**修复状态：已修复并验收（2026-11-07，限E-H126-03所列本机范围）；原失败/完整门禁限制保留，fix提交后回填E05。**
+
 **级别：中（P2；仅当已配置的 MCP server 返回异常大响应，或并发 MCP 请求同时返回大响应时，才会形成显著的宿主内存与解析 CPU 压力；本探针证明缺少上限，不声称 2 MiB 本身会导致进程失效）。** 本项关注 transport 的资源边界，不是 MCP 协议要求的通用最大响应大小。
 
 - 生产路径：stdio 的 `crates/deepagent-mcp/src/stdio.rs::StdioTransport::send` 使用 `AsyncBufReadExt::read_line(&mut String)` 读取整条 JSON-RPC 消息，再调用 `serde_json::from_str`；读取前没有累计字节计数或行长度上限。HTTP 的 `crates/deepagent-mcp/src/http.rs::HttpTransport::send` 对成功响应调用 `response.text().await`，随后才解析 JSON 或 SSE；总请求 timeout 为 60 秒，但没有 body 字节上限。非成功 HTTP 状态的错误正文也通过 `response.text()` 全量读取。
@@ -4343,6 +4345,75 @@ E-H125-07（独立提交与完整性）：本项实现、默认回归与当时�
 - 成熟实现对照与边界：DeepSeek Harness `packages/mcp/mcp-client/src/connection.ts` 对 MCP attributed server instructions 提供 32 KiB 上限；这是语义字段的大小约束，不是任意 JSON-RPC 响应 body 限制。Codex `codex-mcp/src/trusted_access.rs` 对特定 verified-access HTTP 响应采用 1 MiB 流式字节上限；这是另一个受控 API 的局部做法，不能据此声称 Codex 已给所有 MCP transport 加统一上限。两者只支持“在解码/解析前设置有界读取”的工程模式；通用 MCP 响应预算仍应由本系统按工具目录、工具调用和资源内容制定本地策略。
 - 影响与触发边界：stdio server 是本机已配置子进程，HTTP server 是显式配置的 MCP 端点；需要相应 server 返回大型内容。现实现对 JSONL 整行和 HTTP 正文均先完整缓冲，再构建 JSON 值；多请求/多连接并发会叠加内存和解析成本。探针只确认 2 MiB 可完整通过，没有制造极端 payload、压力测试或证明实际 OOM。MCP server 的可信级别、单次调用并发度和允许的大型资源使用场景需要在修复设计中区分，避免把文件/图像资源误伤为过小的固定限制。
 - 收敛方向（尚未实施，本地设计）：在 MCP transport 边界引入明确、可配置且有合理默认值的字节预算。stdio 采用有上限的增量行读取，超过上限即返回结构化 transport 错误并关闭/隔离该连接；HTTP 按流式 chunk 计数后再解析，不能只依赖可伪造或缺失的 `Content-Length`，成功正文、SSE 和错误正文都要有界。错误信息只保留状态、字节数和预算，不回显完整远端 body。再为 MCP 工具目录、单次工具结果和资源/图片分别定义策略；大型合法内容走现有 artifact/file reference 或分块读取，不让无界 JSON 进入内存。验收需包含小响应成功、刚好到界成功、超界拒绝、chunked 无 Content-Length、SSE 超界、畸形/多行 stdio 输出、并发请求、取消/超时及不回显远端正文；预算值作为本地设计，经真实插件兼容测试确定。
+
+**E-H126-01（2026-11-07，原探针与TDD红；读取前预算候选，修复中）**：基线2bca830ba9df91a01cbc1cfd836d317f41ced1d6，tracked干净，无未完成合并；原五项用户untracked只列名、不读改/暂存。已核对原报告/台账、MCP单一stdio dispatcher与owned process/job关闭、HTTP JSON/SSE/error/notify body消费、ConfigReconnectFactory与业务unknown outcome、不自动重派、现有McpConfig/AppCore DTO/持久化/插件来源/TS类型与设置保存spread、工具目录分页/模型可见结果预算、Cargo/CI与本地http_runtime有界chunk和Codex trusted_access局部限额参考。只做本地合成Node子进程/临时文件/SQLite和自建loopback，无真实MCP端点/内网/凭据/用户数据、迁移、push或PR。H47/H48恢复调度、H138模型可见性及网络URL校验等独立项不混修。
+
+真实Cargo根C:\Users\32734\AppData\Local\Temp\h126-repair-20261107初始不存在；合成HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/TMP/data/workspace、清凭据/代理与DEEPAGENT环境，固定离线工具链缓存、仅外层显式target-dir。原生产源码未改时cargo test --target-dir <该根> -p deepagent-mcp --features http --test response_limit_audit --offline -j 2 -- --ignored --nocapture --test-threads=1：exit101、0过2败0忽略、127.589秒含冷编译。stdio/HTTP均先通过16字节payload对照、再完整解析2097152字节payload，HTTP实际body2097200字节，完全复现无读取上限；stdio/http/config三份源码前后SHA256一致。原1MiB审计线不是MCP协议或产品默认，不能把拒绝2MiB设为唯一修复标准。
+
+生产未改时补默认response_budget真实回归，cargo test --target-dir <根> -p deepagent-mcp --features http --test response_budget --offline -j 2 -- --nocapture --test-threads=1：exit101、0过4败0忽略。配置0限额未拒绝；stdio无LF/EOF超限仍pending；HTTP在首个故意不提供EOF的成功JSON场景就仍pending（该红测未到达后续SSE/错误分支）；精确预算内合法UTF8正常对照通过、非法JSON错误却回显合成正文标记，分别保留真实红测。此时配置字段尚未实现，测试经serde注入候选field而不依赖新增API或假mock。候选完成首轮同命令exit0、4过0败0忽略、15.619秒，尚非冻结完整验收。
+
+本地策略为一个每server的原始响应预算response_limit_bytes：默认16MiB，显式1字节至64MiB，0/越界无效，不提供无限值；不是MCP标准上限。stdio统一原始line/envelope（含LF）与HTTP统一实际body chunk在UTF8/JSON/SSE前计数并拒绝，不仅信Content-Length，不截断成成功。保留工具目录既有页/条目/游标预算和模型可见结果预算；大合法图片/资源可在有限配置内返回，超预算应分页/引用或显式调大，不能用模型token截断保护已发生的读取。stdio尚未解析id就须有界，因此采用连接原始envelope上限而非另造按method猜测的预解析链；HTTP所有状态及notification body同边界。默认大于原探针2MiB，后续原probe将显式配置其1MiB对照并另保留默认大响应正常场景，不能把原失败删去或冒称默认2MiB应拒绝。
+
+候选复用CoreError non_exhaustive新增McpResponseTooLarge结构化limit/observed字节错误（observed是读取至当前chunk的下界，不继续drain）；单一dispatcher保存typed terminal、释放全部pending、关闭reader且不重同步，不附远端body/stderr。等待/后续send发现限额时走原close/Windows job teardown，不新建进程owner；无waiter主动超限先隔离读/写，仍由原owner close/drop收尾，不宣称新CPU沙箱。HTTP在append前检查实际chunk、不读取剩余body，错误只保留status/静态类别/行列，不再回显完整正文。限额不是临时断网：既有reconnect不自动重试此策略错误，tools/call保留RemoteOutcomeUnknown而不重派。McpConfig新增可选field、AppCore DTO/TS类型和持久化往返同步；现有Rust config字面量只补None，标准Agent Plugins封闭schema仍拒绝该非标准字段、投影使用默认，不能偷偷扩展其协议。无新依赖、第二套transport或权限放行。还需边界/大合法响应/并发pending与真实退出/重连无副作用测试、配置持久化/UI消费者、默认及http feature全组、完整workspace/strict lint/构建验收，当前不得关闭H126。
+
+当前188验收/24历史跳过/8归并/3撤销/82待修/1修复中，未关闭83含H180授权跳过，实际总队列82；本轮新增修复0，无fix提交。H126暂估余5–12有效小时，依据读取/解析/错误/生命周期/配置与插件边界和真实生产消费者验收；全部余200–400有效小时仍为未逐项校准低置信历史粗估，构建/设备/依赖/环境及清理等待另计、无可靠总上界。旧G/C清理拒绝路径不重试/改ACL绕过，整体goal active。
+
+**E-H126-02（2026-11-07，候选跨层真实验收及配置/缓冲关联补强，未最终验收）**：E01默认TDD红测实际exit101、0过4败、12.074秒；其中HTTP在首个无EOF JSON场景已失败，后续SSE/错误分支原红测未到达，E01正文已明确校正，不把未执行分支说成红测事实。首候选同组4/0过后，MCP全feature第一次cargo test --target-dir <E01根> -p deepagent-mcp --all-features --offline -j 2 -- --quiet --test-threads=2未能编译：exit101、8.110秒，stdio_dispatch_tests.rs原取消诊断直接把terminal_error当String，新typed DispatchFailure不再有Display/starts_with。只将该测试观测值转换为原CoreError.to_string再保留原starts_with及取消断言，不加生产特判。candidate2同全包exit0、154过0败3忽略、81.688秒（13顶层target，无嵌套重复），原response_limit_audit去ignore并显式配置其1MiB审计线，小payload16字节仍正常，大2MiB返回McpResponseTooLarge；HTTP fixture改为记录计划body/完整write是否成功，不把客户端拒绝后的BrokenPipe当产品失败，也不谎称完整收到大body。
+
+新增/扩充真实response_budget集成：candidate3 cargo test --target-dir <根> -p deepagent-mcp --features http --test response_budget --offline -j 2 -- --nocapture --test-threads=1，exit0、7过0败0忽略、16.688秒。stdio验证精确raw line字节（含LF/多字节UTF8）、默认16MiB下合法2MiB与显式3MiB下合法2MiB、并发held waiter被释放、无LF/EOF超限无需等尾部、永久拒绝重同步；限额错误返回前实际关闭原owned child，另用Node signal0只读确认原PID不存在，再做显式close正常对照，错误不附合成stderr/body。真实Node业务调用先追加合成副作用文件，再返回超限结果，经原ReconnectingTransport得到RemoteOutcomeUnknown内含typed budget，factory调用0、副作用只1次，不自动恢复或重派。HTTP覆盖无Content-Length、伪造大长度、真实chunked、JSON/SSE、503错误与202通知body，在fixture故意扣住EOF/零终块时及时拒绝；预算内完整UTF8合法、非法JSON错误不回显合成标记；默认合法2MiB正常且同HTTP transport超限后新的小ping仍可成功。单位缓冲测试验证超限块未拷入、字节而非字符、容量不超过限额，未做极端OOM/压力或全宿主总内存承诺。
+
+配置入口关联根因确认：新字段若为负数/小数/字符串，旧McpConfig::parse会先吞wrapped反序列化失败，再把mcpServers当裸map保留键跳过，静默变成空配置。这个入口必须同预算语义一起fail-closed，不能宣传坏限额被拒绝却在原配置生产方丢失。新增h126_wrapped_config_cannot_silently_drop_malformed_budget精确cargo test（相同target/包/feature/test，--exact --nocapture）：exit101、0过1败、158.290秒含等待另一AppCore构建锁；并非有效人工工时。随后按显式wrapper存在性选择原wrapped serde边界，不再把其坏字段当裸map；合法bare/wrapped/空wrapped仍走原schema，未另造配置解析器。candidate4完整MCP all-feature实测exit0、156过0败3忽略、81.777秒（13顶层target），含新wrapped1条、两原probe默认2条及response_budget8条；无新问题编号/重复计数。原wrapped red与所有旧失败保留。
+
+缓冲实现还做资源根因自检：初版try_reserve_exact逐小块增长，新增4097个1字节fragment/8192限额测试，精确lib测试exit101、0过1败、33.740秒，实际4097次capacity变化，不称每次都有真实OS分配。已改为夹在限额内的几何增长（初始最多4KiB，后续doubling但不越cap），避免有界内存以反复复制制造新的CPU压力；最终冻结门禁须覆盖这次更新，不拿candidate4旧缓冲结果冒称更新后已验。
+
+AppCore候选cargo test --target-dir <根> -p deepagent-app-core --lib h126_ --offline -j 2 -- --nocapture --test-threads=1，先仅DTO/持久化/旧field默认/编辑/overlay及0值拒绝正常对照1过0败、exit0、386.231秒含冷编译。追加真实persisted config→connect_enabled→原resilient registry工具调用后，首fixture误把raw Node脚本换行写成字面反斜杠n，不能形成JSONL；该候选在2条测试开始后主动停止，exit-1、182.449秒，无行为验收，不当产品失败/通过。仅核对本轮Cargo/rustc/link绝对target与PID后结束，随后只读确认关联test/fixture进程为0，不因观测超时盲目重启。修正合成脚本换行并增加测试握手5秒有限deadline（不改生产启动策略），candidate2同命令exit0、2过0败、130.536秒：从原DocumentStore重开预算512，正式initialize/tools/list成功、小工具结果正常、大工具结果typed unknown、合成副作用文件恰两次显式调用，无重派；原close_all收尾。不碰真实服务或用户数据。
+
+Desktop新AST测试执行实际MCPSettings::draftPayload，不复制业务序列化，省略/4096/64MiB预算都在编辑后保持；已加入正常test:mcp-response-budget与build链，首显式执行1过0败0跳过。完整pnpm -C apps/desktop build在合成环境实跑exit0、181.790秒，包含本项新测试、现有许可/预打包/前置测试/tsc/Vite，Vite67秒并保留既有externalization/大chunk警告；非GUI/Tauri IPC/安装包验收，未改UI生产控件。输出dist/resources仅为可再生构建产物，不提交。新README说明16/64MiB本地策略、各来源/封闭插件schema默认、raw预算与语义/全局内存边界、unknown不重派、Rust字面量兼容和实际命令，不引入新依赖或第二条链。
+
+当前已冻结全部相关源码/测试/配置/README，串行启动fmt、core/MCP strict lint、default/http两feature全组、原probe、AppCore MCP/插件消费者、完整Desktop build、最新CLI/SDK、affected lint等门禁；随后还需完整workspace/全仓strict/Tauri check及清理提交。当前仍188验收/24历史跳过/8归并/3撤销/82待修/1修复中，无本项fix提交、本轮新增验收0；不能用候选结果提前关闭。全余200–400有效小时仍为未逐项校准低置信历史粗估，机器编译/锁等待/设备/依赖/环境及清理另计，无可靠总上界，整体goal active。
+
+**E-H126-02b（2026-11-07，冻结focused门禁与严格lint基线）**：最终30份相关源码/测试/配置/README冻结SHA256，含32处既有配置/DTO完整字面量补None、AppCore DTO producer/consumer、TS可选field/真实draftPayload测试及build配置，不含两份持续更新证据文档。每个门禁前后核对，未在测试期间改受测源码。cargo fmt --all -- --check exit0、5.709秒；cargo clippy --target-dir <E01根> -p deepagent-core -p deepagent-mcp --all-targets --all-features --no-deps --offline -j 2 -- -D warnings：exit0、45.426秒，没有新增allow或降低MCP/core严格门槛。几何增长新回归在本轮default/http测试内均已默认通过，替代E02红测的4097次容量变化候选，缓冲上限/失败不追加对照保留。
+
+以下cargo test均显式--target-dir <根> --offline -j 2 -- --quiet --test-threads=2：core全包44过0败0忽略（11.677秒）；MCP默认feature全包144过0败3忽略（71.266秒）、MCP --all-features全包157过0败3忽略（84.911秒），各13顶层target，两个feature集有重叠不相加冒充唯一测试数。MCP原response_limit_audit带--features http --test response_limit_audit -- --nocapture --test-threads=1另跑exit0、2过0败0忽略、1.913秒，small payload16字节正常，显式1MiB下stdio/HTTP typed refusal分别观测1056768/1531809字节下界，不称客户端完整drain；HTTP fixture整次write成功只证明服务端已写入TCP，不等同客户端读取/解析。AppCore --lib mcp_选中62过0败2忽略（6.239秒），含持久化重开/DTO/实际resilient registry大小对照与无重派；--lib plugin_runtime::选中8过0败0忽略（1.111秒），不是完整AppCore。
+
+pnpm -C apps/desktop test:mcp-response-budget exit0、1过0败0跳过、2.872秒；完整pnpm -C apps/desktop build再次在冻结源码/合成环境实跑exit0、137.273秒，涵盖原build链所有前置测试/许可/预打包/tsc/Vite及本项新回调序列化，保留既有externalization/大chunk警告。node --check新CJS exit0，未跑GUI、真实Tauri IPC/安装包/签名。Rust新增公共DTO可选field已同步TS生产消费，无数值输入UI控件改动，未把类型/AST测试说成GUI行为验收。
+
+cargo build --target-dir <根> -p deepagent-cli --offline -j 2 exit0、132.998秒；核对旧G共享CLI24192EFA…另存任务副本后，发布本轮81,888,256字节真实CLI，源/目标SHA256均92937E4497D7D4FA8BACA748283173C0675AA374C5C808FC7C03C568C2DA7306。其后CLI全包198过0败11忽略（main197/0/10、startup1/0/1，197.099秒）；Rust SDK全包86过0败5忽略（lib72/0/5、真实stdio12/0/0、doc2/0/0，97.651秒）。pnpm -C packages/sdk test/test:stdio/test:jsonl均exit0（7.061/7.270/6.520秒），分别默认180/0/0、真实stdio4/0/0、真实JSONL1/0/0，消费者使用新G binary，没有沿用旧CLI或默认skip来称通过。
+
+affected AppCore/CLI cargo clippy --target-dir <根> -p deepagent-app-core -p deepagent-cli --all-targets --all-features --no-deps --offline -j 2 -- -D warnings：exit101、238.617秒，仍为context_runtime Usage clone8、http_runtime needless_return、plugin_preparation type_complexity、run_assembler too_many_arguments、session_title needless_borrow共lib12项与media lib test另2项旧诊断。以-W warnings同范围仅作补充诊断、不是strict通过：exit101、80.498秒，未改kernel_v2_e2e/mcp_discovery_restore.rs:776 panicking_unwrap默认deny，另workflow/terminal等旧warning。全部14份诊断文件逐份与2bca830b做CRLF归一化内容核对相同，无本项修改文件/段诊断；未额外导出HEAD执行另一遍lint，不能把源码比对称独立基线门禁。全仓原strict仍须实跑并保留结果，不顺手消除无关旧告警。
+
+focused所有进程已终态，现保持同30份冻结/新CLI，串行启动完整cargo test --workspace --offline --no-fail-fast、全仓strict Clippy和Tauri cargo check，尚无全部终态。当前仍188验收/24历史跳过/8归并/3撤销/82待修/1修复中，无fix提交、本轮新增修复0。默认16MiB/显式至64MiB是有限兼容性取舍：原可接纳更大的服务可能需要显式配置或分页/引用，本轮未做真实第三方服务大语料兼容/全宿主内存压测、其他OS/Node最低版本/强杀断电验收，不扩大为全系统安全配额。机器构建/测试与有效人工工时分开，全部余200–400有效小时仍未逐项校准低置信历史粗估，等待另计、无可靠总上界，整体goal active。
+
+**E-H126-03（2026-11-07，最终限定本机验收；完整门禁失败原样保留）**：30份受测源码/测试/配置/README在所有focused、workspace、Tauri及后续复核前后逐份SHA256一致；冻结清单SHA256为3616DA749E2F7D1F5B277148662472F85081BB26897BD1CF18F299D101289B38。E01原probe 0/2、默认TDD 0/4、坏wrapped配置与碎片增长各0/1以及候选编译/fixture失败均保留，不用默认忽略或编译成功替代行为验收。原两probe已进入默认组且E02b显式再跑2/0；MCP默认144/0/3、全feature157/0/3及core44/0/0、core/MCP严格Clippy exit0、AppCore实际持久化→registry→小/大调用与不重派、Rust/TS SDK真实当前CLI、完整Desktop build的命令/结果沿E02b。MCP的3个ignore为两个由外层测试调用的subprocess helper入口与独立的耗尽探活旧审计探针，不是本项原probe；未把后者算作通过。
+
+以下在同E01合成环境、同一真实Cargo target串行执行，所有命令进程已终态；仅本地临时文件/SQLite、合成Node和自建loopback，无真实端点/凭据/用户数据。表中秒数取命令结束后、写结果及冻结复核前的Stopwatch快照，不包含后置记录耗时。
+
+| 实际命令（仓库根，Target为E01绝对路径） | 退出与实际结果 | 墙钟秒 |
+|---|---|---|
+| `cargo test --target-dir $Target --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=2` | 101；147顶层target，4868过/2败/203忽略，非全绿 | 1830.826 |
+| `cargo clippy --target-dir $Target --all-targets --all-features --offline -j 2 -- -D warnings` | 101；未改Models client.rs:431 clone_on_copy | 46.868 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --target-dir $Target\tauri --offline -j 2` | 0；当前Rust DTO/transport与Tauri消费者检查通过，不是签名包/GUI验收 | 441.914 |
+| 同一workspace AppCore binary `verification_commands::lifecycle_tests::production_cold_compiler_gate_normal_cancel_and_deadline --exact --nocapture --test-threads=1` | 0；1过/0败/0忽略，不改限时、断言或重编译 | 19.741 |
+| 同一AppCore binary `--quiet --test-threads=2` | 0；完整lib1559过/0败/58忽略，含本项实际MCP配置/消费 | 191.742 |
+
+workspace共有148个结果块，其中1个为嵌套helper；按running/result栈剔除嵌套，与147个Running/Doc-tests目标逐一对齐，不能重复计数。失败一为未改H306 `creative.video-edit.v1 has an empty defaultUserPrompt`，Prompts27/1/0；失败二为未改 `verification_commands::lifecycle_tests::production_cold_compiler_gate_normal_cancel_and_deadline`，AppCore1558/1/58。在Deadline样本的原4秒ready窗口，elapsed_ms=4010仍无compiler-started、cargo_lock=false、compiler_stages=[]、build/worker/canary均无标记；原Kernel接受取消并settled，动作终态/SQLite重开诊断保留，不能称该workspace成功。已核对其BashTool/SystemExecutor→Kernel调用链未装配MCP；lifecycle_tests.rs、共享verification_build.rs、Models client.rs及Prompts canvas_prompt.rs与2bca830b做CRLF归一化逐份相同。未导出HEAD另跑整套基线，源码比对不是独立基线门禁。
+
+等待所有Cargo/Tauri结束后，对上述workspace生成的原AppCore `$Target\debug\deps\deepagent_app_core-32f391e263e6c0fa.exe` 进行表中精确复核及完整lib复核，前后SHA256均B01AB0214A4791D86A7EFE80F86B880A2522C8FE10C4701FFA5F0DBA9588CC07。精确组三种None/Cancel/Deadline的cold ready分别2684/1131/1226ms，原正常副作用、真实进程退出、单终态与取消/截止无迟到写入断言通过；完整lib亦通过。说明本次失败具有执行条件/时序敏感性，不证明具体OS调度根因已确定或生命周期问题已被本轮修复；不提高4秒窗口、不增ignore、不循环刷绿，也不回写原workspace的exit101。全仓strict保留Models旧失败；E02b affected strict的AppCore旧12项lib与另2项libtest诊断同样未压制，不以-W warnings称严格通过。
+
+Finding F-H126（依据E01～03）：原MCP完整缓冲后解析的资源缺口已在单一transport读取边界修复。Path P-H126为原McpConfig/McpServerDto持久化→connect/registry→stdio dispatcher或HTTP实际chunk→共用有界append→UTF8/JSON/SSE解析；超限先返回typed计数错误，stdio释放waiter并复用原owner关闭，HTTP丢弃本次body，原reconnect对tools/call返回unknown且无自动重派。默认16MiB、显式1字节～64MiB为本地设计；坏wrapped字段必须在原serde入口明确拒绝，几何增长避免逐碎片反复扩容。没有第二套transport/store/owner、依赖、SQL迁移或权限放行。
+
+兼容性/未验范围：旧JSON省略字段保持默认；Rust完整McpServerConfig/McpServerDto字面量需新增None，仓内32处既有配置/DTO字面量及相关生产消费已同步。原先可接受超过预算的服务将明确拒绝，应显式有限预算或分页/引用；标准Agent Plugins封闭schema不接受此本地扩展、仍用默认。未测试真实第三方MCP大语料、其他OS/最低Node、极端并发与全宿主内存/CPU配额、强杀断电、GUI/真实Tauri IPC/安装签名。既有Tauri sidecar文件未覆盖，不把cargo check或本轮共享CLI称为已打包最新安装包；网络栈单chunk、解析对象与并发额外开销仍存在。全仓/affected strict未全绿是明确残余限制，不对其他编号作关闭。
+
+仅H126按上述本机范围验收，原报告与唯一台账同步：本轮新增1，本阶段189验收、24历史跳过、8归并、3撤销、82待修、0修复中；未关闭82含授权跳过H180，实际后续队列81。下一项准备H167图片下载/持久化资源预算，尚未改其代码。全部余200–400有效工作小时仍是未逐项校准的低置信历史粗估（按既往复现、根因修改、跨层验收/双文提交成本），不是精确排期；本项修复/测试已结束，清理与提交收尾另记E04/E05。机器构建/锁等待/设备/依赖/环境及删除阻塞等待独立计算，无可靠总上界，整体goal active、未宣布系统修复完成。
+
+**E-H126-04（2026-11-07，G/C产物清理及明确残余）**：E03终态/原红与失败细节已写入双文，命令结果、30份冻结与CLI/测试binary身份另在本轮工具状态留存后才开始清理，未把删除日志说成测试未失败。先核对两个命名根绝对路径、边界及祖先无reparse point；递归只读检查无越界/reparse/枚举错误，关联Cargo/rustc/rustdoc/Node/测试/CLI进程为0。未访问原五项用户untracked内容；没有清理源码、用户文档、工具链/依赖缓存或无法独立确认归属的预打包resources。
+
+- C盘独立Tauri target `C:\Users\32734\AppData\Local\Temp\h126-repair-20261107\tauri`：7999文件、2,611,854,876逻辑字节；`cargo clean --manifest-path apps/desktop/src-tauri/Cargo.toml --target-dir <该绝对路径> --offline --dry-run` exit0，计划7999文件/2.4GiB；随后同命令去--dry-run实删exit0，确认该target不存在。
+- C盘主target `C:\Users\32734\AppData\Local\Temp\h126-repair-20261107`：Tauri清后16022文件、28,297,418,398逻辑字节，无reparse/枚举错误或关联进程。`cargo clean --target-dir <该绝对路径> --offline --dry-run` exit0（26.4GiB）；随后同命令去--dry-run实际exit101，测试DACL夹具 `fixture-tmp\.tmpzk8V3Y\destination\child` 删除遭OS拒绝访问(error5)。仅只读统计残余1790文件、1,501,688,331逻辑字节、枚举错误0；停止该路径，不换工具/命令路线、不改ACL/提权或改名移动后重删。与Tauri合计减少29,407,584,943逻辑字节，不将逻辑差值冒称实测物理磁盘释放量。
+- G盘本轮完整Vite build的 `G:\Code_Warehouse\DeepAgent-Studio\apps\desktop\dist`：3375文件、192,921,724逻辑字节，无reparse/枚举错误，路径归属已确认。原生PowerShell `Remove-Item -LiteralPath <该绝对路径> -Recurse -Force -ErrorAction Stop` 在进程创建前被工具策略拒绝，未实际执行；只读确认目录/大小仍在，未改用Cargo/Node/cmd/其他路径重删来绕过。此项与C盘已预定的真实Cargo clean为不同命名目标，不将G盘拒绝改记成成功。
+- 旧G盘SDK dist、C盘H215/H216及更旧已拒绝路径不重试，原阻塞记录保留。G盘共享CLI保留供后续真实验收，SHA256仍92937E4497D7D4FA8BACA748283173C0675AA374C5C808FC7C03C568C2DA7306；既有Tauri sidecar未覆盖或删除。清后C/G可用空间只读快照分别88,658,845,696/149,762,822,144字节，不推算精确回收物理空间。
+
+H126代码行为限E03本机范围已验收，但上述C/G残余清理是明确未完成的环境/工具限制，不静默跳过、不伪称G/C已清空；需限制解除后另行受控处理，本轮不继续尝试。两份文档按306唯一编号、8列、顶部189成员与H126证据一致性核对；只提交30份本项实现/测试/配置/README及双文，fix hash取得后另做E05回填，不反复amend，不推送。
 
 ### H-127：MCP image 工具结果被降格成 Responses 普通 JSON 字符串，模型收不到图像输入
 

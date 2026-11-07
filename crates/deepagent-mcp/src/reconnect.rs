@@ -234,7 +234,9 @@ impl ReconnectingTransport {
                     "MCP connection lost; failed business request will not be replayed");
             }
             if request.method == "tools/call"
-                && (disconnected || error.to_string() == MCP_CANCELLED_UNKNOWN_OUTCOME)
+                && (disconnected
+                    || matches!(error, CoreError::McpResponseTooLarge { .. })
+                    || error.to_string() == MCP_CANCELLED_UNKNOWN_OUTCOME)
             {
                 return Err(CoreError::RemoteOutcomeUnknown {
                     method: request.method.clone(),

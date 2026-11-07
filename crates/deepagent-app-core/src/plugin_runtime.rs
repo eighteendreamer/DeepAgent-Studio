@@ -428,6 +428,7 @@ fn plugin_mcp_servers_to_config(
                     env,
                     cwd,
                 } => McpServerConfig {
+                    response_limit_bytes: None,
                     transport: Some(TransportType::Stdio),
                     command: Some(command),
                     args,
@@ -437,6 +438,7 @@ fn plugin_mcp_servers_to_config(
                     headers: Default::default(),
                 },
                 PluginMcpTransport::StreamableHttp { url, headers } => McpServerConfig {
+                    response_limit_bytes: None,
                     transport: Some(TransportType::Http),
                     command: None,
                     args: Vec::new(),
@@ -446,6 +448,7 @@ fn plugin_mcp_servers_to_config(
                     headers,
                 },
                 PluginMcpTransport::Sse { url, headers } => McpServerConfig {
+                    response_limit_bytes: None,
                     transport: Some(TransportType::Sse),
                     command: None,
                     args: Vec::new(),

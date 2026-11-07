@@ -188,6 +188,7 @@ while ($null -ne ($line = [Console]::ReadLine())) {
             self.requests.to_string_lossy().into_owned(),
         ]);
         McpServerConfig {
+            response_limit_bytes: None,
             transport: None,
             command: Some(
                 if launcher == "dotnet" {

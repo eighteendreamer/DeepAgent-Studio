@@ -13,6 +13,7 @@ async fn crashed_server_reports_exit_and_redacted_bounded_stderr() {
         return;
     }
     let config = McpServerConfig {
+        response_limit_bytes: None,
         command: Some("node".into()),
         args: vec!["-e".into(), r#"process.stdin.once('data', () => {
           process.stderr.write('x'.repeat(20000) + '\nMODULE_NOT_FOUND password=hidden Bearer hidden-bearer ' + process.env.FIXTURE_API_KEY + '\n', () => process.exit(7));

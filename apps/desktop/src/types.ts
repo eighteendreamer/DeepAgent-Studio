@@ -544,6 +544,8 @@ export interface SkillActivation {
 
 /** An MCP server entry (mirrors deepagent-app-core::McpServerDto). */
 export interface McpServer {
+  /** DeepAgent raw response budget, 1 byte to 64 MiB; omitted uses 16 MiB. */
+  response_limit_bytes?: number | null;
   name: string;
   transport: string; // "stdio" | "sse" | "http" | "ws"
   enabled: boolean;

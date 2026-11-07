@@ -196,6 +196,7 @@ async fn audit_stdio_environment_fixture_child() {
             );
         }
         let mut config = McpServerConfig {
+            response_limit_bytes: None,
             transport: None,
             command: Some("node".to_owned()),
             args: vec![

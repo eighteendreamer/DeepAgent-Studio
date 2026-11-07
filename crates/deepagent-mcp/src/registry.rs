@@ -426,6 +426,7 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
         )
         .unwrap();
         let config = crate::McpServerConfig {
+            response_limit_bytes: None,
             transport: None,
             command: Some("node".into()),
             args: vec![
