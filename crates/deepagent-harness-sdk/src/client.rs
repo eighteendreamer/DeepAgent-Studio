@@ -19,8 +19,8 @@ use std::{
 use deepagent_harness_protocol::{
     ApprovalRespondRequest, ConfigReadRequest, EventAckRequest, HarnessRequest, InitializeRequest,
     RpcResponse, SandboxStatusRequest, ThreadArchiveRequest, ThreadForkRequest, ThreadListRequest,
-    ThreadReadRequest, ThreadStartRequest, ToolListRequest, TurnInterruptRequest, TurnStartRequest,
-    TurnSteerRequest, PROTOCOL_VERSION,
+    ThreadReadRequest, ThreadStartRequest, ThreadUnarchiveRequest, ToolListRequest,
+    TurnInterruptRequest, TurnStartRequest, TurnSteerRequest, PROTOCOL_VERSION,
 };
 use tokio::{
     process::{Child, ChildStderr, ChildStdin, ChildStdout},
@@ -227,8 +227,16 @@ impl HarnessClient {
 
     /// List persisted threads.
     pub async fn thread_list(&self) -> Result<RpcResponse, SdkError> {
-        self.call(HarnessRequest::ThreadList(ThreadListRequest::default()))
+        self.thread_list_with_options(ThreadListRequest::default())
             .await
+    }
+
+    /// Select the archived view explicitly; the default remains active threads.
+    pub async fn thread_list_with_options(
+        &self,
+        request: ThreadListRequest,
+    ) -> Result<RpcResponse, SdkError> {
+        self.call(HarnessRequest::ThreadList(request)).await
     }
 
     /// Read one bounded thread-history page. Inspect `hasMore`/`nextCursor`;
@@ -250,6 +258,14 @@ impl HarnessClient {
         request: ThreadArchiveRequest,
     ) -> Result<RpcResponse, SdkError> {
         self.call(HarnessRequest::ThreadArchive(request)).await
+    }
+
+    /// Restore visibility/admission eligibility, then explicitly resume to load.
+    pub async fn thread_unarchive(
+        &self,
+        request: ThreadUnarchiveRequest,
+    ) -> Result<RpcResponse, SdkError> {
+        self.call(HarnessRequest::ThreadUnarchive(request)).await
     }
 
     /// Start a turn (may invoke the model).

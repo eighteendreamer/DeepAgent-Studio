@@ -15,9 +15,9 @@ use deepagent_harness_protocol::{
     project_runtime_event, ConfigReadRequest, EventContext, HarnessEvent, HarnessRequest,
     InitializeCapabilities, InitializeRequest, InitializeResult, RpcNotification, RpcRequest,
     RpcResponse, ThreadArchiveRequest, ThreadForkRequest, ThreadListRequest, ThreadReadRequest,
-    ThreadResumeRequest, ThreadStartRequest, ToolListRequest, TurnInterruptRequest,
-    TurnStartRequest, TurnSteerRequest, CONTROL_PROJECTION_VERSION, JSONRPC_VERSION,
-    PROTOCOL_VERSION,
+    ThreadResumeRequest, ThreadStartRequest, ThreadUnarchiveRequest, ToolListRequest,
+    TurnInterruptRequest, TurnStartRequest, TurnSteerRequest, CONTROL_PROJECTION_VERSION,
+    JSONRPC_VERSION, PROTOCOL_VERSION,
 };
 use deepagent_persistence::event_store::EventStore;
 use deepagent_persistence::run_store::RunStore;
@@ -39,6 +39,9 @@ mod history_page;
 use connection::complete_turn_dispatch;
 use connection::run_stdio_with_io;
 
+#[cfg(test)]
+#[path = "app_server/archive_tests.rs"]
+mod archive_tests;
 #[cfg(test)]
 #[path = "app_server/history_page_tests.rs"]
 mod history_page_tests;
@@ -255,6 +258,7 @@ impl ServerState {
             HarnessRequest::ThreadRead(params) => self.thread_read(request.id, params),
             HarnessRequest::ThreadFork(params) => self.thread_fork(request.id, params),
             HarnessRequest::ThreadArchive(params) => self.thread_archive(request.id, params),
+            HarnessRequest::ThreadUnarchive(params) => self.thread_unarchive(request.id, params),
             HarnessRequest::TurnStart(params) => self.turn_start(request.id, params),
             HarnessRequest::TurnInterrupt(params) => self.turn_interrupt(request.id, params),
             HarnessRequest::TurnSteer(params) => self.turn_steer(request.id, params),
@@ -449,6 +453,16 @@ impl ServerState {
                 )
             }
         };
+        let archive = ArchiveService::new(self.database.clone());
+        let _activity = match archive.active_guard(session_id) {
+            Ok(guard) => guard,
+            Err(error) => {
+                return (
+                    RpcResponse::error(id, ERR_INVALID_THREAD, error.to_string()),
+                    None,
+                )
+            }
+        };
         let store = EventStore::new(&self.database);
         let record = match store.get_session(session_id) {
             Ok(Some(record)) => record,
@@ -522,7 +536,7 @@ impl ServerState {
     fn thread_list(
         &self,
         id: serde_json::Value,
-        _params: ThreadListRequest,
+        params: ThreadListRequest,
     ) -> (RpcResponse, Option<TurnLaunch>) {
         let sessions = match EventStore::new(&self.database).list_sessions() {
             Ok(sessions) => sessions,
@@ -533,8 +547,19 @@ impl ServerState {
                 )
             }
         };
+        let archived = match ArchiveService::new(self.database.clone()).archived_ids() {
+            Ok(archived) => archived,
+            Err(error) => {
+                return (
+                    RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
+                    None,
+                )
+            }
+        };
+        let archived_view = params.archived.unwrap_or(false);
         let threads = sessions
             .into_iter()
+            .filter(|session| archived.contains(&session.id.to_string()) == archived_view)
             .map(|session| {
                 serde_json::json!({
                     "threadId": session.id.to_string(),
@@ -542,7 +567,8 @@ impl ServerState {
                     "cwd": session.project,
                     "createdAt": session.created_at.as_millis(),
                     "updatedAt": session.updated_at.as_millis(),
-                    "ended": session.ended_at.is_some()
+                    "ended": session.ended_at.is_some(),
+                    "archived": archived_view
                 })
             })
             .collect::<Vec<_>>();
@@ -575,6 +601,14 @@ impl ServerState {
         id: serde_json::Value,
         params: ThreadForkRequest,
     ) -> (RpcResponse, Option<TurnLaunch>) {
+        if let Err(error) =
+            ArchiveService::new(self.database.clone()).require_active(&params.thread_id)
+        {
+            return (
+                RpcResponse::error(id, ERR_INVALID_THREAD, error.to_string()),
+                None,
+            );
+        }
         let source_id = match params.thread_id.parse() {
             Ok(source_id) => source_id,
             Err(error) => {
@@ -644,20 +678,111 @@ impl ServerState {
     }
 
     fn thread_archive(
-        &self,
+        &mut self,
         id: serde_json::Value,
         params: ThreadArchiveRequest,
     ) -> (RpcResponse, Option<TurnLaunch>) {
+        let session = match params.thread_id.parse::<SessionId>() {
+            Ok(session) => session,
+            Err(error) => {
+                return (
+                    RpcResponse::error(id, ERR_INVALID_THREAD, error.to_string()),
+                    None,
+                )
+            }
+        };
+        // Retain the connection's worker reservation through queued/cancelling
+        // cleanup, even if its durable terminal was already committed.
+        if self
+            .turns
+            .values()
+            .any(|turn| turn.active && turn.thread_id.parse::<SessionId>().ok() == Some(session))
+        {
+            return (
+                RpcResponse::error(
+                    id,
+                    ERR_THREAD_BUSY,
+                    "thread is busy; wait for every owned turn to finish before archiving",
+                ),
+                None,
+            );
+        }
         match ArchiveService::new(self.database.clone()).archive_session(&params.thread_id) {
+            Ok(_) => {
+                self.threads
+                    .retain(|key, _| key.parse::<SessionId>().ok() != Some(session));
+                (
+                    RpcResponse::success(
+                        id,
+                        serde_json::json!({ "threadId": params.thread_id, "archived": true }),
+                    ),
+                    None,
+                )
+            }
+            Err(error) => (
+                RpcResponse::error(
+                    id,
+                    if matches!(error, CoreError::Invalid(_)) {
+                        ERR_THREAD_BUSY
+                    } else if matches!(error, CoreError::NotFound(_)) {
+                        ERR_INVALID_THREAD
+                    } else {
+                        ERR_INTERNAL
+                    },
+                    error.to_string(),
+                ),
+                None,
+            ),
+        }
+    }
+
+    fn thread_unarchive(
+        &self,
+        id: serde_json::Value,
+        params: ThreadUnarchiveRequest,
+    ) -> (RpcResponse, Option<TurnLaunch>) {
+        let session = match params.thread_id.parse::<SessionId>() {
+            Ok(session) => session,
+            Err(error) => {
+                return (
+                    RpcResponse::error(id, ERR_INVALID_THREAD, error.to_string()),
+                    None,
+                )
+            }
+        };
+        match EventStore::new(&self.database).get_session(session) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return (
+                    RpcResponse::error(id, ERR_INVALID_THREAD, "thread not found"),
+                    None,
+                )
+            }
+            Err(error) => {
+                return (
+                    RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
+                    None,
+                )
+            }
+        }
+        match ArchiveService::new(self.database.clone()).unarchive_session(&params.thread_id) {
             Ok(_) => (
                 RpcResponse::success(
                     id,
-                    serde_json::json!({ "threadId": params.thread_id, "archived": true }),
+                    serde_json::json!({"threadId":params.thread_id,"archived":false}),
                 ),
                 None,
             ),
             Err(error) => (
-                RpcResponse::error(id, ERR_INVALID_THREAD, error.to_string()),
+                RpcResponse::error(
+                    id,
+                    if matches!(error, CoreError::Invalid(_)) {
+                        ERR_THREAD_BUSY
+                    } else {
+                        ERR_INTERNAL
+                    },
+                    error.to_string(),
+                ),
                 None,
             ),
         }
@@ -668,6 +793,14 @@ impl ServerState {
         id: serde_json::Value,
         params: TurnStartRequest,
     ) -> (RpcResponse, Option<TurnLaunch>) {
+        if let Err(error) =
+            ArchiveService::new(self.database.clone()).require_active(&params.thread_id)
+        {
+            return (
+                RpcResponse::error(id, ERR_INVALID_THREAD, error.to_string()),
+                None,
+            );
+        }
         let Some(thread) = self.threads.get(&params.thread_id).cloned() else {
             return (
                 RpcResponse::error(id, ERR_INVALID_THREAD, "thread is not loaded"),
@@ -720,10 +853,10 @@ impl ServerState {
                 return (
                     RpcResponse::error(
                         id,
-                        if matches!(error, CoreError::ExecutionConfigStale) {
-                            ERR_INVALID_PARAMS
-                        } else {
-                            ERR_INTERNAL
+                        match error {
+                            CoreError::ExecutionConfigStale => ERR_INVALID_PARAMS,
+                            CoreError::SessionArchived => ERR_INVALID_THREAD,
+                            _ => ERR_INTERNAL,
                         },
                         error.to_string(),
                     ),
@@ -849,6 +982,16 @@ impl ServerState {
                 None,
             );
         }
+        // Keep the existing invalid-turn classification. Archive eligibility
+        // is still checked before replacement preparation or old-run cancel.
+        if let Err(error) =
+            ArchiveService::new(self.database.clone()).require_active(&params.thread_id)
+        {
+            return (
+                RpcResponse::error(id, ERR_INVALID_THREAD, error.to_string()),
+                None,
+            );
+        }
         let next_turn = format!("turn_{}", deepagent_core::id::EventId::new());
         // Worker activity is not steering eligibility: a replaced worker still
         // owns cleanup and must remain busy/cancellable until finish_turn. The
@@ -873,7 +1016,15 @@ impl ServerState {
             }
             Err(error) => {
                 return (
-                    RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
+                    RpcResponse::error(
+                        id,
+                        if matches!(error, CoreError::SessionArchived) {
+                            ERR_INVALID_THREAD
+                        } else {
+                            ERR_INTERNAL
+                        },
+                        error.to_string(),
+                    ),
                     None,
                 )
             }
@@ -1949,7 +2100,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit H-215: an archived thread must not accept a new turn before explicit restore"]
     fn audit_archived_thread_does_not_accept_new_turn() {
         let mut state = ServerState::new_for_test();
         initialize(&mut state);

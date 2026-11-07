@@ -966,6 +966,9 @@ impl AppService {
         // across checkpoint publication and history commit as rewind.
         let store = EventStore::new(&self.db);
         let control = store.begin_control(id)?;
+        // Archive shares this exact control gate; recheck after acquiring it
+        // before checkpoint restoration or durable child publication.
+        ArchiveService::new(self.db.clone()).require_active(&id.to_string())?;
         let at_seq = store.resolve_branch_sequence(id, at_seq)?;
         self.restore_checkpoints_after(session_id, at_seq, |restored_paths| {
             let new_id = SessionId::new();

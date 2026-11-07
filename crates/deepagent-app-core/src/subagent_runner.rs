@@ -124,6 +124,9 @@ struct TrackedSubagent<'a> {
     surface: Option<crate::context_runtime::SessionSurfaceStore>,
     /// Last complete Surface also survives a drop during pre-session hooks.
     seed_history: Vec<ResponseInputItem>,
+    // A field, not a later stack local: Drop must retain the origin exclusion
+    // until its existing terminal/transcript finalizer has finished too.
+    origin_activity: Option<deepagent_persistence::event_store::SessionActivityGuard>,
 }
 
 impl TrackedSubagent<'_> {
@@ -558,7 +561,27 @@ impl ChatSubagentRunner {
             armed: true,
             surface: None,
             seed_history: history,
+            origin_activity: None,
         };
+        // Child transcripts may use a separate DB. Their durable origin still
+        // owns archive admission, including background work after main teardown.
+        let origin_activity: Result<_> = (|| {
+            let origin = deepagent_persistence::run_store::RunStore::new(&self.db)
+                .get(&self.parent_run_id)?;
+            origin
+                .map(|origin| {
+                    crate::ArchiveService::new(self.db.clone())
+                        .active_guard(origin.session_id.parse()?)
+                })
+                .transpose()
+        })();
+        match origin_activity {
+            Ok(guard) => lifecycle.origin_activity = guard,
+            Err(error) => {
+                lifecycle.finish("failed", &error.to_string())?;
+                return Err(error);
+            }
+        }
         let _ = self
             .dispatch_child_hook(
                 HookPoint::SubagentStart,
@@ -1803,6 +1826,71 @@ mod tests {
                 } => Err(CoreError::other("audit child cancelled")),
             }
         }
+    }
+
+    fn h215_child_request() -> deepagent_builtins::SubagentRequest {
+        deepagent_builtins::SubagentRequest {
+            description: "synthetic archive descendant".into(),
+            prompt: "Return a short result".into(),
+            subagent_type: Some("review".into()),
+            allowed_tools: Vec::new(),
+            model: None,
+            effort: None,
+            skills: Vec::new(),
+            isolation: "shared".into(),
+            fork: false,
+            phase: None,
+            label: None,
+            schema: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn h215_archived_parent_rejects_child_before_model_work() {
+        let root = tempfile::tempdir().unwrap();
+        let transport = Arc::new(AuditResumeTransport::default());
+        let runner = audit_child_runner(root.path(), transport.clone());
+        let id = runner.parent_session_id().unwrap().to_string();
+        crate::ArchiveService::new(runner.db.clone())
+            .archive_session(&id)
+            .unwrap();
+        assert!(runner.run_inner(h215_child_request(), None).await.is_err());
+        assert!(transport.requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn h215_live_background_descendant_excludes_origin_archive_until_its_owner_exits() {
+        let root = tempfile::tempdir().unwrap();
+        let transport = Arc::new(AuditPendingChildTransport::default());
+        let runner = audit_child_runner(root.path(), transport.clone());
+        let archive = crate::ArchiveService::new(runner.db.clone());
+        let id = runner.parent_session_id().unwrap().to_string();
+        let request = h215_child_request();
+        assert!(runner
+            .begin_tracking("sub_h215_background", &request, true, None)
+            .unwrap());
+        let task = tokio::spawn(async move {
+            runner
+                .run_tracked(
+                    "sub_h215_background".into(),
+                    request.into(),
+                    None,
+                    None,
+                    true,
+                    true,
+                )
+                .await
+        });
+        transport.entered.notified().await;
+        let result = archive.archive_session(&id);
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(
+            result.is_err(),
+            "a child using a separate transcript DB still belongs to the durable origin"
+        );
+        assert!(!archive.is_archived(&id).unwrap());
+        assert!(archive.archive_session(&id).unwrap());
     }
 
     struct AuditDelegateAgent;

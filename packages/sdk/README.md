@@ -79,7 +79,7 @@ publish the complete v1 handshake contract. Rust error enum exhaustive matches
 may need updating. Business result validation and transport restart are separate.
 
 Mutation receipts are also validated before a request resolves: `thread/start`,
-`thread/resume`, `thread/fork`, `thread/archive`, `turn/start`, `turn/interrupt`,
+`thread/resume`, `thread/fork`, `thread/archive`, `thread/unarchive`, `turn/start`, `turn/interrupt`,
 `turn/steer`, `approval/respond` and `event/ack` require their typed v1 identity,
 status and control fields. Echoed identities/decisions/ACKs must match the request;
 steer identifies a new turn and the replaced turn. Both raw and owned APIs use
@@ -119,6 +119,50 @@ await agent.close();
 
 `cli-jsonl` is available for one-shot automation through `runJsonl(prompt)`.
 Thread lifecycle and turn control require the stdio app-server transport.
+
+### Archive and explicit restore
+
+`archiveThread(threadId)` returns `{ threadId, archived: true }` only after the
+existing durable archive marker is committed. It refuses an admitted, queued,
+cancelling or still-cleaning turn with `HarnessRpcError.code === -32005`; it
+does not cancel the turn. Shared AppCore activity guards also exclude archive
+while a background child still owns that durable origin, including after the
+foreground run ends. Failed archive publication does not unload the thread.
+
+`listThreads()` now returns only active identities. Use
+`listThreads({ archived: true })` for only archived identities, or
+`{ archived: false }` for an explicit active view. Rows carry an additive
+`archived` boolean; an explicit view rejects missing/conflicting markers from
+an older peer rather than silently presenting its active list as archived.
+The existing list-size/pagination limitation (H-220) is not fixed here.
+
+Archived identities cannot resume, start, steer or fork, even through a stale
+loaded server, another host sharing the data root, an equivalent SessionId
+spelling or a process restart. Explicit `thread/read` remains available for
+durable reconciliation. Archive never deletes events or appends a run terminal.
+Call `await agent.unarchiveThread(threadId)` to restore the existing marker/files,
+then `await agent.resumeThread(threadId)` to load that thread before new work.
+Restore is idempotent for an existing identity; unknown identities fail. The
+same v1 receipt has `archived: false` and is identity/boolean validated.
+
+The existing `ArchiveService`, OS-backed session control/activity gates and
+RunCoordinator admission remain the only authorities. Archive success cannot
+race a new admitted owner, and late follow-ups must pass the same admission.
+Project archive preflights its selected owners before writing any marker;
+as before, a later storage error can leave a partially archived batch, which
+must be reconciled instead of assumed atomic. These gates coordinate cooperating
+hosts, not arbitrary external SQLite writers or a security sandbox. Corrupt
+archive display metadata stays fail-closed for identity visibility/admission.
+
+This is an additive v1 operation/filter, but active-list and archived-admission
+behavior intentionally changes. AppCore/Desktop archive now rejects a busy
+owner instead of hiding live work; existing UI errors remain the handling path.
+Rust callers retain `thread_list()` and gain
+`thread_list_with_options(ThreadListRequest { archived: Some(true) })` plus
+`thread_unarchive(ThreadUnarchiveRequest { thread_id })`.
+Rust `ThreadListRequest {}` literals must use `::default()` or supply `archived`;
+exhaustive `HarnessRequest` matches must handle the new variant. No database
+migration, model/provider change or automatic restore/replay is introduced.
 
 ### CLI JSONL process ownership
 

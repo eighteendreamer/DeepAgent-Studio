@@ -13,8 +13,9 @@ pub use requests::{
     ApprovalRespondRequest, ConfigReadRequest, EventAckRequest, HarnessRequest,
     InitializeCapabilities, InitializeRequest, InitializeResult, RpcError, RpcNotification,
     RpcRequest, RpcResponse, SandboxStatusRequest, ThreadArchiveRequest, ThreadForkRequest,
-    ThreadListRequest, ThreadReadRequest, ThreadResumeRequest, ThreadStartRequest, ToolListRequest,
-    TurnInterruptRequest, TurnStartRequest, TurnSteerRequest, JSONRPC_VERSION, PROTOCOL_VERSION,
+    ThreadListRequest, ThreadReadRequest, ThreadResumeRequest, ThreadStartRequest,
+    ThreadUnarchiveRequest, ToolListRequest, TurnInterruptRequest, TurnStartRequest,
+    TurnSteerRequest, JSONRPC_VERSION, PROTOCOL_VERSION,
 };
 pub use results::{
     control_result_identity, validate_control_result, ApprovalRespondResult, ControlResultError,

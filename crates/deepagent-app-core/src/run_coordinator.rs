@@ -262,7 +262,7 @@ impl RunCoordinator {
             .map_err(|error| CoreError::invalid(format!("bad session id: {error}")))?;
         // Acquire before durable admission/snapshot recovery, and retain it in
         // the existing registration through outer failure/terminal projection.
-        let activity = EventStore::new(&self.db).acquire_activity(id)?;
+        let activity = crate::ArchiveService::new(self.db.clone()).active_guard(id)?;
         // Reentrancy belongs to this coordinator's queue, not a PID or the
         // whole process. Independent ChatServices must still conflict. Weak
         // entries cannot extend ownership beyond the last admitted run.

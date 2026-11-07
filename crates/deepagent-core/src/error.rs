@@ -21,6 +21,10 @@ pub enum CoreError {
     #[error("stale execution configuration; read thread configuration again")]
     ExecutionConfigStale,
 
+    /// The durable archive gate forbids a new execution until explicit restore.
+    #[error("session is archived; explicitly unarchive before resuming or starting work")]
+    SessionArchived,
+
     /// A requested entity (session, task, event) was not found.
     #[error("not found: {0}")]
     NotFound(String),

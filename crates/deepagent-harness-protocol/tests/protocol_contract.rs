@@ -308,6 +308,9 @@ fn every_harness_request_variant_has_a_stable_method_and_round_trips() {
         HarnessRequest::ThreadArchive(ThreadArchiveRequest {
             thread_id: "thread-1".into(),
         }),
+        HarnessRequest::ThreadUnarchive(deepagent_harness_protocol::ThreadUnarchiveRequest {
+            thread_id: "thread-1".into(),
+        }),
         HarnessRequest::TurnStart(TurnStartRequest {
             expected_config_snapshot_id: None,
             thread_id: "thread-1".into(),
@@ -345,6 +348,7 @@ fn every_harness_request_variant_has_a_stable_method_and_round_trips() {
         "thread/read",
         "thread/fork",
         "thread/archive",
+        "thread/unarchive",
         "turn/start",
         "turn/interrupt",
         "turn/steer",

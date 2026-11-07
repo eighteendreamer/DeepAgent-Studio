@@ -212,6 +212,7 @@ export interface ThreadInfo {
   createdAt?: number;
   updatedAt?: number;
   ended?: boolean;
+  archived?: boolean;
 }
 
 export interface ThreadReadOptions {
@@ -729,11 +730,21 @@ export class DeepAgent {
     return new Thread(this, threadId, result.configuration);
   }
 
-  async listThreads(): Promise<ThreadInfo[]> {
-    const result = (await this.request("thread/list", {})) as {
+  async listThreads(options: { archived?: boolean } = {}): Promise<ThreadInfo[]> {
+    const result = (await this.request("thread/list", options)) as {
       threads: ThreadInfo[];
     };
     return result.threads;
+  }
+
+  /** Archive refuses busy owners; it never cancels or deletes their work. */
+  async archiveThread(threadId: string): Promise<{ threadId: string; archived: true }> {
+    return await this.request("thread/archive", { threadId }) as { threadId: string; archived: true };
+  }
+
+  /** Restore eligibility only; call resumeThread explicitly before new work. */
+  async unarchiveThread(threadId: string): Promise<{ threadId: string; archived: false }> {
+    return await this.request("thread/unarchive", { threadId }) as { threadId: string; archived: false };
   }
 
   /** Fetch exactly one bounded page. No automatic accumulation or retry loop. */

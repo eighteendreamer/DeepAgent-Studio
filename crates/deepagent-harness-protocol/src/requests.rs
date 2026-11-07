@@ -26,6 +26,8 @@ pub enum HarnessRequest {
     ThreadFork(ThreadForkRequest),
     #[serde(rename = "thread/archive")]
     ThreadArchive(ThreadArchiveRequest),
+    #[serde(rename = "thread/unarchive")]
+    ThreadUnarchive(ThreadUnarchiveRequest),
     #[serde(rename = "turn/start")]
     TurnStart(TurnStartRequest),
     #[serde(rename = "turn/interrupt")]
@@ -114,7 +116,11 @@ pub struct ThreadResumeRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct ThreadListRequest {}
+pub struct ThreadListRequest {
+    /// Omit for active threads; true selects only archived identities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived: Option<bool>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadReadRequest {
@@ -172,6 +178,12 @@ pub struct ThreadForkRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadArchiveRequest {
+    #[serde(rename = "threadId")]
+    pub thread_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadUnarchiveRequest {
     #[serde(rename = "threadId")]
     pub thread_id: String,
 }

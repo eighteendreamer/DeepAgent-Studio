@@ -34,9 +34,8 @@ fn invalid_results(case: &Value) -> Vec<Value> {
     }
     let method = case["method"].as_str().unwrap();
     let echo = match method {
-        "thread/resume" | "thread/archive" | "turn/start" | "turn/interrupt" | "turn/steer" => {
-            Some("threadId")
-        }
+        "thread/resume" | "thread/archive" | "thread/unarchive" | "turn/start"
+        | "turn/interrupt" | "turn/steer" => Some("threadId"),
         "thread/fork" => Some("sourceThreadId"),
         "approval/respond" => Some("approvalId"),
         _ => None,
@@ -70,9 +69,9 @@ fn invalid_results(case: &Value) -> Vec<Value> {
         bad["approved"] = json!(true);
         values.push(bad);
     }
-    if method == "thread/archive" {
+    if method == "thread/archive" || method == "thread/unarchive" {
         let mut bad = valid.clone();
-        bad["archived"] = json!(false);
+        bad["archived"] = json!(method != "thread/archive");
         values.push(bad);
     }
     if method == "event/ack" {

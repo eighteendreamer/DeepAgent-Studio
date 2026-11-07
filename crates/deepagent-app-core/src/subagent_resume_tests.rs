@@ -457,6 +457,7 @@ fn h242_saved_surface_uses_existing_compaction_replacement_and_native_item_proje
             session_id: session.id(),
         }),
         seed_history: Vec::new(),
+        origin_activity: None,
     };
     lifecycle.finish("succeeded", "short preview").unwrap();
     let saved = record(&runner);

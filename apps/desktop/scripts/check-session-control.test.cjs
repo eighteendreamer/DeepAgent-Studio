@@ -5,19 +5,19 @@ const path = require("node:path");
 const test = require("node:test");
 const ts = require("typescript");
 
-function callback(bindings) {
+function callback(bindings, name = "onRewindSession") {
   const file = path.resolve(__dirname, "../src/App.tsx");
   const ast = ts.createSourceFile(file, fs.readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   let expression;
   function visit(node) {
-    if (ts.isVariableDeclaration(node) && node.name.getText(ast) === "onRewindSession") {
+    if (ts.isVariableDeclaration(node) && node.name.getText(ast) === name) {
       assert.ok(ts.isCallExpression(node.initializer));
       expression = node.initializer.arguments[0].getText(ast);
     }
     ts.forEachChild(node, visit);
   }
   visit(ast);
-  assert.ok(expression, "production rewind callback must exist");
+  assert.ok(expression, `production ${name} callback must exist`);
   const compiled = ts.transpileModule(`module.exports = (${expression});`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
   }).outputText;
@@ -92,6 +92,45 @@ test("a missing session does not call the backend or mutate the screen", async (
   assert.equal(f.state.requests, 0);
   assert.equal(f.state.messages, f.original);
   assert.equal(f.liveTranscripts.current.get("source"), f.original);
+});
+
+function archiveFixture(archiveConversation) {
+  const state = { refreshes: 0, changes: [], errors: [], successes: [] };
+  const run = callback({
+    activeId: "synthetic-active",
+    archiveConversation,
+    refreshSessions: () => { state.refreshes += 1; },
+    setActiveId: (value) => state.changes.push(["active", value]),
+    setDetail: (value) => state.changes.push(["detail", value]),
+    setMessages: (value) => state.changes.push(["messages", value]),
+    setView: (value) => state.changes.push(["view", value]),
+    message: { error: (value) => state.errors.push(value), success: (value) => state.successes.push(value) },
+  }, "onArchiveSession");
+  return { run, state };
+}
+
+test("H215 actual archive callback preserves the active screen when AppCore refuses a busy owner", async () => {
+  const f = archiveFixture(async () => { throw new Error("synthetic session is busy"); });
+  f.run("synthetic-active");
+  await new Promise(setImmediate);
+  assert.equal(f.state.refreshes, 0);
+  assert.deepEqual(f.state.changes, []);
+  assert.deepEqual(f.state.successes, []);
+  assert.equal(f.state.errors.length, 1);
+  assert.match(f.state.errors[0], /session is busy/);
+});
+
+test("H215 actual archive callback changes the screen only after a successful durable receipt", async () => {
+  let release;
+  const f = archiveFixture(() => new Promise((resolve) => { release = resolve; }));
+  f.run("synthetic-active");
+  assert.deepEqual(f.state.changes, []);
+  assert.equal(f.state.refreshes, 0);
+  release(true); await new Promise(setImmediate);
+  assert.equal(f.state.refreshes, 1);
+  assert.deepEqual(f.state.changes, [["active", null], ["detail", null], ["messages", []], ["view", "start"]]);
+  assert.equal(f.state.successes.length, 1);
+  assert.deepEqual(f.state.errors, []);
 });
 
 // Execute the production session-activation effect, including its cleanup.

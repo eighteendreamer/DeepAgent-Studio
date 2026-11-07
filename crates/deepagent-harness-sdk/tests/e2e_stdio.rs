@@ -10,8 +10,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use deepagent_harness_protocol::{
-    ConfigReadRequest, HarnessEvent, InitializeResult, ThreadReadRequest, ThreadResumeRequest,
-    ThreadStartRequest, TurnInterruptRequest, TurnStartRequest,
+    ConfigReadRequest, HarnessEvent, InitializeResult, ThreadArchiveRequest, ThreadListRequest,
+    ThreadReadRequest, ThreadResumeRequest, ThreadStartRequest, ThreadUnarchiveRequest,
+    TurnInterruptRequest, TurnStartRequest,
 };
 use deepagent_harness_sdk::{HarnessProcess, SdkError, SequenceStatus};
 
@@ -61,6 +62,129 @@ async fn spawn_server(tag: &str) -> (HarnessProcess, deepagent_harness_sdk::Harn
     assert!(!identity.server_version.trim().is_empty());
     assert!(identity.capabilities.thread_lifecycle && identity.capabilities.streaming);
     (process, client)
+}
+
+#[tokio::test]
+async fn h215_real_archive_unarchive_is_durable_and_restored_thread_requires_explicit_resume() {
+    let Some(bin) = isolated_cli(
+        "h215_real_archive_unarchive_is_durable_and_restored_thread_requires_explicit_resume",
+        "h215-archive",
+    )
+    .await
+    else {
+        return;
+    };
+    let workspace = temp_workspace("h215-archive-workspace");
+    let process = HarnessProcess::spawn(&bin, &workspace).await.unwrap();
+    let client = process.client();
+    client.initialize("h215", "1").await.unwrap();
+    let started = client
+        .thread_start(serde_json::from_value(serde_json::json!({})).unwrap())
+        .await
+        .unwrap();
+    let thread = started.result()["threadId"].as_str().unwrap().to_owned();
+    let read = || {
+        serde_json::from_value::<ThreadReadRequest>(serde_json::json!({"threadId":thread})).unwrap()
+    };
+    let turn = || {
+        serde_json::from_value::<TurnStartRequest>(
+            serde_json::json!({"threadId":thread,"input":"/help"}),
+        )
+        .unwrap()
+    };
+    let before = client.thread_read(read()).await.unwrap();
+    client
+        .thread_archive(ThreadArchiveRequest {
+            thread_id: thread.clone(),
+        })
+        .await
+        .unwrap();
+    assert!(client.thread_list().await.unwrap().result()["threads"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let archived = client
+        .thread_list_with_options(ThreadListRequest {
+            archived: Some(true),
+        })
+        .await
+        .unwrap();
+    assert_eq!(archived.result()["threads"].as_array().unwrap().len(), 1);
+    assert_eq!(archived.result()["threads"][0]["threadId"], thread);
+    assert_eq!(archived.result()["threads"][0]["archived"], true);
+    assert!(matches!(
+        client.turn_start(turn()).await,
+        Err(SdkError::Rpc { code: -32003, .. })
+    ));
+    assert_eq!(
+        client.thread_read(read()).await.unwrap().result(),
+        before.result()
+    );
+    assert!(process.wait().await.unwrap().success());
+
+    let reopened = HarnessProcess::spawn(&bin, &workspace).await.unwrap();
+    let current = reopened.client();
+    current.initialize("h215-reopen", "1").await.unwrap();
+    assert!(matches!(
+        current
+            .thread_resume(ThreadResumeRequest {
+                thread_id: thread.clone()
+            })
+            .await,
+        Err(SdkError::Rpc { code: -32003, .. })
+    ));
+    let restored = current
+        .thread_unarchive(ThreadUnarchiveRequest {
+            thread_id: thread.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        restored.result(),
+        &serde_json::json!({"threadId":thread,"archived":false})
+    );
+    assert!(matches!(
+        current.turn_start(turn()).await,
+        Err(SdkError::Rpc { code: -32003, .. })
+    ));
+    current
+        .thread_resume(ThreadResumeRequest {
+            thread_id: thread.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        current.thread_read(read()).await.unwrap().result(),
+        before.result()
+    );
+    let mut events = current.turn_start_streamed(turn()).await.unwrap();
+    let mut completed = 0;
+    while let Some(event) = tokio::time::timeout(Duration::from_secs(5), events.recv())
+        .await
+        .unwrap()
+        .unwrap()
+    {
+        if matches!(event, HarnessEvent::TurnCompleted { .. }) {
+            completed += 1;
+        }
+    }
+    assert_eq!(completed, 1);
+    let after = current.thread_read(read()).await.unwrap();
+    let runs = after.result()["runEvents"].as_array().unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0]["terminalKind"], "succeeded");
+    assert_eq!(
+        runs[0]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["event_type"] == "run_terminal")
+            .count(),
+        1
+    );
+    assert!(runs[0]["actions"].as_array().unwrap().is_empty());
+    assert!(runs[0]["approvals"].as_array().unwrap().is_empty());
+    assert!(reopened.wait().await.unwrap().success());
 }
 
 #[tokio::test]

@@ -11,14 +11,14 @@ function invalidResults(c){
     const missing={...c.result};delete missing[field];values.push(missing);
     for(const value of [null,""," \t",{},[]])if(!(Array.isArray(value)&&Array.isArray(c.result[field])))values.push({...c.result,[field]:value});
   }
-  const echo={"thread/resume":"threadId","thread/archive":"threadId","thread/fork":"sourceThreadId",
+  const echo={"thread/resume":"threadId","thread/archive":"threadId","thread/unarchive":"threadId","thread/fork":"sourceThreadId",
     "turn/start":"threadId","turn/interrupt":"threadId","turn/steer":"threadId","approval/respond":"approvalId"}[c.method];
   if(echo)values.push({...c.result,[echo]:"PRIVATE_BAD_ID"});
   if(c.method==="turn/interrupt" || c.method==="turn/steer")values.push({...c.result,[c.method==="turn/steer"?"replacesTurnId":"turnId"]:"PRIVATE_BAD_ID"});
   if(c.method==="turn/steer")values.push({...c.result,turnId:c.params.turnId});
   if("status" in c.result)values.push({...c.result,status:"PRIVATE_BAD_STATUS"});
   if(c.method==="approval/respond")values.push({...c.result,approved:true});
-  if(c.method==="thread/archive")values.push({...c.result,archived:false});
+  if(c.method==="thread/archive"||c.method==="thread/unarchive")values.push({...c.result,archived:c.method!=="thread/archive"});
   if(c.method==="event/ack")for(const ack of [6,8,-1,1.5])values.push({...c.result,acknowledgedEventSequence:ack});
   return values;
 }
@@ -51,4 +51,15 @@ test("H207 public startThread cannot construct a thread from an invalid receipt"
   const c=cases[0],agent=peer(c,[{}]);
   try{await assert.rejects(()=>agent.startThread());assert.deepEqual(await agent.requestForTest("audit/count",{}),{calls:1});}
   finally{await agent.close();}
+});
+
+test("H215 explicit archive list views reject an old or conflicting server projection",async()=>{
+  for(const archived of [true,false]){
+    const valid={threads:[{threadId:"thread-1",archived}]};
+    const agent=peer({result:valid},[{threads:[{threadId:"thread-1"}]},{threads:[{threadId:"thread-1",archived:!archived}]},valid]);
+    try{
+      for(let index=0;index<2;index++)await assert.rejects(()=>agent.listThreads({archived}),HarnessResultError);
+      assert.deepEqual(await agent.listThreads({archived}),valid.threads);
+    }finally{await agent.close();}
+  }
 });

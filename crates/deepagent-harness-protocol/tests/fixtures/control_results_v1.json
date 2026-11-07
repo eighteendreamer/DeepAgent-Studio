@@ -3,6 +3,7 @@
   {"method":"thread/resume","params":{"threadId":"thread-1"},"result":{"threadId":"thread-1","status":"ready"}},
   {"method":"thread/fork","params":{"threadId":"source-1"},"result":{"threadId":"fork-1","sourceThreadId":"source-1","forkedAt":7,"restoredPaths":[]}},
   {"method":"thread/archive","params":{"threadId":"thread-1"},"result":{"threadId":"thread-1","archived":true}},
+  {"method":"thread/unarchive","params":{"threadId":"thread-1"},"result":{"threadId":"thread-1","archived":false}},
   {"method":"turn/start","params":{"threadId":"thread-1","input":"synthetic"},"result":{"threadId":"thread-1","turnId":"turn-1","status":"started"}},
   {"method":"turn/interrupt","params":{"threadId":"thread-1","turnId":"turn-1"},"result":{"threadId":"thread-1","turnId":"turn-1","status":"cancelling"}},
   {"method":"turn/steer","params":{"threadId":"thread-1","turnId":"turn-1","input":"synthetic"},"result":{"threadId":"thread-1","turnId":"turn-2","replacesTurnId":"turn-1","status":"started"}},

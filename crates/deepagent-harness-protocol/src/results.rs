@@ -162,6 +162,20 @@ pub fn validate_control_result(
         control_result_identity(value, method, field, expected).map(|_| ())
     };
     match request {
+        HarnessRequest::ThreadList(request) if request.archived.is_some() => {
+            let expected = request.archived.expect("explicit archive view");
+            let rows = value.get("threads").and_then(Value::as_array);
+            require(
+                "thread/list",
+                "threads",
+                "explicit active/archived view with matching markers",
+                value.get("threads"),
+                rows.is_some_and(|rows| {
+                    rows.iter()
+                        .all(|row| row.get("archived").and_then(Value::as_bool) == Some(expected))
+                }),
+            )
+        }
         HarnessRequest::ThreadStart(_) => {
             id("thread/start", "threadId", None)?;
             let _: ThreadLifecycleResult = decode("thread/start", value)?;
@@ -187,6 +201,17 @@ pub fn validate_control_result(
                 "true",
                 value.get("archived"),
                 result.archived,
+            )
+        }
+        HarnessRequest::ThreadUnarchive(request) => {
+            id("thread/unarchive", "threadId", Some(&request.thread_id))?;
+            let result: ThreadArchiveResult = decode("thread/unarchive", value)?;
+            require(
+                "thread/unarchive",
+                "archived",
+                "false",
+                value.get("archived"),
+                !result.archived,
             )
         }
         HarnessRequest::TurnStart(request) => {

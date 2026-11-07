@@ -24,6 +24,17 @@
 //! `RecvError::Closed` is a transport fact, not proof of run completion/failure;
 //! reconnect explicitly and reconcile durable state before retrying mutations.
 //!
+//! Archive uses the existing shared AppCore activity/control gate: busy owners
+//! are refused, not cancelled. `thread_list()` selects active identities;
+//! `thread_list_with_options(ThreadListRequest { archived: Some(true) })` selects
+//! only archived ones. Explicit views require matching archive projection flags.
+//! `thread_unarchive` restores visibility/admission eligibility without loading
+//! or replaying a thread; call `thread_resume` afterwards. Archived identities
+//! cannot start/resume/steer/fork even through a stale host, while `thread_read`
+//! stays read-only and available. No new event store or migration is involved.
+//! `HarnessRequest` gains an additive v1 unarchive variant; `ThreadListRequest`
+//! literals need `archived` (or `Default`) and exhaustive matches need updating.
+//!
 //! ## Example
 //!
 //! ```no_run

@@ -1,6 +1,6 @@
 //! Archived conversation index for the app shell.
 //!
-//! Archiving is an app-level visibility state, not an event-log mutation. The
+//! Archiving is a durable visibility/admission state, not an event-log mutation. The
 //! session event stream stays append-only and replayable; this service stores a
 //! small document-store index of session ids hidden from the live sidebar.
 
@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use deepagent_core::clock::{Clock, SystemClock};
 use deepagent_core::error::{CoreError, Result};
+use deepagent_core::id::SessionId;
 use deepagent_persistence::document_store::DocumentStore;
 use deepagent_persistence::event_store::EventStore;
 use deepagent_persistence::Database;
@@ -18,6 +19,10 @@ use crate::dto::{ArchiveProjectResultDto, ArchivedConversationDto};
 use crate::project_service::folder_name;
 
 const ARCHIVE_COLLECTION: &str = "archived_conversations";
+
+#[cfg(test)]
+#[path = "archive_lifecycle_tests.rs"]
+mod lifecycle_tests;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ArchivedConversationRecord {
@@ -58,52 +63,64 @@ impl ArchiveService {
 
     /// Session ids currently hidden from the live sidebar.
     pub fn archived_ids(&self) -> Result<HashSet<String>> {
-        Ok(self.list()?.into_iter().map(|a| a.session_id).collect())
+        // A corrupt display body must not reopen a hidden execution identity.
+        Ok(DocumentStore::new(&self.db)
+            .list(ARCHIVE_COLLECTION)?
+            .into_iter()
+            .map(|document| document.id)
+            .collect())
     }
 
     /// Whether `session_id` is archived.
     pub fn is_archived(&self, session_id: &str) -> Result<bool> {
+        let session_id = session_id.parse::<SessionId>()?.to_string();
         Ok(DocumentStore::new(&self.db)
-            .get(ARCHIVE_COLLECTION, session_id)?
+            .get(ARCHIVE_COLLECTION, &session_id)?
             .is_some())
+    }
+
+    /// Read the one durable state, including for stale loaded host views.
+    pub fn require_active(&self, session_id: &str) -> Result<()> {
+        if self.is_archived(session_id)? {
+            return Err(CoreError::SessionArchived);
+        }
+        Ok(())
+    }
+
+    /// Share the existing admission/history gate: archive publication cannot
+    /// pass between this check and the lifetime of the admitted owner.
+    pub fn active_guard(
+        &self,
+        session_id: SessionId,
+    ) -> Result<deepagent_persistence::event_store::SessionActivityGuard> {
+        let guard = EventStore::new(&self.db).acquire_activity(session_id)?;
+        self.require_active(&session_id.to_string())?;
+        Ok(guard)
     }
 
     /// Archive every non-archived conversation under `project_path`.
     pub fn archive_project(&self, project_path: &str) -> Result<ArchiveProjectResultDto> {
-        let now = SystemClock.now().as_millis();
         let event_store = EventStore::new(&self.db);
-        let doc_store = DocumentStore::new(&self.db);
         let existing = self.archived_ids()?;
         let project_name = folder_name(project_path);
         let mut archived_count = 0u32;
-
-        for session in event_store.list_sessions()? {
-            if session.project.as_deref() != Some(project_path) {
-                continue;
-            }
-            let session_id = session.id.to_string();
-            if existing.contains(&session_id) {
-                continue;
-            }
-
-            let record = ArchivedConversationRecord {
-                session_id: session_id.clone(),
-                title: session.title.clone(),
-                project: Some(project_name.clone()),
-                project_path: Some(project_path.to_string()),
-                archived_at: now,
-                deleted_at: None,
-                updated_at: session.updated_at.as_millis(),
-            };
-            let body = serde_json::to_string(&record)?;
-            doc_store.put(
-                ARCHIVE_COLLECTION,
-                &session_id,
-                &body,
-                None,
-                SystemClock.now(),
-            )?;
-            archived_count += 1;
+        let mut sessions = event_store
+            .list_sessions()?
+            .into_iter()
+            .filter(|session| {
+                session.project.as_deref() == Some(project_path)
+                    && !existing.contains(&session.id.to_string())
+            })
+            .collect::<Vec<_>>();
+        sessions.sort_by_key(|session| session.id);
+        // Preflight every selected owner before publishing any marker. Batch
+        // storage failure retains the existing partial-write error contract.
+        let _controls = sessions
+            .iter()
+            .map(|session| event_store.begin_control(session.id))
+            .collect::<Result<Vec<_>>>()?;
+        for session in sessions {
+            archived_count += u32::from(self.archive_in_control(session)?);
         }
 
         Ok(ArchiveProjectResultDto {
@@ -115,15 +132,23 @@ impl ArchiveService {
 
     /// Archive one conversation by session id. Returns whether it was newly archived.
     pub fn archive_session(&self, session_id: &str) -> Result<bool> {
-        if self.is_archived(session_id)? {
+        let id = session_id.parse::<SessionId>()?;
+        let store = EventStore::new(&self.db);
+        let _control = store.begin_control(id)?;
+        let session = store
+            .get_session(id)?
+            .ok_or_else(|| CoreError::not_found(format!("session {session_id}")))?;
+        self.archive_in_control(session)
+    }
+
+    fn archive_in_control(
+        &self,
+        session: deepagent_persistence::event_store::SessionRecord,
+    ) -> Result<bool> {
+        let session_id = session.id.to_string();
+        if self.is_archived(&session_id)? {
             return Ok(false);
         }
-
-        let session = EventStore::new(&self.db)
-            .list_sessions()?
-            .into_iter()
-            .find(|session| session.id.to_string() == session_id)
-            .ok_or_else(|| CoreError::not_found(format!("session {session_id}")))?;
 
         let record = ArchivedConversationRecord {
             session_id: session_id.to_string(),
@@ -136,11 +161,12 @@ impl ArchiveService {
         };
         DocumentStore::new(&self.db).put(
             ARCHIVE_COLLECTION,
-            session_id,
+            &session_id,
             &serde_json::to_string(&record)?,
             None,
             SystemClock.now(),
         )?;
+        tracing::info!(%session_id, "idle session archived; new admission requires explicit restore");
         Ok(true)
     }
 
@@ -159,18 +185,21 @@ impl ArchiveService {
 
     /// Restore recycled files first, then remove the archive marker.
     pub fn unarchive_session(&self, session_id: &str) -> Result<bool> {
-        let Some(_) = self.record(session_id)? else {
+        let id = session_id.parse::<SessionId>()?;
+        let session_id = id.to_string();
+        let store = EventStore::new(&self.db);
+        let _control = store.begin_control(id)?;
+        let Some(_) = self.record(&session_id)? else {
             return Ok(false);
         };
-        let id = session_id
-            .parse()
-            .map_err(|error| CoreError::invalid(format!("bad session id: {error}")))?;
-        if !EventStore::new(&self.db).restore_trashed_session(id)? {
+        if !store.restore_trashed_session(id)? {
             return Err(CoreError::not_found(format!(
                 "session files for {session_id} are no longer available"
             )));
         }
-        DocumentStore::new(&self.db).delete(ARCHIVE_COLLECTION, session_id)
+        let changed = DocumentStore::new(&self.db).delete(ARCHIVE_COLLECTION, &session_id)?;
+        tracing::info!(%session_id, changed, "session explicitly unarchived");
+        Ok(changed)
     }
 
     /// Move one archived conversation into the managed recycle area.
