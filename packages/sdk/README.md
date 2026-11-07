@@ -120,6 +120,31 @@ await agent.close();
 `cli-jsonl` is available for one-shot automation through `runJsonl(prompt)`.
 Thread lifecycle and turn control require the stdio app-server transport.
 
+### Fork readiness
+
+A successful v1 `thread/fork` response makes its returned `threadId` immediately
+usable by `turn/start` on that connection, including when the source was not
+loaded after a server restart. No child `thread/resume` is required before its
+first turn. The source is not implicitly loaded and no turn is automatically run.
+The Rust SDK's existing `thread_fork` uses this same contract.
+
+Fork and resume materialize the same durable workspace and explicit configuration;
+fork does not inherit a stale loaded source view. Absent legacy header overrides
+retain resume's existing host/project fallback, not reconstructed historical
+values. Fallible host preparation runs inside AppCore's existing source control,
+before checkpoint restoration or durable child publication. A preparation error
+therefore creates no child. Later publication errors retain the existing workspace
+compensation; only after successful publication is the prepared child installed.
+The existing AppCore `fork_session` entry and wire response fields are unchanged.
+
+Forks are independent sessions, not background subagents. Archiving a source
+forbids another fork but does not archive already created branches. Two deliberate
+successful fork requests create two distinct branches; this is not request-ID
+deduplication. A crash, lost response or timeout can still leave a durable child:
+reconcile `thread/list`/`thread/read` before retrying and explicitly resume it after
+restarting the connection. Process-crash/DB/filesystem atomicity is not expanded
+into a new protocol transaction or automatic replay guarantee.
+
 ### Archive and explicit restore
 
 `archiveThread(threadId)` returns `{ threadId, archived: true }` only after the

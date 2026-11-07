@@ -65,6 +65,134 @@ async fn spawn_server(tag: &str) -> (HarnessProcess, deepagent_harness_sdk::Harn
 }
 
 #[tokio::test]
+async fn h216_real_cold_fork_is_ready_before_resume_and_keeps_durable_configuration() {
+    let Some(bin) = isolated_cli(
+        "h216_real_cold_fork_is_ready_before_resume_and_keeps_durable_configuration",
+        "h216-fork",
+    )
+    .await
+    else {
+        return;
+    };
+    let first_workspace = temp_workspace("h216-host");
+    let project = temp_workspace("h216-project");
+    let first = HarnessProcess::spawn(&bin, &first_workspace).await.unwrap();
+    let client = first.client();
+    client.initialize("h216", "1").await.unwrap();
+    let started = client
+        .thread_start(
+            serde_json::from_value(serde_json::json!({
+                "cwd":project, "permissionProfile":"read_only",
+                "sandboxBackend":"direct", "reasoningEffort":"none"
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let source = started.result()["threadId"].as_str().unwrap().to_owned();
+    let expected = started.result()["configuration"].clone();
+    assert!(first.wait().await.unwrap().success());
+
+    let reopened = HarnessProcess::spawn(&bin, &temp_workspace("h216-other-host"))
+        .await
+        .unwrap();
+    let current = reopened.client();
+    current.initialize("h216-cold", "1").await.unwrap();
+    let forked = current
+        .thread_fork(
+            serde_json::from_value(serde_json::json!({
+                "threadId":source, "atSequence":0
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let child = forked.result()["threadId"].as_str().unwrap().to_owned();
+    assert_ne!(child, source);
+    assert!(matches!(
+        current
+            .turn_start(
+                serde_json::from_value(serde_json::json!({
+                    "threadId":source,"input":"/help"
+                }))
+                .unwrap()
+            )
+            .await,
+        Err(SdkError::Rpc { code: -32003, .. })
+    ));
+    // The actual first child execution has no preceding thread/resume.
+    let mut events = current
+        .turn_start_streamed(
+            serde_json::from_value(serde_json::json!({
+                "threadId":child,"input":"/help"
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut completed = 0;
+    while let Some(event) = tokio::time::timeout(Duration::from_secs(5), events.recv())
+        .await
+        .unwrap()
+        .unwrap()
+    {
+        if matches!(event, HarnessEvent::TurnCompleted { .. }) {
+            completed += 1;
+        }
+    }
+    assert_eq!(completed, 1);
+    let resumed = current
+        .thread_resume(ThreadResumeRequest {
+            thread_id: child.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(resumed.result()["configuration"], expected);
+    let page = current
+        .thread_read(
+            serde_json::from_value(serde_json::json!({
+                "threadId":child,"maxBytes":1048576
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let runs = page.result()["runEvents"].as_array().unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0]["terminalKind"], "succeeded");
+    assert_eq!(
+        runs[0]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["event_type"] == "run_terminal")
+            .count(),
+        1
+    );
+    let source_page = current
+        .thread_read(
+            serde_json::from_value(serde_json::json!({
+                "threadId":source
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(source_page.result()["runEvents"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        current.thread_list().await.unwrap().result()["threads"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert!(reopened.wait().await.unwrap().success());
+}
+
+#[tokio::test]
 async fn h215_real_archive_unarchive_is_durable_and_restored_thread_requires_explicit_resume() {
     let Some(bin) = isolated_cli(
         "h215_real_archive_unarchive_is_durable_and_restored_thread_requires_explicit_resume",

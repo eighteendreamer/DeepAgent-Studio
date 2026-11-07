@@ -43,6 +43,9 @@ use connection::run_stdio_with_io;
 #[path = "app_server/archive_tests.rs"]
 mod archive_tests;
 #[cfg(test)]
+#[path = "app_server/fork_tests.rs"]
+mod fork_tests;
+#[cfg(test)]
 #[path = "app_server/history_page_tests.rs"]
 mod history_page_tests;
 #[cfg(test)]
@@ -435,6 +438,31 @@ impl ServerState {
         )
     }
 
+    // Resume and fork materialize the same pinned configuration. Their caller
+    // holds the existing activity/control guard while reading this source.
+    fn prepare_thread(
+        &self,
+        record: deepagent_persistence::event_store::SessionRecord,
+    ) -> Result<(ThreadState, Option<SessionExecutionConfig>), CoreError> {
+        let configuration = EventStore::new(&self.database).session_execution_config(record.id)?;
+        let workspace = record
+            .project
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.workspace.clone());
+        let overrides = configuration
+            .as_ref()
+            .map(|config| config.overrides.clone())
+            .unwrap_or_default();
+        Ok((
+            ThreadState {
+                chat: self.base_chat.for_workspace(workspace.clone()),
+                workspace,
+                overrides,
+            },
+            configuration,
+        ))
+    }
+
     fn thread_resume(
         &mut self,
         id: serde_json::Value,
@@ -494,12 +522,8 @@ impl ServerState {
                 )
             }
         }
-        let workspace = record
-            .project
-            .map(PathBuf::from)
-            .unwrap_or_else(|| self.workspace.clone());
-        let configuration = match store.session_execution_config(session_id) {
-            Ok(configuration) => configuration,
+        let (thread, configuration) = match self.prepare_thread(record) {
+            Ok(prepared) => prepared,
             Err(error) => {
                 return (
                     RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
@@ -507,18 +531,8 @@ impl ServerState {
                 )
             }
         };
-        let overrides = configuration
-            .as_ref()
-            .map(|config| config.overrides.clone())
-            .unwrap_or_default();
-        self.threads.insert(
-            params.thread_id.clone(),
-            ThreadState {
-                chat: self.base_chat.for_workspace(workspace.clone()),
-                workspace: workspace.clone(),
-                overrides,
-            },
-        );
+        let workspace = thread.workspace.clone();
+        self.threads.insert(params.thread_id.clone(), thread);
         (
             RpcResponse::success(
                 id,
@@ -639,9 +653,13 @@ impl ServerState {
             }
         };
         let at_sequence = params.at_sequence.unwrap_or(count - 1);
-        let result = match AppService::from_shared(self.database.clone())
-            .fork_session(&params.thread_id, at_sequence)
-        {
+        let (result, thread) = match AppService::from_shared(self.database.clone())
+            .fork_session_prepared(&params.thread_id, at_sequence, || {
+                let record = store
+                    .get_session(source_id)?
+                    .ok_or_else(|| CoreError::not_found("fork source"))?;
+                self.prepare_thread(record).map(|(thread, _)| thread)
+            }) {
             Ok(result) => result,
             Err(error) => {
                 let code = match &error {
@@ -652,17 +670,11 @@ impl ServerState {
                 return (RpcResponse::error(id, code, error.to_string()), None);
             }
         };
-        let source = self.threads.get(&params.thread_id).cloned();
-        if let Some(source) = source {
-            self.threads.insert(
-                result.new_session_id.clone(),
-                ThreadState {
-                    chat: source.chat,
-                    workspace: source.workspace,
-                    overrides: source.overrides,
-                },
-            );
-        }
+        // All fallible preparation and durable publication completed before
+        // this infallible map install. Success is independent of source warmth.
+        self.threads.insert(result.new_session_id.clone(), thread);
+        tracing::info!(source_thread_id = %result.source_session_id,
+            thread_id = %result.new_session_id, "fork published and loaded");
         (
             RpcResponse::success(
                 id,
@@ -2022,9 +2034,8 @@ mod tests {
         assert_ne!(forked.result()["threadId"], thread_id);
     }
 
-    #[test]
-    #[ignore = "audit H-216: a successful cold thread fork must be ready for turn/start"]
-    fn audit_cold_thread_fork_is_loaded_for_the_next_turn() {
+    #[tokio::test]
+    async fn audit_cold_thread_fork_is_loaded_for_the_next_turn() {
         let temporary = tempfile::tempdir().unwrap();
         let workspace = temporary.path().join("workspace");
         std::fs::create_dir(&workspace).unwrap();
@@ -2061,10 +2072,22 @@ mod tests {
             rpc_request(
                 3,
                 "turn/start",
-                serde_json::json!({"threadId": forked_thread_id, "input": "continue the fork"}),
+                serde_json::json!({"threadId": forked_thread_id, "input": "/help"}),
             ),
             None,
         );
+        let launch_created = launch.is_some();
+        let state = Arc::new(Mutex::new(restarted));
+        if let Some(launch) = launch {
+            // Once readiness is fixed this is a real admitted owner. Complete
+            // the local command before the resume/start positive control;
+            // another concurrent normal turn must still be refused as busy.
+            let worker = complete_turn_dispatch(state.clone(), Arc::new(|_| {}), launch, Ok(()))
+                .await
+                .unwrap();
+            worker.await.unwrap();
+        }
+        let mut restarted = state.lock().unwrap();
         let resumed = restarted.handle_request_for_test(rpc_request(
             4,
             "thread/resume",
@@ -2082,7 +2105,7 @@ mod tests {
             "cold-fork audit: fork_success={} fork_loaded={fork_loaded} turn_success={} launch={} resume_success={} resumed_turn_success={} resumed_launch={}",
             forked.is_success(),
             turn.is_success(),
-            launch.is_some(),
+            launch_created,
             resumed.is_success(),
             turn_after_resume.is_success(),
             launch_after_resume.is_some()
@@ -2094,7 +2117,7 @@ mod tests {
             "explicitly resuming the durable fork should make the positive control runnable"
         );
         assert!(
-            fork_loaded && turn.is_success() && launch.is_some(),
+            fork_loaded && turn.is_success() && launch_created,
             "thread/fork returned success but the new thread was not ready for turn/start"
         );
     }

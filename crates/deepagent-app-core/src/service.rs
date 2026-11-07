@@ -31,6 +31,10 @@ use crate::dto::{
 use crate::host_lock::{self, HostRole};
 use crate::{ArchiveService, ProjectService, SessionStateService};
 
+#[cfg(test)]
+#[path = "fork_preparation_tests.rs"]
+mod fork_preparation_tests;
+
 /// Elect this process as the data root's primary host, or mark it standby.
 ///
 /// A lock failure is reported and treated as primary for compatibility. This
@@ -960,6 +964,20 @@ impl AppService {
     /// copies events `0..=at_seq` from the source. The source event log is left
     /// untouched; the workspace is stateful and follows the fork point.
     pub fn fork_session(&self, session_id: &str, at_seq: u64) -> Result<ForkResultDto> {
+        self.fork_session_prepared(session_id, at_seq, || Ok(()))
+            .map(|(result, _)| result)
+    }
+
+    /// Stage fallible host readiness under the same source control as fork.
+    /// Preparation runs before checkpoint restoration or child publication;
+    /// callers only install the returned local state after this returns Ok.
+    /// The callback must not mutate history or acquire another control guard.
+    pub fn fork_session_prepared<T>(
+        &self,
+        session_id: &str,
+        at_seq: u64,
+        prepare: impl FnOnce() -> Result<T>,
+    ) -> Result<(ForkResultDto, T)> {
         let id = SessionId::from_str(session_id)
             .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
         // Fork also restores this workspace. Keep the same exclusive scope
@@ -970,15 +988,19 @@ impl AppService {
         // before checkpoint restoration or durable child publication.
         ArchiveService::new(self.db.clone()).require_active(&id.to_string())?;
         let at_seq = store.resolve_branch_sequence(id, at_seq)?;
+        let prepared = prepare()?;
         self.restore_checkpoints_after(session_id, at_seq, |restored_paths| {
             let new_id = SessionId::new();
             control.fork_session(new_id, at_seq, SystemClock.now())?;
-            Ok(ForkResultDto {
-                new_session_id: new_id.to_string(),
-                source_session_id: session_id.to_string(),
-                forked_at: at_seq,
-                restored_paths,
-            })
+            Ok((
+                ForkResultDto {
+                    new_session_id: new_id.to_string(),
+                    source_session_id: session_id.to_string(),
+                    forked_at: at_seq,
+                    restored_paths,
+                },
+                prepared,
+            ))
         })
     }
 
