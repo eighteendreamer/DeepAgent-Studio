@@ -2750,6 +2750,8 @@ H54状态仍为E02本机范围历史已修复跳过；该功能复核不会消�
 
 ### H-55：简单思考模式直接携带 Responses 的 none 进入 Chat 适配器，本地校验拒绝整个运行
 
+**当前状态（2026-11-08）：历史已修复跳过。历史0aa4fd06已完成None→Chat禁用映射及显式关闭不被默认值覆盖；本轮只补默认公开入口、重试/备用和取消回归，实测与未验边界见E-H55-01～02，无新增生产修复。**
+
 **级别：中（P2）；范围：使用公开 `ModelConfig::deepseek_chat` / `WireMode::ChatCompletions` 的 ModelAgent，且选择 ThinkingDepth::Simple。** 当前生产 `select_run_model` 和 `from_catalog` 默认使用 Responses，搜索未发现桌面/CLI 正式组装器选择 ChatCompletions；因此不能据此解释当前默认桌面简单模式失败。本项是已提供适配器的条件性兼容缺陷。
 
 - 2026-10-24 边界复核：`model_runtime.rs::select_run_model()` 明确设置 `WireMode::Responses`；对生产代码排除 tests 后搜索，没有发现 Harness 使用 `ModelConfig::deepseek_chat` 或将 ChatCompletions 设为运行协议的调用点。系统视觉在 `vision_provider_service.rs` 自行构造 `/chat/completions` 请求；无限画布在 `canvas_provider_service.rs`/`canvas_model_gateway.rs` 使用自己的 provider 协议与 serializer。这两条 Chat 链路不经过 Harness 的 `ModelClient`。因此 H-55 只描述公开 Chat adapter 的条件性缺陷，不要求也不应据此改写 Harness 的 Responses wire。Harness 的禁用思考值应按 DeepSeek Responses endpoint 的 `reasoning.effort: "none"` 语义核验。
@@ -2760,6 +2762,56 @@ H54状态仍为E02本机范围历史已修复跳过；该功能复核不会消�
 - 已确认后果：使用这个公开 adapter 的调用方无法运行简单模式，连最短普通回复也不会发出；中/深档正常不能证明该 route 完整可用。这与 H-05 的历史工具投影分裂不同：此处无历史工具，仅第一轮请求就失败。也不同于 H-54 的配置覆盖：此处没有任何显式覆盖或客户端默认值。
 - DeepSeek Harness `packages/llm/llm-pi-ai/tests/adapter.spec.ts` 的 DeepSeek thinkingFormat 用例对 high→off 连续发请求，明确要求 off 产生 `thinking: { type: 'disabled' }` 并不携带 reasoning_effort；其其他 provider 映射可声明 off→none，体现关闭语义按适配器转换，而非把所有协议的字符串视为相同。`llm-deepseek/src/serialize.ts` 的 Messages route 也将统一 effort off 映射为 disabled，但字段布局不同，不可直接复制。这里只对照参考源码/测试，未运行参考项目。
 - 修复应让既有 thinking 配置携带明确的启用状态与有效 effort，由 provider adapter 生成自己支持的字段并在同一边界验证；关闭模式、缺省和显式禁用不能都退化为一个 Option::None。覆盖两协议三档、显式 off 与默认高强度并存、运行取消及重试；后一个默认值覆盖疑点本轮未动态验证，不列为独立已确认结论。本轮只新增审计测试与报告，没有切换生产默认协议或修改 serializer。
+
+
+**E-H55-01（2026-11-08，历史修复复核，尚待独立验收）**：基线0375b300792e9522ff268e7a7240541517e1f8a7，tracked干净/无暂存，六项原untracked只列名称，不读改或提交。已核对原H55、306唯一台账、公开ModelAgent/Agent两入口、ModelClient及Responses→Chat转换、Chat字段serializer/validate/defaults、原AttemptTransport、Cargo/rustfmt/CI和当前共享Harness装配边界；本项仍仅公开Chat adapter条件性范围，不切换Harness默认Responses，不归并H54/H05或Chat工具选择等独立问题。
+
+`0aa4fd06de37a1f085daf999fd687ea23973504a`（2026-10-23，merge-base已证是HEAD祖先）的实际diff已将旧字符串effort改为ReasoningEffort：None保留显式关闭状态，Chat builder映射thinking.disabled，serializer省略reasoning_effort，validator接受该组合；apply_chat_defaults仅在effort与thinking均缺省时才填默认，with_thinking(false)不再被high重开。该提交把原`audit_simple_depth_maps_to_chat_thinking_disabled`重命名为`reasoning_effort_none_maps_to_chat_thinking_disabled`并移除ignore，扩为两协议×四effort。旧名字已不存在，不执行旧过滤器拿0测试冒充通过，也不恢复已移除的off字符串API。
+
+修改测试前，复核本轮5份源hash及上轮未变生产的原生Runtime测试binary SHA256=7C8653D9279276E43173269574B66E1A84B87901AA1ED486D46AEA67CB3029ED，仅只读执行该现有binary（不在H54拒绝根写入、构建或清理）；命令`& G:\Code_Warehouse\DeepAgent-Studio\target\h54-repair-20261108\debug\deps\deepagent_runtime-6105b647da497c97.exe model_agent::tests::reasoning_effort_none_maps_to_chat_thinking_disabled --exact --nocapture`实际exit0、1/0/0、0.150秒。8组合均completed=true/transport_calls=1：Responses的none/low/high/max留在reasoning.effort；Chat none为thinking.disabled且完全不发effort，其余为enabled+low/high/max。原审计Chat Simple零请求/unsupported none失败保留；当前原复现不成立已查明是历史根因修复，不能凭旧标题再改生产。
+
+本轮仅新增默认integration测试h55_thinking_adapter.rs，直接调用公开ModelAgent/ModelClient，计划独立验证两协议/四档在普通与cancel-aware入口、正常/429重试/529备用中的wire，以及未配置与显式None、Chat toggle(false)在high默认下的区别、发送前/真实在途取消；不接真实服务、内网、凭据或用户数据。新构建/日志/合成HOME与TEMP独立置于G:\Code_Warehouse\DeepAgent-Studio\target\h55-repair-20261108和G:\h55-fixtures-20261108，清凭据/代理环境、managed指向合成不存在目录、离线读工具链缓存，仅外层Cargo显式target，子进程不继承CARGO_TARGET_DIR。门禁正在运行，尚未把新测试或历史跳过记为已验收。H54及全部旧拒绝清理根不写入/不重试清理；本项0新增成果，200验收/27历史跳过/9归并/3撤销，66待修+H55复核中，共67未关含H180（实际66）。本项验收/双文/提交/清理余约1–4有效小时仅作规划，冷编译/策略/环境等待另计；总余170–430低置信有效小时，不作精确完工承诺。
+
+
+
+**E-H55-02（2026-11-08，历史已修复跳过的独立验收，仅限本机离线公开adapter）**：E01原probe当前已真实1/0，其不再复现的原因由`0aa4fd06de37a1f085daf999fd687ea23973504a`历史diff、HEAD祖先关系、当前代码与本轮新编译门禁共同确认，不凭旧名字过滤零用例或默认ignore跳过宣称修复。本轮没有修改生产文件；原H55失败（Chat Simple在transport前unsupported none、请求0）保留，历史原probe改名/移除ignore的事实保留，不恢复旧off字符串API。本轮是历史修复补验，不计新生产fix、归并或撤销。
+
+新增`crates/deepagent-runtime/tests/h55_thinking_adapter.rs`默认4测试，复用公开ModelAgent/Agent、ModelClient两种stream入口、Chat builder/serializer与正式取消实现，底层HttpTransport仅记录body并回合成SSE：
+
+- 两协议×四effort×正常/合成429/合成529×普通/cancel-aware共48组ModelAgent，全部得到真实CompleteItems、正文H55 complete；第一请求primary，429第二次仍primary、529第二次fallback；每attempt的effort映射保持。高默认不会覆盖显式None；Chat None必须thinking.disabled且字段reasoning_effort真正省略，非null；Responses None留在reasoning.effort，不含Chat字段。对每次真实TransportRequest还核对endpoint后缀，没有实际HTTP请求。
+- 8组公开ResponseRequest入口区分省略（使用high缺省）与显式None；6组直接ChatCompletionRequest入口区分省略、None和with_thinking(false)，普通与cancel-aware一致。没有手动调用私有转换函数，也没有新增第二套配置或取消链。
+- 两协议各做发送前已取消（0次transport）和真实在途取消（Notify确认stream已开始后置正式AtomicBool，返回cancelled、仅1请求、无重试）。3秒是测试收敛上界，不称生产SLA；若超时先abort并await本测试task，避免失败fixture遗留任务。这里只证明本地future取消边界，不外推真实远端中断/账单。
+
+总66组情景装在4个默认测试中，不膨胀为66项测试或修复。原默认映射probe在本轮独立target重新编译并显式执行1/0/0（8组合），完整Runtime又执行它及新4测试、原正常重试/工具/记忆/调度与持久化消费方。完整Models默认目标验证现有公开请求/serializer/协议终态等，不表示任何ignored审计问题已修。
+
+实际命令由小怪本地PowerShell串行执行，`$Target='G:\Code_Warehouse\DeepAgent-Studio\target\h55-repair-20261108'`；隔离和边界沿E01，6份最终源SHA256每组前检查，未并行修改源码或共用其他轮target。首次新测试直接4/0/0、无修前新产品红测（生产早已修复）；完整默认目标未用--include-ignored，实际忽略明列，不把它们当通过。
+
+| 实际命令（PowerShell仓库根） | exit；通过/失败/忽略 | 墙钟秒（含编译） |
+|---|---|---|
+| `cargo test --target-dir $Target -p deepagent-runtime --test h55_thinking_adapter --offline -j 2 -- --nocapture --test-threads=2` | 0；4/0/0；1个主harness结果 | 138.675 |
+| `cargo test --target-dir $Target -p deepagent-runtime --lib --offline -j 2 -- model_agent::tests::reasoning_effort_none_maps_to_chat_thinking_disabled --exact --nocapture` | 0；1/0/0；1个主harness结果 | 44.961 |
+| `cargo test --target-dir $Target -p deepagent-runtime --offline -j 2 -- --quiet --test-threads=2` | 0；476/0/8；7个主harness结果 | 95.390 |
+| `cargo test --target-dir $Target -p deepagent-models --offline -j 2 -- --quiet --test-threads=2` | 0；207/0/25；18个主harness结果 | 84.136 |
+| `cargo clippy --target-dir $Target -p deepagent-runtime --test h55_thinking_adapter --no-deps --offline -j 2 -- -D warnings` | 101；既有lib lint阻断（详下文） | 54.734 |
+| `cargo clippy --target-dir $Target -p deepagent-models --all-targets --no-deps --offline -j 2 -- -D warnings` | 101；既有lib lint阻断（详下文） | 10.221 |
+| `cargo fmt --all -- --check` | 0；格式通过 | 7.983 |
+
+去掉独立focused与original重复后，两个完整crate共25个主harness结果（Runtime7、Models18）：683通过/0失败/33忽略。Runtime为lib457/0/7、e2e_stabilization5/0/0、新adapter4/0/0、schedule_audit3/0/0、delivery6/0/0、tokenizer1/0/1、doc0；Models为lib157/0/14，其余integration50/0/11及doc0。33忽略没有执行，不是全workspace仅剩33未验；原probe和新4测试均实际默认运行且零忽略。Runtime完整e2e53.78秒只是实际墙钟，不把测试场景/循环次数当修复数量。
+
+严格lint真实未通过：Runtime lib model_agent.rs:298 Usage clone_on_copy与workflow/canvas.rs:32 derivable_impls两项（exit101）；Models lib及lib-test同一client.rs:453 Option<ReasoningEffort> clone_on_copy一项（exit101），未改文件与基线逐份hash一致，未加allow/放宽-D warnings/绕hook。Runtime strict在lib阶段停止，不能称新integration测试已完成严格lint。fmt实际exit0，双文内容和git diff --check随后再核对。不以这些旧问题为由修改其他H或虚报全绿。
+
+兼容与未验：本轮只有一份本项新增测试及双文，无生产代码/接口/DTO/协议/默认wire/权限/沙箱/SQL/依赖变化，不新增迁移，不影响现有用户配置。历史统一契约早已是none/low/high/max；本轮不接受旧off等别名也不改变原API。普通Harness仍默认Responses，视觉/画布其他Chat链未因本项改写。无生产或跨层契约改动，未重复跑全workspace、CLI生产构建、Desktop pnpm build/Tauri/UI/截图；此次真实跨crate adapter和默认消费方已执行，但不能替代完整系统验收。未执行http feature套件、真实provider/远端限流或取消、内网/凭据/用户数据、其他OS、全部ignored及线上质量/费用测量。H53原全仓4987/4/189与独立DACL失败、H54旧lint及清理残余均仍存在，不被此次功能历史跳过消除。
+
+本轮新增生产修复0、历史已修复跳过1、归并/撤销0；306唯一台账当前200验收、28历史跳过、9归并、3撤销、66待修（含授权跳过H180，实际65有效待处理），无修复中或功能阻塞项。H55按本节本机范围关闭，综合结论中关于H55仍失效的文字属历史审计记录，以此最新验收限定为准；整个goal未完成。下一优先复核H30的SSE未闭合终态误判成功（终态完整性），H257非法UTF8为不同前置根因，仍独立，不为凑数量合并。H55有效修复/验收余0，清理与独立提交随后补记。全余170–430低置信有效小时仍按剩余跨层/执行/持久化/消费边界保守规划，65项复杂度不同、没有独立有效工时计量，不按本轮墙钟机械扣减；设备/依赖/编译/策略/环境等待另计，暂无可靠总等待区间，不承诺精确日期。
+
+清理前证据：原probe日志SHA256=60C24673ABD1FC498DFDFEA8E0B6FD2F3F16997BF713A3A73354A1A6B6E240F2；最终结果JSON SHA256=F3FF3D5BB9DECBFB7481E476F794819F22524A3F3C14FFDAC40A7F1940A08A8D；最终manifest SHA256=70B7E228942E2D506ACB3195D08240DD0173FCD068A4A0E3ED331C8526B76EF8。测试binary SHA256：`h55_thinking_adapter-12312331955fc40b.exe`=`20357142A57E08D0D6239F8020F99C6485ADAD6FB60F028F2BEF66BFC033EEE9`；`deepagent_runtime-6105b647da497c97.exe`=`5D56E39CBE065EA86F9A9DAA7C778B4A24205D47BE2D7FDC0C915511CD08DDD6`；`deepagent_models-e8797762959682b3.exe`=`4910CDF5F7621758CF34869CE3FA1FC7CA0F6EEF7E8BCA3158BB6702B31508BF`。最终源SHA256：`crates/deepagent-runtime/src/model_agent.rs`=`6C18433A38684AD93F9D97B3EB7E549BCF6434141112F5C2BC889FC4E369F59F`；`crates/deepagent-models/src/client.rs`=`E8078176393A5B1F212143323A69D6D13D692423C6BA7941ACA988A2E5B5F387`；`crates/deepagent-models/src/chat.rs`=`C28321E0BC3782EB0C962F5505888BBD7A441943C71ECEF27578EB5119BEB798`；`crates/deepagent-models/src/chat_completions.rs`=`FFEF96476A5F54B7083D5137854980FD8C30BC6A831AF699EBF86B30C79591A1`；`crates/deepagent-models/src/transport.rs`=`40195DC473B039E620527C506D94262123DED27AE0D3090EFD96DA3F2B23BE3C`；`crates/deepagent-runtime/tests/h55_thinking_adapter.rs`=`660B0A9B216E042418552EB07552DA152112D8406B04BAE3FB6324CBF6EE2CF1`。原失败摘录/新wire/实际命令和结果已落双文，日志/binary/manifest/一次性脚本不提交，验收后仅按明确归属清理。
+
+
+**E-H55-03（2026-11-08，验收后清理启动前被本机策略拒绝）**：E02实测结果、原失败摘录、命令和冻结hash先写双文，再核验两个本轮根的绝对路径及所有祖先、逐目录不跟随链接枚举。G:\Code_Warehouse\DeepAgent-Studio\target\h55-repair-20261108为3390文件/606目录/3,446,255,366逻辑字节；G:\h55-fixtures-20261108为4文件/26目录/28,460逻辑字节；两树及祖先零reparse、枚举零错误，无存活本轮Cargo/rustc/clippy/测试/Node进程。C盘Temp只列h55目录未发现，不动C工具链缓存；本轮未写入H54或任何旧拒绝根，六项原untracked仅列名称不读改。计数早于新增清理预检JSON，不当作精确物理占用。
+
+本机cargo clean --help已查证--target-dir/--dry-run。拟先dry-run、再正式cargo clean，成功后才用PowerShell Remove-Item -LiteralPath清理两个已确认绝对根，任一步报错立即停止。整个命令在CreateProcess前被Rejected/blocked by policy，脚本完全未启动；dry-run/clean/Remove-Item均未执行，无实际exit、没有删除任何文件。立即停止，不拆分命令/重写参数、换shell或工具、改ACL/提权绕过；只读检查两根仍存在。本轮约3.45GB逻辑长度可再生产物保留，不声称已回收物理空间或清理完成，也不把H54等旧残余计入本轮。
+
+H55仅按E02功能范围历史跳过，清理策略阻塞、全仓旧失败与strict lint债务仍保留。当前200验收、28历史跳过、9归并、3撤销、66待修含H180（实际65）；功能本项余0，清理待环境决策；整体goal继续active。下一准备H30的SSE终态完整性，本轮不改其生产；总余170–430低置信有效小时，设备/依赖/编译/策略/环境等待另计且无法可靠量化。后续只提交本项integration测试及双文，不提交任何target、日志、脚本或合成夹具。
 
 ### H-56：宿主就绪快照合并未检查工具重名，已连接 MCP 可让普通聊天在请求前整体失败
 
