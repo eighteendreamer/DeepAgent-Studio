@@ -18,6 +18,22 @@ pub struct Fixture {
 
 impl Fixture {
     pub async fn start(chunks: Vec<Vec<u8>>) -> Self {
+        Self::start_timed(
+            chunks
+                .into_iter()
+                .map(|chunk| (Duration::ZERO, chunk))
+                .collect(),
+            Duration::ZERO,
+            200,
+        )
+        .await
+    }
+
+    pub async fn start_timed(
+        chunks: Vec<(Duration, Vec<u8>)>,
+        header_delay: Duration,
+        status: u16,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base_url = format!("http://{}", listener.local_addr().unwrap());
         let (stop, mut stopped) = oneshot::channel();
@@ -34,12 +50,19 @@ impl Fixture {
                         .await
                         .expect("fixture request deadline");
                 received.lock().unwrap().push(request);
-                if socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n").await.is_err() {
+                if header_delay > Duration::ZERO {
+                    tokio::time::sleep(header_delay).await;
+                }
+                let headers = format!("HTTP/1.1 {status} Synthetic\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
+                if socket.write_all(headers.as_bytes()).await.is_err() {
                     continue;
                 }
-                for chunk in &chunks {
+                for (delay, chunk) in &chunks {
                     if chunk.is_empty() {
                         continue;
+                    }
+                    if *delay > Duration::ZERO {
+                        tokio::time::sleep(*delay).await;
                     }
                     let header = format!("{:X}\r\n", chunk.len());
                     if socket.write_all(header.as_bytes()).await.is_err()
@@ -112,7 +135,11 @@ async fn read_request(socket: &mut TcpStream) -> Value {
             assert!(
                 headers.starts_with("POST /responses HTTP/1.1")
                     || headers.starts_with("POST /chat/completions HTTP/1.1")
+                    || headers.starts_with("GET /models HTTP/1.1")
             );
+            if headers.starts_with("GET /models HTTP/1.1") {
+                return Value::Null;
+            }
             let size: usize = headers
                 .lines()
                 .filter_map(|line| line.split_once(':'))

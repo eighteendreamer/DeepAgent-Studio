@@ -5162,6 +5162,9 @@ workspace唯一失败仍为未修改H-306的 canvas_prompt::tests::every_node_ki
 
 ### H-131：固定总时限会截断仍在持续输出的 provider stream
 
+**当前状态（2026-11-08）：已修复并验收，限E-H131-03所列Windows本机范围。** 原probe默认真实通过、两协议生命周期及正式Host/SQLite冷重开通过；全仓三个既有失败与严格lint旧阻断保留，不称系统全绿。原失败证据不删除，详E-H131-01～03。
+
+
 **级别：条件性中（P2）；触发条件：单次流式请求持续超过 300 秒，但每个 SSE 间隔仍小于 45 秒 idle timeout。** 普通聊天生成预算由 `ThinkingDepth` 设为 8,192 / 16,384 / 32,768 tokens；因此该风险只在慢速、长输出请求中触发，不代表 DeepSeek 的 384K provider 上限直接进入普通聊天。
 
 - 生产路径：`ReqwestTransport::stream()` 和 `stream_cancelled()` 都在 `tokio::time::timeout(self.timeouts.total, stream_inner(...))` 内运行；默认 `total=300s`、`idle=45s`。即使收到进展事件，外层总计时器也不会重置，最终返回 `model stream total deadline exceeded`。ModelAgent 每次请求经 `with_thinking_depth()` 设置输出上限；Medium 默认 16,384 tokens，Deep 为 32,768 tokens。超过 300 秒所需的平均速率分别约为 54.6 和 109.2 tokens/秒。
@@ -5169,6 +5172,43 @@ workspace唯一失败仍为未修改H-306的 canvas_prompt::tests::every_node_ki
 - 成熟实现对照：DeepSeek Harness `packages/llm/llm-deepseek/src/adapter.ts` 与 `packages/llm/llm-pi-ai/src/adapter.ts` 使用可取消的 idle watchdog 包裹 async iterator，每次 `next()` 期间监测无活动时限，不因累计生成时间到期而主动中止活跃流。此处只引用其流生命周期实现，不声称请求预算或所有 provider adapter 完全相同。
 - 桌面显示与恢复边界：`App.tsx::appendDelta()` 会把 `content_delta` 立即写入内存 transcript；`run_failed` 走 `finalize(..., "error")`，保留已有 text parts 并在尾部追加错误文本。已完成失败运行的 transcript 留在 `liveTranscripts`，同进程切换会话再返回仍显示半截内容；同进程下一次发送也以这份 live transcript 作为 UI seed，但 provider 的模型历史仍由后端 session Surface 构建。`AgentKernel::PersistentEventSink` 将流文本按 batch 写入 run-local `run_events`，但 `session_detail()` / `session_conversation_from_events()` 只从 session `EventStore` 重建；失败 attempt 未提交的 assistant item 不会成为 `MessageAppended`，因此整个应用重启后半截文本不会作为回答复活。取消路径不同：`finalizeCancelled()` 会移除 reasoning/output text。新增 AppCore SQLite 审计回归 `service::tests::audit_failed_stream_delta_is_not_replayed_as_an_assistant_answer`，证明 run ledger 中有 partial delta，session replay 仍只有用户消息和失败终态。
 - 影响与边界：若慢速长输出越过 300 秒，请求会以 transport timeout 失败；用户当前运行时看到“半截回答 + 错误”，但这一内容只是进程内 UI 投影，不是后端 session transcript 或模型历史。退出应用后该半截回答消失，形成实时界面与重开会话不一致；同进程缓存期间后续 UI 也会继续保留它。尚未用真实 Tauri 窗口截图/手动操作验证视觉样式，本轮通过生产前端路径检查和 AppCore 持久化重放测试确认行为。建议将总时限收敛为可取消 idle watchdog；另需在 provider 失败 UX 上明确决定保留为“未完成片段”还是删除，不能把片段呈现成完整 assistant answer。
+
+
+**E-H131-01（2026-11-08，当前原探针复核，修复中）**：基线5ac33448，tracked起始干净，原六项用户untracked仅列名保留，无未完成合并。核对原审计、当前唯一ReqwestTransport的普通/cancel-aware stream入口、first_byte/idle/GET/error body时限、所有TransportTimeouts调用方及当前Models/Runtime/AppCore消费。读取本地DeepSeek Harness idleWatchdog和Codex SSE逐次next超时实现作设计依据，不复制业务代码；锁定reqwest-0.12.28源码证实默认无client total timeout，用户显式ClientBuilder.timeout会覆盖整个响应体，本项不能擅自清除该部署策略。
+
+只读复用H257已有Models HTTP binary `deepagent_models-0c324b8c084b0c51.exe`（SHA256=`FE90865C04C5DEDAF31A395F335D9EC48AB7AA353E118BEB4D0E7A209AC32D1C`），`& $binary reqwest_transport::tests::audit_active_provider_stream_is_not_cut_off_by_total_deadline --exact --nocapture --test-threads=1 --ignored`真实exit101、0/1/0、0.430秒，原错误`active provider stream ended after 4 progress events and before its terminal event: Err(Other("model stream total deadline exceeded"))`。旧默认250ms缩放deadline仍在持续50ms进度下触发；未把合法长输出当作网络故障本应正常重试。源码基线和结果记录在本轮target/h131-repair-20261108，均用新G盘隔离HOME/TEMP/数据根、MemorySecretStore或占位key、回环合成HTTP，未访问真实模型、内网或凭据。
+
+两个独立原对照也实际执行：当前Runtime binary `model_agent::tests::audit_partial_response_is_streamed_but_not_committed_after_total_deadline --ignored --exact --nocapture --test-threads=1` exit0、1/0/0、0.639秒，但其transport显式注入deadline错误，不是实际HTTP计时器，所以通过不能证明H131已修。当前AppCore binary `service::tests::audit_failed_stream_delta_is_not_replayed_as_an_assistant_answer --exact --nocapture --test-threads=1` exit0、1/0/0、0.300秒；源码核实它手动写入in-memory session/run事件来测session replay，并非真实ChatService/网络/文件SQLite冷重开，本轮将另补真实HTTP→Host消费验收，不扩大这个旧对照的证明范围。
+
+本项只收敛成功SSE流的生命周期：保留可取消idle watchdog、请求头等待上限与非成功HTTP错误体/GET的总预算；不改默认重试、工具副作用、usage账本、持久化协议、模型参数或Desktop失败UX。TransportTimeouts现有public字段保留，明确total不再剪断正常活跃SSE；调用方另行设置的reqwest client硬期限仍尊重。当前先在旧生产代码补真实两协议/两入口、超过旧total后的stall与真正取消、请求头/error body/GET/显式caller期限对照；旧失败probe随后取消ignore。尚未修改生产代码或验收关闭，不把默认跳过probe/Mock故障对照当修复成果。预计本项余2–6有效小时，冷构建与全仓等待另计；当前累计203验收、28历史跳过、9归并、3撤销、62待修+H131修复中1，63未关闭含H180授权跳过，实际62项。全部170–430低置信有效小时仍未逐项校准，环境等待无可靠总上界。
+
+**E-H131-02（2026-11-08，TDD红测及唯一传输边界修复）**：保留E01原失败。先只补测试、未改生产时，`cargo test --target-dir $build -p deepagent-models --features http --test sse_lifecycle --offline -j 2 -- --nocapture --test-threads=2`真实exit101，2通过/3失败/0忽略，含冷编译68.245秒；活跃流、超过旧total后真正idle、超过旧total后真正取消均被旧`model stream total deadline exceeded`抢先终止，headers/error-body和GET/caller期限对照通过。`cargo test --target-dir $build -p deepagent-app-core --features web --test sse_framing --offline -j 2 -- h131_ --nocapture --test-threads=1`真实exit101，0/1/0，193.933秒，正常活跃场景返回相同total错误。红日志SHA256分别为`FDF62ABBACE36D36EFDEAE119BB75F19515143807CB49DDE6ECA0D8411763C0E`、`2F3B051FE088FA678521368CE08462B83C86F77C41DD6BAFF9D4F825BBB98E28`；原始脱敏错误仍保留，不把失败候选当验收。
+
+根因是两入口共同包裹整个成功SSE的outer total，而非Runtime重试或持久化：只在原`ReqwestTransport`抽出私有`open_stream`，将原total预算限定为请求头建立及非成功错误体读取；成功SSE复用原逐chunk idle/cancel守卫，普通/cancel-aware共用原`stream_inner`。GET总预算及30秒cap、first-byte、错误体上限/metadata、UTF-8/帧解析保持原边界；原H131 probe取消ignore。public `TransportTimeouts`字段保留并补充语义说明：total不再是成功流的硬寿命；`with_client`中调用者显式设置的reqwest timeout仍有效。不新增运行链、依赖、配置、SQL迁移或供应商字段，未改Runtime、账本和UI失败UX。
+
+复用已有有限loopback夹具增加`start_timed`，原start委托零延迟路径且不逐字节sleep；合成GET只用于预算对照。Models新增五组真实HTTP用例覆盖Responses/Chat两协议及普通/cancel-aware两入口、完整文本/Stop/usage、跨旧total后的真实stall及实际设置true的取消、慢请求头、滴流429/503错误体、GET、caller timeout及快速成功。正式ChatService→ModelAgent/Kernel→临时文件SQLite两场景：活跃流1请求/0reset/唯一succeeded/usage与cost只记一次；真实idle为3请求/2reset/唯一failed且无伪造usage/assistant。释放全部DB句柄后冷重开比较run记录、顺序事件、session history、receipt、cost和summary。候选专项分别5/0/0和1/0/0（后者含两个场景），13.621及69.103秒；最终验收见E03，不只凭候选关闭。
+
+**E-H131-03（2026-11-08，冻结版本最终验收，限下列本机范围）**：`$build='G:\Code_Warehouse\DeepAgent-Studio\target\h131-repair-20261108'`，fixture为`G:\h131-fixtures-20261108`。所有门禁清除凭据/代理环境继承，使用隔离HOME/TEMP/APPDATA/数据根、占位key或MemorySecretStore、合成loopback HTTP和临时SQLite；离线，仅顶层Cargo显式target，子进程不继承CARGO_TARGET_DIR。每个gate前后核对冻结源，结束再次确认871文件0变更。以下为实际命令及终态；无输出或观察等待超时未导致重启全仓：
+
+| 实际命令 | 实际结果（通过/失败/忽略） | 墙钟秒数（含编译） |
+|---|---|---:|
+| `cargo fmt --all -- --check`，末尾再次执行 | 两次exit0 | 4.502 / 4.616 |
+| `cargo test --target-dir $build -p deepagent-models --features http --lib --offline -j 2 -- reqwest_transport::tests::audit_active_provider_stream_is_not_cut_off_by_total_deadline --exact --nocapture` | exit0；1/0/0，无ignored参数 | 11.763 |
+| `cargo test --target-dir $build -p deepagent-models --features http --offline -j 2 -- --quiet --test-threads=2` | exit0；244/0/24，22个Cargo主target，含新增5组 | 55.403 |
+| `cargo test --target-dir $build -p deepagent-app-core --features web --test sse_framing --offline -j 2 -- --nocapture --test-threads=1` | exit0；3/0/0，H131两场景及H30/H257实际HTTP/Host/冷重开对照 | 10.292 |
+| `cargo build --target-dir $build -p deepagent-cli --offline -j 2` | exit0 | 113.229 |
+| `cargo test --target-dir $build --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=2` | exit101；5027/3/185，154个Cargo主target；剔除1条嵌套helper summary，不重复相加 | 1428.711 |
+| `cargo clippy --target-dir $build -p deepagent-models --features http --all-targets --no-deps --offline -j 2 -- -D warnings` | exit101；既有client.rs:453 clone_on_copy阻断 | 26.252 |
+| `cargo clippy --target-dir $build --all-targets --all-features --offline -j 2 -- -D warnings` | exit101；同一旧Models阻断，不能称全仓严格lint通过 | 52.673 |
+| `cargo clippy --target-dir $build -p deepagent-models --features http --all-targets --no-deps --offline -j 2` | 补充诊断exit0，仅上述旧warning及lib-test重复提示；不替代严格门禁 | 5.502 |
+
+全仓3失败均在此前完整/CLI验收已记录，当前逐项核对仍为：`kernel_v2_e2e::image_preparation::read_failure::real_read_data_dacl_denial_fails_without_sampling_and_recovers`在`image_read_failure.rs:286`报`original DACL must be restored exactly`（target324/1/20）；CLI `viewport_snapshot_with_a_pending_approval`的golden与隔离HOME路径不同（CLI210/1/10）；Prompts `every_node_kind_owns_exactly_one_profile`为H306的`creative.video-edit.v1`空defaultUserPrompt（27/1/0）。不顺修这些独立问题、不更新golden、不加allow或放宽断言，失败原样保留，系统全仓并非全绿。默认workspace不启用AppCore web，不能用其中0测试的sse_framing替代显式web真实门禁；Models24及全仓185个ignored不计通过。
+
+原用户六项untracked未暂存。快照测试会写原已有.snap.new，执行前备份、finally恢复946字节、原hash `ACDBFD864BEDBE07167E6CFD498E73D8D5B7DA21E71008305EF3240CAD2E9184`及mtime `2026-11-08T08:02:29Z`，实际核对成功。默认target/debug/deepagent.exe前后hash均为`1FA7ACD9211B29E94BCC46B83D1C87E0F1DE5A627ACA1407B039279658B633B3`，未覆盖默认CLI。最终结果JSON SHA256=`91FB61DB6B56F0A85668EE6A634D3AA9778D75367F99620A0E844382A5EB452D`；完整workspace日志=`BAF9D4E8F00CBE646835CE5E4516259EAB9920D772E90EE7545BA466632E2E97`；显式Host日志=`0F8B041557734E60F3926B465860CAAC1A852CCE8C71581FC5EB4ADBCE3D1498`。原日志/临时脚本/binary属本轮可再生产物，安全清理及commit hash取得后另回填；文内保留失败原文、命令、数字及hash，不靠保留几十GB产物作为唯一证据。
+
+仅完成上述Windows本机范围；未执行真实DeepSeek/账单/300秒长跑、Desktop/Tauri UI、其他OS、TLS/真实代理、强杀/断电/磁盘满、全部ignored或全宿主压力，因不触及真实服务/数据且不在本项变更范围。活跃以传输chunk而非语义token为依据，心跳可保持连接直至idle/cancel/调用者硬期限；默认成功SSE不再受300秒硬寿命是有意兼容变化。失败片段UI策略维持既有行为，不据此宣布UX已改。
+
+本轮新增修复验收1、历史跳过0、归并/撤销0；306唯一编号核对为204验收、28历史跳过、9归并、3撤销、62待修含H180授权跳过（实际61有效未关），0修复中。H180继续跳过，不计修复。本项本机实现/验收余0，独立提交与清理随后回填；下一准备H116，先复核失败任务错误派发TaskCompleted的副作用/终态边界，不与H117自动合并。全部剩余170–430低置信有效小时仍是按跨层、持久化及执行风险分组的历史未逐项校准粗估；构建、设备、依赖和清理策略等待单列，无可靠总上界，不给精确完工承诺。
 
 ### H-132：Chat Completions 的合法内容过滤终态被当作未知 provider 错误，usage 未进入运行账本
 

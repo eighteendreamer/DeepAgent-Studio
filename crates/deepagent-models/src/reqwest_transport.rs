@@ -24,8 +24,12 @@ pub struct ReqwestTransport {
 #[derive(Debug, Clone, Copy)]
 pub struct TransportTimeouts {
     pub connect: Duration,
+    /// Time allowed for response headers, within the non-streaming total budget.
     pub first_byte: Duration,
+    /// Maximum wait for the next response body chunk, reset by each chunk.
     pub idle: Duration,
+    /// GET lifetime (also capped at 30s), or POST response headers/error body.
+    /// Successful SSE bodies use `idle` and cancellation, not this stopwatch.
     pub total: Duration,
 }
 
@@ -63,7 +67,8 @@ impl ReqwestTransport {
         }
     }
 
-    /// Build from an existing client (to share pools / config).
+    /// Build from an existing client (to share pools / config). An explicit
+    /// timeout configured on that client remains the caller's additional policy.
     pub fn with_client(client: reqwest::Client) -> Self {
         Self {
             client,
@@ -103,9 +108,7 @@ impl HttpTransport for ReqwestTransport {
     }
 
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
-        tokio::time::timeout(self.timeouts.total, self.stream_inner(request, sink, None))
-            .await
-            .map_err(|_| CoreError::other("model stream total deadline exceeded"))?
+        self.stream_inner(request, sink, None).await
     }
 
     async fn stream_cancelled(
@@ -114,12 +117,7 @@ impl HttpTransport for ReqwestTransport {
         sink: &mut dyn EventSink,
         cancel: Arc<AtomicBool>,
     ) -> Result<()> {
-        tokio::time::timeout(
-            self.timeouts.total,
-            self.stream_inner(request, sink, Some(cancel)),
-        )
-        .await
-        .map_err(|_| CoreError::other("model stream total deadline exceeded"))?
+        self.stream_inner(request, sink, Some(cancel)).await
     }
 }
 
@@ -168,13 +166,14 @@ impl ReqwestTransport {
         self.read_get_body(response, cancel.as_ref()).await
     }
 
-    async fn stream_inner(
+    /// The finite HTTP preparation phase keeps its total deadline even if a
+    /// non-success response drips an error body often enough to avoid idle.
+    async fn open_stream(
         &self,
         request: TransportRequest,
-        sink: &mut dyn EventSink,
-        cancel: Option<Arc<AtomicBool>>,
-    ) -> Result<()> {
-        if is_cancelled(cancel.as_ref()) {
+        cancel: Option<&Arc<AtomicBool>>,
+    ) -> Result<reqwest::Response> {
+        if is_cancelled(cancel) {
             return Err(CoreError::other("request cancelled"));
         }
 
@@ -190,7 +189,7 @@ impl ReqwestTransport {
         let response = self
             .await_cancelable_timeout(
                 send,
-                cancel.as_ref(),
+                cancel,
                 self.timeouts.first_byte,
                 "model first-byte timeout",
             )
@@ -201,9 +200,7 @@ impl ReqwestTransport {
         if !response.status().is_success() {
             let status = response.status();
             let (retry_after_ms, request_id) = provider_response_metadata(&response);
-            let detail = self
-                .read_provider_error_body(response, cancel.as_ref())
-                .await?;
+            let detail = self.read_provider_error_body(response, cancel).await?;
             return Err(provider_error_with_metadata(
                 status.as_u16(),
                 &detail,
@@ -211,6 +208,22 @@ impl ReqwestTransport {
                 request_id,
             ));
         }
+
+        Ok(response)
+    }
+
+    async fn stream_inner(
+        &self,
+        request: TransportRequest,
+        sink: &mut dyn EventSink,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Result<()> {
+        let response = tokio::time::timeout(
+            self.timeouts.total,
+            self.open_stream(request, cancel.as_ref()),
+        )
+        .await
+        .map_err(|_| CoreError::other("model response total deadline exceeded"))??;
 
         let mut parser = SseParser::new();
         let mut body = response.bytes_stream();
@@ -503,7 +516,6 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    #[ignore = "explicit harness audit probe for active streams crossing the total deadline"]
     async fn audit_active_provider_stream_is_not_cut_off_by_total_deadline() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;

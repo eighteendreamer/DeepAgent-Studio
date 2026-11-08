@@ -266,3 +266,199 @@ async fn h257_real_http_encoding_failures_are_not_retried_and_survive_sqlite_reo
         );
     }
 }
+
+#[tokio::test]
+async fn h131_real_http_progress_succeeds_once_but_actual_idle_failure_stays_failed_after_reopen() {
+    use deepagent_app_core::{CostService, ModelPricing};
+    use deepagent_core::{event::EventPayload, response_item::ResponseItem};
+    use deepagent_models::TransportTimeouts;
+    use deepagent_persistence::{cost_store::CostStore, event_store::EventStore};
+    use deepagent_runtime::RuntimeEvent;
+    use std::{sync::Mutex, time::Duration};
+
+    for idle_failure in [false, true] {
+        let mut chunks: Vec<_> = (0..6)
+            .map(|sequence| {
+                let event = serde_json::json!({"type":"response.output_text.delta",
+                    "sequence_number":sequence,"item_id":"h30-output","output_index":0,
+                    "content_index":0,"delta":sequence.to_string()});
+                (
+                    Duration::from_millis(60),
+                    format!("data: {event}\n\n").into_bytes(),
+                )
+            })
+            .collect();
+        let mut terminal: serde_json::Value =
+            serde_json::from_str(&fixture::response_terminal()).unwrap();
+        terminal["sequence_number"] = 6.into();
+        terminal["response"]["output"][0]["content"][0]["text"] = "012345".into();
+        terminal["response"]["usage"] = serde_json::json!({"input_tokens":9,"output_tokens":2,"total_tokens":11,
+            "input_tokens_details":{"cached_tokens":4},"output_tokens_details":{"reasoning_tokens":1}});
+        chunks.push((
+            Duration::from_millis(if idle_failure { 600 } else { 60 }),
+            format!("data: {terminal}\n\n").into_bytes(),
+        ));
+        let server = fixture::Fixture::start_timed(chunks, Duration::ZERO, 200).await;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("h131-synthetic.sqlite");
+        let db = Arc::new(Database::open(&path).unwrap());
+        let settings = Arc::new(SettingsService::new(
+            db.clone(),
+            Arc::new(MockTransport::with_get_json(
+                r#"{"data":[{"id":"deepseek-v4-flash"}]}"#,
+            )),
+            Arc::new(MemorySecretStore::new()),
+        ));
+        settings.initialize("h131-synthetic").await.unwrap();
+        let limits = TransportTimeouts {
+            connect: Duration::from_secs(2),
+            first_byte: Duration::from_secs(2),
+            idle: Duration::from_millis(if idle_failure { 200 } else { 1000 }),
+            total: Duration::from_millis(if idle_failure { 500 } else { 250 }),
+        };
+        let transport = Arc::new(LocalTransport {
+            base_url: server.config(WireMode::Responses).base_url,
+            inner: fixture::Fixture::transport().with_timeouts(limits),
+        });
+        let cost = Arc::new(CostService::new(db.clone()));
+        cost.set_pricing(std::collections::HashMap::from([(
+            "deepseek-v4-flash".into(),
+            ModelPricing {
+                input_cache_hit_per_million: 100.0,
+                input_cache_miss_per_million: 1000.0,
+                output_per_million: 20.0,
+            },
+        )]));
+        let chat = ChatService::new(db.clone(), settings.clone(), transport, root.path())
+            .with_cost(cost.clone());
+        let session = chat.create_session(None).unwrap();
+        let run = if idle_failure {
+            "h131-idle"
+        } else {
+            "h131-progress"
+        };
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let record = events.clone();
+        let started = tokio::time::Instant::now();
+        let result = tokio::time::timeout(
+            Duration::from_secs(12),
+            chat.run_in_session(
+                "Acknowledge the synthetic stream.",
+                Some(&session),
+                None,
+                None,
+                vec![],
+                None,
+                false,
+                Some(run),
+                move |event| record.lock().unwrap().push(event),
+                |_| panic!("no synthetic tool approval expected"),
+            ),
+        )
+        .await
+        .expect("bounded synthetic host run");
+        let elapsed = started.elapsed();
+        let requests = server.finish().await;
+        assert_eq!(
+            result.is_ok(),
+            !idle_failure,
+            "idle={idle_failure}: {result:?}"
+        );
+        assert!(elapsed > limits.total);
+        assert_eq!(requests.len(), if idle_failure { 3 } else { 1 });
+        if idle_failure {
+            assert!(result.unwrap_err().to_string().contains("SSE idle timeout"));
+        }
+        let live = events.lock().unwrap();
+        assert_eq!(
+            live.iter()
+                .filter(|event| matches!(event, RuntimeEvent::ModelAttemptReset { .. }))
+                .count(),
+            if idle_failure { 2 } else { 0 }
+        );
+        assert_eq!(
+            live.iter()
+                .filter(|event| matches!(event, RuntimeEvent::Usage { .. }))
+                .count(),
+            usize::from(!idle_failure)
+        );
+        let receipts = CostStore::new(&db)
+            .run_call_receipts(&session, run)
+            .unwrap();
+        assert_eq!(receipts.len(), usize::from(!idle_failure));
+        let costs = CostStore::new(&db)
+            .session_costs_detailed(&session)
+            .unwrap();
+        assert_eq!(costs.len(), usize::from(!idle_failure));
+        let summary = cost.summary(&session).unwrap();
+        assert_eq!(
+            (summary.input_tokens, summary.output_tokens),
+            if idle_failure { (0, 0) } else { (9, 2) }
+        );
+        let history = EventStore::new(&db)
+            .load_session(session.parse().unwrap())
+            .unwrap();
+        let replies: Vec<_> = history
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::ResponseItemAppended {
+                    item: ResponseItem::Message { role, content },
+                } if role == "assistant" => Some(content.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(replies, if idle_failure { vec![] } else { vec!["012345"] });
+        let run_record = RunStore::new(&db).get(run).unwrap().unwrap();
+        let terminal_kind = if idle_failure { "failed" } else { "succeeded" };
+        assert_eq!(run_record.terminal_kind.as_deref(), Some(terminal_kind));
+        let durable = RunStore::new(&db).events_after(run, None).unwrap();
+        assert!(durable
+            .windows(2)
+            .all(|pair| pair[0].sequence < pair[1].sequence));
+        assert_eq!(
+            durable
+                .iter()
+                .filter(|event| event.event_type == "run_terminal")
+                .count(),
+            1
+        );
+        drop(chat);
+        drop(settings);
+        drop(cost);
+        drop(db);
+        let reopened = Arc::new(Database::open(&path).unwrap());
+        assert_eq!(
+            RunStore::new(&reopened).get(run).unwrap().unwrap(),
+            run_record
+        );
+        assert_eq!(
+            RunStore::new(&reopened).events_after(run, None).unwrap(),
+            durable
+        );
+        assert_eq!(
+            EventStore::new(&reopened)
+                .load_session(session.parse().unwrap())
+                .unwrap(),
+            history
+        );
+        assert_eq!(
+            serde_json::to_value(
+                CostStore::new(&reopened)
+                    .run_call_receipts(&session, run)
+                    .unwrap()
+            )
+            .unwrap(),
+            serde_json::to_value(receipts).unwrap()
+        );
+        assert_eq!(
+            CostStore::new(&reopened)
+                .session_costs_detailed(&session)
+                .unwrap(),
+            costs
+        );
+        assert_eq!(
+            CostService::new(reopened).summary(&session).unwrap(),
+            summary
+        );
+    }
+}
