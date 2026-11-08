@@ -2559,6 +2559,8 @@ E-H51-11：稳定ID知识专项实跑33 passed/0 failed/1既有H-52 ignored，13
 
 ### H-53：原生压缩移除相关记忆后，后台检索去重与预算仍保留旧记录
 
+修复状态（2026-11-08）：已修复并验收，仅E-H53-07所列Windows本机范围。E01～06原红/候选/环境与全仓反例保留；用户32项本项零忽略门禁通过，隔离DACL仍失败，不称全仓全绿。H243归并本项；清理部分成功及真实删除拒绝见E08，独立提交随后回填。
+
 **级别：中（P2）；范围：同一 ModelAgent 内完成压缩后，再次需要已经从 Surface 移除的后台相关记忆。** 本项与宿主 Codex 的 `continuation_history_incomplete/cipher_incompatible` 无关。
 
 - `ModelAgent::maybe_schedule_memory_prefetch` 使用独立 `surfaced_memory_ids` 排除已经展示的 ID，达到 `MAX_SURFACED_MEMORIES_PER_RUN = 12` 后直接停止预取；`collect_finished_memory_prefetch` 也按该集合过滤返回值。`adopt_compaction` / `adopt_compacted_history` 更换模型历史，没有根据保留内容重建该集合。因此旧摘录被摘要合法省略后，其 ID 仍占用去重集合与配额。
@@ -2573,6 +2575,85 @@ E-H51-11：稳定ID知识专项实跑33 passed/0 failed/1既有H-52 ignored，13
 - 第一组再次检索但旧 ID 被过滤；第二组已耗尽旧配额，后续检索没有启动。直接后果是压缩后同一运行无法通过这个后台通道重新取得相关摘录。系统另有 `KnowledgeReminderProvider::passive_block` 和显式记忆工具，可能补偿；不能据此声称所有记忆从此永久不可访问。重启回放侧的 `collect_surfaced_memory_ids_from_events` 也累计历史注入 ID，但本轮未新增该路径的动态探针，不扩大复现范围。
 - Claude Code `借鉴/claudecode/restored-src/src/utils/attachments.ts:2251` 的 `collectSurfacedMemories(messages)` 扫描当前保留的 relevant_memories 附件，注释明确说明：压缩移除旧附件后，去重和累计字节预算自然释放。这里只对照源码，未运行参考项目。
 - 修复方向：在既有 Surface 的记忆附件身份上统一 live/replay 的当前可见集合与预算；摘要若保留某条记忆，应明确保留其身份，否则允许重新检索。不能无条件清空全部去重，导致仍在尾部的摘录反复注入；同样不能以全量历史事件替代当前可见状态。具体身份与回放映射属于本地设计，应覆盖保留尾部、重复压缩、snip、在途预取和恢复场景。本轮只新增审计测试与报告，没有修改生产检索行为。
+
+**E-H53-01（2026-11-08，原探针与扩展TDD，修复中，未验收）**：基线131e317624bcb45b1374f3eb490fbc56376c95c7，H49 fix/docs已完成；tracked原干净/无暂存，五项既有untracked仅列名称不读改哈希或暂存。复核原报告/306台账、ModelAgent/Surface/记忆provider、压缩/snip与原会话事件恢复、主生产方和Cargo/rustfmt/CI。H53仍有效待修，无历史跳过/归并依据；不合并其他问题、不动H180及全部历史拒绝清理根。所有新构建/合成SQLite/夹具集中G:\Code_Warehouse\DeepAgent-Studio\target\h53-repair-20261108，隔离HOME/TEMP/数据根并清除子进程凭据/代理变量，仅离线，不访问真实服务或用户数据。
+
+原命令`cargo test -p deepagent-runtime --lib audit_compaction_releases_removed_memories_for_retrieval --offline -j 2 -- --ignored --nocapture`明确exit101，编译2m31s后原单例0通过/1失败/0忽略：1条组provider_calls=2/dedup_after=1/最终wire摘录false，12条组provider_calls=1/dedup_after=12/false，与原审计一致，不是编译或环境失败。先添加实际agent/serializer扩展5例，`cargo test -p deepagent-runtime --lib h53_ --offline -j 2 -- --nocapture`得1通过/4失败/0忽略：保留尾部重复adoption对照通过，同查询不重试、snip旧ID未释放、在途旧排除快照未作废、仅ID占配额明确失败。
+
+根因是历史累计ID与当前正文身份分离；本地设计（参考Claude当前附件扫描，不复制业务代码）：既有user reminder内使用版本1完整ID+正文附件，Context共享解析，ModelAgent只派生当前完整附件集合和12条配额，压缩/snip释放并撤销旧预取/query gate；完整附件经SessionSurfaceStore原会话日志先落盘再注入，MemoriesInjected保留为遥测而非状态源。旧ID-only记录不能证明正文保留，允许重取；不做数据迁移、不新建event/store/执行链，不修改公开JSON DTO或provider item种类。Rust RelevantMemory原路径保留re-export，Surface writer加法方法默认明确拒绝不支持的持久化，旧自定义writer若开启记忆需实现；无writer的独立agent仍仅内存，不伪称durable。候选Runtime/Context lib初验455/0/7和60/0/0，扩展后验收/消费方/全仓/lint与清理尚待完成，不能标已修复。
+
+**E-H53-02（2026-11-08，候选与消费方夹具调查，未完成验收）**：原probe移除ignore后显式1/0/0，1条与12条组provider_calls均2、后续wire摘录均true；Runtime新增8/0/0，包括原生/legacy保留尾部与重复adoption、部分12→1释放、同查询重新检索、snip、在途排除快照作废、ID-only无配额、失败持久化阻止下一请求及实际压力门禁触发（摘要模型为离线fixture，不称真实供应商压缩）。AppCore新增4/0/0，包含原SessionSurfaceStore实际SQLite写入、全部owner关闭/重开三阶段、boundary后重取、无最终MemoriesInjected遥测仍能恢复完整正文，另覆盖snip回放与写入失败。初候选完整Runtime455/0/7、Context60/0/0不等于最终全仓结果。
+
+正式ChatService/RunAssembler消费验收初版失败于夹具空catalog，沿用原配置准入正确返回“model discovery returned no usable DeepSeek models”；已仅改合成目录为仓内既有合法ID。其后实际wire身份数0（预期1），核查发现夹具将project笔记存入另一个project-vault，而正式host按H51绑定当前工作区；该隔离是正确行为，不修改生产项目绑定。夹具改为真实工作区同根，并显式采用现有set_passive_enabled(false)后台单通道配置及关闭自动收尾捕获，避免被动附件/旁路模型掩盖本项。另发现默认被动知识前缀与latest_user_query排除整条system-reminder的交互不是本项身份根因，不顺带修改，默认被动开启组合未验不能外推。上述失败保留，不将夹具失败归为环境成功或生产修复证据。最终冻结、两wire正文/身份、完整消费者/全仓/lint及清理仍待完成；本项保持修复中。
+
+**E-H53-03（2026-11-08，宿主夹具契约复核与定向通过，尚待全仓）**：连续宿主夹具失败后先停止重试，重新核对当前装配/项目绑定/模型目录/Responses身份契约，没有放宽生产校验。修正同根后台配置后第二次run仍被正式校验拒绝：“Responses input item 6 (function_call) repeats call_id from item 1”；夹具原先每次新transport重用h53-read，修为按phase唯一call_id，未修改生产validator。最终正式host单例1/0/0，实际三阶段普通ChatService→RunAssembler→原KnowledgeMemoryProvider→Surface先写→实际wire：首轮取回、关闭全部DB owner后续聊保留而不重复注入、人工持久化省略摘录的boundary后再次取回；每run成功终态仅一次。边界为合成事件，不声称此host测试触发真实自动摘要；实际压力门禁由Runtime单例覆盖。默认passive开启与后台查询guard组合仍不在验收范围。
+
+新增两协议检查后Runtime h53_共9/0/0，真实ModelClient的Responses/ChatCompletions序列化保留相同完整ID/正文；只在最终transport录制后返回合成错误，无网络。追加期间源码变化仅测试夹具/测试文件，使过早冻结的门禁明确停止，未将这些结果冒充最终冻结全仓验收。Tauri初次cargo check exit0/6m53s后全文件冻结复核因测试变动拒绝（生产依赖源码未变）；最终重跑同命令exit0/13.34s，仍须与最终hash复核。最终21源hash已重新冻结，CLI新构建/SDK真实stdio、全仓与严格lint正在后续执行，未完成项不计成功；本项尚未交付/提交。
+
+**E-H53-04（2026-11-08，完整门禁反例与本机策略阻塞，未验收/未提交）**：21源hash再次逐项核对一致。首轮完整命令`cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=2 --quiet`（target由子进程环境指定）exit101/1612.575秒，实际148目标/148主harness结果，4980通过/11失败/189忽略。原始日志有149条summary，其中AppCore失败stdout含一个子harness summary；逐Running/Doc-tests只取主harness最后结果，不重复计数。失败分布：AppCore1598/6/54，Kernel320/1/22，CLI200/1/9，SDK lib71/1/5，Prompts27/1/0，Workspace12/1/0；Context60/0/0、Models172/0/16、Runtime457/0/7和SDK真实stdio13/0/0等通过。不能把11失败说成只有旧H306。
+
+验收环境反例：本轮最初把TEMP/HOME放在仓库内target/fixtures，导致非仓库测试能发现真实上级.git/Cargo.toml；同时导出CARGO_TARGET_DIR使验证夹具的嵌套Cargo继承共享target，实际冷编译/暂停marker未出现或提前成功。8项Git/祖先Cargo/验证构建失败与该布局/继承反例一致，仍须在正确环境复测，不能直接豁免。CLI快照另明确显示旧期望C:\Users\32734\…而本轮路径G:\Code_Warehou…，没有修改golden或跳过测试。SDK H206一次Closed尚未定位，不能擅自宣称环境根因；随后真实stdio13通过不等于SDK lib71/1已通过。H306仍是creative.video-edit.v1空defaultUserPrompt。源代码不为这些其他问题放宽门禁。
+
+另外实际执行：Runtime/Context all-features默认目标及文档测试exit0/82.991秒（lib分别457/0/7、60/0/0）；SDK显式stdio13/0/0，exit0/15.088秒；CLI build exit0/172.252秒，Tauri最终cargo check exit0/13.573秒；fmt和两份include测试文件rustfmt检查通过。全仓严格Clippy exit101，旧Models client.rs:453 clone_on_copy；Context严格exit0，Runtime严格exit101（旧Usage clone/Canvas Default），AppCore严格exit101/14个旧测试警告提升错误，三crate诊断exit101（旧mcp_discovery_restore必定panic unwrap），CLI严格exit0。诊断日志未列本项新测试/附件文件告警；不把诊断失败说成严格通过。完整结果保留本轮target/broad-results.json与各日志，尚未执行预定最终8组binary显式验收。
+
+修正方案是不改生产代码：使用仓库外全新`G:\h53-fixtures-20261108`（已核对G根无.git/Cargo.toml，已创建空根），取消CARGO_TARGET_DIR继承，仅在顶层Cargo传--target-dir本轮root，仍离线合成。完整复验命令首次在CreateProcess前被本机策略Rejected/blocked by policy，脚本未启动；用户明确回复“放行该本地验收后继续”后，按原命令重试一次仍同样拒绝。立即停止该命令，不换壳/工具/写法、提权或改ACL，不将口头确认误报为宿主策略已变更；后续需要本机实际放行或获准执行方式。正确环境全仓复验、SDK lib复核、最终显式binary门禁与验收后清理均未执行，本项为阻塞待处理而非已修复并验收，H53代码/当时双文全部未提交。
+
+同轮台账复核发现H243使用与H53完全相同的audit_compaction_releases_removed_memories_for_retrieval、同样1/12条wire失败，是重复补充证据；修改分类前已向用户说明依据。H243归并H53，原E-243及未实施历史保留，不另计修复。306唯一行/8列当前199验收、26历史跳过、9归并、3撤销、68待修、1阻塞；68待修含授权跳过H180，实际有效未关68（含阻塞H53）。本项新增验收0、历史跳过0、归并1、撤销0；不宣称完成率。下一步先解除H53验收阻塞，不静默进入H54。全部剩余暂沿170–430低置信有效小时，尚未从区间扣减H53，重复H243归并在下一估算校准；设备/依赖/环境/本机策略等待另计，无法可靠给总等待时间。
+
+产物/兼容性：尚未验收，本轮G构建/旧内置夹具、空仓外夹具和CLI失败生成的.snap.new保留供复核，不提交target/临时日志/快照新文件；既有C/H48/H49及所有旧拒绝目录未触碰或重试。共享CLI在正常构建后先核对原hash/所有祖先无reparse/零使用进程，备份后更新为`1FA7ACD9211B29E94BCC46B83D1C87E0F1DE5A627ACA1407B039279658B633B3`、82,201,600字节，只改可执行文件、不动sidecar。新附件只复用user message文本/既有session event，JSON版本正文有计量开销；旧ID-only允许重取，自定义Surface writer未实现新加法方法会明确拒绝注入；没有新依赖、公开DTO字段或真实数据库迁移。真实供应商/摘要质量、默认passive开启组合、完整桌面UI/pnpm build、其他OS、真实断电/磁盘满及全部默认忽略项未验。abort保证旧预取结果不采纳，不保证已开始的同步provider工作立即停止。整体goal未完成。
+
+**E-H53-05（2026-11-08，收到用户独立终端完整复验，仍未验收）**：用户回传独立PowerShell执行结果exit101；小怪直接读取实际文件`target/h53-repair-20261108/manual-workspace-20261108-155030.log`，SHA256=`D3310E9B4BFE8B0CED52004512B558C8441EDFBA9AE90C26281A08980EF702D3`，83,916字节。实际约16分钟（首次test profile报告7.07秒），不是卡死或仍在后台等待。启动前用户脚本核对冻结hash，收取结果后小怪再次逐项核对21源hash一致；没有新生产改动。逐Running/Doc-tests取主harness末条summary，仍148目标/148结果，排除AppCore失败stdout内一个子harness summary，最终**4987通过/4失败/189忽略**。
+
+四个真实失败及范围：AppCore1603/1/54，仅`completion_plan::audit_tests::discovered_real_build_completes_after_release`未在4秒观察窗产生合成workspace/build-started；Kernel320/1/22，仅`image_preparation::read_failure::real_read_data_dacl_denial_fails_without_sampling_and_recovers`在fixture Drop的原DACL精确恢复断言失败；CLI200/1/9，仍旧快照C/G临时路径差异；Prompts27/1/0，仍旧H306空defaultUserPrompt。失败用例、CLI golden及Prompts源码与HEAD逐项git diff为空；这证明本轮未改这些测试，不证明前两项根因已经定位或可以忽略。未增加超时、忽略AI/权限差异、改golden或修改其他H问题。首轮11失败的原证据继续保留，不被本轮替换；首次SDK H206 Closed本次未再现，不能称其已修复。
+
+当前完整复验中Context60/0/0、Models172/0/16、Runtime457/0/7、SDK lib72/0/5、SDK真实stdio13/0/0、Workspace13/0/0；原H53 probe已去ignore，新增H53回归也非忽略项。本项原单例、Runtime9、Context2、AppCore4与正式host1所在实际二进制均完成本轮默认执行且未出现在失败清单，但不将整体四失败隐藏为全仓全绿。另从该日志的Running记录定位5个真实binary并记录hash：Runtime=`753C9B1179CB5D718624D1BB7871C787BB87C45F7DF62FF9DAACFF3531A400EA`；Context=`0FB6BC19F37AA77AABADBF09E71EDFF1BC54D913239195268ED99C9553AE6D72`；AppCore=`F4F395EB31455F8466173E58A8225CCC7233EE5E7156638B08722ACA1ED88B0D`；Kernel=`34AD8BB8F55995D70AFB34ACE9BC19907E4F2804F5793A5B08282FCFC28CF969`；SDK stdio=`9E84B0D1B7EE65934AB45D2DAA8998A0D1467576D66A0F75C52D47CED375CBEA`。元数据保留manual-workspace-summary.json/manual-binaries.json，无真实凭据。
+
+E04的“正确环境全仓未执行”现已由用户本次执行补齐；自动工具的策略阻塞并未因此解除。针对本次真实binary的预定8组定向验收批次再次在CreateProcess前Rejected/blocked by policy，脚本未启动；立即停止，不换工具/参数写法规避，不把旧定向通过冒充新批次通过。尚需前两项失败的隔离/基线证据，以及本项最终定向门禁与验收后清理；不再要求用户盲目重复整个workspace，不合并修复其他根因。当前H53仍阻塞待处理，代码/测试/当时双文未提交，不进入H54。306台账仍199验收、26历史跳过、9归并、3撤销、68待修、1阻塞；有效未关68含H53且不含授权跳过H180。本次新增验收0、历史跳过0、归并/撤销0（H243归并已在E04记过，不重复记）。全部剩余暂沿170–430低置信有效小时，等待环境/策略时间另计且无法可靠估算。旧拒绝清理根不触碰；未验收产物继续保留，整体目标未完成。
+
+**E-H53-06（2026-11-08，用户授权手动定向，脚本已静态检查但尚未执行）**：用户恢复目标后复核21源hash、5个manual实际binary hash均一致，暂存仍为空；未重试被拒绝执行批次。用户明确选择“继续手动定向验收”，据此新增仅供用户运行的本轮产物`target/h53-repair-20261108/h53-manual-focused.ps1`，SHA256=`1CB0E76C72F808B9ED8B635C39FC773D2187AFA70124A21C3BBDA7DDF67FCB82`。用本机PowerShell Parser.ParseFile静态解析，语法错误0；没有执行脚本或任何测试程序，不将语法检查计为验收通过。该脚本不进入提交白名单。
+
+脚本硬核对final-sources.json/hash=`DB8A13E5B5A240568E24F84882756A4D912043A6E829CFFDE472E5001BCC5183`和manual-binaries.json/hash=`75DB74B1A04B19F211EFF05125B985A87403789CA6A3582638BD630D621A2732`，检查同一独立窗口的隔离HOME/TEMP/数据根/离线环境、无继承CARGO_TARGET_DIR与凭据/代理覆盖、目录祖先无reparse，运行前后核对源码/binary。仅串行执行既有binary：8组H53/正常对照/SDK门禁共32例，另2组分别隔离实际build-started及图片DACL失败；每组保存实际exit/主harness summary/完整日志，非零失败也继续收集，未知/缺summary不得算通过。两项隔离结果与H53门禁分别列出，但不是忽略或豁免失败。结果目录为本轮root下新的h53-focused-external-*，不覆盖旧日志、不删除文件、不改权限/执行策略；不重新编译主项目，构建隔离用例仍按原测试代码编译自己的最小合成Cargo夹具。
+
+当前只是准备交接，需用户在刚才已准备环境的独立PowerShell执行并回传结果目录或报错；若环境、hash、执行策略不符即停止，不降低检查。尚未取得10组执行结果，H53保持阻塞待处理/未提交，四个全仓失败与E05原样保留，不能因脚本可解析而关闭问题。306台账状态/199验收/68有效未关及170–430低置信有效小时估算不变，等待用户实际执行/工具环境另计。旧拒绝清理根仍不触碰，未验收产物保留。
+
+**E-H53-07（2026-11-08，最终本机验收，仅关闭H53，不代表全仓全绿）**：小怪只读发现用户手动脚本的真实报告目录`G:\Code_Warehouse\DeepAgent-Studio\target\h53-repair-20261108\h53-focused-external-20261108-163152-8627eaf5`，首次核对已完成9组且第10组进程39600真实存活；未重启，等待后确认该进程退出且10组结果齐全。逐组重读原始日志的最终主harness summary，核对JSON实际exit/计数/accepted计算与binary hash，结果JSON SHA256=`AE1426BEE97F6B1C670447F0E0806A61F68C8C2673E412DB2CBD5F30FF1C40BD`；脚本hash仍为E06的1CB0E76C…，21源hash及5个binary hash与E05/E06均一致。不是仅凭用户口述、文件存在、语法检查或默认忽略通过做验收。
+
+实际8组本项门禁合计**32通过/0失败/0忽略**，含原1/12条wire探针、9个新Runtime回归、2个Context附件解析、4个AppCore持久化/回放、正式ChatService/RunAssembler/KnowledgeMemoryProvider三阶段host、正常预取和保留正文对照及真实SDK stdio。另2组隔离为1通过/1失败/0忽略，均完整保留，不折算成H53通过。实际命令均为`& <下列本轮debug/deps测试程序> <所列参数>`，在用户已隔离的独立PowerShell执行，主项目不重编译；构建隔离仍按原测试编译自己的最小合成crate：
+
+| 组 | 本轮实际测试程序及参数 | 通过/失败/忽略 | exit |
+|---|---|---|---|
+| original | `deepagent_runtime-a1fb3e223e049034.exe` `model_agent::tests::audit_compaction_releases_removed_memories_for_retrieval --exact --nocapture --test-threads=1` | 1/0/0 | 0 |
+| h53-runtime | `deepagent_runtime-a1fb3e223e049034.exe` `h53_ --nocapture --test-threads=1` | 9/0/0 | 0 |
+| h53-context | `deepagent_context-2704ee017f0bb5ce.exe` `memory_attachment::tests:: --nocapture --test-threads=1` | 2/0/0 | 0 |
+| h53-appcore | `deepagent_app_core-32f391e263e6c0fa.exe` `h53_ --nocapture --test-threads=1` | 4/0/0 | 0 |
+| h53-host | `kernel_v2_e2e-028d6b1208d6698b.exe` `memory_surface::h53_ --nocapture --test-threads=1` | 1/0/0 | 0 |
+| normal-prefetch | `deepagent_runtime-a1fb3e223e049034.exe` `model_agent::tests::relevant_memory_prefetch_injects_on_next_turn --exact --nocapture --test-threads=1` | 1/0/0 | 0 |
+| normal-retained | `deepagent_runtime-a1fb3e223e049034.exe` `model_agent::tests::retained_memory_bodies_stop_reinjection_on_next_run --exact --nocapture --test-threads=1` | 1/0/0 | 0 |
+| sdk-stdio | `e2e_stdio-40602f1c262b28ef.exe` `--nocapture --test-threads=1` | 13/0/0 | 0 |
+| isolate-build-marker | `deepagent_app_core-32f391e263e6c0fa.exe` `completion_plan::audit_tests::discovered_real_build_completes_after_release --exact --nocapture --test-threads=1` | 1/0/0 | 0 |
+| isolate-image-dacl | `kernel_v2_e2e-028d6b1208d6698b.exe` `image_preparation::read_failure::real_read_data_dacl_denial_fails_without_sampling_and_recovers --exact --nocapture --test-threads=1` | 0/1/0 | 101 |
+
+隔离结果与归因边界：build marker单独执行1/0/0，日志显示`exited_before_release=false persisted_before_release=None`、随后`terminal=Succeeded terminal_count=1 cleanup_success=true`，用时4.951秒。原完整全仓4秒观察窗失败仍保留，不据此声称高负载/冷编译时限稳定或该测试已被修复。图片DACL单独仍0/1/0，exit101，精确失败在未改`image_read_failure.rs:286`的DeniedImage::drop：原fixture经.NET SetAccessControl restore后捕获SDDL与原值不相等；未忽略AI/ACE差异、未提高权限、未把它记为通过。静态逐调用边界核对：该fixture的ChatService::new明确knowledge=None，未调用with_knowledge；RunAssembler只有Some(knowledge)才挂记忆provider，ModelAgent无provider直接不调度，新record_memory_attachment不被调用。DACL辅助函数本身不读Surface/记忆/模型，是本项未修改的独立测试权限往返边界。H53生产补丁没有ACL操作；这里只确认失败不落在H53记忆身份路径，没有宣称DACL为何被系统转换、H68在新G盘条件已重新全验或修复了该残余。后续独立核查，不能顺手改H68的断言或生产权限。四个失败测试源码/CLI golden与HEAD的git diff均空；H53仍只关闭记忆身份根因。
+
+因此最终完整workspace保留E05的148目标、4987/4/189（四项：build marker、图片DACL、CLI C/G快照、旧H306），而不是只报H306或改成全仓成功；首轮4980/11/189与夹具/冻结反例仍保留E01～06。正确G盘仓外夹具和顶层--target-dir已由用户真实执行，SDK lib72/0/5、stdio13/0/0及Workspace13/0/0本次全量通过，但首次SDK Closed原因尚无独立解释，不称已修复。所有189个ignored仍为未执行。本项acceptance以32项实际零忽略门禁、真实完整运行及消费边界为准，不依赖其他失败被静默跳过。
+
+其他实际门禁：Tauri离线cargo check exit0/13.573秒；CLI离线build exit0/172.252秒；Runtime/Context all-features完整默认目标及doc exit0（lib457/0/7、60/0/0）；Models完整workspace lib172/0/16。最终再次`cargo fmt --all -- --check`和`rustfmt --edition 2021 --check crates/deepagent-runtime/src/model_memory_surface_tests.rs crates/deepagent-app-core/src/input_memory_surface_tests.rs`均exit0，diff check通过。Context/CLI严格lint通过；全仓严格仍旧Models client.rs:453 clone_on_copy，Runtime旧Usage clone/Canvas Default，AppCore旧测试lint及诊断mcp_discovery_restore必定panic unwrap阻断，详E04实跑命令，不称全仓lint通过。新附件/新测试文件在诊断日志没有新告警；未放宽-D warnings。
+
+根因与兼容性：唯一真相是既有ResponseHistory中的完整版本1记忆附件（scope-qualified ID+非空正文）；Context共享严格解析供当前可见集合/配额，当前Surface删除释放而保留尾部仍去重，压缩/snip/历史替换统一撤销旧排除快照与查询gate；SessionSurfaceStore经原ResponseItemAppended先写再注入，不另建event/store/审批或执行链。MemoriesInjected保留遥测，不再充当正文可见证明；旧ID-only记录允许重新检索，不做迁移。原RelevantMemory Rust路径以re-export保留，seed_surfaced_memories签名保留但不再接受无正文ID；自定义Surface writer需实现加法record_memory_attachment，否则明确拒绝发送，无writer的独立agent仍只内存。无依赖/公开DTO字段/provider item类型/真实数据库迁移变化；正文增加版本JSON元数据，有计量开销，不保证真实模型质量改善。附件身份是本地上下文元数据，不是认证/ACL边界，也非不可伪造证据。
+
+残余/未验：限Windows本机离线合成fixture与既有本地stdio；真实供应商/摘要质量/线上容量、默认passive开启的查询guard组合、完整Desktop UI/截图/pnpm build、其他OS、真实断电/磁盘满/host强杀、全部ignored项未验。无TS/UI/Tauri command形状变化，本轮pnpm build未跑；Tauri只编译消费。abort只保证旧预取结果不采纳，不保证已开始的同步provider工作立即停止。跨文件事务/大规模性能/主动仿造reminder不在本项证据范围。四个全仓失败及旧lint未被此功能验收消除。
+
+台账本项新增验收1、历史跳过0、同一原探针补充H243归并1/撤销0（不重复计数）；累计200验收、26历史跳过、9归并、3撤销、68待修含授权跳过H180，实际**67有效未关**。H53本项有效修复余0，仍未宣布整个系统完成。下一准备H54，尚未改其生产。全部剩余保守暂沿170–430低置信有效小时，不机械按条数扣减；依据原剩余风险分组与近期轮次，尚未逐项校准H243重复预留/跨环境验收，等待设备/依赖/策略/环境另计，无法可靠给总等待区间或完工承诺。清理与独立提交随后补记，仅提交15份本项Rust实现/测试/契约注释及双文，不提交任何target/日志/脚本/.snap.new，无push/PR，不amend。
+
+最终21源SHA256（支持清理后对照本轮提交）：`crates/deepagent-app-core/src/context_runtime.rs`=`5C10DC7B4BF11EFDC65AF97AE4AE3C5EE5D3029DA161B118955878AE9447F660`；`crates/deepagent-app-core/src/input_runtime.rs`=`9F2AEE6666A52877E147B733AE8F0C98B85FA1EF2F1609D72896C4888B7F2760`；`crates/deepagent-app-core/src/run_assembler.rs`=`06308EEEE8F37B07D35477A6B93993DF1F919D57249519CE148BCA82621D9E54`；`crates/deepagent-app-core/src/input_memory_surface_tests.rs`=`18BBF7E8B3F46E8F5CB81517035F47CD990FA07B06F432A71914AAE01F309A02`；`crates/deepagent-app-core/src/memory_surface_acceptance_tests.rs`=`E14CA462900CC07C32B07904C04810ADC5B90F7EB9A11BF87D1E02298578CE61`；`crates/deepagent-app-core/tests/kernel_v2_e2e.rs`=`FB1CF8E13A0D411397A390A697348FCC9370A6F3743F2E031B6B686E068654E5`；`crates/deepagent-app-core/tests/kernel_v2_e2e/memory_surface.rs`=`A4653F7B2E3CE6576CB2204BD28B1DD90A460EDF741E89D38948062D5E86AC19`；`crates/deepagent-context/src/lib.rs`=`C9FF54DA31ED20D5221B03D6AEDAC2F109778322EB59020059876E3D12164E5D`；`crates/deepagent-context/src/memory_attachment.rs`=`F007CAB4A1BD279ED27BF539070C28F74020CD33D3B20ADDC6CF1E65635F6216`；`crates/deepagent-core/src/event.rs`=`568280A5CC13BC769506CC4E7FB89F791A3A6AB20363178E0F8A7E8944EBBBE3`；`crates/deepagent-runtime/src/agent.rs`=`C1AAAACE2E575F88E967BB1AA1484C0E970E6784634273DAE6298A29726A065A`；`crates/deepagent-runtime/src/events.rs`=`E3F78513D68F53404DEE9E2952D25CFA5CD21918237417F894F8CB94B70D792C`；`crates/deepagent-runtime/src/loop_engine.rs`=`0ECD7FAD27D4CB6EEA4FCA85FE56B1FD2832395EE5F67162284B95350DB039DC`；`crates/deepagent-runtime/src/model_agent.rs`=`6C18433A38684AD93F9D97B3EB7E549BCF6434141112F5C2BC889FC4E369F59F`；`crates/deepagent-runtime/src/model_memory_surface_tests.rs`=`984C3475C69113E7CBBC1C5AE92A24FC0B0453685D77D8BB164F7CC22E95EC3B`；`apps/cli/src/main.rs`=`1C133087C73F9EED1E0EA8972CAF7E7E471488FC4D124C6913EE87612A608C78`；`apps/desktop/src-tauri/src/lib.rs`=`AD37EC4B9539685C98649AFB400B465368A6D308E94AAB2C6BE2D34B6086D451`；`crates/deepagent-models/src/responses.rs`=`2DF1030F3E6C41F6A487A1637A86ABCAAD45A836B614DDBFDCFE5A0AACC85AEE`；`crates/deepagent-models/src/chat_completions.rs`=`FFEF96476A5F54B7083D5137854980FD8C30BC6A831AF699EBF86B30C79591A1`；`crates/deepagent-app-core/src/knowledge_service.rs`=`CC21897B37EF635A0AC3C906D064D98B89B6358D562CC30035D074B962AF2763`；`crates/deepagent-app-core/src/subagent_runner.rs`=`CEA7124DF74F533B0CE8A1F57A18A30E174779872F087C3E1B6EFEB81525A879`。
+
+**E-H53-08（2026-11-08，验收后产物清理部分成功，真实删除拒绝后立即停止）**：E07已把原失败/最终结果、命令、21源hash及5个binary hash写入双文，并核对真实10组日志/JSON后才开始清理。只核对本轮新G构建根、仓外G夹具及本轮CLI失败生成的单个.snap.new，不读改五项既有用户untracked内容，不触碰C/H48/H49等任何旧拒绝根。元数据预检：G构建root22,705文件/28,912,596,241逻辑字节/6,105目录/零reparse；仓外G夹具2,278文件/1,516,463,556字节/1,950目录，发现1条Windows为隔离HOME生成的INetCache内部junction（Content.IE5→同根IE），只读取链接元数据、未遍历链接目标；CLI .snap.new946字节、SHA256=ACDBFD864BEDBE07167E6CFD498E73D8D5B7DA21E71008305EF3240CAD2E9184，原golden不改。编译/本轮测试进程为零；各待操作绝对根及全部祖先先核对，G构建树无链接，cargo clean参数由本机--help查证。仓外根未进入实际删除。
+
+实际先执行`cargo clean --target-dir G:\Code_Warehouse\DeepAgent-Studio\target\h53-repair-20261108\tauri --offline`，exit0/3.876725秒，报告Removed8008 files/2.5GiB；随后`cargo clean --target-dir G:\Code_Warehouse\DeepAgent-Studio\target\h53-repair-20261108 --offline`确实启动并部分删除，exit101/8.657470秒，失败原文：`failed to remove file G:\Code_Warehouse\DeepAgent-Studio\target\h53-repair-20261108\fixtures\tmp\.tmpI4XsU4\destination\child; 拒绝访问。 (os error 5)`。这是实际本地文件删除拒绝，不是把此前测试命令CreateProcess拒绝当作成功。立即停止全部后续删除，不改ACL/提权、改名搬移、换壳/工具/路线或重试；构建根加入本任务禁止重试清理清单。未对仓外夹具或.snap.new另发删除命令，不将它们误称已经拒绝/已经删除。
+
+只读复核：tauri根已不存在；G构建根仍1,906文件/1,452,378,316逻辑字节/1,326目录/零reparse；仓外G夹具仍2,278文件/1,516,463,556字节/1,950目录及同一内部junction；两根枚举错误均0。本轮残余合计**2,968,842,818逻辑字节**（含946字节.new），不能称全部清理完成，也不把逻辑长度差额当物理回收承诺。共享CLI在清理前后hash始终1FA7ACD9211B29E94BCC46B83D1C87E0F1DE5A627ACA1407B039279658B633B3、82,201,600字节，sidecar及默认target其余内容不动。未完成清理需后续明确人工/权限决策；H53功能验收不会消除该残余或全仓四个失败，整体goal仍未完成。下一H54不复用或重试这份受拒清理根。
+
+本项提交白名单仅15份Rust实现/回归/必要契约注释及双文共17文件，不提交target、临时日志、手动脚本、备份或.snap.new；无推送/PR/真实数据库迁移。取得独立fix ID后另回填，不为自身ID反复amend。台账200验收、26历史跳过、9归并、3撤销、68待修含H180授权跳过，实际67有效未关；本项新增验收1、历史跳过0、同轮H243归并1/撤销0，不重复计数。全余保守170–430低置信有效小时及未验限制见E07，设备/依赖/环境/策略/删除权限等待另计。
 
 ### H-54：有效模型参数被桌面深度覆盖，显式思考强度与输出上限没有进入真实请求
 
@@ -8888,7 +8969,7 @@ H207本机修复/验收/代码提交余0；E03旧H306/全仓lint/206 ignored及�
 | `cargo test -p deepagent-runtime --lib --offline`（H-55 核查时） | 266 passed / 8 ignored；包括 H-55 在内的审计缺陷探针默认忽略，不能以此宣称问题已修复 |
 | H-54 Harness 思考覆盖显式探针（见该节命令） | 明确失败：无覆盖对照正确；max/low 覆盖被 Medium/Simple/Deep 持久化档位分别改成 high/none/max |
 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`（H-54 核查时） | 11 passed / 6 ignored；新缺陷探针另行显式执行并失败 |
-| H-53 压缩后后台记忆显式探针（见该节命令） | 明确失败：1 条组再次取回但被旧 ID 过滤；12 条组不再调用 provider；两组后续 wire 均缺少摘录 |
+| H-53 压缩后后台记忆显式探针（见该节命令） | 原审计明确失败：1条被旧ID过滤，12条不再调用provider；原证据保留。2026-11-08候选原probe通过，但全仓及策略反例使本项仍阻塞未验收，见E-H53-01～04；H243仅补充证据 |
 | `cargo test -p deepagent-runtime --lib memor --offline`（H-53 核查时） | 5 passed / 1 ignored；新缺陷探针另行显式执行并失败，不视为已修复 |
 | H-52 独立知识服务写入显式探针（见该节命令） | 明确失败：两次保存均成功，不刷新时 ID 相同、磁盘只剩 B、首缓存仍为 A；刷新对照两条均保留 |
 | `cargo test -p deepagent-app-core --lib knowledge_service::tests --offline`（H-52 核查时） | 18 passed / 2 ignored；H-51/H-52 缺陷探针各自另行显式执行，不能用默认绿测视为已修复 |
@@ -12206,6 +12287,9 @@ baseline-and-freeze-proof.json保留源码hash、严格lint诊断/文件未变�
 - 未运行 workspace 全量、Desktop build/UI、真实 DeepSeek/HTTP/计费或参考工程测试；未验证数据库重开、真实进程崩溃、并发 resume、压缩 replacement、图片/大工具输出和恢复后副作用。官方 API 文档已联网核对，真实 provider 行为未宣称。全系统审计仍 active，未处理用户排除的 encrypted-content 报错。
 
 ### H-243：原生 compaction 移除 memory 摘录后，memory 去重状态未释放，后续检索无法重新注入
+
+分类校正（2026-11-08）：归并H-53；下述E-243为同一原probe的补充审计证据，不是独立问题。原失败与历史未实施记录保留；当前修复/验收状态统一见H53及E-H53，不重复计数。
+
 
 **级别：中（P2，compaction 后的相关记忆连续性缺陷）；状态：正式 `ModelAgent`、`ModelClient`、`RelevantMemoryProvider` 与请求 wire 已复现，未修复。** 这不是重复 H-168 的 instructions 前缀问题，也不是 H-242 的子 Agent resume 摘要问题；本项专门验证 compaction 对运行内存检索去重状态的失配。
 

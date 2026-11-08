@@ -29,6 +29,10 @@ use crate::skill_catalog_reminder::SkillCatalogSendState;
 use crate::system_context::{build_context_pack_snapshot, build_system_manifest_with_permissions};
 use crate::tool_manifest::{deferred_tools_announcement, ToolManifest};
 
+#[cfg(test)]
+#[path = "memory_surface_acceptance_tests.rs"]
+mod memory_surface;
+
 pub(crate) type RemoteContextFuture = Pin<Box<dyn Future<Output = Result<Option<String>>> + Send>>;
 pub(crate) type RemoteContextFactory = Arc<dyn Fn(String) -> RemoteContextFuture + Send + Sync>;
 
@@ -38,6 +42,13 @@ pub(crate) struct SessionSurfaceStore {
 }
 
 impl deepagent_runtime::ContextSurfacePersistence for SessionSurfaceStore {
+    fn record_memory_attachment(&self, item: &ResponseInputItem) -> Result<()> {
+        let clock = deepagent_core::clock::SystemClock;
+        let mut session = deepagent_session::Session::recover(&self.db, &clock, self.session_id)?;
+        session.append_response_item(item.clone())?;
+        Ok(())
+    }
+
     fn replace_tool_results(
         &self,
         strategy: &str,

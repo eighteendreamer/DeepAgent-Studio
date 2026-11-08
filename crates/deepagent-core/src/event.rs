@@ -264,10 +264,9 @@ pub enum EventPayload {
     },
 
     /// Long-term memory entries were injected into the model context. The
-    /// `relevant_memories` counterpart of [`EventPayload::ToolsDiscovered`]:
-    /// persisting the **ids** makes the already-surfaced de-dup set derivable
-    /// from the event stream, so a resumed or reopened session does not
-    /// re-inject the same memories, and the UI can show what was added.
+    /// Telemetry-only delta for UI/audit. These historical IDs do not establish
+    /// current model visibility: intact memory attachments in the retained
+    /// `ResponseItemAppended` Surface own de-duplication and its budget.
     MemoriesInjected {
         /// Ids of the entries newly surfaced (empty when only counts are known).
         #[serde(default)]

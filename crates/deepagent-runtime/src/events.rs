@@ -374,7 +374,8 @@ pub enum RuntimeEvent {
         /// Milliseconds from prefetch start to injection.
         latency_ms: u64,
         /// Ids of the injected entries. Carried so the loop can persist a
-        /// replayable `MemoriesInjected` event (session de-dup across runs).
+        /// replayable `MemoriesInjected` telemetry event. Current Surface
+        /// attachments, not this cumulative telemetry, own model de-dup.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         ids: Vec<String>,
     },

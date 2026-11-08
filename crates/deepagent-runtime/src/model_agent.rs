@@ -331,19 +331,21 @@ pub trait ContextSurfacePersistence: Send + Sync {
     fn replace_tool_results(&self, strategy: &str, replacements: &[(String, String)])
         -> Result<()>;
     fn record_snip(&self, tags: &[String]) -> Result<()>;
+    /// Commit the complete identity/body before it becomes model-visible.
+    /// Existing hosts remain source-compatible but must opt in to durable
+    /// memory injection; an unsupported writer must not silently lose content.
+    fn record_memory_attachment(&self, _item: &ResponseInputItem) -> Result<()> {
+        Err(CoreError::invalid(
+            "Surface persistence does not support memory attachments",
+        ))
+    }
 }
 
 /// One background-prefetched memory ready for injection (§3.2, Claude Code
 /// `relevant_memories` attachment). `id` is a stable entry id used for
 /// per-session de-duplication; `block` is the already-rendered content
 /// (without the surrounding `<system-reminder>` wrapper).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RelevantMemory {
-    /// Stable entry id (scope-qualified) for session de-dup.
-    pub id: String,
-    /// Rendered memory block (title + excerpt), ready to inject.
-    pub block: String,
-}
+pub use deepagent_context::memory_attachment::RelevantMemory;
 
 /// Retrieves memories relevant to the evolving conversation, off the critical
 /// path (Claude Code `startRelevantMemoryPrefetch`). The runtime calls this in
@@ -371,10 +373,10 @@ pub trait RelevantMemoryProvider: Send + Sync {
     ) -> Result<Vec<RelevantMemory>>;
 }
 
-/// Cap on distinct memories surfaced by the background prefetch across one
-/// run. Bounds cumulative injection (Claude Code caps by
+/// Cap on distinct memories currently visible on the retained Surface.
+/// Bounds cumulative injection (Claude Code caps by
 /// `RELEVANT_MEMORIES_CONFIG.MAX_SESSION_BYTES`; we cap by entry count since
-/// our entries are short knowledge excerpts). After this the prefetch stops.
+/// our entries are short knowledge excerpts). Removal releases this budget.
 const MAX_SURFACED_MEMORIES_PER_RUN: usize = 12;
 
 /// Current todo state for the periodic reminder (§3.1 attachment breadth).
@@ -660,7 +662,8 @@ pub struct ModelAgent {
     /// The user query the last prefetch was fired for — a new query (new user
     /// turn) triggers a fresh prefetch; identical queries do not re-fire.
     last_prefetch_query: Option<String>,
-    /// Entry ids already surfaced this run (session de-dup + cap).
+    /// Derived cache of intact memory identities on the CURRENT native Surface.
+    /// Never extended from historical telemetry IDs.
     surfaced_memory_ids: std::collections::HashSet<String>,
     /// Injections produced this run, waiting to be persisted as durable
     /// `MemoriesInjected` events by the loop: `(ids, latency_ms)`.
@@ -787,6 +790,14 @@ impl ModelAgent {
     /// Runtime mutations must update the native items first; this projection is
     /// never used as the source for a live provider request.
     fn sync_message_projection(&mut self) {
+        let visible =
+            deepagent_context::memory_attachment::surfaced_memory_ids(&self.response_history.items)
+                .into_iter()
+                .collect();
+        if !self.surfaced_memory_ids.is_subset(&visible) {
+            self.invalidate_memory_prefetch();
+        }
+        self.surfaced_memory_ids = visible;
         self.messages = deepagent_models::messages_from_response_items(
             self.response_history.instructions.as_deref(),
             &self.response_history.items,
@@ -873,6 +884,7 @@ impl ModelAgent {
 
     fn adopt_compacted_history(&mut self, compacted: &ReactiveCompaction) {
         self.reset_tool_context("compaction");
+        self.invalidate_memory_prefetch();
         // Every adoption path (proactive threshold, prefire pass-2, reactive
         // overflow recovery) funnels here, so this is the one place the
         // summarizing call's spend can be recorded without missing a route.
@@ -1223,6 +1235,7 @@ impl ModelAgent {
     pub fn with_history(mut self, history: Vec<Message>) -> Self {
         if !history.is_empty() {
             self.reset_tool_context("history_replacement");
+            self.invalidate_memory_prefetch();
             // messages == [system, goal]; reinsert as [system, history.., goal].
             let goal = self.messages.pop().expect("seeded with system + goal");
             self.messages.extend(history);
@@ -1245,6 +1258,7 @@ impl ModelAgent {
             return self;
         }
         self.reset_tool_context("history_replacement");
+        self.invalidate_memory_prefetch();
         let instructions = self.response_history.instructions.clone();
         let live_goal = self.response_history.items.last().filter(|item| matches!(item,
             ResponseInputItem::Message { role, .. } | ResponseInputItem::InputMessage { role, .. } if role == "user")).cloned();
@@ -1833,17 +1847,25 @@ impl ModelAgent {
         names
     }
 
-    /// Non-blocking: if the background relevant-memory prefetch has settled,
-    /// inject the fresh entries as a single `<system-reminder>` and emit a
-    /// [`RuntimeEvent::RelevantMemoriesInjected`]. Deduped against
-    /// `surfaced_memory_ids` and bounded by [`MAX_SURFACED_MEMORIES_PER_RUN`].
-    async fn collect_finished_memory_prefetch(&mut self) {
+    /// Context replacement invalidates both the query gate and the exclusions
+    /// captured by an in-flight retrieval. Its detached result is never adopted.
+    fn invalidate_memory_prefetch(&mut self) {
+        if let Some(handle) = self.memory_prefetch_handle.take() {
+            handle.abort();
+        }
+        self.memory_prefetch_started_at = None;
+        self.last_prefetch_query = None;
+    }
+
+    /// Non-blocking collection, bounded against current visible identities.
+    /// Persistence failure stops dispatch before adopting any new content.
+    async fn collect_finished_memory_prefetch(&mut self) -> Result<()> {
         if !self
             .memory_prefetch_handle
             .as_ref()
             .is_some_and(|handle| handle.is_finished())
         {
-            return;
+            return Ok(());
         }
         let handle = self.memory_prefetch_handle.take().unwrap();
         let started_at = self.memory_prefetch_started_at.take();
@@ -1851,20 +1873,22 @@ impl ModelAgent {
             Ok(Ok(memories)) => memories,
             Ok(Err(error)) => {
                 tracing::warn!(error = %error, "relevant-memory prefetch failed");
-                return;
+                return Ok(());
             }
             Err(join_error) => {
                 tracing::warn!(error = %join_error, "relevant-memory prefetch task join failed");
-                return;
+                return Ok(());
             }
         };
-        // De-dup + cap: keep only entries not already surfaced this run.
+        // De-dup + cap are derived from retained content, not all past events.
         let mut fresh: Vec<RelevantMemory> = Vec::new();
         for memory in memories {
             if self.surfaced_memory_ids.len() + fresh.len() >= MAX_SURFACED_MEMORIES_PER_RUN {
                 break;
             }
-            if self.surfaced_memory_ids.contains(&memory.id)
+            if memory.id.trim().is_empty()
+                || memory.block.trim().is_empty()
+                || self.surfaced_memory_ids.contains(&memory.id)
                 || fresh.iter().any(|m| m.id == memory.id)
             {
                 continue;
@@ -1872,19 +1896,15 @@ impl ModelAgent {
             fresh.push(memory);
         }
         if fresh.is_empty() {
-            return;
-        }
-        for memory in &fresh {
-            self.surfaced_memory_ids.insert(memory.id.clone());
+            return Ok(());
         }
         let injected_ids: Vec<String> = fresh.iter().map(|m| m.id.clone()).collect();
-        let mut body = String::from("# 相关记忆 (relevant memories, retrieved in background)\n");
-        for memory in &fresh {
-            body.push('\n');
-            body.push_str(memory.block.trim());
-            body.push('\n');
+        let item = deepagent_context::memory_attachment::memory_attachment(&fresh)?;
+        if let Some(persistence) = &self.surface_persistence {
+            persistence.record_memory_attachment(&item)?;
         }
-        self.push_message(Message::user(deepagent_context::reminder::wrap(&body)));
+        self.response_history.items.push(item);
+        self.sync_message_projection();
 
         let count = fresh.len();
         let latency_ms = started_at
@@ -1904,6 +1924,7 @@ impl ModelAgent {
                 ids: injected_ids,
             });
         }
+        Ok(())
     }
 
     fn record_proactive_compaction_failure(&mut self, step: usize, reason: &str) {
@@ -2057,6 +2078,7 @@ impl ModelAgent {
         }
         self.snipped_tags.extend(plan.applied_tags.iter().cloned());
         self.reset_tool_context("history_snip");
+        self.invalidate_memory_prefetch();
         let items = std::mem::take(&mut self.response_history.items);
         self.response_history.replace_items(plan.apply(items));
         self.sync_message_projection();
@@ -2340,13 +2362,6 @@ impl Agent for ModelAgent {
         self.finish_prefire_background().await;
     }
 
-    fn seed_surfaced_memories(&mut self, ids: &[String]) {
-        // Session-wide de-dup: ids replayed from `MemoriesInjected` events
-        // count as already surfaced, so a resumed run does not re-inject them
-        // and the injection cap is honored across runs.
-        self.surfaced_memory_ids.extend(ids.iter().cloned());
-    }
-
     fn drain_memory_injections(&mut self) -> Vec<(Vec<String>, u64)> {
         std::mem::take(&mut self.pending_memory_injections)
     }
@@ -2426,7 +2441,7 @@ impl ModelAgent {
         // request projection. Every attempt below runs the shared pressure
         // check; overflow recovery remains the bounded fallback.
         self.collect_finished_prefire(cancel.clone()).await?;
-        self.collect_finished_memory_prefetch().await;
+        self.collect_finished_memory_prefetch().await?;
         self.maybe_time_based_microcompact();
         self.maybe_schedule_prefire(cancel.clone());
         self.maybe_schedule_memory_prefetch();
@@ -6158,11 +6173,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn seeded_surfaced_memories_stop_reinjection_on_next_run() {
+    async fn retained_memory_bodies_stop_reinjection_on_next_run() {
         // Scenario: run 1 of a session injected `project:build-fix` and the loop
-        // persisted it. Run 2 replays that id into seed_surfaced_memories, so the
-        // same memory must NOT be injected again (the de-dup set used to be
-        // run-local, which re-sent it after every restart).
+        // persisted its complete attachment. Run 2 restores that body through
+        // native history, so the same memory must NOT be injected again.
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
                 response_function_call_done("c1", "read_file", r#"{"path":"a.txt"}"#),
@@ -6188,19 +6202,29 @@ mod tests {
             "investigate the failing build error and fix it",
             vec![],
         )
-        .with_relevant_memory_provider(provider);
-        agent.seed_surfaced_memories(&["project:build-fix".to_string()]);
+        .with_relevant_memory_provider(provider)
+        .with_response_history(vec![
+            deepagent_context::memory_attachment::memory_attachment(&[RelevantMemory {
+                id: "project:build-fix".into(),
+                block: "run cargo clean first".into(),
+            }])
+            .unwrap(),
+        ]);
 
         agent.think(0, &[]).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         agent.think(1, &[]).await.unwrap();
 
-        let injected = agent.conversation().iter().any(|m| {
-            m.role == Role::User
-                && m.content.contains("相关记忆")
-                && m.content.contains("cargo clean first")
-        });
-        assert!(!injected, "already-surfaced memory must not be re-injected");
+        let injected = agent
+            .conversation()
+            .iter()
+            .filter(|m| {
+                m.role == Role::User
+                    && m.content.contains("相关记忆")
+                    && m.content.contains("cargo clean first")
+            })
+            .count();
+        assert_eq!(injected, 1, "retained memory must not be re-injected");
         assert!(
             agent.drain_memory_injections().is_empty(),
             "no injection means nothing to persist"
@@ -6208,7 +6232,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: compaction must release dedup and budget for removed memory attachments"]
     async fn audit_compaction_releases_removed_memories_for_retrieval() {
         let mut restored = Vec::new();
         for count in [1, MAX_SURFACED_MEMORIES_PER_RUN] {
@@ -6307,6 +6330,8 @@ mod tests {
             "a removed memory excerpt must be eligible for retrieval after compaction"
         );
     }
+
+    include!("model_memory_surface_tests.rs");
 
     #[test]
     fn recent_tool_names_are_deduped_in_first_seen_order() {

@@ -249,10 +249,9 @@ pub trait Agent: Send + Sync {
         None
     }
 
-    /// Seed the ids of memories already surfaced earlier in this session,
-    /// rebuilt from the replayed event stream. Without it a resumed run would
-    /// re-inject the same entries (the de-dup set used to be run-local).
-    /// Non-model agents have no memory track and keep the default.
+    /// Legacy compatibility hook. IDs alone do not prove that a memory body
+    /// survived compaction/snip. ModelAgent derives dedup from intact attachments
+    /// in its restored native Surface and deliberately ignores this hint.
     fn seed_surfaced_memories(&mut self, _ids: &[String]) {}
 
     /// Drain the background-memory injections produced during this run as

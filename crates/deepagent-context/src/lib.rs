@@ -25,6 +25,7 @@ pub mod attachment;
 pub mod budget;
 pub mod compaction;
 pub mod config_overlay;
+pub mod memory_attachment;
 pub mod meter;
 pub mod model_compactor;
 pub mod pack;

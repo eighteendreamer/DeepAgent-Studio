@@ -1134,14 +1134,9 @@ impl<'a> RunAssembler<'a> {
             agent = agent.with_relevant_memory_provider(Arc::new(
                 crate::knowledge_service::KnowledgeMemoryProvider::new(knowledge.clone()),
             ));
-            // Session-wide de-dup: entries already injected by an earlier run
-            // of this session are replayed from the event stream, so resuming
-            // does not re-send the same memories (the set used to be run-local).
-            let restored_memories =
-                crate::input_runtime::collect_surfaced_memory_ids_from_events(&prior_events);
-            if !restored_memories.is_empty() {
-                agent.seed_surfaced_memories(&restored_memories);
-            }
+            // with_response_history already restored intact memory attachments
+            // through the shared compaction/snip projection. Historical IDs are
+            // telemetry only; they cannot prove that a body remains visible.
         }
 
         agent = agent.with_todo_reminder_source(Arc::new(

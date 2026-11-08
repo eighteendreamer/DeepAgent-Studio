@@ -1118,9 +1118,9 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             })?;
         }
 
-        // Persist each background-memory injection as a replayable delta so the
-        // session's already-surfaced set is derived from the event stream
-        // instead of a process-local set (resumed runs then stop re-injecting).
+        // Telemetry deltas remain replayable for UI/audit. Model de-dup is
+        // derived from intact native Surface attachments persisted at injection,
+        // not these historical IDs (whose bodies may since have been removed).
         for (ids, latency_ms) in agent.drain_memory_injections() {
             let count = ids.len();
             session.append(EventPayload::MemoriesInjected {
