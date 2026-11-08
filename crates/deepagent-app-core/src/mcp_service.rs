@@ -266,13 +266,6 @@ pub struct McpService {
     preparation: preparation::McpPreparation,
 }
 
-/// A cached, live [`McpRegistry`] plus the config fingerprint it was built for.
-struct CachedRegistry {
-    fingerprint: String,
-    registry: Arc<McpRegistry>,
-    failures: Vec<(String, String)>,
-}
-
 impl McpService {
     /// Build over the shared database.
     pub fn new(db: Arc<Database>) -> Self {

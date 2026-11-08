@@ -2180,6 +2180,76 @@ E-H46-20261027-12（独立提交与真实hash回填）：代码、默认回归�
 - 后果是在管理另一台 MCP 时，仍然合法、原本正在加载的 A 被误报为失败，新请求缺失 A 的工具；仅重复聊天或相同配置的宿主准备不会修复。初始化越慢，越容易遇到该窗口；不是模型网络慢，也不是 A 自身握手失败。重启或显式定向重试等路径可能恢复，本探针没有动态覆盖这些恢复入口。
 - 修复应把初始化 owner/cancel 和失败缓存归到同一服务连接身份及配置代次；全局 generation 只控制当前视图发布，不能撤销未变服务的共享工作。取消的旧身份不应成为新身份可复用的稳定失败；同时保留真实初始化失败的有界重试策略，避免每轮聊天重试。验收增加 A 初始化中新增 B、修改 B、禁用 A、修改 A、迟到旧任务及共享插件 owner 的对照，确认只失效目标服务且新视图无过期能力。本轮仅添加测试和文档，未修改生产准备调度。
 
+修复状态（2026-11-08）：已修复并验收，限E-H47-01～06实际本机证据；原失败与反例保留，清理及提交随后回填。
+
+**E-H47-01（2026-11-08，原探针复现与根因方案，修复中）**：基线9ffd5b278713c35e3bc66a5f032d0cca244f7369；上轮H95已验收并独立fix/docs提交，属实质进展。当前tracked干净、无未完成合并，原五项用户untracked仅读名称、不读改/暂存。306唯一主行中H47待修；当前host仍用全局generation取消所有pending初始化且将取消写入同配置slot失败缓存。核对H219能力装配/快照绑定、H126读取预算等历史提交未修复此归属边界，不能历史跳过/归并。优先修复MCP运行状态及能力可用性；H48恢复耗尽问题独立，本轮不合并；H180继续授权跳过，H95及全部旧拒绝清理根不重试。
+
+核对mcp_preparation/service、PluginPreparation共享owner、McpRuntime attach、Registry/Client/stdio生命周期、桌面save/remove/enable及ChatService准备入口、Cargo/CI/rustfmt和现有测试。参考只读Codex reusable_pending_startup按身份复用gate及disable取消测试，没有运行参考工程；实际watch/Semaphore API另核对Cargo.lock锁定Tokio1.52.3本地源码，不按最新版签名猜实现。目标为唯一服务连接身份的初始化owner/cancel/结果缓存，保留原McpRegistry、ToolRegistry及请求快照，不复制一套MCP执行链。
+
+新建前确认本轮真正Cargo/证据根C:\Users\32734\AppData\Local\Temp\h47-repair-20261108不存在；隔离合成HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/TMP/data，清继承凭据/代理/DEEPAGENT环境，offline复用已安装依赖与本地Node。冻结6份原相关源码及Node身份后，实际 cargo test --target-dir <本轮绝对root> -p deepagent-app-core --lib mcp_service::preparation::tests::audit_unrelated_config_change_preserves_pending_startup --offline -j 2 -- --ignored --exact --nocapture --test-threads=1：exit101、0/1/0、340.132秒含冷编译（测试0.73秒），六源未变。无B对照A配置未变、启动1次、connected、ready有A；新增B时A仍配置未变/启动1次，却failed/MCP preparation cancelled、ready仅B；再次相同配置准备no-op。原失败证据保留，不把默认忽略当通过。
+
+生产未改时新增独立h47_tests模块，拟真实覆盖：新增/修改B时A保持pending且复用实际进程/路由；插件等待者cancel或drop不拥有共享初始化；禁用A仅最后owner退役、共享插件不被杀；替换A取消旧身份且不发布旧能力；真实失败仍缓存且只允许显式重试。均为gate控制的真实Node MCP、合成文件/内存SQLite，Windows仅以SYNCHRONIZE句柄观察本夹具进程退出，不按PID杀进程。第一扩展编译因unwrap_err要求McpRegistry:Debug失败（exit101、31.736秒，无测试结果块），已只改测试为matches检查JoinError，不算产品红；第二次扩展实际测试仍在执行。
+
+本地设计：在既有按name/fingerprint的server slot中单独持有一次初始化及取消、可共享的ready/failed结果；调用者取消只停止等待，不把它缓存成服务失败。新host generation只决定视图发布；删除/禁用最后owner或该连接配置变化才取消相应pending身份，旧结果不得写入替换slot，现有请求借出的ready客户端仍可完成。真实连接失败/30秒初始化timeout保持缓存及显式有界retry，保留本地2/远程4并发预算。插件须在等待初始化之前登记既有owner，以免host退役误伤共享pending；该改动与同一初始化归属根因必须共同闭环。先验证新增TDD红再实现，不堆叠“忽略cancel错误字符串”特判，不改握手协议/权限/配置DTO/沙箱或H48恢复预算。
+
+尚未完成根因实现、完整回归/插件/内核/CLI与Tauri消费、fmt/lint/build/全仓、清理和独立提交，新增验收0。当前196验收、26历史跳过、8归并、3撤销、72待修+H47修复中=73未关闭（含H180授权跳过，实际72）。本项暂估4–10有效小时；全余约200–450有效小时的低置信标题分组依据沿E-H95-05，编译/设备/依赖/环境与删除权限等待另计，暂无可靠总等待区间或精确完工承诺，整体goal active。
+
+**E-H47-02（2026-11-08，TDD红与身份slot候选，未最终验收）**：生产未改的扩展第二次实际执行exit101、2/3/0、110.471秒含编译（测试6.65秒）：新增/修改B用例实际A=failed而非preparing，取消/Drop插件等待者后A无法ready，共享插件owner禁用对照收到MCP preparation cancelled；替换A正常对照及真实失败缓存/显式重试对照通过。不是编译问题、默认ignore或纯mock，原失败结果保留。
+
+根因实现把原slots内的“持锁等待后缓存”收敛为唯一ServerSlot：连接fingerprint、既有CancellationTree、一次独立owned初始化及watch共享结果；只移动原connect/register/instructions/liveness装配到server_startup，不增加连接/ToolRegistry/权限/审批链或依赖。owned任务不捕获slot或service强引用，最后owner可取消queued/handshaking任务；调用者取消/Drop仅结束等待，不改服务结果。真实初始化/30秒timeout错误仍缓存、retry_failed才可重试；本地2/远程4Semaphore预算不变。配置替换取消旧slot，旧结果只发给旧channel，不能写替换缓存；退役ready cache只移除owner，不杀已借出请求client。
+
+host准备的配置读取、fingerprint/generation及owner更新在原active_fingerprint锁内串行；reconcile_owner保持既有入口，改为同一锁序下原owner/map的原子差分，取消移到锁外，不在新旧异步view里迟到退役新owner。全局cancel仍停止旧view/payload等待，但不拥有未变身份的连接。PluginPreparation在等连接前登记同一原owner，失败/禁用沿原reconcile释放，以闭环共享pending归属；这是同一根因所需跨模块修改，不归并H48。DTO/配置序列化、握手、恢复预算、权限/沙箱均未改变。
+
+原probe移除ignore并修正其原先“B ready前A必须settle”的错误等待前提：只等B发布，额外断言A仍preparing，再开放A gate并验证两路实际工具/同配置no-op，不放宽为取消成功。第一候选完整preparation9/0/0、exit0、111.287秒（测试3.30秒）；真实原probe两组A均配置未变/启动1次/connected，增加B组ready同时含A/B。未以该局部结果结案。
+
+复审增加真实PluginService manifest/loader→准备→owner→ready/disable，以及占满原本地预算后queued identity取消不再spawn的对照。第二候选10/1/0、exit101、118.931秒；唯一失败为新插件fixture仍手拼legacy工具名。使用同一实际binary的精确诊断0/1/0、回溯定位h47_tests.rs:412（gate已开放且pending owner断言已通过），核对现有RemoteTool及namespaced_name：插件双下划线身份按H200既有规则使用稳定alias，不能反解/手拼。只改测试调用既有canonical namespaced_name，不改生产路由或放宽期望。
+
+另加真实生产30秒初始化deadline对照，B视图更新不取消A、不重置连接生命周期，最终缓存真正timeout并观测本夹具进程退出，后续默认调用不重启。第三候选实际12/0/0、exit0、141.037秒含编译（测试35.72秒），含8个新默认用例、原probe及3个正常对照，全部非ignored。随后只加强测试，沿正式mcp_runtime::attach_mcp_tools→ToolRegistry权限/审批检查→真实Node echo验证user/plugin生产消费、instructions与disable后新快照，未改该生产链。最后13份相关源码冻结并启动fmt、完整preparation/AppCore/MCP全特性/插件及Kernel、strict/diagnostic lint、CLI build与独立Tauri check；该最终版本尚在验收，新增验收0，不假称H47或整个系统已完成。
+
+**E-H47-03（2026-11-08，最终冻结版本已过的门禁，未最终验收）**：13份最终源码冻结后，包含正式attach_mcp_tools→ToolRegistry权限/审批→真实Node echo及user/plugin instructions/disable新快照的MCP preparation整组实际12/0/0、exit0、151.446秒含编译（测试36.04秒）；原probe默认执行，未按ignore/0项取绿。AppCore完整--lib实际1601/0/45、exit0、232.990秒（测试231.14秒）；MCP --all-features实际lib126/0/2，相关测试另31/0/1，doc为0项不计正向，共157通过/0失败/3忽略、exit0、114.953秒。fmt实际exit0（4.377秒），各gate前后源码hash核对未变。
+
+桌面真实生产消费编译 cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --target-dir C:\Users\32734\AppData\Local\Temp\h47-repair-20261108\tauri --offline -j 2 实际exit0、406.216秒；该运行脚本由上轮模板派生，结果JSON的说明字符串误沿用<H95 root>占位，实际root变量、命令参数及target始终为本轮H47路径，已只纠正说明元数据，不伪称重跑一遍。13源hash在该gate前后亦一致。Tauri check不等于Wry/UI运行验收；无公开DTO/桥接/TS形状改变，尚未执行UI/pnpm build或真实模型/内网/凭据测试。
+
+插件/Kernel、严格及诊断lint、CLI build仍在同一已启动pipeline执行，尚无最终结果；新的共享CLI发布、真实SDK消费、全workspace及其strict lint、最后实际binary显式probe/回归、台账终验/清理/独立提交尚未执行。本轮仍修复中，新增验收0；当前196验收、26历史跳过、8归并、3撤销、72待修+H47修复中，实际72未处理（扣H180授权跳过）。本轮根未尝试清理，H95及旧拒绝根不重试，不把当前专项通过当作整项或全系统完成。
+
+**E-H47-04（2026-11-08，内核/插件及CLI产物，消费方验收中）**：同一13源冻结pipeline后续实际 cargo test --target-dir <本轮root> -p deepagent-app-core --test plugin_conformance --test kernel_v2_e2e --offline -j 2 -- --quiet --test-threads=2，exit0、383.892秒含编译；Kernel319/0/22、plugin_conformance6/0/0。相关插件producer、MCP准备、ToolRegistry consumer、旧正常对照均真实执行；没有以小范围成功代替全仓。cargo build --target-dir <本轮root> -p deepagent-cli --offline -j 2 --message-format=json 实际exit0、120.217秒，唯一compiler-artifact确定本轮deepagent.exe。
+
+AppCore --all-targets --no-deps strict clippy实际exit101、157.902秒；原context_runtime Usage clone、config_resolver return、run_assembler参数数、session_title借用、plugin_preparation.rs:14原states类型复杂度、workflow_audit/media冗余绑定/布尔断言等阻断。plugin_preparation虽属本轮修改文件，其14行原类型无diff，本轮只改pending owner登记处；不把该旧诊断误报为新增，也不顺手修复。--lib --no-deps -W warnings诊断实际exit0、30.659秒，保留原12条告警；不是strict通过。后续还需all-targets诊断覆盖本轮lib-test，已有旧kernel测试deny级问题需按实际结果记录，不能静默allow。
+
+发布前复核工具脚本，实测FileInfo没有Parent属性，旧模板用该属性向上遍历不足以证明“所有祖先已检查”（此前同模板记录的该项证据强度有限，不追改功能测试结果）。本次改为字符串路径逐级GetDirectoryName，逐项打印C源9级与G目标6级，实际全无reparse；13源hash一致、源/目标零活进程。先验证旧共享CLI SHA256=8ECE51B5FA5C279FEA48F6F72ADB81AEFB69EE2EE2AEB013B27BE7D78465CFB7并备份/复核，再复制实际Cargo产物，不动sidecar。当前共享G:\Code_Warehouse\DeepAgent-Studio\target\debug\deepagent.exe为82,141,696字节、SHA256=1D4561B923A06139C68CAC1B59B32C5540D9B8A0674EF9D94C85A67A00354D3B，供既有SDK真实stdio消费方验收；尚未把“复制成功”当作消费方已通过。
+
+新的消费方pipeline已启动，重新fmt及preparation、all-targets诊断、真实CLI startup、CLI strict lint及SDK全组；全workspace/strict lint、最后真实binary显式probe、双文台账终验、验收后清理和独立提交仍待执行。H47保持修复中、无新增验收，不与H48合并，不重试H95/其他旧拒绝目录。
+
+**E-H47-05（2026-11-08，消费方结果与全仓启动，尚未最终验收）**：新共享CLI身份1D4561B923A06139C68CAC1B59B32C5540D9B8A0674EF9D94C85A67A00354D3B在每gate前后复核不变；13源仍一致。消费方pipeline实际fmt exit0（4.867秒）；preparation再次12/0/0、exit0（38.111秒）；CLI startup2/0/1、exit0（115.277秒含编译，原H229专用Wry仍ignored，未冒称执行）；CLI --all-targets --all-features --no-deps -D warnings exit0（46.356秒）；SDK完整72/0/5、真实stdio13/0/0、doc2/0，exit0（95.508秒）。测试环境继续合成隔离、offline，不读取真实凭据/用户数据或访问真实内网。
+
+AppCore --all-targets --no-deps -W warnings实际exit101（42.537秒）：旧kernel_v2_e2e/mcp_discovery_restore.rs:776因first.is_err后unwrap为deny级guaranteed panic；其行无本轮diff，未改allow。lib-test诊断完整输出原14条（12条重复lib），逐定位核对新server_startup/h47_tests及修改位置无新增诊断；plugin_preparation.rs:14仅为E04已说明的原states复杂度，不称“修改文件全无诊断”。该结果仍是失败，不能与CLI strict或lib诊断通过合并称整体lint通过。
+
+上述确定完成后实际启动一次全仓 cargo test --target-dir <本轮root> --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=2，随后同pipeline会执行workspace --all-targets --all-features strict clippy；目前同一进程仍在运行，尚无全仓结论，不因观测超时重启。最后从真实Running记录定位binary、显式原probe/新组/整准备及正常插件/恢复/SDK消费，验收后清理及独立提交仍待完成。H47维持修复中，新增验收0，台账计数不变。
+
+**E-H47-06（2026-11-08，限定本机范围修复验收通过）**：实际全仓 cargo test --target-dir <本轮root> --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=2，exit101、1736.790秒含冷编译；147个Running/Doc-tests目标与147个结果正确配对，4956通过/1失败/192忽略。唯一失败为旧H306 canvas_prompt::tests::every_node_kind_owns_exactly_one_profile（creative.video-edit.v1的空defaultUserPrompt），源码无本轮diff；AppCore1601/0/54（单crate默认特性1601/0/45）、Kernel319/0/22、CLI201/0/9及startup2/0/1、恢复20/0/0、SDK及其他相关目标均执行。全仓strict clippy实际exit101、69.577秒，由旧models/client.rs:431的Option<ReasoningEffort> clone_on_copy阻断，不能声称整个workspace或strict lint通过。
+
+首次日志解析器只按stderr的Running标记分块，得到147目标/146结果及4943通过，尚未形成验收结论即发现缺SDK13项。原始日志610/612行明确是SDK目标及running13，613行提前出现下一hooks目标的stderr banner，615行才是SDK的stdout 13/0/0，618/620行为hooks running67及67/0/0。改用待消费banner队列、实际running N及结果数量校验配对，拒绝缺目标；同时识别AppCore内部H92子进程的running1/1654 filtered结果，不重复当外层目标。得到147/147及4956/1/192，无改原日志、补造测试、重跑或默认忽略取绿。初次解析摘要保留为编排工具反例，正确摘要另存workspace-final-summary，不混称测试失败/通过。
+
+从这次workspace真实Running记录定位最后二进制，逐次核对13源、binary及共享CLI哈希，并要求非零预期通过数、0失败/0忽略：AppCore binary SHA256=8C855198965351F63B500140830D140A61D7DCE70EEC31D4A5CB7729CDBD0D84，原probe精确1/0/0、H47新组8/0/0、完整preparation12/0/0、插件正常准备H92精确1/0/0；recovery binary F6E00AE0A90AD9BB6255ACA2ED2D622B152B6017EE1FAC0BAA59BF2F0C9914D5完整20/0/0；CLI startup测试binary 9FEA107D084A287CE5CB6DBC51112BD4150A62C99F9F84E9C5677A416E3F6D1B中的H95真实冷启精确1/0/0；最后SDK stdio binary DEA30EDD9A9B13C71AA9102CFA6E90F649CE1A547E3FEF0A44B8C7B2FEDAA200完整13/0/0。命令均--nocapture，整组--test-threads=1；不使用猜测路径或旧候选binary。该CLI startup用本次workspace实际生产产物E45D5E794935812F0F3C7CA620B7DEE3EDE88FE7E6B65653C7501D9D4A1E2E4D，SDK用E04已发布1D4561...同冻结生产源产物，两种构建身份不混称同一hash。
+
+实现限既有McpService/PluginPreparation的同一连接身份owner边界：slot持有一次初始化/取消/共享结果，view/caller取消仅停止等待；新增/修改B保留A pending与实际进程，修改/禁用A只退役目标或最后owner，旧身份不能写替换slot。真实失败及生产30秒timeout仍缓存、默认不重试，显式retry和本地2/远程4预算保留；已借出ready client不因cache退役失效。生产PluginService在等待前登记原owner，正式attach→ToolRegistry权限/审批→真实echo与instructions、disable后新快照均已覆盖。无新执行/store/取消系统、公开DTO/序列化/权限/沙箱/协议/依赖变化，无数据库迁移，不合并H48。
+
+范围限本机合成文件/SQLite、真实本地Node MCP及所列CLI/SDK路径、Tauri生产消费编译。未执行实际Tauri设置UI点击/整应用退出或真实宿主崩溃、Linux/macOS动态验收、真实模型/第三方MCP/真实内网/凭据，以及全部192个默认忽略项；普通node观察不冒称所有服务/OS退出机制均新验收。无TS/UI/桥接形状改动，未跑pnpm build/UI截图，Tauri check不等于桌面运行。原红/编排与候选反例保留，不追加无关lint修复或降低标准。清理及独立fix提交随后执行，取得hash另双文回填，不amend/推送。
+
+306唯一行/8列及顶部成员核对后，本轮新增验收1、历史跳过0、归并/撤销0；累计197验收、26历史跳过、8归并、3撤销、72未关闭含H180授权跳过，实际待处理71。下一准备H48 stdio探活耗尽/能力退役及重复恢复预算，先原probe/当前代码/历史核对，本轮未修改其库级恢复策略。
+
+剩余71项估算沿E-H95-05分类，去掉已验H47后MCP运行状态为2项×4–8小时；模型/输入36×3–7、Hook17×2–4、Harness5×3–6、UI/投影4×3–6、工作流2×3–7、验证3×2–5、CodeGraph1×4–8、提醒1×2–4。脚本核对覆盖71且无重复，粗算195–431，向外取整约190–440有效分析/修复/验收/文档提交小时；尚未逐项重核，属低置信规划，不是精确完工承诺。门禁wall time可能并发/含冷编译，不能累加当有效工时；编译/设备/依赖/环境及删除权限等待另计，暂无可靠总等待区间。整体goal仍active。
+
+**E-H47-07（2026-11-08，验收后清理及提交前复核）**：最后fmt/diff-check通过，13源hash与最后验收一致；双文E-H47证据逐字一致，306唯一主行/8列、顶部成员及计数实测核对，只有H47主行相对9ffd5b27改变。原五项用户untracked及曾出现的.claude/仅列名称，不读取其内容、不清理/暂存。最后命令/结果、正确147目标配对、原红/候选反例及binary/Node/源hash已保存证据摘要；不提交临时日志、缓存或二进制，原始失败文本与回归源码保留。
+
+首次清理预检在任何删除前因新h2n21zb0.brs停止。仅列元数据/名称发现Assets、PrecheckTools、vs_installershell.exe、VSInstallerElevationService.exe、vswhere.exe等安装器文件，无法确认归属本任务，未读取内容、执行或删除；广义^h数字扫描误包含随机名，不是删除权限拒绝。按h数字后接分隔符/结尾识别任务标签，继续保留未归属目录；所存两份快照中无新增未归属任务标签目录，G盘无新增h目录，H47以外旧根均未重试。继续的删除目标/路线仍仅为事先确定的本轮tauri子target→本轮root，不借此扩大删除范围或处理未知目录。
+
+本轮根C:\Users\32734\AppData\Local\Temp\h47-repair-20261108经绝对路径、祖先、全部子项边界/reparse及关联活进程检查：23,779文件、30,858,824,554逻辑字节、零reparse/零关联进程。实际查本机cargo clean --help的manifest-path/target-dir/offline/dry-run参数；先 cargo clean --manifest-path apps/desktop/src-tauri/Cargo.toml --target-dir <本轮root>/tauri --offline --dry-run，exit0，随后同命令去--dry-run，exit0，移除7,805文件（cargo显示约1.9GiB）。再 cargo clean --target-dir <本轮root> --offline --dry-run，exit0，15,974文件；实际去--dry-run后exit101，拒绝访问fixture-tmp\.tmpRdi7cb\destination\child（os error5），立即终止全部后续删除，未改ACL/提权/改名搬移/换工具参数路线或重试。
+
+只读残余核对2,586文件、1,991,552,055字节、枚举错误0，合计逻辑减少21,193文件/28,867,272,499字节；C/G可用60,841,975,808/148,567,228,416字节仅是当时快照，不把逻辑长度当物理回收承诺。H47根自此列为禁止重试的清理残余，需后续明确人工/权限决策；未知安装器目录继续保留，G共享CLI1D4561...作为后续真实SDK消费依赖保留，不动sidecar或整个默认target，不称全部清理完成。该权限残余不被功能验收/提交消除，整体goal未完成。
+
+白名单仅H47 mcp_preparation/mcp_service/plugin_preparation、新server_startup与h47_tests及双文共7文件，独立fix提交后另双文回填hash，不amend、不push/PR或真实数据库迁移。
+
 ### H-48：stdio MCP 探活耗尽后只停止探针，旧能力仍可发现，后续每次调用重新启动完整恢复预算
 
 **级别：中（P2）；范围：本地 stdio MCP 曾正常发现工具，随后断线且重启一直失败。** 本项不是 H-06 的未知结果自动重放，也不是 H-47 的配置变更取消；只审查恢复耗尽的稳定状态及后续调用。

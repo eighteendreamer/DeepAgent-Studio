@@ -7,7 +7,13 @@ use std::sync::{Mutex, RwLock};
 use std::time::Duration;
 use tokio::sync::Semaphore;
 
-type ServerSlot = Arc<AsyncMutex<Option<CachedRegistry>>>;
+#[path = "mcp_preparation/server_startup.rs"]
+mod server_startup;
+use server_startup::ServerSlot;
+
+#[cfg(test)]
+#[path = "mcp_preparation/h47_tests.rs"]
+mod h47_tests;
 
 struct ReadyFingerprints {
     configs: BTreeMap<String, String>,
@@ -22,21 +28,21 @@ impl ReadyFingerprints {
 }
 
 pub(super) struct McpPreparation {
-    slots: Mutex<BTreeMap<String, ServerSlot>>,
+    slots: Mutex<BTreeMap<String, Arc<ServerSlot>>>,
     owners: Mutex<BTreeMap<String, BTreeSet<String>>>,
     ready: RwLock<Arc<McpRegistry>>,
     ready_fingerprints: RwLock<ReadyFingerprints>,
     active_fingerprint: Mutex<Option<String>>,
     generation: AtomicU64,
     cancelled: Mutex<deepagent_runtime::CancellationTree>,
-    local: Semaphore,
-    remote: Semaphore,
+    local: Arc<Semaphore>,
+    remote: Arc<Semaphore>,
     payload_verified: std::sync::atomic::AtomicBool,
     payload_change_generation: AtomicU64,
     payload_lock: AsyncMutex<()>,
     watcher: Mutex<Option<RecommendedWatcher>>,
     #[cfg(test)]
-    startup_attempts: std::sync::atomic::AtomicUsize,
+    startup_attempts: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Default for McpPreparation {
@@ -52,14 +58,14 @@ impl Default for McpPreparation {
             active_fingerprint: Mutex::new(None),
             generation: AtomicU64::new(0),
             cancelled: Mutex::new(Default::default()),
-            local: Semaphore::new(2),
-            remote: Semaphore::new(4),
+            local: Arc::new(Semaphore::new(2)),
+            remote: Arc::new(Semaphore::new(4)),
             payload_verified: std::sync::atomic::AtomicBool::new(false),
             payload_change_generation: AtomicU64::new(0),
             payload_lock: AsyncMutex::new(()),
             watcher: Mutex::new(None),
             #[cfg(test)]
-            startup_attempts: std::sync::atomic::AtomicUsize::new(0),
+            startup_attempts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 }
@@ -203,70 +209,78 @@ impl McpService {
             tools: Vec::new(),
         };
         if let Some(slot) = slot {
-            if let Ok(guard) = slot.try_lock() {
-                if let Some(cached) = guard.as_ref() {
-                    if let Some((_, error)) = cached.failures.first() {
-                        result.status = "failed".into();
-                        result.error = Some(error.clone());
-                    } else {
-                        result.status = "connected".into();
-                        result.tools = cached
-                            .registry
-                            .all_tools()
-                            .into_iter()
-                            .map(|tool| McpToolInfoDto {
-                                name: tool.local_name,
-                                description: tool.description,
-                            })
-                            .collect();
-                    }
+            match slot.result() {
+                Some(Err(error)) => {
+                    result.status = "failed".into();
+                    result.error = Some(error.to_string());
                 }
+                Some(Ok(registry)) => {
+                    result.status = "connected".into();
+                    result.tools = registry
+                        .all_tools()
+                        .into_iter()
+                        .map(|tool| McpToolInfoDto {
+                            name: tool.local_name,
+                            description: tool.description,
+                        })
+                        .collect();
+                }
+                None => {}
             }
         }
         result
     }
 
     pub(crate) async fn retire_server(&self, name: &str) -> Result<()> {
-        self.preparation
+        let mut owners = self
+            .preparation
             .owners
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values_mut()
-            .for_each(|names| {
-                names.remove(name);
-            });
+            .unwrap_or_else(|p| p.into_inner());
+        owners.values_mut().for_each(|names| {
+            names.remove(name);
+        });
         let slot = self
             .preparation
             .slots
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(name);
+        drop(owners);
         if let Some(slot) = slot {
-            // Drop this owner. Active request snapshots keep their client Arc
-            // alive until they finish, so retiring a config cannot interrupt
-            // an in-flight tool call.
-            drop(slot.lock().await.take());
+            // Cancel only pending work. Borrowed ready client Arcs remain valid.
+            slot.retire();
         }
         Ok(())
     }
 
     pub(crate) async fn reconcile_owner(&self, owner: &str, names: BTreeSet<String>) -> Result<()> {
-        let retire = {
+        self.reconcile_owner_now(owner, names);
+        Ok(())
+    }
+
+    fn reconcile_owner_now(&self, owner: &str, names: BTreeSet<String>) {
+        let retired = {
             let mut owners = self
                 .preparation
                 .owners
                 .lock()
                 .unwrap_or_else(|p| p.into_inner());
             let previous = owners.insert(owner.to_owned(), names).unwrap_or_default();
+            let mut slots = self
+                .preparation
+                .slots
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             previous
                 .into_iter()
                 .filter(|name| !owners.values().any(|set| set.contains(name)))
+                .filter_map(|name| slots.remove(&name))
                 .collect::<Vec<_>>()
         };
-        for name in retire {
-            self.retire_server(&name).await?;
+        for slot in retired {
+            slot.retire();
         }
-        Ok(())
     }
 
     /// Initialize one identity at most once; simultaneous host callers share
@@ -287,110 +301,59 @@ impl McpService {
             .remove(name)
             .ok_or_else(|| CoreError::invalid("missing MCP config"))?;
         let fingerprint = serde_json::to_string(&cfg)?;
-        let slot = self
-            .preparation
-            .slots
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .entry(name.to_owned())
-            .or_insert_with(|| Arc::new(AsyncMutex::new(None)))
-            .clone();
-        let mut slot = slot.lock().await;
-        if let Some(cached) = slot.as_ref() {
-            if cached.fingerprint == fingerprint {
-                if let Some((_, error)) = cached.failures.first() {
-                    if !retry_failed {
-                        return Err(CoreError::other(error.clone()));
-                    }
-                } else {
-                    return Ok(cached.registry.clone());
-                }
-            }
-            // Requests may still hold clients from this registry. Dropping the
-            // cache owner lets those requests finish before transport teardown.
-            drop(slot.take());
-        }
-        let semaphore = if matches!(cfg.effective_type(), Ok(TransportType::Stdio)) {
-            &self.preparation.local
-        } else {
-            &self.preparation.remote
-        };
-        let _permit = if let Some(cancel) = &cancellation {
-            tokio::select! {
-                _ = cancel.cancelled() => return Err(CoreError::other("MCP preparation cancelled")),
-                result = semaphore.acquire() => result.map_err(|e| CoreError::other(e.to_string()))?,
-            }
-        } else {
-            semaphore
-                .acquire()
-                .await
-                .map_err(|e| CoreError::other(e.to_string()))?
-        };
-        #[cfg(test)]
-        self.preparation
-            .startup_attempts
-            .fetch_add(1, Ordering::AcqRel);
-        let connect = async {
-            let (client, instructions) = Self::connect_one_resilient(name, &cfg).await?;
-            let mut registry = McpRegistry::new();
-            if let Err(error) = registry
-                .register_with_instructions(name, client.clone(), instructions)
-                .await
+        let slot = {
+            let mut slots = self
+                .preparation
+                .slots
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            // Check under the same map lock as identity replacement: a stale
+            // view must not recreate a retired identity after cancellation.
+            if cancellation
+                .as_ref()
+                .is_some_and(|cancel| cancel.is_cancelled())
             {
-                let _ = client.close().await;
-                return Err(error);
+                return Err(CoreError::other("MCP preparation cancelled"));
             }
-            registry.enable_liveness(deepagent_mcp::LivenessConfig::default());
-            Ok::<_, CoreError>(Arc::new(registry))
-        };
-        let result = if let Some(cancel) = &cancellation {
-            tokio::select! {
-                _ = cancel.cancelled() => Err(CoreError::other("MCP preparation cancelled")),
-                result = tokio::time::timeout(MCP_STARTUP_TIMEOUT, connect) =>
-                    result.unwrap_or_else(|_| Err(CoreError::other(format!("MCP startup timed out after {} seconds", MCP_STARTUP_TIMEOUT.as_secs())))),
+            if let Some(slot) = slots
+                .get(name)
+                .filter(|slot| slot.reusable(&fingerprint, retry_failed))
+            {
+                slot.clone()
+            } else {
+                if let Some(previous) = slots.remove(name) {
+                    previous.retire();
+                }
+                let semaphore = if matches!(cfg.effective_type(), Ok(TransportType::Stdio)) {
+                    self.preparation.local.clone()
+                } else {
+                    self.preparation.remote.clone()
+                };
+                let slot = ServerSlot::start(
+                    name.to_owned(),
+                    cfg,
+                    fingerprint,
+                    semaphore,
+                    #[cfg(test)]
+                    self.preparation.startup_attempts.clone(),
+                );
+                slots.insert(name.to_owned(), slot.clone());
+                slot
             }
-        } else {
-            tokio::time::timeout(MCP_STARTUP_TIMEOUT, connect)
-                .await
-                .unwrap_or_else(|_| {
-                    Err(CoreError::other(format!(
-                        "MCP startup timed out after {} seconds",
-                        MCP_STARTUP_TIMEOUT.as_secs()
-                    )))
-                })
         };
-        let (registry, failures) = match &result {
-            Ok(registry) => (registry.clone(), Vec::new()),
-            Err(error) => (
-                Arc::new(McpRegistry::new()),
-                vec![(name.to_owned(), error.to_string())],
-            ),
-        };
-        *slot = Some(CachedRegistry {
-            fingerprint,
-            registry,
-            failures,
-        });
-        result
+        slot.wait(cancellation).await
     }
 
-    async fn cache_preparation_failure(&self, name: &str, fingerprint: String, error: String) {
-        let slot = self
+    fn cache_preparation_failure(&self, name: &str, fingerprint: &str, error: String) {
+        let slots = self
             .preparation
             .slots
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .entry(name.to_owned())
-            .or_insert_with(|| Arc::new(AsyncMutex::new(None)))
-            .clone();
-        let mut slot = slot.lock().await;
-        *slot = Some(CachedRegistry {
-            fingerprint,
-            registry: Arc::new(McpRegistry::new()),
-            failures: vec![(name.to_owned(), error)],
-        });
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(slot) = slots.get(name).filter(|slot| slot.matches(fingerprint)) {
+            slot.fail(error);
+        }
     }
-
     async fn ensure_builtin_payload(
         &self,
         cancel: &deepagent_runtime::CancellationTree,
@@ -498,6 +461,13 @@ impl McpService {
     /// Start configured user servers independently of the bundled payload.
     /// Slow bundle verification cannot delay other servers or conversation.
     pub fn start_preparation(self: &Arc<Self>) {
+        // Serialize the config read and owner reconciliation. Older background
+        // views may not retire owners registered by a newer configuration.
+        let mut active = self
+            .preparation
+            .active_fingerprint
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         // Resolve and fingerprint the effective host config before scheduling
         // work. Repeated callers with the same environment/config share the
         // current preparation instead of cancelling and restarting it.
@@ -544,17 +514,10 @@ impl McpService {
                 return;
             }
         };
-        {
-            let mut active = self
-                .preparation
-                .active_fingerprint
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            if active.as_deref() == Some(config_fingerprint.as_str()) {
-                return;
-            }
-            *active = Some(config_fingerprint);
+        if active.as_deref() == Some(config_fingerprint.as_str()) {
+            return;
         }
+        *active = Some(config_fingerprint);
 
         let cancel = deepagent_runtime::CancellationTree::new();
         {
@@ -567,6 +530,7 @@ impl McpService {
             *active_cancel = cancel.clone();
         }
         let generation = self.preparation.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        self.reconcile_owner_now("host", config.servers.keys().cloned().collect());
 
         let desired_fingerprints = config
             .servers
@@ -603,10 +567,6 @@ impl McpService {
         let service = self.clone();
         service.watch_builtin_payload();
         tokio::spawn(async move {
-            let desired = config.servers.keys().cloned().collect::<BTreeSet<_>>();
-            if let Err(error) = service.reconcile_owner("host", desired).await {
-                tracing::warn!(%error, "could not retire stale host MCP servers");
-            }
             let mut jobs = FuturesUnordered::new();
             for (name, cfg) in config.servers {
                 let worker = service.clone();
@@ -635,9 +595,11 @@ impl McpService {
                         }
                         if let Err(error) = ready.extend_ready(&registry) {
                             tracing::error!(server = name.as_str(), %error, "MCP snapshot conflict; excluding server from ready capabilities");
-                            service
-                                .cache_preparation_failure(&name, fingerprint, error.to_string())
-                                .await;
+                            service.cache_preparation_failure(
+                                &name,
+                                &fingerprint,
+                                error.to_string(),
+                            );
                             continue;
                         }
                         let mut fingerprints = service
@@ -795,7 +757,6 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     }
 
     #[tokio::test]
-    #[ignore = "audit: unrelated config changes must preserve valid pending MCP startup"]
     async fn audit_unrelated_config_change_preserves_pending_startup() {
         let mut observations = Vec::new();
         for add_unrelated in [false, true] {
@@ -872,14 +833,13 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
                     .unwrap();
                 service.start_preparation();
                 tokio::time::timeout(Duration::from_secs(3), async {
-                    while service.cached_status("a").status == "preparing"
-                        || service.ready_registry().find_tool("mcp__b__echo").is_none()
-                    {
+                    while service.ready_registry().find_tool("mcp__b__echo").is_none() {
                         tokio::time::sleep(Duration::from_millis(10)).await;
                     }
                 })
                 .await
-                .expect("the new generation must publish B and settle A");
+                .expect("the new generation must publish B without joining pending A");
+                assert_eq!(service.cached_status("a").status, "preparing");
             }
             std::fs::write(dir.path().join("a.gate"), "open").unwrap();
             tokio::time::timeout(Duration::from_secs(3), async {

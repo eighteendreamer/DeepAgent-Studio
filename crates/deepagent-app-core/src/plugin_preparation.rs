@@ -189,11 +189,13 @@ impl PluginService {
                                     let result = match prepared {
                                         Ok(Ok(projection)) => {
                                             let mut registry = deepagent_mcp::McpRegistry::new();
-                                            let mut error = None;
                                             let owner = format!("plugin:{}", plugin.id);
-                                            let mut owned_names = BTreeSet::new();
+                                            // Claim pending connections before waiting: another
+                                            // owner retiring its view must not cancel this plugin.
+                                            let owned_names = projection.mcp_config.servers.keys().cloned().collect();
+                                            let mut error = mcp.reconcile_owner(&owner, owned_names).await.err();
                                             for (name, config) in projection.mcp_config.servers {
-                                                owned_names.insert(name.clone());
+                                                if error.is_some() { break; }
                                                 let connected = tokio::select! {
                                                     biased;
                                                     _ = cancel.cancelled() => Err(CoreError::other("plugin preparation cancelled")),
@@ -210,7 +212,7 @@ impl PluginService {
                                                 let _ = mcp.reconcile_owner(&owner, BTreeSet::new()).await;
                                                 Err(error)
                                             } else {
-                                                mcp.reconcile_owner(&owner, owned_names).await.map(|_| registry)
+                                                Ok(registry)
                                             }
                                         }
                                         Ok(Err(error)) => Err(error),
