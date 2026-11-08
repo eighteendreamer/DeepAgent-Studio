@@ -1115,25 +1115,11 @@ impl ModelAgent {
     }
 
     fn current_context_policy(&self) -> Option<deepagent_context::ContextPolicy> {
-        let configured = self.context_policy.as_ref()?;
+        self.context_policy.as_ref()?;
         let request = self
             .client
             .prepare_response_request(self.response_history.request(self.model.clone()));
-        let capability = if configured.model_id == self.model {
-            deepagent_models::ModelCapability {
-                input_modalities: None,
-                model_id: self.model.clone(),
-                context_window: configured.context_window,
-                max_output_tokens: configured.max_output_tokens,
-                supports_tools: true,
-                supports_thinking: true,
-                supports_json_output: true,
-                capability_source: deepagent_models::CapabilitySource::ProviderMetadata,
-                fallback_reason: None,
-            }
-        } else {
-            self.client.capability(&self.model)
-        };
+        let capability = self.client.capability(&self.model);
         Some(
             deepagent_context::ContextPolicy::for_capability_with_output(
                 &capability,
@@ -1378,11 +1364,12 @@ impl ModelAgent {
     }
 
     fn context_measurement(&self) -> (u64, deepagent_context::SurfaceTokenBreakdown) {
-        let request = self
+        let mut request = self
             .response_history
             .request(self.model.clone())
             .with_reasoning_effort(self.reasoning_effort)
             .with_tools(self.tools.clone());
+        request.max_output_tokens = self.request_max_output_override;
         self.measure_request(&request)
     }
 
@@ -2470,6 +2457,9 @@ impl ModelAgent {
                 return Err(CoreError::other("request cancelled by user"));
             }
             attempt += 1;
+            request.max_output_tokens = self
+                .client
+                .effective_output_tokens(&request.model, request.max_output_tokens);
             self.request_max_output_override = request.max_output_tokens;
             // Run pressure management against the final Surface and this
             // attempt's output ceiling, including nudges and retry changes.
@@ -2555,7 +2545,10 @@ impl ModelAgent {
                             return Err(CoreError::other("request cancelled by user"));
                         }
                         let current_max = request.max_output_tokens.unwrap_or(8_192);
-                        let escalated_max = current_max.max(65_536);
+                        let escalated_max = self
+                            .client
+                            .effective_output_tokens(&request.model, Some(current_max.max(65_536)))
+                            .expect("an explicit output proposal stays explicit");
                         if escalated_max > current_max {
                             if let Some(tools) = tools.as_deref_mut() {
                                 tools.abort(attempt, "model output reached max_tokens");
@@ -3046,6 +3039,9 @@ mod tests {
     use deepagent_models::ModelConfig;
     use std::collections::VecDeque;
     use std::sync::Mutex;
+
+    // Keep the shared real serializer/attempt fixtures in one test boundary.
+    include!("model_output_limit_tests.rs");
 
     #[test]
     fn repeated_responses_requests_keep_the_same_prefix_and_old_tool_outputs() {
@@ -5003,7 +4999,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: fallback output ceiling must match the active model capability"]
     async fn audit_fallback_rebuilds_output_limit_from_active_capability() {
         struct CapabilityGate {
             wire_mode: deepagent_models::WireMode,
@@ -5084,6 +5079,10 @@ mod tests {
                 });
                 let mut config = ModelConfig::deepseek("test").with_wire_mode(wire_mode);
                 config.capabilities = vec![primary.clone(), fallback];
+                // Effort and output ceilings are independent (H-05/H-174).
+                // Reproduce H-49 with a real configured primary ceiling, not
+                // the retired assumption that Max effort invents one.
+                config.defaults.max_output_tokens = Some(32_768);
                 let client = Arc::new(ModelClient::new(transport.clone(), config));
                 let (sink, mut rx) = crate::events::ChannelSink::new();
                 let mut agent = ModelAgent::new(client, "audit-primary", "system", "goal", vec![])
@@ -5133,7 +5132,10 @@ mod tests {
         }
         eprintln!("fallback capability audit: {}", serde_json::json!(cases));
         assert!(
-            cases.iter().all(|case| case["completed"] == true),
+            cases
+                .iter()
+                .all(|case| case["completed"] == true
+                    && case["wire_limit"] == case["fallback_limit"]),
             "fallback must not retain the primary model's incompatible output limit"
         );
     }
@@ -5233,7 +5235,8 @@ mod tests {
         let _ = complete_items(decision);
         let requests = transport.requests.lock().unwrap();
         assert_eq!(requests.len(), 2);
-        assert_eq!(requests[1]["max_output_tokens"], 65_536);
+        // The synthetic unknown model has the resolver's 32k conservative cap.
+        assert_eq!(requests[1]["max_output_tokens"], 32_000);
         assert_eq!(
             tool_attempt.events,
             vec![
@@ -5250,8 +5253,8 @@ mod tests {
 
     #[tokio::test]
     async fn max_tokens_truncation_injects_continue_prompt_and_resumes() {
-        // Attempt 1: escalation (8k default -> 64k) after a truncated turn.
-        // Attempt 2: still truncated at 64k with partial prose (no tools) ->
+        // Attempt 1: escalation (omitted default -> conservative 32k ceiling).
+        // Attempt 2: still truncated at 32k with partial prose (no tools) ->
         // multi-turn continue: partial output + resume prompt are appended.
         // Attempt 3: completes normally.
         let transport = Arc::new(AttemptTransport {
@@ -5276,7 +5279,7 @@ mod tests {
         let requests = transport.requests.lock().unwrap();
         assert_eq!(requests.len(), 3, "escalate, then continue, then finish");
         // Second attempt escalated max_tokens; third carries the resume prompt.
-        assert_eq!(requests[1]["max_output_tokens"], 65_536);
+        assert_eq!(requests[1]["max_output_tokens"], 32_000);
         let third = requests[2]["input"].as_array().unwrap();
         let last = third.last().unwrap();
         assert_eq!(last["role"], "user");

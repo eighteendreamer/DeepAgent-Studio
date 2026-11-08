@@ -2359,6 +2359,8 @@ E01原失败、E02～05候选与两种环境反例保留；最终验收仅E06限
 
 **级别：中（P2）；范围：主模型过载后自动切换到输出容量较小的备用模型。** 容量相同的切换对照成功；不声称当前官方 flash/pro 默认组合一定触发，也不涉及跨供应商/账号切换。
 
+修复状态（2026-11-08）：已修复并验收，限E-H49-01～05本机证据；原失败/探针失效及适配红保留，G本轮已清理、C残余及拒绝见E05，独立提交随后回填。
+
 #### 生产链路与确定性对照
 
 - `deepagent-app-core/src/model_runtime.rs::select_run_model` 从同一 catalog 选择主模型和 fallback_role，RunAssembler 将两者及 context_policy 传给正式 ModelAgent。`model_agent.rs::think_inner` 的过载恢复分支只修改 request.model/self.model，保留已由 ThinkingDepth 生成的 max_output_tokens；下一轮 pressure check 能查到备用能力，却只通过 `ContextPolicy::for_capability_with_output` 对预算中的 reserved_output 做 min，没有修改 wire 字段。ModelClient 的两种序列化路径也没有按新能力重建该字段。
@@ -2379,6 +2381,72 @@ E01原失败、E02～05候选与两种环境反例保留；最终验收仅E06限
 - Claude Code `services/api/withRetry.ts` 达到 529 切换条件后抛 FallbackTriggeredError；`query.ts` 更新 currentModel、清理失败 attempt 的工具执行状态，再以新的 options.model 重新进入 callModel。`services/api/claude.ts::getMaxOutputTokensForModel` 根据该模型的 default/upperLimit 计算默认值并校验环境覆盖，paramsFromContext 重新组装 max_tokens。这里借鉴的是重新解析有效请求配置；不能概括为 Claude 的任意显式 maxOutputTokensOverride 都会自动被 clamp，本轮也未运行其测试。
 - 后果是本可由备用模型接续的短任务，因沿用不兼容输出参数从暂时过载变成请求失败；日志/面板可能显示已按较小输出预留，实际却发送较大上限。若 gateway 自行裁剪，该 gateway 可能掩盖错误，不能据此认为本系统配置已经一致。
 - 修复应在既有模型请求边界形成同一份有效模型/能力/输出上限，再供 policy、meter 和 wire 使用；模型切换、截断上调及每步请求都重新验证这份配置。对不支持的显式配置明确报错或按已定义策略收敛，不能只在预算层取 min，也不把特定模型名/8,192 特判散落在 fallback 分支。补足不同窗口、不同输出能力、显式覆盖、截断后再切换和两协议对照。本轮仅新增审计测试与文档，生产行为未修复。
+
+**E-H49-01（2026-11-08，原复现失效调查与真实TDD，修复中）**：基线8994d9cb1cc207d3242b1eb04c28f832bb0647fe，H48已实质修复并独立fix/docs交付；tracked干净、无既有暂存/合并，原五项untracked只列名称不读改哈希/暂存。核对审计/306台账、ModelAgent主/子生产方、ModelClient两协议默认/prepare/实际序列化、ContextPolicy/ContextMeter及现有回归、Cargo/rustfmt/CI；H49仍待修，无历史跳过/归并依据。范围是有效模型的显式输出上限、压力预算/计量和wire一致性，保持H05/H174已有reasoning与token上限解耦，不改供应商、工具执行、审批、持久化/协议，不并入其他H问题；H180授权跳过，H48及所有旧清理拒绝根不重试。
+
+原命令`cargo test --target-dir <H49 root> -p deepagent-runtime --lib audit_fallback_rebuilds_output_limit_from_active_capability --offline -j 2 -- --ignored --nocapture`实际exit101/147.961秒含冷编译，0/1/0，但失败在夹具max_output_tokens None的unwrap（原:5033），不是原目标400。查当前with_reasoning_effort与6bc2d660历史证明Max已不再生成32768：先只把原fixture改为现有ResponseDefaults显式32768配置，不改生产。再执行同命令exit101/32.387秒，四组真实序列化再次复现：两协议相同容量32768成功、fallback8192均wire32768/预算8192并被离线CapabilityGate返回400。原始探针失效与适配后红均保留，不能假称历史修复或恢复旧effort→max映射。
+
+新TDD用正式准备/四个Response与nativeChat入口、实际序列化与ModelAgent：Models0/3失败（wire未收敛/0仍下发）、Runtime0/4失败（下一步沿主default、旧policy覆盖client能力、不可上调仍重试、上调后fallback超额）。首组合命令因Models失败未执行Runtime，随后单独运行Runtime得到真实4红，不把未执行计红/绿。候选3+4通过后再补meter指纹反例，最终验收尚未执行。全为离线录制transport、合成配置，无真实模型、内网或凭据。
+
+根因方案复用ModelClient一个effective_output_tokens(model, requested)边界：只对显式request/default取min(active maxOutput, contextWindow)，未配置继续None不臆造默认，0或零能力收敛成0在实际发送前明确Invalid。prepare与两协议原serializer入口共用，ModelAgent每attempt（fallback/上调/新step）在压力检查前应用并把同上限给预算和meter；ContextPolicy不另造主模型能力，读client原catalog。显式上限是用户允许的上界而非必须达到值，超额只向下收敛，不引入模型名/8192特判；容量元数据不假作provider默认。依据当前代码/DeepSeek Harness adapter.ts:305“不把catalog容量当默认”和Claude paramsFromContext按有效模型重建；本系统的向下收敛及0本地拒绝属明确本地设计，不声称参考项目或官方自动clamp任何覆盖。预计本项3–8有效小时；全余180–430低置信小时初估保留，编译/依赖/设备/环境及删除权限等待另计。
+
+**E-H49-02（2026-11-08，候选结果与计量补强，未验收）**：初候选Models3/0/0、Runtime4/0/0通过。追加实际meter指纹TDD单例先红0/1/0（错误地对上调65536仍按默认32768计量），随后context_measurement把现有attempt override投影回同一prepare/measure边界，避免预算和wire虽一致但计量锚点分离。完整三crate候选exit101，仅Runtime lib444/2/9，两个失败是原截断用例要求未知model发送65536，而该model当前保守能力明确32000；不把这些失败伪报既有基线失败。保持原prepare/abort/commit、继续文本、usage和有界恢复断言，更新该正常对照为实际32000能力上限；新显式96000能力对照仍独立验证合法65536上调和随后fallback8192收敛。原probe去ignore并加强wire_limit必须等于active limit，不只检查最终成功。
+
+为避免预算与发送两处各自取min，提炼至原ModelCapability::bound_output_tokens：ContextPolicy复用此规则，ModelClient的原默认/prepare及两协议发送（含native Chat/cancel/observed）通过effective_output_tokens选择显式值再共用能力边界。未配置仍None，effort不生成输出限制；显式0/有效容量0在最终序列化前拒绝，不发transport；不改模型reasoning、工具提交或fallback次数。ModelAgent每attempt压力检查前应用，并同值传给原context override和meter，上调提案也用同边界，不做无效超能力上调。主/子agent使用的ContextPolicy capacity统一读取同client catalog，不把旧传入policy另解释为第二模型能力源；仓内生产方原本由同client构造，无DTO/迁移变化。pure prepare返回型不变，最终dispatch负责Invalid，公开加法仅复用方法。
+
+新增正式AppCore验收夹具经SettingsService合成catalog/显式设置、RunAssembler/ModelAgent/真实Responses序列化、live ContextUsage和临时SQLite关闭重开，覆盖备用8192与相同32768对照、重复新run与终态幂等只读；当前仍编译候选，不凭计划算通过。底层唯一离线transport严格按实际body判上限，无provider请求/真实密钥。新included测试文件显式rustfmt --edition 2021并在最终门禁单独--check，复用原tests的attempt/真实serializer夹具，不复制生产请求链。尚未冻结最终源码，候选编译期间变更不作为最终验收；原始失败全部保留。
+
+**E-H49-03（2026-11-08，冻结定向验收及新lint自纠，未全仓验收）**：16源hash覆盖8份本项实现/测试与主/子生产方、两wire类型、CLI/Tauri消费者。原probe去ignore后显式1/0/0通过，四组预算/wire均等于声明上限（32768、8192，两协议）；三crate all-features exit0，Context lib58/0/0，Models lib172/0/16及全部默认集成通过，Runtime lib447/0/8、stabilization5/0/0、schedule3+6/0/0、tokenizer1/0/1通过；不把默认忽略的外部provider/故障探针记为执行成功。正式AppCore H49默认新测试1/0/0通过，实际覆盖保存32768设置/带容量catalog、主529→备用正常或较小容量、两次新run/live预算、全部DB owner关闭后SQLite reopen且终态只一次、不重派；两种fallback容量不是两个独立问题计数。
+
+Context严格lint通过；Models strict exit101是既有client.rs:431 clone_on_copy在新增函数后位移到:453，同一旧语句未改；Runtime strict exit101是既有model_agent.rs:298 Usage clone、workflow/canvas.rs:32可derive Default，变更位置无新增诊断。三crate all-target/all-feature no-deps -W warnings诊断exit0，仅上述既有项。AppCore all-target诊断exit101仍有既有12 lib/2 workflow测试、kernel mcp_discovery_restore.rs:776 guaranteed panic和旧kernel警告；本轮新增output_limit.rs:95 filter.last另有DoubleEndedIterator警告，已改反向find保留相同断言，不忽略warning。仅该测试文件hash变化，保存旧冻结元数据并更新该一项；final2 fmt、新host1/0/0、AppCore诊断复跑，确认新文件无诊断，旧阻断保留，未声称AppCore strict/全仓lint通过。
+
+Tauri cargo check离线exit0/475.761秒，生产源码与最终hash一致（后续仅上述测试迭代器修正，不属于Tauri target），不把打开预览算编译。Rust运行参数向下收敛/ContextPolicy以client能力为准属本项明确语义变更，配置/DTO字段、wire协议与provider、权限/工具提交/取消/持久化不变，无依赖/SQL迁移；无TS/UI变更未跑pnpm build/真实桌面。CLI已用真实compiler-artifact构建，受控共享替换/CLI/SDK/全仓尚待验收。H49仍修复中、198验收，未计新增；新included测试有显式rustfmt --check，非Cargo默认漏查。
+
+**E-H49-04（2026-11-08，最终本机验收，仅关闭本项）**：最终16源hash逐项核对，涵盖8份本项实现/测试和8份原生产/消费契约文件；新included测试显式rustfmt --check，原probe默认化并加强四组成功且wire等于声明上限。原第一次None unwrap、适配后两协议400红、新Models0/3/Runtime0/4、追加meter0/1（指纹419190313112782241≠3635615982768956935）、候选Runtime444/2/9和本项新增lint反例全部保留E01～03，不抹为环境成功。最终只读catalog与显式配置为合成能力控制，不是对真实DeepSeek容量/HTTP400的测量；只有底层transport离线录制/发合成SSE，provider serializer、adapter、agent与正式AppCore装配均真实执行。
+
+完整workspace exit101/1881.397秒（含14m42s编译），148顶层目标148结果，4975通过/1失败/190忽略；唯一失败仍为未改H306 creative.video-edit.v1空defaultUserPrompt。AppCore1602/0/54、Kernel320/0/22、plugin_conformance6/0/0、Runtime447/0/8、Models172/0/16、Context58/0/0；不重复计H92嵌套子进程结果。CLI冷启2/0/1、CLI strict、SDK72/0/5+真实stdio13/0/0+doc2/0、Tauri check通过。全仓strict仍exit101/77.044秒，旧Models client.rs:431 clone_on_copy现:453；Runtime及AppCore旧阻断见E03。Context/CLI严格通过，三crate全部target诊断exit0、AppCore诊断受旧必定panic处exit101，变更处最终无新诊断；不宣称全仓或Models/Runtime/AppCore严格lint通过。
+
+最后从本轮workspace实际Running记录定位最终binary并显式执行8组，全部exit0、0失败/0忽略：原probe1、Runtime H49五例、Models H49三例、Context全58、正式host1（含8192/32768两对照与两run+SQLite冷重开）、原正常上调1和继续/耗尽2、SDK实际stdio13。原probe四组请求恰一主一备，较小组wire8192、reserved8192；未配置max的对照仍不发max字段，0/零容量本地拒绝且不dispatch；首/后step、截断上调再fallback、无效上调改continue、能力/计量指纹对照均已执行。Runtime binary SHA256 891F9A313E917F4955A0984C941F4632CFF546C279AC965D6D7740F144E3389E，Models D58D6B632010DAD7599921EBB1DCAC8BB7A7966E5AE2822A4B671B1E9E700044，Kernel AFF8D6FA5C10F5153231167BC736D1934D7A88BCAD660B579E9A3703037DAC49；共享CLI82,181,120字节/0D73B80D157A155B4B13AD43EC2FD565379D85F7C6BA797CC84DF2BA292CD58E，原旧CLI已备份后仅复制确认的编译artifact，源只读HardLink、写目标/全部祖先非reparse/非链接、零相关进程且旧hash一致，不动sidecar。Node身份仅用于本轮原有正常MCP/CLI消费者回归，SHA256 923A41F268AB49EDE2E3363FBDD9E790609E385C6F3CA880B4EE9A56A8133E5A。
+
+实际门禁命令（PowerShell仓库根；G盘target为本项新根、HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/XDG/data全部指向C盘仓外新夹具根；凭据/代理env已清，offline、临时合成文件/SQLite，无真实内网/凭据/模型请求）：
+
+| 命令 | 退出 | 墙钟秒（含编译/锁等待） |
+|---|---:|---:|
+| `cargo fmt --all -- --check` | 0 | 7.218 |
+| `rustfmt --edition 2021 --check crates/deepagent-runtime/src/model_output_limit_tests.rs` | 0 | 0.103 |
+| `cargo test --target-dir G:\Code_Warehouse\DeepAgent-Studio\target\h49-repair-20261108 -p deepagent-runtime --lib audit_fallback_rebuilds_output_limit_from_active_capability --offline -j 2 -- --exact model_agent::tests::audit_fallback_rebuilds_output_limit_from_active_capability --nocapture` | 0 | 58.273 |
+| `cargo test --target-dir G:\Code_Warehouse\DeepAgent-Studio\target\h49-repair-20261108 -p deepagent-runtime -p deepagent-models -p deepagent-context --all-features --offline --no-fail-fast -j 2 -- --quiet --test-threads=2` | 0 | 256.417 |
+| `cargo test --target-dir G:\Code_Warehouse\DeepAgent-Studio\target\h49-repair-20261108 -p deepagent-app-core --test kernel_v2_e2e output_limit::h49_ --offline -j 2 -- --nocapture --test-threads=1` | 0 | 265.741 |
+| `cargo clippy --target-dir G:\Code_Warehouse\DeepAgent-Studio\target\h49-repair-20261108 -p deepagent-models --all-targets --all-features --no-deps --offline -j 2 -- -D warnings` | 101 | 39.833 |
+| `cargo clippy --target-dir G:\Code_Warehouse\DeepAgent-Studio\target\h49-repair-20261108 -p deepagent-context --all-targets --no-deps --offline -j 2 -- -D warnings` | 0 | 8.816 |
+| `cargo clippy --target-dir G:\Code_Warehouse\DeepAgent-Studio\target\h49-repair-20261108 -p deepagent-runtime --all-targets --no-deps --offline -j 2 -- -D warnings` | 101 | 41.518 |
+| `cargo clippy --target-dir G:\Code_Warehouse\DeepAgent-Studio\target\h49-repair-20261108 -p deepagent-models -p deepagent-context -p deepagent-runtime --all-targets --all-features --no-deps --offline -j 2 -- -W warnings` | 0 | 24.015 |
+| `cargo build --target-dir G:\Code_Warehouse\DeepAgent-Studio\target\h49-repair-20261108 -p deepagent-cli --offline -j 2 --message-format=json` | 0 | 176.718 |
+| `cargo fmt --all -- --check` | 0 | 6.551 |
+| `cargo test --target-dir G:\Code_Warehouse\DeepAgent-Studio\target\h49-repair-20261108 -p deepagent-app-core --test kernel_v2_e2e output_limit::h49_ --offline -j 2 -- --nocapture --test-threads=1` | 0 | 125.423 |
+| `cargo clippy --target-dir G:\Code_Warehouse\DeepAgent-Studio\target\h49-repair-20261108 -p deepagent-app-core --all-targets --no-deps --offline -j 2 -- -W warnings` | 101 | 20.341 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --target-dir <H49 root>/tauri --offline -j 2` | 0 | 475.761 |
+| `cargo test --target-dir G:\Code_Warehouse\DeepAgent-Studio\target\h49-repair-20261108 -p deepagent-cli --test session_startup_isolation --offline -j 2 -- --nocapture --test-threads=1` | 0 | 165.036 |
+| `cargo clippy --target-dir G:\Code_Warehouse\DeepAgent-Studio\target\h49-repair-20261108 -p deepagent-cli --all-targets --all-features --no-deps --offline -j 2 -- -D warnings` | 0 | 60.609 |
+| `cargo test --target-dir G:\Code_Warehouse\DeepAgent-Studio\target\h49-repair-20261108 -p deepagent-harness-sdk --offline -j 2 -- --quiet --test-threads=2` | 0 | 85.585 |
+| `cargo test --target-dir G:\Code_Warehouse\DeepAgent-Studio\target\h49-repair-20261108 --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=2` | 101 | 1881.397 |
+| `cargo clippy --target-dir G:\Code_Warehouse\DeepAgent-Studio\target\h49-repair-20261108 --all-targets --all-features --offline -j 2 -- -D warnings` | 101 | 77.044 |
+
+兼容性：唯一能力夹紧规则在原ModelCapability，client只选择request/default并保留None；主/子、prepare、两wire和runtime每attempt共用。超出当前能力/上下文的显式上限现按定义向下收敛；未知模型继续使用既有保守能力，因此旧的大额覆盖可能更早截断，需完善现有catalog元数据，不发明模型名特判。传入with_context_policy不再成为与client不同的第二容量源，保留启用、headroom/pct及原压力管理；仓内主/子原就从同client构建。没有公开DTO/字段、provider/协议版本、权限、工具/审批/取消/持久化链或SQL迁移变化，无新依赖；Rust仅新增复用方法。没有恢复effort→token映射，没有把catalog能力当默认，也没有新增第二执行/配置中心或在fallback分支补孤立数字。
+
+残余/未验：限本机Windows离线与既有自建回环集成；真实供应商、小容量真实部署/第三方、完整桌面启动/截图、其他OS、全部默认忽略项、真实断电/宿主崩溃等未验。无TS/UI/Tauri command形状变化，本轮未跑pnpm build；Tauri仅编译消费。无输出参数时provider默认仍未知，预算保守预留现有cap而wire保持省略，这是显式定义的保守界限，不声称知道provider实际默认；能力元数据缺失/错误仍会受既有resolver保守行为限制。全仓旧H306/旧lint保留，不能外推整个目标完成。清理与独立提交随后回填，所有旧拒绝目录不重试。
+
+台账306唯一行/8列核对后本轮新增1、历史跳过0、归并/撤销0；累计199已验收、26历史跳过、8归并、3撤销，70待修含授权跳过H180，实际69有效未关。当前唯一未关P1是用户跳过H180；下一准备P2 H53原生压缩后的记忆去重/预算状态，优先运行状态与持久化依赖，尚未改其生产。全余约170–430有效小时，沿原71项分组195–431小时减H48约4–10/H49约3–8得到177–424后向外粗取整，低置信、不是逐项精算或完工承诺；编译/设备/依赖/环境/删除权限等待另计，无法可靠给总等待范围。
+
+最终冻结源追溯（清理后仍能对照提交，不含真实凭据）：`crates/deepagent-models/src/capability.rs`=`2BE3925DAA976AB8291CB03F67BA1F14C132C37B443B3C64F2E50A651E1D3654`；`crates/deepagent-models/src/client.rs`=`E8078176393A5B1F212143323A69D6D13D692423C6BA7941ACA988A2E5B5F387`；`crates/deepagent-models/src/client_output_limit_tests.rs`=`63A9BA18582E98AAEF8BFFF33AB305923264A1276F0F842C8C738FF610C59711`；`crates/deepagent-context/src/policy.rs`=`2FDDC429EFBB1BF15E97B068BF28912D752BE22D14290598229E1334B4341E45`；`crates/deepagent-runtime/src/model_agent.rs`=`F8EBCC706268A7F5993FF8837CB10B3863CBC5C0A124E96EA1748FBFA0EF4EF2`；`crates/deepagent-runtime/src/model_output_limit_tests.rs`=`EFF18B77828C9D07E1C06E53B3D094F64A059471C61652EFC53F0328640A5E74`；`crates/deepagent-app-core/tests/kernel_v2_e2e.rs`=`83A805167260A396D8F1CCA3041506B24250464F26AFB8D04E490F869484BBBF`；`crates/deepagent-app-core/tests/kernel_v2_e2e/output_limit.rs`=`CC78B7FEC67EF0C7A0EFEA3177BCC304D217A131E21ECFE46152A247817A40B4`；`crates/deepagent-app-core/src/model_runtime.rs`=`06601D0658874DF9216BA0964A85796BD14D6E07F46D9CE1546615822F45CC4F`；`crates/deepagent-app-core/src/run_assembler.rs`=`53FB5B99EBB6A396679DB0B1F4C8F28EC159BEF8E96A468458E9DC247933B7D0`；`crates/deepagent-app-core/src/subagent_runner.rs`=`CEA7124DF74F533B0CE8A1F57A18A30E174779872F087C3E1B6EFEB81525A879`；`crates/deepagent-models/src/chat.rs`=`C28321E0BC3782EB0C962F5505888BBD7A441943C71ECEF27578EB5119BEB798`；`crates/deepagent-models/src/chat_completions.rs`=`FFEF96476A5F54B7083D5137854980FD8C30BC6A831AF699EBF86B30C79591A1`；`crates/deepagent-models/src/responses.rs`=`2DF1030F3E6C41F6A487A1637A86ABCAAD45A836B614DDBFDCFE5A0AACC85AEE`；`apps/cli/src/main.rs`=`1C133087C73F9EED1E0EA8972CAF7E7E471488FC4D124C6913EE87612A608C78`；`apps/desktop/src-tauri/src/lib.rs`=`AD37EC4B9539685C98649AFB400B465368A6D308E94AAB2C6BE2D34B6086D451`。
+
+**E-H49-05（2026-11-08，任务产物清理与残余，不代表整体完成）**：最终验收、显式8组和E04证据/16源hash回填后，仅核对本轮新G/C两根，未读取原五项用户untracked或未知目录内容，H48与全部历史拒绝目录均不触碰。清理前逐级绝对路径/全子项零reparse、零关联进程；G本轮root21,213文件/31,519,719,435逻辑字节（含tauri），C本轮夹具2,374文件/2,092,562,990字节，总33,612,282,425字节。共享CLI 0D73B80...保留供后续SDK，不动其sidecar和整个默认target；清理命令参数先由本机cargo clean --help查证。
+
+本轮新G构建目录此前未拒绝过：在已核对范围内先`cargo clean --target-dir G:\Code_Warehouse\DeepAgent-Studio\target\h49-repair-20261108\tauri --offline` exit0/2.286秒、报告Removed7999 files/2.4GiB；再`cargo clean --target-dir G:\Code_Warehouse\DeepAgent-Studio\target\h49-repair-20261108 --offline` exit0/8.413秒、Removed13214 files/26.9GiB。只读Test-Path确认整个G本轮根不存在，共享CLI hash和82,181,120长度未变；该正常清理不是对H48或任何旧拒绝根换路线/重试。原失败与候选日志已在E01～04保留核心输出/命令/结果及最终binary/源码hash后清理，不提交target、临时日志或backup。
+
+之后首次尝试本轮C夹具原生PowerShell Remove-Item，exec_command在CreateProcess阶段返回Rejected/blocked by policy，脚本没有启动，未执行删除；立即停止，不改ACL/提权、改名搬移、另壳/工具或Cargo clean替代、不重试。只读复核C仍2,374文件/2,092,562,990字节，与预检完全相同，枚举错误0、reparse0、关联进程0；该根加入本任务禁止重试的清理残余，需后续明确人工/权限决策。逻辑长度不是物理占用/回收承诺，当前只可称G本轮目录已删除，不能称全部清理完成；原C/H48等旧残余仍以各自记录为准。
+
+本项提交白名单仅8份Rust实现/回归/必要消费模块与双文共10文件；无新依赖/真实数据库迁移/公开DTO字段变化，无push/PR。取得独立fix ID后另双文回填，不反复amend。台账199验收、26历史跳过、8归并、3撤销、70待修含H180授权跳过，实际69有效未关；本轮新增1、历史跳过0、归并/撤销0，不把正常截断测试适配或记忆后续问题重复计数。下一准备H53，生产未改；全部剩余170–430低置信有效小时依据/未验限制见E04，编译/设备/依赖/环境/删除权限等待另计。清理拒绝不被功能验收或提交消除，整体goal仍active且未完成。
 
 ### H-50：移动输入未校验界面快照，已过期和未知引用仍下发设备命令
 

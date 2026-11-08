@@ -42,6 +42,16 @@ pub struct ModelCapability {
     pub fallback_reason: Option<String>,
 }
 
+impl ModelCapability {
+    /// A requested upper bound cannot exceed either provider output capacity
+    /// or the whole context window. This does not invent a request default.
+    pub fn bound_output_tokens(&self, requested: usize) -> usize {
+        requested
+            .min(self.max_output_tokens)
+            .min(self.context_window)
+    }
+}
+
 /// Resolves provider model ids into budgeting capabilities.
 #[derive(Debug, Clone)]
 pub struct ModelCapabilityResolver {

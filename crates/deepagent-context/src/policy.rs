@@ -92,10 +92,8 @@ impl ContextPolicy {
     ) -> Self {
         let management_window = capability.context_window;
         let _ = reasoning_effort; // Reasoning effort does not change the provider capacity.
-        let reserved_output_tokens = requested_output_tokens
-            .unwrap_or(capability.max_output_tokens)
-            .min(capability.max_output_tokens)
-            .min(management_window);
+        let reserved_output_tokens = capability
+            .bound_output_tokens(requested_output_tokens.unwrap_or(capability.max_output_tokens));
         let reserved_tool_tokens = (management_window / 16).clamp(8_000, 64_000);
         let budget = ContextBudget::new(
             management_window,

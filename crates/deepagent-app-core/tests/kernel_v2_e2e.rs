@@ -159,6 +159,9 @@ mod incomplete_reason;
 #[path = "kernel_v2_e2e/model_selection.rs"]
 mod model_selection;
 
+#[path = "kernel_v2_e2e/output_limit.rs"]
+mod output_limit;
+
 #[path = "kernel_v2_e2e/run_capabilities.rs"]
 mod run_capabilities;
 

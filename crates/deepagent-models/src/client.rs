@@ -153,6 +153,25 @@ impl ModelClient {
             .unwrap_or_else(|| crate::ModelCapabilityResolver::new().resolve_model_id(model))
     }
 
+    /// An explicit request/default is an upper bound, never a promise to exceed
+    /// the active model. Keep omission intact: catalog capacity is not a wire
+    /// default. Shared by runtime budgeting, preparation and both serializers.
+    pub fn effective_output_tokens(&self, model: &str, requested: Option<u32>) -> Option<u32> {
+        let requested = requested.or(self.config.defaults.max_output_tokens)?;
+        let capability = self.capability(model);
+        // The bound never exceeds the u32 input, including usize::MAX metadata.
+        Some(capability.bound_output_tokens(requested as usize) as u32)
+    }
+
+    fn validate_output_tokens(&self, output: Option<u32>) -> Result<()> {
+        if output == Some(0) {
+            return Err(deepagent_core::error::CoreError::invalid(
+                "model output ceiling must be positive within the active capability",
+            ));
+        }
+        Ok(())
+    }
+
     /// Check the current native Surface without resolving attachment bytes.
     /// Runtime preparation and final provider dispatch use this same gate.
     /// A cached URL unreferenced by the current input is not an image input.
@@ -228,6 +247,7 @@ impl ModelClient {
         request.stream = true;
         self.apply_defaults(&mut request);
         request.validate()?;
+        self.validate_output_tokens(request.max_output_tokens)?;
         self.validate_response_input_modalities(&request)?;
         log_response_input_pairs(&request);
         // Ask the provider to include a final usage chunk in the stream.
@@ -277,6 +297,7 @@ impl ModelClient {
         request.stream = true;
         self.apply_defaults(&mut request);
         request.validate()?;
+        self.validate_output_tokens(request.max_output_tokens)?;
         self.validate_response_input_modalities(&request)?;
         log_response_input_pairs(&request);
         let body = request_body::encode(&request)?;
@@ -315,6 +336,7 @@ impl ModelClient {
         request.stream = true;
         self.apply_chat_defaults(&mut request);
         request.validate()?;
+        self.validate_output_tokens(request.max_tokens)?;
         self.validate_chat_input_modalities(&request)?;
         let body = request_body::encode(&request)?;
         let transport_req = TransportRequest {
@@ -356,6 +378,7 @@ impl ModelClient {
         request.stream = true;
         self.apply_chat_defaults(&mut request);
         request.validate()?;
+        self.validate_output_tokens(request.max_tokens)?;
         self.validate_chat_input_modalities(&request)?;
         let body = request_body::encode(&request)?;
         let transport_req = TransportRequest {
@@ -421,9 +444,8 @@ impl ModelClient {
         if request.top_p.is_none() {
             request.top_p = self.config.defaults.top_p;
         }
-        if request.max_output_tokens.is_none() {
-            request.max_output_tokens = self.config.defaults.max_output_tokens;
-        }
+        request.max_output_tokens =
+            self.effective_output_tokens(&request.model, request.max_output_tokens);
         if request.top_logprobs.is_none() {
             request.top_logprobs = self.config.defaults.top_logprobs;
         }
@@ -464,9 +486,7 @@ impl ModelClient {
         if request.top_p.is_none() {
             request.top_p = self.config.defaults.top_p;
         }
-        if request.max_tokens.is_none() {
-            request.max_tokens = self.config.defaults.max_output_tokens;
-        }
+        request.max_tokens = self.effective_output_tokens(&request.model, request.max_tokens);
         if request.reasoning_effort.is_none() && request.thinking.is_none() {
             if let Some(effort) = self.config.defaults.reasoning_effort {
                 *request = request.clone().with_reasoning_effort(effort);
@@ -613,6 +633,10 @@ mod tool_name_tests;
 #[cfg(test)]
 #[path = "client_tool_projection_tests.rs"]
 mod tool_projection_tests;
+
+#[cfg(test)]
+#[path = "client_output_limit_tests.rs"]
+mod output_limit_tests;
 
 #[cfg(test)]
 mod tests {
