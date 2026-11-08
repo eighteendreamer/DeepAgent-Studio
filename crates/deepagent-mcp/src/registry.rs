@@ -91,12 +91,24 @@ pub fn split_namespaced(name: &str) -> Option<(&str, &str)> {
 struct ConnectedServer {
     client: Arc<McpClient>,
     tools: Vec<RemoteTool>,
+    /// Run-bound discovery projection, never a second dispatch/lifecycle owner.
+    /// Live registries leave this empty; a request snapshots it once for all
+    /// descriptors, instructions and lifecycle records of the same identity.
+    discovery_status: Option<crate::McpConnectionStatus>,
     /// Background liveness pinger (long-lived registries only); aborts with
     /// the entry, so probing stops exactly when the connection is dropped.
     probe: Option<Arc<LivenessProbe>>,
     /// Server `instructions` from the MCP `initialize` result, surfaced to the
     /// model via `<mcp-instructions>` context. `None` when the server omits it.
     instructions: Option<String>,
+}
+
+impl ConnectedServer {
+    fn discovery_status(&self) -> crate::McpConnectionStatus {
+        self.discovery_status
+            .clone()
+            .unwrap_or_else(|| self.client.connection_status())
+    }
 }
 
 /// Registry of connected MCP servers and their tools.
@@ -174,6 +186,7 @@ impl McpRegistry {
             ConnectedServer {
                 client,
                 tools,
+                discovery_status: None,
                 probe: None,
                 instructions,
             },
@@ -238,6 +251,23 @@ impl McpRegistry {
         self.servers.keys().cloned().collect()
     }
 
+    /// Read the same live identity state used by transport dispatch.
+    pub fn server_status(&self, name: &str) -> Option<crate::McpConnectionStatus> {
+        self.servers
+            .get(name)
+            .map(ConnectedServer::discovery_status)
+    }
+
+    /// Capture one discovery view at a request boundary. Dispatch still checks
+    /// each live client, so a previously advertised tool cannot revive it.
+    pub fn discovery_snapshot(&self) -> Self {
+        let mut snapshot = self.clone();
+        for server in snapshot.servers.values_mut() {
+            server.discovery_status = Some(server.client.connection_status());
+        }
+        snapshot
+    }
+
     /// All namespaced tools across all servers (for advertising to the model).
     /// Server-provided `instructions` (from the `initialize` handshake), paired
     /// with the server name, for every server that declared any. Empty when no
@@ -245,6 +275,7 @@ impl McpRegistry {
     pub fn server_instructions(&self) -> Vec<(String, String)> {
         self.servers
             .iter()
+            .filter(|(_, server)| server.discovery_status().is_discoverable())
             .filter_map(|(name, server)| {
                 server
                     .instructions
@@ -258,6 +289,7 @@ impl McpRegistry {
     pub fn all_tools(&self) -> Vec<RemoteTool> {
         self.servers
             .values()
+            .filter(|server| server.discovery_status().is_discoverable())
             .flat_map(|s| s.tools.iter().cloned())
             .collect()
     }
@@ -266,8 +298,19 @@ impl McpRegistry {
     pub fn find_tool(&self, namespaced: &str) -> Option<&RemoteTool> {
         self.servers
             .values()
+            .filter(|server| server.discovery_status().is_discoverable())
             .flat_map(|server| &server.tools)
             .find(|t| t.namespaced_name == namespaced)
+    }
+
+    // Retain metadata for previously borrowed adapters and historical calls;
+    // dispatch still goes through the live lifecycle gate, yielding a typed
+    // not-dispatched error rather than reviving an unavailable connection.
+    fn registered_tool(&self, namespaced: &str) -> Option<&RemoteTool> {
+        self.servers
+            .values()
+            .flat_map(|server| &server.tools)
+            .find(|tool| tool.namespaced_name == namespaced)
     }
 
     /// Invoke a namespaced tool, routing to the owning server's client.
@@ -282,7 +325,7 @@ impl McpRegistry {
             )));
         }
         let tool = self
-            .find_tool(namespaced)
+            .registered_tool(namespaced)
             .ok_or_else(|| CoreError::not_found(format!("MCP tool '{namespaced}'")))?;
         validate_tool_arguments(namespaced, &tool.input_schema, &arguments)?;
         let connected = self
@@ -308,7 +351,7 @@ impl McpRegistry {
             )));
         }
         let tool = self
-            .find_tool(namespaced)
+            .registered_tool(namespaced)
             .ok_or_else(|| CoreError::not_found(format!("MCP tool '{namespaced}'")))?;
         validate_tool_arguments(namespaced, &tool.input_schema, &arguments)?;
         let connected = self
@@ -398,7 +441,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit: a parked stdio server must leave discovery and stop automatic respawns"]
     async fn audit_exhausted_liveness_retires_tools_and_stops_request_reconnects() {
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("exhausted-server.cjs");
@@ -497,8 +539,14 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
         );
         assert!(
             registry.all_tools().is_empty()
+                && adapters.is_empty()
+                && registry.server_instructions().is_empty()
                 && starts_after_calls.iter().all(|count| *count == after_probe),
             "a parked server must not remain discoverable and spend a new recovery budget per call"
+        );
+        assert_eq!(
+            after_probe, 4,
+            "one initial process plus one shared three-attempt budget"
         );
     }
 

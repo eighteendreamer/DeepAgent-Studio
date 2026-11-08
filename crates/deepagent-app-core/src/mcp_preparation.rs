@@ -15,6 +15,10 @@ use server_startup::ServerSlot;
 #[path = "mcp_preparation/h47_tests.rs"]
 mod h47_tests;
 
+#[cfg(test)]
+#[path = "mcp_preparation/h48_tests.rs"]
+mod h48_tests;
+
 struct ReadyFingerprints {
     configs: BTreeMap<String, String>,
     /// Opaque publication identity, independent of secret/environment values.
@@ -215,7 +219,24 @@ impl McpService {
                     result.error = Some(error.to_string());
                 }
                 Some(Ok(registry)) => {
-                    result.status = "connected".into();
+                    match registry.server_status(name) {
+                        Some(deepagent_mcp::McpConnectionStatus::Unavailable {
+                            reason, ..
+                        }) => {
+                            result.status = "failed".into();
+                            result.error = Some(reason);
+                            return result;
+                        }
+                        Some(deepagent_mcp::McpConnectionStatus::Closed) => {
+                            result.status = "failed".into();
+                            result.error = Some("MCP transport is closed".into());
+                            return result;
+                        }
+                        Some(deepagent_mcp::McpConnectionStatus::Recovering) => {
+                            result.status = "preparing".into();
+                        }
+                        _ => result.status = "connected".into(),
+                    }
                     result.tools = registry
                         .all_tools()
                         .into_iter()

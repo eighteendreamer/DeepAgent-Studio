@@ -21,10 +21,11 @@
 //! The probe holds an [`McpClient`] whose transport is (in production) the
 //! self-healing [`crate::reconnect::ReconnectingTransport`]. A `ping` that hits
 //! a dead transport therefore *is* the recovery trigger: the reconnect wrapper
-//! runs its bounded backoff respawn underneath the ping. The probe only counts
-//! a failure after that budget is exhausted, and parks (stops probing, logs)
-//! after [`DEFAULT_PING_FAILURE_LIMIT`] consecutive failures — mirroring
-//! Grok's bounded "park as unavailable" philosophy.
+//! runs the connection's shared bounded backoff underneath the ping. Local
+//! exhaustion retires discovery and stops this probe immediately. Repeated
+//! ping timeouts also park a local connection after
+//! [`DEFAULT_PING_FAILURE_LIMIT`] failures; they never renew its restart budget.
+//! Network transports retain their next-request recovery policy.
 //!
 //! Lenient by design: only transport-level failures and timeouts count as
 //! failures. A server that answers `ping` with a JSON-RPC error (e.g. an older
@@ -127,7 +128,15 @@ pub(crate) fn classify_ping(result: Option<deepagent_core::error::Result<()>>) -
     match result {
         None => ProbeStep::Failure, // timeout
         Some(Ok(())) => ProbeStep::Alive,
-        Some(Err(error)) if is_transport_closed_error(&error) => ProbeStep::Failure,
+        Some(Err(error))
+            if is_transport_closed_error(&error)
+                || matches!(
+                    error,
+                    deepagent_core::error::CoreError::McpUnavailable { .. }
+                ) =>
+        {
+            ProbeStep::Failure
+        }
         // Any other reply (JSON-RPC error such as -32601 method-not-found)
         // came from a live server — lenient: never park a healthy server.
         Some(Err(_)) => ProbeStep::Unsupported,
@@ -139,6 +148,13 @@ async fn probe_loop(client: Arc<McpClient>, server: String, config: LivenessConf
     loop {
         tokio::time::sleep(config.interval).await;
         let outcome = tokio::time::timeout(config.timeout, client.ping()).await;
+        if !client.connection_status().is_discoverable() {
+            tracing::warn!(
+                server = server.as_str(),
+                "MCP connection retired; stopping liveness probe"
+            );
+            return;
+        }
         match classify_ping(outcome.ok()) {
             ProbeStep::Alive => {
                 if consecutive_failures > 0 {
@@ -169,6 +185,9 @@ async fn probe_loop(client: Arc<McpClient>, server: String, config: LivenessConf
                         server = server.as_str(),
                         "MCP liveness failure limit reached; parking probe (server unavailable)"
                     );
+                    client
+                        .park_after_liveness_failure("MCP liveness failure limit reached")
+                        .await;
                     return;
                 }
             }

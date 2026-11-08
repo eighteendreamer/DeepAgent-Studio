@@ -63,7 +63,7 @@ pub use reconnect::{
 pub use registry::{namespaced_name, split_namespaced, McpRegistry, RemoteTool};
 pub use response_budget::{DEFAULT_MCP_RESPONSE_LIMIT_BYTES, MAX_MCP_RESPONSE_LIMIT_BYTES};
 pub use stdio::StdioTransport;
-pub use transport::{McpTransport, MockTransport};
+pub use transport::{McpConnectionStatus, McpTransport, MockTransport};
 
 #[cfg(feature = "http")]
 pub use http::HttpTransport;

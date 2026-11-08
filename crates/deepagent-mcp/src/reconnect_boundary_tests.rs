@@ -129,11 +129,22 @@ async fn recovery_failures_do_not_dispatch_waiting_business_request() {
             .with_backoff(vec![Duration::ZERO; 2]);
     unknown(transport.send(&request(1)).await.unwrap_err(), 1);
     let error = transport.send(&request(2)).await.unwrap_err();
-    assert!(!matches!(error, CoreError::RemoteOutcomeUnknown { .. }));
+    assert!(matches!(
+        error,
+        CoreError::McpUnavailable {
+            recovery_attempts: 2,
+            ..
+        }
+    ));
     assert_eq!(*effects.lock().unwrap(), vec![1]);
     assert_eq!(factory.calls.load(Ordering::SeqCst), 2);
-    transport.send(&request(3)).await.unwrap();
-    assert_eq!(*effects.lock().unwrap(), vec![1, 3]);
+    // H-48: a new request is not an explicit lifecycle retry.
+    assert!(matches!(
+        transport.send(&request(3)).await,
+        Err(CoreError::McpUnavailable { .. })
+    ));
+    assert_eq!(*effects.lock().unwrap(), vec![1]);
+    assert_eq!(factory.calls.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
@@ -280,7 +291,10 @@ async fn cancelling_during_recovery_does_not_dispatch_or_clear_disconnected_stat
         .unwrap_err()
         .to_string()
         .contains("before dispatch"));
-    assert!(transport.inner.lock().await.disconnected);
+    assert!(matches!(
+        transport.state().phase,
+        ConnectionPhase::Unavailable { attempts: 1, .. }
+    ));
     assert_eq!(*effects.lock().unwrap(), vec![1]);
     transport.close().await.unwrap();
     assert!(transport

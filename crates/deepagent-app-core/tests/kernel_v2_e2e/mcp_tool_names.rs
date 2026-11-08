@@ -356,11 +356,14 @@ async fn h147_alias_is_shared_by_discovery_approval_history_and_reopened_kernel(
             |_| panic!("reopen must not redispatch an old call"),
         )
         .await;
+    // Validate the catalog advertised by this run, not live discovery after
+    // teardown. H-48 retires closed connections at the next request boundary.
+    let advertised = mcp.ready_registry().discovery_snapshot();
     mcp.ready_registry().close_all().await.unwrap();
     result.unwrap();
     assert_eq!(calls(root.path()), json!([]));
     assert_eq!(
-        mcp.ready_registry()
+        advertised
             .all_tools()
             .iter()
             .find(|t| t.local_name == RAW)
@@ -424,6 +427,7 @@ async fn h147_duplicate_raw_names_fail_management_without_publishing_partial_cap
         }
     })
     .await;
+    let advertised = mcp.ready_registry().discovery_snapshot();
     mcp.ready_registry().close_all().await.unwrap();
     let statuses = result.unwrap();
     let failed = statuses.iter().find(|s| s.name == "ambiguous").unwrap();
@@ -435,7 +439,8 @@ async fn h147_duplicate_raw_names_fail_management_without_publishing_partial_cap
         .contains("duplicate raw tool identity"));
     assert!(failed.tools.is_empty());
     assert_eq!(mcp.ready_registry().server_names(), vec!["healthy"]);
-    assert_eq!(mcp.ready_registry().all_tools().len(), 1);
+    assert_eq!(advertised.all_tools().len(), 1);
+    assert!(mcp.ready_registry().all_tools().is_empty());
     assert_eq!(calls(&root.path().join("ambiguous")), json!([]));
     assert_eq!(calls(&root.path().join("healthy")), json!([]));
 }

@@ -80,6 +80,14 @@ pub struct McpClient {
 }
 
 impl McpClient {
+    pub fn connection_status(&self) -> crate::McpConnectionStatus {
+        self.transport.connection_status()
+    }
+
+    pub(crate) async fn park_after_liveness_failure(&self, reason: &str) {
+        self.transport.park_after_liveness_failure(reason).await;
+    }
+
     /// Build a client over a transport.
     pub fn new(transport: Arc<dyn McpTransport>) -> Self {
         Self {

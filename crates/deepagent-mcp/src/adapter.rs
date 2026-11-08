@@ -21,6 +21,18 @@ use crate::registry::{McpRegistry, RemoteTool};
 fn tool_output(result: Result<crate::protocol::ToolCallResult>) -> Result<ToolOutput> {
     let result = match result {
         Ok(result) => result,
+        Err(error @ CoreError::McpUnavailable { .. }) => {
+            return Ok(ToolOutput {
+                ok: false,
+                value: serde_json::json!({
+                    "error": error.to_string(),
+                    "error_type": "mcp_unavailable",
+                    "outcome": "not_dispatched",
+                    "retryable": false,
+                }),
+                truncated: false,
+            });
+        }
         Err(CoreError::RemoteOutcomeUnknown {
             method,
             request_id,

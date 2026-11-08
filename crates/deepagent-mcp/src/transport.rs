@@ -22,9 +22,36 @@ pub(crate) const MCP_CANCELLED_UNKNOWN_OUTCOME: &str =
     "MCP tool call cancelled; the remote outcome may be unknown";
 pub(crate) const MCP_CANCELLED_BEFORE_DISPATCH: &str = "MCP tool call cancelled before dispatch";
 
+/// Live connection identity state, shared by probes, invocations and discovery.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum McpConnectionStatus {
+    Ready,
+    Recovering,
+    Unavailable {
+        recovery_attempts: usize,
+        reason: String,
+    },
+    Closed,
+}
+
+impl McpConnectionStatus {
+    pub fn is_discoverable(&self) -> bool {
+        matches!(self, Self::Ready | Self::Recovering)
+    }
+}
+
 /// Sends JSON-RPC requests to an MCP server.
 #[async_trait]
 pub trait McpTransport: Send + Sync {
+    /// Simple transports have no recovery lifecycle; wrappers own that policy.
+    fn connection_status(&self) -> McpConnectionStatus {
+        McpConnectionStatus::Ready
+    }
+
+    /// Park a lifecycle-managed local connection after repeated ping timeouts.
+    /// Network and simple transports retain their existing recovery policy.
+    async fn park_after_liveness_failure(&self, _reason: &str) {}
+
     /// Send `request` and await the correlated response.
     async fn send(&self, request: &JsonRpcRequest) -> Result<JsonRpcResponse>;
 

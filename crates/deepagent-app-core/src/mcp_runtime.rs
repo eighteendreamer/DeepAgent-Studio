@@ -58,33 +58,55 @@ pub(crate) fn attach_mcp_tools(
             tracing::warn!(%error, "MCP plugin snapshot conflict; excluding plugin capabilities from this run");
         }
     }
-    let mcp_registry = Arc::new(ready);
+    let mcp_registry = Arc::new(ready.discovery_snapshot());
     for adapter in deepagent_mcp::adapters_for(mcp_registry.clone()) {
         registry.register(adapter)?;
     }
     let lifecycle = mcp_registry
         .server_names()
         .into_iter()
-        .map(|server_id| McpLifecycleRecord {
-            config_hash: configs
-                .get(&server_id)
-                .or_else(|| {
-                    plugin_projection
-                        .and_then(|projection| projection.mcp_config.servers.get(&server_id))
-                })
-                .map(config_hash),
-            tool_schema_hash: Some(tool_schema_hash(&mcp_registry, &server_id)),
-            tool_count: mcp_registry
-                .all_tools()
-                .iter()
-                .filter(|tool| tool.server == server_id)
-                .count(),
-            server_id,
-            status: "ready".into(),
-            transport: None,
-            startup_attempt: 0,
-            degradation_code: None,
-            reason: None,
+        .map(|server_id| {
+            let (status, degradation_code, reason) = match mcp_registry.server_status(&server_id) {
+                Some(deepagent_mcp::McpConnectionStatus::Unavailable {
+                    recovery_attempts, ..
+                }) => (
+                    "unavailable",
+                    Some("mcp_recovery_exhausted".into()),
+                    // This event is durable. Handshake/peer error text belongs
+                    // to the existing connection diagnostic, not this ledger.
+                    Some(format!(
+                        "MCP local connection unavailable after {recovery_attempts} recovery attempts; explicit lifecycle retry required"
+                    )),
+                ),
+                Some(deepagent_mcp::McpConnectionStatus::Closed) => (
+                    "unavailable",
+                    Some("mcp_connection_closed".into()),
+                    Some("MCP transport is closed".into()),
+                ),
+                Some(deepagent_mcp::McpConnectionStatus::Recovering) => ("recovering", None, None),
+                _ => ("ready", None, None),
+            };
+            McpLifecycleRecord {
+                config_hash: configs
+                    .get(&server_id)
+                    .or_else(|| {
+                        plugin_projection
+                            .and_then(|projection| projection.mcp_config.servers.get(&server_id))
+                    })
+                    .map(config_hash),
+                tool_schema_hash: Some(tool_schema_hash(&mcp_registry, &server_id)),
+                tool_count: mcp_registry
+                    .all_tools()
+                    .iter()
+                    .filter(|tool| tool.server == server_id)
+                    .count(),
+                server_id,
+                status: status.into(),
+                transport: None,
+                startup_attempt: 0,
+                degradation_code,
+                reason,
+            }
         })
         .collect();
     Ok(McpRuntimeTools {

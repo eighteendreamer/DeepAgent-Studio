@@ -2258,6 +2258,8 @@ AppCore --all-targets --no-deps -W warnings实际exit101（42.537秒）：旧ker
 
 **级别：中（P2）；范围：本地 stdio MCP 曾正常发现工具，随后断线且重启一直失败。** 本项不是 H-06 的未知结果自动重放，也不是 H-47 的配置变更取消；只审查恢复耗尽的稳定状态及后续调用。
 
+修复状态（2026-11-08）：已修复并验收，限E-H48-01～07本机证据；原始失败/候选/环境反例保留，清理策略拒绝及全部残余见E07，独立提交随后回填。
+
 #### 生产边界与真实进程复现
 
 - `deepagent-mcp/src/liveness.rs::probe_loop` 达到 failure_limit 后记录“parking probe (server unavailable)”并 return，没有向 registry/宿主发布状态；McpRegistry 的工具/说明仍为初始化发现结果。`ReconnectingTransport::send` 的重试计数是每次 send 内部局部循环，没有共享的耗尽状态或服务级恢复 owner；下一次工具调用会重走全部 backoff/factory。
@@ -2272,6 +2274,82 @@ AppCore --all-targets --no-deps -W warnings实际exit101（42.537秒）：旧ker
 - Grok 的 HTTP 恢复路径明确允许 parked until next tool call，不能将该策略混称为其 stdio 行为，或宣称所有类型都应永久断路。这里需要修复的是本系统宣称的本地服务级耗尽语义与实际行为不一致，且不可用工具继续被发现。
 - 后果是模型仍会发现并尝试失效工具，连续调用重复承担启动/握手负担，用户可能反复经历长等待。生产默认一轮完整退避合计 21 秒，另加每次启动和初始化；本探针实际使用短退避，没有实测每轮 21 秒，外层运行/工具 deadline 也可能提前截断。不能把本结果概括为所有普通聊天都等待或所有连接都失效。
 - 修复应在现有 MCP 服务生命周期内维护同一连接身份的 ready/recovering/unavailable 状态和恢复预算，探活/工具调用共用恢复 owner；耗尽时在下一请求边界退役该服务新发现的工具及说明，并让既有请求收到结构化失败。明确显式重试、配置变更、宿主重启或受控冷却何时重新开放预算，避免 request 层自行无限重启；保留历史调用配对。应覆盖恢复成功、持续失败、并发调用/探活、旧代迟到、用户禁用和全局快照投影。本轮只新增测试与文档，未修改生产恢复策略。
+
+
+**E-H48-01（2026-11-08，原探针与TDD，修复中）**：基线3653f2de4559960e137e6179d50eb40364c2e725，H47已独立fix/docs交付；tracked干净、无既有暂存或合并，原五项untracked只列名称不读改暂存。核对当前reconnect/liveness/registry、client/adapter及AppCore slot/status/runtime生产消费方、manifest/rustfmt/CI、Grok stdio与HTTP差异及H06/H08/H126/H47历史；H48尚未修复，不能历史跳过或与H47归并，H180继续授权跳过，全部旧拒绝清理根不重试。范围仅本地stdio同连接身份的恢复预算、能力退役与显式重试，不改变未知结果禁止重放、不将stdio策略套到HTTP/SSE。
+
+真实原命令`cargo test --target-dir C:\Users\32734\AppData\Local\Temp\h48-repair-20261108 -p deepagent-mcp --lib audit_exhausted_liveness_retires_tools_and_stops_request_reconnects --offline -j 2 -- --ignored --exact registry::tests::audit_exhausted_liveness_retires_tools_and_stops_request_reconnects --nocapture`实际exit101，92.125秒（含冷编译），0通过/1失败/0忽略；真实Node记录probe_finished=true，启动10，工具/adapter/说明各1，后两次启动13/16。新增四个确定性TDD覆盖共享耗尽、取消不退款、close不等handshake、旧snapshot/adapter退役，初次临时值生命周期编译错误不计产品红，修正测试借用后实际0通过/4失败/0忽略：调用总27次、取消后第四次再次进入factory、close被锁阻塞、旧快照工具仍在。原日志保留在本轮产物根，尚未验收或提交，不能宣称已修复。
+
+根因方案复用既有ReconnectingTransport：单一连接phase、共享已开始尝试计数、序列化recovery owner与不跨I/O的状态锁；caller取消不退款、close/park取消handshake、不发布旧代。registry发现/说明、旧adapter调用、AppCore状态及正式attach投影共读同一身份；stdio耗尽仅显式retry、新配置或重启创建新身份，HTTP/SSE保留原next-request策略。新增CoreError::McpUnavailable与ToolOutput not_dispatched/retryable=false，公开配置/DTO形状和权限不变；Rust新增enum/trait默认方法属加法，所有消费方须编译验证。真实进程/并发/超时/显式retry/禁用/正常恢复及跨层门禁尚待执行；本项初估4–10有效小时，全余190–440低置信有效小时不变，环境/编译等待另计。
+
+**E-H48-02（2026-11-08，候选反例与边界补强，未验收）**：首个reconnect候选19/0/0通过；真实原probe候选exit0、1/0/0（含编译9.73秒，测试0.63秒），启动4、调用后4/4，工具/adapter/说明全0。随后MCP全features候选164/0/2（lib133/0/1，加集成31/0/1）通过，包括真实HTTP/stdio未知结果不重放、初始化契约、响应预算、真实故障恢复；这不是最终冻结源码验收。AppCore首候选0/1，360.640秒含冷编译，已运行真实默认1/4/16秒恢复并通过前段耗尽断言，但测试把既有Medium风险误当必需approval，实际permission.rs只对High要求approval；改为无Network权限拒绝/正常developer权限通过的真实对照，不修改生产权限或放宽其门禁，原失败保留。此期间候选编译与源码新增测试重叠，不将中间binary视为最终冻结验收。
+
+本地设计（适配既有trait，不复制Grok dispatcher）：连接phase与尝试预算由原ReconnectingTransport单一持有，recovery锁只序列化owner、短状态锁不跨I/O，最后一次handshake的caller取消也由owner Drop保留耗尽；Notify在检查state前登记，close/park可取消待握手future。CoreError::McpUnavailable明确不可因reason含broken pipe被外层重试分类；业务已下发失联仍走原UnknownOutcome。原探针去ignore、加强adapter/说明及恰4进程断言；六个库级回归另覆盖取消耗尽、并发、网络不永久停用、ping超时与不支持ping、历史snapshot与旧adapter；新增Windows真实Node替换握手中close并持有确切进程handle验退出（脚本保活，不能靠EOF自然退出假通过）。
+
+AppCore复用原slot的显式retry、原启停/配置代次和正式attach；每请求通过同registry的discovery_snapshot一次采样状态，保证该请求工具/说明/lifecycle互相一致，采样后连接失效时旧adapter仍通过活连接门禁拒绝，新请求不再广告。该投影不是第二套连接/store/取消引擎。原connected/failed/disabled/preparing UI DTO字段和值集合不变，harness mcp.lifecycle的status原本即String，新增recovering/unavailable语义、degradation code，无wire版本/schema迁移。最终隔离HOME/临时SQLite/冻结源检查、真实默认backoff宿主测试、MCP strict、AppCore/core/CLI/SDK/Tauri/workspace门禁待执行；当前仍修复中，未计新增验收。
+
+**E-H48-03（2026-11-08，跨层反例与冻结重验，未验收）**：首批冻结检查实际fmt通过、MCP全features165/0/2（含原probe、6库级新增和真实替换握手子进程退出）、core44/0/0、正式preparation13/0/0、AppCore默认1602/0/45通过；kernel实际317/2/22（493.679秒含编译）失败，plugin_conformance因Cargo遇该失败未继续，不能冒称其通过。两个失败分别是H147重开后的实时目录unwrap（原mcp_tool_names.rs:367）及正常工具计数0而非1（原:438）；二者都在fixture先close_all后读取实时目录。H48将Unavailable/Closed从后续发现中退役，这是兼容性语义变化，不伪报旧失败，也不能恢复广告已关闭能力来讨好断言。消费方仍验证同样别名、审批、原始调用、历史配对与SQLite重开，改为关闭前同一registry.discovery_snapshot的已发布目录，另增关闭后实时目录确为空的断言；不移除/ignore原断言、不改H147生产逻辑、不新增独立修复计数。
+
+新增mcp.lifecycle是可持久化事件，最终将其reason收敛为固定本地诊断摘要及恢复次数，不把握手/peer原始error文本带进该新增ledger字段；原连接诊断仍保留上下文。真实宿主新回归断言固定摘要，权限反例使用既有PermissionSet::empty（无Network）而非误猜Medium需approval。此前Tauri cargo check实际exit0/约476秒，但外层冻结源检查发现这次源码补强而exit1；它只算候选编译，不作为最终当前源码验收。首批focused也在kernel结果后因源hash变化严格停止，后续lint/CLI未执行。新的23源hash冻结及final2前缀重验保留旧日志不覆盖；最终验收、清理和独立提交仍未完成，台账不新增验收。
+
+**E-H48-04（2026-11-08，当前源码定向门禁与全仓环境反例，未最终验收）**：最终23源hash冻结，final2 fmt、MCP全features165/0/2、core44/0/0、准备13/0/0（含真实默认退避宿主、H47全部对照）、H147正式kernel消费3/0/0、MCP/core严格lint、Tauri check均exit0；AppCore严格lint exit101，未改的context_runtime八处clone_on_copy、http_runtime needless_return、plugin_preparation:14 type_complexity、run_assembler:1883参数数、session_title:54 needless_borrow及workflow_audit/media两处旧测试警告。lib诊断exit0，all-target诊断exit101另有原kernel mcp_discovery_restore.rs:776必定panic unwrap；diff确认所列旧位置未改，本项位置未新增诊断，但不宣称整个AppCore严格通过。
+
+CLI构建exit0。首次受控发布在只读源deepagent.exe被Cargo标记HardLink时，保守路径检查提前拒绝、尚无复制/覆盖；这不是文件删除/权限拒绝。核对source只读、destination与全部祖先非reparse/非链接、旧CLI hash一致、零源/目标进程、先备份后复制，只允许该已确认只读源的HardLink（不允许写目标或祖先链接）；本轮82,178,560字节共享CLI SHA256 2FDF5FE758C79F9B83537C54B0C71BEB8577FEE4F51914B73BBBDACCB250ED0B。后续消费门禁实际CLI冷启2/0/1、CLI strict、SDK72/0/5+真实stdio13/0/0+doc2/0通过；忽略项未当作执行成功，无TS/DTO形状改动，未跑pnpm build/真实桌面。
+
+全仓第一次命令`cargo test --target-dir C:\Users\32734\AppData\Local\Temp\h48-repair-20261108 --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=2`实际exit101/289.531秒，在测试前不能写ratatui指纹invoked.timestamp（os error3），0测试结果；未改源码/缓存/ACL，同根串行重跑一次exit101/6.815秒，旧SQLite OUT_DIR/bindgen.rs不存在（os error2），仍0测试结果。两个strict尝试除同一缓存缺失还都命中未改Models client.rs:431 clone_on_copy。读取产物元数据/原构建输出确认此前已生成过out而当前bindgen缺失，空间C约54GB/G148GB，零本轮关联进程；无法归因，不臆称安全软件/用户清理/产品原因。用户明确回复“没有，继续独立验收”（无其他清理），不在该损坏target连续重试，不手工拼bindgen/改权限或移除产物。
+
+改用全新G:\Code_Warehouse\DeepAgent-Studio\target\h48-verify-20261108，仅复制冻结hash/CLI身份元数据，不复制旧依赖/可执行产物；同一冻结源码与隔离HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP，清凭据/代理env，本地合成进程/临时SQLite、离线构建一次。尚在干净workspace门禁，保留C环境失败；没有删除拒绝或规避任何旧清理拒绝。两根须本项验收后按真实路径/零reparse/零进程/敏感边界确认再清理，拒绝即停。全仓未验收，当前H48仍修复中、197验收/26历史跳过/8归并/3撤销、71待修+1修复中含H180跳过，实际71有效未关，整体目标未完成。
+
+**E-H48-05（2026-11-08，干净全仓环境反例与夹具纠正，未最终验收）**：G盘clean-workspace实际exit101/1607.750秒，148个顶层目标148个结果，4960通过/6失败/191忽略；队列解析严格配对Running/banner、running N与结果总数，排除H92子进程嵌套结果，不重复计数。完整kernel319/0/22、plugin_conformance6/0/0及H48实际执行；失败为AppCore3、CLI1、Prompts1、Workspace1。Prompts仍是旧H306 creative.video-edit.v1空defaultUserPrompt，其余5不能伪报既有失败：本次小怪将临时夹具HOME/TEMP错误地也放进G仓库target目录，导致GitService/non_repo与Workspace detect_git_context沿祖先发现真实仓库、两个verification_dispatcher用例发现祖先Cargo.toml；CLI快照只从预期C临时路径变成G仓路径。逐条堆栈及snapshot diff已读，未改产品代码/测试断言/expected snapshot来消除环境错误，生成的唯一.snap.new仅属本次测试产物，待验收后核对路径清理。clean strict仍exit101/66.923秒、旧Models clone_on_copy，不能全仓称绿。
+
+保持G盘target已编译产物和23源hash不变，只改验收运行时隔离目录为新C:\Users\32734\AppData\Local\Temp\h48-verify-fixtures-20261108，HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/XDG/DEEPAGENT_DATA_ROOT全指向仓外该根，逐级确认无reparse、无.git或Cargo.toml祖先。离线合成数据、共享CLI hash继续固定，串行完整corrected-workspace再验；不是在损坏C target重试，也不是忽略失败/修改生产规则。C的两次缓存失败/G初次五个夹具失败均完整保留，最终结果未出前台账仍修复中、无新增验收；最终清理涉及C构建根、G验证根、C夹具根及精确.snap.new，旧拒绝根不触碰。
+
+**E-H48-06（2026-11-08，最终本机验收，仅关闭本项）**：限当前Windows离线本地范围。最终23源hash在各门禁前后逐项核对；仓外合成HOME/TEMP/SQLite及显式配置的Node，不访问第三方/真实内网/凭据。G盘corrected-workspace实际exit101/954.497秒，148目标/148结果，4965通过/1失败/191忽略；唯一失败为未改旧H306 creative.video-edit.v1空defaultUserPrompt。AppCore1602/0/54、Kernel319/0/22、plugin_conformance6/0/0、CLI201/0/9、MCP默认126/0/1及SDK真实stdio13/0/0；C定向MCP全features165/0/2、Core44/0/0、准备13/0/0、H1473/0/0、CLI冷启2/0/1、SDK72/0/5+stdio13/0/0+doc2/0、Tauri check通过。仅夹具位置纠正后E05五失败全部消失，原失败证据不删除、不称其产品修复；原H306、全部默认忽略项和旧lint不消失。
+
+原probe已默认化，最后从本轮workspace实际Running记录定位binary后显式执行，退出0且断言0忽略：原probe1（启动4、后调用4/4、发现/adapter/说明均0）、6个新库级边界、整准备13（含真实默认1/4/16秒的宿主耗尽/失败状态/正式attach权限与旧adapter/无关B/启停新身份/显式retry和H47全部正常对照）、Windows替换握手中真实子进程退出1、H147消费3、当前CLI的SDK stdio13。新测试不因Node缺失静默skip；本机Node SHA256 923A41F268AB49EDE2E3363FBDD9E790609E385C6F3CA880B4EE9A56A8133E5A。G原probe/lib binary 1BBB420381C3CAFF93A22673848659ED98F4B4DA55DDFEA88FA67E7AFFA884B4，AppCore DFE9FBA121DCFD1C10224EF0BC1C050591351EC215A357BABC475CF4CF4EB9EF，真实子进程proof 50A6918469DC453EC9191AF9C05E3F3821111A09A08BBF82E3E67D56BE408802；没有仅凭编译或默认忽略原探针宣称完成。
+
+实际命令（仓库根；target均为本项明确隔离根，所有测试为原命令真实执行）：
+
+| 命令 | 退出 | 墙钟秒（含编译/锁等待） |
+|---|---:|---:|
+| `cargo fmt --all -- --check` | 0 | 5.018 |
+| `cargo test --target-dir C:\Users\32734\AppData\Local\Temp\h48-repair-20261108 -p deepagent-mcp --all-features --offline -j 2 -- --nocapture --test-threads=2` | 0 | 48.573 |
+| `cargo test --target-dir C:\Users\32734\AppData\Local\Temp\h48-repair-20261108 -p deepagent-core --offline -j 2 -- --quiet --test-threads=2` | 0 | 3.947 |
+| `cargo test --target-dir C:\Users\32734\AppData\Local\Temp\h48-repair-20261108 -p deepagent-app-core --lib mcp_service::preparation:: --offline -j 2 -- --nocapture --test-threads=1` | 0 | 254.901 |
+| `cargo test --target-dir C:\Users\32734\AppData\Local\Temp\h48-repair-20261108 -p deepagent-app-core --test kernel_v2_e2e mcp_tool_names:: --offline -j 2 -- --nocapture --test-threads=1` | 0 | 202.873 |
+| `cargo clippy --target-dir C:\Users\32734\AppData\Local\Temp\h48-repair-20261108 -p deepagent-mcp --all-targets --all-features --no-deps --offline -j 2 -- -D warnings` | 0 | 46.186 |
+| `cargo clippy --target-dir C:\Users\32734\AppData\Local\Temp\h48-repair-20261108 -p deepagent-core --all-targets --no-deps --offline -j 2 -- -D warnings` | 0 | 3.071 |
+| `cargo clippy --target-dir C:\Users\32734\AppData\Local\Temp\h48-repair-20261108 -p deepagent-app-core --all-targets --no-deps --offline -j 2 -- -D warnings` | 101 | 169.920 |
+| `cargo clippy --target-dir C:\Users\32734\AppData\Local\Temp\h48-repair-20261108 -p deepagent-app-core --lib --no-deps --offline -j 2 -- -W warnings` | 0 | 43.440 |
+| `cargo build --target-dir C:\Users\32734\AppData\Local\Temp\h48-repair-20261108 -p deepagent-cli --offline -j 2 --message-format=json` | 0 | 171.703 |
+| `cargo test --target-dir C:\Users\32734\AppData\Local\Temp\h48-repair-20261108 -p deepagent-cli --test session_startup_isolation --offline -j 2 -- --nocapture --test-threads=1` | 0 | 147.853 |
+| `cargo clippy --target-dir C:\Users\32734\AppData\Local\Temp\h48-repair-20261108 -p deepagent-cli --all-targets --all-features --no-deps --offline -j 2 -- -D warnings` | 0 | 59.864 |
+| `cargo test --target-dir C:\Users\32734\AppData\Local\Temp\h48-repair-20261108 -p deepagent-harness-sdk --offline -j 2 -- --quiet --test-threads=2` | 0 | 126.390 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --target-dir <H48 root>/tauri --offline -j 2` | 0 | 33.487 |
+| `cargo test --target-dir G:\Code_Warehouse\DeepAgent-Studio\target\h48-verify-20261108 --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=2` | 101 | 954.497 |
+| `cargo clippy --target-dir G:\Code_Warehouse\DeepAgent-Studio\target\h48-verify-20261108 --all-targets --all-features --offline -j 2 -- -D warnings` | 101 | 33.853 |
+
+AppCore strict仍有E04的12生产/2测试旧诊断，all-target diagnostic另受旧guaranteed-panic unwrap阻断；MCP/Core/CLI严格lint通过，变更位置无新诊断。全仓strict仍是Models client.rs:431 clone_on_copy，不能报告全仓lint通过。无依赖、SQL迁移、公开配置/DTO字段改变；Rust trait默认方法及CoreError variant为加法，自定义网络factory需覆写parks_on_exhaustion=false，生产Config按stdio/HTTP明确区分。外部直接消费者要适应Closed/Unavailable不再广告；既有请求的冻结schema/历史配对不改，实际调用始终检查活身份，未知已下发仍不可自动重放。UI状态值集合不变；新harness lifecycle用既有String字段表达recovering/unavailable，并只落固定脱敏reason/次数。没有第二套执行、连接、event/store、审批或取消引擎。
+
+残余与未验：仅本机Windows、合成stdio与既有自建回环HTTP；未验其他OS/真实第三方MCP、真实桌面启停/截图、真实宿主崩溃与设备、电源/系统I/O故障及全部忽略项目。无TS/UI/桥接形状变化，本项未跑pnpm build；默认生产30秒ping与30秒startup的完整真实宿主长时间复合故障未做，库级ping timeout使用短配置，正式宿主真实恢复退避与H47真实30秒startup对照已做。能力在下一请求边界退役，已准备请求不篡改历史schema，旧adapter返回结构化未下发错误；不承诺UI实时push或永久阻止外部用户进程。功能范围已验收，清理残余和提交随后独立记录，不能因此称整个goal完成。
+
+台账本轮新增1、历史跳过0、归并/撤销0；306唯一行/8列核对后198验收、26历史跳过、8归并、3撤销、71待修含授权跳过H180，实际70有效未关。下一准备H49（尚未实施其生产修改）；剩余粗估约180–430有效小时，依据上轮71项195–431小时分组区间减本项4–10小时后向外取整（低置信、未逐项校准），编译/设备/依赖/环境等待另计、无可靠等待总区间或精确完工承诺。清理拒绝的历史根仍全部不重试。
+
+冻结源追溯（日志清理后仍可对照提交；不含真实凭据）：`crates/deepagent-app-core/src/mcp_preparation.rs` = `36D5445AAEF3D3EB4ED8E820ECEDB1BE4080A7C667D867B777B057BFF301754A`；`crates/deepagent-app-core/src/mcp_preparation/server_startup.rs` = `BB4C49014449A7184D643FF71DA82A5A4D187E25B696EB140D033AA0F7B37B34`；`crates/deepagent-app-core/src/mcp_preparation/h48_tests.rs` = `4A443E8C715E8D5F41BAF9114A71CE3567D34AEF8CC5A5B6F267A2AF7D43E6E1`；`crates/deepagent-app-core/src/mcp_runtime.rs` = `9C8B598ECF3438819D005B066C8BC37536AA968DFFFE7342833FA541B998F0E8`；`crates/deepagent-core/src/error.rs` = `7D9E51719274C7E98404C0FF731A660EFF10087C4760780C892F627A20836392`；`crates/deepagent-mcp/src/adapter.rs` = `574F9ED21EAC6B0973D30487404B3A549FCB7FEEB2FC6A604F732333221D6589`；`crates/deepagent-mcp/src/client.rs` = `3E48D8785C4BC6B4D75F4C996A97D5A3EF937D521966E0D5F4C271C9491B12AB`；`crates/deepagent-mcp/src/lib.rs` = `91BCF64550AEFA49CEFD32CB747A6289491C05E17273F597D446F5021E18098C`；`crates/deepagent-mcp/src/liveness.rs` = `FF004654DE45170795AE948B706477B08B01574C5FC658CF99F0B7FDFC5C85A6`；`crates/deepagent-mcp/src/reconnect.rs` = `B1882A8EF5D2E68565DB2E768DD8DDED47A4693EE3E59F260DEF34742A2B7FBE`；`crates/deepagent-mcp/src/reconnect_boundary_tests.rs` = `B3568FE7FB8A031A761ACCE929619D31EC0CD0630A82244F78EF1624A431908A`；`crates/deepagent-mcp/src/reconnect_lifecycle_tests.rs` = `39444CE05F8AFE4B8F32652DDB627D91B9D7E9AFED8F02FDD7152D7D37F115E0`；`crates/deepagent-mcp/src/registry.rs` = `107E5E53AB3F162A75AC788CA929C4CB16C91FCC0F3FA42A9C181D70B1C2F465`；`crates/deepagent-mcp/src/transport.rs` = `77A659CE3949F220AE9BABA6471181F3E1C9907095AA83698158F0DE51079E10`；`crates/deepagent-mcp/tests/recovery_lifecycle.rs` = `3ABE8070F84345BA93CCFBFFD46DEAF9247F81F6E4C6F065DA37367CA2379956`；`crates/deepagent-app-core/src/mcp_service.rs` = `BA60A19A845054436DCBBCE5E947E5F132FC35BFBB0F9918411C7141E552D52E`；`crates/deepagent-app-core/src/plugin_preparation.rs` = `02EF5AE69365A83D8129C425EE2D5FF8D979D414358CE5A290438C06ED269280`；`crates/deepagent-app-core/src/run_capabilities.rs` = `E37376086C185891419550BDE553CE04F26A4C9C70311A2FBF21F9B11B431E3A`；`crates/deepagent-app-core/src/run_assembler.rs` = `53FB5B99EBB6A396679DB0B1F4C8F28EC159BEF8E96A468458E9DC247933B7D0`；`apps/desktop/src-tauri/src/lib.rs` = `AD37EC4B9539685C98649AFB400B465368A6D308E94AAB2C6BE2D34B6086D451`；`apps/desktop/src/types.ts` = `2A22CC5DBC72F7F0836038846FD50B5354327DCB65E069D2A73082EDBF9D8739`；`apps/cli/src/main.rs` = `1C133087C73F9EED1E0EA8972CAF7E7E471488FC4D124C6913EE87612A608C78`；`crates/deepagent-app-core/tests/kernel_v2_e2e/mcp_tool_names.rs` = `F5E711E18BF89949A6FFDD0F1C552AF703E5AF97BA7AA795F83960821DD76D53`。
+
+**E-H48-07（2026-11-08，清理拒绝即停止与交付范围）**：功能验收及最后显式6组通过后，已把23源hash、门禁命令/结果、原始红与所有候选/环境反例保留在双文。清理前只枚举明确本项三根，不扫描/读取原五项用户untracked、不碰历史拒绝根；逐级绝对路径及全子项确认零reparse、零关联进程，保留共享CLI 2FDF5FE...作为后续SDK依赖，不动其sidecar/默认整个target。原快照失败生成的唯一.snap.new在纠正后insta通过时已自动消失，未执行人工删除，也未更新expected snapshot；tracked snapshot无diff。
+
+实际预检：
+
+| 本轮明确目录 | 文件数 | 逻辑字节 | reparse/进程 |
+|---|---:|---:|---|
+| `C:\Users\32734\AppData\Local\Temp\h48-repair-20261108` | 20430 | 16545823466 | 0/0 |
+| `G:\Code_Warehouse\DeepAgent-Studio\target\h48-verify-20261108` | 9724 | 19553312873 | 0/0 |
+| `C:\Users\32734\AppData\Local\Temp\h48-verify-fixtures-20261108` | 2224 | 1512844389 | 0/0 |
+
+清理计划只包含上述已核对根中的G debug、C tauri、C debug及三根；调用原生PowerShell Remove-Item前，exec_command在CreateProcess阶段返回Rejected/blocked by policy，脚本没有启动、没有执行任何删除。已立即停止，无ACL修改/提权、改名搬移、另壳/工具替代、Cargo clean替代、改路线或重试。之后仅只读枚举确认三根文件数/逻辑字节与预检完全相同，总32,378文件/37611980728字节（约37.61GB逻辑量）全部保留，枚举错误0、仍零reparse/关联进程，不把逻辑长度当作物理占用或回收量。三根自此加入本任务禁止重试的清理残余，需后续明确人工/权限决策；不能称清理完成。首次只读预检因.snap.new已不存在而终止、随后按exists=false重新核对均发生在任何删除调用之前，不是删除重试。该拒绝不被功能验收或提交消除，整体goal仍未完成。
+
+提交前白名单为本项16份Rust实现/回归/必要H147消费方适配与双文共18文件；不包含日志、target、HOME/缓存/合成数据库/用户untracked或新snapshot。独立fix提交当时双文，再取得hash后仅文档回填，不amend、不推送/PR、不真实数据库迁移。当前198验收、26历史跳过、8归并、3撤销、71待修含H180授权跳过，实际70有效待处理；本轮新增1，历史跳过0、归并/撤销0，未把H147环境适配计第二项修复。下一准备H49，全部剩余180–430有效小时的低置信依据及未验边界见E06，编译/设备/依赖/环境和清理权限等待另计，不做精确完工承诺。
 
 ### H-49：备用模型切换只更新模型和预算，实际请求仍携带主模型的输出上限
 

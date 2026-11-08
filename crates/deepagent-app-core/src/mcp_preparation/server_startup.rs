@@ -72,7 +72,16 @@ impl ServerSlot {
 
     pub(super) fn reusable(&self, fingerprint: &str, retry_failed: bool) -> bool {
         self.matches(fingerprint)
-            && !(retry_failed && matches!(*self.state.borrow(), StartupState::Failed(_)))
+            && !(retry_failed
+                && match &*self.state.borrow() {
+                    StartupState::Failed(_) => true,
+                    StartupState::Ready(registry) => registry.server_names().iter().any(|name| {
+                        registry
+                            .server_status(name)
+                            .is_some_and(|status| !status.is_discoverable())
+                    }),
+                    StartupState::Pending => false,
+                })
     }
 
     pub(super) fn result(&self) -> Option<Result<Arc<McpRegistry>>> {

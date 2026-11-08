@@ -24,26 +24,30 @@
 //! before a subsequent request is dispatched. A failed business request is
 //! never replayed: its remote outcome may be unknown. Only the protocol's
 //! `ping` and `tools/list` control requests get one retry after recovery.
+//! The budget belongs to a disconnected connection identity, not a send or
+//! probe. Local exhaustion is stable until the host explicitly replaces that
+//! identity (retry, config replacement or restart). HTTP/SSE factory policy
+//! deliberately retains next-request recovery rather than permanent parking.
 //!
 //! Non-transport errors (a JSON-RPC error from a healthy server, a bad
 //! request) are returned unchanged: only genuine transport failures trigger a
 //! reconnect, so we never mask a real tool error as a connectivity blip.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StateMutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 use deepagent_core::error::{CoreError, Result};
 use deepagent_tools::ToolExecutionContext;
 
 use crate::client::McpClient;
-use crate::config::McpServerConfig;
+use crate::config::{McpServerConfig, TransportType};
 use crate::connect::connect_transport;
 use crate::protocol::{JsonRpcRequest, JsonRpcResponse};
 use crate::transport::{
-    McpTransport, MCP_CANCELLED_BEFORE_DISPATCH, MCP_CANCELLED_UNKNOWN_OUTCOME,
+    McpConnectionStatus, McpTransport, MCP_CANCELLED_BEFORE_DISPATCH, MCP_CANCELLED_UNKNOWN_OUTCOME,
 };
 
 /// Grok's bounded stdio-restart backoff schedule (`mcp_restart.rs::BACKOFF`):
@@ -59,7 +63,10 @@ pub const DEFAULT_RECONNECT_BACKOFF: [Duration; 3] = [
 /// warrant a reconnect. Matches the messages produced by [`crate::stdio`] and
 /// [`crate::http`] transports plus common OS pipe/socket failures.
 pub fn is_transport_closed_error(error: &deepagent_core::error::CoreError) -> bool {
-    if matches!(error, CoreError::RemoteOutcomeUnknown { .. }) {
+    if matches!(
+        error,
+        CoreError::RemoteOutcomeUnknown { .. } | CoreError::McpUnavailable { .. }
+    ) {
         return false;
     }
     let msg = error.to_string().to_ascii_lowercase();
@@ -87,6 +94,12 @@ pub fn is_transport_closed_error(error: &deepagent_core::error::CoreError) -> bo
 /// already succeeded, so the caller can dispatch a new request.
 #[async_trait]
 pub trait ReconnectFactory: Send + Sync {
+    /// Local connection identities stay parked until replaced explicitly.
+    /// Network factories override this to retain next-request recovery.
+    fn parks_on_exhaustion(&self) -> bool {
+        true
+    }
+
     /// Reconnect: build a new transport and complete the MCP `initialize`
     /// handshake on it. Returns the ready transport, or an error if the server
     /// could not be reached/handshaked this attempt.
@@ -114,6 +127,10 @@ impl ConfigReconnectFactory {
 
 #[async_trait]
 impl ReconnectFactory for ConfigReconnectFactory {
+    fn parks_on_exhaustion(&self) -> bool {
+        matches!(self.config.effective_type(), Ok(TransportType::Stdio))
+    }
+
     async fn reconnect(&self) -> Result<Arc<dyn McpTransport>> {
         let transport = connect_transport(&self.config)?;
         // Re-run the handshake on the fresh transport before it is used. The
@@ -129,15 +146,49 @@ impl ReconnectFactory for ConfigReconnectFactory {
 /// A [`McpTransport`] that transparently rebuilds its inner transport (bounded
 /// backoff) when a request fails with a transport-closed error.
 pub struct ReconnectingTransport {
-    inner: Mutex<ConnectionState>,
+    inner: StateMutex<ConnectionState>,
+    recovery: Mutex<()>,
+    stopped: Notify,
     factory: Arc<dyn ReconnectFactory>,
     backoff: Vec<Duration>,
 }
 
 struct ConnectionState {
     transport: Arc<dyn McpTransport>,
-    disconnected: bool,
-    closed: bool,
+    phase: ConnectionPhase,
+}
+
+enum ConnectionPhase {
+    Ready,
+    Recovering { attempts: usize, last_error: String },
+    Unavailable { attempts: usize, reason: String },
+    Closed,
+}
+
+/// Preserve exhaustion even when a caller drops the final handshake future.
+struct RecoveryOwner<'a>(&'a ReconnectingTransport);
+
+impl Drop for RecoveryOwner<'_> {
+    fn drop(&mut self) {
+        let transport = self.0;
+        if !transport.factory.parks_on_exhaustion() {
+            return;
+        }
+        let mut state = transport.state();
+        if let ConnectionPhase::Recovering {
+            attempts,
+            last_error,
+        } = &state.phase
+        {
+            if *attempts >= transport.backoff.len() {
+                state.phase = ConnectionPhase::Unavailable {
+                    attempts: *attempts,
+                    reason: last_error.clone(),
+                };
+                transport.stopped.notify_waiters();
+            }
+        }
+    }
 }
 
 impl ReconnectingTransport {
@@ -145,11 +196,12 @@ impl ReconnectingTransport {
     /// using the default Grok-aligned backoff.
     pub fn new(inner: Arc<dyn McpTransport>, factory: Arc<dyn ReconnectFactory>) -> Self {
         Self {
-            inner: Mutex::new(ConnectionState {
+            inner: StateMutex::new(ConnectionState {
                 transport: inner,
-                disconnected: false,
-                closed: false,
+                phase: ConnectionPhase::Ready,
             }),
+            recovery: Mutex::new(()),
+            stopped: Notify::new(),
             factory,
             backoff: DEFAULT_RECONNECT_BACKOFF.to_vec(),
         }
@@ -161,39 +213,145 @@ impl ReconnectingTransport {
         self
     }
 
-    /// Serialize recovery and publish one initialized generation. No business
-    /// request is held by the factory. Cancellation drops this future while
-    /// leaving the old generation marked disconnected for the next caller.
+    fn state(&self) -> std::sync::MutexGuard<'_, ConnectionState> {
+        self.inner.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    fn stopped_error(&self) -> CoreError {
+        match &self.state().phase {
+            ConnectionPhase::Unavailable { attempts, reason } => CoreError::McpUnavailable {
+                recovery_attempts: *attempts,
+                reason: reason.clone(),
+            },
+            _ => CoreError::other("MCP transport is closed"),
+        }
+    }
+
+    async fn stopped(&self) {
+        loop {
+            let notified = self.stopped.notified();
+            tokio::pin!(notified);
+            // Register before checking state: close cannot be lost in between.
+            notified.as_mut().enable();
+            if matches!(
+                self.state().phase,
+                ConnectionPhase::Closed | ConnectionPhase::Unavailable { .. }
+            ) {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    fn disconnected(&self, current: &Arc<dyn McpTransport>) {
+        let mut state = self.state();
+        // Neither late failures nor concurrent callers renew a recovery budget.
+        if Arc::ptr_eq(&state.transport, current) && matches!(state.phase, ConnectionPhase::Ready) {
+            state.phase = ConnectionPhase::Recovering {
+                attempts: 0,
+                last_error: "MCP transport closed; reconnect not attempted".into(),
+            };
+        }
+    }
+
+    /// One recovery owner, but no state lock spans I/O. Started attempts survive
+    /// waiter cancellation; close can stop the owner without awaiting a handshake.
     async fn ready_transport(&self) -> Result<Arc<dyn McpTransport>> {
-        let mut state = self.inner.lock().await;
-        if state.closed {
-            return Err(CoreError::other("MCP transport is closed"));
-        }
-        if !state.disconnected {
-            return Ok(state.transport.clone());
-        }
-        let mut last_error = CoreError::other("MCP transport closed; reconnect not attempted");
-        for (idx, wait) in self.backoff.iter().enumerate() {
-            let attempt = idx + 1;
-            tokio::time::sleep(*wait).await;
-            match self.factory.reconnect().await {
+        let _owner = self.recovery.lock().await;
+        let _completion = RecoveryOwner(self);
+        loop {
+            let index = {
+                let mut state = self.state();
+                match &mut state.phase {
+                    ConnectionPhase::Ready => return Ok(state.transport.clone()),
+                    ConnectionPhase::Closed => {
+                        return Err(CoreError::other("MCP transport is closed"))
+                    }
+                    ConnectionPhase::Unavailable { attempts, reason } => {
+                        return Err(CoreError::McpUnavailable {
+                            recovery_attempts: *attempts,
+                            reason: reason.clone(),
+                        })
+                    }
+                    ConnectionPhase::Recovering {
+                        attempts,
+                        last_error,
+                    } if *attempts >= self.backoff.len() => {
+                        let error = last_error.clone();
+                        if self.factory.parks_on_exhaustion() {
+                            let attempts = *attempts;
+                            state.phase = ConnectionPhase::Unavailable {
+                                attempts,
+                                reason: error.clone(),
+                            };
+                            tracing::warn!(
+                                attempts,
+                                "MCP local recovery budget exhausted; explicit retry required"
+                            );
+                            self.stopped.notify_waiters();
+                            return Err(CoreError::McpUnavailable {
+                                recovery_attempts: attempts,
+                                reason: error,
+                            });
+                        }
+                        // Preserve the existing HTTP/SSE next-request policy.
+                        *attempts = 0;
+                        return Err(CoreError::other(error));
+                    }
+                    ConnectionPhase::Recovering { attempts, .. } => *attempts,
+                }
+            };
+            tokio::select! {
+                biased;
+                _ = self.stopped() => return Err(self.stopped_error()),
+                _ = tokio::time::sleep(self.backoff[index]) => {}
+            }
+            {
+                let mut state = self.state();
+                let ConnectionPhase::Recovering { attempts, .. } = &mut state.phase else {
+                    drop(state);
+                    return Err(self.stopped_error());
+                };
+                // Reserve before starting the factory. Dropping this await may
+                // end a caller, never refund a process that was already started.
+                *attempts += 1;
+            }
+            let attempt = index + 1;
+            let result = tokio::select! {
+                biased;
+                _ = self.stopped() => return Err(self.stopped_error()),
+                result = self.factory.reconnect() => result,
+            };
+            match result {
                 Ok(fresh) => {
+                    let accepted = {
+                        let mut state = self.state();
+                        if matches!(state.phase, ConnectionPhase::Recovering { .. }) {
+                            state.transport = fresh.clone();
+                            state.phase = ConnectionPhase::Ready;
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    if !accepted {
+                        if let Err(error) = fresh.close().await {
+                            tracing::warn!(%error, "MCP superseded recovery transport shutdown failed");
+                        }
+                        return Err(self.stopped_error());
+                    }
                     tracing::info!(attempt, "MCP connection restored for subsequent dispatch");
-                    state.transport = fresh.clone();
-                    state.disconnected = false;
                     return Ok(fresh);
                 }
                 Err(error) => {
                     tracing::warn!(attempt, error = %error, "MCP reconnect attempt failed");
-                    last_error = error;
+                    if let ConnectionPhase::Recovering { last_error, .. } = &mut self.state().phase
+                    {
+                        *last_error = error.to_string();
+                    }
                 }
             }
         }
-        tracing::warn!(
-            attempts = self.backoff.len(),
-            "MCP reconnect budget exhausted; surfacing transport error"
-        );
-        Err(last_error)
     }
 
     async fn send_request(
@@ -224,12 +382,7 @@ impl ReconnectingTransport {
             };
             let disconnected = is_transport_closed_error(&error);
             if disconnected {
-                let mut state = self.inner.lock().await;
-                // A delayed failure from an older generation must not retire
-                // the replacement published by another concurrent request.
-                if Arc::ptr_eq(&state.transport, &current) {
-                    state.disconnected = true;
-                }
+                self.disconnected(&current);
                 tracing::warn!(method = %request.method, request_id = request.id,
                     "MCP connection lost; failed business request will not be replayed");
             }
@@ -254,6 +407,41 @@ impl ReconnectingTransport {
 
 #[async_trait]
 impl McpTransport for ReconnectingTransport {
+    fn connection_status(&self) -> McpConnectionStatus {
+        match &self.state().phase {
+            ConnectionPhase::Ready => McpConnectionStatus::Ready,
+            ConnectionPhase::Recovering { .. } => McpConnectionStatus::Recovering,
+            ConnectionPhase::Unavailable { attempts, reason } => McpConnectionStatus::Unavailable {
+                recovery_attempts: *attempts,
+                reason: reason.clone(),
+            },
+            ConnectionPhase::Closed => McpConnectionStatus::Closed,
+        }
+    }
+
+    async fn park_after_liveness_failure(&self, reason: &str) {
+        if !self.factory.parks_on_exhaustion() {
+            return;
+        }
+        let transport = {
+            let mut state = self.state();
+            let attempts = match &state.phase {
+                ConnectionPhase::Closed | ConnectionPhase::Unavailable { .. } => return,
+                ConnectionPhase::Recovering { attempts, .. } => *attempts,
+                ConnectionPhase::Ready => 0,
+            };
+            state.phase = ConnectionPhase::Unavailable {
+                attempts,
+                reason: reason.into(),
+            };
+            state.transport.clone()
+        };
+        self.stopped.notify_waiters();
+        if let Err(error) = transport.close().await {
+            tracing::warn!(%error, "MCP parked transport shutdown failed");
+        }
+    }
+
     async fn send(&self, request: &JsonRpcRequest) -> Result<JsonRpcResponse> {
         self.send_request(request, ToolExecutionContext::default())
             .await
@@ -272,10 +460,7 @@ impl McpTransport for ReconnectingTransport {
         let result = current.notify(method, params).await;
         if let Err(error) = &result {
             if is_transport_closed_error(error) {
-                let mut state = self.inner.lock().await;
-                if Arc::ptr_eq(&state.transport, &current) {
-                    state.disconnected = true;
-                }
+                self.disconnected(&current);
             }
         }
         result
@@ -283,10 +468,11 @@ impl McpTransport for ReconnectingTransport {
 
     async fn close(&self) -> Result<()> {
         let transport = {
-            let mut state = self.inner.lock().await;
-            state.closed = true;
+            let mut state = self.state();
+            state.phase = ConnectionPhase::Closed;
             state.transport.clone()
         };
+        self.stopped.notify_waiters();
         transport.close().await
     }
 }
@@ -294,6 +480,10 @@ impl McpTransport for ReconnectingTransport {
 #[cfg(test)]
 #[path = "reconnect_boundary_tests.rs"]
 mod boundary_tests;
+
+#[cfg(test)]
+#[path = "reconnect_lifecycle_tests.rs"]
+mod lifecycle_tests;
 
 #[cfg(test)]
 mod tests {
@@ -481,7 +671,13 @@ mod tests {
             .send(&JsonRpcRequest::new(1, "ping", None))
             .await
             .unwrap_err();
-        assert!(is_transport_closed_error(&error));
+        assert!(matches!(
+            error,
+            CoreError::McpUnavailable {
+                recovery_attempts: 3,
+                ..
+            }
+        ));
         assert_eq!(factory.calls.load(Ordering::SeqCst), 3);
     }
 

@@ -33,6 +33,14 @@ pub enum CoreError {
         observed_bytes: usize,
     },
 
+    /// A local MCP connection exhausted its shared recovery budget. No new
+    /// business request was dispatched; only explicit lifecycle retry reopens it.
+    #[error("MCP server unavailable after {recovery_attempts} recovery attempts; explicit retry required: {reason}")]
+    McpUnavailable {
+        recovery_attempts: usize,
+        reason: String,
+    },
+
     /// A requested entity (session, task, event) was not found.
     #[error("not found: {0}")]
     NotFound(String),
