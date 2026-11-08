@@ -1494,6 +1494,8 @@ E-H28-20261027-10（独立提交与真实 hash 回填）：修复代码、正式
 
 ### H-30：SSE 实际按 data 行解析，合法多行事件失败，未闭合终态帧却被接受
 
+**当前状态（2026-11-08）：已修复并验收，限E-H30-04本机范围。原唯一SSE分帧器只在空行派发完整事件，EOF丢弃半帧；原失败保留，实际测试、兼容性收紧及全仓旧失败/未验见E-H30-01～04。H257独立未修。**
+
 **级别：中（P2）；范围：共用 SSE 分帧与模型响应组装边界。** 触发需要供应商/兼容网关输出多行 data、CR-only 行结束符，或连接在终态事件空行前断开；未声称当前真实 DeepSeek 成功样本采用了这些格式。
 
 #### 标准依据与可重跑证据
@@ -1509,6 +1511,76 @@ E-H28-20261027-10（独立提交与真实 hash 回填）：修复代码、正式
 - 兼容网关改变合法 SSE 格式就可能使普通文本或工具调用失败，即使 JSON 语义未变；连接半帧结束又可能被误判成功。这里只证明模型组装结果，未额外运行实际工具执行或桌面终态回放，不能把它扩大为已发生工具副作用。
 - 修复应统一字节 UTF-8 解码、SSE 事件分帧、provider JSON 解析的三个边界。可评估现有依赖或标准解析器，保持单一 transport 链路；兼容无空行的非标准供应商若确有需求，需显式定义策略，不能默认把半帧等同于完成。
 - 验收应覆盖多 data 行、CR/LF/CRLF、分隔符跨网络 chunk、注释心跳、EOF 半帧和完整终态，并检查真实 HTTP→ModelClient→运行终态。现有默认测试把连续 data 行直接视为两个 payload，恰好固化了行级假设，常规通过不能证明 SSE 协议完整。本轮未修改生产 parser。
+
+
+**E-H30-01（2026-11-08，原probe确认与三层TDD准备，修复中）**：基线f6d511ad（完整hash以本轮提交父追溯），tracked干净/无暂存，六项原untracked只列名称，不读改或暂存。已核对原H30/H257独立边界、306台账、当前SseParser及唯一正式ReqwestTransport消费方、两协议accumulator/ModelClient、AgentKernel终态与ChatService/RunStore冷重开测试、所有仓内SseParser调用及Cargo/feature/格式/CI。H30仍为真实有效问题，非历史修复：当前逐LF立即输出data行、flush派发无空行尾部；H257非法UTF8在更前置decoder中，不合并。上轮H54/H55及全部旧拒绝清理根只允许读取已有binary，本轮不写入、不复用编译或重试清理。
+
+原probe在本轮生产未改前，使用上轮实际Models默认原生binary `G:\Code_Warehouse\DeepAgent-Studio\target\h55-repair-20261108\debug\deps\deepagent_models-e8797762959682b3.exe sse::tests::audit_sse_frames_preserve_multiline_json_and_require_terminal_boundary --ignored --exact --nocapture`执行，exit101、0/1/0、0.104秒：单行完整控制成功；multiline JSON仍bad Chat chunk EOF、CR-only仍trailing characters，unterminated terminal frame本应失败却actual_success=true。原审计失败证据及本次真实失败完整保留，不把正常文本成功冒充协议完整。
+
+本轮实际读取WHATWG官方9.2.5/9.2.6（https://html.spec.whatwg.org/multipage/server-sent-events.html#parsing-an-event-stream）：多data字段用LF拼接，CR/LF/CRLF均为行边界，空行才dispatch，EOF丢弃未闭合事件；单次流开头BOM与field无冒号/单ASCII空格规则也属于同一分帧边界。只总结必要规则，不复制规范全文。另读取本地Codex Eventsource与DeepSeek Harness EventSourceParserStream的同类入口；当前Cargo.lock无该解析器依赖，不复制参考业务、不为本项引入新库。
+
+修复方案在既有SseParser内维护当前行/当前事件data与跨chunk CRLF状态，按统一空行边界派发；保留feed(&str)->Vec<String>及flush()->Option<String>公共签名，flush的严格EOF语义改为清空未完成事件且不产生payload，正式transport不再把尾部喂给accumulator。该语义会拒绝旧非标准无空行终态，是明确兼容性收紧，不加默认宽松模式；有效UTF8增量解码和正式终态状态机仍用原边界，H257不改。只保留data投影，event/id/retry仍不公开、不自动重连。
+
+先新增parser四个默认回归（延迟到空行、CRLF拆分、Unicode所有两断点分块、BOM/字面字段/空data/EOF），新增共享有限自建127.0.0.1:0 HTTP chunked fixture及两协议/两公开入口的真实分帧回归，再新增普通ChatService→RunAssembler→ModelAgent→ReqwestTransport→单一run_terminal/临时SQLite冷重开验收。底层仅将该测试模型请求URL改到自建回环，正式请求内容/serializer/权限/状态机不绕过；不请求公网provider、真实内网、真实凭据或用户数据。新TDD正按parser→HTTP→host顺序在生产未改时执行，未把编译或未执行测试当红/绿结论。
+
+本轮构建/日志统一G:\Code_Warehouse\DeepAgent-Studio\target\h30-repair-20261108、合成HOME/TEMP/数据根G:\h30-fixtures-20261108；清子进程凭据/代理变量、managed指向合成不存在目录、离线复用现有工具链缓存，仅顶层Cargo显式target，不向子进程传CARGO_TARGET_DIR。当前200验收、28历史跳过、9归并、3撤销、65待修+H30修复中，66未关含H180（实际65）；本轮尚无新增验收。本项初估4–12有效小时，依原probe修复+跨层真实HTTP/持久化/全仓验收复杂度，编译/设备/依赖/策略等待另计；全余170–430低置信有效小时保守区间，未逐项校准，无精确日期承诺。
+
+
+**E-H30-02（2026-11-08，三层真实TDD红与统一分帧实现，尚待最终验收）**：生产修改前6份初始源hash逐项一致，三层新测试均真实编译执行后失败：`cargo test --target-dir <H30 target> -p deepagent-models --features http --test sse_event_framing --offline -j 2 -- --nocapture --test-threads=2` exit101、0/4/0、88.303秒含冷编译；同参数改`--test sse_http_framing` exit101、0/2/0、4.786秒，真实HTTP未闭合Responses终态竟返回Ok/H30 complete、多行JSON报EOF；正式host命令`cargo test --target-dir <H30 target> -p deepagent-app-core --features web --test sse_framing --offline -j 2 -- --nocapture --test-threads=1` exit101、0/1/0、286.984秒含AppCore冷编译，普通single-lf对照完成，multiline-lf正式运行失败于bad Responses event EOF。这些不是未执行计划或测试编译错误，原probe0/1及三层红都保留；没有在运行中改生产或掩盖原断言。
+
+随后仅在既有SseParser加入line/data及跨chunk skip_lf/流起始状态，逐字符单次扫描，data字段附LF、空行一次性派发并去最后LF；CR立即结束一行，后续LF只作同一CRLF，处理单个leading BOM、字面field、无冒号data及仅一个ASCII空格。原feed/flush签名不变；flush重置并丢弃尾部，ReqwestTransport EOF不再派发flush payload，仍由既有两协议accumulator判定缺终态；decode_utf8_prefix/timeout/cancel/retry/终态持久化均未改。只用原唯一生产parser，不加依赖、第二套transport或非标准供应商特判。原测试中连续data行冒充两事件的错误假设改为真实空行分隔，原审计probe移除ignore默认运行；另加单BOM测试，现parser5项。
+
+候选parser5/0/0与实际HTTP2/0/0已经通过，host重编译及后续完整Models HTTP、CLI生产构建、workspace和严格lint/fmt门禁仍在执行，不凭局部绿称验收完成。新HTTP测试服务端以单字节HTTP chunk发送UTF8/CRLF分隔，真实reqwest可合并接收chunk，故不声称其每次回调必定1字节；所有字符边界两断点枚举由独立parser测试确定验证。共享fixture仅有限自建IPv4 loopback，正常结束显式join、超时abort并await、Drop兜底abort，未使用真实网络资源/凭据；正式host改写的是测试transport目的地址，仍经过完整Settings/ChatService/组装/请求序列化和真实HTTP、RunStore及SQLite冷重开。
+
+兼容性边界明确：合规单行空行分隔事件保持；无最后空行的旧非标准流现在报缺终态而非成功，flush保留Rust源码签名但不再返回尾payload。event/id/retry仍不公开、不自动重连；非法UTF8（H257）、长流总超时（H131）、未设单事件大小上限和真实provider质量不因本轮声称已修。当前状态修复中，新增验收0，台账计数沿E01；验收/清理/提交未完成，不进入下一问题。
+
+
+**E-H30-03（2026-11-08，定向/生产构建通过，完整workspace仍在运行，未最终验收）**：11份最终Rust源hash自候选门禁前冻结，每组前复核一致，期间仅更新双文、不改源码。当前实际终态：parser5/0/0（9.434秒）、真实HTTP2/0/0（6.908秒）、正式host1/0/0且七种场景全部经过唯一终态与SQLite重开（124.849秒含重新编译）、去ignore后的原probe1/0/0（23.052秒含构建）；本项9个互不重复的探针/新测试均零忽略通过。完整`cargo test --target-dir <本轮target> -p deepagent-models --features http --offline -j 2 -- --quiet --test-threads=2` exit0、77.564秒，共20个主harness结果231通过/0失败/26忽略，lib173/0/15，余integration58/0/11、doc0；新parser/HTTP和原probe已在默认组再次真实执行，26 ignored不称通过。真实HTTP正向24种组合（两协议×三换行×单双data×两入口）、反向16种组合（两协议×四尾部×两入口）均完成，不把40组合说成40个独立测试。
+
+`cargo build --target-dir <本轮target> -p deepagent-cli --offline -j 2`已exit0、184.254秒；本轮CLI binary SHA256=D4D988F9487BBAEBD29BAAB8AC4260E435744AC2C5A300A2A2DE9D37721FEF84。共享默认target/debug/deepagent.exe只读核验仍为原1FA7ACD9211B29E94BCC46B83D1C87E0F1DE5A627ACA1407B039279658B633B3，本轮不覆盖/清理它；SDK stdio原测试硬编码默认路径，故后续workspace若执行该项，不能伪称是在本轮新CLI上验证SSE。该SDK用例本身不调用模型，H30的实际wire/终态消费证据来自前述真实HTTP→正式ChatService/Kernel。未因此新增第二套CLI配置或绕过生产协议。
+
+完整命令`cargo test --target-dir <本轮target> --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=2`已经真实启动并仍在冷编译，运行中的Cargo/rustc进程已直接核验，不凭日志存在推断存活；没有终态exit或完整统计，不能把它称为通过、失败、卡死或重启。其后严格Models HTTP lint与最终fmt仍待执行。暂不清理未验收产物、不提交、不宣布H30已修复并验收；台账/估算沿E01。其他未验和兼容限制沿E02，整体goal active。
+
+
+
+**E-H30-04（2026-11-08，最终本机验收，仅关闭H30，不代表全仓全绿）**：E01原probe0/1与E02三层parser0/4、真实HTTP0/2、正式host0/1均保留，生产修复前初始6源hash一致；不存在原复现失效或历史跳过依据。根因修复只在原唯一SseParser/ReqwestTransport EOF边界，11份最终Rust源每组前及整轮后逐项hash一致，无并行源码修改。两协议、真实HTTP及正常/异常正式host与持久化验收均真实执行，不凭编译、默认ignored或局部绿色关闭。
+
+以下实际命令由本机PowerShell执行，`$Target='G:\Code_Warehouse\DeepAgent-Studio\target\h30-repair-20261108'`；隔离环境与有限自建loopback/合成文件SQLite沿E01，顶层显式target、子进程不继承CARGO_TARGET_DIR，未触碰真实provider/内网/凭据/用户数据。
+
+| 实际命令（仓库根） | exit；通过/失败/忽略 | 墙钟秒（含编译/等待） |
+|---|---|---|
+| `cargo test --target-dir $Target -p deepagent-models --features http --test sse_event_framing --offline -j 2 -- --nocapture --test-threads=2` | 0；5/0/0 | 9.434 |
+| `cargo test --target-dir $Target -p deepagent-models --features http --test sse_http_framing --offline -j 2 -- --nocapture --test-threads=2` | 0；2/0/0 | 6.908 |
+| `cargo test --target-dir $Target -p deepagent-app-core --features web --test sse_framing --offline -j 2 -- --nocapture --test-threads=1` | 0；1/0/0 | 124.849 |
+| `cargo test --target-dir $Target -p deepagent-models --lib --offline -j 2 -- sse::tests::audit_sse_frames_preserve_multiline_json_and_require_terminal_boundary --exact --nocapture` | 0；1/0/0 | 23.052 |
+| `cargo test --target-dir $Target -p deepagent-models --features http --offline -j 2 -- --quiet --test-threads=2` | 0；231/0/26 | 77.564 |
+| `cargo build --target-dir $Target -p deepagent-cli --offline -j 2` | 0；生产CLI构建通过 | 184.254 |
+| `cargo test --target-dir $Target --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=2` | 101；152目标5004/3/186，非全绿 | 2003.835 |
+| `cargo clippy --target-dir $Target -p deepagent-models --all-targets --features http --no-deps --offline -j 2 -- -D warnings` | 101；既有client.rs:453 clone_on_copy | 41.760 |
+| `cargo fmt --all -- --check` | 0；格式通过 | 5.576 |
+
+本项独立门禁9/0/0：5个新parser回归（含所有Unicode字符边界的两断点三chunk穷举、CRLF拆分、空data/BOM/EOF/字面字段）、2个真实HTTP（正向24/反向16组合）、正式host1测试7场景、原probe1默认执行。host四种合规单/多data及LF/CR/CRLF都一次请求成功；三种未闭合/仅行结束的terminal都明确失败，不再报成功。每场景在普通ChatService→RunAssembler→ModelAgent→真实ReqwestTransport→原Kernel/RunStore链实际终态恰好一次，关闭chat/settings/DB owner后重新打开同一临时SQLite，terminal_kind与run_events完整相同。无实际工具调用副作用测试，不外推所有工具回滚或强杀/断电原子性。
+
+完整workspace原始有153条summary，但152个Running/Doc-tests主target；逐target取末条主summary，排除AppCore H92自建子harness的1通过，不重复计为5005。最终5004/3/186、exit101：AppCore lib1604/0/54，Kernel324/1/20，CLI200/1/9，Models lib173/0/15，Runtime457/0/7，Rust SDK72/0/5、真实stdio13/0/0等。本轮新Models parser5/0、HTTP2/0与原probe默认通过；AppCore的独立sse_framing在默认workspace因web feature未开启为0测试，不能拿它冒充host验收，其真实7场景来自上表显式--features web的1/0/0。Models完整HTTP20目标231/0/26另列，不与workspace重叠重复累计。全部186 ignored仍未执行；其他平台/前端等未验另列。
+
+三项完整失败与归因边界：①图片`image_preparation::read_failure::real_read_data_dacl_denial_fails_without_sampling_and_recovers`在未改image_read_failure.rs:286断言original DACL must be restored exactly，与H53已保留的同一失败位置一致；该fixture用合成/离线Transport，DACL恢复函数不调用SseParser/Reqwest，未忽略AI、改ACL或放宽断言。②CLI `viewport_snapshot_with_a_pending_approval`仅HOME从原golden C路径变为本轮G:\h30-fixtures路径，未改TUI/golden/断言。③Prompts `every_node_kind_owns_exactly_one_profile`仍为H306的creative.video-edit.v1空defaultUserPrompt，未混修。三处源码/golden的git diff为空，不将它们算作本项通过，也不据本项验收声称已消除这些独立问题。旧H53完整四失败仍作为历史证据保留；本次build marker已在默认AppCore通过，不宣称其高负载时限另获修复。
+
+额外保全事实：原六项untracked中五项用户项一直只列名称、不读改/暂存；既有H53生成的单个.snap.new在本次CLI执行前核对祖先无reparse并备份至本轮target，原946字节/SHA256=ACDBFD864BEDBE07167E6CFD498E73D8D5B7DA21E71008305EF3240CAD2E9184与H53记录一致。CLI测试后来生成C539A30791CCFFFF277D0A6F2EB3227D6EF8EB9E5987BD51FDA329BDC3B766B3，差异仅h53→h30 fixture路径。完整workspace终态后先核对两绝对路径/全部祖先、备份hash及新生成hash无并发变化，再复制原备份恢复内容与原mtime，最终hash回到原值；没有删除/提交该文件，不谎称测试没有重写它，也不改golden来消除红测。共享默认CLI始终为E03原hash；本轮新CLI只编译未替换默认SDK硬编码路径，stdio通过不当作本轮CLI真实模型SSE验收。
+
+严格lint真实exit101，只在未改Models client.rs:453的Option<ReasoningEffort>.clone()既有clone_on_copy阻断（lib/lib-test同一个位置）；没有加allow、放宽-D warnings、绕hook或顺手修改其他问题。新parser/HTTP测试的严格lint未越过该lib门禁，不能声称strict全绿。最终fmt及diff check通过。生产CLI已按本轮source编译成功；未改Tauri command/DTO/TS/UI，故未另跑Desktop pnpm build/Tauri/UI截图，不能称桌面已实机验收。未执行其他OS、真实DeepSeek或兼容网关、真实远端取消/计费、长期性能/RSS、大事件大小上限、强杀/断电/磁盘满、全部ignored或参考工程测试。H257非法UTF8、H131活动长流总时限仍未修，不因本轮严格事件边界声称整个传输层健壮。
+
+兼容性：保留SseParser::new/Default/feed/flush的公开签名，不新增配置/依赖/DTO/协议版本/权限/SQL或迁移；flush仍返回Option<String>但严格EOF总为None并重置未完成数据。非标准无最后空行的流现在被现有accumulator报缺终态，合规空行分隔单行事件维持正常，multi-data正确LF拼接，CRLF跨chunk不被当作两个换行。只剥一个流首BOM，event/id/retry依旧不投影、不自动重连；这是data-only客户端边界，不冒称完整浏览器EventSource。按官方WHATWG规则对齐，不以宽松特判继续接受半终态。
+
+本轮新增修复并验收1、历史跳过0、归并/撤销0；306唯一台账当前201验收、28历史跳过、9归并、3撤销、65待修（含H180授权跳过，实际64有效待处理），无修复中或功能阻塞项。本项仅限本节所列Windows本机、合成loopback/临时SQLite范围，覆盖综合表关于H30仍失效的历史结论，不表示完整workspace或整个系统全绿。下一准备H257前置UTF8边界，仍独立问题。H30有效代码/验收余0，清理与独立提交随后补记；全余170–430低置信有效小时沿剩余跨层/执行/持久化风险保守规划，未按本轮约33分钟workspace墙钟推算有效吞吐或机械扣减。设备/依赖/编译/策略/环境等待另计，暂无可靠总等待区间，不作精确日期承诺，整个goal继续active。
+
+清理前证据hash：`original-probe.log`=`EA22B2BEF77DA7B77A6C59FEAF406F1B41347720CD0A5998293ED0A395CF1EDF`；`original-result.json`=`356355AC4F57A30E9DA8FF10A7636ECF4A76CEDA67831E550697B069DD6DF21E`；`red-results.json`=`81BFA1856E3978D3C874EE5C522FC86BFFFBA406485B668FFE88360B3169FFA1`；`green-results.json`=`745A97CD7ACD3DBD2EB158DF624BF281461D5204C00425F777EB27C5931582EA`；`workspace.log`=`B73F4200D12E5B4F024D561A6DDFDB9E3CA22D2D03F6ED41F2649ECD97D66BC6`；`workspace-analysis.json`=`4E11350B5093F5FFA2EBEA117ECBE3859C683D37C8117CA007CAF0E588B778AB`；`final-sources.json`=`1CE4BAE42B10869C8A79B0F0D5A4EDCB5D095B2C16BE6B49C2D43A4248C3CCAF`。原生测试binary：`sse_event_framing-a867706c4fe2bbae.exe`=`024AC326697BEA9CD5323CA737709AA88D754A0CAC84E4B0C7353A9A7E638BDD`；`sse_http_framing-614ae2ae087b2694.exe`=`C5CA044875026C7B4734F4E6CD67B2B1318A0D6AB423D2C66766C95699130A35`；`sse_framing-9e1eec8bc9d23f3a.exe`=`8057EF956863B4C5237528E7FCA3281ADAF501A828B387C15CCF61E72F9A299C`。最终11源SHA256：`crates/deepagent-models/src/sse.rs`=`B6D148A02D39700AFB6D1DF7B58B4BDB8B4B1CF274B5CE03B8EBAD25CF69325B`；`crates/deepagent-models/src/reqwest_transport.rs`=`25A516D6C5D9B945648D31F36098792085C28E0875121467BA8B9C39C2F44617`；`crates/deepagent-models/src/stream.rs`=`B53782DD16BBBFC4A9C43670231D47508A375F32773488E855D5B216C202212E`；`crates/deepagent-models/src/chat_completions.rs`=`FFEF96476A5F54B7083D5137854980FD8C30BC6A831AF699EBF86B30C79591A1`；`crates/deepagent-models/src/client.rs`=`E8078176393A5B1F212143323A69D6D13D692423C6BA7941ACA988A2E5B5F387`；`crates/deepagent-models/tests/sse_event_framing.rs`=`B1674468FD42B392D178131B90838D9AF3970B2E163DC4FF6111EB9E166103CC`；`crates/deepagent-models/tests/sse_http_framing.rs`=`79A396DC5538A24E948D647C61FEC51D5BA02D30BD452DB79ADDFC2A7B995687`；`crates/deepagent-models/tests/support/sse_http_fixture.rs`=`2B85CBDFFA17DB9B9758117D0D4ABE8E9A05D4FF3B5F5E5522C664EB3FD71932`；`crates/deepagent-app-core/tests/sse_framing.rs`=`08D6CB1D5920878DABB7A516CC42FD2A13BE6452565488D79592B34D27D40694`；`crates/deepagent-app-core/src/run_assembler.rs`=`06308EEEE8F37B07D35477A6B93993DF1F919D57249519CE148BCA82621D9E54`；`crates/deepagent-runtime/src/model_agent.rs`=`6C18433A38684AD93F9D97B3EB7E549BCF6434141112F5C2BC889FC4E369F59F`。命令/结果/原失败及未验边界已落双文；日志、binary、manifest、一次性脚本、备份不提交，验收后仅按明确归属清理。
+
+
+**E-H30-05（2026-11-08，验收后清理启动前被策略拒绝，未删除）**：E04最终命令/真实结果/原失败/源码与binary hash及快照保全已先写双文。逐根核验绝对路径及全部祖先、逐目录不跟随链接枚举，G:\Code_Warehouse\DeepAgent-Studio\target\h30-repair-20261108为8737文件/1480目录/23,895,407,082逻辑字节；G:\h30-fixtures-20261108为2088文件/1725目录/934,887,355逻辑字节。两树及祖先零reparse、枚举零错误，无存活本轮Cargo/rustc/clippy/测试/Node子进程；C盘Temp只列h30目录未发现，不动工具链缓存、默认CLI/其他target、任何旧拒绝根、用户源码或文档。上述计数早于新增预检JSON，不当作精确物理占用。
+
+已由本机cargo clean --help查证--target-dir/--dry-run；预定顺序dry-run→正式cargo clean→仅同根成功后PowerShell Remove-Item -LiteralPath删除两个已确认绝对根，任何错误立即停止。但整个命令在CreateProcess前被Rejected/blocked by policy，脚本完全未启动，dry-run/clean/Remove-Item均未实际执行、无exit结果，没有删除任何文件。立即停止，不拆分/重写命令、换工具/shell、改ACL或提权绕过；只读存在性检查两根仍在。合计24,830,294,437逻辑字节（约24.83GB十进制）本轮可再生产物保留，不称已回收物理空间或清理完成；原CLI .snap.new已按E04恢复并仍在原位置，不在本轮清理白名单。
+
+H30仅按E04本机功能范围修复并验收，清理阻塞/旧残余、全仓三失败及strict旧lint仍未消除，整体goal继续active而非全部完成。当前201验收、28历史跳过、9归并、3撤销、65待修含H180（实际64）；本项有效修复/验收余0、清理待环境解决，下一准备独立H257。全余170–430低置信有效小时，设备/依赖/编译/策略/环境等待另计且无法可靠给总区间。随后仅提交两份生产边界、四份测试/共享夹具及当时双文，不提交target/日志/manifest/脚本/备份，不push/PR。
 
 ### H-31：同步原生压缩的摘要请求没有运行取消信号，停止必须等摘要返回（已修复）
 

@@ -1,16 +1,16 @@
-//! Minimal Server-Sent Events framing.
+//! Incremental Server-Sent Events data framing.
 //!
-//! We only need the subset of the SSE spec that Responses providers use:
-//! lines beginning with `data:` carry a payload; a blank line dispatches the
-//! event. This parser is byte-oriented and incremental so it can be fed
-//! arbitrary network chunks (which may split a line mid-way) without losing
-//! data — directly supporting the Phase 2 "无 chunk 丢失" requirement.
+//! The transport decodes UTF-8; this parser joins `data` fields and dispatches
+//! only on a blank line. CR, LF and CRLF (including split CRLF) are supported.
+//! Event names, IDs and retry hints are not projected by this data-only API.
 
-/// Incremental SSE parser. Feed it raw byte chunks; it yields complete `data:`
-/// payloads as they become available.
+/// Incremental SSE parser for already-decoded UTF-8 text chunks.
 #[derive(Debug, Default)]
 pub struct SseParser {
-    buffer: String,
+    line: String,
+    data: String,
+    skip_lf: bool,
+    started: bool,
 }
 
 impl SseParser {
@@ -19,41 +19,67 @@ impl SseParser {
         Self::default()
     }
 
-    /// Feed a chunk of UTF-8 text, returning any complete `data:` payloads that
-    /// were finished by this chunk. Partial lines are retained internally.
+    /// Return complete event payloads, joining their `data` fields with LF.
+    /// Partial lines and events remain buffered until a blank line arrives.
     pub fn feed(&mut self, chunk: &str) -> Vec<String> {
-        self.buffer.push_str(chunk);
         let mut out = Vec::new();
-
-        // Process all complete lines (terminated by '\n'); keep the remainder.
-        while let Some(newline) = self.buffer.find('\n') {
-            let line: String = self.buffer.drain(..=newline).collect();
-            let line = line.trim_end_matches(['\r', '\n']);
-            if let Some(payload) = parse_data_line(line) {
-                out.push(payload);
+        for character in chunk.chars() {
+            if !self.started {
+                self.started = true;
+                if character == '\u{feff}' {
+                    continue;
+                }
+            }
+            if self.skip_lf {
+                self.skip_lf = false;
+                if character == '\n' {
+                    continue;
+                }
+            }
+            match character {
+                '\r' => {
+                    self.finish_line(&mut out);
+                    self.skip_lf = true;
+                }
+                '\n' => self.finish_line(&mut out),
+                _ => self.line.push(character),
             }
         }
         out
     }
 
-    /// Flush any buffered final line that was not newline-terminated (e.g. at
-    /// end of stream). Returns the payload if it was a `data:` line.
-    pub fn flush(&mut self) -> Option<String> {
-        if self.buffer.is_empty() {
-            return None;
+    fn finish_line(&mut self, out: &mut Vec<String>) {
+        if self.line.is_empty() {
+            if !self.data.is_empty() {
+                // Each data field contributes one LF, including an empty field.
+                self.data.pop();
+                out.push(std::mem::take(&mut self.data));
+            }
+        } else if let Some(payload) = parse_data_line(&self.line) {
+            self.data.push_str(payload);
+            self.data.push('\n');
         }
-        let line = std::mem::take(&mut self.buffer);
-        let line = line.trim_end_matches(['\r', '\n']);
-        parse_data_line(line)
+        self.line.clear();
+    }
+
+    /// Finish the stream, discarding any event not terminated by a blank line.
+    ///
+    /// The old signature is retained for source compatibility, but EOF never
+    /// dispatches a payload. This always returns `None` and resets the parser.
+    pub fn flush(&mut self) -> Option<String> {
+        *self = Self::default();
+        None
     }
 }
 
-/// Extract the payload from a `data:` line, or `None` for comments / other
-/// fields / blank lines.
-fn parse_data_line(line: &str) -> Option<String> {
-    let rest = line.strip_prefix("data:")?;
-    // Per spec a single leading space after the colon is stripped.
-    Some(rest.strip_prefix(' ').unwrap_or(rest).to_string())
+fn parse_data_line(line: &str) -> Option<&str> {
+    let (field, value) = line.split_once(':').unwrap_or((line, ""));
+    if field == "data" {
+        // Field names are literal; remove at most one ASCII space after ':'.
+        Some(value.strip_prefix(' ').unwrap_or(value))
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -61,7 +87,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "audit H-30: SSE line splitting is not complete event framing"]
     fn audit_sse_frames_preserve_multiline_json_and_require_terminal_boundary() {
         fn assemble(chunks: &[&str]) -> deepagent_core::error::Result<crate::Response> {
             let mut parser = SseParser::new();
@@ -121,10 +146,10 @@ mod tests {
     }
 
     #[test]
-    fn parses_complete_lines() {
+    fn parses_complete_events() {
         let mut p = SseParser::new();
         let out = p.feed(
-            "data: {\"a\":1}\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n",
+            "data: {\"a\":1}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n",
         );
         assert_eq!(
             out,
@@ -142,7 +167,8 @@ mod tests {
         // A line split across three feeds.
         assert!(p.feed("data: {\"hel").is_empty());
         assert!(p.feed("lo\": ").is_empty());
-        let out = p.feed("true}\n");
+        assert!(p.feed("true}\n").is_empty());
+        let out = p.feed("\n");
         assert_eq!(out, vec!["{\"hello\": true}".to_string()]);
     }
 
@@ -156,15 +182,15 @@ mod tests {
     #[test]
     fn handles_crlf() {
         let mut p = SseParser::new();
-        let out = p.feed("data: x\r\ndata: y\r\n");
+        let out = p.feed("data: x\r\n\r\ndata: y\r\n\r\n");
         assert_eq!(out, vec!["x".to_string(), "y".to_string()]);
     }
 
     #[test]
-    fn flush_returns_unterminated_line() {
+    fn flush_discards_unterminated_event() {
         let mut p = SseParser::new();
         assert!(p.feed("data: tail").is_empty());
-        assert_eq!(p.flush(), Some("tail".to_string()));
+        assert_eq!(p.flush(), None);
         assert_eq!(p.flush(), None);
     }
 }

@@ -1,8 +1,7 @@
 //! Real HTTP transport backed by `reqwest` (only compiled with `--features http`).
 //!
 //! Streams the response body in chunks, decodes UTF-8 incrementally, and runs
-//! each line through the [`SseParser`] so partial network frames never drop
-//! data.
+//! decoded text through [`SseParser`], forwarding only complete SSE events.
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -245,9 +244,9 @@ impl ReqwestTransport {
             pending.drain(..consumed);
         }
 
-        if let Some(payload) = parser.flush() {
-            sink.on_event(&payload)?;
-        }
+        // EOF is not an SSE event boundary. The model accumulator diagnoses a
+        // missing terminal instead of accepting an unterminated terminal line.
+        let _ = parser.flush();
         Ok(())
     }
 
