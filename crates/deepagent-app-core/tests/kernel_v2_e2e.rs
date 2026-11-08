@@ -162,6 +162,9 @@ mod model_selection;
 #[path = "kernel_v2_e2e/output_limit.rs"]
 mod output_limit;
 
+#[path = "kernel_v2_e2e/effective_model_parameters.rs"]
+mod effective_model_parameters;
+
 #[path = "kernel_v2_e2e/memory_surface.rs"]
 mod memory_surface;
 
@@ -2798,7 +2801,6 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: explicit Harness reasoning effort must reach the provider request"]
 async fn audit_harness_reasoning_override_reaches_provider_request() {
     use deepagent_app_core::HarnessRunOverrides;
     use deepagent_models::ReasoningEffort;
@@ -2824,6 +2826,8 @@ async fn audit_harness_reasoning_override_reaches_provider_request() {
         (ReasoningEffort::High, Some("max"), "max"),
         (ReasoningEffort::None, Some("max"), "max"),
         (ReasoningEffort::Max, Some("low"), "low"),
+        (ReasoningEffort::Max, Some("none"), "none"),
+        (ReasoningEffort::Low, None, "low"),
     ] {
         let root = tempfile::tempdir().unwrap();
         let db = Arc::new(Database::open_in_memory().unwrap());
@@ -2858,6 +2862,7 @@ async fn audit_harness_reasoning_override_reaches_provider_request() {
         .await
         .unwrap();
         let requests = transport.0.lock().unwrap();
+        assert_eq!(requests.len(), 1);
         let actual = requests[0]["reasoning"]["effort"].as_str().unwrap();
         eprintln!(
             "Harness effort audit: depth={depth:?} override={requested:?} expected={expected} wire={actual}"
@@ -3163,7 +3168,6 @@ async fn responses_user_identifier_is_validated_before_transport() {
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: saved output ceiling must survive the runtime thinking profile"]
 async fn audit_configured_output_limit_reaches_provider_request() {
     use deepagent_app_core::settings::ResponsesApiSettings;
     use deepagent_app_core::RuntimeEvent;
@@ -3186,17 +3190,21 @@ async fn audit_configured_output_limit_reaches_provider_request() {
 
     let mut matched = Vec::new();
     for (depth, panel, developer, expected) in [
-        (ReasoningEffort::High, None, None, 16_384),
-        (ReasoningEffort::High, Some(512), None, 512),
-        (ReasoningEffort::High, Some(512), Some(768), 768),
-        (ReasoningEffort::Max, Some(65_536), None, 65_536),
+        // The historical ReasoningEffort migration removed invented depth caps.
+        // Omission stays omission on the wire; budgeting reserves model capacity.
+        (ReasoningEffort::High, None, None, None),
+        (ReasoningEffort::None, None, None, None),
+        (ReasoningEffort::Max, None, None, None),
+        (ReasoningEffort::High, Some(512), None, Some(512)),
+        (ReasoningEffort::High, Some(512), Some(768), Some(768)),
+        (ReasoningEffort::Max, Some(65_536), None, Some(65_536)),
     ] {
         let root = tempfile::tempdir().unwrap();
         let db = Arc::new(Database::open_in_memory().unwrap());
         let settings = Arc::new(SettingsService::new(
             db.clone(),
             Arc::new(MockTransport::with_get_json(
-                r#"{"data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#,
+                r#"{"data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek","context_window":1000000,"max_output_tokens":131072}]}"#,
             )),
             Arc::new(MemorySecretStore::new()),
         ));
@@ -3249,15 +3257,20 @@ async fn audit_configured_output_limit_reaches_provider_request() {
         .unwrap();
         let requests = model.0.lock().unwrap();
         assert_eq!(requests.len(), 1);
-        let actual = requests[0]["max_output_tokens"].as_u64().unwrap();
+        let actual = requests[0]
+            .get("max_output_tokens")
+            .map(|value| value.as_u64().expect("an output ceiling must be unsigned"));
         let reservations = reservations.lock().unwrap();
         assert!(!reservations.is_empty());
-        eprintln!("Output limit audit: depth={depth:?} panel={panel:?} developer={developer:?} expected={expected} wire={actual} reservations={reservations:?}");
+        assert!(reservations
+            .iter()
+            .all(|value| *value == expected.unwrap_or(131_072) as usize));
+        eprintln!("Output limit audit: effort={depth:?} panel={panel:?} developer={developer:?} expected={expected:?} wire={actual:?} reservations={reservations:?}");
         matched.push(actual == expected);
     }
     assert!(
         matched[0],
-        "without an explicit cap the profile default remains valid"
+        "without an explicit cap the wire must preserve omission"
     );
     assert!(
         matched.into_iter().all(|value| value),

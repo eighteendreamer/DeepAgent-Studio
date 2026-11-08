@@ -2661,6 +2661,8 @@ E04的“正确环境全仓未执行”现已由用户本次执行补齐；自�
 
 ### H-54：有效模型参数被桌面深度覆盖，显式思考强度与输出上限没有进入真实请求
 
+**当前状态（2026-11-08）：历史已修复跳过。两个原根因已由历史0aa4fd06消除，H49补强输出预算；本轮只补默认真实回归与证据，范围/原失效探针/严格lint限制见E-H54-01～02，未重复修改生产。**
+
 **级别：中（P2）；范围：CLI/app-server 调用共享 ChatService 时指定 `reasoning_effort` / `reasoningEffort`，且与持久化 ThinkingDepth 不同。** 本项不是 H-04 的 resume/steer 参数丢失：这里新运行直接携带参数仍失效。
 
 - CLI 的 `--reasoning-effort` 和 app-server `turn/start.reasoningEffort` 都进入 `HarnessRunOverrides`；`RunConfigOverlay::reasoning_effort_override` 按配置优先级读取，`select_run_model` 将其放进 `ResponseDefaults.reasoning_effort`。但 `RunAssembler` 继续把持久化的 `thinking_depth` 传给 ModelAgent。后者每次 `think_inner` 调用 `with_thinking_depth` 写入显式 reasoning_effort；`ModelClient::apply_defaults` 只填 None，故不会再应用调用方覆盖。
@@ -2693,6 +2695,51 @@ E04的“正确环境全仓未执行”现已由用户本次执行补齐；自�
 - ContextUsage 差异也有明确源码来源：请求中 `request_max_output_override` 保存 profile 上限，`current_context_policy` 优先使用它；回答写入前又将该字段清空，随后的 publish 回到 client defaults，未配置时则使用 capability.max_output_tokens（本 fixture 为 384,000）。下一次实际请求又重新套 profile。不是根据数值不同猜测事件乱序；本次捕获的是正式事件回调顺序，没有验收 Tauri 渲染或磁盘重开。不能宣称模型真的生成了超出 512 的文本，因为离线回答很短；已证明的是用户限制和运行后预算与实际请求不一致。
 - 本系统 `ChatService::run_review_streaming` 已有同类正确对照：先调用 with_max_output_tokens，再应用深度，因此显式上限不会被该 helper 填掉。DeepSeek Harness `packages/llm/llm-deepseek/src/serialize.ts` 使用 options.maxTokens 优先于 model/connection 缺省；`llm-pi-ai/src/adapter.ts` 将 options.maxTokens 作为本次流式调用参数，其 modelInfo 明确区分模型能力与部署配置的请求缺省。这里只借鉴优先级及能力/请求上限分离，没有把 Messages 的 max_tokens 字段套到 Responses，也未运行参考项目。
 - 修复与 H-54 原方向共用一次有效参数解析，应进一步要求发送前、回答写入后的下一请求预算及实际 wire 使用同一输出上限。覆盖低于/高于深度缺省、开发者 JSON 优先、无配置对照和多轮工具调用；本轮没有修改任何生产参数或计量策略。
+
+
+**E-H54-01（2026-11-08，历史修复追溯与原探针复核，暂未最终验收）**：基线6dd8cf2299675189223878d25716621c3ad5560a，tracked干净/无未完成合并，六项既有untracked（含H53遗留.snap.new）仅列名、不读改或暂存。已核对原H54及输出上限补充、306唯一台账行、当前RunModelPlan/RunAssembler/ModelAgent/ResponseRequest/ModelClient/ContextPolicy、配置overlay/Settings及CLI/桌面消费入口和Cargo/格式/CI。历史`0aa4fd06de37a1f085daf999fd687ea23973504a`（2026-10-23，当前HEAD祖先）已把有效reasoning_effort从resolver传入Agent，并将with_thinking_depth替换为只设置effort的with_reasoning_effort，明确不生成或重写max_output_tokens；`49cdc7568bd31d70e51404ffba8a4d801f1dcdb9`再统一能力夹紧、每attempt预算与发送上限。H05不是此根因的修复来源，不因提交名或旧摘要猜测。
+
+原命令`cargo test --target-dir G:\Code_Warehouse\DeepAgent-Studio\target\h54-repair-20261108 -p deepagent-app-core --test kernel_v2_e2e <原probe> --offline -j 2 -- --ignored --exact <原probe> --nocapture`：effort原probe exit0、1/0/0、386.057秒含冷编译，原四组wire为high/max/max/low，覆盖已生效；output原probe exit101、0/1/0、3.081秒，在无显式上限对照的as_u64().unwrap()因字段省略失败，并非再现旧wire16384。续接时又用同一未改binary显式执行output原probe，仍同处0/1、0.459秒；两份失败均保留，不把过时断言当新的生产缺陷红测。先查明历史新契约，再仅将旧无配置对照改为省略字段、以明确合成catalog容量131072验证预算，保留512/开发者768/65536原故障输入并新增none/high/max省略对照；两原probe移除ignore。新增默认正式Settings→ChatService→RunAssembler→Kernel→ModelAgent→真实序列化测试：全局/面板/开发者/project snake与camel/run覆盖，429重试后真实read_file再续轮，全部wire与ContextUsage同为768；非法别名在transport前拒绝。候选新2/0/0、89.523秒含编译，不当作最终验收。
+
+本轮只改本项测试，不改生产、DTO、协议、权限或数据。G盘本项独立target/仓外合成夹具、隔离HOME/TEMP/数据根、清凭据及代理环境、离线复用现有工具链缓存，仅顶层Cargo显式target，不访问真实provider、内网、凭据或用户数据；旧H53及其他拒绝清理根不复用/不重试。最终冻结回归/lint/fmt、清理与独立提交尚未完成，本项仍修复中。台账200验收、26历史跳过、9归并、3撤销、67待修+1修复中，68未关含H180，实际67；整体170–430低置信有效小时，编译/设备/依赖/策略/环境等待另计，不能承诺精确日期。
+
+
+
+**E-H54-02（2026-11-08，历史已修复跳过的独立验收，仅限所列本机范围）**：H54两个原根因均追溯到历史`0aa4fd06de37a1f085daf999fd687ea23973504a`；H49是后续能力/预算一致性补强，不重复计生产修复。当前原effort四组成功已在E01实际复核；原output探针的过时缺省断言失败原因由历史diff、当前helper及真实wire省略共同确认，原0/1及原审计失败表均保留。本轮不改生产，不将夹具失效伪称新产品TDD红。两原探针现在默认执行，effort扩为6组（含显式none），output扩为6组：未配置在none/high/max下均真正省略字段且发送前后预算131072；512、开发者优先768、65536均逐一匹配真实wire与全部ContextUsage。未把JSON null/非数值当省略，未恢复已删除的深度默认上限。
+
+新增正式组装链覆盖全局none→面板high→开发者max、项目camel/snake低档覆盖与run显式none优先；每组实际经历合成429→重试→真实workspace read_file→下一模型轮，3次wire保持同一effort/768、真实工具结果回传，最终succeeded终态恰好一次、合成源文件不变。五个非法旧别名均在transport前拒绝（0请求），普通无工具对照保留。H49正式host回归覆盖当前能力/备用模型上限、后续run预算与SQLite重开。完整Runtime默认lib包含两协议×四effort（8组合）现有映射测试、重试/备用/截断及正常记忆/工具消费方；完整Context默认lib包括临时目录managed/base/drop-in优先级；未把它们声称为真实托管部署effort的端到端验收。
+
+实际命令均由小怪本地PowerShell执行，`$Target='G:\Code_Warehouse\DeepAgent-Studio\target\h54-repair-20261108'`；隔离环境沿E01，最终定向还显式将managed目录指向本轮仓外不存在的合成路径。默认系统managed-settings.json与drop-in目录只查存在性均为false，无读取真实配置内容。先冻结相关Rust源码运行整组；测试复核仅补强“字段必须真正省略”和“唯一终态必须成功”两个断言后重冻，两份测试及5组Kernel门禁和fmt/严格lint均再次执行，11份原生产hash始终不变。下表采用最终5组定向和未变生产方/消费方整组，不把重复执行累计成新增测试数。
+
+| 实际命令（PowerShell仓库根） | exit；通过/失败/忽略 | 墙钟秒（含编译） |
+|---|---|---|
+| `cargo test --target-dir $Target -p deepagent-app-core --test kernel_v2_e2e --offline -j 2 -- audit_harness_reasoning_override_reaches_provider_request --exact --nocapture --test-threads=1` | 0；1/0/0 | 100.113 |
+| `cargo test --target-dir $Target -p deepagent-app-core --test kernel_v2_e2e --offline -j 2 -- audit_configured_output_limit_reaches_provider_request --exact --nocapture --test-threads=1` | 0；1/0/0 | 4.245 |
+| `cargo test --target-dir $Target -p deepagent-app-core --test kernel_v2_e2e --offline -j 2 -- effective_model_parameters:: --nocapture --test-threads=1` | 0；2/0/0 | 3.906 |
+| `cargo test --target-dir $Target -p deepagent-app-core --test kernel_v2_e2e --offline -j 2 -- responses_reasoning_effort_settings_ --nocapture --test-threads=1` | 0；2/0/0 | 1.779 |
+| `cargo test --target-dir $Target -p deepagent-app-core --test kernel_v2_e2e --offline -j 2 -- output_limit:: --nocapture --test-threads=1` | 0；1/0/0 | 1.948 |
+| `cargo test --target-dir $Target -p deepagent-app-core --lib --offline -j 2 -- model_runtime::tests:: --nocapture --test-threads=1` | 0；1/0/0 | 133.396 |
+| `cargo test --target-dir $Target -p deepagent-app-core --lib --offline -j 2 -- run_config::tests:: --quiet --test-threads=2` | 0；14/0/0 | 2.949 |
+| `cargo test --target-dir $Target -p deepagent-context --lib --offline -j 2 -- --quiet --test-threads=2` | 0；60/0/0 | 28.709 |
+| `cargo test --target-dir $Target -p deepagent-models --lib --offline -j 2 -- --quiet --test-threads=2` | 0；157/0/14 | 40.776 |
+| `cargo test --target-dir $Target -p deepagent-runtime --lib --offline -j 2 -- --quiet --test-threads=2` | 0；457/0/7 | 91.580 |
+| `cargo clippy --target-dir $Target -p deepagent-app-core --test kernel_v2_e2e --no-deps --offline -j 2 -- -D warnings` | 101；未改AppCore lib的12项lint阻断 | 27.435 |
+| `cargo fmt --all -- --check` | 0；格式通过 | 6.201 |
+
+所列互不重复用例合计696通过/0失败，21忽略未执行（Models14、Runtime7）；不是整个workspace仅21未验，AppCore非定向用例/其他target也未重跑。原始测试候选2/0、第一冻组、第二冻组都已实际终态，不因默认ignore跳过探针称绿。初次严格lint141.601秒、最终27.435秒均exit101，同一未改AppCore lib 12项：context_runtime.rs的8处Usage clone_on_copy（418/440/507/527/556/568/578/587）、http_runtime.rs:332 needless_return、plugin_preparation.rs:14 type_complexity、run_assembler.rs:1878 too_many_arguments、session_title.rs:54 needless_borrow；git diff确认这些生产文件未改。未加allow、放宽-D warnings或顺手修其他项；测试target另有既有BuildFixture::cold dead_code警告，严格lint尚未越过lib阶段，不能宣称新测试已获严格lint全绿。
+
+本轮只修改两份本项测试及双文：无新生产修复、公共接口/序列化/配置/权限/迁移/依赖变化。无新的生产或跨层契约变更，故未再次跑全workspace/生产CLI build、Desktop pnpm build/Tauri/UI；测试编译及上述真实AppCore链/原模型serializer已执行，不能用它们替代完整系统验收。上轮H53全仓4987/4/189及隔离DACL失败完整保留，不称已消除。真实供应商、账单/答案质量、内网、真实凭据、其他OS、真实管理员部署及全部ignored均未验；本地429为合成响应，不是假称供应商限流。参考项目未执行。
+
+按306唯一台账复核，本轮新增生产修复0、历史已修复跳过1、归并/撤销0；累计200已修复并验收、27历史跳过、9归并、3撤销、67待修（含H180授权跳过，实际66有效待处理），无修复中/阻塞项。H54在本节所列范围关闭，不改变其他H编号，也覆盖原报告综合表关于H54仍失效的历史表述；未宣布整个goal完成。本项有效修复/验收余0，独立测试提交与清理随后补记；下一只准备H55。全部剩余170–430低置信有效小时仍沿当前跨层/持久化/执行与剩余66项风险分组，未按单项数量机械扣减，也未假造独立有效工时；设备/依赖/编译/策略/环境等待另计且无法可靠给总上界，无精确完工承诺。
+
+清理前证据校验：initial-sources.json SHA256=55CC47432AB935461BB0C57D3E5BDA7511EB831E111BE114EFA83D4B5084764F；final-sources.json SHA256=C7A8D344774319BD34E9EF262A93E0F1949F37820F8431C6B0AA3DD90135B2C4；原始结果JSON SHA256=BA2A81630D39D4C989EB33D33388FC716AC6E680116A11A44CE2EB1F49180F6D；第一冻结整组结果JSON SHA256=1FF2FAD6EC2ABEE3040A8CC13ED2C9D69ED769C039F851F2C577E7609E56F5C2；最终断言组结果JSON SHA256=9C4967DA02CBE820C52622B8219CDAB3651136DCBFCB7EBF811D4163E53B0F9C。当前Kernel测试binary SHA256=0BFE6255545F6E4456C93E58C54A32492950422E9E92F92B220E4A514C6B2353；最终两测试源SHA256：`crates/deepagent-app-core/tests/kernel_v2_e2e.rs`=`D3A71067B8380ECD0898543BB052E33813CA50CC91A606C42AD5494C5184784B`; `crates/deepagent-app-core/tests/kernel_v2_e2e/effective_model_parameters.rs`=`C987D40939B79DA5A8A650E37B4C5BA0974FD0C50239EE90B64EB9EEAF998505`。命令/结果/原始失败摘录已写双文，日志、binary及一次性脚本不提交，验收后按用户要求清理。
+
+
+**E-H54-03（2026-11-08，清理启动前被本机策略拒绝，未执行删除）**：E02功能证据/命令/结果/原失败摘录和hash写入双文后，核对本轮两个明确绝对根及全部祖先、逐目录不跟随链接枚举，零reparse、无存活本轮Cargo/rustc/测试/Node子进程。预检G:\Code_Warehouse\DeepAgent-Studio\target\h54-repair-20261108为6690文件/1198目录/5,428,578,268逻辑字节，G:\h54-fixtures-20261108为13文件/28目录/28,460逻辑字节（计数先于新写入的预检JSON）；只读另查C盘Temp无h54前缀目录。未触碰六项原untracked、默认target、用户源码/文档、工具链缓存和任何旧拒绝清理根。
+
+已用本机cargo clean --help查证--target-dir/--dry-run。预定命令按顺序执行cargo clean --target-dir <本轮build> --dry-run、正式cargo clean，同根成功后才用PowerShell Remove-Item -LiteralPath对两个已核验绝对根递归删除，任何错误立即停止；但整个命令在CreateProcess前被Rejected/blocked by policy，PowerShell脚本完全未启动，dry-run和正式clean均没有实际exit结果，未删除任何文件。立即停止，不拆分/重写参数、换shell、提权、改ACL或换工具绕过。拒绝后的只读存在性检查两个根均仍存在；约5.43GB逻辑长度的本轮产物仍待清理，不称已回收物理空间，未承诺清理完成。
+
+H54状态仍为E02本机范围历史已修复跳过；该功能复核不会消除本轮清理策略阻塞、旧残余、全仓旧失败或lint债务。测试与双文照白名单独立提交，不提交target/日志/脚本；整体goal继续active，不把清理阻塞静默降低为成功。当前200验收、27历史跳过、9归并、3撤销、67待修含H180（实际66）；下一准备H55。全余170–430低置信有效小时，策略/设备/依赖/环境等待另计且无法可靠量化。
 
 ### H-55：简单思考模式直接携带 Responses 的 none 进入 Chat 适配器，本地校验拒绝整个运行
 
