@@ -215,6 +215,7 @@ impl ReqwestTransport {
         let mut parser = SseParser::new();
         let mut body = response.bytes_stream();
         let mut pending = Vec::new();
+        let mut consumed_stream_bytes = 0usize;
 
         loop {
             let item = self
@@ -233,7 +234,10 @@ impl ReqwestTransport {
 
             // Decode as much valid UTF-8 as possible, retaining a trailing
             // partial code point for the next chunk.
-            let (text, consumed) = decode_utf8_prefix(&pending);
+            let (text, consumed, invalid) = match decode_utf8_prefix(&pending) {
+                Ok((text, consumed)) => (text, consumed, None),
+                Err(error) => (error.valid_prefix, error.valid_up_to, Some(error.error_len)),
+            };
             if !text.is_empty() {
                 for payload in parser.feed(&text) {
                     if sink.on_event(&payload)? {
@@ -242,6 +246,20 @@ impl ReqwestTransport {
                 }
             }
             pending.drain(..consumed);
+            let invalid_offset = consumed_stream_bytes.saturating_add(consumed);
+            consumed_stream_bytes = invalid_offset;
+            if let Some(error_len) = invalid {
+                return Err(CoreError::Serialization(format!(
+                    "provider SSE contains invalid UTF-8 at byte {invalid_offset} (sequence length {error_len})"
+                )));
+            }
+        }
+
+        if !pending.is_empty() {
+            return Err(CoreError::Serialization(format!(
+                "provider SSE ended with an incomplete UTF-8 sequence ({} trailing bytes)",
+                pending.len()
+            )));
         }
 
         // EOF is not an SSE event boundary. The model accumulator diagnoses a
@@ -435,17 +453,31 @@ fn parse_http_date(value: &str) -> Option<time::OffsetDateTime> {
     None
 }
 
-/// Decode the longest valid UTF-8 prefix of `bytes`, returning the decoded text
-/// and the number of bytes consumed (so a trailing partial code point is kept).
-fn decode_utf8_prefix(bytes: &[u8]) -> (String, usize) {
+#[derive(Debug)]
+struct InvalidUtf8Prefix {
+    valid_prefix: String,
+    valid_up_to: usize,
+    error_len: usize,
+}
+
+/// Keep only a trailing incomplete code point for the next HTTP chunk. A
+/// sequence with a known error length cannot be repaired by future bytes.
+fn decode_utf8_prefix(bytes: &[u8]) -> std::result::Result<(String, usize), InvalidUtf8Prefix> {
     match std::str::from_utf8(bytes) {
-        Ok(s) => (s.to_string(), bytes.len()),
+        Ok(s) => Ok((s.to_string(), bytes.len())),
         Err(e) => {
             let valid = e.valid_up_to();
             let s = std::str::from_utf8(&bytes[..valid])
                 .expect("valid_up_to guarantees valid UTF-8")
                 .to_string();
-            (s, valid)
+            match e.error_len() {
+                Some(error_len) => Err(InvalidUtf8Prefix {
+                    valid_prefix: s,
+                    valid_up_to: valid,
+                    error_len,
+                }),
+                None => Ok((s, valid)),
+            }
         }
     }
 }
@@ -1040,7 +1072,7 @@ mod tests {
 
     #[test]
     fn decodes_full_utf8() {
-        let (s, n) = decode_utf8_prefix("hello".as_bytes());
+        let (s, n) = decode_utf8_prefix("hello".as_bytes()).unwrap();
         assert_eq!(s, "hello");
         assert_eq!(n, 5);
     }
@@ -1049,7 +1081,7 @@ mod tests {
     fn retains_partial_codepoint() {
         // "é" is 0xC3 0xA9; feed only the first byte.
         let bytes = [b'a', 0xC3];
-        let (s, n) = decode_utf8_prefix(&bytes);
+        let (s, n) = decode_utf8_prefix(&bytes).unwrap();
         assert_eq!(s, "a");
         assert_eq!(n, 1);
     }
