@@ -2,8 +2,8 @@
 //! synthetic kernel events in tests.
 //!
 //! The mapping is deliberately narrow: everything that belongs in the transcript
-//! or in the status line comes from `RuntimeEvent`; model-request bookkeeping stays
-//! in the persisted event log and is not re-derived here.
+//! or in the status line comes from `RuntimeEvent`. The existing model request
+//! lifecycle also delimits speculative text that must not enter scrollback.
 
 use deepagent_app_core::dto::{ApprovalRequestDto, QuestionRequestDto};
 use deepagent_runtime::RuntimeEvent;
@@ -12,7 +12,15 @@ use super::history::HistoryCell;
 
 #[cfg(test)]
 #[path = "state_retry_audit.rs"]
-mod retry_audit;
+pub(super) mod retry_audit;
+
+#[cfg(test)]
+#[path = "state_retry_tests.rs"]
+mod retry_tests;
+
+#[cfg(test)]
+#[path = "state_retry_producer_tests.rs"]
+mod retry_producer_tests;
 
 /// Outcome text a tool cell carries until the matching completion arrives.
 pub const TOOL_RUNNING: &str = "running";
@@ -60,6 +68,14 @@ pub struct ChatState {
     pub question: Option<QuestionRequestDto>,
     pub tokens: TokenTotals,
     pub notice: Option<String>,
+    model_attempt_view: Option<ModelAttemptView>,
+}
+
+#[derive(Debug)]
+struct ModelAttemptView {
+    step: usize,
+    streaming_base: String,
+    reasoning_base: String,
 }
 
 impl ChatState {
@@ -76,6 +92,7 @@ impl ChatState {
             question: None,
             tokens: TokenTotals::default(),
             notice: None,
+            model_attempt_view: None,
         }
     }
 
@@ -122,6 +139,35 @@ impl ChatState {
             }
             RuntimeEvent::ReasoningDelta { text } => {
                 self.reasoning.push_str(&text);
+                Continue::Nothing
+            }
+            RuntimeEvent::ModelRequestStarted { step, .. } => {
+                self.model_attempt_view = Some(ModelAttemptView {
+                    step,
+                    streaming_base: self.streaming.clone(),
+                    reasoning_base: self.reasoning.clone(),
+                });
+                Continue::Nothing
+            }
+            RuntimeEvent::ModelAttemptReset { step, .. } => {
+                if let Some(attempt) = self
+                    .model_attempt_view
+                    .as_ref()
+                    .filter(|attempt| attempt.step == step)
+                {
+                    self.streaming.clone_from(&attempt.streaming_base);
+                    self.reasoning.clone_from(&attempt.reasoning_base);
+                }
+                Continue::Nothing
+            }
+            RuntimeEvent::ModelRequestCompleted { step, .. } => {
+                if self
+                    .model_attempt_view
+                    .as_ref()
+                    .is_some_and(|attempt| attempt.step == step)
+                {
+                    self.model_attempt_view = None;
+                }
                 Continue::Nothing
             }
             RuntimeEvent::ToolStarted {
@@ -201,6 +247,7 @@ impl ChatState {
                 message,
                 edited_files,
             } => {
+                self.model_attempt_view = None;
                 let streamed = !self.streaming.trim().is_empty();
                 self.commit_streaming();
                 // The loop already printed the answer when it streamed it; only a
@@ -222,12 +269,14 @@ impl ChatState {
                 Continue::DrainQueue
             }
             RuntimeEvent::RunFailed { reason } => {
+                self.discard_uncommitted_model_output();
                 self.commit_streaming();
                 self.fail(reason);
                 self.finish_run();
                 Continue::DrainQueue
             }
             RuntimeEvent::RunCancelled { edited_files } => {
+                self.discard_uncommitted_model_output();
                 self.commit_streaming();
                 let suffix = if edited_files.is_empty() {
                     String::new()
@@ -253,6 +302,8 @@ impl ChatState {
                 self.finish_run();
             }
             Err(reason) => {
+                self.discard_uncommitted_model_output();
+                self.commit_streaming();
                 self.fail(reason);
                 self.finish_run();
             }
@@ -280,6 +331,11 @@ impl ChatState {
 
     /// Move streamed assistant text and reasoning into the transcript.
     fn commit_streaming(&mut self) {
+        // Even if a tool fact arrives early, the model's unaccepted text must
+        // remain retractable. Tool facts themselves are never rolled back.
+        if self.model_attempt_view.is_some() {
+            return;
+        }
         if !self.reasoning.trim().is_empty() {
             self.cells.push(HistoryCell::Reasoning {
                 text: std::mem::take(&mut self.reasoning),
@@ -293,6 +349,13 @@ impl ChatState {
             });
         } else {
             self.streaming.clear();
+        }
+    }
+
+    fn discard_uncommitted_model_output(&mut self) {
+        if let Some(attempt) = self.model_attempt_view.take() {
+            self.streaming = attempt.streaming_base;
+            self.reasoning = attempt.reasoning_base;
         }
     }
 
@@ -338,6 +401,7 @@ impl ChatState {
         self.question = None;
         self.streaming.clear();
         self.reasoning.clear();
+        self.model_attempt_view = None;
     }
 }
 

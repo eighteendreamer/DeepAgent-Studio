@@ -19,6 +19,10 @@ use crate::tui::questions::join_selection;
 use crate::tui::state::{ChatState, Continue};
 use crate::tui::terminal::TerminalGuard;
 
+#[cfg(test)]
+#[path = "app_retry_tests.rs"]
+mod retry_tests;
+
 /// Rows owned by the live viewport: status, streaming tail, composer/overlay,
 /// hint. ratatui 0.30 has no `set_viewport`, so the height stays fixed.
 const VIEWPORT_ROWS: u16 = 4;
@@ -832,7 +836,7 @@ fn tail_path(path: &str, width: usize) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
     use ratatui::text::Text;
@@ -1059,7 +1063,7 @@ mod tests {
         assert_eq!(sanitize("a\u{7}b\n"), "ab");
     }
 
-    fn test_app() -> App {
+    pub(super) fn test_app() -> App {
         let dir = tempfile::tempdir().expect("temp dir");
         let database = std::sync::Arc::new(
             deepagent_persistence::Database::open_in_memory().expect("test database"),

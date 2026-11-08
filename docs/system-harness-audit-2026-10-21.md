@@ -13703,6 +13703,8 @@ H257在上述本机范围已修复并验收，本轮新增1、历史跳过0、�
 
 ### H-258：CLI TUI 忽略模型 attempt 回滚，重试成功后仍把废弃答案和推理拼入最终显示
 
+**当前状态（2026-11-08）：已修复并验收，限E-H258-03本机范围。** 原探针红、全部候选失败及E02撤回局部通过记录保留；CLI旧HOME快照和依赖旧lint未消除，不称全仓或整个系统已完成。
+
 **级别：中（P2，模型重试后的用户可见正确性）；状态：正式 ChatService/ModelAgent/Kernel、文件 SQLite、生产 TUI state 与 HistoryCell 渲染已复现，未修复。** 触发需要模型已发送部分正文或推理，随后出现可重试传输错误，下一 attempt 成功。不是 Harness 丢通知，也不是运行时没有回滚信号；本项在消费信号的终端视图边界。
 
 #### 首次即时 Evidence（2026-10-25）
@@ -13733,6 +13735,44 @@ H257在上述本机范围已修复并验收，本轮新增1、历史跳过0、�
 - `ChatState`、App事件路由和scrollback flush共用同一attempt生命周期；若片段可提前flush为不可改终端历史，需要明确定义可撤回区域或用可识别的废弃attempt标记，不把旧片段作为正常最终回答。不要在TUI重新实现重试或改写已正确保存的模型历史。line-mode同样未处理reset属源码旁证，本轮未捕获其stdout，不额外登记第二个缺陷或称其已动态复现。
 - 验收应覆盖正文/推理分别先到、多次重试、重试耗尽/取消、输出上限升级、fallback、工具之前/之后的多step、compaction标记、实际TTY绘制/scrollback与复制。当前只动态验证一次transport断线、一次恢复及两种正常对照；未运行真实HTTP/DeepSeek、真实终端、Desktop、参考项目、workspace全量或生产修复。
 - 验证收尾：`cargo test -p deepagent-cli --offline` **86 passed / 24 ignored**，既有正常协议、终端状态与新正常对照全部通过；已知缺陷ignored测试未自动关闭。`cargo fmt --all -- --check`、`git diff --check`通过。`cargo clippy -p deepagent-cli --all-targets --offline -- -D warnings`未通过，实际报models/client.rs:355的clone_on_copy和persistence/run_store.rs:127的explicit_counter_loop；均核对HEAD含原代码，本轮不修改这两个无关文件，不声称lint全绿。没有运行全workspace、前端构建或手动TTY验证。
+
+**E-H258-01（2026-11-08，现存问题原探针复核）**：HEAD=`5b2a0d20355900827d6717f3ce859a5fc39c6e7d`，tracked起始干净，既有用户untracked保留。复用H257 target当前CLI test binary `deepagent-4cd4c0a85fe5724b.exe`，SHA256=`E190A6B0873768B2AA4F952E89896C70B92FF8C1D8FFFB79BBD20BB84C0DCF2B`，执行`& $binary tui::state::retry_audit::audit_terminal_retry_discards_failed_attempt_text_and_reasoning --exact --nocapture --ignored`，exit101、0通过/1失败/0忽略、0.955秒：正式ChatService生产事件、Runtime reset及唯一完成和持久化内容均为`有效答案：乙。`，而正式ChatState/HistoryCell实际渲染为assistant=`已废弃答案：甲。有效答案：乙。`、reasoning=`已废弃推理。有效推理。`。其同binary普通成功及首delta前断线对照`...audit_terminal_normal_and_pre_delta_retry_preserve_one_answer --exact --nocapture` exit0、1/0/0、1.066秒。原red输出SHA256=`334E57B10DB019BD3EF36D12F402CA4FBF615E7C2803A6790F5D80CB86A1FF3B`、normal对照SHA256=`805269B2A24077502F40BE256DBFFE260299AC6992C0BECF887EA79571F5245C`，原结果JSON SHA256=`CBF4F5667A5120C88F3EE561F3FAA0E7BBDD5834B2F95F5866826D5AD7BDB357`、六源码初始manifest SHA256=`67B6D21AAB8BCDDC4F3BD25F71936135F698D648C557CCD4DCDADD1D670455DF`，原始目标和当前代码对应的复现均在target/h258-repair-20261108中。无真实provider/公网/用户数据或工具副作用。
+
+**E-H258-02（2026-11-08，早期候选与撤回局部通过，非最终验收）**：生产变更限CLI两个RuntimeEvent消费者，AppCore/ModelAgent/Kernel/SQLite、Desktop与供应商协议均未改。新增状态/实际App渲染/line-mode子进程stdout捕获TDD在旧生产代码上真实exit101、0通过/7失败/2忽略、264.431秒含冷编译；原`original-probe`失败及正常对照见E01。之后候选1/2均因test_app测试辅助函数重导出的可见性错误而编译失败，未执行测试；候选3为3/4/2、候选4为5/2/2，候选5局部7/0/2。候选阶段错误地保留了ModelRequestCompleted后的快照，并曾把“已提交输出不得因迟到reset撤回”“未提交失败尾段不得作为普通答案”“最终screen/scrollback必须真的有有效答案”三个强断言改弱，因此**候选5及其后208/1/10包级结果不作为H258最终关闭证据**，必须在恢复边界与强断言后重验；相关日志原样保留。
+
+审查重新核对生产方：ModelAgent在每个逻辑step仅首attempt发ModelRequestStarted，断线/fallback/长度升级的reset均在最终accepted response退出重试循环之前发出；ModelRequestCompleted位于循环最终break之后，不是“每个中间length响应已完成后仍会reset”。早期E02曾作相反解释，现明确撤回该解释，不以测试期望覆盖生产代码。真实工具执行正常在accepted response之后；已提交cell不可撤回，尚未接受的正文/推理必须留在可变live buffer。最后一条失败或取消没有显式reset，也不等于这些未提交文本已被接受；后续E03将沿同一基线撤回未提交尾段，保留先前已接受文本及真实工具事实。既有不带ModelRequestStarted的legacy事件路径仍按原行为对照。
+
+Ratatui TestBackend的CJK宽字占两格，原测试直接拼全部Cell.symbol会把隐藏占位格拼进字符串，导致有效答案的正向查找失败；候选曾删掉该正向断言，现已按本机锁定ratatui-core-0.1.2的真实buffer语义跳过宽字符占位格，恢复正向断言，不修改生产renderer或golden。原有test_app访问器重导出另触发items_after_test_module严格lint；已取消重导出，收敛为cfg(test)测试模块内访问，不加allow。所有候选编译、测试和lint失败不算产品新增缺陷或完成数量。
+
+早期候选真正PTY显式1/0/0：不redirect stdout，从工具ConPTY直启测试binary，实际TerminalGuard::inline/paint/flush运行，回放正式ChatService生成的synthetic retry事件。曾用PowerShell重定向造成stdout非TTY而0/1，另一次漏--ignored实际0/0/1；两者均不算通过。修正调用后才有实际1/0/0与H258_REAL_TTY_ACCEPTED标记。该结果对应早期候选源码，最终E03修复后必须再跑；不是抓取物理屏幕像素或系统剪贴板，也不是完整键盘交互事件泵测试。原Host fixture已补所有数据库句柄释放后的SQLite冷重开对照。无真实provider、网络、凭据或用户工具副作用。
+
+
+**E-H258-03（2026-11-08，按真实生产生命周期重验后的最终本机验收）**：E01原始0/1与正常对照、E02全部候选失败及撤回的局部绿结论均保留。本轮真正修复只在CLI的ChatState和line-mode视图消费边界：首个ModelRequestStarted存step与两通道基线；匹配reset反复恢复相同基线；匹配ModelRequestCompleted释放快照，迟到或其他step reset不再撤回已接受内容；RunCompleted终态接受当前成功文本，RunFailed/RunCancelled或Future错误只撤回尚无Completed的当前attempt，再保留先前已接受前缀/真实cells。ToolStarted即使提前到达也不能把未接受模型文本commit进不可改scrollback；工具事实本身不回滚。legacy没有ModelRequestStarted的流式路径仍用原对照。reset不清usage/队列/审批/工具状态，不另造运行或取消链。
+
+重验明确证伪E02错误解释：新增真实ModelAgent→ModelClient→TUI测试覆盖Responses与ChatCompletions两协议各7场景：正常、连续两次断线后成功、overload fallback到真实第二模型、输出上限提高后成功、三次断线耗尽、首attempt实际取消flag置true、重试后实际取消。不是手造reset：Script只在原HttpTransport seam交付合成合法provider事件和受控错误，ModelAgent正式发出Started/Reset/Completed。断言请求数、reset数、最终Completed后不得再有reset、fallback的第二模型、max_output_tokens/max_tokens实际增大及投影不含废弃正文/推理；取消由生产cancel-aware transport丢弃pending流并在有界6秒内返回。该组的终态由测试显式喂给消费方，**不冒充14场景都走过Kernel或SQLite**；真实ChatService/Kernel/文件SQLite成功重试与正常对照、唯一terminal及完全释放句柄后的冷重开由原retry_audit另外证明。源码确认length/fallback/reset在最终Completed之前，测试不凭记忆改生产契约。
+
+状态强断言已恢复并通过：正文先到/推理先到、2/3/4字节Unicode基线、3次reset同基线、其他step/已完成step迟到reset不回滚、真正未接受的失败/取消/Future尾段不进普通Assistant/Reasoning cell、工具前后两step的已提交叙述及结果不丢、异常早到工具不flush未提交文本。Ratatui TestBackend按实际宽字符格读取，既断言reset后的screen及最终scrollback没有旧文本，也正向断言最终有效乙答案确实可见；不再通过删正向断言取得绿。永久HistoryCell及notice不被截断；CLI原本尚未渲染的compaction/memory专属事件未借本项扩展，也不伪称这些新增标记已动态显示。
+
+最终21份相关源码/配置在门禁前后逐份SHA256相同，manifest=`2B9146F1D6FA7015EC75F52983293ACE082E522DE56A28E03E2765351224CA83`；包含全部7份本项Rust源/测试、既有history/host/terminal及真实生产方/存储/模型契约，Runtime/Models/AppCore/Persistence目录git diff为空。PowerShell仓库根，`$Target=G:\Code_Warehouse\DeepAgent-Studio\target\h258-repair-20261108`；最终门禁清凭据/代理环境、隔离HOME/USERPROFILE/APPDATA/LOCALAPPDATA/仓外TEMP/数据根/managed-absent，离线复用工具链缓存，只给外层Cargo显式target，子夹具不继承CARGO_TARGET_DIR。早期部分候选未套完整环境隔离，但只运行上述MemorySecretStore/临时SQLite/受控Transport回归，无真实凭据或模型访问；不把它们当最终环境门禁。
+
+| 实际最终命令 | 退出；通过/失败/忽略 | 墙钟秒（含构建/测试等待） |
+|---|---|---|
+| `cargo test --target-dir $Target -p deepagent-cli --bin deepagent --offline -j 2 -- h258_ --nocapture --test-threads=2` | 0；9/0/2，含14真实producer场景 | 3.575 |
+| `cargo test --target-dir $Target -p deepagent-cli --bin deepagent --offline -j 2 -- tui::state::retry_audit:: --nocapture --test-threads=1` | 0；原缺陷probe已默认执行、正常两场景对照，共2/0/0 | 2.144 |
+| `cargo test --target-dir $Target -p deepagent-cli --offline -j 2 -- --quiet --test-threads=2` | 101；整个CLI binary包210/1/10，不称全绿 | 81.175 |
+| `cargo build --target-dir $Target -p deepagent-cli --offline -j 2` | 0；当前源码生产CLI | 19.281 |
+| `cargo clippy --target-dir $Target -p deepagent-cli --all-targets --offline -j 2 -- -D warnings` | 101；未改Models client.rs:453旧clone_on_copy | 6.264 |
+| `cargo clippy --target-dir $Target -p deepagent-cli --all-targets --no-deps --offline -j 2 -- -D warnings` | 0；CLI生产及新增测试严格lint通过 | 31.498 |
+| `cargo fmt --all -- --check` | 0 | 4.789 |
+| 当前test binary的`...h258_real_tty_replays_production_retry_through_the_actual_flush_and_paint --ignored --exact --nocapture --test-threads=1`，ConPTY直接执行、无stdout重定向 | 0；真实TTY 1/0/0，H258_REAL_TTY_ACCEPTED | 1.364 |
+
+最终TTY binary SHA256=`22A46F0FE231EEE2EEC0834776088523CFD5ECC928C3F3C2C6DC80112BA7AC1D`；在真实ConPTY检查stdin/stdout均terminal，直接调用生产App::on_ui_event/collect_flushable/TerminalGuard::inline/flush/paint，逐条重放正式ChatService真实生成的synthetic retry事件。实际工具输出可见旧正文/推理仅在live tail中短暂出现，reset后清除，最终散出的不可变transcript只含有效乙答案；有真实paint/insert_before执行，不是仅字符串正则测试。TestBackend验证最终screen/scrollback及可复制的HistoryCell行内容；**未读取物理控制台像素或系统剪贴板，未跑完整键盘事件泵、窗口resize及手工复制动作**。line mode父测试从真实子进程stdout确认旧输出→明确废弃分隔→新答案顺序；已打印字符不能物理撤回，分隔是有意的兼容策略，不声称tee文件已删除旧字节。
+
+CLI唯一完整失败仍为`viewport_snapshot_with_a_pending_approval`：golden内C盘HOME与本轮G隔离HOME路径不同，未更新golden、未放宽断言。最终强门禁以原`.snap.new`内容备份hash=`ACDBFD864BEDBE07167E6CFD498E73D8D5B7DA21E71008305EF3240CAD2E9184`及mtime=`2026-11-08T08:02:29Z`为准；先确认中间输出hash=`5BEA92BBC6692C7F4C14BE1D20D8F1E157DE8B62C4C3801EB7445375B08FF650`确为本轮相同fixture结果，再恢复原内容，最终包测试结束finally再次恢复原946字节hash/mtime并复核成功。其余原用户untracked不读改/暂存；未覆盖默认target/debug/deepagent.exe。包含依赖的strict旧lint失败不消失，未放宽-D warnings或加allow。整个CLI包10 ignored内本项stdout helper与TTY helper均在独立门禁实际执行，其余忽略项不计通过。
+
+无共享Rust crate生产、公共DTO、Tauri command、TS/UI、协议、配置、SQL/迁移或依赖变化；只修CLI消费方，未重跑全workspace或Desktop build/Tauri/UI，也未验其他OS、真实DeepSeek/HTTP故障/账单/凭据/真实内网、强杀/磁盘满/断电、全部ignored及真正compaction/memory运行。原H257完整workspace5011/3/185仍是历史完整执行，不用这次CLI局部结果替代或改成全绿。H258生产方与消费方已由真实ModelAgent组及正式ChatService/Kernel/SQLite原probe、当前CLI包与TTY完成上述范围验收，不靠编译或默认跳过。原始失败与审查前错误候选已同步两文，不扩大为整个系统完成。
+
+H258本轮新增验收1、历史跳过0、归并/撤销0；306唯一编号重核为203验收、28历史跳过、9归并、3撤销、63待修含H180授权跳过（实际62有效未关），0修复中。本项本机实现/验收余0，独立提交及安全清理随后另回填。下一按剩余运行状态风险复核H131（仍持续输出的provider stream被固定总时限截断），未开始修改。全部剩余170–430低置信有效小时仍为按跨层/持久化/执行风险分组的未逐项校准粗估；构建、设备、依赖及清理策略等待另计且无可靠总上界，不给精确完工日期。最终门禁结果JSON SHA256=`BC7560800D8BC5451C8CD83A126AEEAC6A1CE204D35EA4D18F160E91C17F664A`，完整CLI日志SHA256=`7B23E6D6491A66DD0D034532BE60C776679694FA5117C2E52D4213F6B94FDC6F`，最初新增TDD红日志SHA256=`988101669E634F3BDC89425F5FA75166117F4561AB00E70EE253B4B836689E2A`。
 
 ### H-259：流式预处理缓存覆盖最终工具参数，实际写入与原生调用历史及续轮上下文发生错配
 

@@ -19,6 +19,12 @@ const ACCENT: &str = "\x1b[38;5;209m";
 const MUTED: &str = "\x1b[38;5;244m";
 const DIM: &str = "\x1b[2m";
 
+#[derive(Default)]
+struct LineModelAttempt {
+    step: usize,
+    emitted_content: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputAction {
     Empty,
@@ -176,8 +182,10 @@ async fn run_turn(
     println!();
     let context = Arc::new(Mutex::new(EventContext::default()));
     let context_for_events = context.clone();
+    let model_attempt = Arc::new(Mutex::new(None));
+    let attempt_for_events = model_attempt.clone();
     let on_event = move |event: RuntimeEvent| {
-        render_event(&event, &context_for_events);
+        render_event(&event, &context_for_events, &attempt_for_events);
     };
 
     let context_for_approval = context.clone();
@@ -230,7 +238,11 @@ async fn run_turn(
     .map_err(|error| error.to_string())
 }
 
-fn render_event(event: &RuntimeEvent, context: &Arc<Mutex<EventContext>>) {
+fn render_event(
+    event: &RuntimeEvent,
+    context: &Arc<Mutex<EventContext>>,
+    model_attempt: &Arc<Mutex<Option<LineModelAttempt>>>,
+) {
     {
         let mut guard = context
             .lock()
@@ -247,7 +259,57 @@ fn render_event(event: &RuntimeEvent, context: &Arc<Mutex<EventContext>>) {
     }
 
     match event {
-        RuntimeEvent::ContentDelta { text } => print!("{text}"),
+        RuntimeEvent::ModelRequestStarted { step, .. } => {
+            *model_attempt
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(LineModelAttempt {
+                step: *step,
+                emitted_content: false,
+            });
+        }
+        RuntimeEvent::ModelAttemptReset { step, .. } => {
+            let mut attempt = model_attempt
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(attempt) = attempt.as_mut() {
+                if attempt.step == *step && attempt.emitted_content {
+                    print!("\r\n{DIM}(previous model output discarded after retry){RESET}\r\n");
+                    attempt.emitted_content = false;
+                }
+            }
+        }
+        RuntimeEvent::RunCompleted { .. }
+        | RuntimeEvent::RunFailed { .. }
+        | RuntimeEvent::RunCancelled { .. } => {
+            *model_attempt
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        }
+        RuntimeEvent::ModelRequestCompleted { step, .. } => {
+            let mut attempt = model_attempt
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if attempt
+                .as_ref()
+                .is_some_and(|attempt| attempt.step == *step)
+            {
+                *attempt = None;
+            }
+        }
+        _ => {}
+    }
+
+    match event {
+        RuntimeEvent::ContentDelta { text } => {
+            print!("{text}");
+            if let Some(attempt) = model_attempt
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_mut()
+            {
+                attempt.emitted_content = true;
+            }
+        }
         RuntimeEvent::ReasoningDelta { .. } => {}
         RuntimeEvent::ToolStarted { name, summary, .. } => {
             let summary = summary.as_deref().unwrap_or("running");
@@ -358,5 +420,43 @@ mod tests {
         assert!(screen.contains("C:\\repo"));
         assert!(screen.contains("deepseek-chat"));
         assert!(screen.contains("> "));
+    }
+
+    #[test]
+    fn h258_line_mode_marks_preceding_output_discarded_before_the_retry_answer() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "tui::linemode::tests::h258_line_mode_production_events_child",
+                "--ignored",
+                "--exact",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let old = stdout.find("已废弃答案：甲。").unwrap();
+        let marker = stdout
+            .find("previous model output discarded after retry")
+            .expect("pipe output cannot silently join a discarded attempt to its answer");
+        let new = stdout.find("有效答案：乙。").unwrap();
+        assert!(old < marker && marker < new, "{stdout}");
+    }
+
+    #[tokio::test]
+    #[ignore = "isolated stdout capture helper for H-258, invoked explicitly by its parent"]
+    async fn h258_line_mode_production_events_child() {
+        use crate::tui::state::retry_audit::{observe, FirstAttempt};
+        let observed = observe(FirstAttempt::DisconnectAfterDelta).await;
+        let context = Arc::new(Mutex::new(EventContext::default()));
+        let attempt = Arc::new(Mutex::new(None));
+        for event in observed.runtime {
+            render_event(&event, &context, &attempt);
+        }
     }
 }

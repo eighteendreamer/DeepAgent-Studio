@@ -17,7 +17,7 @@ const STALE_REASONING: &str = "已废弃推理。";
 const FINAL_REASONING: &str = "有效推理。";
 
 #[derive(Clone, Copy, Debug)]
-enum FirstAttempt {
+pub(crate) enum FirstAttempt {
     Success,
     DisconnectBeforeDelta,
     DisconnectAfterDelta,
@@ -82,13 +82,14 @@ impl HttpTransport for Model {
     }
 }
 
-struct Observation {
+pub(crate) struct Observation {
     assistant: String,
     reasoning: String,
     rendered: String,
+    pub(crate) runtime: Vec<RuntimeEvent>,
 }
 
-async fn observe(first: FirstAttempt) -> Observation {
+pub(crate) async fn observe(first: FirstAttempt) -> Observation {
     let temporary = tempfile::tempdir().unwrap();
     let database_path = temporary.path().join("state.sqlite");
     let workspace = temporary.path().join("workspace");
@@ -236,11 +237,30 @@ async fn observe(first: FirstAttempt) -> Observation {
         })
         .collect::<Vec<_>>()
         .join("\n");
+    let runtime = events.clone();
     eprintln!("terminal retry audit: first={first:?} attempts={expected_attempts} resets={} completed={completed:?} persisted={persisted:?} assistant={assistant:?} reasoning={reasoning:?}", reset_positions.len());
+    drop(state);
+    drop(events);
+    drop(chat);
+    drop(db);
+    let reopened = Database::open(&database_path).unwrap();
+    assert_eq!(
+        deepagent_persistence::run_store::RunStore::new(&reopened)
+            .events_after("audit-terminal-retry", None)
+            .unwrap(),
+        durable
+    );
+    assert_eq!(
+        EventStore::new(&reopened)
+            .load_session(session.parse().unwrap())
+            .unwrap(),
+        stored
+    );
     Observation {
         assistant,
         reasoning,
         rendered,
+        runtime,
     }
 }
 
@@ -255,7 +275,6 @@ async fn audit_terminal_normal_and_pre_delta_retry_preserve_one_answer() {
 }
 
 #[tokio::test]
-#[ignore = "H-258: TUI must roll back visible fragments from a discarded model attempt"]
 async fn audit_terminal_retry_discards_failed_attempt_text_and_reasoning() {
     let observation = observe(FirstAttempt::DisconnectAfterDelta).await;
     assert!(
