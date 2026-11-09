@@ -4757,7 +4757,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 ### H-111：PreCompact hook 的 stdout 指令没有进入摘要请求
 
-**修复状态（2026-11-10）：已修复并验收，限本机Windows同步command PreCompact与离线合成模型；证据E-H111-01～04见[修复台账](system-harness-repair-progress.md)。** 复用单一HookReport/registry有界接纳并交付至summary user侧数据；有指令不复用旧session note或micro-only结果，prefire采用前只运行一次hook并重新摘要原prefix，PTL保留独立指令，accounted路径与physical账本保留重新生成但未采用的用量。原失败证据如下不删除。原探针已去ignore，冻结context回归53/0/3、扩展10/0/0；全仓5099/4/176保留四个既有失败，非全绿；fmt、hooks/context严格lint、CLI构建/当前CLI真实SDK、Tauri check通过，全特性strict仍被旧Models lint阻断，详见台账。未验真实供应商摘要质量/遵循率、UI、其他OS或HTTP/MCP/model hook上下文；不据此关闭独立H110/H140。修复commit取得后另回填，不amend自引用。
+**修复状态（2026-11-10）：已修复并验收，限本机Windows同步command PreCompact与离线合成模型；证据E-H111-01～05见[修复台账](system-harness-repair-progress.md)。** 复用单一HookReport/registry有界接纳并交付至summary user侧数据；有指令不复用旧session note或micro-only结果，prefire采用前只运行一次hook并重新摘要原prefix，PTL保留独立指令，accounted路径与physical账本保留重新生成但未采用的用量。原失败证据如下不删除。原探针已去ignore，冻结context回归53/0/3、扩展10/0/0；全仓5099/4/176保留四个既有失败，非全绿；fmt、hooks/context严格lint、CLI构建/当前CLI真实SDK、Tauri check通过，全特性strict仍被旧Models lint阻断，详见台账。未验真实供应商摘要质量/遵循率、UI、其他OS或HTTP/MCP/model hook上下文；不据此关闭独立H110/H140。修复commit=57c58530df6b878fd0ae1a157280ffad34aca8d2；本轮两根与生成快照已清理，见E05。
 
 **级别：中（P2，条件性 hook 功能缺陷）；触发条件：配置 `PreCompact` command hook，并从成功退出的 hook stdout 返回摘要指令。** 不返回指令或使用退出码拒绝压缩时不受此项影响。
 

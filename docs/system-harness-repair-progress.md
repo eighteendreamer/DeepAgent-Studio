@@ -6362,7 +6362,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-108：SessionStart/SessionEnd payload 缺少必需的事件元数据](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-109：SubagentStop hook 缺少必需的停止状态与 transcript 路径](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-110：PreCompact/PostCompact payload 不符合事件输入 schema](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-111：PreCompact hook 的 stdout 指令没有进入摘要请求](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H111-01～04保留原红/候选；不归并H110/H140 | 单一HookReport交付有界user侧指令；prefire重新摘要原prefix且hook一次，accounted保留不采用用量 | 扩展10/0、context53/0/3；全仓5099/4/176保留四旧失败；scope strict/CLI/SDK/Tauri通过，旧lint阻断见E04 | 本轮修复提交后回填 | 仅同步command PreCompact、本机Windows离线验收；真实模型遵循率未验；本项余0，清理另记E05 |
+| [H-111：PreCompact hook 的 stdout 指令没有进入摘要请求](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H111-01～05保留原红/候选/清理；不归并H110/H140 | 单一HookReport交付有界user侧指令；prefire重新摘要原prefix且hook一次，accounted保留不采用用量 | 扩展10/0、context53/0/3；全仓5099/4/176保留四旧失败；scope strict/CLI/SDK/Tauri通过，旧lint阻断见E04 | 57c58530df6b878fd0ae1a157280ffad34aca8d2 | 仅同步command PreCompact、本机Windows离线验收；真实模型遵循率未验；本项余0，E05已清理 |
 | [H-112：工作树生命周期 hook 缺少事件专属字段](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-113：FileChanged hook 字段名与变化类型不符合 schema](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-114：后台子 Agent Notification hook 缺少必需的通知类别](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
@@ -9248,3 +9248,17 @@ boundary-candidate hooks完整91/0/0（70单元+5取消+8去重+8once，69.527�
 兼容性：复用原HookReport/registry与CompactionOutcome，不另造hook执行、持久化、取消或用量账本。ModelCompactor增加可选builder；ReactiveContextCompactor增加有默认适配的accounted prefire入口，旧方法保留，现有实现无必须迁移的源码破坏；生产ModelAgent用accounted接收付费不采用的结果。旧Option方法仅呈现采用与否，不作为完整支出接口，physical sink逐请求记账。未新增依赖/SQL格式/UI或Tauri wire/配置/权限变化，不需数据迁移。PreCompact指令user侧封装与交付限长是本地设计，不声称参考协议要求；不保证模型遵从率、拒绝/失败时heuristic fallback的语义质量或消除所有提示词注入。仅同步command PreCompact、本机Windows与离线synthetic provider完成验收；HTTP/MCP/model hook上下文、真实模型/服务/UI/其他OS未执行。不涉及前端契约，未跑pnpm build。H110输入schema、H141提醒生命周期和H269字面量摘要损坏不归并本项。
 
 按306唯一行核对：本轮新增修复1，历史跳过/归并/撤销各新增0；累计212验收/28历史跳过/10归并/3撤销/53待修，修复中0；53含H180授权不修，实际有效剩余52。下一准备H269：合法JSON摘要字面量被清理器删除，按数据完整性优先于提醒/展示问题；先复核原正式探针，另轮提交。全部剩余170–430有效小时仍为沿用低置信规划区间，依据尚余跨层/事件/模型/持久化复杂度，未逐项校准；本项余0。编译/设备/依赖/环境等待另计，未来无法可靠量化；本轮全仓24.3分钟、Tauri4.8分钟只作机器实测，不承诺完工日期。当前修复hash取得后另回填、不反复amend；本轮两根与生成快照清理另记E05。整个goal未完成。
+
+**E-H111-05（独立提交、实际清理与回填，2026-11-10）**：修复commit=`57c58530df6b878fd0ae1a157280ffad34aca8d2`，仅9份本项Rust实现/测试及双文共11文件；显式pathspec add/commit --only，未纳入六项用户untracked，不推送、不PR、不迁移。取得hash后另做本次双文回填，不为自引用反复amend。文档按原报告/唯一台账增量维护，不另建重复报告，原失败证据、实际命令、残余限制与下一项均可追溯。
+
+清理前核对9源冻结hash无漂移、各门禁终态、默认CLI恢复原hash/备份、无本项活动Cargo/测试进程、无Git跟踪文件、ownership H111及绝对目录；逐个检查根/祖先/所有后代，无reparse或越界才允许递归删除。首个dry-run因初始空快照枚举的PowerShell空管道未生成baseline-snapshots.json，在Get-Content处exit1、尚未进入任何Remove-Item；依据matrix前两次真实空枚举及当时Git状态确认原快照不存在，显式补写`[]`后dry-run exit0。没有改ACL、换工具或绕过策略拒绝。
+
+随后实际原生PowerShell执行 `& 'G:\Code_Warehouse\DeepAgent-Studio\target\h111-repair-20261109\cleanup.ps1' -Execute` exit0，清理清单与dry-run一致：
+
+| 确切目标 | 文件数 | 逻辑字节 |
+|---|---:|---:|
+| G:\Code_Warehouse\DeepAgent-Studio\target\h111-repair-20261109 | 18,392 | 28,239,938,135 |
+| G:\h111-fixtures-20261109 | 2,334 | 1,644,445,064 |
+| G:\Code_Warehouse\DeepAgent-Studio\apps\cli\src\tui\snapshots\deepagent__tui__app__tests__viewport_snapshot_with_a_pending_approval.snap.new | 1 | 946 |
+
+合计20,727文件、29,884,384,145逻辑字节（约29.88 GB）；未测物理空间回收，不声称同量磁盘释放。三个Test-Path最终均false，清理脚本/日志随本轮target删除，默认CLI原SHA256仍一致。只清理本轮确切三目标，不泛称整机垃圾已清空；未删源码、原快照、用户文档、六项用户untracked或C盘共享Cargo/Rustup缓存。使用当前用户已有权限，未取得/声称管理员提权。清理后tracked干净；本次仅两文档回填后再核对306唯一行/212验收/有效剩余52并提交。下一准备H269，整个goal未完成。
