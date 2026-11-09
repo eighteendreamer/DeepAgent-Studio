@@ -1,0 +1,29 @@
+sequenceDiagram
+  actor U as 用户
+  participant UI as Tauri 前端
+  participant K as 既有 AppCore / Kernel
+  participant S as VM 与空间协调服务
+  participant G as Linux 执行服务
+  participant F as 宿主文件提交边界
+  participant R as 既有事件和产物存储
+  U->>UI: 发送任务或指定环境
+  UI->>K: 现有聊天 / Harness 入口
+  K->>K: 固化目标、版本、权限和网络策略
+  K->>R: 保存准备与审批上下文
+  opt 权限要求审批
+    K-->>UI: 既有审批请求
+    UI->>K: 既有 approval/respond
+  end
+  K->>S: 获得空间预留、工作区与 VM 租约
+  S->>G: 已授权 exec/start
+  loop 真实进程运行中
+    G-->>K: 带 exec 标识的输出 / 状态
+    K->>R: 有界日志与顺序稳定事件
+    R-->>UI: 事件投影和可重连读取
+  end
+  G-->>S: 命令退出及变更清单
+  S->>F: 校验输出、基线与目标授权
+  F->>F: 冲突检测及受控提交
+  F->>R: 产物引用与修改摘要
+  K->>R: 唯一运行终态
+  S->>S: 释放租约，登记回收时间

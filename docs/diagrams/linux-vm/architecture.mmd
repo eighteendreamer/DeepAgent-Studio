@@ -1,0 +1,33 @@
+flowchart TB
+  subgraph ui["桌面展示边界"]
+    web["Tauri / React<br/>聊天、审批、终端、文件、设置"]
+  end
+  subgraph host["宿主 Rust 控制边界"]
+    entry["Tauri commands / Harness"]
+    kernel["AppCore / AgentKernel<br/>审批、取消、工具注册"]
+    plan["按 run 固化执行计划"]
+    files["现有文件权限与提交边界"]
+    network["宿主网络策略与代理"]
+    storage["资源安装 / 配额 / 定时清理"]
+    records["现有 RunStore / run_events<br/>ArtifactStore / RuntimeLogStore"]
+    native["宿主执行适配<br/>Direct / Sandboxie / Windows Sandbox"]
+    supervisor["VM 监督器与受控 IPC"]
+  end
+  subgraph vm["独立 worker 与 Linux 边界"]
+    worker["Rust vm-worker<br/>固定引擎与磁盘句柄"]
+    guest["Linux 内受控执行服务<br/>进程、文件传输、PTY"]
+    tools["Python / JDK / Node / Git<br/>受限工作副本与缓存"]
+  end
+  project["用户授权的宿主项目"]
+  internet["获准的外部服务"]
+  web --> entry --> kernel --> plan
+  plan --> native
+  plan --> supervisor --> worker --> guest --> tools
+  kernel --> records
+  supervisor --> records
+  supervisor --> storage
+  guest -->|"文件请求与变更提案"| files
+  files --> project
+  guest -->|"已授权网络请求"| network --> internet
+  storage --> worker
+  records -.->|"事件投影 / replay"| entry
