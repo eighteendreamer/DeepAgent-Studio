@@ -28,11 +28,25 @@ struct SelectionOutcome {
     error: Option<String>,
     requested_models: Vec<String>,
     terminal_kind: String,
+    config: serde_json::Value,
 }
 
 async fn observe_model_selection(overrides: HarnessRunOverrides) -> SelectionOutcome {
+    observe_selection_with_files(overrides, &[]).await
+}
+
+async fn observe_selection_with_files(
+    overrides: HarnessRunOverrides,
+    files: &[(&str, &str)],
+) -> SelectionOutcome {
     let root = tempfile::tempdir().unwrap();
-    let db = Arc::new(Database::open(root.path().join("state.sqlite")).unwrap());
+    for (path, body) in files {
+        let path = root.path().join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+    let path = root.path().join("state.sqlite");
+    let db = Arc::new(Database::open(&path).unwrap());
     let settings = Arc::new(SettingsService::new(
         db.clone(),
         Arc::new(MockTransport::with_get_json(
@@ -50,6 +64,7 @@ async fn observe_model_selection(overrides: HarnessRunOverrides) -> SelectionOut
     );
     let model = Arc::new(SelectionModel::default());
     let chat = ChatService::new(db, settings, model.clone(), root.path());
+    let config = chat.read_execution_config(&overrides).unwrap();
     let result = chat
         .run_in_session_with_overrides(
             "Audit explicit model selection.",
@@ -83,10 +98,88 @@ async fn observe_model_selection(overrides: HarnessRunOverrides) -> SelectionOut
         }
     );
     let requested_models = model.0.lock().unwrap().clone();
+    drop(chat); // Every database owner is closed before the cold read.
+    let cold = Database::open(path).unwrap();
+    let run = deepagent_persistence::run_store::RunStore::new(&cold)
+        .get("audit-explicit-model-selection")
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.terminal_kind.as_deref(), Some(terminal_kind.as_str()));
+    assert_eq!(
+        deepagent_persistence::run_store::RunStore::new(&cold)
+            .events_after("audit-explicit-model-selection", None)
+            .unwrap(),
+        events
+    );
     SelectionOutcome {
         error: result.err().map(|error| error.to_string()),
         requested_models,
         terminal_kind,
+        config,
+    }
+}
+
+#[tokio::test]
+async fn h89_unknown_explicit_and_blank_models_fail_without_provider_dispatch_even_over_claude_alias(
+) {
+    for id in ["deepseek-audit-not-in-catalog", "sonnet", "opus", "", "   "] {
+        let outcome = observe_selection_with_files(
+            HarnessRunOverrides {
+                model: Some(id.into()),
+                ..Default::default()
+            },
+            &[(".claude/settings.json", r#"{"model":"sonnet"}"#)],
+        )
+        .await;
+        assert_eq!(outcome.config["resolutionStatus"], "invalid", "{id}");
+        assert!(outcome.config["model"].is_null());
+        assert!(
+            outcome
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("model")),
+            "{id}"
+        );
+        assert!(outcome.requested_models.is_empty(), "{id}");
+        assert_eq!(outcome.terminal_kind, "failed");
+    }
+}
+
+#[tokio::test]
+async fn h89_compatibility_aliases_are_scoped_to_claude_files_not_deepagent_settings() {
+    for (path, model, expected) in [
+        (".claude/settings.json", "sonnet", Some(DEFAULT_MODEL)),
+        (".claude/settings.local.json", "opus", Some(DEFAULT_MODEL)),
+        (".claude/settings.json", "haiku", Some(DEFAULT_MODEL)),
+        (
+            ".claude/settings.json",
+            KNOWN_OVERRIDE,
+            Some(KNOWN_OVERRIDE),
+        ),
+        (
+            ".deepagent/settings.json",
+            KNOWN_OVERRIDE,
+            Some(KNOWN_OVERRIDE),
+        ),
+        (".deepagent/settings.json", "sonnet", None),
+        (
+            ".claude/settings.json",
+            "unrecognized-synthetic-model",
+            None,
+        ),
+    ] {
+        let body = serde_json::json!({"model":model}).to_string();
+        let outcome =
+            observe_selection_with_files(HarnessRunOverrides::default(), &[(path, &body)]).await;
+        if let Some(expected) = expected {
+            assert!(outcome.error.is_none(), "{path}: {:?}", outcome.error);
+            assert_eq!(outcome.requested_models, [expected]);
+            assert_eq!(outcome.config["resolutionStatus"], "resolved");
+        } else {
+            assert_eq!(outcome.config["resolutionStatus"], "invalid", "{path}");
+            assert!(outcome.error.is_some());
+            assert!(outcome.requested_models.is_empty());
+        }
     }
 }
 
@@ -206,7 +299,6 @@ async fn audit_catalog_refresh_preserves_selected_model_on_provider_wire() {
 }
 
 #[tokio::test]
-#[ignore = "audit H-89: an explicit unknown model is silently replaced by the catalog default"]
 async fn audit_unknown_explicit_model_is_rejected_or_sent_without_substitution() {
     const REQUESTED: &str = "deepseek-audit-not-in-catalog";
     let outcome = observe_model_selection(HarnessRunOverrides {

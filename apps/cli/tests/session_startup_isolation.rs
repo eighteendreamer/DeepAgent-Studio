@@ -17,6 +17,208 @@ impl Drop for ChildGuard {
 }
 
 #[test]
+fn h89_real_stdio_unknown_selection_fails_before_credentials_and_survives_cold_resume() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("data")).unwrap();
+    std::fs::create_dir_all(root.path().join(".claude")).unwrap();
+    std::fs::write(
+        root.path().join(".claude/settings.json"),
+        r#"{"model":"sonnet"}"#,
+    )
+    .unwrap();
+    let path = root.path().join("data/state.sqlite");
+    {
+        // Non-secret catalog only. No encrypted secret record or keychain entry
+        // is created; the actual CLI cannot contact a provider without a key.
+        let db = Database::open(&path).unwrap();
+        let settings: deepagent_app_core::settings::AppSettings = serde_json::from_value(json!({
+            "catalog":{"base_url":deepagent_models::DEEPSEEK_BASE_URL,
+                "available":[{"id":"deepseek-flash"},{"id":"deepseek-pro"}],
+                "chat_model":"deepseek-flash","reasoner_model":"deepseek-pro"},
+            "discovered_at":0,"sandbox_mode":"read_only"
+        }))
+        .unwrap();
+        deepagent_persistence::document_store::DocumentStore::new(&db)
+            .put(
+                "settings",
+                "app",
+                &serde_json::to_string(&settings).unwrap(),
+                None,
+                Timestamp::from_millis(0),
+            )
+            .unwrap();
+    }
+    let mut saved = None::<String>;
+    let mut previous: Vec<(
+        String,
+        Vec<deepagent_persistence::run_store::StoredRunEvent>,
+    )> = Vec::new();
+    for pass in 0..2 {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_deepagent"));
+        isolated(&mut command, root.path());
+        let mut child = ChildGuard(
+            command
+                .args(["server", "--transport", "stdio"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let mut input = child.0.stdin.take().unwrap();
+        let output = child.0.stdout.take().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            for line in BufReader::new(output).lines() {
+                if tx.send(line.unwrap()).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut notices = Vec::<Value>::new();
+        let mut runs = Vec::new();
+        {
+            let mut rpc = |id, method, params, notices: &mut Vec<Value>| {
+                writeln!(
+                    input,
+                    "{}",
+                    json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})
+                )
+                .unwrap();
+                input.flush().unwrap();
+                loop {
+                    let line = rx
+                        .recv_timeout(Duration::from_secs(20))
+                        .expect("H89 stdio response timed out");
+                    let value: Value = serde_json::from_str(&line).unwrap();
+                    if value["id"] == id {
+                        assert!(value.get("error").is_none(), "{value}");
+                        break value["result"].clone();
+                    }
+                    notices.push(value);
+                }
+            };
+            rpc(
+                1,
+                "initialize",
+                json!({"clientName":"H89","clientVersion":"1","protocolVersion":1}),
+                &mut notices,
+            );
+            let started = if let Some(thread) = &saved {
+                rpc(2, "thread/resume", json!({"threadId":thread}), &mut notices)
+            } else {
+                rpc(
+                    2,
+                    "thread/start",
+                    json!({"cwd":root.path(),"model":"h89-unknown-thread","permissionProfile":"read_only","sandboxBackend":"direct"}),
+                    &mut notices,
+                )
+            };
+            assert_eq!(
+                started["configuration"]["overrides"]["model"],
+                "h89-unknown-thread"
+            );
+            let thread = started["threadId"].as_str().unwrap().to_owned();
+            saved = Some(thread.clone());
+            let config = rpc(3, "config/read", json!({"threadId":thread}), &mut notices);
+            assert_eq!(config["resolutionStatus"], "invalid");
+            assert!(config["model"].is_null());
+            for (index, model) in [None, Some("deepseek-flash"), None].into_iter().enumerate() {
+                let mut params = json!({"threadId":thread,"input":"synthetic model selection"});
+                if let Some(model) = model {
+                    params["model"] = json!(model)
+                }
+                let turn = rpc(4 + index as u64, "turn/start", params, &mut notices);
+                let context = &turn["capabilitySnapshot"]["context"]["executionConfig"];
+                assert_eq!(
+                    context["resolutionStatus"],
+                    if model.is_some() {
+                        "resolved"
+                    } else {
+                        "invalid"
+                    }
+                );
+                assert_eq!(context["model"], json!(model));
+                let id = turn["turnId"].as_str().unwrap().to_owned();
+                loop {
+                    if let Some(event) = notices.iter().find(|event| {
+                        event["params"]["turnId"] == id && event["params"]["type"] == "turn.failed"
+                    }) {
+                        let reason = event["params"]["reason"].as_str().unwrap();
+                        assert!(
+                            reason.contains(if model.is_some() {
+                                "API key not set"
+                            } else {
+                                "unknown model 'h89-unknown-thread'"
+                            }),
+                            "{reason}"
+                        );
+                        break;
+                    }
+                    let line = rx
+                        .recv_timeout(Duration::from_secs(20))
+                        .expect("H89 failure event timed out");
+                    notices.push(serde_json::from_str(&line).unwrap());
+                }
+                runs.push(id);
+            }
+            let alias_thread = rpc(9, "thread/start", json!({"cwd":root.path()}), &mut notices);
+            let alias = rpc(
+                10,
+                "config/read",
+                json!({"threadId":alias_thread["threadId"]}),
+                &mut notices,
+            );
+            assert_eq!(alias["resolutionStatus"], "resolved");
+            assert_eq!(alias["model"], "deepseek-flash");
+            assert_eq!(alias["modelOverrideApplied"], false);
+        }
+        drop(input);
+        let end = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < end,
+                "H89 CLI EOF exit timed out"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        reader.join().unwrap();
+        let db = Database::open(&path).unwrap();
+        let store = RunStore::new(&db);
+        for (id, expected) in &previous {
+            assert_eq!(
+                &store.events_after(id, None).unwrap(),
+                expected,
+                "cold resume must not redispatch or rewrite earlier failure"
+            );
+        }
+        for id in runs {
+            let events = store.events_after(&id, None).unwrap();
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event.event_type == "run_terminal")
+                    .count(),
+                1
+            );
+            assert!(!events
+                .iter()
+                .any(|event| event.event_type == "model_request_started"));
+            assert_eq!(
+                store.get(&id).unwrap().unwrap().terminal_kind.as_deref(),
+                Some("failed")
+            );
+            previous.push((id, events));
+        }
+        eprintln!("H89 real stdio pass {pass}: invalid unknown, exact known plan then missing-key failure, imported alias, unique terminal; no provider dispatch");
+    }
+}
+
+#[test]
 fn h95_real_cli_startup_keeps_each_runs_reason_and_reopen_is_idempotent() {
     use deepagent_core::{clock::SystemClock, task::TaskState};
     use deepagent_session::Session;

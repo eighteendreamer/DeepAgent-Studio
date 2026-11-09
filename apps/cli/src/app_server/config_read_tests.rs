@@ -6,6 +6,129 @@ fn read(state: &mut ServerState, params: Value) -> Value {
 }
 
 #[tokio::test]
+async fn h89_thread_models_turn_overrides_and_unknowns_match_snapshot_wire_and_failed_terminal() {
+    let transport = Arc::new(WireTransport {
+        bodies: Mutex::new(Vec::new()),
+        script: ScriptedTransport {
+            responses: vec![completed_text("synthetic model choice")],
+            next_response: AtomicUsize::new(0),
+        },
+    });
+    let mut fixture = Fixture::with_transport(transport.clone()).await;
+    let created = dispatch(
+        &mut fixture.state.lock().unwrap(),
+        "thread/start",
+        json!({"cwd":fixture.workspace,"model":"deepseek-pro"}),
+    );
+    fixture.thread_id = created["threadId"].as_str().unwrap().into();
+    for (extra, expected) in [
+        (json!({}), Some("deepseek-pro")),
+        (json!({"model":"deepseek-flash"}), Some("deepseek-flash")),
+        (json!({"model":"h89-unknown"}), None),
+        (json!({"model":"sonnet"}), None),
+        (json!({}), Some("deepseek-pro")),
+    ] {
+        let before = transport.bodies.lock().unwrap().len();
+        let launch = start(
+            &mut fixture.state.lock().unwrap(),
+            &fixture.thread_id,
+            extra,
+        );
+        let context = &launch.prepared.capability_snapshot()["context"]["executionConfig"];
+        assert_eq!(
+            context["resolutionStatus"],
+            if expected.is_some() {
+                "resolved"
+            } else {
+                "invalid"
+            }
+        );
+        assert_eq!(context["model"], json!(expected));
+        let id = execute_with_approvals(&fixture, launch).await;
+        assert_durable_terminal(
+            &fixture.read(),
+            &id,
+            if expected.is_some() {
+                "succeeded"
+            } else {
+                "failed"
+            },
+        );
+        let bodies = transport.bodies.lock().unwrap();
+        if let Some(expected) = expected {
+            assert_eq!(bodies.len(), before + 1);
+            assert_eq!(bodies.last().unwrap()["model"], expected);
+        } else {
+            assert_eq!(
+                bodies.len(),
+                before,
+                "unknown selection must not bind or dispatch a replacement model"
+            );
+        }
+        let persisted = dispatch(
+            &mut fixture.state.lock().unwrap(),
+            "thread/resume",
+            json!({"threadId":fixture.thread_id}),
+        );
+        assert_eq!(
+            persisted["configuration"]["overrides"]["model"],
+            "deepseek-pro"
+        );
+    }
+    let invalid = dispatch(
+        &mut fixture.state.lock().unwrap(),
+        "thread/start",
+        json!({"cwd":fixture.workspace,"model":"h89-unknown-thread"}),
+    );
+    fixture.thread_id = invalid["threadId"].as_str().unwrap().into();
+    let config = read(
+        &mut fixture.state.lock().unwrap(),
+        json!({"threadId":fixture.thread_id}),
+    );
+    assert_eq!(config["resolutionStatus"], "invalid");
+    let before = transport.bodies.lock().unwrap().len();
+    let launch = start(
+        &mut fixture.state.lock().unwrap(),
+        &fixture.thread_id,
+        json!({}),
+    );
+    let id = execute_with_approvals(&fixture, launch).await;
+    assert_durable_terminal(&fixture.read(), &id, "failed");
+    assert_eq!(transport.bodies.lock().unwrap().len(), before);
+    let launch = start(
+        &mut fixture.state.lock().unwrap(),
+        &fixture.thread_id,
+        json!({"model":"deepseek-flash"}),
+    );
+    let id = execute_with_approvals(&fixture, launch).await;
+    assert_durable_terminal(&fixture.read(), &id, "succeeded");
+    assert_eq!(
+        transport.bodies.lock().unwrap().last().unwrap()["model"],
+        "deepseek-flash"
+    );
+}
+
+#[tokio::test]
+async fn h89_unknown_project_model_is_reported_invalid_but_known_thread_selection_wins() {
+    let fixture = Fixture::new(completed_text("unused")).await;
+    let path = fixture.workspace.join(".deepagent/settings.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, r#"{"model":"not-in-catalog"}"#).unwrap();
+    let mut state = fixture.state.lock().unwrap();
+    let config = read(&mut state, json!({"threadId":fixture.thread_id}));
+    assert_eq!(config["resolutionStatus"], "invalid");
+    assert!(config["model"].is_null());
+    assert!(
+        !config.to_string().contains("not-in-catalog"),
+        "read-only diagnostics retain redaction"
+    );
+    let known = configured_thread(&mut state, &fixture.workspace);
+    let config = read(&mut state, json!({"threadId":known["threadId"]}));
+    assert_eq!(config["resolutionStatus"], "resolved");
+    assert_eq!(config["model"], "deepseek-flash");
+}
+
+#[tokio::test]
 async fn h221_scoped_configuration_is_effective_redacted_and_read_only() {
     let fixture = Fixture::new(completed_text("unused")).await;
     let project = fixture.workspace.join(".deepagent");
@@ -13,7 +136,7 @@ async fn h221_scoped_configuration_is_effective_redacted_and_read_only() {
     std::fs::write(
         project.join("settings.json"),
         json!({
-            "model":"not-in-catalog", "permission_profile":"full_access",
+            "model":"deepseek-flash", "permission_profile":"full_access",
             "instructions":"H221-PRIVATE-INSTRUCTIONS", "api_key":"H221-SYNTHETIC-SECRET"
         })
         .to_string(),
@@ -33,7 +156,7 @@ async fn h221_scoped_configuration_is_effective_redacted_and_read_only() {
     assert_eq!(global["scope"]["kind"], "global");
     assert_eq!(global["scope"]["requiresThreadScope"], true);
     assert_eq!(global["model"], "deepseek-flash");
-    assert_eq!(global["modelOverrideApplied"], false);
+    assert_eq!(global["modelOverrideApplied"], true);
     assert_eq!(global["reasoningEffort"], "low");
     assert_eq!(global["projectTrusted"], false);
     assert_eq!(
@@ -147,10 +270,10 @@ async fn h221_admitted_snapshot_is_consumed_by_real_provider_after_settings_chan
     });
     let fixture = Fixture::with_transport(transport.clone()).await;
     std::fs::write(fixture.workspace.join("h221.txt"), "synthetic normal read").unwrap();
-    std::fs::create_dir(fixture.workspace.join(".deepagent")).unwrap();
+    std::fs::create_dir(fixture.workspace.join(".claude")).unwrap();
     std::fs::write(
-        fixture.workspace.join(".deepagent/settings.json"),
-        r#"{"model":"not-in-catalog"}"#,
+        fixture.workspace.join(".claude/settings.json"),
+        r#"{"model":"sonnet"}"#,
     )
     .unwrap();
     fixture

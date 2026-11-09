@@ -4297,13 +4297,15 @@ expanded-settings误用include-ignored，实际72过/1败/0忽略（193.723秒�
 
 ### H-89：Harness 显式选择未知模型时静默回退到默认模型
 
+**本轮状态（2026-11-10）：已修复并验收，限本机Windows与离线合成provider；E-H89-01～04见[修复台账](system-harness-repair-progress.md)。** 复用唯一credential-free resolver，使未知/空显式model返回invalid，config/read、prepared snapshot与worker同源，绑定凭据及发起模型请求前失败，原单一durable failed终态不变。Claude别名只在赢得优先级的明确Claude文件来源兼容原catalog角色默认；run/thread/managed/DeepAgent同名值不获兼容，不声称Claude或1M能力。原probe去ignore，当前wire=[]/error=true/terminal=failed；selection8/0、overlay15/0、CLI configuration15/0、真实stdio1/0含两次进程及冷恢复；默认/已知模型的真实离线wire对照保留。全仓5112/4/174保留四旧失败，非全绿；fmt、CLI严格lint、CLI/SDK/Tauri过，旧全仓strict与AppCore all-targets lint阻断保留。catalog未知需刷新后选择，不自动请求provider试探；旧显式alias或空值现在明确失败。未验真实供应商/UI/其他OS，也不改变既有运行中有审计的provider-error fallback策略。修复commit取得后另回填；以下原失败证据保留为审计时历史。
+
 **级别：中（P2）；触发条件：Harness `turn/start` 显式提供的 model 不在当前模型目录中。** 默认模型和目录内显式模型正常；本项不表示普通桌面对话已遇到此问题。
 
 - 根因与生产路径：公开 `TurnStartRequest.model` 由 CLI app-server 优先于 thread 默认模型，并进入 `HarnessRunOverrides`。`RunConfigOverlay` 将其作为显式 `model_override` 传给 `select_run_model`；当前实现先以 `catalog.has_model(id)` 过滤，未知值被丢弃，随后无提示选择该角色的 catalog 默认值。该兼容注释针对 `~/.claude/settings.json` 的 `sonnet/opus` 别名，但 Harness 显式选择也经过同一过滤分支，没有来源区分。正式 `ChatService` 集成探针捕获模型请求序列化 body：请求 `deepseek-audit-not-in-catalog`，实际 wire 为 `deepseek-v4-flash`，没有错误且 durable terminal 为 `succeeded`。
 - 动态复现与对照：`model_selection::audit_unknown_explicit_model_is_rejected_or_sent_without_substitution` 以 **0 passed / 1 failed** 退出，输出 `requested=deepseek-audit-not-in-catalog wire_models=["deepseek-v4-flash"] error_present=false terminal=succeeded`。同一夹具的默认模型与已知显式 Pro 均到达预期 wire；不支持的显式 provider 在任何模型请求前明确失败。测试使用临时文件 SQLite、正式 SettingsService/ChatService/Kernel 与离线传输，没有调用公网、真实模型或完整 stdio server。
 - 成熟实现对照：DeepSeek Harness `packages/llm/llm-pi-ai/src/adapter.ts::modelOf` 对未知 provider/model 返回 `UNKNOWN_MODEL`，请求准备与流式请求共用解析；Codex `models-manager/src/model_info.rs::model_info_from_slug` 的未知 slug 回退仅补能力元数据且保留请求 slug。Codex 的 manager 接口也允许特定实现按明示策略做 provider fallback，因此这里的结论限定为：显式模型不能在没有策略提示时静默变成另一个模型。Claude 别名兼容应在来源明确的设置导入入口解析，而不是对所有显式请求做默认回退。
 - 影响与限制：调用方指定的模型没有被使用，用户或自动化客户端可能误以为请求使用了指定能力，实际却以默认模型完成；预算、能力和预期响应可能不同。探针没有请求真实供应商，因此不报告实际费用、质量或账户侧日志；也未启动 CLI stdio 端到端或 Tauri 桌面。当前证据证明正式 AppCore 请求构造和持久化终态中的确定行为，不证明特定 Harness 客户端已经触发。
-- 收敛方向（尚未实施，本地设计）：保留兼容别名，但只在配置来源明确的适配入口映射；Harness/CLI/SDK 的显式 model 应在本地明确拒绝未知值，或按原值发送并让 provider 决定，不能静默换成目录默认项。错误需说明请求模型及可选目录信息，并维持单一 durable failed 终态。补充 stdio `turn/start` 回归验证指定模型、未知模型、thread 默认和别名导入四条路径。
+- 原收敛方向（审计时尚未实施，本轮见E-H89-04；本地设计）：保留兼容别名，但只在配置来源明确的适配入口映射；Harness/CLI/SDK 的显式 model 应在本地明确拒绝未知值，或按原值发送并让 provider 决定，不能静默换成目录默认项。错误需说明请求模型及可选目录信息，并维持单一 durable failed 终态。补充 stdio `turn/start` 回归验证指定模型、未知模型、thread 默认和别名导入四条路径。
 
 ### H-90：Harness SDK 关闭 writer 后的失败请求残留 pending reply
 

@@ -203,9 +203,34 @@ impl RunConfigOverlay {
     /// Scalar `model` override resolved through the standard precedence
     /// chain (managed > run > local > project > user > plugin).
     pub(crate) fn model_override(&self) -> Option<&str> {
-        string_field(&self.value, &["model"])
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
+        let model = string_field(&self.value, &["model"])?.trim();
+        // Local import compatibility, not a provider model alias or a claim
+        // about Opus/1M capabilities: preserve the old catalog-role default
+        // only for recognized aliases from the loader's Claude file tiers.
+        // Equal text from a higher run/managed/DeepAgent source is still exact.
+        let imported = self
+            .layers
+            .iter()
+            .rev()
+            .find(|layer| layer.value.get("model").is_some())
+            .is_some_and(|layer| {
+                matches!(
+                    layer.precedence,
+                    deepagent_context::USER_CLAUDE_PRECEDENCE
+                        | deepagent_context::PROJECT_CLAUDE_PRECEDENCE
+                        | deepagent_context::PROJECT_LOCAL_CLAUDE_PRECEDENCE
+                )
+            });
+        let normalized = model.to_ascii_lowercase();
+        let alias = normalized
+            .strip_suffix("[1m]")
+            .unwrap_or(&normalized)
+            .trim();
+        if imported && matches!(alias, "sonnet" | "opus" | "haiku" | "opusplan" | "best") {
+            tracing::info!("using catalog role default for imported Claude model alias");
+            return None;
+        }
+        Some(model)
     }
 
     pub(crate) fn provider_override(&self) -> Option<&str> {
@@ -819,9 +844,54 @@ mod tests {
             RunConfigOverlay::from_value(serde_json::json!({"model": "  deepseek-reasoner "}));
         assert_eq!(overlay.model_override(), Some("deepseek-reasoner"));
         let empty = RunConfigOverlay::from_value(serde_json::json!({"model": "   "}));
-        assert_eq!(empty.model_override(), None);
+        assert_eq!(empty.model_override(), Some(""));
         let none = RunConfigOverlay::from_value(serde_json::json!({}));
         assert_eq!(none.model_override(), None);
+    }
+
+    #[test]
+    fn h89_alias_compatibility_requires_the_winning_claude_source_even_for_equal_values() {
+        use deepagent_context::{
+            MANAGED_PRECEDENCE, PROJECT_CLAUDE_PRECEDENCE, PROJECT_LOCAL_CLAUDE_PRECEDENCE,
+            USER_CLAUDE_PRECEDENCE,
+        };
+        for precedence in [
+            USER_CLAUDE_PRECEDENCE,
+            PROJECT_CLAUDE_PRECEDENCE,
+            PROJECT_LOCAL_CLAUDE_PRECEDENCE,
+        ] {
+            for alias in [
+                "sonnet",
+                "opus",
+                "haiku",
+                "opusplan",
+                "best",
+                " Sonnet[1M] ",
+            ] {
+                let imported = layer(
+                    "claude fixture",
+                    precedence,
+                    serde_json::json!({"model":alias}),
+                );
+                let overlay = RunConfigOverlay::from_layers(vec![imported.clone()]);
+                assert_eq!(overlay.model_override(), None);
+                for higher in [RUN_PRECEDENCE, MANAGED_PRECEDENCE] {
+                    let overlay = RunConfigOverlay::from_layers(vec![
+                        imported.clone(),
+                        layer("explicit", higher, serde_json::json!({"model":alias})),
+                    ]);
+                    assert_eq!(
+                        overlay.model_override(),
+                        Some(alias.trim()),
+                        "identical merged text must not inherit lower-source compatibility"
+                    );
+                }
+            }
+        }
+        for value in ["", "   ", "future-model", "sonnet"] {
+            let overlay = RunConfigOverlay::from_value(serde_json::json!({"model":value}));
+            assert_eq!(overlay.model_override(), Some(value.trim()));
+        }
     }
 
     #[test]

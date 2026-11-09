@@ -120,16 +120,18 @@ pub(crate) fn resolve_run_model(
     reasoning_effort_override: Option<&str>,
 ) -> Result<RunModelPlan> {
     let reasoning_effort = resolve_reasoning_effort(loaded, reasoning_effort_override)?;
-    // Scalar `model` from the config overlay (managed > run > local >
-    // project > user > plugin) overrides the catalog's role default — but
-    // only when this provider actually serves that model. Compat overlays
-    // read `~/.claude/settings.json`, where users keep Claude model names
-    // ("sonnet", "opus"); passing those through verbatim would 400 every
-    // DeepSeek request. Unknown names are ignored, not errors.
-    let model = model_override
-        .filter(|id| loaded.catalog.has_model(id))
-        .map(str::to_string)
-        .unwrap_or_else(|| loaded.catalog.model_for(role).to_string());
+    // Compatibility imports are adapted at the source-aware overlay. An exact
+    // selection reaching this sole resolver must never silently become a
+    // different role default, including config/read and prepared execution.
+    let model = match model_override {
+        Some(id) if loaded.catalog.has_model(id) => id.to_owned(),
+        Some(id) => {
+            return Err(CoreError::invalid(format!(
+                "unknown model '{id}'; select a model from the configured catalog"
+            )))
+        }
+        None => loaded.catalog.model_for(role).to_owned(),
+    };
     let fallback_model = Some(loaded.catalog.model_for(fallback_role).to_string())
         .filter(|fallback| fallback != &model);
     let defaults = ResponseDefaults {
@@ -160,7 +162,7 @@ pub(crate) fn resolve_run_model(
         .with_wire_mode(wire_mode);
     Ok(RunModelPlan {
         config,
-        override_applied: model_override.is_some_and(|id| loaded.catalog.has_model(id)),
+        override_applied: model_override.is_some(),
         model,
         reasoning_effort,
         fallback_model,
