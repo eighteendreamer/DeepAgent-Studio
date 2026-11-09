@@ -6391,7 +6391,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-137：MCP 工具目录变更通知被丢弃，后续运行继续发布旧工具](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H137-01～05原失败、冻结验收与清理；不归并其他编号 | 单一连接目录后台刷新，宿主/插件共享owner；run冻结schema/路由，config/read共用修订 | wire4/0/0；MCP173/0/2；宿主17/0；全仓5071/5/179保留失败；fmt/MCP strict/CLI/Tauri通过，旧lint阻断见E04 | 5cfdc09432e19d3dff5dee64ae374e671cf15bfe | 仅本机stdio，find_tool owned源码迁移；远程推送/真实供应商/其他OS未验；本项剩余0，E05已清理 |
 | [H-138：MCP 结果整对象进入模型上下文，客户端元数据没有独立可见性边界](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H138-01～03；不归并其他编号 | adapter公开投影与host-only字段分离，复用run_events.meta；旧历史不迁移 | 原探针0/1→最终MCP8/0；全仓5056/6/180，额外时序失败同二进制串行7/0；fmt/CLI/Tauri通过，lint旧阻断保留 | `21a9babb7fd938f8e33d59285efa51e65c307779` | Windows离线新生成结果范围；旧正文不自动清除，完整MCP Apps/其他平台未验；功能剩余0，清理另列 |
 | [H-139：后置 hook 报错跳过已执行工具的结果提交，重开后成功写入变成结果缺失](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-28，E-H139-01～06所列Windows本机范围；原失败保留 | 统一完成边界先收尾action/Session，同组结果全提交后才运行可失败post-hook，原错误仍传播 | 原专项2/0/0、新runtime9/0/0默认通过；workspace3558/1既有H-306/316 ignored，Tauri Rust check/fmt通过，严格lint旧阻断保留 | `93a412d049f7a41be129d528f9b043f9978e80c9` | 所列范围剩余0；未验UI/供应商/其他OS/DB故障与强杀窗口，不宣称exactly-once；总工时粗估不机械扣减 |
-| [H-140：输入 hook 成功输出的上下文被丢弃，主模型只收到原始输入](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H140-01～04原红/候选与冻结验收；不归并H111/H141 | 单一Hook report分离决定/有界上下文，输入原子Projection后进入Surface，原输入不改写 | 基础373/0、正式wire6/0、snip1/0；全仓5088/4/177保留旧失败；scope strict/CLI/Tauri通过，旧lint阻断见E04 | 待独立commit后回填 | 仅同步命令UserPromptSubmit；外部PromptDecision match需适配；本项验收余0，清理/提交待收尾 |
+| [H-140：输入 hook 成功输出的上下文被丢弃，主模型只收到原始输入](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H140-01～05原红/候选、冻结验收与清理；不归并H111/H141 | 单一Hook report分离决定/有界上下文，输入原子Projection后进入Surface，原输入不改写 | 基础373/0、正式wire6/0、snip1/0；全仓5088/4/177保留旧失败；scope strict/CLI/Tauri通过，旧lint阻断见E04 | 1afd7845873421db1a495a87e797b3104637bb03 | 仅同步命令UserPromptSubmit；外部PromptDecision match需适配；本项余0，E05已清理 |
 | [H-141：周期 todo reminder 在独立用户回合之间被重置，长期会话永不触发](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-142：运行事件持久化失败被吞掉，实时事件与回放事件发生分叉](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H142-01保留原探针0/1/0；非跳过/归并项；限E-H142-06～07所列Windows本机范围，H-143独立未修 | 单sink首错锁存/checkpoint与原取消树收敛；保留已执行工具事实、结清未派发action，统一聊天/工作流准入收尾 | 正式专项5/0/0、Runtime327/0/12、准入2/0/0、E2E156/0/78；fmt/Tauri Rust check通过；workspace3587/1既有H-306/313 ignored及lint既有阻断保留 | `e1370f9db521556eb10c4719ffaa2b08dd1503ec` | 本机所列范围剩余0；provisional delta非完成回执，不承诺exactly-once；其他OS/UI/供应商/断电强杀/跨进程锁未验；下一P1 H-143；总200–400有效小时未校准粗估及等待另计不变 |
 | [H-143：终态持久化失败前已经发布实时完成事件](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H143-01原探针0/1/0为修前证据；E-H143-03～05为本轮正式验收，非跳过/归并项 | 规范终态与生命周期通知共用原事务，提交后才delivery；Kernel、预检短路、ChatService/工作流及CLI共用 | 持久化/Kernel/AppCore/恢复/CLI专项通过；真实OS子进程重开与cursor通过；workspace/lint基线阻断见E-H143-05 | `7bf6bae11a97296953f1f61f092949cba2a8800d` | 仅Windows本机/离线mock与正式消费者范围；其他OS、供应商、UI、断电强杀、锁争用、压力和exactly-once未验；总200–400有效小时未校准粗估及等待另计 |
@@ -9185,3 +9185,15 @@ boundary-candidate hooks完整91/0/0（70单元+5取消+8去重+8once，69.527�
 兼容性：原HookOutcome不增变体、Hook trait新run_report有默认适配；外部PromptDecision穷举匹配须增加AcceptWithContext处理（不能忽略已接纳上下文）。原无context Accept/accepted/is_accepted正常保持。新user来源封装是本地数据、不是provider类型；没有新增SQL格式/依赖/前端wire、权限或数据迁移。仅同步command UserPromptSubmit交付，未验HTTP/MCP/model hook的上下文、SessionStart/工具hook等其他事件、真实供应商/UI/其他OS/凭据、TS stdio；没有前端契约变化，未跑pnpm build。交付限长不修既有stdout全量捕获峰值，不保证消除所有提示词注入；可执行权限仍由原内核控制。不据此关闭独立H111/H141。
 
 本轮新增修复1、历史跳过/归并/撤销各新增0；306唯一行应为211验收/28历史跳过/10归并/3撤销/54待修含H180授权不修、修复中0，实际有效剩余53。下一准备H111 PreCompact输出指令交付，先复核原probe，不混本项。全部余项170–430有效小时为沿用低置信区间，按剩余跨层/持久化/模型契约复杂度、未逐项校准；编译/设备/依赖/策略等待另计，未来无法可靠量化；本轮全仓26.3分钟与Tauri4.6分钟只是实测机器耗时，不承诺日期。修复hash取得后另双文回填、不反复amend；清理结果E05续记。整体goal未完成。
+
+**E-H140-05（提交与实际清理，2026-11-09）**：独立修复commit=`1afd7845873421db1a495a87e797b3104637bb03`，仅本项18份Rust/测试及双文共20文件；显式pathspec提交，没有纳入其他工作Linux VM文档/图表或六项用户untracked，不推送/PR/迁移。取得hash后另做本次双文提交，不amend。
+
+所有测试/检查终态、默认CLI原哈希恢复后，原生PowerShell清理脚本核对三个完整绝对目标及祖先、ownership.json的H140身份/路径、快照原本不存在的记录及最终hash、18源冻结hash、测试/检查无漂移文件、无Git跟踪文件/本项活跃进程；逐个遍历子项、不跟随reparse，任何越界/reparse/策略拒绝即停止，不改ACL/换工具绕过。dry-run核对后，实际`& 'G:\Code_Warehouse\DeepAgent-Studio\target\h140-repair-20261109\cleanup.ps1' -Execute`原生exit0：
+
+| 确切删除目标 | 文件数 | 目录数（含根） | 逻辑字节 |
+|---|---:|---:|---:|
+| `G:\h140-fixtures-20261109` | 2,205 | 1,744 | 967,189,553 |
+| `G:\Code_Warehouse\DeepAgent-Studio\target\h140-repair-20261109`（含全部日志/清单/一次性脚本/CLI备份） | 18,833 | 3,719 | 28,944,495,690 |
+| `G:\Code_Warehouse\DeepAgent-Studio\apps\cli\src\tui\snapshots\deepagent__tui__app__tests__viewport_snapshot_with_a_pending_approval.snap.new` | 1 | 0 | 946 |
+
+合计19,039文件、29,911,686,189逻辑字节，约29.91 GB；未测物理回收空间，不声称同量磁盘释放。脚本最后三个Test-Path均false、默认CLI原hash仍一致，清理脚本本身随target删除。使用当前用户已有权限，未取得/声称管理员提权；未动源码、原快照、用户文档、C盘共享Cargo/Rustup缓存或六项用户untracked。只证明本轮三个确切目标清理，不泛称整机已清空。再次双文diff/306唯一行和Git范围核对后提交回填；下一H111尚未修改，整个goal未完成。
