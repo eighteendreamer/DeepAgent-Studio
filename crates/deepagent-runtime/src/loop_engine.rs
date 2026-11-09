@@ -1094,8 +1094,13 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 },
             });
         }
-        self.fire_task_hook(session, session_id, task, HookPoint::TaskCompleted)
-            .await?;
+        // TaskCompleted announces the completed-task transition, not every
+        // loop exit. Failed tasks and approval yields must not trigger its
+        // external side effects; genuine completion keeps the same error path.
+        if matches!(&outcome, RunOutcome::Completed(_)) {
+            self.fire_task_hook(session, session_id, task, HookPoint::TaskCompleted)
+                .await?;
+        }
 
         // Persist the run's cumulative token usage + wall-clock duration so the
         // UI can show per-turn metrics when the session is reopened later.
@@ -4275,7 +4280,6 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    #[ignore = "audit H-116: TaskCompleted hooks must not announce failed tasks as completed"]
     async fn audit_failed_task_does_not_fire_task_completed_hook() {
         use deepagent_hooks::{HookDefinitions, SystemHookRunner};
 

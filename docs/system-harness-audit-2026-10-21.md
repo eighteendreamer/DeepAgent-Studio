@@ -4807,6 +4807,8 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 ### H-116：步数上限终止的失败任务仍触发 TaskCompleted hook
 
+**当前状态（2026-11-09）：已修复并验收（所列Windows本机离线范围）。** 原probe与新增真实Kernel/SQLite回归通过；完整workspace仍有未改H-306失败，严格Runtime Clippy被两处既有告警阻断，详E-H116-01～03。
+
 **级别：中（P2，条件性生命周期缺陷）；触发条件：配置 `TaskCompleted` hook，且显式设置的运行步数上限耗尽。** 默认运行没有步数上限；未配置完成 hook 时没有本项外部脚本副作用。
 
 - 根因与生产路径：`RuntimeEngine::run()` 在循环耗尽时已将任务改为 `Failed` 并发出 `RunFailed`，随后无条件调用 `fire_task_hook(..., TaskCompleted)`。`HookData::Task` 只包含 ID 和 subject，不携带结果状态；外部 hook 无法从这个 payload 判断“失败退出”还是“成功完成”。该调用也位于预算超限和部分取消分支之后，但它们受取消派发条件影响，本次不将源码位置视为已经动态覆盖。
@@ -4814,6 +4816,44 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 成熟实现对照：Claude Code `tools/TaskUpdateTool/TaskUpdateTool.ts` 在 `status !== existingTask.status` 且 `status === 'completed'` 时调用 `executeTaskCompletedHooks`，并在无 blockingErrors 后才写入 completed；`utils/hooks.ts` 将其定义为任务将被标记完成时的事件。本系统的 kernel task 与 Claude 的任务清单不是同一对象，借鉴的是按真实状态转换选择事件的边界，不将两者 ID 或存储强行等同。
 - 影响及限制：按“任务完成”触发通知、归档或后续操作的脚本可能在任务失败时启动。探针没有部署、发送通知或产生真实外部副作用；也没有证明普通 provider error、用户取消或默认无步数上限的运行会触发相同行为。H-83 是完成 hook 报错后的实时/持久化终态冲突，本项是 hook 被派发给已失败任务，两者应分别验收。
 - 收敛方向（尚未实施，本地设计）：在既有 RuntimeEngine/Kernel 收尾边界按真实任务结果定义完成事件，仅成功转换走 TaskCompleted；若需要通用退出通知，应明确现有事件的状态语义及兼容策略，不能继续借完成事件表示任意退出。覆盖成功、显式步数/费用上限、取消、模型失败与 hook 失败，同时核对 task state、规范终态和实际脚本调用数。
+
+**E-H116-01（2026-11-09，当前原探针复核，修复中）**：基线01dab1d7842707514e1c2f83133de77181631937，tracked起始干净，无未完成合并；原六项用户untracked保留。核对原审计、RuntimeEngine所有退出分支、HookRegistry实际派发/取消、TaskCompleted DTO、AgentKernel终态提交与Session恢复；本地Claude TaskUpdateTool按completed状态转换选择hook，只借鉴生命周期边界，不复制业务代码。H116不是H117的StopFailure错误派发，也不改H83/H143既有规范终态提交。
+
+先比对H131最终冻结的871个源文件全部相同，才只读复用当前Runtime binary `target/h131-repair-20261108/debug/deps/deepagent_runtime-a1fb3e223e049034.exe`，SHA256=`76E6507593D1D9FDF9B5333498CE61E4DBE85A614628E083C39E0961725911F8`。实际运行`& $binary loop_engine::tests::audit_failed_task_does_not_fire_task_completed_hook --ignored --exact --nocapture --test-threads=1`，exit101、0/1/0、1.125秒。真实PowerShell hook在成功对照收到TaskCompleted/Completed任务；max_steps=1组任务Failed，仍写出TaskCompleted payload，最终原错`TaskCompleted was dispatched for tasks that did not complete: ["step-limit"]`。当前问题成立，不作为历史跳过。
+
+本轮证据单独存于`G:\Code_Warehouse\DeepAgent-Studio\target\h116-repair-20261109`，合成数据/临时SQLite/真实command marker均隔离`G:\h116-fixtures-20261109`；清除凭据/代理环境继承、离线且无真实模型/内网/用户数据。为不再复制数十GB，本轮Cargo复用已终态且归属明确的H131构建缓存，顶层显式target，子进程不继承CARGO_TARGET_DIR；不覆盖用户默认CLI、不覆盖H131日志/证据文件，也不重试该根此前被拒绝的删除。
+
+修复范围限唯一RuntimeEngine完成hook选择：先补正常三类完成、零/非零步数耗尽、等待审批、token预算、BeforePlan拒绝、真正取消、Agent错误和完成hook自身错误的正式Kernel/真实命令/文件SQLite冷重开TDD；后按既有RunOutcome的Completed分支派发，其他退出不得借完成事件表示。完成hook自身失败仍走既有Kernel失败终态，不另建退出事件或改变其错误策略；这不是数据库提交后对外副作用exactly-once保证。当前未改生产、尚未验收关闭，暂估本项余2–6有效小时，构建/测试等待另计。台账204验收、28历史跳过、9归并、3撤销、61待修+H116修复中1，62未关闭含H180授权跳过，实际61有效未关；全余170–430有效小时为历史低置信未逐项校准粗估，环境等待无可靠总上界。
+
+**E-H116-02（2026-11-09，真实回归先红后绿，最终门禁运行中）**：生产未改时新增`crates/deepagent-runtime/tests/task_completion_lifecycle.rs`，`cargo test --target-dir $build -p deepagent-runtime --test task_completion_lifecycle --offline -j 2 -- --nocapture --test-threads=2`实际exit101、3通过/1失败/0忽略、46.553秒含编译。四组共十一场景均执行：正常Complete/CompleteMessage/CompleteItems各完成一次；真正设置取消树的取消、Agent返回错误、完成hook自身返回错误的既有终态对照通过。零步数、一步耗尽、等待审批、token预算超限及BeforePlan拒绝五场景均实际写出不应出现的TaskCompleted，聚合失败原文`invalid TaskCompleted dispatch: [ZeroSteps, OneStep, Approval, TokenBudget, PlanDenied]`。原探针日志SHA256=`7DAC7AFC50918A48A31D106B19E95D84C7A1FCAA63794D77D354D7BE3D89AE43`，新TDD红日志=`0A18C10025CCE4E2B1B483E392637840681D6931871376FB24762AF98FE041B9`。
+
+只在原RuntimeEngine统一收尾处按`RunOutcome::Completed(_)`选择TaskCompleted，其他退出不再派发；普通及原生响应完成都走同一既有分支，原ignored probe取消ignore。没有增加第二套任务/退出事件、状态机或hook runner，不改TaskCreated、SessionEnd、StopFailure、取消/费用记账、权限、配置和协议。真实命令均通过原HookDefinitions/HookRegistry/SystemHookRunner执行，TaskCreated marker证明runner实际工作；不是拿“全部命令未启动”当失败分支零次派发。
+
+相同新增命令修复后exit0、4/0/0，19.004秒含编译（实际测试5.31秒），五个错误分支完成脚本次数全部变为0，三个正常完成各1；真取消/Agent错误各0，完成hook错误仍执行1次并由既有Kernel提交唯一failed。每场景核对TaskCreated/TaskCompleted payload的session/task/subject、live终态在DB提交后仅一次、run_events序号及规范终态；所有DB/Session/Kernel/live句柄离开作用域后以文件SQLite冷重开，逐项比较run记录/事件/session history/恢复task状态，marker内容不新增，不重派hook。
+
+明确状态层次：完成hook自身抛错发生在engine已将task置Completed之后，所以内层task状态仍Completed，外层规范run为failed；这是当前兼容对照，不把TaskState等同于RunTerminal，也不虚称所有最终失败运行都从未执行过完成hook。真正模型HTTP/API错误、StopFailure派发由H117独立处理；这里Agent错误只验证Kernel错误出口。当前原probe默认执行已转绿、完整Runtime及Hooks已通过，但最终AppCore消费方/workspace/strict lint门禁尚在运行；不凭本段局部结果关闭H116。
+
+**E-H116-03（2026-11-09，最终隔离验收；本项已关闭）**：此前用户清理了共享`target`，本轮未复用旧测试二进制，改在`target\h116-reverify-20261109`重新构建；合成HOME/配置/数据根放在`G:\h116-reverify-fixtures-20261109`，清除凭据/代理环境，Cargo离线、`-j 2`，测试使用本地command hook、合成内容及临时SQLite。为保留Windows DACL既有测试的系统TEMP继承语义，Runtime/AppCore/workspace套件使用系统默认TEMP；仅H-116专项最初在G盘TEMP运行。没有真实模型、内网、凭据或用户数据。
+
+| 实际命令（仓库根） | 结果 |
+|---|---|
+| `cargo fmt --all -- --check`；`git diff --check` | 均exit 0 |
+| `cargo test --target-dir $build -p deepagent-runtime --test task_completion_lifecycle --offline -j 2 -- --nocapture --test-threads=2` | exit 0；4/0/0；四组十一场景，包括三类成功完成、步数/审批/预算/计划拒绝、真实取消、Agent错误、完成hook错误及文件SQLite冷重开 |
+| `cargo test --target-dir $build -p deepagent-runtime --lib --offline -j 2 -- loop_engine::tests::audit_failed_task_does_not_fire_task_completed_hook --exact --nocapture --test-threads=1` | exit 0；1/0/0，原H-116探针现默认执行通过 |
+| `cargo test --target-dir $build -p deepagent-runtime --offline --no-fail-fast -j 2 -- --quiet --test-threads=2` | exit 0；8个结果块合计481通过/0失败/7忽略 |
+| `cargo test --target-dir $build -p deepagent-app-core --offline --no-fail-fast -j 2 -- --quiet --test-threads=2` | exit 0；33个结果块合计2199通过/0失败/111忽略 |
+| `cargo build -p deepagent-cli --offline -j 2` | exit 0；默认SDK测试路径的CLI SHA256=`8C03E6A63D3E64EBF14DF4AC67C4DC56FB87C2D8B9C35949D3CBA9BC391F30A4` |
+| `cargo test --target-dir $build -p deepagent-harness-sdk --test e2e_stdio --offline -j 2 -- --nocapture --test-threads=2` | exit 0；13/0/0，验证真实本地CLI stdio消费方 |
+| `cargo test --target-dir $build --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=2` | exit 101；156结果块合计5023通过/13失败/184忽略。12项SDK stdio失败均因隔离target下没有测试硬编码要求的`target\debug\deepagent.exe`；按测试提示构建CLI并独立重跑后该组13项全通过。余下1项为未修改H-306 `creative.video-edit.v1`空`defaultUserPrompt`，未顺手修复。故workspace不报告全绿。 |
+| `cargo clippy --target-dir $build -p deepagent-runtime --all-targets --no-deps --offline -j 2 -- -D warnings` | exit 101；被未改`model_agent.rs:298 clone_on_copy`及`workflow/canvas.rs:32 derivable_impls`阻断；诊断未涉及H-116改动。未再跑workspace-wide strict Clippy，原因是受影响crate的严格门禁已被既有告警阻断。 |
+
+Runtime首次全组在G盘TEMP下另出现既有`checkpoint::access::native::tests::restrictive_tree_is_protected_before_copying_any_bytes`的DACL恢复差异；将TEMP恢复为Windows默认路径后单测通过，全Runtime重跑exit 0（481/0/7）。保留首次失败日志作为环境敏感证据，不改checkpoint生产/测试代码。
+
+E03原始复验日志均留在上述target目录，SHA256：`runtime-lifecycle.log`=`F923BC40519BEAC2631D89D83E9E638CD4EC33261A7D2809322D166F9F6B8D9E`；`runtime-original-probe.log`=`2F00A5BA73EECE9AF1BA83024D9A0B5EC35B56DC920FEE90FA99B385DF0AD5A2`；`runtime-package-tests.log`（G盘TEMP下首次DACL失败）=`21684F1AAC0FBD55227C332F0AEB3C4EACAA0FCFAD47858FE1E6E7886CFACF0E`；`runtime-package-tests-default-temp.log`=`9ACCD9BE43D1B5F7B40FB05C285C8F596294CFF418665DFDD53A1CDA3FE6B3E5`；`app-core-package-tests.log`=`5D4A892982C747CD149B77ED93CE3672E0E7C02902E3BF15C63D538D4FA2336E`；`workspace-tests.log`=`084149F3956DCCCD48DEE4A2F37CF9913212B678C552883869A3B779CAD5CEE0`；`sdk-stdio-tests.log`=`2097B34E96CFCF2ACAC0FB33FD44C1D0E047062B4B87C398C2AE25799B1438C6`；`runtime-strict-clippy.log`=`8982A9F8DE22E71DBD84DF7706933FE597AE84525AAF27EF516D94A757FA434B`；`cli-default-target-build.log`=`E0FC9E89A16AA8CA477E24283700D3B4BCAC547FF2FE5875D4C42102320F7E43`。此前E01/E02的原始probe、TDD红测及候选日志hash继续保留，不被本轮结果覆盖。
+
+修复仅在`RuntimeEngine::run()`统一收尾按`RunOutcome::Completed(_)`派发既有`TaskCompleted`，其他退出不触发；不增加退出事件、状态机、hook runner、DTO、依赖或迁移。成功Completed/Message/Native仍各调用一次；步数/审批/预算/BeforePlan拒绝、取消和Agent错误均为零次。完成hook自身失败仍允许它在已完成的task状态之后抛错并由Kernel提交唯一failed run，不混淆TaskState与RunTerminal，也不承诺数据库提交后外部副作用exactly-once。H117的provider API错误与StopFailure语义仍独立。H-116本轮实现、测试和本段当时文档随单项fix commit提交，hash随后按E-H116-04回填。
+
+本轮新增修复验收1、历史跳过/归并/撤销新增均0；台账为205验收、28历史跳过、9归并、3撤销、61待修（含H-180授权跳过，实际60项）、0修复中。全余有效修复与验收暂估168–424小时，依据旧170–430小时粗估扣除H-116先前2–6小时估算；仍为低置信、未逐项校准，不提供完成率或精确完工承诺。设备/依赖/冷编译及环境等待另计且无可靠总上界。下一项按审计顺序复核独立P2 H-117；H-180保持授权跳过，整体目标继续active。
 
 ### H-117：API 错误终止未派发 StopFailure，反而只在完成被拒绝时触发
 
