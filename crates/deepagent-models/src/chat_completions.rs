@@ -368,16 +368,23 @@ impl ChatCompletionAccumulator {
             if self.finish_reason.is_none() {
                 self.finish_reason = Some(FinishReason::Stop);
             }
-            // A length terminal means the provider stopped while generating
-            // the current assistant turn.  Chat Completions has no separate
+            // Length or content filtering stopped the current assistant turn
+            // without authorizing its tools. Chat Completions has no separate
             // `arguments.done` event, so a tool-call builder cannot be
             // distinguished from a call whose JSON was cut off.  Do not
             // promote such builders to completed calls: doing so would make
             // the runtime prepare/commit an invocation that never finished.
-            if self.finish_reason != Some(FinishReason::Length) {
+            if !matches!(
+                self.finish_reason,
+                Some(FinishReason::Length | FinishReason::ContentFilter)
+            ) {
                 self.complete_tool_calls(observer);
             }
-            if self.content.is_empty() && self.reasoning.is_empty() && self.tool_calls.is_empty() {
+            if self.finish_reason != Some(FinishReason::ContentFilter)
+                && self.content.is_empty()
+                && self.reasoning.is_empty()
+                && self.tool_calls.is_empty()
+            {
                 return Err(CoreError::provider(
                     None,
                     Some("empty_response".into()),
@@ -533,10 +540,13 @@ impl ChatCompletionAccumulator {
             });
         }
         // There is no explicit tool-call completion event in this protocol.
-        // A length terminal therefore invalidates every still-buffered call;
-        // retain only text/reasoning so a retry can continue the turn without
-        // replaying a fabricated `{}` or malformed argument object.
-        if self.finish_reason != Some(FinishReason::Length) {
+        // Length and content-filter terminals invalidate buffered calls;
+        // retain text/reasoning without promoting filtered or incomplete
+        // arguments into executable invocations. Runtime decides recovery.
+        if !matches!(
+            self.finish_reason,
+            Some(FinishReason::Length | FinishReason::ContentFilter)
+        ) {
             for (index, builder) in self.tool_calls {
                 output_items.push(ResponseOutputItem::FunctionCall {
                     call_id: builder.id.unwrap_or_else(|| format!("call_stream_{index}")),
@@ -582,6 +592,7 @@ fn map_finish_reason(reason: &str) -> Result<FinishReason> {
         "stop" => Ok(FinishReason::Stop),
         "tool_calls" => Ok(FinishReason::ToolCalls),
         "length" => Ok(FinishReason::Length),
+        "content_filter" => Ok(FinishReason::ContentFilter),
         other => Err(CoreError::provider(
             None,
             Some(other.to_string()),
@@ -829,9 +840,9 @@ mod tests {
         let mut accumulator = ChatCompletionAccumulator::new();
         accumulator
             .push_sse_data(
-                r#"{"choices":[{"delta":{"content":"x"},"finish_reason":"content_filter"}]}"#,
+                r#"{"choices":[{"delta":{"content":"x"},"finish_reason":"future_unknown_reason"}]}"#,
             )
-            .expect_err("content_filter must be surfaced as a provider failure");
+            .expect_err("unknown reason must still be surfaced as a provider failure");
 
         let mut closed = ChatCompletionAccumulator::new();
         closed

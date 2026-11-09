@@ -5821,6 +5821,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn h132_chat_filter_is_not_an_unknown_terminal_or_a_tool_commit_and_bills_once() {
+        let raw = serde_json::json!({"prompt_tokens":9,"completion_tokens":2,"total_tokens":11,"prompt_cache_hit_tokens":4,"prompt_cache_miss_tokens":5,"completion_tokens_details":{"reasoning_tokens":1}});
+        for with_call in [false, true] {
+            let mut events = Vec::new();
+            if with_call {
+                events.push(serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"filtered","type":"function","function":{"name":"add","arguments":"{\"a\":1,\"b\":2}"}}]},"finish_reason":null}]}).to_string());
+            }
+            events.push(serde_json::json!({"choices":[{"index":0,"delta":{},"finish_reason":"content_filter"}],"usage":raw}).to_string());
+            events.push("[DONE]".into());
+            let transport = Arc::new(AttemptTransport {
+                attempts: Mutex::new(VecDeque::from([events])),
+                requests: Mutex::new(Vec::new()),
+            });
+            let client = Arc::new(ModelClient::new(
+                transport.clone(),
+                ModelConfig::deepseek_chat("synthetic"),
+            ));
+            let mut agent = ModelAgent::new(client, "deepseek-flash", "rules", "synthetic", vec![])
+                .with_max_model_attempts(3)
+                .with_fallback_model(Some("fallback".into()));
+            let mut controller = RecordingToolAttempt::default();
+            let error = agent
+                .think_streaming_cancelled(0, &[], None, Some(&mut controller))
+                .await
+                .unwrap_err();
+            let usage = agent.cumulative_usage().unwrap();
+            eprintln!(
+                "H132 current Chat failure: {error}; paid input={} output={} cache_hit={}",
+                usage.billed_prompt_tokens, usage.completion_tokens, usage.billed_cache_hit_tokens
+            );
+            assert_eq!(
+                (
+                    usage.billed_prompt_tokens,
+                    usage.completion_tokens,
+                    usage.reasoning_tokens,
+                    usage.billed_cache_hit_tokens,
+                    usage.billed_cache_miss_tokens
+                ),
+                (9, 2, 1, 4, 5)
+            );
+            assert!(
+                matches!(&error,CoreError::Provider{code:Some(code),message,..}if code=="content_filter" && message=="model stopped due to content filter"),
+                "{error}"
+            );
+            assert!(!classify_model_error(&error).retryable());
+            assert!(!classify_model_error(&error).should_fallback());
+            assert_eq!(transport.requests.lock().unwrap().len(), 1);
+            assert_eq!(controller.events, ["begin:1", "abort:1"]);
+            assert!(controller.calls.is_empty());
+            let routes = agent.model_usage();
+            assert_eq!(routes.len(), 1);
+            assert_eq!(routes[0].model_id, "deepseek-flash");
+            let observed = agent.take_pending_raw_usage();
+            assert_eq!(observed.as_slice(), std::slice::from_ref(&raw));
+        }
+    }
+
+    #[tokio::test]
     async fn aborts_failed_tool_attempt_and_commits_only_retry_calls() {
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([

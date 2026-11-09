@@ -18,6 +18,10 @@ use crate::transport::{HttpTransport, TransportRequest};
 
 mod request_body;
 
+#[cfg(test)]
+#[path = "chat_content_filter_tests.rs"]
+mod content_filter_tests;
+
 /// Stable provider identity exposed by the Harness layer.
 pub const DEEPSEEK_OFFICIAL_PROVIDER: &str = "deepseek-official";
 // Shared Responses/Chat image occurrence limit (Vision Limits, retrieved
@@ -1704,7 +1708,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: preserve valid Chat Completions content-filter completion and usage"]
     async fn audit_chat_content_filter_preserves_typed_finish_reason_and_usage() {
         let events = vec![
             r#"{"choices":[{"index":0,"delta":{},"finish_reason":"content_filter"}],"usage":{"prompt_tokens":9,"completion_tokens":0,"total_tokens":9,"prompt_cache_hit_tokens":8,"prompt_cache_miss_tokens":1}}"#.to_string(),

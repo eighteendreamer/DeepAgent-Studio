@@ -14,6 +14,9 @@ mod budget_boundaries;
 #[path = "side_call_usage_tests.rs"]
 mod side_calls;
 
+#[path = "chat_filter_usage_tests.rs"]
+mod chat_filter;
+
 #[derive(Default)]
 struct Events(Mutex<Vec<RuntimeEvent>>);
 impl RuntimeEventSink for Events {

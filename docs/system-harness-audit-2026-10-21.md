@@ -5362,6 +5362,8 @@ workspace唯一失败仍为未修改H-306的 canvas_prompt::tests::every_node_ki
 
 ### H-132：Chat Completions 的合法内容过滤终态被当作未知 provider 错误，usage 未进入运行账本
 
+**当前状态（2026-11-10）：已修复并验收，仅限E-H132-04本机离线范围；提交hash取得后另回填。原probe/TDD红保留，当前旧canonical账本已入账，不重复修记账；本轮修唯一Chat终态/空过滤/工具采用边界。全仓5118/5/173与strict旧阻断均未全绿，额外构建就绪失败隔离复核过但未定因；详本条E04及[修复台账](system-harness-repair-progress.md)。以下原文为历史失败快照，不代表当前仍完全漏账。**
+
 **级别：低（P3，条件性）；触发条件：调用方使用公开 `WireMode::ChatCompletions` 路由，DeepSeek 对该请求返回合法 `finish_reason=content_filter`，且响应包含 usage。** 桌面 `model_runtime::select_run_model()` 默认使用 Responses，因此该项不解释桌面默认协议的过滤行为。
 
 - 官方契约：DeepSeek [Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion) 的 `finish_reason` 枚举包含 `content_filter`，定义为内容因安全过滤被省略；同一接口定义 stream final usage chunk 可携带请求用量。官方说明允许过滤结果没有 assistant content，不能要求一定存在文本块。
@@ -5369,6 +5371,43 @@ workspace唯一失败仍为未修改H-306的 canvas_prompt::tests::every_node_ki
 - 动态复现：新增 opt-in 测试 `client::tests::audit_chat_content_filter_preserves_typed_finish_reason_and_usage`，经正式 `ModelClient::stream_response()` 和 Chat Completions 路由送入官方形状的无内容过滤终态及 9 prompt tokens usage。预期是返回 `FinishReason::ContentFilter` 且保留 usage；当前会在 `content_filter` 映射处以 provider error 退出，`[DONE]` 后续路径也未被到达。使用 MockTransport，无公网或真实 provider 响应。
 - 成熟实现对照：Codex 的 Responses adapter 将官方 `incomplete_details.reason=content_filter` 映射成独立 `ApiError::ContentFilter`，Runtime 能区分过滤与 transport failure；这是 H-82 中已经核对的 Responses 同协议处理，不等同于 DeepSeek Chat Completions。DeepSeek Harness 的默认 DeepSeek LLM adapter 使用 Messages 协议；其 pi-ai adapter 将终态 stop/error 分类保留到统一 finish event，本轮没有找到其对 DeepSeek Chat `content_filter` wire 值的同协议处理，不把它作为直接实现证据。
 - 影响与边界：触发时用户看到 provider failure 而不是明确的内容过滤终态；尽管 provider 返回了 usage，当前 ModelAgent 路径无法记账，导致该请求的上下文/计费统计少记。此项限于显式 Chat Completions client；没有真实 DeepSeek 账号或桌面 Chat 路由复测。修复需让 Chat adapter 映射 `content_filter` 到已有 `FinishReason::ContentFilter`，允许该终态为空内容，并继续将 Response/usage 交给既有运行层处理。
+
+
+**E-H132-04（本机验收结论，2026-11-10，仅关闭本项）**：原E01 probe 0/1/0、E02扩展红与当前已有账本实测全部保留。根因生产修改只有ChatCompletionAccumulator：映射已有ContentFilter、允许明确过滤为空、在observer完成与Response投影两处拒绝采用缓冲工具；原Runtime过滤abort、禁止retry/fallback及canonical observer/RunCallUsageOwner/CostStore/Finalizer不重写。原probe已去ignore，默认整组和explicit exact均真实通过，不以忽略数减少充当验收。原报告“SinkObserver不记Usage”仅是历史快照；红阶段已经实际记账，本轮不重复计其为修复成果。
+
+PowerShell仓库根执行，`$build='G:\Code_Warehouse\DeepAgent-Studio\target\h132-repair-20261110'`。清凭据/代理名称环境、隔离HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/data，清继承CARGO_TARGET_DIR，仅顶层指定target，offline/-j2，不改profile。只用本地合成wire、原Kernel/数据库及自有CLI/构建夹具，无真实provider、凭据、内网或用户数据。六源在第一矩阵逐gate SHA256核对；末次仅修正新增测试等价断言的lint，范围和补验明确列于表后，不伪称全仓在该末次测试文本上重跑。
+
+| 实际命令 | 原生结果（通过/失败/忽略） | 墙钟秒，含编译 |
+|---|---|---:|
+| `cargo fmt --all -- --check` | 0 | 4.634 |
+| `cargo test --target-dir $build -p deepagent-models --features http --offline -j 2 -- --test-threads=2 --quiet` | 0；22结果块253/0/22，其中lib183/0/12 | 82.692 |
+| `cargo test --target-dir $build -p deepagent-models --lib client::tests::audit_chat_content_filter_preserves_typed_finish_reason_and_usage --offline -j 2 -- --exact --nocapture` | 0；1/0/0，非ignored | 7.891 |
+| `cargo test --target-dir $build -p deepagent-runtime --lib h132_ --offline -j 2 -- --nocapture --test-threads=1` | 0；1/0/0 | 29.270 |
+| `cargo test --target-dir $build -p deepagent-runtime --lib h82_content_filter --offline -j 2 -- --nocapture --test-threads=1` | 0；1/0/0 | 0.551 |
+| `cargo test --target-dir $build -p deepagent-runtime --lib usage --offline -j 2 -- --test-threads=2 --quiet` | 0；14/0/0 | 0.930 |
+| `cargo test --target-dir $build -p deepagent-app-core --lib call_usage:: --offline -j 2 -- --nocapture --test-threads=1` | 0；31/0/0 | 159.638 |
+| `cargo build --target-dir $build -p deepagent-cli --offline -j 2` | 0 | 120.412 |
+| `cargo test --target-dir $build -p deepagent-harness-sdk --offline -j 2 -- --test-threads=2 --quiet`（当前CLI临时接管后） | 0；lib72/0/5、stdio13/0/0、doc2/0/0 | 65.799 |
+| `cargo test --target-dir $build --workspace --offline --no-fail-fast -j 2 -- --test-threads=2 --quiet` | **101**；157结果块5118/5/173，非全绿 | 1502.262 |
+| `cargo clippy --target-dir $build --workspace --all-targets --all-features --offline -j 2 -- -D warnings` | **101**；旧Models client.rs:487 clone_on_copy | 90.828 |
+| `cargo clippy --target-dir $build -p deepagent-models --features http --all-targets --no-deps --offline -j 2 -- -D warnings` | **101**；同一旧clone_on_copy | 16.765 |
+| `cargo clippy --target-dir $build -p deepagent-models --features http --all-targets --no-deps --offline -j 2` | 0；原1警告 | 5.194 |
+| `cargo clippy --target-dir $build -p deepagent-runtime --all-targets --no-deps --offline -j 2` | 0；原2警告及新增测试1警告，后者下述已改并重验 | 26.866 |
+| `cargo clippy --target-dir $build -p deepagent-app-core --lib --no-deps --offline -j 2` | 0；原6警告 | 81.174 |
+| `cargo clippy --target-dir $build -p deepagent-app-core --all-targets --no-deps --offline -j 2` | **101**；旧mcp_discovery_restore.rs:776 panicking_unwrap及旧警告 | 44.988 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --target-dir $build --offline -j 2` | 0 | 259.115 |
+
+全仓157结果块包含1个H92嵌套helper，不是唯一测试ID计数；不把173 ignored当通过。四个与前轮同形的失败保留：kernel image_read_failure.rs:286原DACL精确恢复；Runtime checkpoint/access.rs:364 restored test DACL differs；CLI pending approval snapshot因隔离HOME；Prompts H306 creative.video-edit.v1空defaultUserPrompt。另本轮AppCore `completion_plan::audit_tests::discovered_real_build_completes_after_release`在audit_tests.rs:41的4秒就绪等待失败，未生成build-started；不冒充已知四失败之一。该未修改fixture走Responses而非本项Chat，末次只在cfg(test)内改等价断言，未改其路径、超时、原快照或断言。
+
+全矩阵结束、无活跃Cargo后，直接执行刚才失败的同一AppCore二进制（SHA256 `3A80D1D0CE95E08FF3D5C3F68C8A08CEF12C1B467918F780A68A442D9B71B433`）`& "$build\debug\deps\deepagent_app_core-32f391e263e6c0fa.exe" completion_plan::audit_tests::discovered_real_build_completes_after_release --exact --nocapture --test-threads=1`，仍用同一隔离runner环境，原生0、1/0/0、2.517秒，真实build release→Succeeded/单一持久终态/cleanup_success通过。只能证明隔离复核通过，不抹除全仓失败；负载/冷编译等具体因果尚未确认，不宣称此独立就绪不稳定已修复。
+
+第一矩阵发现本轮Runtime新测试`[raw.clone()]`触发cloned_ref_to_slice_refs；仅将它改为`observed.as_slice()`对`std::slice::from_ref(&raw)`的等价比较，未放宽断言。反向替换一行重建旧文件SHA256与矩阵冻结完全相等，其他五源hash不变，证明无生产/其他测试漂移；旧冻结保留matrix-sources.json、新六源冻结final-sources.json。改后实际补验：同Runtime all-targets no-deps lint原生0/11.817秒，仅原2警告；fmt原生0/5.223秒；`cargo test --target-dir $build -p deepagent-models -p deepagent-runtime -p deepagent-app-core --lib h132_ --offline --no-fail-fast -j 2 -- --nocapture --test-threads=1`原生0/135.379秒，Models4/0/0、Runtime1/0/0、AppCore1/0/0；同CLI build原生0/62.882秒、同Tauri check原生0/10.971秒。全仓与完整Models/SDK/lint矩阵在末次等价测试文本前执行，未无谓重跑整仓；明确保留其真实源码范围，不声称当前全仓全绿。本项无新增lint诊断，不加allow、不顺手修旧阻断。
+
+验收覆盖官方同帧/compat分帧、空/partial、missing/null/完整用量、一次Finished/Usage、完整/截断tool builder均不promote、unknown/empty stop/缺DONE拒绝、DONE前取消不制造Finished；Runtime精确过滤原因、begin→abort无commit、无retry/fallback且9输入/2输出/4hit/5miss/1reasoning只记一次。public Chat ModelClient→原AgentKernel/RuntimeEngine→RunCallUsageOwner/Finalizer实际receipt1/row1/CNY0.00544，missing/null receipt1/row0；normal stop成功对照、预算超限下一真实run不dispatch、关闭全部DB owner后run/session事件/receipt/cost/summary逐项冷重开一致。没有修改ChatService默认Responses路由来造入口。
+
+兼容性：公开Chat client现能返回typed ContentFilter及可选usage，Runtime仍明确失败而非成功/未知终态，过滤内容可空且不能授权工具；原Stop/Length/tool_calls及未知拒绝策略保持。默认Responses、公共Rust类型/协议版本/SQL/TS/Tauri DTO/权限与取消不变，无依赖或数据迁移；Chat公开raw_usage原wire策略未改，不以本项宣称任意raw字段安全。未执行真实provider/计费、其他OS、外部用户SDK和UI手动验证；无前端/桥接变化，未执行pnpm build。SDK/全仓临时CLI hash为`92393B94F25C7AF6909FD904B82D85AA81A070D803F77F0BAF757624F6A9CAB8`，finally与补验后默认CLI原SHA256均恢复为`8C03E6A63D3E64EBF14DF4AC67C4DC56FB87C2D8B9C35949D3CBA9BC391F30A4`。
+
+306唯一行核对：本轮新增修复1、历史跳过/归并/撤销各新增0；累计215验收/28历史跳过/10归并/3撤销/50待修含H180授权不修，修复中0，实际有效剩余49。下一准备H144的aborted/insufficient_system_resource终态与恢复策略，独立核对原probe后另轮修，不把它并入本项。全部剩余暂沿用170–430有效小时低置信区间，依据剩余跨层/事件/模型/持久化复杂度、未逐项校准；本项代码验收余0，提交/清理另记E05。设备/编译/依赖/环境等待另计，未来无法可靠量化；本轮全仓约25.0分钟/Tauri约4.3分钟仅机器实测，不承诺日期。修复hash取得后另回填、不反复amend；整个goal未完成。
 
 ### H-133：Responses `response.failed` 携带 usage 时未进入运行用量
 
