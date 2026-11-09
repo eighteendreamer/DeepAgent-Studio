@@ -14528,7 +14528,7 @@ Windows故障夹具持有合成权威日志的read-only share句柄；真实错�
 
 ### H-269：摘要草稿清理在解析 JSON 前删除字符串内的合法 analysis 标签及正文
 
-**本轮状态（2026-11-10）：已修复并验收，限本机Windows及离线synthetic provider；E-H269-01～04见[修复台账](system-harness-repair-progress.md)。** 在原parser先识别完整JSON，选择未改写的原对象slice；只剥离首个对象前完整且平衡的草稿包装，不再全局删除字符串内容。原H268 typed schema/有状态门禁与H111指令及用量保持。原probe去ignore，正式摘要/下一wire/SQLite冷恢复均保留字面量；完整Context66/0/2、AppCore context56/0/2，含native/compatibility/prefire两路径共12场景及半截流取消；全仓5105/4/175仍有四个既有失败，不称全绿。fmt、Context严格lint、CLI/当前CLI真实SDK、Tauri check通过；全特性strict与AppCore all-targets旧阻断保留。未验真实供应商生成频率/摘要质量、UI、其他OS；含糊/不完整包装沿原heuristic fallback，兼容路径原额外transcript pointer差异未混修。修复commit取得后另回填。以下未修复状态为审计时历史记录，原失败证据不删除。
+**本轮状态（2026-11-10）：已修复并验收，限本机Windows及离线synthetic provider；E-H269-01～05见[修复台账](system-harness-repair-progress.md)。** 在原parser先识别完整JSON，选择未改写的原对象slice；只剥离首个对象前完整且平衡的草稿包装，不再全局删除字符串内容。原H268 typed schema/有状态门禁与H111指令及用量保持。原probe去ignore，正式摘要/下一wire/SQLite冷恢复均保留字面量；完整Context66/0/2、AppCore context56/0/2，含native/compatibility/prefire两路径共12场景及半截流取消；全仓5105/4/175仍有四个既有失败，不称全绿。fmt、Context严格lint、CLI/当前CLI真实SDK、Tauri check通过；全特性strict与AppCore all-targets旧阻断保留。未验真实供应商生成频率/摘要质量、UI、其他OS；含糊/不完整包装沿原heuristic fallback，兼容路径原额外transcript pointer差异未混修。修复commit=`4f289c5a6794133ab71bd19b8d69c2fa658982c6`；本轮两个确切根与生成快照已清理，详见E05。以下未修复状态为审计时历史记录，原失败证据不删除。
 
 **级别：低（P3，条件性摘要内容完整性）；状态：正式原生压缩、下一请求和文件数据库重开已复现，未修复。** 触发条件是摘要需要保存模板/协议/提示词中的字面量 `<analysis>…</analysis>`，模型将它放在合法 JSON 的字段字符串中。不是 H-268 的空/缺字段对象：本轮摘要五个字段齐全，含 completed、pending 和 decisions，原始 JSON 明确含有应保留的事实，宿主清理才删掉它。
 
