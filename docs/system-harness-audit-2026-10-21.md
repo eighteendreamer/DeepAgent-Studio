@@ -4297,7 +4297,7 @@ expanded-settings误用include-ignored，实际72过/1败/0忽略（193.723秒�
 
 ### H-89：Harness 显式选择未知模型时静默回退到默认模型
 
-**本轮状态（2026-11-10）：已修复并验收，限本机Windows与离线合成provider；E-H89-01～04见[修复台账](system-harness-repair-progress.md)。** 复用唯一credential-free resolver，使未知/空显式model返回invalid，config/read、prepared snapshot与worker同源，绑定凭据及发起模型请求前失败，原单一durable failed终态不变。Claude别名只在赢得优先级的明确Claude文件来源兼容原catalog角色默认；run/thread/managed/DeepAgent同名值不获兼容，不声称Claude或1M能力。原probe去ignore，当前wire=[]/error=true/terminal=failed；selection8/0、overlay15/0、CLI configuration15/0、真实stdio1/0含两次进程及冷恢复；默认/已知模型的真实离线wire对照保留。全仓5112/4/174保留四旧失败，非全绿；fmt、CLI严格lint、CLI/SDK/Tauri过，旧全仓strict与AppCore all-targets lint阻断保留。catalog未知需刷新后选择，不自动请求provider试探；旧显式alias或空值现在明确失败。未验真实供应商/UI/其他OS，也不改变既有运行中有审计的provider-error fallback策略。修复commit取得后另回填；以下原失败证据保留为审计时历史。
+**本轮状态（2026-11-10）：已修复并验收，限本机Windows与离线合成provider；E-H89-01～05见[修复台账](system-harness-repair-progress.md)。** 复用唯一credential-free resolver，使未知/空显式model返回invalid，config/read、prepared snapshot与worker同源，绑定凭据及发起模型请求前失败，原单一durable failed终态不变。Claude别名只在赢得优先级的明确Claude文件来源兼容原catalog角色默认；run/thread/managed/DeepAgent同名值不获兼容，不声称Claude或1M能力。原probe去ignore，当前wire=[]/error=true/terminal=failed；selection8/0、overlay15/0、CLI configuration15/0、真实stdio1/0含两次进程及冷恢复；默认/已知模型的真实离线wire对照保留。全仓5112/4/174保留四旧失败，非全绿；fmt、CLI严格lint、CLI/SDK/Tauri过，旧全仓strict与AppCore all-targets lint阻断保留。catalog未知需刷新后选择，不自动请求provider试探；旧显式alias或空值现在明确失败。未验真实供应商/UI/其他OS，也不改变既有运行中有审计的provider-error fallback策略。修复commit=`925f60dc7a1b727d38c0be850ea409fd31fa4b7b`，本轮两根与生成快照已清理，见E05；以下原失败证据保留为审计时历史。
 
 **级别：中（P2）；触发条件：Harness `turn/start` 显式提供的 model 不在当前模型目录中。** 默认模型和目录内显式模型正常；本项不表示普通桌面对话已遇到此问题。
 
