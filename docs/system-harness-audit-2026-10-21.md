@@ -5141,7 +5141,7 @@ H126代码行为限E03本机范围已验收，但上述C/G残余清理是明确�
 
 ### H-127：MCP image 工具结果被降格成 Responses 普通 JSON 字符串，模型收不到图像输入
 
-**当前状态（2026-11-09）：已修复并验收，仅E-H127-04所列Windows本机范围；H-173同根归并到本项，只计一个新增修复。修复提交`641f24d6f13af984a5bbb395ab86174957351b70`，清理策略阻断见E05；原失败及候选记录保留。** H-127的真实MCP图片必须通过H-173所指出的公共工具输出边界，二者均由字符串型结果丢失typed图片发生，不能在MCP侧另造专用模型请求链。只计一个有效修复，原始失败证据和H-173编号保留。
+**当前状态（2026-11-09）：已修复并验收，仅E-H127-04所列Windows本机范围；H-173同根归并到本项，只计一个新增修复。修复提交`641f24d6f13af984a5bbb395ab86174957351b70`，清理E05原阻断已按E06核实三个根不存在；原失败及候选记录保留。** H-127的真实MCP图片必须通过H-173所指出的公共工具输出边界，二者均由字符串型结果丢失typed图片发生，不能在MCP侧另造专用模型请求链。只计一个有效修复，原始失败证据和H-173编号保留。
 
 **E-H127-01（2026-11-09，当前原探针与增强TDD红）**：基线`2e4d5a7211f674e92c4ab43516e36defa49b873f`，tracked起始干净，原六项用户untracked只列名、不读改暂存。复用现存`target/h116-reverify-20261109`，未另建大型Cargo target。实际原`cargo test --target-dir target/h116-reverify-20261109 -p deepagent-models --test modalities_audit audit_responses_tool_output_images_are_preserved_before_transport --offline -j 2 -- --ignored --exact --nocapture`为exit101、0/1/0，`output_image_parts=0`、wire为`"screenshot ready"`。原AppCore命令同target、`-p deepagent-app-core --test kernel_v2_e2e mcp_image_output::audit_mcp_image_result_is_not_serialized_as_text_json --offline -j 2 -- --ignored --exact --nocapture`为exit101、0/1/0，真实Node stdio经过正式McpService/Adapter/ChatService/Kernel后仍为`wire_output_kind=string, typed_input_image=false, raw_json_string=true, raw_image_data_present=true`。清除凭据/代理环境继承，只使用合成provider/临时SQLite/本机MCP，不访问真实服务或数据。
 
@@ -5206,6 +5206,9 @@ H127按以上范围关闭，H173同根归并，不另算第二修复。本轮新
 已向用户提供`G:\Code_Warehouse\DeepAgent-Studio\target\h116-reverify-20261109\h127-cleanup.ps1`供管理员PowerShell实际启动，工具只保存并Parser静态检查，明确NOT_EXECUTED。脚本固定上述三个路径，先核对全部根、默认CLI哈希/reparse/进程，再删除；不改ACL、不终止进程、不使用通配扩范围、不触及源码/用户文档/默认target/debug CLI，且保留其他目录。脚本SHA256=`ED21C347BD9730517C490EB4B4E216D84F22BE860950CE2EBC79913CD01426DD`；用户实际执行并只读复核前，清理仍属阻塞残余。
 
 H127功能验收和独立提交完成，不抹去全仓四旧失败及strict/scoped lint旧阻断；只有清理仍受本机策略阻断。306台账仍207验收/28历史跳过/10归并/3撤销/58待修含H180授权跳过（实际57有效待修），下一H138尚未修改。总体goal仍active、不是完成全系统任务；全余170–430低置信有效小时与环境等待分开估算。避免在清理未落地时再堆一份大型target，下一轮先核对实际清理结果再执行新门禁。
+
+
+**E-H127-06（2026-11-09，清理落地只读复核）**：下一轮开始时分别Test-Path核对E05三个确切根：`G:\Code_Warehouse\DeepAgent-Studio\target\h116-reverify-20261109`、`G:\h127-fixtures-20261109`、`G:\Code_Warehouse\DeepAgent-Studio\packages\sdk\dist`均为false。没有重复启动此前被工具策略拒绝的删除，也没有换工具或提权绕过。只证明原路径已不存在，不据此推断用户使用了哪种权限、物理回收字节或未知G/C历史产物已全部清空。默认CLI SHA256仍为`8C03E6A63D3E64EBF14DF4AC67C4DC56FB87C2D8B9C35949D3CBA9BC391F30A4`；tracked干净，原六项untracked仅列名、保留不读改。H127实际修复提交641f24d6与文档回填02601c4c均在HEAD祖先；清理残余按这三个根关闭，E05原拒绝/盘点与E01～04真实失败、命令、数量、hash证据均保留。台账207验收/28历史跳过/10归并/3撤销/58待修含H180授权跳过（实际57）不变，不新增修复。接下来正式复核H138，不为此复制上一轮的大型target；仅建立本项唯一可清理产物根，验收终态后同样清理。
 
 **级别：中（P2；仅当 MCP 工具返回 `type: image` 内容且后续模型需要检查图像时触发；调用本身仍可成功，但模型无法按图像语义观察结果）。** 当前跨层证明限定在 DeepSeek Responses 请求路径，不外推所有 provider adapter。
 
