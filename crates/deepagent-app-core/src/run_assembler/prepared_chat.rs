@@ -229,6 +229,9 @@ impl RunAssembler<'_> {
             root,
             overrides,
             plugin_projection.as_ref(),
+            plugin_snapshot
+                .as_ref()
+                .map(|(_, registry)| registry.clone()),
             Some(run_id),
         )?;
         Ok(PreparedChatEnvironment {

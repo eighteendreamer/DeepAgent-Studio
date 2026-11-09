@@ -60,11 +60,13 @@ impl PluginPreparation {
 impl PluginService {
     /// One immutable generation contains both advertised capabilities and routes.
     pub fn ready_snapshot(&self) -> ReadySnapshot {
-        self.preparation
+        let (projection, registry) = self
+            .preparation
             .ready
             .read()
             .unwrap_or_else(|p| p.into_inner())
-            .clone()
+            .clone();
+        (projection, Arc::new(registry.catalog_snapshot()))
     }
 
     pub(super) fn preparation_status(

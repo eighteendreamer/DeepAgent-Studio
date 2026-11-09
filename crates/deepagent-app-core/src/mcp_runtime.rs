@@ -49,17 +49,7 @@ pub(crate) fn attach_mcp_tools(
         return Ok(McpRuntimeTools::default());
     };
 
-    let (ready_registry, configs, generation) = mcp.ready_runtime_snapshot()?;
-    let mut ready = (*ready_registry).clone();
-    if let Some(plugins) = plugin_registry {
-        let mut plugins = (*plugins).clone();
-        let user_names = ready.server_names();
-        plugins.retain_servers(|name| !user_names.iter().any(|user| user == name));
-        if let Err(error) = ready.extend_ready(&plugins) {
-            tracing::warn!(%error, "MCP plugin snapshot conflict; excluding plugin capabilities from this run");
-        }
-    }
-    let mcp_registry = Arc::new(ready.discovery_snapshot());
+    let (mcp_registry, configs, generation) = runtime_snapshot(mcp, plugin_registry)?;
     for tool in mcp_registry.all_tools() {
         let mut adapter = deepagent_mcp::McpToolAdapter::new(tool, mcp_registry.clone());
         if let Some(store) = image_store.as_ref() {
@@ -71,26 +61,7 @@ pub(crate) fn attach_mcp_tools(
         .server_names()
         .into_iter()
         .map(|server_id| {
-            let (status, degradation_code, reason) = match mcp_registry.server_status(&server_id) {
-                Some(deepagent_mcp::McpConnectionStatus::Unavailable {
-                    recovery_attempts, ..
-                }) => (
-                    "unavailable",
-                    Some("mcp_recovery_exhausted".into()),
-                    // This event is durable. Handshake/peer error text belongs
-                    // to the existing connection diagnostic, not this ledger.
-                    Some(format!(
-                        "MCP local connection unavailable after {recovery_attempts} recovery attempts; explicit lifecycle retry required"
-                    )),
-                ),
-                Some(deepagent_mcp::McpConnectionStatus::Closed) => (
-                    "unavailable",
-                    Some("mcp_connection_closed".into()),
-                    Some("MCP transport is closed".into()),
-                ),
-                Some(deepagent_mcp::McpConnectionStatus::Recovering) => ("recovering", None, None),
-                _ => ("ready", None, None),
-            };
+            let (status, degradation_code, reason) = lifecycle_status(&mcp_registry, &server_id);
             McpLifecycleRecord {
                 config_hash: configs
                     .get(&server_id)
@@ -121,6 +92,59 @@ pub(crate) fn attach_mcp_tools(
         instructions_entries: mcp_registry.server_instructions(),
         lifecycle,
     })
+}
+
+/// Config/read and run assembly must identify the exact same host/plugin
+/// catalog projection. This helper only reads already-published revisions.
+pub(crate) fn runtime_snapshot(
+    mcp: &McpService,
+    plugins: Option<Arc<deepagent_mcp::McpRegistry>>,
+) -> Result<(
+    Arc<deepagent_mcp::McpRegistry>,
+    std::collections::BTreeMap<String, deepagent_mcp::McpServerConfig>,
+    String,
+)> {
+    let (registry, configs, generation) = mcp.ready_runtime_snapshot()?;
+    let mut ready = (*registry).clone();
+    if let Some(plugins) = plugins {
+        let mut plugins = (*plugins).clone();
+        let user_names = ready.server_names();
+        plugins.retain_servers(|name| !user_names.iter().any(|user| user == name));
+        if let Err(error) = ready.extend_ready(&plugins) {
+            tracing::warn!(%error, "MCP plugin snapshot conflict; excluding plugin capabilities from this run");
+        }
+    }
+    let registry = Arc::new(ready.discovery_snapshot());
+    let generation = format!("{generation}:{}", registry.catalog_generation());
+    Ok((registry, configs, generation))
+}
+
+fn lifecycle_status(
+    registry: &deepagent_mcp::McpRegistry,
+    server: &str,
+) -> (&'static str, Option<String>, Option<String>) {
+    if registry.server_catalog_error(server).is_some() {
+        return (
+            "unavailable",
+            Some("mcp_catalog_refresh_failed".into()),
+            Some("MCP catalog refresh failed; capabilities withdrawn until a later change or explicit retry".into()),
+        );
+    }
+    match registry.server_status(server) {
+        Some(deepagent_mcp::McpConnectionStatus::Unavailable { recovery_attempts, .. }) => (
+            "unavailable",
+            Some("mcp_recovery_exhausted".into()),
+            // Durable reason, never arbitrary peer/handshake diagnostics.
+            Some(format!("MCP local connection unavailable after {recovery_attempts} recovery attempts; explicit lifecycle retry required")),
+        ),
+        Some(deepagent_mcp::McpConnectionStatus::Closed) => (
+            "unavailable",
+            Some("mcp_connection_closed".into()),
+            Some("MCP transport is closed".into()),
+        ),
+        Some(deepagent_mcp::McpConnectionStatus::Recovering) => ("recovering", None, None),
+        _ => ("ready", None, None),
+    }
 }
 
 /// Render the aggregated MCP `instructions` from every connected server into a

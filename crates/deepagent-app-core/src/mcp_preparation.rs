@@ -19,6 +19,10 @@ mod h47_tests;
 #[path = "mcp_preparation/h48_tests.rs"]
 mod h48_tests;
 
+#[cfg(test)]
+#[path = "mcp_preparation/h137_tests.rs"]
+mod h137_tests;
+
 struct ReadyFingerprints {
     configs: BTreeMap<String, String>,
     /// Opaque publication identity, independent of secret/environment values.
@@ -111,7 +115,7 @@ impl McpService {
             .ready_fingerprints
             .write()
             .unwrap_or_else(|p| p.into_inner());
-        let mut ready = (*self.ready_registry()).clone();
+        let mut ready = (*self.live_ready_registry()).clone();
         ready.retain_servers(|name| !builtin_names.contains(name));
         fingerprints
             .configs
@@ -166,6 +170,10 @@ impl McpService {
     }
 
     pub fn ready_registry(&self) -> Arc<McpRegistry> {
+        Arc::new(self.live_ready_registry().catalog_snapshot())
+    }
+
+    fn live_ready_registry(&self) -> Arc<McpRegistry> {
         self.preparation
             .ready
             .read()
@@ -190,6 +198,7 @@ impl McpService {
             .read()
             .unwrap_or_else(|p| p.into_inner())
             .clone();
+        let registry = Arc::new(registry.catalog_snapshot());
         let configs = fingerprints
             .configs
             .iter()
@@ -219,6 +228,12 @@ impl McpService {
                     result.error = Some(error.to_string());
                 }
                 Some(Ok(registry)) => {
+                    let registry = registry.catalog_snapshot();
+                    if let Some(error) = registry.server_catalog_error(name) {
+                        result.status = "failed".into();
+                        result.error = Some(error);
+                        return result;
+                    }
                     match registry.server_status(name) {
                         Some(deepagent_mcp::McpConnectionStatus::Unavailable {
                             reason, ..
@@ -568,7 +583,7 @@ impl McpService {
             .ready_fingerprints
             .write()
             .unwrap_or_else(|p| p.into_inner());
-        let mut ready = (*self.ready_registry()).clone();
+        let mut ready = (*self.live_ready_registry()).clone();
         ready.retain_servers(|name| {
             desired_fingerprints.get(name).is_some_and(|fingerprint| {
                 ready_fingerprints.configs.get(name) == Some(fingerprint)

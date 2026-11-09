@@ -3,6 +3,38 @@ use crate::protocol::JsonRpcError;
 
 const DEADLINE: Duration = Duration::from_secs(5);
 
+#[tokio::test]
+async fn h137_reader_routes_only_valid_tool_list_notifications_without_blocking_responses() {
+    let (_dir, transport) = spawn_server(
+        r#"
+require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
+ const req=JSON.parse(line);
+ process.stdout.write('{"jsonrpc":"2.0","method":"notifications/tools/list_changed","method":"notifications/tools/list_changed"}\n');
+ process.stdout.write('{"jsonrpc":"2.0","id":'+req.id+',"result":{"wrong":true},"result":{"wrong":true}}\n');
+ const frames=[
+  {jsonrpc:'2.0',method:'notifications/tools/list_changed'},
+  {jsonrpc:'2.0',method:'notifications/tools/list_changed',params:{}},
+  {jsonrpc:'2.0',id:null,method:'notifications/tools/list_changed'},
+  {jsonrpc:'1.0',method:'notifications/tools/list_changed'},
+  {jsonrpc:'2.0',method:'notifications/tools/list_changed',params:null},
+  {jsonrpc:'2.0',method:'notifications/other'},
+  {jsonrpc:'2.0',id:req.id,result:{ok:true}}
+ ]; for(const f of frames) process.stdout.write(JSON.stringify(f)+'\n');
+});
+"#,
+    );
+    let changes = transport.tool_list_changes().unwrap();
+    let response = send(&transport, 1, "ping").await.unwrap();
+    assert_eq!(response.result.unwrap()["ok"], true);
+    assert_eq!(
+        *changes.borrow(),
+        2,
+        "notifications are hints only; id/version/params must be valid"
+    );
+    assert_eq!(pending_count(&transport), 0);
+    transport.close().await.unwrap();
+}
+
 fn spawn_server(script: &str) -> (tempfile::TempDir, Arc<StdioTransport>) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("server.cjs");

@@ -34,6 +34,7 @@
 //! [`transport::MockTransport`] enables full offline testing.
 
 pub mod adapter;
+mod catalog;
 pub mod client;
 pub mod config;
 pub mod connect;

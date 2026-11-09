@@ -32,12 +32,20 @@ impl ResolvedExecutionConfig {
 
 impl RunAssembler<'_> {
     pub(crate) fn read_execution_config(&self, overrides: &HarnessRunOverrides) -> Result<Value> {
-        let projection = self
+        let plugin_snapshot = self
             .plugins
             .as_ref()
-            .map(|plugins| plugins.ready_snapshot().0);
+            .map(|plugins| plugins.ready_snapshot());
         Ok(self
-            .resolve_execution_config(self.workspace, overrides, projection.as_ref(), None)?
+            .resolve_execution_config(
+                self.workspace,
+                overrides,
+                plugin_snapshot.as_ref().map(|(projection, _)| projection),
+                plugin_snapshot
+                    .as_ref()
+                    .map(|(_, registry)| registry.clone()),
+                None,
+            )?
             .snapshot)
     }
 
@@ -46,6 +54,7 @@ impl RunAssembler<'_> {
         root: &Path,
         overrides: &HarnessRunOverrides,
         plugin_projection: Option<&PluginRuntimeProjection>,
+        plugin_registry: Option<Arc<deepagent_mcp::McpRegistry>>,
         run_id: Option<&str>,
     ) -> Result<ResolvedExecutionConfig> {
         // One committed Settings document supplies the coupled policy/model
@@ -118,7 +127,7 @@ impl RunAssembler<'_> {
             .mcp
             .as_ref()
             .map(|mcp| {
-                mcp.ready_runtime_snapshot()
+                crate::mcp_runtime::runtime_snapshot(mcp, plugin_registry)
                     .map(|(_, _, generation)| generation)
             })
             .transpose()?;

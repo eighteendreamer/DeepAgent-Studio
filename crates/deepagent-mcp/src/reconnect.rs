@@ -33,11 +33,11 @@
 //! request) are returned unchanged: only genuine transport failures trigger a
 //! reconnect, so we never mask a real tool error as a connectivity blip.
 
-use std::sync::{Arc, Mutex as StateMutex};
+use std::sync::{Arc, Mutex as StateMutex, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{watch, Mutex, Notify};
 
 use deepagent_core::error::{CoreError, Result};
 use deepagent_tools::ToolExecutionContext;
@@ -146,6 +146,9 @@ impl ReconnectFactory for ConfigReconnectFactory {
 /// A [`McpTransport`] that transparently rebuilds its inner transport (bounded
 /// backoff) when a request fails with a transport-closed error.
 pub struct ReconnectingTransport {
+    transport_changes: watch::Sender<Arc<dyn McpTransport>>,
+    tool_changes: watch::Sender<u64>,
+    catalog_relay: OnceLock<tokio::task::JoinHandle<()>>,
     inner: StateMutex<ConnectionState>,
     recovery: Mutex<()>,
     stopped: Notify,
@@ -154,6 +157,7 @@ pub struct ReconnectingTransport {
 }
 
 struct ConnectionState {
+    generation: u64,
     transport: Arc<dyn McpTransport>,
     phase: ConnectionPhase,
 }
@@ -195,8 +199,14 @@ impl ReconnectingTransport {
     /// Wrap an already-connected `inner` transport with self-healing reconnect
     /// using the default Grok-aligned backoff.
     pub fn new(inner: Arc<dyn McpTransport>, factory: Arc<dyn ReconnectFactory>) -> Self {
+        let (transport_changes, _) = watch::channel(inner.clone());
+        let (tool_changes, _) = watch::channel(0);
         Self {
+            transport_changes,
+            tool_changes,
+            catalog_relay: OnceLock::new(),
             inner: StateMutex::new(ConnectionState {
+                generation: 0,
                 transport: inner,
                 phase: ConnectionPhase::Ready,
             }),
@@ -328,7 +338,9 @@ impl ReconnectingTransport {
                         let mut state = self.state();
                         if matches!(state.phase, ConnectionPhase::Recovering { .. }) {
                             state.transport = fresh.clone();
+                            state.generation = state.generation.wrapping_add(1);
                             state.phase = ConnectionPhase::Ready;
+                            self.transport_changes.send_replace(fresh.clone());
                             true
                         } else {
                             false
@@ -407,6 +419,27 @@ impl ReconnectingTransport {
 
 #[async_trait]
 impl McpTransport for ReconnectingTransport {
+    fn connection_generation(&self) -> u64 {
+        self.state().generation
+    }
+
+    fn tool_list_changes(&self) -> Option<watch::Receiver<u64>> {
+        if matches!(self.state().phase, ConnectionPhase::Closed) {
+            return None;
+        }
+        // Subscribe in the host's async discovery boundary, not in the sync
+        // constructor. Exactly one relay follows this connection's replacements;
+        // it never captures self or sends RPCs, and is aborted on close/drop.
+        let runtime = tokio::runtime::Handle::try_current().ok()?;
+        self.catalog_relay.get_or_init(|| {
+            runtime.spawn(relay_catalog_changes(
+                self.transport_changes.subscribe(),
+                self.tool_changes.clone(),
+            ))
+        });
+        Some(self.tool_changes.subscribe())
+    }
+
     fn connection_status(&self) -> McpConnectionStatus {
         match &self.state().phase {
             ConnectionPhase::Ready => McpConnectionStatus::Ready,
@@ -467,6 +500,9 @@ impl McpTransport for ReconnectingTransport {
     }
 
     async fn close(&self) -> Result<()> {
+        if let Some(task) = self.catalog_relay.get() {
+            task.abort();
+        }
         let transport = {
             let mut state = self.state();
             state.phase = ConnectionPhase::Closed;
@@ -474,6 +510,52 @@ impl McpTransport for ReconnectingTransport {
         };
         self.stopped.notify_waiters();
         transport.close().await
+    }
+}
+
+impl Drop for ReconnectingTransport {
+    fn drop(&mut self) {
+        if let Some(task) = self.catalog_relay.get() {
+            task.abort();
+        }
+    }
+}
+
+async fn relay_catalog_changes(
+    mut transports: watch::Receiver<Arc<dyn McpTransport>>,
+    changes: watch::Sender<u64>,
+) {
+    let mut incoming = transports.borrow_and_update().tool_list_changes();
+    if incoming
+        .as_ref()
+        .is_some_and(|receiver| *receiver.borrow() != 0)
+    {
+        changes.send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
+    loop {
+        tokio::select! {
+            biased;
+            result = transports.changed() => {
+                if result.is_err() { return; }
+                incoming = transports.borrow_and_update().tool_list_changes();
+                // A replacement can have a different catalog even without a
+                // fresh notification. The client generation gate rejects mixed
+                // pagination, and this signal schedules subsequent discovery.
+                changes.send_modify(|revision| *revision = revision.wrapping_add(1));
+            }
+            available = async {
+                match incoming.as_mut() {
+                    Some(receiver) => receiver.changed().await.is_ok(),
+                    None => std::future::pending().await,
+                }
+            } => {
+                if available {
+                    changes.send_modify(|revision| *revision = revision.wrapping_add(1));
+                } else {
+                    incoming = None;
+                }
+            }
+        }
     }
 }
 

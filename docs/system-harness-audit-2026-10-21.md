@@ -5522,6 +5522,12 @@ E-H136-07（独立提交回填）：生产、默认回归和当时两文档已�
 
 ### H-137：MCP 工具目录变更通知被丢弃，后续运行继续发布旧工具
 
+**修复状态（2026-11-09）：已修复并验收，限本机 stdio 目录刷新与运行快照边界。** 原probe当前0/1、扩展TDD1/2及候选失败保留进度E-H137-01～03。在原Registry连接内维护唯一ToolCatalog，单reader→有界watch→后台串行tools/list；100ms合并、实际30秒发现deadline，物理代次拒绝混合分页，失败撤下能力、旧owner退役停止刷新，宿主/插件共用。运行冻结schema/路由，下一run及config/read共用runtime_snapshot与目录修订；不自动重放业务调用，不另建注册表。Rust find_tool返回owned RemoteTool，显式依赖Option<&RemoteTool>的外部源码需迁移；无SQL、前端DTO或新依赖变更。
+
+最终新组7/0、真实宿主/插件及生命周期17/0（含生产30秒deadline），17份源冻结后正式wire四组4/0/0（六种逻辑场景、真实执行新工具、旧run后续请求保持旧schema、当前/旧config ID对照），完整MCP all-features 173/0/2。全仓实际157结果块合计5071/5/179，原生exit101、1745.744秒；4项失败与H138旧DACL/隔离HOME快照/H306空提示词同形，另builtins junction夹具新观察失败，同一原二进制串行三次均1/0/0且未越界，不抹去原失败或宣称全仓稳定。AppCore lib1612/0/53、真实Rust SDK stdio13/0/0及协议20/0/0通过。fmt/diff、MCP strict、当前CLI build和Tauri Rust check通过；workspace strict仍被旧models/client.rs:483 clone_on_copy阻断，AppCore all-targets仍被旧mcp_discovery_restore.rs:776 panicking_unwrap阻断，lib非严格诊断exit0含12原警告。默认CLI原哈希已恢复，冻结源终检无漂移。完整命令、失败证据及残余见[进度E-H137-04](system-harness-repair-progress.md)。修复提交待取得hash后回填，不amend；本轮清理结果随后补记。
+
+限制：异步发现deadline不是同步schema校验的OS级CPU硬预算；通知只是失效提示，不授予权限。未实现HTTP常驻后台推送或完整MCP Apps；未验真实供应商、真实UI、其他OS，未改前端故未跑pnpm build/TS stdio。累计209验收/28历史跳过/10归并/3撤销，56待修含H180授权不修，实际55；下一准备H298读取游标边界，优先核对事件重放正确性。全部余项170–430低置信有效小时与编译/设备/环境等待分计，不承诺日期、不宣布整个goal完成。以下原始失败证据保留。
+
 **级别：中（P2，动态能力陈旧）；触发条件：已连接的 stdio MCP 在运行期间新增、删除或更新工具，并通过声明的 `tools.listChanged` 能力发出变更通知。** 静态工具目录不触发本项；不能据此宣称所有 MCP 调用不可用。
 
 #### 生产路径与动态证据

@@ -43,6 +43,18 @@ impl McpConnectionStatus {
 /// Sends JSON-RPC requests to an MCP server.
 #[async_trait]
 pub trait McpTransport: Send + Sync {
+    /// A bounded, coalescing invalidation signal, not a tool catalog or an RPC
+    /// request. Static/request-only transports have no unsolicited feed.
+    fn tool_list_changes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        None
+    }
+
+    /// Opaque physical-connection generation. Paginated discovery must not
+    /// publish a mixture of pages from different peers after recovery.
+    fn connection_generation(&self) -> u64 {
+        0
+    }
+
     /// Simple transports have no recovery lifecycle; wrappers own that policy.
     fn connection_status(&self) -> McpConnectionStatus {
         McpConnectionStatus::Ready

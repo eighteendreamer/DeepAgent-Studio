@@ -240,6 +240,7 @@ async fn dispatch_responses(
     stdout: ChildStdout,
     dispatcher: Arc<ResponseDispatcher>,
     limit: usize,
+    tool_changes: tokio::sync::watch::Sender<u64>,
 ) {
     let mut reader = BufReader::new(stdout);
     loop {
@@ -291,8 +292,32 @@ async fn dispatch_responses(
                     dispatcher.finish("read from MCP server failed: invalid UTF-8");
                     return;
                 };
+                // Preserve typed response decoding, including duplicate-field
+                // rejection. Parsing responses through Value first would widen
+                // the existing admission contract by collapsing duplicate keys.
                 if let Ok(response) = serde_json::from_str::<JsonRpcResponse>(line.trim()) {
                     dispatcher.deliver(response);
+                    continue;
+                }
+                let Ok(notification) = serde_json::from_str::<JsonRpcNotification>(line.trim())
+                else {
+                    continue;
+                };
+                let Ok(message) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+                    continue;
+                };
+                if message.get("id").is_none()
+                    && notification.jsonrpc == crate::protocol::JSONRPC_VERSION
+                    && notification.method == "notifications/tools/list_changed"
+                    && message.get("result").is_none()
+                    && message.get("error").is_none()
+                    && message
+                        .get("params")
+                        .map_or(true, serde_json::Value::is_object)
+                {
+                    // Reader never performs discovery or waits for a consumer.
+                    // The signal conveys no server-provided payload/authority.
+                    tool_changes.send_modify(|revision| *revision = revision.wrapping_add(1));
                 }
             }
         }
@@ -301,6 +326,7 @@ async fn dispatch_responses(
 
 /// A stdio transport backed by a spawned child process.
 pub struct StdioTransport {
+    tool_changes: tokio::sync::watch::Sender<u64>,
     child: Mutex<Child>,
     #[cfg(windows)]
     process_job: windows_job::ProcessJob,
@@ -393,12 +419,15 @@ impl StdioTransport {
         secrets.dedup();
 
         let dispatcher = Arc::new(ResponseDispatcher::default());
+        let (tool_changes, _) = tokio::sync::watch::channel(0);
         let reader_task = tokio::spawn(dispatch_responses(
             stdout,
             dispatcher.clone(),
             response_limit,
+            tool_changes.clone(),
         ));
         Ok(Self {
+            tool_changes,
             child: Mutex::new(child),
             #[cfg(windows)]
             process_job,
@@ -675,6 +704,10 @@ impl Drop for StdioTransport {
 
 #[async_trait]
 impl McpTransport for StdioTransport {
+    fn tool_list_changes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        Some(self.tool_changes.subscribe())
+    }
+
     async fn send(&self, request: &JsonRpcRequest) -> Result<JsonRpcResponse> {
         self.send_request(request, ToolExecutionContext::default())
             .await

@@ -76,9 +76,10 @@ impl ServerSlot {
                 && match &*self.state.borrow() {
                     StartupState::Failed(_) => true,
                     StartupState::Ready(registry) => registry.server_names().iter().any(|name| {
-                        registry
-                            .server_status(name)
-                            .is_some_and(|status| !status.is_discoverable())
+                        registry.server_catalog_error(name).is_some()
+                            || registry
+                                .server_status(name)
+                                .is_some_and(|status| !status.is_discoverable())
                     }),
                     StartupState::Pending => false,
                 })
@@ -100,6 +101,9 @@ impl ServerSlot {
 
     pub(super) fn retire(&self) {
         self.cancellation.cancel();
+        if let StartupState::Ready(registry) = &*self.state.borrow() {
+            registry.stop_catalog_refresh();
+        }
     }
 
     pub(super) async fn wait(

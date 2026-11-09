@@ -16,6 +16,7 @@ use deepagent_tools::{
     MAX_TOOL_NAME_BYTES,
 };
 
+use crate::catalog::{CatalogSnapshot, ToolCatalog};
 use crate::client::McpClient;
 use crate::liveness::{LivenessConfig, LivenessProbe};
 use crate::protocol::{McpToolDef, ToolCallResult};
@@ -90,7 +91,9 @@ pub fn split_namespaced(name: &str) -> Option<(&str, &str)> {
 #[derive(Clone)]
 struct ConnectedServer {
     client: Arc<McpClient>,
-    tools: Vec<RemoteTool>,
+    catalog: Arc<ToolCatalog>,
+    /// A request/host-reader view, not a second mutable catalog.
+    frozen_catalog: Option<Arc<CatalogSnapshot>>,
     /// Run-bound discovery projection, never a second dispatch/lifecycle owner.
     /// Live registries leave this empty; a request snapshots it once for all
     /// descriptors, instructions and lifecycle records of the same identity.
@@ -104,6 +107,12 @@ struct ConnectedServer {
 }
 
 impl ConnectedServer {
+    fn catalog(&self) -> Arc<CatalogSnapshot> {
+        self.frozen_catalog
+            .clone()
+            .unwrap_or_else(|| self.catalog.snapshot())
+    }
+
     fn discovery_status(&self) -> crate::McpConnectionStatus {
         self.discovery_status
             .clone()
@@ -147,28 +156,7 @@ impl McpRegistry {
             .list_tools()
             .instrument(tracing::info_span!("mcp_tools_list", server = server_name))
             .await?;
-        let tools: Vec<RemoteTool> = defs
-            .into_iter()
-            .filter_map(|d: McpToolDef| {
-                let namespaced = namespaced_name(server_name, &d.name);
-                if let Err(error) = validate_tool_schema(&namespaced, &d.input_schema) {
-                    tracing::warn!(
-                        server = server_name,
-                        tool = d.name.as_str(),
-                        error = %error,
-                        "ignoring MCP tool with invalid input schema"
-                    );
-                    return None;
-                }
-                Some(RemoteTool {
-                    namespaced_name: namespaced,
-                    server: server_name.to_string(),
-                    local_name: d.name,
-                    description: d.description,
-                    input_schema: d.input_schema,
-                })
-            })
-            .collect();
+        let tools = validated_tools(server_name, defs)?;
         let count = tools.len();
         let mut names = std::collections::BTreeSet::new();
         for tool in &tools {
@@ -184,8 +172,13 @@ impl McpRegistry {
         self.servers.insert(
             server_name.to_string(),
             ConnectedServer {
+                catalog: Arc::new(ToolCatalog::new(
+                    server_name.to_owned(),
+                    client.clone(),
+                    tools,
+                )),
+                frozen_catalog: None,
                 client,
-                tools,
                 discovery_status: None,
                 probe: None,
                 instructions,
@@ -261,11 +254,45 @@ impl McpRegistry {
     /// Capture one discovery view at a request boundary. Dispatch still checks
     /// each live client, so a previously advertised tool cannot revive it.
     pub fn discovery_snapshot(&self) -> Self {
-        let mut snapshot = self.clone();
+        let mut snapshot = self.catalog_snapshot();
         for server in snapshot.servers.values_mut() {
             server.discovery_status = Some(server.client.connection_status());
         }
         snapshot
+    }
+
+    /// Freeze definitions and routes without performing discovery I/O. Live
+    /// entries (including plugin entries) share one connection-owned updater.
+    pub fn catalog_snapshot(&self) -> Self {
+        let mut snapshot = self.clone();
+        for server in snapshot.servers.values_mut() {
+            server.frozen_catalog = Some(server.catalog());
+        }
+        snapshot
+    }
+
+    pub fn catalog_generation(&self) -> String {
+        let mut digest = Sha256::new();
+        for (name, server) in &self.servers {
+            digest.update((name.len() as u64).to_le_bytes());
+            digest.update(name.as_bytes());
+            digest.update(server.catalog().generation.as_bytes());
+        }
+        format!("{:x}", digest.finalize())
+    }
+
+    pub fn server_catalog_error(&self, name: &str) -> Option<String> {
+        self.servers
+            .get(name)
+            .and_then(|server| server.catalog().error.clone())
+    }
+
+    /// Retiring a host identity stops only refresh work; borrowed run snapshots
+    /// retain their original definitions/client and existing dispatch policy.
+    pub fn stop_catalog_refresh(&self) {
+        for server in self.servers.values() {
+            server.catalog.stop();
+        }
     }
 
     /// All namespaced tools across all servers (for advertising to the model).
@@ -275,7 +302,9 @@ impl McpRegistry {
     pub fn server_instructions(&self) -> Vec<(String, String)> {
         self.servers
             .iter()
-            .filter(|(_, server)| server.discovery_status().is_discoverable())
+            .filter(|(_, server)| {
+                server.discovery_status().is_discoverable() && server.catalog().error.is_none()
+            })
             .filter_map(|(name, server)| {
                 server
                     .instructions
@@ -290,27 +319,39 @@ impl McpRegistry {
         self.servers
             .values()
             .filter(|server| server.discovery_status().is_discoverable())
-            .flat_map(|s| s.tools.iter().cloned())
+            .flat_map(|s| s.catalog().tools.clone())
             .collect()
     }
 
     /// Look up a tool by its namespaced name.
-    pub fn find_tool(&self, namespaced: &str) -> Option<&RemoteTool> {
-        self.servers
+    pub fn find_tool(&self, namespaced: &str) -> Option<RemoteTool> {
+        self.lookup_tool(namespaced, true)
+    }
+
+    fn lookup_tool(&self, namespaced: &str, discoverable: bool) -> Option<RemoteTool> {
+        let mut tools = self
+            .servers
             .values()
-            .filter(|server| server.discovery_status().is_discoverable())
-            .flat_map(|server| &server.tools)
-            .find(|t| t.namespaced_name == namespaced)
+            .filter(|server| !discoverable || server.discovery_status().is_discoverable())
+            .filter_map(|server| {
+                server
+                    .catalog()
+                    .tools
+                    .iter()
+                    .find(|tool| tool.namespaced_name == namespaced)
+                    .cloned()
+            });
+        let first = tools.next()?;
+        // No ambiguous first-owner routing, even if an actual alias collision
+        // were ever admitted by independently refreshed server catalogs.
+        tools.next().is_none().then_some(first)
     }
 
     // Retain metadata for previously borrowed adapters and historical calls;
     // dispatch still goes through the live lifecycle gate, yielding a typed
     // not-dispatched error rather than reviving an unavailable connection.
-    fn registered_tool(&self, namespaced: &str) -> Option<&RemoteTool> {
-        self.servers
-            .values()
-            .flat_map(|server| &server.tools)
-            .find(|tool| tool.namespaced_name == namespaced)
+    fn registered_tool(&self, namespaced: &str) -> Option<RemoteTool> {
+        self.lookup_tool(namespaced, false)
     }
 
     /// Invoke a namespaced tool, routing to the owning server's client.
@@ -366,11 +407,37 @@ impl McpRegistry {
 
     /// Close all server connections.
     pub async fn close_all(&self) -> Result<()> {
+        self.stop_catalog_refresh();
         for s in self.servers.values() {
             let _ = s.client.close().await;
         }
         Ok(())
     }
+}
+
+pub(crate) fn validated_tools(server_name: &str, defs: Vec<McpToolDef>) -> Result<Vec<RemoteTool>> {
+    let mut tools = Vec::new();
+    let mut names = std::collections::BTreeSet::new();
+    for definition in defs {
+        let name = namespaced_name(server_name, &definition.name);
+        if let Err(error) = validate_tool_schema(&name, &definition.input_schema) {
+            tracing::warn!(server = server_name, tool = definition.name, %error, "ignoring MCP tool with invalid input schema");
+            continue;
+        }
+        if !names.insert(name.clone()) {
+            return Err(CoreError::invalid(
+                "MCP catalog contains a duplicate tool identity",
+            ));
+        }
+        tools.push(RemoteTool {
+            namespaced_name: name,
+            server: server_name.to_owned(),
+            local_name: definition.name,
+            description: definition.description,
+            input_schema: definition.input_schema,
+        });
+    }
+    Ok(tools)
 }
 
 #[cfg(test)]
@@ -646,7 +713,15 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
         // Force a genuine projected-name collision, independently of the now
         // disambiguated delimiter fixture, to exercise hash-collision safety.
         let collision = first.all_tools()[0].namespaced_name.clone();
-        second.servers.get_mut("a__b").unwrap().tools[0].namespaced_name = collision.clone();
+        let server = second.servers.get_mut("a__b").unwrap();
+        let catalog = server.catalog();
+        let mut tools = catalog.tools.clone();
+        tools[0].namespaced_name = collision.clone();
+        server.frozen_catalog = Some(Arc::new(CatalogSnapshot {
+            tools,
+            generation: catalog.generation.clone(),
+            error: None,
+        }));
         let error = first.extend_ready(&second).unwrap_err().to_string();
         assert!(error.contains(&collision), "{error}");
         assert_eq!(first.server_names(), vec!["a"]);

@@ -80,6 +80,9 @@ pub struct McpClient {
 }
 
 impl McpClient {
+    pub(crate) fn tool_list_changes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        self.transport.tool_list_changes()
+    }
     pub fn connection_status(&self) -> crate::McpConnectionStatus {
         self.transport.connection_status()
     }
@@ -169,6 +172,7 @@ impl McpClient {
 
     /// Discover the tools the server provides (`tools/list`).
     pub async fn list_tools(&self) -> Result<Vec<McpToolDef>> {
+        let generation = self.transport.connection_generation();
         let mut tools = Vec::new();
         let mut raw_names = HashSet::new();
         let mut cursor = None;
@@ -209,6 +213,11 @@ impl McpClient {
             }
 
             let Some(next_cursor) = parsed.next_cursor else {
+                if self.transport.connection_generation() != generation {
+                    return Err(CoreError::invalid(
+                        "MCP tools/list crossed a physical connection generation; catalog discarded",
+                    ));
+                }
                 return Ok(tools);
             };
             if next_cursor.len() > MAX_TOOLS_LIST_CURSOR_BYTES {
