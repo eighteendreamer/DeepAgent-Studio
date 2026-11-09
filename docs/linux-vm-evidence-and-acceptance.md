@@ -157,3 +157,13 @@ P-storage-01（资源回收路径）：默认设置或压力事件 → AppCore �
 本轮文档已完成：本地文件链接存在、UTF-8 与 fenced code 检查、JSON 设置样例解析、3,000 MB 配额预算与磁盘统计算术检查。两份 Mermaid 源码经本地 11.16.1 解析并在无头浏览器中渲染，已目视核对图形与文字；SVG 通过 diagram-generator 脚本写入交付目录。CLI 渲染器的网络安装曾因 ECONNRESET 失败，随后使用仓库现有 Mermaid 完成解析和渲染，不依赖新增全局工具。
 
 可编辑源和 SVG 位于 `docs/diagrams/linux-vm/`；主方案已链接。最后检查本轮 Git 差异和要求覆盖表；未运行的生产验收始终保留“未验收”状态，不将文档检查写作生产测试通过。
+
+## 9. 后续跨机器反馈与实验修订
+
+用户报告：另一台无开发环境的 Windows 11 电脑，安装后到开始测试大约两分钟，Linux 命令完全失败；唯一通过项可能是“基础镜像未被命令修改”。该项独立于 VM 能否启动，不能用作 Linux 可用的证据。尚未收到目标机的原始错误码、虚拟化组件/CPU/内存情况，不能直接断定是哪一项系统依赖缺失。
+
+复核已确认原 0.1.0 使用调试构建，在 Tauri setup 同步解压 2 GiB 镜像和执行 PowerShell/CIM；测试前后又对镜像全量计算哈希。0.1.1 实验改为 release、后台初始化、实际 WHP 分区/引擎/启动前置检查、阶段化诊断和依赖测试阻塞标记。它修订性能与失败处理，不代表目标机的兼容问题已解决。
+
+最新实验测试、耗时和包信息见 [RELIABILITY-REVIEW.md](G:/Code_Warehouse/DeepAgent-VM-Lab/tauri-demo/RELIABILITY-REVIEW.md) 与 [验证记录](G:/Code_Warehouse/DeepAgent-VM-Lab/tauri-demo/evidence/reliability-verification.json)。V01/V02/V17 的跨机器门槛继续保留；主项目业务后端未切换到 VM。
+
+0.1.1 已在本机实际执行 NSIS 安装并使用安装目录内的资源运行真实 Tauri 测试：前端 bridge 就绪 2.662 秒、后台首次准备与启动探测 16.317 秒，功能测试 19 通过、0 失败、1 未验收。5 项 Rust 回归、格式检查、Clippy、前端构建和 release 打包通过。人为移除引擎时为 0 通过、1 失败、19 阻塞。本机仍安装了 WSL2，因此上述结果不能替代干净目标机的验收；用户那台机器尚未复测，原始启动根因仍待诊断。

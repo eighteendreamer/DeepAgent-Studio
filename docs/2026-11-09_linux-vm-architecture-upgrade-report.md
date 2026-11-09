@@ -1,6 +1,7 @@
 # DeepAgent Studio 内置 Linux 开发环境架构升级方案
 
 > 状态：未来架构设计，尚未接入产品。调研日期：2026-11-09。
+> 后续实机反馈：0.1.0 Demo 在另一台无开发环境的 Windows 11 上首次等待约两分钟，Linux 命令失败。该目标机的根因尚未确定，P0 干净系统验收仍是阻塞发布的门槛；不能把本机 19 项通过当作跨机器稳定性证明。修订记录见[实验可靠性复核](G:/Code_Warehouse/DeepAgent-VM-Lab/tauri-demo/RELIABILITY-REVIEW.md)。
 > 范围：DeepAgent Studio 当前 Rust/Tauri 架构与独立 VM Lab；不修改业务实现。
 > 阅读顺序：本文明确架构和实施顺序；[接口与清理策略附录](G:/Code_Warehouse/DeepAgent-Studio/docs/linux-vm-contracts-and-storage-policy-v1.md)定义拟议契约；[证据与验收索引](G:/Code_Warehouse/DeepAgent-Studio/docs/linux-vm-evidence-and-acceptance.md)区分代码事实、实测与未验收能力。
 
