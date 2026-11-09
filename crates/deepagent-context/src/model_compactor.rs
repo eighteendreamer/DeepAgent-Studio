@@ -349,45 +349,55 @@ struct SummaryJson {
     failures: Vec<String>,
 }
 
-/// Strip a leading/embedded `<analysis>...</analysis>` scratch block (Claude
-/// Code `formatCompactSummary` parity) so the model's private reasoning never
-/// leaks into the parsed summary.
-fn strip_analysis(content: &str) -> String {
-    let mut out = String::with_capacity(content.len());
-    let mut rest = content;
-    while let Some(start) = rest.find("<analysis>") {
-        out.push_str(&rest[..start]);
-        match rest[start..].find("</analysis>") {
-            Some(end) => rest = &rest[start + end + "</analysis>".len()..],
-            None => {
-                // Unclosed block: drop the remainder.
-                rest = "";
-                break;
+/// Local tolerance for a complete scratch wrapper before the JSON, not a
+/// transform of model data. Nested wrappers must close before any enclosed
+/// JSON can be considered a checkpoint; a truncated draft is never salvaged.
+fn after_analysis_block(content: &str) -> Option<&str> {
+    let mut depth = 0;
+    for (index, _) in content.match_indices('<') {
+        let tail = &content[index..];
+        if tail.starts_with("<analysis>") {
+            depth += 1;
+        } else if let Some(rest) = tail.strip_prefix("</analysis>") {
+            depth -= 1;
+            if depth == 0 {
+                return Some(rest);
             }
         }
     }
-    out.push_str(rest);
-    out
+    None
 }
 
-/// Parse the model output into a [`SummaryJson`], tolerating a stray markdown
-/// fence or surrounding prose by extracting the first `{...}` block. Any
-/// `<analysis>` scratch block is stripped first.
-fn parse_summary_json(content: &str) -> Option<SummaryJson> {
-    let cleaned = strip_analysis(content);
-    let trimmed = cleaned.trim();
-    let json = if serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
-        trimmed
-    } else {
-        // Retain the existing fence/prose tolerance, but do not extract a
-        // checkpoint from inside an otherwise valid JSON array or string.
-        let start = trimmed.find('{')?;
-        let end = trimmed.rfind('}')?;
+/// Select an unchanged JSON slice. Valid JSON takes precedence over textual
+/// wrapper spelling, including valid array/string roots that the typed gate
+/// will reject. Only scratch blocks before the first object may be peeled.
+fn summary_json_slice(mut content: &str) -> Option<&str> {
+    loop {
+        content = content.trim();
+        if serde_json::from_str::<serde_json::Value>(content).is_ok() {
+            return Some(content);
+        }
+        let start = content.find('{')?;
+        if let Some(scratch) = content
+            .find("<analysis>")
+            .filter(|scratch| *scratch < start)
+        {
+            content = after_analysis_block(&content[scratch..])?;
+            continue;
+        }
+        // Preserve existing fence/prose tolerance without ever editing bytes
+        // inside the candidate object. Malformed objects stay malformed.
+        let end = content.rfind('}')?;
         if end <= start {
             return None;
         }
-        &trimmed[start..=end]
-    };
+        return Some(&content[start..=end]);
+    }
+}
+
+/// Parse the original object through the existing typed and task-state gate.
+fn parse_summary_json(content: &str) -> Option<SummaryJson> {
+    let json = summary_json_slice(content)?;
     if !json.starts_with('{') {
         return None;
     }
@@ -466,6 +476,70 @@ mod tests {
     #[test]
     fn rejects_non_json() {
         assert!(parse_summary_json("no json here").is_none());
+    }
+
+    #[test]
+    fn h269_json_string_values_survive_all_supported_envelopes_and_equivalent_encoding() {
+        for fact in [
+            "<analysis>literal</analysis>",
+            "中文🦀<analysis>外层<analysis>内层</analysis>末</analysis><analysis>再一段</analysis>",
+            "未闭合<analysis>仍是正文🦀",
+            "引用\\路径\"和{括号} </analysis>孤立闭合",
+        ] {
+            let value = serde_json::json!({"goal":fact,"completed":[fact],"pending":[fact],"decisions":[fact],"failures":[fact]});
+            let plain = value.to_string();
+            let escaped = plain.replace('<', "\\u003c");
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&escaped).unwrap(),
+                value
+            );
+            for json in [&plain, &escaped] {
+                for body in [
+                    json.clone(),
+                    format!("Here is the checkpoint:\n```json\n{json}\n```\nDone."),
+                    format!("<analysis>private {{\"completed\":[\"H269_PRIVATE_DRAFT\"]}}</analysis>\n<analysis>nested<analysis>private</analysis>scratch</analysis>\n{json}"),
+                ] {
+                    let parsed = parse_summary_json(&body).expect("valid checkpoint must be admitted");
+                    assert_eq!(parsed.goal, fact);
+                    for entries in [parsed.completed, parsed.pending, parsed.decisions, parsed.failures] {
+                        assert_eq!(entries, [fact], "host must not rewrite JSON string values");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn h269_incomplete_scratch_or_invalid_json_cannot_be_salvaged_as_a_checkpoint() {
+        for body in [
+            r#"<analysis>private {"completed":["private draft"]}"#,
+            r#"<analysis>outer<analysis>inner</analysis>{"completed":["private draft"]}"#,
+            r#"{"completed":["unterminated <analysis>literal</analysis>"#,
+            r#"{"completed":["first"],"completed":["second <analysis>literal</analysis>"]}"#,
+            r#"<analysis>private</analysis>[{"completed":["array wrapper"]}]"#,
+            r#"<analysis>private</analysis>"{\"completed\":[\"string wrapper\"]}""#,
+        ] {
+            assert!(parse_summary_json(body).is_none(), "must reject: {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn h269_truncated_checkpoint_falls_back_without_draft_and_keeps_usage() {
+        let events = vec![
+            serde_json::json!({"type":"response.output_text.delta","delta":"<analysis>H269_PRIVATE_DRAFT {\"completed\":[\"draft\"]}"}).to_string(),
+            usage_events()[1].clone(),
+        ];
+        let (summary, usage) = ModelCompactor::new(client(events), "deepseek-flash")
+            .summarize_accounted(
+                "task",
+                &TaskSummary::default(),
+                &["Created H269_SOURCE_FACT".into()],
+            )
+            .await;
+        assert!(summary.to_context_block().contains("H269_SOURCE_FACT"));
+        assert!(!summary.to_context_block().contains("H269_PRIVATE_DRAFT"));
+        assert_eq!(usage.prompt_tokens, 900);
+        assert_eq!(usage.completion_tokens, 60);
     }
 
     #[test]
@@ -569,7 +643,7 @@ mod tests {
     }
 
     #[test]
-    fn unclosed_analysis_block_drops_remainder() {
+    fn ignores_trailing_prose_without_rewriting_checkpoint() {
         let s =
             "{\"goal\":\"kept\",\"completed\":[\"kept state\"]} trailing <analysis> never closed";
         let v = parse_summary_json(s).unwrap();

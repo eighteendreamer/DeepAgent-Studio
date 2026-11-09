@@ -198,6 +198,19 @@ fn h268_seed_history(
     SessionId,
     Vec<ResponseInputItem>,
 ) {
+    seed_history_for_fact(with_tool_tail, FACT)
+}
+
+fn seed_history_for_fact(
+    with_tool_tail: bool,
+    fact: &str,
+) -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    Arc<Database>,
+    SessionId,
+    Vec<ResponseInputItem>,
+) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("h268.sqlite3");
     let db = Arc::new(Database::open(&path).unwrap());
@@ -209,7 +222,7 @@ fn h268_seed_history(
             .append_response_item(ResponseInputItem::Message {
                 role: if index % 2 == 0 { "user" } else { "assistant" }.into(),
                 content: if index == 1 {
-                    format!("Created {FACT}\n{}", "history detail ".repeat(600))
+                    format!("Created {fact}\n{}", "history detail ".repeat(600))
                 } else {
                     format!("turn {index}: {}", "history detail ".repeat(600))
                 },
@@ -254,174 +267,204 @@ async fn h268_fallback_is_shared_by_native_compatibility_and_prefire_with_cold_r
         "prefire-compatibility",
         "compatibility-valid",
     ] {
-        let native = mode.ends_with("native");
-        let (_dir, path, db, sid, items) = h268_seed_history(native);
-        let messages =
-            deepagent_models::messages_from_response_items(Some("protected rules"), &items);
         let body = if mode == "compatibility-valid" {
             serde_json::json!({"completed": [format!("Created {FACT}; H268_MODEL_ONLY")]})
                 .to_string()
         } else {
             "{}".into()
         };
-        let (client, summary_wire) =
-            scripted_client_with_transport(vec![ScriptedTransport::text(&body)]);
-        let compactor = HookedReactiveContextCompactor::new(
-            client,
-            "deepseek-flash".into(),
-            Arc::new(HookRegistry::new()),
-            sid,
-            db.clone(),
-        );
-        let result = match mode {
-            "native" => compactor
-                .compact_response_items(
-                    Some("protected rules"),
-                    &items,
-                    CompactionTrigger::ContextOverflow,
-                )
-                .await
-                .unwrap()
-                .unwrap(),
-            "compatibility" | "compatibility-valid" => compactor
-                .compact(&messages, CompactionTrigger::ContextOverflow)
-                .await
-                .unwrap()
-                .unwrap(),
-            _ => {
-                let note = if native {
-                    compactor
-                        .prefire_pass1_response_items(Some("protected rules"), &items)
-                        .await
-                        .unwrap()
-                        .unwrap()
-                } else {
-                    compactor.prefire_pass1(&messages).await.unwrap().unwrap()
-                };
-                assert!(
-                    note.note.contains(FACT),
-                    "{mode}: rejected model object must use fallback before prefire caching"
-                );
-                let before = deepagent_persistence::event_store::EventStore::new(&db)
-                    .load_session(sid)
-                    .unwrap();
-                assert!(!before
-                    .iter()
-                    .any(|event| matches!(event.payload, EventPayload::ContextCompacted { .. })));
-                let mut stale = note.clone();
-                stale.fingerprint ^= 1;
-                let refused = if native {
-                    compactor
-                        .apply_prefire_response_items(&stale, Some("protected rules"), &items)
-                        .await
-                        .unwrap()
-                } else {
-                    compactor.apply_prefire(&stale, &messages).await.unwrap()
-                };
-                assert!(refused.is_none());
-                if native {
-                    compactor
-                        .apply_prefire_response_items(&note, Some("protected rules"), &items)
-                        .await
-                        .unwrap()
-                        .unwrap()
-                } else {
-                    compactor
-                        .apply_prefire(&note, &messages)
-                        .await
-                        .unwrap()
-                        .unwrap()
-                }
-            }
-        };
-        assert!(summary_wire.last_prompt().contains(FACT));
-        assert_eq!(result.usage.prompt_tokens, 120);
-        assert_eq!(result.usage.completion_tokens, 18);
-        assert!(result.tokens_after < result.tokens_before);
-        assert!(
-            result.summary.contains(FACT)
-                && result.summary.contains("完整记录（未压缩的原始事件）")
-        );
-        if mode == "compatibility-valid" {
-            assert!(
-                result.summary.contains("H268_MODEL_ONLY"),
-                "valid sparse model state is actually adopted"
-            );
-        }
-        let live = result
-            .response_items
-            .unwrap_or_else(|| deepagent_models::response_items_from_messages(&result.messages).1);
-        if native {
-            for item in &items {
-                if matches!(
-                    item,
-                    ResponseInputItem::FunctionCall { .. }
-                        | ResponseInputItem::FunctionCallOutput { .. }
-                ) {
-                    assert!(
-                        live.contains(item),
-                        "{mode}: retained tool pair must be exact"
-                    );
-                }
-            }
-        }
-        // Exercise the real provider serializer on the adopted surface, not a
-        // hand-built JSON expectation. The transport stays entirely offline.
-        let (next_client, next_wire) =
-            scripted_client_with_transport(vec![ScriptedTransport::text("done")]);
-        next_client
-            .stream_response(deepagent_models::ResponseRequest::from_response_items(
-                "deepseek-flash",
-                Some("protected rules".into()),
-                live.clone(),
-            ))
-            .await
-            .unwrap();
-        let request: serde_json::Value = serde_json::from_str(&next_wire.last_prompt()).unwrap();
-        let sent: Vec<ResponseInputItem> =
-            serde_json::from_value(request["input"].clone()).unwrap();
-        assert_eq!(sent, live);
-        assert_eq!(request["instructions"], "protected rules");
-        drop(compactor);
-        drop(db);
-        let reopened = Database::open(&path).unwrap();
-        let events = deepagent_persistence::event_store::EventStore::new(&reopened)
-            .load_session(sid)
-            .unwrap();
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| matches!(event.payload, EventPayload::ContextCompacted { .. }))
-                .count(),
-            1
-        );
-        let replay = crate::input_runtime::response_items_from_events(&events);
-        if native {
-            assert!(
-                replay == sent,
-                "{mode}: native cold replay must equal live wire"
-            );
-        } else {
-            // Existing compatibility record_durable_boundary unconditionally
-            // adds one extra transcript pointer. Check that exact discrepancy,
-            // including the valid model control, rather than hiding differences
-            // with trim/field omission or mixing this independent formatter bug.
-            let mut expected = sent.clone();
-            let Some(ResponseInputItem::Message { content, .. }) = expected.first_mut() else {
-                panic!("summary message required")
-            };
-            *content = crate::input_runtime::with_transcript_pointer(
-                content.clone(),
-                &reopened.session_transcript_dir(sid),
-            );
-            assert!(
-                replay == expected,
-                "{mode}: only the known extra compatibility pointer may differ"
-            );
-        }
-        assert!(serde_json::to_string(&replay).unwrap().contains(FACT));
-        eprintln!("H268 {mode}: fact, tool tail where applicable, 120+18 usage, one boundary; native exact replay / compatibility known extra pointer verified");
+        check_compaction_mode(
+            mode,
+            FACT,
+            &body,
+            (mode == "compatibility-valid").then_some("H268_MODEL_ONLY"),
+            None,
+        )
+        .await;
     }
+}
+
+async fn check_compaction_mode(
+    mode: &str,
+    fact: &str,
+    body: &str,
+    model_marker: Option<&str>,
+    forbidden: Option<&str>,
+) {
+    let native = mode.ends_with("native");
+    let (_dir, path, db, sid, items) = seed_history_for_fact(native, fact);
+    let messages = deepagent_models::messages_from_response_items(Some("protected rules"), &items);
+    let (client, summary_wire) =
+        scripted_client_with_transport(vec![ScriptedTransport::text(body)]);
+    let compactor = HookedReactiveContextCompactor::new(
+        client,
+        "deepseek-flash".into(),
+        Arc::new(HookRegistry::new()),
+        sid,
+        db.clone(),
+    );
+    let result = match mode {
+        "native" => compactor
+            .compact_response_items(
+                Some("protected rules"),
+                &items,
+                CompactionTrigger::ContextOverflow,
+            )
+            .await
+            .unwrap()
+            .unwrap(),
+        "compatibility" | "compatibility-valid" => compactor
+            .compact(&messages, CompactionTrigger::ContextOverflow)
+            .await
+            .unwrap()
+            .unwrap(),
+        _ => {
+            let note = if native {
+                compactor
+                    .prefire_pass1_response_items(Some("protected rules"), &items)
+                    .await
+                    .unwrap()
+                    .unwrap()
+            } else {
+                compactor.prefire_pass1(&messages).await.unwrap().unwrap()
+            };
+            assert!(
+                note.note.contains(fact),
+                "{mode}: prefire cache must retain the supplied source fact"
+            );
+            let before = deepagent_persistence::event_store::EventStore::new(&db)
+                .load_session(sid)
+                .unwrap();
+            assert!(!before
+                .iter()
+                .any(|event| matches!(event.payload, EventPayload::ContextCompacted { .. })));
+            let mut stale = note.clone();
+            stale.fingerprint ^= 1;
+            let refused = if native {
+                compactor
+                    .apply_prefire_response_items(&stale, Some("protected rules"), &items)
+                    .await
+                    .unwrap()
+            } else {
+                compactor.apply_prefire(&stale, &messages).await.unwrap()
+            };
+            assert!(refused.is_none());
+            if native {
+                compactor
+                    .apply_prefire_response_items(&note, Some("protected rules"), &items)
+                    .await
+                    .unwrap()
+                    .unwrap()
+            } else {
+                compactor
+                    .apply_prefire(&note, &messages)
+                    .await
+                    .unwrap()
+                    .unwrap()
+            }
+        }
+    };
+    assert!(summary_wire.last_prompt().contains(fact));
+    assert_eq!(result.usage.prompt_tokens, 120);
+    assert_eq!(result.usage.completion_tokens, 18);
+    assert!(result.tokens_after < result.tokens_before);
+    assert!(
+        result.summary.contains(fact) && result.summary.contains("完整记录（未压缩的原始事件）")
+    );
+    if let Some(marker) = model_marker {
+        assert!(
+            result.summary.contains(marker),
+            "valid sparse model state is actually adopted"
+        );
+    }
+    if let Some(forbidden) = forbidden {
+        assert!(!result.summary.contains(forbidden));
+    }
+    let live = result
+        .response_items
+        .unwrap_or_else(|| deepagent_models::response_items_from_messages(&result.messages).1);
+    if native {
+        for item in &items {
+            if matches!(
+                item,
+                ResponseInputItem::FunctionCall { .. }
+                    | ResponseInputItem::FunctionCallOutput { .. }
+            ) {
+                assert!(
+                    live.contains(item),
+                    "{mode}: retained tool pair must be exact"
+                );
+            }
+        }
+    }
+    // Exercise the real provider serializer on the adopted surface, not a
+    // hand-built JSON expectation. The transport stays entirely offline.
+    let (next_client, next_wire) =
+        scripted_client_with_transport(vec![ScriptedTransport::text("done")]);
+    next_client
+        .stream_response(deepagent_models::ResponseRequest::from_response_items(
+            "deepseek-flash",
+            Some("protected rules".into()),
+            live.clone(),
+        ))
+        .await
+        .unwrap();
+    let request: serde_json::Value = serde_json::from_str(&next_wire.last_prompt()).unwrap();
+    let sent: Vec<ResponseInputItem> = serde_json::from_value(request["input"].clone()).unwrap();
+    assert_eq!(sent, live);
+    assert_eq!(request["instructions"], "protected rules");
+    if let Some(marker) = model_marker {
+        assert!(request.to_string().contains(marker));
+    }
+    if let Some(forbidden) = forbidden {
+        assert!(!request.to_string().contains(forbidden));
+    }
+    drop(compactor);
+    drop(db);
+    let reopened = Database::open(&path).unwrap();
+    let events = deepagent_persistence::event_store::EventStore::new(&reopened)
+        .load_session(sid)
+        .unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::ContextCompacted { .. }))
+            .count(),
+        1
+    );
+    let replay = crate::input_runtime::response_items_from_events(&events);
+    if native {
+        assert!(
+            replay == sent,
+            "{mode}: native cold replay must equal live wire"
+        );
+    } else {
+        // Existing compatibility record_durable_boundary unconditionally
+        // adds one extra transcript pointer. Check that exact discrepancy,
+        // including the valid model control, rather than hiding differences
+        // with trim/field omission or mixing this independent formatter bug.
+        let mut expected = sent.clone();
+        let Some(ResponseInputItem::Message { content, .. }) = expected.first_mut() else {
+            panic!("summary message required")
+        };
+        *content = crate::input_runtime::with_transcript_pointer(
+            content.clone(),
+            &reopened.session_transcript_dir(sid),
+        );
+        assert!(
+            replay == expected,
+            "{mode}: only the known extra compatibility pointer may differ"
+        );
+    }
+    let replay_text = serde_json::to_string(&replay).unwrap();
+    assert!(replay_text.contains(fact));
+    if let Some(marker) = model_marker {
+        assert!(replay_text.contains(marker));
+    }
+    if let Some(forbidden) = forbidden {
+        assert!(!replay_text.contains(forbidden));
+    }
+    eprintln!("checkpoint {mode}: fact, tool tail where applicable, 120+18 usage, one boundary; native exact replay / compatibility known extra pointer verified");
 }
 
 #[tokio::test]
@@ -510,6 +553,122 @@ async fn h268_native_boundary_storage_failure_does_not_adopt_or_erase_usage() {
 
 const LITERAL_FACT: &str = "<analysis>AUDIT_SUMMARY_LITERAL_269</analysis>";
 
+#[tokio::test]
+async fn h269_cancelled_partial_literal_checkpoint_does_not_replace_durable_history() {
+    use deepagent_models::transport::{EventSink, HttpTransport, TransportRequest};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct PartialSummary(tokio::sync::Semaphore);
+    #[async_trait::async_trait]
+    impl HttpTransport for PartialSummary {
+        async fn stream(
+            &self,
+            _: TransportRequest,
+            sink: &mut dyn EventSink,
+        ) -> deepagent_core::error::Result<()> {
+            let sink: &mut dyn EventSink = &mut crate::test_sequence::sink(sink);
+            sink.on_event(&serde_json::json!({"type":"response.output_text.delta","delta":format!("{{\"completed\":[\"Created {LITERAL_FACT}")}).to_string())?;
+            self.0.add_permits(1);
+            std::future::pending().await
+        }
+    }
+    let (_dir, path, db, sid, items) = seed_history_for_fact(true, LITERAL_FACT);
+    let original = deepagent_persistence::event_store::EventStore::new(&db)
+        .load_session(sid)
+        .unwrap();
+    let transport = Arc::new(PartialSummary(tokio::sync::Semaphore::new(0)));
+    let client = Arc::new(deepagent_models::ModelClient::new(
+        transport.clone(),
+        deepagent_models::ModelConfig::deepseek("synthetic"),
+    ));
+    let compactor = HookedReactiveContextCompactor::new(
+        client,
+        "deepseek-flash".into(),
+        Arc::new(HookRegistry::new()),
+        sid,
+        db.clone(),
+    );
+    let cancel = Arc::new(AtomicBool::new(false));
+    let operation = compactor.compact_response_items_accounted(
+        Some("rules"),
+        &items,
+        CompactionTrigger::ContextOverflow,
+        Some(cancel.clone()),
+    );
+    let signal = async {
+        transport.0.acquire().await.unwrap().forget();
+        cancel.store(true, Ordering::Release);
+    };
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::join!(operation, signal)
+    })
+    .await
+    .unwrap();
+    let error = result.unwrap_err();
+    assert!(error.error.to_string().contains("cancelled"));
+    assert_eq!(
+        error.usage,
+        deepagent_models::Usage::default(),
+        "partial stream did not report provider usage"
+    );
+    assert_eq!(
+        deepagent_persistence::event_store::EventStore::new(&db)
+            .load_session(sid)
+            .unwrap(),
+        original
+    );
+    drop(compactor);
+    drop(db);
+    let reopened = Database::open(&path).unwrap();
+    let events = deepagent_persistence::event_store::EventStore::new(&reopened)
+        .load_session(sid)
+        .unwrap();
+    assert_eq!(events, original);
+    assert_eq!(
+        crate::input_runtime::response_items_from_events(&events),
+        items
+    );
+}
+
+#[tokio::test]
+async fn h269_literal_data_survives_native_compatibility_and_prefire_on_wire_and_cold_reopen() {
+    for (index, fact) in [
+        LITERAL_FACT,
+        "中文🦀<analysis>未闭合但合法JSON字符串",
+        "<analysis>外层<analysis>内层</analysis>末</analysis><analysis>再次</analysis>",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let mut checkpoint: serde_json::Value =
+            serde_json::from_str(&literal_checkpoint(fact)).unwrap();
+        checkpoint["completed"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!("H269_MODEL_ONLY"));
+        let checkpoint = checkpoint.to_string();
+        let body = match index {
+            0 => checkpoint,
+            1 => format!("Here is the summary:\n```json\n{checkpoint}\n```"),
+            _ => format!("<analysis>H269_PRIVATE_DRAFT {{\"completed\":[\"draft\"]}}</analysis>\n<analysis>nested<analysis>scratch</analysis></analysis>\n{checkpoint}"),
+        };
+        for mode in [
+            "native",
+            "compatibility",
+            "prefire-native",
+            "prefire-compatibility",
+        ] {
+            check_compaction_mode(
+                mode,
+                fact,
+                &body,
+                Some("H269_MODEL_ONLY"),
+                Some("H269_PRIVATE_DRAFT"),
+            )
+            .await;
+        }
+    }
+}
+
 fn literal_checkpoint(fact: &str) -> String {
     serde_json::json!({
         "goal": "continue audit",
@@ -549,7 +708,6 @@ async fn literal_summary_leading_scratchpad_still_allows_checkpoint() {
 }
 
 #[tokio::test]
-#[ignore = "audit: scratch cleanup must not delete literal text inside valid JSON strings"]
 async fn audit_literal_summary_analysis_tag_does_not_erase_fact() {
     check_summary_adoption_for_fact(
         "literal-analysis-tag",

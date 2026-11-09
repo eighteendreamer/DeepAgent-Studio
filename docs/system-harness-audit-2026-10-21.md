@@ -14528,6 +14528,8 @@ Windows故障夹具持有合成权威日志的read-only share句柄；真实错�
 
 ### H-269：摘要草稿清理在解析 JSON 前删除字符串内的合法 analysis 标签及正文
 
+**本轮状态（2026-11-10）：已修复并验收，限本机Windows及离线synthetic provider；E-H269-01～04见[修复台账](system-harness-repair-progress.md)。** 在原parser先识别完整JSON，选择未改写的原对象slice；只剥离首个对象前完整且平衡的草稿包装，不再全局删除字符串内容。原H268 typed schema/有状态门禁与H111指令及用量保持。原probe去ignore，正式摘要/下一wire/SQLite冷恢复均保留字面量；完整Context66/0/2、AppCore context56/0/2，含native/compatibility/prefire两路径共12场景及半截流取消；全仓5105/4/175仍有四个既有失败，不称全绿。fmt、Context严格lint、CLI/当前CLI真实SDK、Tauri check通过；全特性strict与AppCore all-targets旧阻断保留。未验真实供应商生成频率/摘要质量、UI、其他OS；含糊/不完整包装沿原heuristic fallback，兼容路径原额外transcript pointer差异未混修。修复commit取得后另回填。以下未修复状态为审计时历史记录，原失败证据不删除。
+
 **级别：低（P3，条件性摘要内容完整性）；状态：正式原生压缩、下一请求和文件数据库重开已复现，未修复。** 触发条件是摘要需要保存模板/协议/提示词中的字面量 `<analysis>…</analysis>`，模型将它放在合法 JSON 的字段字符串中。不是 H-268 的空/缺字段对象：本轮摘要五个字段齐全，含 completed、pending 和 decisions，原始 JSON 明确含有应保留的事实，宿主清理才删掉它。
 
 #### 首次即时 Evidence（2026-10-25）
@@ -14550,7 +14552,7 @@ Windows故障夹具持有合成权威日志的read-only share句柄；真实错�
 - **DeepSeek Harness**：`packages/compaction/compaction-basic/src/summarizer.ts::summaryText` 过滤类型为 text 的块，reasoning 等其他 block 不作为检查点正文；没有在所保留的 text 内用 analysis 字符串切掉片段。它请求 Markdown 检查点而非本系统 JSON，不证明其可直接处理本轮 JSON 契约，也不借其结构化块保证模型不会把草稿写在正文中。
 - DeepSeek 官方 [Responses API 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)分别定义 reasoning_text 与 output_text 事件，以及 reasoning/message 输出 item。本系统现有 `Response::output_text_projection` 已按 Message/Reasoning 类型隔离；摘要提示词允许额外前置 analysis 草稿属于本地约定，不是供应商协议要求。应保留官方结构化边界，并把该本地容错约定限定为顶层/前置包装，不能据标签拼写擅自删除 JSON 字符串正文。
 
-#### 治理与验证（本地设计，未实施）
+#### 原治理与验证（审计时本地设计、尚未实施；本轮实现见E-H269-04）
 
 - 在现有 parser 先尝试完整 JSON，成功时不再对字符串内数据做草稿删除；只有确实存在非 JSON 前置包装时，才按明确位置剥离该包装，再解析剩余对象。解析失败可沿用受控 fallback；不能用全局 Unicode 转义绕过作为生产修复，也不能把去标签后的“仍能解析”当成原输入未变。
 - 配合 H-268 收敛同一个摘要解析/采用边界，但保留两项独立不变量：有效 JSON 的字符串值不能被损坏；空/无效检查点不能借标题/goal 包装成功。仅补必要字段检查不会修复本项，因为字段完整且 completed 删除后仍有非空文本；仅补本项先解析也不会自动拒绝 H-268 的空对象。
