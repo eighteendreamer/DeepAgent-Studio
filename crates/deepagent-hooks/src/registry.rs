@@ -79,6 +79,11 @@ impl HookRegistry {
             .await
     }
 
+    /// Complete handoff with the registry's existing owning-run controls.
+    pub async fn dispatch_report_bound(&self, ctx: &HookContext) -> Result<HookReport> {
+        self.dispatch_report(ctx, self.execution.clone()).await
+    }
+
     /// Dispatch using the owning run's existing cancellation controls. Each
     /// deduplicated hook gets an isolated child and finishes cleanup before the
     /// same precedence/reduction path below returns.
@@ -129,8 +134,10 @@ impl HookRegistry {
         for (ordinal, (hook, result)) in hooks.into_iter().zip(results).enumerate() {
             let result = result?;
             let outcome = result.outcome;
-            if ctx.point == HookPoint::UserPromptSubmit
-                && !matches!(outcome, HookOutcome::AsyncPending { .. })
+            if matches!(
+                ctx.point,
+                HookPoint::UserPromptSubmit | HookPoint::BeforeCompact
+            ) && !matches!(outcome, HookOutcome::AsyncPending { .. })
             {
                 report.context_truncated |= result.context_truncated;
                 for mut entry in result.additional_context {

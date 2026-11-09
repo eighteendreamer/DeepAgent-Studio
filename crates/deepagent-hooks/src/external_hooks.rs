@@ -1781,7 +1781,7 @@ fn interpret_result_for_event(
 fn interpret_report_for_event(result: &HookCommandResult, event: HookEvent) -> HookReport {
     let outcome = interpret_result_for_event(result, Some(event));
     if result.exit_code != 0
-        || event != HookEvent::UserPromptSubmit
+        || !matches!(event, HookEvent::UserPromptSubmit | HookEvent::PreCompact)
         || matches!(outcome, HookOutcome::AsyncPending { .. })
     {
         return HookReport::decision(outcome);

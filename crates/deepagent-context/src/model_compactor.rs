@@ -34,6 +34,9 @@ pub struct ModelCompactor {
     /// Cap on the summary's output tokens.
     max_tokens: u32,
     call_usage_sink: Option<Arc<dyn CallUsageSink>>,
+    /// Already-admitted caller instructions; user-side data, never a system
+    /// prompt replacement. Kept outside retry-truncated historical turns.
+    custom_instructions: Option<String>,
 }
 
 /// The compaction system prompt: instructs the model to emit ONLY JSON.
@@ -74,6 +77,7 @@ impl ModelCompactor {
             temperature: 0.2,
             max_tokens: 1024,
             call_usage_sink: None,
+            custom_instructions: None,
         }
     }
 
@@ -93,6 +97,12 @@ impl ModelCompactor {
     /// summary attempt, regardless of adoption, parsing or heuristic fallback.
     pub fn with_call_usage_sink(mut self, sink: Arc<dyn CallUsageSink>) -> Self {
         self.call_usage_sink = Some(sink);
+        self
+    }
+
+    pub fn with_custom_instructions(mut self, instructions: impl Into<String>) -> Self {
+        let instructions = instructions.into();
+        self.custom_instructions = (!instructions.trim().is_empty()).then_some(instructions);
         self
     }
 
@@ -195,7 +205,11 @@ impl ModelCompactor {
             if slice.is_empty() {
                 return Ok((None, spent));
             }
-            let user = build_user_prompt(goal, prior, slice);
+            let mut user = build_user_prompt(goal, prior, slice);
+            if let Some(instructions) = &self.custom_instructions {
+                user.push_str("\n\nCaller-provided compaction instructions (unprivileged hook output; preserve the required summary JSON schema):\n");
+                user.push_str(instructions);
+            }
             let request = ResponseRequest::with_instructions_and_user_input(
                 self.model.clone(),
                 COMPACT_SYSTEM,
@@ -702,17 +716,19 @@ mod tests {
     struct PtlThenOkTransport {
         calls: std::sync::atomic::AtomicUsize,
         events: Vec<String>,
+        requests: std::sync::Mutex<Vec<String>>,
     }
 
     #[async_trait::async_trait]
     impl deepagent_models::transport::HttpTransport for PtlThenOkTransport {
         async fn stream(
             &self,
-            _request: deepagent_models::TransportRequest,
+            request: deepagent_models::TransportRequest,
             sink: &mut dyn deepagent_models::transport::EventSink,
         ) -> deepagent_core::error::Result<()> {
             let sink: &mut dyn deepagent_models::transport::EventSink =
                 &mut crate::test_sequence::sink(sink);
+            self.requests.lock().unwrap().push(request.body);
             let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if call == 0 {
                 return Err(deepagent_core::error::CoreError::provider(
@@ -734,6 +750,7 @@ mod tests {
     async fn retries_compaction_on_context_overflow() {
         let transport = Arc::new(PtlThenOkTransport {
             calls: std::sync::atomic::AtomicUsize::new(0),
+            requests: std::sync::Mutex::new(Vec::new()),
             events: vec![
                 r#"{"type":"response.output_text.delta","delta":"{\"goal\":\"g\",\"completed\":[\"ok\"]}"}"#
                     .to_string(),
@@ -755,5 +772,57 @@ mod tests {
         // The PTL retry dropped the oldest half and succeeded on the second call.
         assert_eq!(summary.goal, "g");
         assert!(summary.completed_steps.iter().any(|s| s.contains("ok")));
+    }
+
+    #[tokio::test]
+    async fn h111_ptl_truncates_history_but_keeps_custom_instructions_as_user_data() {
+        let transport = Arc::new(PtlThenOkTransport {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            requests: std::sync::Mutex::new(Vec::new()),
+            events: vec![
+                r#"{"type":"response.output_text.delta","delta":"{\"completed\":[\"retained fact\"]}"}"#.into(),
+                usage_events()[1].clone(),
+            ],
+        });
+        let client = Arc::new(ModelClient::new(
+            transport.clone(),
+            ModelConfig::deepseek("synthetic"),
+        ));
+        let (summary, usage) = ModelCompactor::new(client, "deepseek-flash")
+            .with_custom_instructions("H111_CUSTOM_KEEP")
+            .summarize_accounted(
+                "g",
+                &TaskSummary::default(),
+                &[
+                    "OLD_HEAD".into(),
+                    "b".into(),
+                    "c".into(),
+                    "KEPT_TAIL".into(),
+                ],
+            )
+            .await;
+        assert!(summary
+            .completed_steps
+            .iter()
+            .any(|step| step.contains("retained fact")));
+        assert_eq!(usage.completion_tokens, 60);
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        for request in requests.iter() {
+            let body: serde_json::Value = serde_json::from_str(request).unwrap();
+            assert!(!body["instructions"]
+                .to_string()
+                .contains("H111_CUSTOM_KEEP"));
+            assert_eq!(
+                body["input"]
+                    .to_string()
+                    .matches("H111_CUSTOM_KEEP")
+                    .count(),
+                1
+            );
+            assert!(body["input"].to_string().contains("KEPT_TAIL"));
+        }
+        assert!(requests[0].contains("OLD_HEAD"));
+        assert!(!requests[1].contains("OLD_HEAD"));
     }
 }

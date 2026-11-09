@@ -33,6 +33,10 @@ use crate::tool_manifest::{deferred_tools_announcement, ToolManifest};
 #[path = "memory_surface_acceptance_tests.rs"]
 mod memory_surface;
 
+#[cfg(all(test, windows))]
+#[path = "context_runtime/h111_tests.rs"]
+mod h111_tests;
+
 pub(crate) type RemoteContextFuture = Pin<Box<dyn Future<Output = Result<Option<String>>> + Send>>;
 pub(crate) type RemoteContextFactory = Arc<dyn Fn(String) -> RemoteContextFuture + Send + Sync>;
 
@@ -117,6 +121,19 @@ pub(crate) struct HookedReactiveContextCompactor {
     call_usage_sink: Option<Arc<dyn deepagent_models::usage::CallUsageSink>>,
 }
 
+fn compaction_custom_instructions(report: &deepagent_hooks::HookReport) -> Result<Option<String>> {
+    if report.additional_context.is_empty() {
+        return Ok(None);
+    }
+    serde_json::to_string(&serde_json::json!({
+        "kind":"compaction_hook_instructions","version":1,"event":"PreCompact",
+        "trust":"hook_output_unprivileged","truncated":report.context_truncated,
+        "contexts":report.additional_context,
+    }))
+    .map(Some)
+    .map_err(Into::into)
+}
+
 /// Unified debounce + circuit breaker across the run's reactive compactions
 /// (Phase E). Prevents overflow→compact→overflow loops from thrashing: a
 /// cooldown window between attempts, and a trip after repeated ineffective
@@ -186,9 +203,12 @@ impl HookedReactiveContextCompactor {
         self
     }
 
-    fn model_compactor(&self) -> deepagent_context::ModelCompactor {
-        let compactor =
+    fn model_compactor(&self, custom: Option<&str>) -> deepagent_context::ModelCompactor {
+        let mut compactor =
             deepagent_context::ModelCompactor::new(self.client.clone(), self.model.clone());
+        if let Some(custom) = custom {
+            compactor = compactor.with_custom_instructions(custom);
+        }
         match &self.call_usage_sink {
             Some(sink) => compactor.with_call_usage_sink(sink.clone()),
             None => compactor,
@@ -221,10 +241,13 @@ impl HookedReactiveContextCompactor {
     async fn summarize_response_item_zone(
         &self,
         zone: &[ResponseInputItem],
+        custom: Option<&str>,
     ) -> (String, deepagent_models::Usage) {
         let store = crate::session_memory::SessionMemoryStore::new(self.db.clone());
-        if let Some(note) =
-            crate::session_memory::note_for_response_zone(&store, self.session_id, zone)
+        if let Some(note) = custom
+            .is_none()
+            .then(|| crate::session_memory::note_for_response_zone(&store, self.session_id, zone))
+            .flatten()
         {
             let summary = crate::input_runtime::with_transcript_pointer(
                 format!("Session notes maintained during this conversation:\n{note}"),
@@ -238,7 +261,7 @@ impl HookedReactiveContextCompactor {
             .collect::<Vec<_>>();
         let goal = latest_user_content_from_response_items(zone).unwrap_or_default();
         let (summary, usage) = self
-            .model_compactor()
+            .model_compactor(custom)
             .summarize_accounted(&goal, &deepagent_context::TaskSummary::default(), &rendered)
             .await;
         let mut summary_block = summary.to_context_block();
@@ -258,9 +281,13 @@ impl HookedReactiveContextCompactor {
         )
     }
 
-    async fn summarize_zone(&self, zone: &[Message]) -> (String, deepagent_models::Usage) {
+    async fn summarize_zone(
+        &self,
+        zone: &[Message],
+        custom: Option<&str>,
+    ) -> (String, deepagent_models::Usage) {
         let (_, items) = deepagent_models::response_items_from_messages(zone);
-        self.summarize_response_item_zone(&items).await
+        self.summarize_response_item_zone(&items, custom).await
     }
 
     async fn dispatch_compaction_hook(
@@ -269,12 +296,23 @@ impl HookedReactiveContextCompactor {
         cancel: Option<Arc<AtomicBool>>,
         usage: deepagent_models::Usage,
     ) -> std::result::Result<HookOutcome, CompactionFailure> {
+        self.dispatch_compaction_report(context, cancel, usage)
+            .await
+            .map(|report| report.outcome)
+    }
+
+    async fn dispatch_compaction_report(
+        &self,
+        context: HookContext,
+        cancel: Option<Arc<AtomicBool>>,
+        usage: deepagent_models::Usage,
+    ) -> std::result::Result<deepagent_hooks::HookReport, CompactionFailure> {
         let result = if let Some(cancel) = cancel {
             self.hooks
-                .dispatch_with_context(&context, deepagent_tools::ToolExecutionContext::new(cancel))
+                .dispatch_report(&context, deepagent_tools::ToolExecutionContext::new(cancel))
                 .await
         } else {
-            self.hooks.dispatch(&context).await
+            self.hooks.dispatch_report_bound(&context).await
         };
         result.map_err(|error| CompactionFailure::new(error, usage))
     }
@@ -283,6 +321,7 @@ impl HookedReactiveContextCompactor {
         &self,
         zone: &[ResponseInputItem],
         cancel: Option<Arc<AtomicBool>>,
+        custom: Option<&str>,
     ) -> std::result::Result<(String, deepagent_models::Usage), CompactionFailure> {
         if cancel
             .as_ref()
@@ -294,8 +333,10 @@ impl HookedReactiveContextCompactor {
             ));
         }
         let store = crate::session_memory::SessionMemoryStore::new(self.db.clone());
-        if let Some(note) =
-            crate::session_memory::note_for_response_zone(&store, self.session_id, zone)
+        if let Some(note) = custom
+            .is_none()
+            .then(|| crate::session_memory::note_for_response_zone(&store, self.session_id, zone))
+            .flatten()
         {
             let summary = crate::input_runtime::with_transcript_pointer(
                 format!("Session notes maintained during this conversation:\n{note}"),
@@ -309,7 +350,7 @@ impl HookedReactiveContextCompactor {
             .collect::<Vec<_>>();
         let goal = latest_user_content_from_response_items(zone).unwrap_or_default();
         let (summary, usage) = self
-            .model_compactor()
+            .model_compactor(custom)
             .summarize_accounted_cancelled(
                 &goal,
                 &deepagent_context::TaskSummary::default(),
@@ -369,7 +410,7 @@ impl HookedReactiveContextCompactor {
             return Ok(CompactionOutcome::none());
         };
         let before = self
-            .dispatch_compaction_hook(
+            .dispatch_compaction_report(
                 HookContext::new(
                     self.session_id,
                     HookPoint::BeforeCompact,
@@ -382,13 +423,22 @@ impl HookedReactiveContextCompactor {
                 deepagent_models::Usage::default(),
             )
             .await?;
-        if matches!(before, HookOutcome::Deny { .. } | HookOutcome::Ask { .. }) {
+        if matches!(
+            before.outcome,
+            HookOutcome::Deny { .. } | HookOutcome::Ask { .. }
+        ) {
             return Ok(CompactionOutcome::none());
         }
+        let custom = compaction_custom_instructions(&before)
+            .map_err(|error| CompactionFailure::new(error, Default::default()))?;
         let count = |items: &[ResponseInputItem]| self.measure_native_items(instructions, items);
         let tokens_before = count(items);
         let (summary_block, summary_usage) = self
-            .summarize_response_item_zone_cancelled(&items[..split], cancel.clone())
+            .summarize_response_item_zone_cancelled(
+                &items[..split],
+                cancel.clone(),
+                custom.as_deref(),
+            )
             .await?;
         let mut compacted_items = Vec::with_capacity(1 + items.len() - split);
         compacted_items.push(ResponseInputItem::Message {
@@ -472,7 +522,7 @@ impl HookedReactiveContextCompactor {
             return Ok(None);
         };
         let (summary_block, summary_usage) = self
-            .summarize_response_item_zone_cancelled(&items[..split], cancel.clone())
+            .summarize_response_item_zone_cancelled(&items[..split], cancel.clone(), None)
             .await?;
         if cancel
             .as_ref()
@@ -497,24 +547,24 @@ impl HookedReactiveContextCompactor {
         instructions: Option<&str>,
         items: &[ResponseInputItem],
         cancel: Option<Arc<AtomicBool>>,
-    ) -> std::result::Result<Option<ReactiveCompaction>, CompactionFailure> {
+    ) -> std::result::Result<CompactionOutcome, CompactionFailure> {
         if cancel
             .as_ref()
             .is_some_and(|flag| flag.load(Ordering::Acquire))
         {
             return Err(CompactionFailure::new(
                 CoreError::other("request cancelled by user"),
-                note.usage.clone(),
+                note.usage,
             ));
         }
         if note.prefix_end == 0
             || note.prefix_end > items.len()
             || fingerprint_response_item_prefix(&items[..note.prefix_end]) != note.fingerprint
         {
-            return Ok(None);
+            return Ok(CompactionOutcome::observed(note.usage));
         }
         let before = self
-            .dispatch_compaction_hook(
+            .dispatch_compaction_report(
                 HookContext::new(
                     self.session_id,
                     HookPoint::BeforeCompact,
@@ -524,23 +574,48 @@ impl HookedReactiveContextCompactor {
                     },
                 ),
                 cancel.clone(),
-                note.usage.clone(),
+                note.usage,
             )
             .await?;
-        if matches!(before, HookOutcome::Deny { .. } | HookOutcome::Ask { .. }) {
-            return Ok(None);
+        if matches!(
+            before.outcome,
+            HookOutcome::Deny { .. } | HookOutcome::Ask { .. }
+        ) {
+            return Ok(CompactionOutcome::observed(note.usage));
         }
+        let custom = compaction_custom_instructions(&before)
+            .map_err(|error| CompactionFailure::new(error, note.usage))?;
+        let mut usage = note.usage;
+        let summary = if custom.is_some() {
+            // Pass-1 ran before this side-effectful hook. Regenerate the actual
+            // source prefix once; a cached summary cannot honor missing facts.
+            let (summary, spent) = self
+                .summarize_response_item_zone_cancelled(
+                    &items[..note.prefix_end],
+                    cancel.clone(),
+                    custom.as_deref(),
+                )
+                .await
+                .map_err(|failure| {
+                    usage.absorb(failure.usage);
+                    CompactionFailure::new(failure.error, usage)
+                })?;
+            usage.absorb(spent);
+            summary
+        } else {
+            note.note.clone()
+        };
         let tokens_before = self.measure_native_items(instructions, items);
         let tail = &items[note.prefix_end..];
         let mut compacted_items = Vec::with_capacity(1 + tail.len());
         compacted_items.push(ResponseInputItem::Message {
             role: "user".to_string(),
-            content: format!("[Earlier conversation compacted to summary]\n{}", note.note),
+            content: format!("[Earlier conversation compacted to summary]\n{summary}"),
         });
         compacted_items.extend_from_slice(tail);
         let tokens_after = self.measure_native_items(instructions, &compacted_items);
         if tokens_after >= tokens_before {
-            return Ok(None);
+            return Ok(CompactionOutcome::observed(usage));
         }
         let post = self
             .dispatch_compaction_hook(
@@ -549,15 +624,15 @@ impl HookedReactiveContextCompactor {
                     HookPoint::PostCompact,
                     HookData::Compact {
                         trigger: CompactionTrigger::AutoCompactThreshold.as_str().to_string(),
-                        summary: Some(note.note.clone()),
+                        summary: Some(summary.clone()),
                     },
                 ),
                 cancel.clone(),
-                note.usage.clone(),
+                usage,
             )
             .await?;
         if matches!(post, HookOutcome::Deny { .. } | HookOutcome::Ask { .. }) {
-            return Ok(None);
+            return Ok(CompactionOutcome::observed(usage));
         }
         if cancel
             .as_ref()
@@ -565,26 +640,26 @@ impl HookedReactiveContextCompactor {
         {
             return Err(CompactionFailure::new(
                 CoreError::other("request cancelled by user"),
-                note.usage.clone(),
+                usage,
             ));
         }
         self.record_native_boundary(
             deepagent_core::compaction_strategy::PREFIRE_PASS2,
             tokens_before,
             tokens_after,
-            &note.note,
+            &summary,
             tail,
         )
-        .map_err(|error| CompactionFailure::new(error, note.usage.clone()))?;
+        .map_err(|error| CompactionFailure::new(error, usage))?;
         let messages =
             deepagent_models::messages_from_response_items(instructions, &compacted_items);
-        Ok(Some(ReactiveCompaction {
+        Ok(CompactionOutcome::adopted(ReactiveCompaction {
             messages,
             response_items: Some(compacted_items),
             tokens_before,
             tokens_after,
-            summary: note.note.clone(),
-            usage: note.usage.clone(),
+            summary,
+            usage,
         }))
     }
 
@@ -760,7 +835,7 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
 
         let before = self
             .hooks
-            .dispatch(&HookContext::new(
+            .dispatch_report_bound(&HookContext::new(
                 self.session_id,
                 HookPoint::BeforeCompact,
                 HookData::Compact {
@@ -769,9 +844,13 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
                 },
             ))
             .await?;
-        if matches!(before, HookOutcome::Deny { .. } | HookOutcome::Ask { .. }) {
+        if matches!(
+            before.outcome,
+            HookOutcome::Deny { .. } | HookOutcome::Ask { .. }
+        ) {
             return Ok(None);
         }
+        let custom = compaction_custom_instructions(&before)?;
 
         let counter = HeuristicTokenizer::new();
         let count = |items: &[Message]| {
@@ -793,8 +872,10 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
         // call) and reversible in spirit — the model can re-run a tool if it
         // really needs the data again. Only when this alone does not free
         // enough space do we pay for a full summary.
-        if let Some((micro_messages, cleared)) =
-            micro_compact_tool_results(messages, system_end, split)
+        if let Some((micro_messages, cleared)) = custom
+            .is_none()
+            .then(|| micro_compact_tool_results(messages, system_end, split))
+            .flatten()
         {
             let tokens_after = count(&micro_messages);
             // Accept when it frees at least ~20% of the estimate.
@@ -829,7 +910,8 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
         }
 
         // Stage 2 — full structured summary of the compacted zone.
-        let (summary_block, summary_usage) = self.summarize_zone(&body[..split]).await;
+        let (summary_block, summary_usage) =
+            self.summarize_zone(&body[..split], custom.as_deref()).await;
 
         let mut compacted = Vec::with_capacity(system_end + 1 + body.len() - split);
         compacted.extend_from_slice(&messages[..system_end]);
@@ -927,7 +1009,7 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
             return Ok(None);
         };
         let prefix_end = system_end + split;
-        let (summary_block, summary_usage) = self.summarize_zone(&body[..split]).await;
+        let (summary_block, summary_usage) = self.summarize_zone(&body[..split], None).await;
         Ok(Some(PrefireNote {
             note: summary_block,
             prefix_end,
@@ -978,7 +1060,7 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
         }
         let before = self
             .hooks
-            .dispatch(&HookContext::new(
+            .dispatch_report_bound(&HookContext::new(
                 self.session_id,
                 HookPoint::BeforeCompact,
                 HookData::Compact {
@@ -987,9 +1069,23 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
                 },
             ))
             .await?;
-        if matches!(before, HookOutcome::Deny { .. } | HookOutcome::Ask { .. }) {
+        if matches!(
+            before.outcome,
+            HookOutcome::Deny { .. } | HookOutcome::Ask { .. }
+        ) {
             return Ok(None);
         }
+        let custom = compaction_custom_instructions(&before)?;
+        let mut usage = note.usage;
+        let summary = if custom.is_some() {
+            let (summary, spent) = self
+                .summarize_zone(&messages[system_end..note.prefix_end], custom.as_deref())
+                .await;
+            usage.absorb(spent);
+            summary
+        } else {
+            note.note.clone()
+        };
 
         let counter = HeuristicTokenizer::new();
         let count = |items: &[Message]| {
@@ -1011,7 +1107,7 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
         compacted.extend_from_slice(&messages[..system_end]);
         compacted.push(Message::user(format!(
             "[Earlier conversation compacted to summary]\n{}",
-            note.note
+            summary
         )));
         compacted.extend_from_slice(tail);
 
@@ -1025,7 +1121,7 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
                 HookPoint::PostCompact,
                 HookData::Compact {
                     trigger: CompactionTrigger::AutoCompactThreshold.as_str().to_string(),
-                    summary: Some(note.note.clone()),
+                    summary: Some(summary.clone()),
                 },
             ))
             .await?;
@@ -1033,7 +1129,7 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
             deepagent_core::compaction_strategy::PREFIRE_PASS2,
             tokens_before,
             tokens_after,
-            &note.note,
+            &summary,
             tail.first(),
         );
         Ok(Some(ReactiveCompaction {
@@ -1041,10 +1137,10 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
             response_items: None,
             tokens_before,
             tokens_after,
-            summary: note.note.clone(),
+            summary,
             // Pass-1 paid for this text; carry the charge to the boundary that
             // uses it.
-            usage: note.usage,
+            usage,
         }))
     }
 
@@ -1056,6 +1152,7 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
     ) -> Result<Option<ReactiveCompaction>> {
         self.apply_prefire_response_items_inner(note, instructions, items, None)
             .await
+            .map(|outcome| outcome.compaction)
             .map_err(|failure| failure.error)
     }
 
@@ -1066,6 +1163,18 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
         items: &[ResponseInputItem],
         cancel: Option<Arc<AtomicBool>>,
     ) -> std::result::Result<Option<ReactiveCompaction>, CompactionFailure> {
+        self.apply_prefire_response_items_inner(note, instructions, items, cancel)
+            .await
+            .map(|outcome| outcome.compaction)
+    }
+
+    async fn apply_prefire_response_items_accounted(
+        &self,
+        note: &PrefireNote,
+        instructions: Option<&str>,
+        items: &[ResponseInputItem],
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> std::result::Result<CompactionOutcome, CompactionFailure> {
         self.apply_prefire_response_items_inner(note, instructions, items, cancel)
             .await
     }
@@ -2105,16 +2214,16 @@ mod tests {
         let history = crate::input_runtime::model_history_from_events(&events);
         let (_, items) = deepagent_models::response_items_from_messages(&history);
         let compactor = make_compactor(unreachable_client());
-        let (text, usage) = compactor.summarize_response_item_zone(&items).await;
+        let (text, usage) = compactor.summarize_response_item_zone(&items, None).await;
         assert!(text.contains("RED"));
         assert_eq!(usage, deepagent_models::Usage::default());
         let (text, usage) = compactor
-            .summarize_response_item_zone_cancelled(&items, None)
+            .summarize_response_item_zone_cancelled(&items, None, None)
             .await
             .unwrap();
         assert!(text.contains("RED"));
         assert_eq!(usage, deepagent_models::Usage::default());
-        let (text, usage) = compactor.summarize_zone(&history).await;
+        let (text, usage) = compactor.summarize_zone(&history, None).await;
         assert!(text.contains("RED"));
         assert_eq!(usage, deepagent_models::Usage::default());
 
@@ -2140,15 +2249,16 @@ mod tests {
             )]);
             let compactor = make_compactor(client);
             let (summary, usage) = match path {
-                "native" => compactor.summarize_response_item_zone(&items).await,
+                "native" => compactor.summarize_response_item_zone(&items, None).await,
                 "cancelled_native" => compactor
                     .summarize_response_item_zone_cancelled(
                         &items,
                         Some(Arc::new(AtomicBool::new(false))),
+                        None,
                     )
                     .await
                     .unwrap(),
-                _ => compactor.summarize_zone(&history).await,
+                _ => compactor.summarize_zone(&history, None).await,
             };
             assert!(summary.contains("BLUE"), "{path}: {summary}");
             assert!(!summary.contains("RED"), "{path}: {summary}");
@@ -2272,7 +2382,6 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    #[ignore = "audit H-111: PreCompact stdout must reach the compaction request"]
     async fn audit_precompact_stdout_is_used_as_compaction_instructions() {
         const INSTRUCTIONS: &str = "AUDIT_CUSTOM_COMPACTION_INSTRUCTIONS";
         let (_, model_request) =

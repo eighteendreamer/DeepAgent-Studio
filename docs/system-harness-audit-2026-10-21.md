@@ -4757,13 +4757,15 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 ### H-111：PreCompact hook 的 stdout 指令没有进入摘要请求
 
+**修复状态（2026-11-10）：已修复并验收，限本机Windows同步command PreCompact与离线合成模型；证据E-H111-01～04见[修复台账](system-harness-repair-progress.md)。** 复用单一HookReport/registry有界接纳并交付至summary user侧数据；有指令不复用旧session note或micro-only结果，prefire采用前只运行一次hook并重新摘要原prefix，PTL保留独立指令，accounted路径与physical账本保留重新生成但未采用的用量。原失败证据如下不删除。原探针已去ignore，冻结context回归53/0/3、扩展10/0/0；全仓5099/4/176保留四个既有失败，非全绿；fmt、hooks/context严格lint、CLI构建/当前CLI真实SDK、Tauri check通过，全特性strict仍被旧Models lint阻断，详见台账。未验真实供应商摘要质量/遵循率、UI、其他OS或HTTP/MCP/model hook上下文；不据此关闭独立H110/H140。修复commit取得后另回填，不amend自引用。
+
 **级别：中（P2，条件性 hook 功能缺陷）；触发条件：配置 `PreCompact` command hook，并从成功退出的 hook stdout 返回摘要指令。** 不返回指令或使用退出码拒绝压缩时不受此项影响。
 
 - 根因与生产路径：外部命令结果解释器将普通文本 stdout 映射为 `HookOutcome::Continue`；`HookedReactiveContextCompactor::compact()` 对 `BeforeCompact` 只检查 `Deny`/`Ask`，随后直接调用 `summarize_zone()`，没有把 hook stdout 或修改结果传给摘要模型。
 - 动态复现：Windows ignored 探针 `context_runtime::tests::audit_precompact_stdout_is_used_as_compaction_instructions` 让正式 PowerShell PreCompact hook 输出唯一标记 `AUDIT_CUSTOM_COMPACTION_INSTRUCTIONS`，随后检查 `ScriptedTransport` 捕获的真实 summary request body；标记不存在，断言以 **0 passed / 1 failed** 退出。hook 与模型请求均为本地离线执行。
 - 成熟实现对照：Claude Code `utils/hooks/hooksConfigManager.ts` 对 `PreCompact` 明确规定：exit code 0 时 stdout 追加为 custom compact instructions，exit code 2 阻止压缩。本系统保留阻止路径，但未实现成功 stdout 的指令路径。
 - 影响及限制：用户配置的压缩保留/强调指令会被静默忽略，摘要可能丢掉 hook 指定的重要信息。本探针确认了 compactor 发出的请求体不含指令，没有尝试证明具体摘要质量变化或真实模型输出。
-- 收敛方向（尚未实施，本地设计）：为 `BeforeCompact` 明确一个有类型的 hook result，区分 veto、审批和 custom instructions；在已有 compaction pipeline 将指令纳入 summary prompt，不把通用 `Modify` 猜测性地套用到所有 hook。覆盖空 stdout、多 hook 合并、拒绝、超时、Message/ResponseItem 和取消路径。
+- 原收敛方向（审计时尚未实施；本轮实现及限制见E-H111-04，本地设计）：为 `BeforeCompact` 明确一个有类型的 hook result，区分 veto、审批和 custom instructions；在已有 compaction pipeline 将指令纳入 summary prompt，不把通用 `Modify` 猜测性地套用到所有 hook。覆盖空 stdout、多 hook 合并、拒绝、超时、Message/ResponseItem 和取消路径。
 
 ### H-112：工作树生命周期 hook 缺少事件专属字段
 

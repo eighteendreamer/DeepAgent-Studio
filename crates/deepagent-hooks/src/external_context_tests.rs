@@ -61,3 +61,42 @@ fn h140_context_parser_is_event_success_and_protocol_scoped() {
     // on aggregate denial, rather than allowing parsing to erase the decision.
     assert_eq!(deny.additional_context.len(), 1);
 }
+
+#[test]
+fn h111_precompact_context_requires_success_matching_event_and_synchronous_output() {
+    let context = r#"{"hookSpecificOutput":{"hookEventName":"PreCompact","additionalContext":"keep synthetic fact"}}"#;
+    assert_eq!(
+        report(context, 0, HookEvent::PreCompact).additional_context[0].text,
+        "keep synthetic fact"
+    );
+    assert_eq!(
+        report("plain instructions", 0, HookEvent::PreCompact).additional_context[0].text,
+        "plain instructions"
+    );
+    for (text, code) in [
+        (context, 7),
+        (context, 2),
+        ("  ", 0),
+        (
+            r#"{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"wrong event"}}"#,
+            0,
+        ),
+        (
+            r#"{"async":true,"hookSpecificOutput":{"hookEventName":"PreCompact","additionalContext":"late"}}"#,
+            0,
+        ),
+        (
+            r#"{"hookSpecificOutput":{"hookEventName":"PreCompact","additionalContext":42}}"#,
+            0,
+        ),
+        (r#"{"debug":"diagnostic"}"#, 0),
+        ("{malformed", 0),
+    ] {
+        assert!(
+            report(text, code, HookEvent::PreCompact)
+                .additional_context
+                .is_empty(),
+            "{text}"
+        );
+    }
+}

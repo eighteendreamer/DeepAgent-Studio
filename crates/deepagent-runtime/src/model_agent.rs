@@ -281,8 +281,8 @@ pub trait ReactiveContextCompactor: Send + Sync {
         self.apply_prefire(note, &messages).await
     }
 
-    /// Cancellation-aware native prefire adoption. This method can run hooks
-    /// and persist the compaction boundary even though it does not call a model.
+    /// Cancellation-aware native prefire adoption. An implementation may run
+    /// hooks, regenerate a summary and persist the compaction boundary.
     async fn apply_prefire_response_items_cancelled(
         &self,
         note: &PrefireNote,
@@ -296,6 +296,28 @@ pub trait ReactiveContextCompactor: Send + Sync {
         )
         .await
         .map_err(|error| CompactionFailure::new(error, note.usage.clone()))
+    }
+
+    /// A pre-adoption hook can require regeneration after speculative spend.
+    /// Preserve paid-but-not-adopted work through the same CompactionOutcome
+    /// boundary used by synchronous compaction. Old implementations keep their
+    /// cancellation entry point and original note accounting by default.
+    async fn apply_prefire_response_items_accounted(
+        &self,
+        note: &PrefireNote,
+        instructions: Option<&str>,
+        items: &[ResponseInputItem],
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> std::result::Result<CompactionOutcome, CompactionFailure> {
+        Ok(
+            match self
+                .apply_prefire_response_items_cancelled(note, instructions, items, cancel)
+                .await?
+            {
+                Some(compaction) => CompactionOutcome::adopted(compaction),
+                None => CompactionOutcome::observed(note.usage),
+            },
+        )
     }
 }
 
@@ -1553,7 +1575,7 @@ impl ModelAgent {
         }
         if let Some(note) = self.prefire_cache.take() {
             match compactor
-                .apply_prefire_response_items_cancelled(
+                .apply_prefire_response_items_accounted(
                     &note,
                     self.response_history.instructions.as_deref(),
                     &self.response_history.items,
@@ -1561,22 +1583,22 @@ impl ModelAgent {
                 )
                 .await
             {
-                Ok(Some(compacted)) => {
-                    tracing::info!(step, "prefire pass-2 applied cached note (prefire hit)");
-                    self.adopt_compaction(
-                        compacted,
-                        deepagent_core::compaction_strategy::PREFIRE_PASS2,
-                    );
-                    return Ok(());
-                }
-                Ok(None) => {
+                Ok(outcome) => {
+                    self.side_usage.record_call(&outcome.observed_usage);
+                    if let Some(compacted) = outcome.compaction {
+                        tracing::info!(step, "prefire pass-2 applied cached note (prefire hit)");
+                        self.adopt_compaction(
+                            compacted,
+                            deepagent_core::compaction_strategy::PREFIRE_PASS2,
+                        );
+                        return Ok(());
+                    }
                     tracing::info!(
                         step,
                         "prefire note stale/unusable; falling back to synchronous compaction"
                     );
                     // Pass-1 already spent the call; throwing the note away does
                     // not refund it.
-                    self.side_usage.record_call(&note.usage);
                 }
                 Err(error) => {
                     self.side_usage.record_call(&error.usage);

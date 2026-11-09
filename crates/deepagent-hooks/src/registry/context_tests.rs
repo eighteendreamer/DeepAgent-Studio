@@ -42,6 +42,15 @@ impl Hook for ContextHook {
 
 #[tokio::test]
 async fn h140_report_bounds_deduplicates_and_preserves_modify_without_authority_from_output() {
+    assert_report_bounds(HookPoint::UserPromptSubmit).await;
+}
+
+#[tokio::test]
+async fn h111_precompact_reuses_the_same_provenance_deduplication_and_utf8_limits() {
+    assert_report_bounds(HookPoint::BeforeCompact).await;
+}
+
+async fn assert_report_bounds(point: HookPoint) {
     let calls = Arc::new(AtomicUsize::new(0));
     let mut registry = HookRegistry::new();
     for index in 0..20 {
@@ -58,14 +67,10 @@ async fn h140_report_bounds_deduplicates_and_preserves_modify_without_authority_
             text: "界🦀".repeat(10_000),
             calls: calls.clone(),
         });
-        registry.register(HookPoint::UserPromptSubmit, hook.clone());
-        registry.register(HookPoint::UserPromptSubmit, hook);
+        registry.register(point, hook.clone());
+        registry.register(point, hook);
     }
-    let ctx = HookContext::new(
-        SessionId::nil(),
-        HookPoint::UserPromptSubmit,
-        HookData::prompt("original"),
-    );
+    let ctx = HookContext::new(SessionId::nil(), point, HookData::prompt("original"));
     let report = registry
         .dispatch_report(&ctx, ToolExecutionContext::default())
         .await
@@ -93,7 +98,11 @@ async fn h140_report_bounds_deduplicates_and_preserves_modify_without_authority_
 
 #[tokio::test]
 async fn h140_reports_cannot_admit_context_for_vetoes_observers_or_cancelled_owners() {
-    for point in [HookPoint::UserPromptSubmit, HookPoint::AfterToolUse] {
+    for point in [
+        HookPoint::UserPromptSubmit,
+        HookPoint::BeforeCompact,
+        HookPoint::AfterToolUse,
+    ] {
         for decision in [HookOutcome::deny("blocked"), HookOutcome::ask("approval")] {
             let mut registry = HookRegistry::new();
             let calls = Arc::new(AtomicUsize::new(0));

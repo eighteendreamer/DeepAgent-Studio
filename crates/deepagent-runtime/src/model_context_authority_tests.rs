@@ -5,6 +5,79 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 struct ImageResolver;
 
+#[tokio::test]
+async fn h111_proactive_prefire_consumer_books_regenerated_usage_once_even_when_not_adopted() {
+    struct RegeneratedPrefire(bool);
+    #[async_trait]
+    impl ReactiveContextCompactor for RegeneratedPrefire {
+        async fn compact(
+            &self,
+            _: &[Message],
+            _: CompactionTrigger,
+        ) -> Result<Option<ReactiveCompaction>> {
+            Ok(None)
+        }
+        async fn apply_prefire_response_items_accounted(
+            &self,
+            _: &PrefireNote,
+            _: Option<&str>,
+            _: &[ResponseInputItem],
+            _: Option<Arc<AtomicBool>>,
+        ) -> std::result::Result<CompactionOutcome, CompactionFailure> {
+            let usage = deepagent_models::Usage {
+                prompt_tokens: 120,
+                completion_tokens: 36,
+                total_tokens: 156,
+                ..Default::default()
+            };
+            if self.0 {
+                Ok(CompactionOutcome::adopted(ReactiveCompaction {
+                    messages: vec![Message::user("instructed replacement")],
+                    response_items: None,
+                    tokens_before: 10000,
+                    tokens_after: 10,
+                    summary: "instructed replacement".into(),
+                    usage,
+                }))
+            } else {
+                Ok(CompactionOutcome::observed(usage))
+            }
+        }
+    }
+    use crate::agent::Agent;
+    for adopted in [false, true] {
+        let client = Arc::new(ModelClient::new(
+            Arc::new(crate::test_sequence::mock(vec![])),
+            ModelConfig::deepseek("synthetic"),
+        ));
+        let mut agent = ModelAgent::new(client, "deepseek-flash", "rules", "current", vec![])
+            .with_history(vec![Message::user("old history".repeat(100))])
+            .with_reactive_compactor(Arc::new(RegeneratedPrefire(adopted)))
+            .with_proactive_compaction(1);
+        agent.prefire_cache = Some(PrefireNote {
+            note: "old note".into(),
+            prefix_end: 1,
+            fingerprint: 0,
+            usage: deepagent_models::Usage {
+                prompt_tokens: 120,
+                completion_tokens: 18,
+                total_tokens: 138,
+                ..Default::default()
+            },
+        });
+        let original = agent.conversation().to_vec();
+        agent.maybe_proactive_compact(0, None).await.unwrap();
+        let usage = agent.side_usage().unwrap();
+        assert_eq!(usage.billed_prompt_tokens, 120);
+        assert_eq!(
+            usage.completion_tokens, 36,
+            "observed regeneration and its original note must not be erased or counted twice"
+        );
+        assert!(agent.prefire_cache.is_none());
+        assert_eq!(agent.conversation() != original, adopted);
+    }
+}
+
 impl AttachmentDataResolver for ImageResolver {
     fn data_url(&self, _: &deepagent_core::message::MessageAttachment) -> Option<String> {
         Some("data:image/png;base64,aW1hZ2U=".into())
