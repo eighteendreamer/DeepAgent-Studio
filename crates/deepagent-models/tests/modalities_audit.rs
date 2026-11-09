@@ -157,7 +157,6 @@ async fn sample_image_role(role: &str) -> RoleImageObservation {
 }
 
 #[tokio::test]
-#[ignore = "audit probe: Responses tool outputs may carry input_image content blocks"]
 async fn audit_responses_tool_output_images_are_preserved_before_transport() {
     let transport = Arc::new(RoleImageTransport::default());
     let client = ModelClient::new(
@@ -185,7 +184,11 @@ async fn audit_responses_tool_output_images_are_preserved_before_transport() {
             }]),
             image_result,
         ],
-    );
+    )
+    .with_attachment_data_urls(BTreeMap::from([(
+        "tool-image".into(),
+        "data:image/png;base64,aDEyNy1zeW50aGV0aWM=".into(),
+    )]));
     client
         .stream_response_cancelled(request, Arc::new(AtomicBool::new(false)))
         .await
@@ -215,6 +218,235 @@ async fn audit_responses_tool_output_images_are_preserved_before_transport() {
         output_image_parts, 1,
         "a tool result image attachment was reduced to text before the Responses request"
     );
+    assert_eq!(output["output"][0]["type"], "input_text");
+    assert_eq!(output["output"][0]["text"], "screenshot ready");
+    assert_eq!(
+        output["output"][1]["image_url"],
+        "data:image/png;base64,aDEyNy1zeW50aGV0aWM="
+    );
+}
+
+#[tokio::test]
+async fn h127_function_custom_and_replayed_tool_images_use_one_typed_wire_boundary() {
+    use deepagent_core::tool_content::{ToolResultBody, ToolResultPart};
+    for custom in [false, true] {
+        for cancelled_api in [false, true] {
+            let transport = Arc::new(RoleImageTransport::default());
+            let client = ModelClient::new(
+                transport.clone(),
+                ModelConfig::deepseek("offline-placeholder"),
+            );
+            let image = MessageAttachment {
+                id: "native-tool-image".into(),
+                kind: "image".into(),
+                media_type: Some("image/png".into()),
+                path: Some("not-read-by-models.png".into()),
+                sha256: Some("a".repeat(64)),
+            };
+            let body = ToolResultBody::Parts(vec![
+                ToolResultPart::Text {
+                    text: "before".into(),
+                },
+                ToolResultPart::Image { attachment: image },
+                ToolResultPart::Text {
+                    text: "after".into(),
+                },
+            ]);
+            let call = if custom {
+                ResponseInputItem::CustomToolCall {
+                    call_id: "native-call".into(),
+                    name: "apply_patch".into(),
+                    input: "*** Begin Patch\n*** End Patch".into(),
+                }
+            } else {
+                ResponseInputItem::FunctionCall {
+                    call_id: "native-call".into(),
+                    name: "screenshot".into(),
+                    arguments: "{}".into(),
+                }
+            };
+            let output = if custom {
+                ResponseInputItem::CustomToolCallOutput {
+                    call_id: "native-call".into(),
+                    output: body,
+                }
+            } else {
+                ResponseInputItem::FunctionCallOutput {
+                    call_id: "native-call".into(),
+                    output: body,
+                }
+            };
+            let json = serde_json::to_string(&vec![call, output]).unwrap();
+            assert!(!json.contains("base64"));
+            let items = serde_json::from_str(&json).unwrap();
+            let request = ResponseRequest::from_response_items("deepseek-flash", None, items)
+                .with_attachment_data_urls(BTreeMap::from([(
+                    "native-tool-image".into(),
+                    "data:image/png;base64,aDEyNw==".into(),
+                )]));
+            if cancelled_api {
+                client
+                    .stream_response_cancelled(request, Arc::new(AtomicBool::new(false)))
+                    .await
+                    .unwrap();
+            } else {
+                client.stream_response(request).await.unwrap();
+            }
+            let requests = transport.requests.lock().unwrap();
+            assert_eq!(requests.len(), 1);
+            let expected = if custom {
+                "custom_tool_call_output"
+            } else {
+                "function_call_output"
+            };
+            let outputs: Vec<_> = requests[0]["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|item| item["type"] == expected)
+                .collect();
+            assert_eq!(outputs.len(), 1);
+            assert_eq!(outputs[0]["call_id"], "native-call");
+            assert_eq!(
+                outputs[0]["output"][0],
+                serde_json::json!({"type":"input_text","text":"before"})
+            );
+            assert_eq!(outputs[0]["output"][1]["type"], "input_image");
+            assert_eq!(
+                outputs[0]["output"][1]["image_url"],
+                "data:image/png;base64,aDEyNw=="
+            );
+            assert_eq!(
+                outputs[0]["output"][2],
+                serde_json::json!({"type":"input_text","text":"after"})
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn h127_tool_image_rejections_are_explicit_before_transport_and_text_stays_compatible() {
+    use deepagent_models::WireMode;
+    for (wire_mode, model, resolved) in [
+        (WireMode::Responses, "deepseek-flash", false),
+        (WireMode::Responses, "deepseek-v4-pro", true),
+        (WireMode::ChatCompletions, "deepseek-flash", true),
+    ] {
+        let transport = Arc::new(RoleImageTransport::default());
+        let mut config = ModelConfig::deepseek("offline-placeholder");
+        config.wire_mode = wire_mode;
+        // Verified catalog metadata, not a guess based on the model id.
+        let mut capability =
+            deepagent_models::ModelCapabilityResolver::new().resolve_model_id(model);
+        capability.input_modalities = Some(if model == "deepseek-v4-pro" {
+            vec!["text".into()]
+        } else {
+            vec!["text".into(), "image".into()]
+        });
+        config.capabilities = vec![capability];
+        let client = ModelClient::new(transport.clone(), config);
+        let make = |image: bool| {
+            let result = Message::tool_result("call", "normal text");
+            let result = if image {
+                result.with_attachments(vec![MessageAttachment {
+                    id: "rejection-image".into(),
+                    kind: "image".into(),
+                    media_type: Some("image/png".into()),
+                    path: None,
+                    sha256: None,
+                }])
+            } else {
+                result
+            };
+            let mut request = ResponseRequest::new(
+                model,
+                vec![
+                    Message::assistant("").with_tool_calls(vec![ToolCall {
+                        id: "call".into(),
+                        name: "screenshot".into(),
+                        arguments: serde_json::json!({}),
+                    }]),
+                    result,
+                ],
+            );
+            if resolved {
+                request.attachment_data_urls.insert(
+                    "rejection-image".into(),
+                    "data:image/png;base64,aDEyNw==".into(),
+                );
+            }
+            request
+        };
+        let error = client
+            .stream_response(make(true))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("image"), "{error}");
+        assert!(transport.requests.lock().unwrap().is_empty());
+        // The fixture returns Responses events; the no-image wire compatibility
+        // control applies to that protocol, not an invented Chat response.
+        if wire_mode == WireMode::Responses {
+            client.stream_response(make(false)).await.unwrap();
+            let requests = transport.requests.lock().unwrap();
+            let output = requests[0]["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["type"] == "function_call_output")
+                .unwrap();
+            assert_eq!(output["output"], "normal text");
+        }
+    }
+}
+
+#[tokio::test]
+async fn h127_complete_request_counts_repeated_tool_image_occurrences() {
+    use deepagent_core::tool_content::{ToolResultBody, ToolResultPart};
+    let transport = Arc::new(RoleImageTransport::default());
+    let client = ModelClient::new(
+        transport.clone(),
+        ModelConfig::deepseek("offline-placeholder"),
+    );
+    let image = MessageAttachment {
+        id: "same-image".into(),
+        kind: "image".into(),
+        media_type: Some("image/png".into()),
+        path: None,
+        sha256: None,
+    };
+    let request = ResponseRequest::from_response_items(
+        "deepseek-flash",
+        None,
+        vec![
+            ResponseInputItem::FunctionCall {
+                call_id: "many".into(),
+                name: "screenshot".into(),
+                arguments: "{}".into(),
+            },
+            ResponseInputItem::FunctionCallOutput {
+                call_id: "many".into(),
+                output: ToolResultBody::Parts(
+                    (0..601)
+                        .map(|_| ToolResultPart::Image {
+                            attachment: image.clone(),
+                        })
+                        .collect(),
+                ),
+            },
+        ],
+    )
+    .with_attachment_data_urls(BTreeMap::from([(
+        "same-image".into(),
+        "data:image/png;base64,aDEyNw==".into(),
+    )]));
+    let error = client
+        .stream_response(request)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("image_input_count_exceeded"), "{error}");
+    assert!(transport.requests.lock().unwrap().is_empty());
 }
 
 async fn sample(model: &str, with_image: bool) -> Observation {

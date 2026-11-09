@@ -1130,6 +1130,7 @@ mod tests {
                 meta: None,
             });
             events.emit(RuntimeEvent::ToolCompleted {
+                content: Vec::new(),
                 name: "audit_tool".into(),
                 call_id: "call-audit".into(),
                 ok: true,

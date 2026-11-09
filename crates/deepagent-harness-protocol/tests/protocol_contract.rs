@@ -8,6 +8,75 @@ use deepagent_harness_protocol::{
 use deepagent_runtime::RuntimeEvent;
 
 #[test]
+fn h127_tool_image_refs_survive_runtime_harness_and_wire_roundtrip() {
+    use deepagent_core::message::MessageAttachment;
+    use deepagent_core::tool_content::ToolResultPart;
+    let content = vec![
+        ToolResultPart::Text {
+            text: "untrusted tool text".into(),
+        },
+        ToolResultPart::Image {
+            attachment: MessageAttachment {
+                id: "h127-image".into(),
+                kind: "image".into(),
+                media_type: Some("image/png".into()),
+                path: Some("synthetic/image.png".into()),
+                sha256: Some("a".repeat(64)),
+            },
+        },
+    ];
+    for include_content in [false, true] {
+        let runtime = RuntimeEvent::ToolCompleted {
+            name: "screenshot".into(),
+            call_id: "image-call".into(),
+            ok: true,
+            output: serde_json::json!({"text":"image result"}),
+            content: if include_content {
+                content.clone()
+            } else {
+                Vec::new()
+            },
+            duration_ms: 1,
+            tool_kind: None,
+            file_path: None,
+            summary: None,
+            meta: None,
+        };
+        let event = project_runtime_event(
+            &runtime,
+            &EventContext::new(Some("thread".into()), Some("turn".into())),
+        )
+        .unwrap();
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "item.completed");
+        assert_eq!(json["item"]["callId"], "image-call");
+        assert_eq!(
+            json["item"]["output"],
+            serde_json::json!({"text":"image result"})
+        );
+        if include_content {
+            let fixture: serde_json::Value =
+                serde_json::from_str(include_str!("fixtures/tool-image-result-v1.json")).unwrap();
+            assert_eq!(
+                json, fixture,
+                "SDK fixture must match the real RuntimeEvent projection"
+            );
+            assert_eq!(
+                json["item"]["content"],
+                serde_json::to_value(&content).unwrap()
+            );
+            assert!(!json.to_string().contains("base64"));
+        } else {
+            assert!(
+                json["item"].get("content").is_none(),
+                "text-only event wire is unchanged"
+            );
+        }
+        assert_eq!(serde_json::from_value::<HarnessEvent>(json).unwrap(), event);
+    }
+}
+
+#[test]
 fn h221_config_scope_is_additive_and_admission_guard_round_trips() {
     assert_eq!(
         serde_json::to_value(ConfigReadRequest::default()).unwrap(),

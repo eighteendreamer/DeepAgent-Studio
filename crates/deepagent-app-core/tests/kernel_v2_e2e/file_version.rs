@@ -203,7 +203,7 @@ async fn observe_write(
                             output,
                         },
                 } if call_id == "audit-version-write" => {
-                    Some(serde_json::from_str(output).unwrap())
+                    Some(serde_json::from_str(&output.text()).unwrap())
                 }
                 _ => None,
             })

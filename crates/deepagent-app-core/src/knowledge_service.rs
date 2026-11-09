@@ -1509,6 +1509,7 @@ mod tests {
             ev(
                 2,
                 EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
                     call_id: "c1".into(),
                     ok: false,
                     output: serde_json::json!({"error": "os error 5: access denied"}),
@@ -1719,6 +1720,7 @@ mod tests {
                     call_id: "c1".into(),
                     ok: true,
                     output: serde_json::json!({"content": "..."}),
+                    content: Vec::new(),
                     duration_ms: 4,
                 },
             ),

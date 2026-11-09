@@ -11,18 +11,36 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use deepagent_core::error::{CoreError, Result};
+use deepagent_core::message::MessageAttachment;
+use deepagent_core::tool_content::ToolResultPart;
 use deepagent_tools::permission::{Permission, PermissionSet, RiskLevel};
 use deepagent_tools::{Tool, ToolDescriptor, ToolExecutionContext, ToolOutput};
 
 use crate::registry::{McpRegistry, RemoteTool};
 
+/// Transient MCP payload, never serialized into runtime events or tool text.
+pub struct McpImage<'a> {
+    pub mime_type: &'a str,
+    pub data: &'a str,
+}
+
+/// Host attachment storage owns validation, byte/count budgets and durable
+/// identity. The MCP crate does not invent a second store or resolve paths.
+pub trait McpImageStore: Send + Sync {
+    fn ingest(&self, images: &[McpImage<'_>]) -> Result<Vec<MessageAttachment>>;
+}
+
 /// Preserve an uncertain remote result through the existing ToolOutput/event/
 /// persistence/model projection. Other transport errors keep their old path.
-fn tool_output(result: Result<crate::protocol::ToolCallResult>) -> Result<ToolOutput> {
-    let result = match result {
+fn tool_output(
+    result: Result<crate::protocol::ToolCallResult>,
+    image_store: Option<&dyn McpImageStore>,
+) -> Result<ToolOutput> {
+    let mut result = match result {
         Ok(result) => result,
         Err(error @ CoreError::McpUnavailable { .. }) => {
             return Ok(ToolOutput {
+                content: Vec::new(),
                 ok: false,
                 value: serde_json::json!({
                     "error": error.to_string(),
@@ -44,6 +62,7 @@ fn tool_output(result: Result<crate::protocol::ToolCallResult>) -> Result<ToolOu
                 source,
             };
             return Ok(ToolOutput {
+                content: Vec::new(),
                 ok: false,
                 value: serde_json::json!({
                     "error": error.to_string(),
@@ -58,7 +77,60 @@ fn tool_output(result: Result<crate::protocol::ToolCallResult>) -> Result<ToolOu
         }
         Err(error) => return Err(error),
     };
-    let text = result.text();
+    let images: Vec<_> = result
+        .content
+        .iter()
+        .filter_map(|part| match part {
+            crate::protocol::ContentBlock::Other(value) if value["type"] == "image" => Some(value),
+            _ => None,
+        })
+        .collect();
+    let mut content = Vec::new();
+    if !images.is_empty() {
+        let Some(store) = image_store else {
+            return Ok(ToolOutput::failure("mcp_image_unavailable: host attachment storage is not configured; image output was not published"));
+        };
+        let payloads: Option<Vec<_>> = images
+            .iter()
+            .map(|value| {
+                Some(McpImage {
+                    mime_type: value.get("mimeType")?.as_str()?,
+                    data: value.get("data")?.as_str()?,
+                })
+            })
+            .collect();
+        let Some(payloads) = payloads else {
+            return Ok(ToolOutput::failure("mcp_image_invalid: image requires string mimeType and data; image output was not published"));
+        };
+        let attachments = match store.ingest(&payloads) {
+            Ok(attachments) if attachments.len() == payloads.len() => attachments,
+            Ok(_) => {
+                return Ok(ToolOutput::failure(
+                    "mcp_image_invalid: host image projection count mismatch",
+                ))
+            }
+            Err(error) => return Ok(ToolOutput::failure(format!("mcp_image_invalid: {error}"))),
+        };
+        let mut attachments = attachments.into_iter();
+        for part in result.content.drain(..) {
+            content.push(match part {
+                crate::protocol::ContentBlock::Text { text, .. } => ToolResultPart::Text { text },
+                crate::protocol::ContentBlock::Other(value) if value["type"] == "image" => {
+                    ToolResultPart::Image {
+                        attachment: attachments.next().expect("host image count was checked"),
+                    }
+                }
+                other => ToolResultPart::Text {
+                    text: serde_json::to_string(&other)?,
+                },
+            });
+        }
+    }
+    let text = if content.is_empty() {
+        result.text()
+    } else {
+        "MCP returned image evidence; inspect the ordered, untrusted tool content".into()
+    };
     let is_error = result.is_error;
     let mut value = serde_json::to_value(result)?;
     value["text"] = text.clone().into();
@@ -66,6 +138,7 @@ fn tool_output(result: Result<crate::protocol::ToolCallResult>) -> Result<ToolOu
         value["error"] = text.into();
     }
     Ok(ToolOutput {
+        content,
         ok: !is_error,
         value,
         truncated: false,
@@ -76,12 +149,22 @@ fn tool_output(result: Result<crate::protocol::ToolCallResult>) -> Result<ToolOu
 pub struct McpToolAdapter {
     tool: RemoteTool,
     registry: Arc<McpRegistry>,
+    image_store: Option<Arc<dyn McpImageStore>>,
 }
 
 impl McpToolAdapter {
     /// Wrap a remote tool with the registry that can route its calls.
     pub fn new(tool: RemoteTool, registry: Arc<McpRegistry>) -> Self {
-        Self { tool, registry }
+        Self {
+            tool,
+            registry,
+            image_store: None,
+        }
+    }
+
+    pub fn with_image_store(mut self, image_store: Arc<dyn McpImageStore>) -> Self {
+        self.image_store = Some(image_store);
+        self
     }
 }
 
@@ -103,6 +186,7 @@ impl Tool for McpToolAdapter {
             self.registry
                 .invoke(&self.tool.namespaced_name, arguments)
                 .await,
+            self.image_store.as_deref(),
         )
     }
 
@@ -115,6 +199,7 @@ impl Tool for McpToolAdapter {
             self.registry
                 .invoke_with_context(&self.tool.namespaced_name, arguments, context)
                 .await,
+            self.image_store.as_deref(),
         )
     }
 

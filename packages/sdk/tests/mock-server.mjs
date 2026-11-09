@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline";
+import { readFileSync } from "node:fs";
 
 const threads = new Set();
 const configurations = new Map();
@@ -98,6 +99,11 @@ input.on("line", (line) => {
         capabilitySnapshot: { runId: turnId, threadId: request.params.threadId, snapshotId: "snapshot-start-mock" }
       });
       setTimeout(() => {
+        if (request.params.input === "fixture:h127-tool-image") {
+          const fixture = JSON.parse(readFileSync(new URL("../../../crates/deepagent-harness-protocol/tests/fixtures/tool-image-result-v1.json", import.meta.url), "utf8"));
+          event({ ...fixture, threadId: request.params.threadId, turnId });
+          return;
+        }
         event({
           type: "item.updated",
           threadId: request.params.threadId,

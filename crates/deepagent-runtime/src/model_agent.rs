@@ -488,7 +488,10 @@ impl ResponseHistory {
             }
             Role::Tool => {
                 let call_id = message.tool_call_id.clone().unwrap_or_default();
-                self.push_tool_output(call_id, message.content.clone());
+                self.push_tool_output(
+                    call_id,
+                    deepagent_core::tool_content::ToolResultBody::from_message(message),
+                );
             }
             _ => {
                 if message.should_persist_reasoning() {
@@ -527,7 +530,11 @@ impl ResponseHistory {
         }
     }
 
-    fn push_tool_output(&mut self, call_id: String, output: String) {
+    fn push_tool_output(
+        &mut self,
+        call_id: String,
+        output: deepagent_core::tool_content::ToolResultBody,
+    ) {
         if self.is_custom_call(&call_id) {
             self.items
                 .push(ResponseInputItem::CustomToolCallOutput { call_id, output });
@@ -841,7 +848,12 @@ impl ModelAgent {
         self
     }
 
-    fn push_tool_observation(&mut self, call_id: String, tool_name: &str, content: String) {
+    fn push_tool_observation(
+        &mut self,
+        call_id: String,
+        tool_name: &str,
+        content: deepagent_core::tool_content::ToolResultBody,
+    ) {
         if tool_name == "apply_patch" && !self.response_history.is_custom_call(&call_id) {
             tracing::warn!(
                 call_id = call_id.as_str(),
@@ -930,11 +942,11 @@ impl ModelAgent {
             .filter_map(|item| match item {
                 ResponseInputItem::FunctionCallOutput { call_id, output }
                 | ResponseInputItem::CustomToolCallOutput { call_id, output }
-                    if !output.is_empty()
-                        && output != CLEARED_MARKER
+                    if (!output.text().is_empty() || output.attachments().next().is_some())
+                        && output.text() != CLEARED_MARKER
                         && deepagent_context::TokenCounter::count(
                             &deepagent_context::HeuristicTokenizer::new(),
-                            output,
+                            &output.text(),
                         ) > min_tokens.max(deepagent_context::TokenCounter::count(
                             &deepagent_context::HeuristicTokenizer::new(),
                             CLEARED_MARKER,
@@ -958,7 +970,7 @@ impl ModelAgent {
                     if let Some((_, replacement)) =
                         replacements.iter().find(|(id, _)| id == call_id)
                     {
-                        *output = replacement.clone();
+                        *output = replacement.clone().into();
                     }
                 }
                 _ => {}
@@ -1022,33 +1034,27 @@ impl ModelAgent {
             let mut urls = std::collections::BTreeMap::new();
             let mut references = std::collections::BTreeMap::new();
             for item in &request.input {
-                if let deepagent_core::response_item::ResponseInputItem::InputMessage {
-                    attachments,
-                    ..
-                } = item
-                {
-                    for attachment in attachments {
-                        if attachment.kind == "image" {
-                            // Both provider adapters index materialized URLs by
-                            // id. Reject ambiguous history, never let a later
-                            // reference overwrite an earlier content identity.
-                            if let Some(previous) = references.insert(&attachment.id, attachment) {
-                                if previous != attachment {
-                                    return Err(CoreError::invalid(
+                for attachment in item.image_attachments() {
+                    if attachment.kind == "image" {
+                        // Both provider adapters index materialized URLs by
+                        // id. Reject ambiguous history, never let a later
+                        // reference overwrite an earlier content identity.
+                        if let Some(previous) = references.insert(&attachment.id, attachment) {
+                            if previous != attachment {
+                                return Err(CoreError::invalid(
                                         "attachment_integrity: conflicting image references; reattach with a new id",
+                                    ));
+                            }
+                        }
+                        if let Some(url) = resolver.try_data_url(attachment)? {
+                            if let Some(previous) = urls.get(&attachment.id) {
+                                if previous != &url {
+                                    return Err(CoreError::invalid(
+                                        "attachment_integrity: inconsistent image materialization",
                                     ));
                                 }
                             }
-                            if let Some(url) = resolver.try_data_url(attachment)? {
-                                if let Some(previous) = urls.get(&attachment.id) {
-                                    if previous != &url {
-                                        return Err(CoreError::invalid(
-                                            "attachment_integrity: inconsistent image materialization",
-                                        ));
-                                    }
-                                }
-                                urls.insert(attachment.id.clone(), url);
-                            }
+                            urls.insert(attachment.id.clone(), url);
                         }
                     }
                 }
@@ -1361,7 +1367,11 @@ impl ModelAgent {
         };
         let content = serde_json::to_string(&envelope).unwrap_or_else(|_| obs.output.to_string());
         if let Some(call_id) = call_id {
-            self.push_tool_observation(call_id, &obs.tool, content);
+            self.push_tool_observation(
+                call_id,
+                &obs.tool,
+                deepagent_core::tool_content::ToolResultBody::with_parts(content, &obs.content),
+            );
         } else {
             // Verification, Stop-hook and CompletionGate feedback is generated
             // by the kernel, not by a model tool_use block. Sending it as a
@@ -3072,7 +3082,7 @@ mod tests {
             });
             history.items.push(ResponseInputItem::FunctionCallOutput {
                 call_id: format!("call-{index}"),
-                output: format!("{}-{index}", "settled output ".repeat(40)),
+                output: format!("{}-{index}", "settled output ".repeat(40)).into(),
             });
         }
 
@@ -3091,7 +3101,7 @@ mod tests {
         assert!(continued.input.starts_with(&first.input));
         assert!(matches!(
             &continued.input[2],
-            ResponseInputItem::FunctionCallOutput { output, .. } if output.starts_with("settled output")
+            ResponseInputItem::FunctionCallOutput { output, .. } if output.text().starts_with("settled output")
         ));
     }
 
@@ -3462,6 +3472,7 @@ mod tests {
         let mut agent = ModelAgent::new(client, "deepseek-v4-flash", "sys", "look up", vec![]);
 
         let obs = Observation {
+            content: Vec::new(),
             tool: "adversarial_verification".to_string(),
             ok: false,
             raw_output: None,
@@ -4410,7 +4421,7 @@ mod tests {
                 if call_id == "meter-call" && name == "lookup" && sent_args == &arguments)));
         assert!(sent.iter().any(|item| matches!(item,
             ResponseInputItem::FunctionCallOutput { call_id, output }
-                if call_id == "meter-call" && output.contains(&result))));
+                if call_id == "meter-call" && output.text().contains(&result))));
         eprintln!(
             "context wire audit: retained={} after_call={} final={} billed_prompt=22000",
             initial.occupancy_tokens(),
@@ -4699,7 +4710,7 @@ mod tests {
             .items
             .iter()
             .any(|item| matches!(item,
-            ResponseInputItem::FunctionCallOutput { output, .. } if output == "ok")));
+            ResponseInputItem::FunctionCallOutput { output, .. } if output == &"ok".into())));
     }
 
     #[test]
@@ -5493,6 +5504,7 @@ mod tests {
         let first_decision = agent.think(0, &[]).await.unwrap();
         assert!(matches!(first_decision, AgentDecision::CallTool(_)));
         let observation = Observation {
+            content: Vec::new(),
             tool: "read_file".to_string(),
             ok: true,
             output: serde_json::json!({"content": "body"}),
@@ -5546,6 +5558,7 @@ mod tests {
             serde_json::json!({"type": "object"}),
         ));
         let observation = Observation {
+            content: Vec::new(),
             tool: "tool_search".into(),
             ok: true,
             output: serde_json::json!({"matches": [{"name": "mcp__rea__inspect"}]}),
@@ -5825,6 +5838,7 @@ mod tests {
         let events = response_text_completed("sum is 3");
         let mut agent = ModelAgent::new(client(events), "deepseek-v4-flash", "sys", "add", vec![]);
         let obs = Observation {
+            content: Vec::new(),
             tool: "add".to_string(),
             ok: true,
             output: serde_json::json!({"sum": 3}),
@@ -5836,7 +5850,7 @@ mod tests {
             matches!(
                 item,
                 ResponseInputItem::FunctionCallOutput { call_id, output }
-                    if call_id == "c1" && output.contains("\"sum\":3")
+                    if call_id == "c1" && output.text().contains("\"sum\":3")
             )
         }));
         // A tool-role compatibility projection correlated to c1 is still kept
@@ -5865,6 +5879,7 @@ mod tests {
         ));
         let mut agent = ModelAgent::new(client, "deepseek-v4-flash", "sys", "add", vec![]);
         let obs = Observation {
+            content: Vec::new(),
             tool: "add".to_string(),
             ok: true,
             output: serde_json::json!({"sum": 3}),
@@ -5897,6 +5912,7 @@ mod tests {
         ));
         let mut agent = ModelAgent::new(client, "deepseek-v4-flash", "sys", "patch", vec![]);
         let obs = Observation {
+            content: Vec::new(),
             tool: "apply_patch".to_string(),
             ok: true,
             raw_output: None,
@@ -5929,6 +5945,7 @@ mod tests {
         let mut agent =
             ModelAgent::new(client(events), "deepseek-v4-flash", "sys", "search", vec![]);
         let obs = Observation {
+            content: Vec::new(),
             tool: "web_search".to_string(),
             ok: false,
             raw_output: None,
@@ -5958,6 +5975,7 @@ mod tests {
         // in the sliding window the hint must demand a different approach.
         let mut agent = ModelAgent::new(client(vec![]), "m", "sys", "goal", vec![]);
         let fail = |id: &str| Observation {
+            content: Vec::new(),
             tool: "bash".to_string(),
             ok: false,
             raw_output: None,
@@ -5965,6 +5983,7 @@ mod tests {
             call_id: Some(id.to_string()),
         };
         let ok = |id: &str| Observation {
+            content: Vec::new(),
             tool: "bash".to_string(),
             ok: true,
             raw_output: None,
@@ -5999,6 +6018,7 @@ mod tests {
         assert!(hint.contains("built-in tools"), "hint: {hint}");
         // A different tool failing once keeps the standard hint.
         agent.record_observation(&Observation {
+            content: Vec::new(),
             tool: "web_search".to_string(),
             ok: false,
             raw_output: None,
@@ -6023,6 +6043,7 @@ mod tests {
         let events = response_text_completed("retry complete");
         let mut agent = ModelAgent::new(client(events), "model", "system", "goal", vec![]);
         let feedback = Observation {
+            content: Vec::new(),
             tool: "completion_gate".to_string(),
             ok: false,
             raw_output: None,

@@ -318,6 +318,7 @@ mod tests {
             ev(
                 2,
                 EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
                     call_id: "c1".to_string(),
                     ok: false,
                     output: serde_json::json!({"error": "old_string not unique"}),
@@ -388,6 +389,7 @@ mod tests {
             ev(
                 2,
                 EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
                     call_id: "c1".into(),
                     ok: false,
                     output: serde_json::json!({"error": "network unreachable"}),
@@ -403,6 +405,7 @@ mod tests {
             ev(
                 4,
                 EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
                     call_id: "c2".into(),
                     ok: true,
                     output: serde_json::json!({"results": []}),
@@ -481,6 +484,7 @@ mod tests {
             ev(
                 2,
                 EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
                     call_id: "c1".into(),
                     ok: false,
                     output: serde_json::json!({"error": "boom"}),
@@ -522,6 +526,7 @@ mod tests {
             ev(
                 2,
                 EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
                     call_id: "c1".into(),
                     ok: true,
                     output: serde_json::json!({"bytes": 1234}),
@@ -634,6 +639,7 @@ mod tests {
             ev(
                 2,
                 EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
                     call_id: "c1".into(),
                     ok: true,
                     output: serde_json::json!({}),

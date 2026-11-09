@@ -483,7 +483,7 @@ pub fn render_stall_transcript_from_response_items(
                 out.push_str(&format!(
                     "[tool_result for {}] {}\n",
                     call_id,
-                    truncate_snippet(output)
+                    truncate_snippet(&output.text())
                 ));
             }
             ResponseInputItem::WebSearchCall { id, status, action } => {
@@ -629,7 +629,7 @@ mod tests {
             },
             ResponseInputItem::FunctionCallOutput {
                 call_id: "call_bash".to_string(),
-                output: r#"{"status":"ok"}"#.to_string(),
+                output: r#"{"status":"ok"}"#.into(),
             },
             ResponseInputItem::CustomToolCall {
                 call_id: "call_patch".to_string(),
@@ -638,7 +638,7 @@ mod tests {
             },
             ResponseInputItem::CustomToolCallOutput {
                 call_id: "call_patch".to_string(),
-                output: "patch applied".to_string(),
+                output: "patch applied".into(),
             },
             ResponseInputItem::WebSearchCall {
                 id: "ws_1".to_string(),

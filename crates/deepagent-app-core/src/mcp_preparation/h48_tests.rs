@@ -63,7 +63,8 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
     let old = service.ready_registry();
     let old_adapters = deepagent_mcp::adapters_for(old.clone());
     let mut previous_tools = ToolRegistry::new();
-    crate::mcp_runtime::attach_mcp_tools(&mut previous_tools, Some(&service), None, None).unwrap();
+    crate::mcp_runtime::attach_mcp_tools(&mut previous_tools, Some(&service), None, None, None)
+        .unwrap();
     std::fs::write(root.path().join("a.fail"), "synthetic failure").unwrap();
     assert!(matches!(
         old.invoke("mcp__a__echo", serde_json::json!({})).await,
@@ -99,7 +100,8 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
     assert_eq!(failures[0].0, "a");
     let mut registry = ToolRegistry::new();
     let projection =
-        crate::mcp_runtime::attach_mcp_tools(&mut registry, Some(&service), None, None).unwrap();
+        crate::mcp_runtime::attach_mcp_tools(&mut registry, Some(&service), None, None, None)
+            .unwrap();
     assert!(registry.get("mcp__a__echo").is_none());
     assert!(registry.get("mcp__b__echo").is_some());
     assert_eq!(

@@ -428,11 +428,13 @@ async fn production_replacement_and_cold_resume(reject_prune: bool) {
         }
         assert!(events.iter().any(|event| matches!(&event.payload,
             EventPayload::ResponseItemAppended { item: ResponseInputItem::FunctionCallOutput { call_id, output } }
-                if call_id == "first-read" && output.contains("H260 real production read"))));
+                if call_id == "first-read" && output.text().contains("H260 real production read"))));
         let replay = crate::input_runtime::response_items_from_events(&events);
-        assert!(!replay.iter().any(|item| matches!(item,
+        assert!(
+            !replay.iter().any(|item| matches!(item,
             ResponseInputItem::FunctionCallOutput { call_id, output }
-                if call_id == "first-read" && output.contains("H260 real production read"))));
+                if call_id == "first-read" && output.text().contains("H260 real production read")))
+        );
         let mut session = Session::recover(&db, &SystemClock, sid).unwrap();
         match tool {
             "edit_file" => {

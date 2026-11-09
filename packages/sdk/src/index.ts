@@ -88,6 +88,20 @@ export interface HarnessErrorEvent {
   data?: unknown;
 }
 
+/** Durable, untrusted tool evidence; image bytes are not embedded in events. */
+export type ToolResultContent =
+  | { type: "text"; text: string }
+  | {
+      type: "image";
+      attachment: {
+        id: string;
+        kind: "image";
+        media_type?: string;
+        path?: string;
+        sha256?: string;
+      };
+    };
+
 export type ItemPayload =
   | { kind: "content_delta"; text: string }
   | { kind: "reasoning_delta"; text: string }
@@ -106,6 +120,7 @@ export type ItemPayload =
       callId: string;
       ok: boolean;
       output: unknown;
+      content?: ToolResultContent[];
       durationMs: number;
       toolKind?: string;
       filePath?: string;

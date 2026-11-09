@@ -77,6 +77,8 @@ pub struct Observation {
     pub ok: bool,
     /// JSON output / error detail.
     pub output: serde_json::Value,
+    /// Ordered, reference-only content from the completed tool.
+    pub content: Vec<deepagent_core::tool_content::ToolResultPart>,
     pub raw_output: Option<serde_json::Value>,
     /// The originating tool-call id, when known, so the agent can correlate this
     /// observation with the exact `tool_calls[].id` it emitted (required when a
@@ -91,6 +93,7 @@ impl Observation {
             tool: tool.into(),
             ok,
             output,
+            content: Vec::new(),
             raw_output: None,
             call_id: None,
         }

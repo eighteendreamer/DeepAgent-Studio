@@ -505,7 +505,11 @@ fn h80_unique_mixed_output_kinds_are_repaired_losslessly_and_idempotently() {
                     match item {
                         ResponseInputItem::FunctionCallOutput { output, .. }
                         | ResponseInputItem::CustomToolCallOutput { output, .. } => {
-                            output.push_str("\r\n\0中文\t{ raw: not JSON }");
+                            let deepagent_core::tool_content::ToolResultBody::Text(text) = output
+                            else {
+                                panic!("identity fixture expects a legacy textual tool result");
+                            };
+                            text.push_str("\r\n\0中文\t{ raw: not JSON }");
                         }
                         _ => {}
                     }
@@ -861,7 +865,7 @@ fn h261_real_empty_results_and_truly_missing_pairs_keep_existing_recovery_policy
             | ResponseInputItem::CustomToolCallOutput { output, .. } => output,
             _ => unreachable!(),
         };
-        assert!(output.contains("tool result missing"));
+        assert!(output.text().contains("tool result missing"));
         let orphan = items("h261-orphan", custom, 2);
         let repaired = crate::responses::repair_tool_call_pairs(&orphan);
         assert_eq!(repaired.len(), 3);

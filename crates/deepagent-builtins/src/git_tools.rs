@@ -53,6 +53,7 @@ async fn run_git<E: CommandExecutor>(executor: &E, cwd: &str, command: &str) -> 
                 "stderr": cap(out.stderr),
             });
             Ok(ToolOutput {
+                content: Vec::new(),
                 ok,
                 value,
                 truncated: false,
@@ -256,6 +257,7 @@ impl<E: CommandExecutor> Tool for GitCommitTool<E> {
             if let Ok(o) = &add {
                 if o.exit_code != Some(0) {
                     return Ok(ToolOutput {
+                        content: Vec::new(),
                         ok: false,
                         value: serde_json::json!({
                             "stage_exit_code": o.exit_code,
@@ -284,6 +286,7 @@ impl<E: CommandExecutor> Tool for GitCommitTool<E> {
                     .collect();
                 if !blocking.is_empty() {
                     return Ok(ToolOutput {
+                        content: Vec::new(),
                         ok: false,
                         value: serde_json::json!({
                             "error": "refusing to commit: potential secret(s) detected in staged changes",

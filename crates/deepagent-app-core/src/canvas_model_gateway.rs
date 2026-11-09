@@ -3077,7 +3077,7 @@ fn sniff_audio_mime(bytes: &[u8]) -> Option<String> {
 /// Providers label payloads inconsistently, and the type reported here becomes
 /// the stored artifact's extension plus the `data:` prefix sent back to other
 /// providers, so the bytes win over any declared name.
-fn sniff_image_mime(bytes: &[u8]) -> Option<String> {
+pub(crate) fn sniff_image_mime(bytes: &[u8]) -> Option<String> {
     let mime = match bytes {
         [0x89, b'P', b'N', b'G', ..] => "image/png",
         [0xff, 0xd8, 0xff, ..] => "image/jpeg",

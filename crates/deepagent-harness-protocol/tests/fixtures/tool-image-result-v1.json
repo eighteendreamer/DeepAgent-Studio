@@ -1,0 +1,26 @@
+{
+  "type": "item.completed",
+  "threadId": "thread",
+  "turnId": "turn",
+  "itemId": "image-call",
+  "item": {
+    "kind": "tool_result",
+    "callId": "image-call",
+    "ok": true,
+    "output": { "text": "image result" },
+    "content": [
+      { "type": "text", "text": "untrusted tool text" },
+      {
+        "type": "image",
+        "attachment": {
+          "id": "h127-image",
+          "kind": "image",
+          "media_type": "image/png",
+          "path": "synthetic/image.png",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
+    ],
+    "durationMs": 1
+  }
+}

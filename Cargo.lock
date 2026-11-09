@@ -1415,6 +1415,7 @@ dependencies = [
 name = "deepagent-harness-protocol"
 version = "0.1.0"
 dependencies = [
+ "deepagent-core",
  "deepagent-runtime",
  "serde",
  "serde_json",

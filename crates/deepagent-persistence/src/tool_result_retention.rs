@@ -267,7 +267,8 @@ mod tests {
                         call_id: "call".into(),
                         output:
                             serde_json::json!({"status":"ok","result":{"saved_path":record.path}})
-                                .to_string(),
+                                .to_string()
+                                .into(),
                     },
                 },
                 Timestamp::from_millis(2),
@@ -308,6 +309,7 @@ mod tests {
             .append(
                 source,
                 EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
                     call_id: "call".into(),
                     ok: true,
                     output: serde_json::json!({"saved_path":record.path}),

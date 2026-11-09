@@ -86,6 +86,124 @@ fn admitted_images_survive_history_replacement_compaction_and_metering() {
     }
 }
 
+#[test]
+fn h127_tool_images_survive_native_and_legacy_compaction_adoption_and_metering() {
+    use deepagent_core::message::MessageAttachment;
+    use deepagent_core::tool_content::{ToolResultBody, ToolResultPart};
+    for custom in [false, true] {
+        for native in [false, true] {
+            let client = Arc::new(ModelClient::new(
+                Arc::new(crate::test_sequence::mock(vec![])),
+                ModelConfig::deepseek("synthetic"),
+            ));
+            let reserve = client.image_token_reserve("deepseek-flash");
+            let parts = vec![
+                ToolResultPart::Text {
+                    text: "before".into(),
+                },
+                ToolResultPart::Image {
+                    attachment: MessageAttachment {
+                        id: "tool-left".into(),
+                        kind: "image".into(),
+                        media_type: Some("image/png".into()),
+                        path: Some("left.png".into()),
+                        sha256: Some("a".repeat(64)),
+                    },
+                },
+                ToolResultPart::Text {
+                    text: "between".into(),
+                },
+                ToolResultPart::Image {
+                    attachment: MessageAttachment {
+                        id: "tool-right".into(),
+                        kind: "image".into(),
+                        media_type: Some("image/png".into()),
+                        path: Some("right.png".into()),
+                        sha256: Some("b".repeat(64)),
+                    },
+                },
+            ];
+            let call = if custom {
+                ResponseInputItem::CustomToolCall {
+                    call_id: "tool-image".into(),
+                    name: "apply_patch".into(),
+                    input: "synthetic".into(),
+                }
+            } else {
+                ResponseInputItem::FunctionCall {
+                    call_id: "tool-image".into(),
+                    name: "screenshot".into(),
+                    arguments: "{}".into(),
+                }
+            };
+            let output = if custom {
+                ResponseInputItem::CustomToolCallOutput {
+                    call_id: "tool-image".into(),
+                    output: ToolResultBody::Parts(parts),
+                }
+            } else {
+                ResponseInputItem::FunctionCallOutput {
+                    call_id: "tool-image".into(),
+                    output: ToolResultBody::Parts(parts),
+                }
+            };
+            let retained = vec![
+                ResponseInputItem::Message {
+                    role: "user".into(),
+                    content: "summary".into(),
+                },
+                call,
+                output.clone(),
+            ];
+            let messages = deepagent_models::messages_from_response_items(Some("rules"), &retained);
+            let mut agent = ModelAgent::new(client, "deepseek-flash", "rules", "goal", vec![])
+                .with_response_history(retained.clone())
+                .with_attachment_resolver(Arc::new(ImageResolver));
+            agent.adopt_compaction(
+                ReactiveCompaction {
+                    messages,
+                    response_items: native.then_some(retained),
+                    tokens_before: 10000,
+                    tokens_after: 100,
+                    summary: "summary".into(),
+                    usage: Default::default(),
+                },
+                "h127-retained-tool-image",
+            );
+            let request = agent.request_for_current_history().unwrap();
+            assert_eq!(request.attachment_data_urls.len(), 2);
+            assert_eq!(agent.context_measurement().1.attachments, reserve * 2);
+            if native {
+                assert!(
+                    request.input.contains(&output),
+                    "native compaction must preserve exact text/image ordering"
+                );
+            }
+            let wire = serde_json::to_value(request).unwrap();
+            let kind = if custom {
+                "custom_tool_call_output"
+            } else {
+                "function_call_output"
+            };
+            let output = wire["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["type"] == kind)
+                .unwrap();
+            assert_eq!(
+                output["output"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|part| part["type"] == "input_image")
+                    .count(),
+                2
+            );
+        }
+    }
+}
+
 #[derive(Default)]
 struct SurfaceStore {
     reject: AtomicBool,
@@ -132,7 +250,7 @@ fn stale_result(agent: ModelAgent, custom: bool) -> ModelAgent {
         });
         items.push(ResponseInputItem::CustomToolCallOutput {
             call_id: "old-read".into(),
-            output: "observed bytes ".repeat(200),
+            output: "observed bytes ".repeat(200).into(),
         });
     } else {
         items.push(ResponseInputItem::FunctionCall {
@@ -142,7 +260,7 @@ fn stale_result(agent: ModelAgent, custom: bool) -> ModelAgent {
         });
         items.push(ResponseInputItem::FunctionCallOutput {
             call_id: "old-read".into(),
-            output: "observed bytes ".repeat(200),
+            output: "observed bytes ".repeat(200).into(),
         });
     }
     items.extend((0..10).map(|index| ResponseInputItem::Message {

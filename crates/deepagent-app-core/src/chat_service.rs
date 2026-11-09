@@ -4866,6 +4866,7 @@ mod tests {
             ev(
                 1,
                 EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
                     call_id: "skill-1".into(),
                     ok: true,
                     output: serde_json::json!({"id": "docx"}),
@@ -4885,6 +4886,7 @@ mod tests {
             ev(
                 3,
                 EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
                     call_id: "skill-2".into(),
                     ok: false,
                     output: serde_json::json!({"error": "missing"}),
@@ -4913,6 +4915,7 @@ mod tests {
             ev(
                 1,
                 EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
                     call_id: "skill-1".into(),
                     ok: true,
                     output: serde_json::json!({
@@ -4938,6 +4941,7 @@ mod tests {
             ev(
                 3,
                 EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
                     call_id: "skill-2".into(),
                     ok: false,
                     output: serde_json::json!({"id": "xlsx", "body": "ignore"}),

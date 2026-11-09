@@ -137,12 +137,12 @@ pub fn response_items_from_messages(messages: &[Message]) -> (Option<String>, Ve
                 if custom_call_ids.contains(call_id.as_str()) {
                     items.push(ResponseItem::CustomToolCallOutput {
                         call_id,
-                        output: message.content.clone(),
+                        output: deepagent_core::tool_content::ToolResultBody::from_message(message),
                     });
                 } else {
                     items.push(ResponseItem::FunctionCallOutput {
                         call_id,
-                        output: message.content.clone(),
+                        output: deepagent_core::tool_content::ToolResultBody::from_message(message),
                     });
                 }
             }
@@ -284,12 +284,12 @@ pub fn repair_tool_call_pairs(items: &[ResponseInputItem]) -> Vec<ResponseInputI
                     if custom_call_ids.contains(&call_id) {
                         repaired.push(ResponseInputItem::CustomToolCallOutput {
                             call_id: call_id.clone(),
-                            output,
+                            output: output.into(),
                         });
                     } else {
                         repaired.push(ResponseInputItem::FunctionCallOutput {
                             call_id: call_id.clone(),
-                            output,
+                            output: output.into(),
                         });
                     }
                 }
@@ -479,7 +479,10 @@ pub fn messages_from_response_items(
             ResponseItem::FunctionCallOutput { call_id, output }
             | ResponseItem::CustomToolCallOutput { call_id, output } => {
                 flush_tool_calls(&mut pending_tool_calls, &mut out, &mut pending_reasoning);
-                out.push(Message::tool_result(call_id.clone(), output.clone()));
+                out.push(
+                    Message::tool_result(call_id.clone(), output.text().into_owned())
+                        .with_attachments(output.attachments().cloned().collect()),
+                );
             }
             ResponseItem::WebSearchCall { .. } => {
                 flush_tool_calls(&mut pending_tool_calls, &mut out, &mut pending_reasoning);
@@ -564,7 +567,7 @@ mod tests {
         assert!(repaired.iter().any(|item| matches!(
             item,
             ResponseItem::FunctionCallOutput { call_id, output }
-                if call_id == "call-missing" && output.contains("tool result missing")
+                if call_id == "call-missing" && output.text().contains("tool result missing")
         )));
         assert!(repaired.iter().any(|item| matches!(
             item,
@@ -709,7 +712,7 @@ mod tests {
         assert!(matches!(
             &items[1],
             ResponseItem::CustomToolCallOutput { call_id, output }
-                if call_id == "call-patch" && output == "patch applied"
+                if call_id == "call-patch" && output == &"patch applied".into()
         ));
     }
 

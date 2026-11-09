@@ -159,7 +159,7 @@ async fn assert_attached_echo(
 ) {
     let mut tools = deepagent_tools::ToolRegistry::new();
     let snapshot =
-        crate::mcp_runtime::attach_mcp_tools(&mut tools, Some(service), projection, plugins)
+        crate::mcp_runtime::attach_mcp_tools(&mut tools, Some(service), projection, plugins, None)
             .unwrap();
     assert!(snapshot.generation.is_some());
     assert!(snapshot
@@ -465,6 +465,7 @@ async fn h47_real_plugin_claims_pending_identity_before_waiting_and_retires_it_o
         Some(&service),
         Some(&projection),
         Some(current),
+        None,
     )
     .unwrap();
     assert!(fresh.lifecycle.iter().all(|entry| entry.server_id != *name));

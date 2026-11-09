@@ -381,7 +381,7 @@ fn h242_saved_surface_uses_existing_compaction_replacement_and_native_item_proje
     let output = session
         .append_response_item(ResponseInputItem::FunctionCallOutput {
             call_id: "function-242".into(),
-            output: "OLD_RESULT_MUST_NOT_REAPPEAR".repeat(1000),
+            output: "OLD_RESULT_MUST_NOT_REAPPEAR".repeat(1000).into(),
         })
         .unwrap();
     session
@@ -394,7 +394,7 @@ fn h242_saved_surface_uses_existing_compaction_replacement_and_native_item_proje
     session
         .append_response_item(ResponseInputItem::CustomToolCallOutput {
             call_id: "custom-242".into(),
-            output: "NATIVE_CUSTOM_RESULT".repeat(1000),
+            output: "NATIVE_CUSTOM_RESULT".repeat(1000).into(),
         })
         .unwrap();
     session

@@ -187,6 +187,8 @@ impl Serialize for ResponseRequest {
         S: Serializer,
     {
         use serde::ser::SerializeMap;
+        self.validate_tool_image_resolution()
+            .map_err(serde::ser::Error::custom)?;
         let mut map = serializer.serialize_map(None)?;
         map.serialize_entry("model", &self.model)?;
         if let Some(value) = &self.instructions {
@@ -286,7 +288,7 @@ fn response_input_items_to_wire(
                 serde_json::json!({
                     "type": "function_call_output",
                     "call_id": call_id,
-                    "output": output,
+                    "output": tool_output_to_wire(output, data_urls),
                 })
             }
             ResponseInputItem::CustomToolCall {
@@ -305,7 +307,7 @@ fn response_input_items_to_wire(
                 serde_json::json!({
                     "type": "custom_tool_call_output",
                     "call_id": call_id,
-                    "output": output,
+                    "output": tool_output_to_wire(output, data_urls),
                 })
             }
             ResponseInputItem::WebSearchCall { id, status, action } => {
@@ -323,11 +325,29 @@ fn response_input_items_to_wire(
         .collect()
 }
 
-/// Render a Responses user message that carries attachment references into the
-/// wire form. Text-only messages keep `content` as a string; messages with
-/// resolvable image attachments emit a content-parts array (text part + one
-/// `input_image` part per image). Per the DeepSeek Vision guide images are only
-/// permitted on `user` messages, so non-user roles fall back to text.
+/// Map the neutral durable tool content at the existing Responses wire seam.
+fn tool_output_to_wire(
+    output: &deepagent_core::tool_content::ToolResultBody,
+    data_urls: &std::collections::BTreeMap<String, String>,
+) -> serde_json::Value {
+    use deepagent_core::tool_content::{ToolResultBody, ToolResultPart};
+    match output {
+        ToolResultBody::Text(text) => text.clone().into(),
+        ToolResultBody::Parts(parts) => parts
+            .iter()
+            .map(|part| match part {
+                ToolResultPart::Text { text } => {
+                    serde_json::json!({"type":"input_text", "text":text})
+                }
+                ToolResultPart::Image { attachment } => serde_json::json!({
+                    "type":"input_image", "image_url":data_urls.get(&attachment.id), "detail":"auto"
+                }),
+            })
+            .collect(),
+    }
+}
+
+/// Render a user message using the existing attachment materialization map.
 fn response_input_message_to_wire(
     role: &str,
     content: &str,
@@ -535,6 +555,27 @@ impl ResponseRequest {
         }
         validate_function_tool_schemas(&self.tools)?;
         crate::responses::validate_tool_call_history(&self.input)?;
+        self.validate_tool_image_resolution()?;
+        Ok(())
+    }
+
+    fn validate_tool_image_resolution(&self) -> Result<()> {
+        for item in &self.input {
+            if let ResponseInputItem::FunctionCallOutput { output, .. }
+            | ResponseInputItem::CustomToolCallOutput { output, .. } = item
+            {
+                for attachment in output.attachments() {
+                    if attachment.kind != "image"
+                        || !self
+                            .attachment_data_urls
+                            .get(&attachment.id)
+                            .is_some_and(|url| !url.is_empty())
+                    {
+                        return Err(CoreError::invalid("image_input_tool_output_unresolved: image output requires a resolved image reference; no tool image was sent"));
+                    }
+                }
+            }
+        }
         Ok(())
     }
 

@@ -1775,6 +1775,7 @@ mod tests {
             sequence,
             timestamp: ts(1_000 + sequence as i64),
             payload: EventPayload::ToolCallCompleted {
+                content: Vec::new(),
                 call_id: call_id.to_string(),
                 ok: true,
                 output: serde_json::json!("done"),

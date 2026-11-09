@@ -67,6 +67,7 @@ mod tests {
 
     fn ok_with(value: Value) -> ToolOutput {
         ToolOutput {
+            content: Vec::new(),
             ok: true,
             value,
             truncated: false,
@@ -120,6 +121,7 @@ mod tests {
     #[test]
     fn preserves_failure_status_when_replacing() {
         let mut out = ToolOutput {
+            content: Vec::new(),
             ok: false,
             value: Value::Null,
             truncated: false,
@@ -133,6 +135,7 @@ mod tests {
     #[test]
     fn preserves_truncated_flag() {
         let mut out = ToolOutput {
+            content: Vec::new(),
             ok: true,
             value: Value::Null,
             truncated: true,

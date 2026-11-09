@@ -45,7 +45,7 @@ pub struct ToolCall {
     pub arguments: serde_json::Value,
 }
 
-/// A reference to a file/image attachment carried by a user message.
+/// A reference to a file/image attachment carried by input or a tool result.
 ///
 /// Only the *reference* is stored on [`Message`] (and therefore in the
 /// append-only event log) — never the inline bytes. The model request layer
@@ -93,8 +93,8 @@ pub struct Message {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
 
-    /// File/image attachments carried by this message (user messages only in
-    /// practice). Reference-only — see [`MessageAttachment`]. Omitted from JSON
+    /// File/image attachments carried by this input or tool-result message.
+    /// Reference-only — see [`MessageAttachment`]. Omitted from JSON
     /// when empty, so existing events round-trip unchanged.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<MessageAttachment>,

@@ -1224,9 +1224,9 @@ fn micro_compact_response_item_outputs(
         match item {
             ResponseInputItem::FunctionCallOutput { output, .. }
             | ResponseInputItem::CustomToolCallOutput { output, .. }
-                if output.chars().count() > MIN_CLEAR_CHARS =>
+                if output.text().chars().count() > MIN_CLEAR_CHARS =>
             {
-                *output = CLEARED_STUB.to_string();
+                *output = CLEARED_STUB.into();
                 cleared += 1;
             }
             _ => {}
@@ -1246,7 +1246,10 @@ fn render_response_item_for_compaction(item: &ResponseInputItem) -> String {
             arguments,
         } => format!("function_call call_id={call_id} name={name} arguments={arguments}"),
         ResponseInputItem::FunctionCallOutput { call_id, output } => {
-            format!("function_call_output call_id={call_id} output={output}")
+            format!(
+                "function_call_output call_id={call_id} output={}",
+                output.text()
+            )
         }
         ResponseInputItem::CustomToolCall {
             call_id,
@@ -1254,7 +1257,10 @@ fn render_response_item_for_compaction(item: &ResponseInputItem) -> String {
             input,
         } => format!("custom_tool_call call_id={call_id} name={name} input={input}"),
         ResponseInputItem::CustomToolCallOutput { call_id, output } => {
-            format!("custom_tool_call_output call_id={call_id} output={output}")
+            format!(
+                "custom_tool_call_output call_id={call_id} output={}",
+                output.text()
+            )
         }
         ResponseInputItem::WebSearchCall { id, status, action } => {
             let action = action
@@ -1397,13 +1403,13 @@ fn compaction_reinjection_block_from_items(compacted_zone: &[ResponseInputItem])
             }
             ResponseInputItem::FunctionCallOutput { call_id, output }
             | ResponseInputItem::CustomToolCallOutput { call_id, output }
-                if output.contains("\"status\":\"error\"") && failures.len() < MAX_ITEMS =>
+                if output.text().contains("\"status\":\"error\"") && failures.len() < MAX_ITEMS =>
             {
                 let tool = call_names
                     .get(call_id)
                     .cloned()
                     .unwrap_or_else(|| "tool".to_string());
-                let preview: String = output.chars().take(160).collect();
+                let preview: String = output.text().chars().take(160).collect();
                 failures.push(format!("{tool}: {preview}"));
             }
             _ => {}
@@ -2551,7 +2557,7 @@ mod tests {
             },
             ResponseInputItem::FunctionCallOutput {
                 call_id: "old-c1".into(),
-                output: original.clone(),
+                output: original.clone().into(),
             },
         ];
         for index in 0..10 {
@@ -2592,7 +2598,7 @@ mod tests {
         let events = deepagent_persistence::event_store::EventStore::new(&reopened)
             .load_session(sid)
             .unwrap();
-        assert!(events.iter().any(|event| matches!(&event.payload, EventPayload::ResponseItemAppended { item: ResponseInputItem::FunctionCallOutput { output, .. } } if output == &original)), "raw event remains unchanged");
+        assert!(events.iter().any(|event| matches!(&event.payload, EventPayload::ResponseItemAppended { item: ResponseInputItem::FunctionCallOutput { output, .. } } if output == &original.clone().into())), "raw event remains unchanged");
         assert!(events
             .iter()
             .any(|event| matches!(event.payload, EventPayload::ContextSurfacePatched { .. })));
@@ -2646,12 +2652,22 @@ mod tests {
             arguments: " {  \"path\" : \"src/lib.rs\" } ".into(),
         };
         session.append_response_item(call.clone()).unwrap();
-        session
-            .append_response_item(ResponseInputItem::FunctionCallOutput {
-                call_id: "retained-c1".into(),
-                output: "file content".into(),
-            })
-            .unwrap();
+        let tool_output = ResponseInputItem::FunctionCallOutput {
+            call_id: "retained-c1".into(),
+            output: deepagent_core::tool_content::ToolResultBody::with_parts(
+                "file content".into(),
+                &[deepagent_core::tool_content::ToolResultPart::Image {
+                    attachment: deepagent_core::message::MessageAttachment {
+                        id: "retained-tool-image".into(),
+                        kind: "image".into(),
+                        media_type: Some("image/png".into()),
+                        path: Some("retained-tool.png".into()),
+                        sha256: Some("b".repeat(64)),
+                    },
+                }],
+            ),
+        };
+        session.append_response_item(tool_output.clone()).unwrap();
         let store = deepagent_persistence::event_store::EventStore::new(&db);
         let before = store.load_session(sid).unwrap();
         let items = crate::input_runtime::response_items_from_events(&before);
@@ -2681,6 +2697,10 @@ mod tests {
         assert!(
             compacted_items.contains(&call),
             "arguments must not be reserialized through Message"
+        );
+        assert!(
+            compacted_items.contains(&tool_output),
+            "H127 retained typed tool output must remain exact across native compaction"
         );
         let after = store.load_session(sid).unwrap();
         assert!(after.iter().any(|event| matches!(
@@ -3186,7 +3206,7 @@ mod tests {
             },
             ResponseInputItem::FunctionCallOutput {
                 call_id: "c1".into(),
-                output: big,
+                output: big.into(),
             },
         ];
 
@@ -3196,7 +3216,7 @@ mod tests {
         assert!(matches!(
             &out[1],
             ResponseInputItem::FunctionCallOutput { call_id, output }
-                if call_id == "c1" && output.contains("cleared by micro-compact")
+                if call_id == "c1" && output.text().contains("cleared by micro-compact")
         ));
     }
 

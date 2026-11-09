@@ -185,6 +185,8 @@ pub enum ItemPayload {
         call_id: String,
         ok: bool,
         output: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        content: Vec<deepagent_core::tool_content::ToolResultPart>,
         #[serde(rename = "durationMs")]
         duration_ms: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -289,6 +291,7 @@ pub fn project_runtime_event(event: &RuntimeEvent, context: &EventContext) -> Op
             call_id,
             ok,
             output,
+            content,
             duration_ms,
             tool_kind,
             file_path,
@@ -302,6 +305,7 @@ pub fn project_runtime_event(event: &RuntimeEvent, context: &EventContext) -> Op
                 call_id: call_id.clone(),
                 ok: *ok,
                 output: output.clone(),
+                content: content.clone(),
                 duration_ms: *duration_ms,
                 tool_kind: tool_kind.clone(),
                 file_path: file_path.clone(),

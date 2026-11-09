@@ -59,14 +59,7 @@ pub fn measure_response_surface_for_route(
     let mut measured = measure_response_surface(instructions, items, tools);
     measured.attachments = items
         .iter()
-        .filter_map(|item| match item {
-            ResponseInputItem::InputMessage {
-                role, attachments, ..
-            } if role == "user" => Some(attachments),
-            _ => None,
-        })
-        .flatten()
-        .filter(|attachment| attachment.kind == "image")
+        .flat_map(ResponseInputItem::image_attachments)
         .map(&mut image_price)
         .sum();
     measured
@@ -129,7 +122,7 @@ pub fn measure_response_surface_with<C: TokenCounter + ?Sized>(
             }
             ResponseInputItem::FunctionCallOutput { output, .. }
             | ResponseInputItem::CustomToolCallOutput { output, .. } => {
-                out.tool_outputs += counter.count(output) + 4;
+                out.tool_outputs += counter.count(&output.text()) + 4;
             }
             ResponseInputItem::WebSearchCall { action, status, .. } => {
                 out.tool_calls += 4
@@ -357,6 +350,66 @@ mod tests {
                 + breakdown.tool_outputs
                 + breakdown.tools
                 + breakdown.attachments
+        );
+    }
+
+    #[test]
+    fn h127_tool_image_occurrences_share_the_user_image_price_boundary() {
+        use deepagent_core::message::MessageAttachment;
+        use deepagent_core::tool_content::{ToolResultBody, ToolResultPart};
+        let image = MessageAttachment {
+            id: "shared".into(),
+            kind: "image".into(),
+            media_type: Some("image/png".into()),
+            path: Some("metadata-not-wire".repeat(200)),
+            sha256: Some("a".repeat(64)),
+        };
+        let body = ToolResultBody::Parts(vec![
+            ToolResultPart::Text {
+                text: "tool text".into(),
+            },
+            ToolResultPart::Image {
+                attachment: image.clone(),
+            },
+            ToolResultPart::Image { attachment: image },
+        ]);
+        let input = vec![
+            ResponseInputItem::FunctionCallOutput {
+                call_id: "function".into(),
+                output: body.clone(),
+            },
+            ResponseInputItem::CustomToolCallOutput {
+                call_id: "custom".into(),
+                output: body,
+            },
+        ];
+        let mut occurrences = 0;
+        let priced = measure_response_surface_for_route(None, &input, &[], |_| {
+            occurrences += 1;
+            1024
+        });
+        assert_eq!(
+            occurrences, 4,
+            "every occurrence costs input tokens, even if it shares bytes"
+        );
+        assert_eq!(priced.attachments, 4096);
+        assert_eq!(
+            priced.tool_outputs,
+            measure_response_surface(
+                None,
+                &[
+                    ResponseInputItem::FunctionCallOutput {
+                        call_id: "one".into(),
+                        output: "tool text".into()
+                    },
+                    ResponseInputItem::FunctionCallOutput {
+                        call_id: "two".into(),
+                        output: "tool text".into()
+                    }
+                ],
+                &[]
+            )
+            .tool_outputs
         );
     }
 }

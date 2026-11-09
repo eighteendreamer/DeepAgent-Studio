@@ -1143,6 +1143,7 @@ impl<E: CommandExecutor> Tool for BashTool<E> {
                     "verification": verification,
                 });
                 Ok(ToolOutput {
+                    content: Vec::new(),
                     ok,
                     value,
                     truncated: false,

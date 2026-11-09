@@ -915,6 +915,7 @@ impl<'a> RunAssembler<'a> {
             });
             session.append(EventPayload::ToolCallRequested { call })?;
             session.append(EventPayload::ToolCallCompleted {
+                content: Vec::new(),
                 call_id: tool.call_id.clone(),
                 ok: tool.ok,
                 output: tool.output.clone(),
@@ -922,6 +923,7 @@ impl<'a> RunAssembler<'a> {
             })?;
             let completed_meta = tool_ui_metadata(&tool.name, &tool.arguments, Some(&tool.output));
             sink.emit(RuntimeEvent::ToolCompleted {
+                content: Vec::new(),
                 name: tool.name.clone(),
                 call_id: tool.call_id.clone(),
                 ok: tool.ok,

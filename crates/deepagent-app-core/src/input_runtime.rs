@@ -418,9 +418,12 @@ pub(crate) fn indexed_response_items(
                 call_id,
                 ok,
                 output,
+                content,
                 ..
             } => {
                 let output = bounded_tool_result(*ok, output);
+                let output =
+                    deepagent_core::tool_content::ToolResultBody::with_parts(output, content);
                 vec![if custom_calls.contains(call_id) {
                     ResponseInputItem::CustomToolCallOutput {
                         call_id: call_id.clone(),
@@ -794,7 +797,7 @@ pub(crate) fn response_items_from_events(events: &[Event]) -> Vec<ResponseInputI
                         | ResponseInputItem::CustomToolCallOutput { call_id, output }
                             if call_id == &replacement.call_id =>
                         {
-                            *output = replacement.replacement_output.clone()
+                            *output = replacement.replacement_output.clone().into()
                         }
                         _ => {}
                     }
@@ -874,7 +877,10 @@ fn conversation_from_response_items(events: &[Event]) -> Vec<Message> {
             }
             ResponseItem::FunctionCallOutput { call_id, output }
             | ResponseItem::CustomToolCallOutput { call_id, output } => {
-                out.push(Message::tool_result(call_id.clone(), output.clone()));
+                out.push(
+                    Message::tool_result(call_id.clone(), output.text().into_owned())
+                        .with_attachments(output.attachments().cloned().collect()),
+                );
             }
             _ => {}
         }
@@ -1093,6 +1099,7 @@ mod tests {
                 sid,
                 1,
                 EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
                     call_id: "legacy-c1".into(),
                     ok: true,
                     output: serde_json::json!("original"),
@@ -1115,7 +1122,7 @@ mod tests {
         ];
         let items = response_items_from_events(&events);
         assert!(
-            matches!(&items[1], ResponseInputItem::FunctionCallOutput { output, .. } if output == "cleared")
+            matches!(&items[1], ResponseInputItem::FunctionCallOutput { output, .. } if output == &"cleared".into())
         );
         assert_eq!(model_history_from_events(&events)[1].content, "cleared");
     }
@@ -1633,6 +1640,7 @@ mod tests {
                 sid,
                 2,
                 EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
                     call_id: "call-1".to_string(),
                     ok: true,
                     output: serde_json::json!("contents"),
@@ -1905,6 +1913,7 @@ mod tests {
                 sid,
                 3,
                 EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
                     call_id: "c1".into(),
                     ok: true,
                     output: serde_json::json!({"content": "x"}),
@@ -1915,6 +1924,7 @@ mod tests {
                 sid,
                 4,
                 EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
                     call_id: "c2".into(),
                     ok: false,
                     output: serde_json::json!({"error": "denied"}),
@@ -1969,6 +1979,7 @@ mod tests {
                 sid,
                 2,
                 EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
                     call_id: "call-1".into(),
                     ok: true,
                     output: serde_json::json!({"status": "ok"}),
@@ -2079,6 +2090,7 @@ mod tests {
                 sid,
                 1,
                 EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
                     call_id: "c".into(),
                     ok: true,
                     output: serde_json::json!({ "content": big }),
@@ -2347,7 +2359,7 @@ mod tests {
         assert!(items.iter().any(|item| matches!(
             item,
             ResponseItem::FunctionCallOutput { call_id, output }
-                if call_id == "c1" && output == "[tool result content cleared]"
+                if call_id == "c1" && output == &"[tool result content cleared]".into()
         )));
     }
 

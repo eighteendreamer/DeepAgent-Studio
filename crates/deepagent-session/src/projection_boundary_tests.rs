@@ -391,6 +391,7 @@ fn native_only_decision_and_custom_result_survive_recovery_and_branching() {
         .unwrap();
     let result = session
         .append(EventPayload::ToolCallCompleted {
+            content: Vec::new(),
             call_id: "patch-1".into(),
             ok: true,
             output: serde_json::json!({"changed":true}),

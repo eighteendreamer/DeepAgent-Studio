@@ -27,6 +27,7 @@ pub mod redaction;
 pub mod response_item;
 pub mod session_mode;
 pub mod task;
+pub mod tool_content;
 
 pub use error::{CoreError, Result};
 pub use session_mode::SessionMode;

@@ -20,6 +20,9 @@ mod request_body;
 
 /// Stable provider identity exposed by the Harness layer.
 pub const DEEPSEEK_OFFICIAL_PROVIDER: &str = "deepseek-official";
+// Shared Responses/Chat image occurrence limit (Vision Limits, retrieved
+// 2026-11-09). Count occurrences, not unique attachment ids or cached URLs.
+const MAX_INPUT_IMAGES: usize = 600;
 
 /// Wire protocol selected by a model client configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,11 +181,25 @@ impl ModelClient {
     pub fn validate_response_input_modalities(&self, request: &ResponseRequest) -> Result<()> {
         self.validate_image_input(
             &request.model,
-            request.input.iter().any(|item| {
-                matches!(item, ResponseInputItem::InputMessage { attachments, .. }
-                if contains_image_reference(attachments))
-            }),
-        )
+            request
+                .input
+                .iter()
+                .map(|item| item.image_attachments().len())
+                .sum(),
+        )?;
+        if self.config.wire_mode == WireMode::ChatCompletions
+            && request.input.iter().any(|item| {
+                matches!(item,
+                ResponseInputItem::FunctionCallOutput { output, .. }
+                | ResponseInputItem::CustomToolCallOutput { output, .. }
+                if output.attachments().next().is_some())
+            })
+        {
+            return Err(deepagent_core::error::CoreError::invalid(
+                "image_input_tool_output_unsupported: Chat Completions tool output does not support the Responses image contract; select Responses",
+            ));
+        }
+        Ok(())
     }
 
     fn validate_chat_input_modalities(&self, request: &ChatCompletionRequest) -> Result<()> {
@@ -191,13 +208,26 @@ impl ModelClient {
             request
                 .messages
                 .iter()
-                .any(|message| contains_image_reference(&message.attachments)),
-        )
+                .flat_map(|message| &message.attachments)
+                .filter(|attachment| attachment.kind == "image")
+                .count(),
+        )?;
+        if request.messages.iter().any(|message| {
+            message.role == deepagent_core::message::Role::Tool && !message.attachments.is_empty()
+        }) {
+            return Err(deepagent_core::error::CoreError::invalid(
+                "image_input_tool_output_unsupported: Chat Completions tool images require Responses",
+            ));
+        }
+        Ok(())
     }
 
-    fn validate_image_input(&self, model: &str, has_image: bool) -> Result<()> {
-        if !has_image {
+    fn validate_image_input(&self, model: &str, image_count: usize) -> Result<()> {
+        if image_count == 0 {
             return Ok(());
+        }
+        if image_count > MAX_INPUT_IMAGES {
+            return Err(deepagent_core::error::CoreError::invalid("image_input_count_exceeded: DeepSeek accepts at most 600 image occurrences per request"));
         }
         match self.capability(model).input_modalities.as_deref() {
             Some(modalities) if modalities.iter().any(|value| value == "image") => Ok(()),
@@ -499,12 +529,6 @@ impl ModelClient {
             request.user = self.config.defaults.user.clone();
         }
     }
-}
-
-fn contains_image_reference(attachments: &[deepagent_core::message::MessageAttachment]) -> bool {
-    attachments
-        .iter()
-        .any(|attachment| attachment.kind == "image")
 }
 
 /// Emit a bounded, content-free summary of Responses tool pairing immediately

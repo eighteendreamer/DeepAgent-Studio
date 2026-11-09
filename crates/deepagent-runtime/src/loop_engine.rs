@@ -1292,6 +1292,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     detail: failure.reason.clone(),
                 });
                 Ok(Some(Observation {
+                    content: Vec::new(),
                     tool: "completion_gate".to_string(),
                     ok: false,
                     raw_output: None,
@@ -1384,6 +1385,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             "error": "The user cancelled this tool call before it completed. The operation may have run partially; inspect the current state before retrying.",
         });
         session.append(EventPayload::ToolCallCompleted {
+            content: Vec::new(),
             call_id: call_id.clone(),
             ok: false,
             output: output.clone(),
@@ -1391,6 +1393,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         })?;
         let metadata = tool_ui_metadata(&invocation.name, &invocation.arguments, Some(&output));
         self.emit(RuntimeEvent::ToolCompleted {
+            content: Vec::new(),
             name: invocation.name.clone(),
             call_id: call_id.clone(),
             ok: false,
@@ -1402,6 +1405,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             meta: metadata.meta,
         });
         Ok(Observation {
+            content: Vec::new(),
             tool: invocation.name,
             ok: false,
             raw_output: None,
@@ -1670,6 +1674,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             | HookOutcome::AsyncPending { .. }
             | HookOutcome::Modify { .. } => Ok(None),
             HookOutcome::Ask { reason, source } => Ok(Some(Observation {
+                content: Vec::new(),
                 tool: "post_tool_batch".to_string(),
                 ok: false,
                 raw_output: None,
@@ -1683,6 +1688,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 call_id: None,
             })),
             HookOutcome::Deny { reason, source } => Ok(Some(Observation {
+                content: Vec::new(),
                 tool: "post_tool_batch".to_string(),
                 ok: false,
                 raw_output: None,
@@ -1756,12 +1762,14 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             self.metrics.incr(names::TOOL_FAILURES, 1);
         }
         session.append(EventPayload::ToolCallCompleted {
+            content: output.content.clone(),
             call_id: call_id.clone(),
             ok,
             output: value.clone(),
             duration_ms: *duration_ms,
         })?;
         Ok(Observation {
+            content: output.content.clone(),
             tool: tool_name.clone(),
             ok,
             raw_output: result.raw_output.clone(),
@@ -1850,6 +1858,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             self.metrics.incr(names::TOOL_FAILURES, 1);
         }
         session.append(EventPayload::ToolCallCompleted {
+            content: result.output.content.clone(),
             call_id: result.call_id.clone(),
             ok: result.output.ok,
             output: result.output.value.clone(),
@@ -1859,6 +1868,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         pipeline.post_execution(&completion).await?;
         let result = completion.result;
         Ok(Observation {
+            content: result.output.content,
             tool: result.name,
             ok: result.output.ok,
             raw_output: result.raw_output,
@@ -1910,12 +1920,14 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     },
                 })?;
                 session.append(EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
                     call_id: call_id.clone(),
                     ok: false,
                     output: value.clone(),
                     duration_ms: 0,
                 })?;
                 return Ok(Observation {
+                    content: Vec::new(),
                     tool: tool_name,
                     ok: false,
                     raw_output: None,
@@ -2044,6 +2056,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 },
             })?;
             session.append(EventPayload::ToolCallCompleted {
+                content: Vec::new(),
                 call_id: call_id.clone(),
                 ok: false,
                 output: err_value.clone(),
@@ -2060,6 +2073,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             )
             .await?;
             return Ok(Observation {
+                content: Vec::new(),
                 tool: tool_name,
                 ok: false,
                 raw_output: None,
@@ -2116,6 +2130,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 let metadata =
                     tool_ui_metadata(&tool_name, &invocation.arguments, Some(&out.value));
                 self.emit(RuntimeEvent::ToolCompleted {
+                    content: out.content.clone(),
                     name: tool_name.clone(),
                     call_id: call_id.clone(),
                     ok: out.ok,
@@ -2151,12 +2166,14 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 }
 
                 session.append(EventPayload::ToolCallCompleted {
+                    content: out.content.clone(),
                     call_id: call_id.clone(),
                     ok: out.ok,
                     output: out.value.clone(),
                     duration_ms,
                 })?;
                 Observation {
+                    content: out.content,
                     tool: tool_name.clone(),
                     ok: out.ok,
                     raw_output: None,
@@ -2173,6 +2190,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 let metadata =
                     tool_ui_metadata(&tool_name, &invocation.arguments, Some(&err_value));
                 self.emit(RuntimeEvent::ToolCompleted {
+                    content: Vec::new(),
                     name: tool_name.clone(),
                     call_id: call_id.clone(),
                     ok: false,
@@ -2184,12 +2202,14 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     meta: metadata.meta,
                 });
                 session.append(EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
                     call_id: call_id.clone(),
                     ok: false,
                     output: err_value.clone(),
                     duration_ms,
                 })?;
                 Observation {
+                    content: Vec::new(),
                     tool: tool_name.clone(),
                     ok: false,
                     raw_output: None,
@@ -2232,6 +2252,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             },
         })?;
         session.append(EventPayload::ToolCallCompleted {
+            content: Vec::new(),
             call_id: call_id.clone(),
             ok: false,
             output: value.clone(),
@@ -2248,6 +2269,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         )
         .await?;
         Ok(Observation {
+            content: Vec::new(),
             tool: tool_name,
             ok: false,
             raw_output: None,
@@ -2307,6 +2329,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             NextAction::Retry => {
                 // Feed the diagnosis back to the agent as a failed observation.
                 Ok(VerifyStep::Retry(Observation {
+                    content: Vec::new(),
                     tool: "verification".to_string(),
                     ok: false,
                     raw_output: None,
@@ -2395,6 +2418,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
 
 fn completion_feedback(reason: String) -> Observation {
     Observation {
+        content: Vec::new(),
         tool: "stop_hook".into(),
         ok: false,
         raw_output: None,

@@ -378,6 +378,7 @@ mod tests {
         let ok = event(
             0,
             EventPayload::ToolCallCompleted {
+                content: Vec::new(),
                 call_id: "c1".into(),
                 ok: true,
                 output: serde_json::json!({"sum": 5}),
@@ -391,6 +392,7 @@ mod tests {
         let fail = event(
             0,
             EventPayload::ToolCallCompleted {
+                content: Vec::new(),
                 call_id: "c2".into(),
                 ok: false,
                 output: serde_json::json!({"error": "boom"}),

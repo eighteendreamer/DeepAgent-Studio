@@ -121,7 +121,12 @@ pub(crate) async fn budget_tool_result(
         };
     }
 
-    let serialized = match serde_json::to_string_pretty(&output.value) {
+    let full_value = if output.content.is_empty() {
+        output.value.clone()
+    } else {
+        serde_json::json!({"value":output.value,"content":output.content})
+    };
+    let serialized = match serde_json::to_string_pretty(&full_value) {
         Ok(s) => s,
         Err(_) => output.value.to_string(),
     };
@@ -141,6 +146,14 @@ pub(crate) async fn budget_tool_result(
         config.preview_tokens.max(1).saturating_mul(CHARS_PER_TOKEN),
     );
     output.truncated = true;
+    // Text may be offloaded, but a byte-budgeted image reference must not be
+    // truncated into JSON or silently discarded by the textual token budget.
+    output.content.retain(|part| {
+        matches!(
+            part,
+            deepagent_core::tool_content::ToolResultPart::Image { .. }
+        )
+    });
     output.value = serde_json::json!({
         "truncated": true,
         "tool": tool_name,
@@ -612,5 +625,58 @@ mod tests {
         assert_eq!(output.value, value);
         assert!(!output.truncated);
         assert!(!config.output_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn h127_text_parts_are_budgeted_without_truncating_image_references() {
+        use deepagent_core::message::MessageAttachment;
+        use deepagent_core::tool_content::ToolResultPart;
+        let fixture = tempfile::tempdir().unwrap();
+        let config = ToolResultBudgetConfig {
+            max_tokens: 100,
+            preview_tokens: 20,
+            output_dir: fixture.path().join("results"),
+            ..Default::default()
+        };
+        let reference = MessageAttachment {
+            id: "budgeted-image".into(),
+            kind: "image".into(),
+            media_type: Some("image/png".into()),
+            path: Some("admitted.png".into()),
+            sha256: Some("a".repeat(64)),
+        };
+        let mut original = ToolOutput::success(serde_json::json!({"isError":false}));
+        original.content = vec![
+            ToolResultPart::Text {
+                text: "large tool text ".repeat(4000),
+            },
+            ToolResultPart::Image {
+                attachment: reference.clone(),
+            },
+        ];
+        let output = apply_tool_result_budget(
+            &config,
+            "session",
+            "mcp__test__image",
+            "call",
+            original.clone(),
+        )
+        .await;
+        assert!(output.truncated);
+        assert!(output.ok);
+        assert_eq!(
+            output.content,
+            vec![ToolResultPart::Image {
+                attachment: reference
+            }]
+        );
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(saved_path(&output).unwrap()).unwrap()).unwrap();
+        assert_eq!(
+            saved["content"],
+            serde_json::to_value(&original.content).unwrap()
+        );
+        assert!(output.value["preview"].as_str().unwrap().len() < 500);
+        assert!(!serde_json::to_string(&output).unwrap().contains("base64"));
     }
 }

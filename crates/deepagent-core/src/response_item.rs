@@ -10,6 +10,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::message::{Message, MessageAttachment};
+use crate::tool_content::ToolResultBody;
 
 /// A semantic Responses API item used for provider input/output persistence.
 ///
@@ -52,7 +53,7 @@ pub enum ResponseItem {
     },
     FunctionCallOutput {
         call_id: String,
-        output: String,
+        output: ToolResultBody,
     },
     CustomToolCall {
         call_id: String,
@@ -61,7 +62,7 @@ pub enum ResponseItem {
     },
     CustomToolCallOutput {
         call_id: String,
-        output: String,
+        output: ToolResultBody,
     },
     WebSearchCall {
         id: String,
@@ -75,6 +76,21 @@ pub type ResponseInputItem = ResponseItem;
 pub type ResponseOutputItem = ResponseItem;
 
 impl ResponseItem {
+    /// References present in the canonical Surface, regardless of whether
+    /// they originated in user input or in an executed tool result.
+    pub fn image_attachments(&self) -> Vec<&MessageAttachment> {
+        let attachments: Vec<_> = match self {
+            Self::InputMessage { attachments, .. } => attachments.iter().collect(),
+            Self::FunctionCallOutput { output, .. } | Self::CustomToolCallOutput { output, .. } => {
+                output.attachments().collect()
+            }
+            _ => Vec::new(),
+        };
+        attachments
+            .into_iter()
+            .filter(|attachment| attachment.kind == "image")
+            .collect()
+    }
     /// Older source-first user mirrors stored text only. Recognize that exact
     /// legacy shape, not an unrelated/native-only message or a different input.
     pub fn is_legacy_text_projection_of(&self, source: &Self) -> bool {

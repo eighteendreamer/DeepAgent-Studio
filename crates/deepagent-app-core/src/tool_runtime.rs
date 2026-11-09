@@ -571,6 +571,11 @@ where
     R: deepagent_builtins::SubagentRunner + 'static,
 {
     let knowledge = request.base.knowledge.clone();
+    let image_store = Arc::new(crate::mcp_image_store::McpAttachmentStore(
+        crate::attachment_service::AttachmentService::new(
+            crate::data_root::UserPaths::under(request.base.db.data_root()).attachments,
+        ),
+    ));
     let cron = request.base.cron.clone();
     #[cfg(feature = "wasm")]
     let wasm_tools_root = request.base.root.to_path_buf();
@@ -586,6 +591,7 @@ where
         request.mcp,
         request.plugin_projection,
         request.plugin_registry,
+        Some(image_store),
     )?;
     register_task_tool(&mut registry, request.task_runner, request.task_agent_types)?;
     register_plan_execute_tool(&mut registry, request.plan_executor)?;

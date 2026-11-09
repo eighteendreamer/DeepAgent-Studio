@@ -2415,6 +2415,7 @@ mod tests {
             .append(
                 session_id,
                 EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
                     call_id: "call-1".into(),
                     ok: true,
                     output: serde_json::json!({
@@ -2510,6 +2511,7 @@ mod tests {
                 .append(
                     session_id,
                     EventPayload::ToolCallCompleted {
+                        content: Vec::new(),
                         call_id: "call-1".into(),
                         ok: true,
                         output: serde_json::json!({"summary": "migration-preview-marker"}),

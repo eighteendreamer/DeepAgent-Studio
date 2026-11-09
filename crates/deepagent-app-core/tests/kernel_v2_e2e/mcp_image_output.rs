@@ -42,7 +42,6 @@ impl HttpTransport for McpOutputModel {
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: MCP image results must reach DeepSeek Responses as input_image parts"]
 async fn audit_mcp_image_result_is_not_serialized_as_text_json() {
     const IMAGE_DATA: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jZh0AAAAASUVORK5CYII=";
     let requests = mcp_result_requests(serde_json::json!({
@@ -75,6 +74,139 @@ async fn audit_mcp_image_result_is_not_serialized_as_text_json() {
         output_is_typed_image,
         "MCP image result must be emitted as typed input_image content parts, not a JSON string"
     );
+}
+
+#[tokio::test]
+async fn h127_mixed_mcp_images_keep_order_without_inline_bytes_in_history() {
+    const DATA: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jZh0AAAAASUVORK5CYII=";
+    let observed = mcp_result_observation(serde_json::json!({
+        "content": [
+            {"type":"text", "text":"before-image"},
+            {"type":"image", "data":DATA, "mimeType":"image/png"},
+            {"type":"text", "text":"between-images"},
+            {"type":"image", "data":DATA, "mimeType":"image/png"},
+            {"type":"text", "text":"after-images"}
+        ],
+        "isError":false
+    }))
+    .await;
+    let output = observed.requests[1]["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "function_call_output")
+        .unwrap()["output"]
+        .clone();
+    let parts = output
+        .as_array()
+        .expect("mixed tool output must stay typed");
+    let images: Vec<_> = parts
+        .iter()
+        .enumerate()
+        .filter(|(_, part)| part["type"] == "input_image")
+        .collect();
+    assert_eq!(images.len(), 2);
+    let text_position = |marker: &str| {
+        parts
+            .iter()
+            .position(|part| {
+                part["type"] == "input_text"
+                    && part["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains(marker))
+            })
+            .unwrap()
+    };
+    assert!(text_position("before-image") < images[0].0);
+    assert!(images[0].0 < text_position("between-images"));
+    assert!(text_position("between-images") < images[1].0);
+    assert!(images[1].0 < text_position("after-images"));
+    assert!(
+        !observed.history_json.contains(DATA),
+        "raw image bytes must not enter session events"
+    );
+    assert!(
+        !observed.run_events_json.contains(DATA),
+        "raw image bytes must not enter run events"
+    );
+    assert!(
+        observed.run_events_json.contains("sha256"),
+        "run events must retain the same typed image refs"
+    );
+    assert!(
+        observed.history_json.contains("sha256"),
+        "durable image identity must survive reopen"
+    );
+    assert_eq!(
+        observed.replayed_output, output,
+        "a real cold continuation must materialize the same ordered tool images without redispatch"
+    );
+    assert!(observed.session_ok);
+}
+
+#[tokio::test]
+async fn h127_invalid_mcp_images_return_paired_visible_failure_without_raw_data() {
+    for (mime, data) in [
+        ("text/plain", "aDEyNy1jYW5hcnk="),
+        ("image/png", "not-base64-h127-canary"),
+    ] {
+        let observed = mcp_result_observation(serde_json::json!({
+            "content":[{"type":"image", "data":data, "mimeType":mime}], "isError":false
+        }))
+        .await;
+        assert!(
+            !observed.session_ok,
+            "invalid tool image must not look successful: {mime}"
+        );
+        let outputs: Vec<_> = observed.requests[1]["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["type"] == "function_call_output" && item["call_id"] == CALL)
+            .collect();
+        assert_eq!(outputs.len(), 1);
+        assert!(outputs[0]["output"].to_string().contains("image"));
+        assert!(!observed.requests[1].to_string().contains(data));
+        assert!(!observed.history_json.contains(data));
+        assert!(!observed.run_events_json.contains(data));
+    }
+}
+
+#[tokio::test]
+async fn h127_failed_mcp_image_result_preserves_error_and_image_evidence() {
+    const DATA: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jZh0AAAAASUVORK5CYII=";
+    let observed = mcp_result_observation(serde_json::json!({
+        "content":[{"type":"text","text":"image-diagnostic"},{"type":"image","data":DATA,"mimeType":"image/png"}],
+        "isError":true, "structuredContent":{"reason":"synthetic-failure"}
+    })).await;
+    assert!(!observed.session_ok);
+    assert!(!observed.event_ok);
+    assert_eq!(observed.action_state, RunActionState::Failed);
+    assert!(!observed.history_json.contains(DATA));
+    let output = observed.requests[1]["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "function_call_output")
+        .unwrap()["output"]
+        .clone();
+    let parts = output.as_array().unwrap();
+    assert_eq!(
+        parts
+            .iter()
+            .filter(|part| part["type"] == "input_image")
+            .count(),
+        1
+    );
+    let first: serde_json::Value =
+        serde_json::from_str(parts[0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(first["status"], "error");
+    assert_eq!(first["error"]["isError"], true);
+    assert_eq!(
+        first["error"]["structuredContent"]["reason"],
+        "synthetic-failure"
+    );
+    assert!(parts.iter().any(|part| part["text"] == "image-diagnostic"));
 }
 
 #[tokio::test]
@@ -199,6 +331,9 @@ struct McpResultObservation {
     session_output: serde_json::Value,
     action_state: RunActionState,
     terminal_kind: String,
+    history_json: String,
+    run_events_json: String,
+    replayed_output: serde_json::Value,
 }
 
 async fn mcp_result_observation(result: serde_json::Value) -> McpResultObservation {
@@ -236,12 +371,13 @@ setTimeout(() => process.exit(2), 15000).unref();
 
     let db_path = root.path().join("mcp-result.sqlite");
     let db = Arc::new(Database::open(&db_path).unwrap());
+    let secrets = Arc::new(MemorySecretStore::new());
     let settings = Arc::new(SettingsService::new(
         db.clone(),
         Arc::new(MockTransport::with_get_json(
-            r#"{"data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#,
+            r#"{"data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek","input_modalities":["text","image"],"output_modalities":["text"]}]}"#,
         )),
-        Arc::new(MemorySecretStore::new()),
+        secrets.clone(),
     ));
     settings
         .initialize("offline-audit-placeholder")
@@ -306,7 +442,7 @@ setTimeout(() => process.exit(2), 15000).unref();
     let event_ok = live_tools[0].data["ok"].as_bool().unwrap();
     drop(chat);
     drop(db);
-    let reopened = Database::open(&db_path).unwrap();
+    let reopened = Arc::new(Database::open(&db_path).unwrap());
     let events = RunStore::new(&reopened).events_after(RUN, None).unwrap();
     let stored_tools: Vec<_> = events
         .iter()
@@ -341,6 +477,57 @@ setTimeout(() => process.exit(2), 15000).unref();
     assert_eq!(completions.len(), 1);
     let (session_ok, session_output) = completions.into_iter().next().unwrap();
 
+    // No MCP service is attached after reopen. A continuation must use the
+    // original admitted refs, not rerun the tool to reconstruct its evidence.
+    let resumed_settings = Arc::new(SettingsService::new(
+        reopened.clone(),
+        Arc::new(MockTransport::with_get_json(
+            r#"{"data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek","input_modalities":["text","image"],"output_modalities":["text"]}]}"#,
+        )),
+        secrets,
+    ));
+    let replay_model = Arc::new(McpOutputModel {
+        calls: AtomicUsize::new(1),
+        requests: Mutex::new(Vec::new()),
+    });
+    let resumed = ChatService::new(
+        reopened.clone(),
+        resumed_settings,
+        replay_model.clone(),
+        root.path(),
+    );
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        resumed.run_in_session(
+            "Inspect the retained evidence without repeating the tool.",
+            Some(&session),
+            None,
+            None,
+            Vec::new(),
+            None,
+            false,
+            Some("h127-cold-replay"),
+            |_| {},
+            |_| {},
+        ),
+    )
+    .await
+    .expect("cold continuation must finish")
+    .unwrap();
+    let replay_requests = replay_model.requests.lock().unwrap();
+    assert_eq!(replay_requests.len(), 1);
+    let replayed_output = replay_requests[0]["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "function_call_output" && item["call_id"] == CALL)
+        .expect("cold continuation retains original paired output")["output"]
+        .clone();
+    let after = EventStore::new(&reopened)
+        .load_session(session.parse().unwrap())
+        .unwrap();
+    assert_eq!(after.iter().filter(|event|matches!(&event.payload,EventPayload::ToolCallRequested{call} if call.id==CALL)).count(),1,"cold continuation must not redispatch the MCP call");
+
     let requests = model.requests.lock().unwrap().clone();
     assert_eq!(
         requests.len(),
@@ -354,5 +541,8 @@ setTimeout(() => process.exit(2), 15000).unref();
         session_output,
         action_state: actions[0].state,
         terminal_kind,
+        history_json: serde_json::to_string(&history).unwrap(),
+        run_events_json: serde_json::to_string(&events).unwrap(),
+        replayed_output,
     }
 }

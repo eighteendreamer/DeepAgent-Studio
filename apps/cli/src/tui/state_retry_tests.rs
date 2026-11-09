@@ -159,6 +159,7 @@ fn h258_tools_and_committed_narration_survive_later_attempt_resets_and_flushes()
         }]
     );
     state.on_runtime(RuntimeEvent::ToolCompleted {
+        content: Vec::new(),
         name: "read_file".into(),
         call_id: "read-1".into(),
         ok: true,

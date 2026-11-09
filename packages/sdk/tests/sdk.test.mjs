@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import { DeepAgent, HarnessRpcError } from "../dist/index.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -16,6 +17,20 @@ function createAgent(options = {}) {
     ...options
   });
 }
+
+test("H127 preserves ordered tool image refs from the real Rust protocol fixture", async () => {
+  const fixture = JSON.parse(readFileSync(new URL("../../../crates/deepagent-harness-protocol/tests/fixtures/tool-image-result-v1.json", import.meta.url), "utf8"));
+  const agent = createAgent();
+  try {
+    const thread = await agent.startThread();
+    const events = [];
+    for await (const event of thread.runStreamed("fixture:h127-tool-image")) events.push(event);
+    const completed = events.find(event => event.type === "item.completed");
+    assert.deepEqual(completed.item, fixture.item);
+    assert.equal(completed.item.content[1].attachment.sha256, "a".repeat(64));
+    assert.equal(JSON.stringify(completed).includes("base64"), false);
+  } finally { await agent.close(); }
+});
 
 test("forwards explicit thread reasoning and exposes the saved value after resume", async () => {
   const agent = createAgent();

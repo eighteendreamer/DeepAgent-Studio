@@ -65,6 +65,7 @@ fn started(id: &str) -> RuntimeEvent {
 
 fn completed() -> RuntimeEvent {
     RuntimeEvent::ToolCompleted {
+        content: Vec::new(),
         name: "counter".into(),
         call_id: "call".into(),
         ok: true,

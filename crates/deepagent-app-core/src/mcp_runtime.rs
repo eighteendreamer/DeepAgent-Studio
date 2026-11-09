@@ -43,6 +43,7 @@ pub(crate) fn attach_mcp_tools(
     service: Option<&McpService>,
     plugin_projection: Option<&PluginRuntimeProjection>,
     plugin_registry: Option<Arc<deepagent_mcp::McpRegistry>>,
+    image_store: Option<Arc<dyn deepagent_mcp::adapter::McpImageStore>>,
 ) -> Result<McpRuntimeTools> {
     let Some(mcp) = service else {
         return Ok(McpRuntimeTools::default());
@@ -59,8 +60,12 @@ pub(crate) fn attach_mcp_tools(
         }
     }
     let mcp_registry = Arc::new(ready.discovery_snapshot());
-    for adapter in deepagent_mcp::adapters_for(mcp_registry.clone()) {
-        registry.register(adapter)?;
+    for tool in mcp_registry.all_tools() {
+        let mut adapter = deepagent_mcp::McpToolAdapter::new(tool, mcp_registry.clone());
+        if let Some(store) = image_store.as_ref() {
+            adapter = adapter.with_image_store(store.clone());
+        }
+        registry.register(Arc::new(adapter))?;
     }
     let lifecycle = mcp_registry
         .server_names()

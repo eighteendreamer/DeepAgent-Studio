@@ -323,6 +323,7 @@ mod tests {
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::write(sub.join("AGENTS.md"), "sub rules").unwrap();
         let mut failed = ToolOutput {
+            content: Vec::new(),
             ok: false,
             value: serde_json::json!({
                 "path": sub.join("x.txt").to_string_lossy(),

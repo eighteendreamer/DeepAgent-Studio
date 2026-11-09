@@ -88,6 +88,9 @@ pub struct ToolOutput {
     pub ok: bool,
     /// JSON-encoded result (or error detail when `ok == false`).
     pub value: serde_json::Value,
+    /// Optional ordered model content with durable, host-admitted image refs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub content: Vec<deepagent_core::tool_content::ToolResultPart>,
     /// Whether the model-visible result was truncated by the runtime budget.
     #[serde(default)]
     pub truncated: bool,
@@ -99,6 +102,7 @@ impl ToolOutput {
         Self {
             ok: true,
             value,
+            content: Vec::new(),
             truncated: false,
         }
     }
@@ -108,6 +112,7 @@ impl ToolOutput {
         Self {
             ok: false,
             value: serde_json::json!({ "error": message.into() }),
+            content: Vec::new(),
             truncated: false,
         }
     }

@@ -120,6 +120,10 @@ pub enum EventPayload {
         ok: bool,
         /// JSON-encoded output or error detail.
         output: serde_json::Value,
+        /// Ordered content admitted by the tool boundary. Reference-only;
+        /// omitted on legacy/text-only results.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        content: Vec<crate::tool_content::ToolResultPart>,
         /// Wall-clock duration in milliseconds.
         duration_ms: u64,
     },
@@ -497,6 +501,7 @@ mod tests {
     #[test]
     fn tool_completed_carries_duration() {
         let p = EventPayload::ToolCallCompleted {
+            content: Vec::new(),
             call_id: "c1".into(),
             ok: true,
             output: serde_json::json!({"bytes": 10}),

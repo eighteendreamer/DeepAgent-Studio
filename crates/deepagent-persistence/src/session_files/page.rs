@@ -948,6 +948,7 @@ mod tests {
             .append(
                 id,
                 EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
                     call_id: "custom-call".into(),
                     ok: true,
                     output: serde_json::json!({"result":"synthetic"}),
@@ -966,7 +967,8 @@ mod tests {
                             "status":"ok",
                             "result":{"result":"synthetic"}
                         })
-                        .to_string(),
+                        .to_string()
+                        .into(),
                     },
                 },
                 Timestamp::from_millis(3),

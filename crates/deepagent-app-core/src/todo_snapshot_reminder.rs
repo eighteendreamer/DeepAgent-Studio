@@ -100,6 +100,7 @@ mod tests {
 
     fn ok_with(value: serde_json::Value) -> ToolOutput {
         ToolOutput {
+            content: Vec::new(),
             ok: true,
             value,
             truncated: false,

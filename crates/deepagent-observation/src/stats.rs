@@ -142,6 +142,7 @@ mod tests {
                 2,
                 1200,
                 EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
                     call_id: "c1".into(),
                     ok: true,
                     output: serde_json::json!({}),
@@ -152,6 +153,7 @@ mod tests {
                 3,
                 1300,
                 EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
                     call_id: "c2".into(),
                     ok: false,
                     output: serde_json::json!({}),

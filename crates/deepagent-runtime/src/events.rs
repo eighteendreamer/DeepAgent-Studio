@@ -223,6 +223,10 @@ pub enum RuntimeEvent {
         ok: bool,
         /// JSON output (or error detail).
         output: serde_json::Value,
+        /// Durable ordered content, never inline image payloads. The original
+        /// run-event stream and its Harness projection carry the same refs.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        content: Vec<deepagent_core::tool_content::ToolResultPart>,
         /// Wall-clock duration in milliseconds.
         duration_ms: u64,
         /// Coarse UI category for row-based rendering.

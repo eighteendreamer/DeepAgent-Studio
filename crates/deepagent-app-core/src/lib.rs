@@ -53,6 +53,7 @@ pub mod install_ledger;
 pub mod kernel_runtime;
 pub mod knowledge_service;
 pub mod managed_files;
+mod mcp_image_store;
 pub mod mcp_runtime;
 pub mod mcp_service;
 pub mod memory_consolidation;

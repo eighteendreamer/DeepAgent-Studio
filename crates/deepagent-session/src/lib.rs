@@ -489,6 +489,7 @@ mod tests {
             .unwrap();
         session
             .append(EventPayload::ToolCallCompleted {
+                content: Vec::new(),
                 call_id: "call-1".into(),
                 ok: true,
                 output: serde_json::json!({"content":"ok"}),
@@ -532,6 +533,7 @@ mod tests {
             .unwrap();
         session
             .append(EventPayload::ToolCallCompleted {
+                content: Vec::new(),
                 call_id: "patch-1".into(),
                 ok: false,
                 output: serde_json::json!({"cancelled": true}),

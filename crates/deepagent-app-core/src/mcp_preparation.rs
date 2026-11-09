@@ -738,7 +738,8 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
         );
 
         let mut registry = deepagent_tools::ToolRegistry::new();
-        crate::mcp_runtime::attach_mcp_tools(&mut registry, Some(&service), None, None).unwrap();
+        crate::mcp_runtime::attach_mcp_tools(&mut registry, Some(&service), None, None, None)
+            .unwrap();
         let discovered: crate::tool_manifest::DiscoveredToolSet = Arc::default();
         let manifest = crate::tool_manifest::prepare_tool_manifest(
             &mut registry,

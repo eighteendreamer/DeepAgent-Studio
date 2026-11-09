@@ -461,6 +461,7 @@ mod tests {
     fn tool_completed(call_id: &str, name: &str, ok: bool, duration_ms: u64) -> RuntimeEvent {
         RuntimeEvent::ToolCompleted {
             name: name.to_string(),
+            content: Vec::new(),
             call_id: call_id.to_string(),
             ok,
             output: Value::Null,

@@ -102,6 +102,7 @@ pub(crate) fn legacy_projection_matches(
         call_id,
         ok,
         output,
+        content,
         ..
     } = source
     else {
@@ -112,6 +113,8 @@ pub(crate) fn legacy_projection_matches(
     } else {
         serde_json::json!({"status":"error","error":output}).to_string()
     };
+    let expected_output =
+        deepagent_core::tool_content::ToolResultBody::with_parts(expected_output, content);
     match item {
         ResponseItem::FunctionCallOutput {
             call_id: actual_call_id,
@@ -256,6 +259,7 @@ pub(crate) fn response_items_for_payload(
             call_id,
             ok,
             output,
+            content,
             ..
         } => {
             // Model-backed runs persist the provider-native call before the
@@ -284,6 +288,7 @@ pub(crate) fn response_items_for_payload(
             } else {
                 serde_json::json!({"status":"error","error":output}).to_string()
             };
+            let output = deepagent_core::tool_content::ToolResultBody::with_parts(output, content);
             if custom {
                 items.push(ResponseItem::CustomToolCallOutput {
                     call_id: call_id.clone(),

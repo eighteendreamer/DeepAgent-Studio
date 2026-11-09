@@ -815,6 +815,7 @@ impl AppService {
                     ok,
                     output,
                     duration_ms,
+                    ..
                 } => {
                     if let Some(&(idx, part_idx)) = tool_pos.get(call_id) {
                         if let Some(ConversationPartDto::Tool {
@@ -1445,6 +1446,7 @@ mod tests {
             s.transition_task(task, deepagent_core::task::TaskState::Running)
                 .unwrap();
             s.append(deepagent_core::event::EventPayload::ToolCallCompleted {
+                content: Vec::new(),
                 call_id: "c1".into(),
                 ok: true,
                 output: serde_json::json!({"ok": true}),
@@ -1884,6 +1886,7 @@ mod tests {
             })
             .unwrap();
             s.append(EventPayload::ToolCallCompleted {
+                content: Vec::new(),
                 call_id: "search-1".into(),
                 ok: true,
                 output: serde_json::json!({
@@ -2082,6 +2085,7 @@ mod tests {
             .unwrap();
         session
             .append(EventPayload::ToolCallCompleted {
+                content: Vec::new(),
                 call_id: "call_1".into(),
                 ok: true,
                 output: serde_json::json!({"content": "fixture"}),
@@ -2344,6 +2348,7 @@ mod tests {
             .unwrap();
         session
             .append(EventPayload::ToolCallCompleted {
+                content: Vec::new(),
                 call_id: "call_1".into(),
                 ok: true,
                 output: serde_json::json!({"count": 5}),
@@ -2910,6 +2915,7 @@ mod tests {
             ev(
                 1,
                 EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
                     call_id: "c1".into(),
                     ok: true,
                     output: serde_json::json!({ "ok": true }),

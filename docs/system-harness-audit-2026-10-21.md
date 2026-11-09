@@ -5141,6 +5141,53 @@ H126代码行为限E03本机范围已验收，但上述C/G残余清理是明确�
 
 ### H-127：MCP image 工具结果被降格成 Responses 普通 JSON 字符串，模型收不到图像输入
 
+**当前状态（2026-11-09）：已修复并验收，仅E-H127-04所列Windows本机范围；H-173同根归并到本项，只计一个新增修复。提交与清理见后续回填，原失败及候选记录保留。** H-127的真实MCP图片必须通过H-173所指出的公共工具输出边界，二者均由字符串型结果丢失typed图片发生，不能在MCP侧另造专用模型请求链。只计一个有效修复，原始失败证据和H-173编号保留。
+
+**E-H127-01（2026-11-09，当前原探针与增强TDD红）**：基线`2e4d5a7211f674e92c4ab43516e36defa49b873f`，tracked起始干净，原六项用户untracked只列名、不读改暂存。复用现存`target/h116-reverify-20261109`，未另建大型Cargo target。实际原`cargo test --target-dir target/h116-reverify-20261109 -p deepagent-models --test modalities_audit audit_responses_tool_output_images_are_preserved_before_transport --offline -j 2 -- --ignored --exact --nocapture`为exit101、0/1/0，`output_image_parts=0`、wire为`"screenshot ready"`。原AppCore命令同target、`-p deepagent-app-core --test kernel_v2_e2e mcp_image_output::audit_mcp_image_result_is_not_serialized_as_text_json --offline -j 2 -- --ignored --exact --nocapture`为exit101、0/1/0，真实Node stdio经过正式McpService/Adapter/ChatService/Kernel后仍为`wire_output_kind=string, typed_input_image=false, raw_json_string=true, raw_image_data_present=true`。清除凭据/代理环境继承，只使用合成provider/临时SQLite/本机MCP，不访问真实服务或数据。
+
+两条原probe转默认；Models补真实materialized URL后仍保留原typed输出oracle。生产未改前新增默认`h127_mixed_mcp_images_keep_order_without_inline_bytes_in_history`与`h127_invalid_mcp_images_return_paired_visible_failure_without_raw_data`，实际`cargo test --target-dir target/h116-reverify-20261109 -p deepagent-app-core --test kernel_v2_e2e h127_ --offline -j 2 -- --nocapture --test-threads=1`为exit101、0/2/0，混合两图结果不是数组、`text/plain`图片仍成功。新增测试从实际第二次provider请求、冷重开session/run_events及真实动作结果判断，不是独立影子序列化器；尚无修复后验收结果。
+
+本地候选设计复用既有AttachmentService/OwnedDirectoryRoot/SHA-256/FileAttachmentResolver，MCP adapter发布前校验并摄取图片，只把ordered reference内容传入原ToolOutput、ToolCallCompleted及ResponseItem边界；无图保持旧字符串JSON，旧历史仍可反序列化。同步上下文计量/预算/压缩/重放/Models消费者，不增加另一套运行器、事件库或模型请求链。官方两页2026-11-09 PowerShell GET均HTTP200，明确function/custom output允许input_image；Web工具503保留，不把失败当规范验证。候选仍在编译适配阶段，编译失败不计TDD行为红或验收。完整跨层回归、fmt/lint/workspace/桌面消费者检查、清理及独立commit均未完成。
+
+
+**E-H127-02（2026-11-09，候选根因实现与广测，仍修复中）**：原两探针及新增两场景先红后，候选已沿原边界实施。`ToolResultBody`以untagged字符串/ordered parts兼容旧文本历史；`ToolResultPart`只含text或MessageAttachment引用。MCP图片在adapter发布前通过宿主注入的原AttachmentService/OwnedDirectoryRoot摄取：本地总32MiB/最多16图、标准base64、四类MIME及现有图片签名检查；全部图片先验后写，写失败只清理本次未发布身份，不删除已发布历史资产。存储沿Database.data_root与既有UserPaths布局，source=`mcp-untrusted`，每次occurrence独立身份和SHA-256；FileAttachmentResolver发送前仍校验摘要、大小及普通文件，未跳过原完整性门禁。
+
+同一内容沿ToolOutput、Observation、ToolCallCompleted原子投影、ResponseItem及RuntimeEvent/run_events/Harness ItemPayload流转；Responses serializer最终才物化input_image，无图仍是字符串wire。工具结果文本预算会offload完整引用型内容、截断文本但保留图片引用；共享ContextMeter逐occurrence计图像reserve，不把路径/hash/base64当文本。原native compaction/replay保留exact ordered body，旧Message兼容compactor保留文本和全部图片但沿其既有text-then-attachments投影，不能承诺旧接口的interleaving精确还原。Chat工具图片明确拒绝，非视觉/未知模型复用原image_input门禁；不新增Chat图片猜测或provider旁路。公共Rust构造器需增加content默认字段及String.into；JSON旧字符串/无content事件仍可读取，含typed图片的新历史要求升级后的reader，不能承诺旧二进制可前向读取。Harness/TS `content`为可选新增字段，协议版本不变；双SDK共享Rust正式projection fixture做验证。无第三方新依赖/SQL迁移；Harness内部显式依赖现有Core类型。
+
+首轮Models probe与function/custom/replay/缺引用/非视觉/Chat拒绝组5/0/1；AppCore初轮因合成目录没有input_modalities被原模态门禁正确拒绝，随后仅为正向fixture声明合成image能力，不降低生产门禁。再次真实MCP六项6/0/1（原metadata探针仍ignored，不计通过），两项store测试2/0/0；其中新增真正冷重开ChatService续聊、无MCP重新注入，最终provider图片wire与原输出相同且请求工具记录仍只有一次。它们是当时候选，不代替后续最终冻结版验收。
+
+首轮完整Models被新增Chat诊断未沿用旧image_input_分类的兼容测试阻断，已修正诊断命名并把原模型能力门禁放在协议拒绝之前；最终冻结74份源码/配置/fixture后，Models http全包`--no-fail-fast --offline -j 2 -- --quiet --test-threads=2`exit0、22个Cargo主target共248/0/23、73.252秒。共享Core/Tools/Persistence/Session/Context/MCP/Runtime/Harness同选项40 targets共1032/1/11、189.459秒，唯一失败为未改checkpoint `restrictive_tree_is_protected_before_copying_any_bytes`恢复DACL不等。将该模块从HEAD导出、逐字节CRLF归一核对当前零差异（HEAD字节SHA256 d8e16ac2fb245533708db9fb8f390eb0f4ced5ce51127254ab90baea979b8e8b），独立最小crate只链接当前Core/Persistence、不链接本轮Runtime/MCP/Models，同一G盘fixture仍exit101、0/1/0，保留`restored test DACL differs`；不顺修ACL、不改断言或计其为H127已消除。TypeScript SDK `pnpm test`实际exit0、181/0/0，包含真实Rust projection fixture经SDK stdio reader保留ordered refs。`cargo check --workspace --all-targets --offline -j 2`exit0、47.64秒；fmt/diff check已通过。完整AppCore、最终MCP重验、CLI build、workspace、独立Tauri consumer及严格lint仍在执行/待执行，未关闭或提交H127。
+
+
+**E-H127-03（2026-11-09，最终定向门禁终态与剩余验收策略阻断；未验收关闭）**：74份冻结源码/配置/fixture门禁后0漂移。阶段二使用E02相同隔离根与offline/顶层target/no-fail-fast策略，正式终态为：Models http全包248/0/23、22主target、exit0/73.252秒；共享八包Core/Tools/Persistence/Session/Context/MCP/Runtime/Harness 1032/1/11、40主target、exit101/189.459秒，唯一checkpoint DACL恢复失败及不链接Runtime的独立复现同E02；AppCore全包2204/1/109、32主target、exit101/866.711秒，唯一失败为未改`image_preparation::read_failure::real_read_data_dacl_denial_fails_without_sampling_and_recovers`在`image_read_failure.rs:286`断言`original DACL must be restored exactly`，此前H131等已记录同一G盘失败，当前文件无diff，不能宣称原DACL问题已修复。AppCore lib正常/新增store组实际通过；完整kernel target为328/1/19，workflow为136/0/29。
+
+最终单独`cargo test --target-dir $build -p deepagent-app-core --test kernel_v2_e2e mcp_image_output:: --offline -j 2 -- --nocapture --test-threads=1`exit0、6/0/1、8.732秒，包含原H127 probe默认执行、混合两图顺序、坏MIME/base64、失败工具图片及无图/错误语义对照。RuntimeEvent/run_events也携带ordered SHA-256 refs、无raw base64；真正冷重开ChatService用持久引用重建相同wire，原MCP调用事件仍仅一次。未执行的metadata ignored是独立H138，不计通过。CLI `cargo build --target-dir $build -p deepagent-cli --offline -j 2`exit0/105.081秒，验收binary SHA256=`8A64347D242CF96255D75D380936D01C9DC7E1033084F73F3ACEC21F714F70EE`；默认CLI始终未替换，SHA256=`8C03E6A63D3E64EBF14DF4AC67C4DC56FB87C2D8B9C35949D3CBA9BC391F30A4`。SDK181/0及fmt/check同E02，以上绝非完整workspace通过。
+
+下一阶段原生PowerShell组合脚本准备全仓测试、strict/scoped Clippy及独立Tauri check，并保护硬编码SDK用的默认CLI及可能产生的.snap.new；工具在CreateProcess前以`blocked by policy`拒绝，脚本完全未启动，未替换binary、未执行上述验收、未删除任何文件。停止该被拒路径，不拆分/换工具或改ACL/执行策略绕过；用户随后回复“允许”不等于本机策略已实际改变。已请求获准执行方式，并只保存用户可审阅/手动启动的`G:\Code_Warehouse\DeepAgent-Studio\target\h116-reverify-20261109\h127-final-acceptance.ps1`，本机Parser静态检查通过，明确NOT_EXECUTED。脚本固定74份源码和两份CLI hash、只使用合成HOME/data/TEMP、offline且不继承CARGO_TARGET_DIR；保存每门禁原生退出码/时间/日志，finally恢复默认CLI及原快照，不把runner完结当测试全过。仍需实际执行并读取结果；不能先提交已修复或清空用于余下验收的target。
+
+阶段二结果JSON SHA256=`c53f6b63e3a1a606ecda4041f6b366dedc4aa694230dcb8f8bc1e5a857c73e5a`，AppCore全组日志=`c116e7ca2ca3f8d72670dbdb34de9ba5037b6ce9309735531b9b00260a38a86c`，最终MCP日志=`d472ddfb0d689c965d1f0a86067312e2bdf35bc58d7e031809bf482c3232d73b`，SDK日志=`4638ea10e50646712e9a5daf3f988324916331f58947b345ade8652d642d0550`，独立ACL日志=`0ae0b86adfced3a0b6b7fd91138b8787b399909487e57ccd0bc008408d3df30f`。验收完成后按确切归属安全清理，不把保留几十GB产物当永久唯一证据；本轮尚未清理、无commit，不推进修复计数。
+
+H127仍修复中，归并H173不另计完成：本轮新增验收0、历史跳过0、归并1、撤销0；306唯一编号为206验收/28历史跳过/10归并/3撤销/58待修+1修复中，59未关含H180授权跳过（实际58有效未关）。下一仍完成H127余下门禁与提交；之后优先复核H138的MCP客户端元数据模型可见性，不在本项顺修。H127剩余暂估2–6有效小时（余下结果审核、lint必要修正、双文/提交/清理），全余170–430有效小时仍低置信历史分组粗估；机器构建/测试可参考本轮AppCore约14.4分钟且其他门禁另加，策略/设备/依赖等待单列、无可靠总上界，不承诺精确完工时间。整体goal继续active，本次不是第三次阻塞turn，不标blocked。
+
+
+**E-H127-04（2026-11-09，限定本机范围已修复并验收）**：用户在独立PowerShell实际执行了E03脚本；此前CreateProcess策略拒绝不再当作当前未执行结论。只读核对真实进程树/日志推进，没有因无输出或观察超时重启Cargo。外部脚本四项门禁已终态，74份冻结源码/配置/fixture末次核对0漂移；默认CLI已自动恢复至`8C03E6A63D3E64EBF14DF4AC67C4DC56FB87C2D8B9C35949D3CBA9BC391F30A4`，无验收CLI子进程，原快照保护完成，没有接受新golden。
+
+| 实际命令（$build=G:\Code_Warehouse\DeepAgent-Studio\target\h116-reverify-20261109） | 原生结果 | 墙钟秒数 |
+|---|---|---:|
+| `cargo test --target-dir $build --workspace --no-fail-fast --offline -j 2 -- --quiet --test-threads=2` | exit101；156个Cargo主target，去嵌套helper重复后5050过/4败/181忽略 | 1381.516 |
+| `cargo clippy --target-dir $build --all-targets --all-features --offline -j 2 -- -D warnings` | exit101；未改Models client.rs:483 clone_on_copy阻断，不称严格lint通过 | 45.489 |
+| `cargo clippy --target-dir $build -p deepagent-core -p deepagent-tools -p deepagent-persistence -p deepagent-context -p deepagent-models -p deepagent-mcp -p deepagent-runtime -p deepagent-harness-protocol -p deepagent-app-core --all-targets --no-deps --offline -j 2` | exit101；未改mcp_discovery_restore.rs:776的panicking_unwrap deny及既有warning；逐位置核对没有新增行重叠诊断，不宣称整组lint通过 | 55.442 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --target-dir $build --offline -j 2` | exit0；真实独立桌面Rust消费方编译通过 | 270.960 |
+| 最终 `cargo fmt --all -- --check`、`git diff --check` | 两者exit0 | 以实际工具终态为准 |
+
+全仓四失败逐项保留：AppCore kernel `image_preparation::read_failure::real_read_data_dacl_denial_fails_without_sampling_and_recovers`的原DACL恢复断言（328/1/19）；CLI `viewport_snapshot_with_a_pending_approval`仅因隔离HOME显示`G:\h127-fixtures...`不同于golden（210/1/10），未改golden；既有H306 `creative.video-edit.v1`空defaultUserPrompt（27/1/0）；Runtime checkpoint DACL恢复断言（459/1/6），独立不链接本轮Runtime/MCP/Models的原HEAD模块复现见E02。相关失败位置/函数均未因本项修改，不把它们计为本轮修复或掩盖；系统完整workspace仍非全绿。当前CLI真实stdio SDK 13/0/0、Models主lib178/0/13；本项原H127/H173探针已转默认、真实多图/错误/无图/冷重开不redispatch组全部执行，不能用其他181个ignored充当本项验收。E02～03的Models http248/0/23、SDK181/0/0、AppCore2204/1/109及最终MCP6/0/1仍保留，不重复相加为一个总测试数。
+
+外部结果JSON SHA256=`c156f12bb0e32d59e9f4481d273238bc0770cf1f498ec41c8122d3d47c3e0458`，workspace日志=`774e9d9d932165cf7fdc5f26ca9ae378b1eaa254d782fc77df041b43cad6d8d3`，strict日志=`cdaa1ea248506def0bc553d7fdc9c89d477458f0f8b6c6644f8307493447ee90`，scoped lint日志=`cf764fe759eff720d232c42e55f95736336c2c9eaedb9d03253b66348e7c1132`，Tauri日志=`03a06c98bf75e9c50758f744e2fa4c37d24e06c6d29a142781565fd7ce859c1d`。实际命令、原失败摘录、数量和hash记录在双文；原日志/binary为可再生产物，验收后按已确认根清理，不为证据永久保留几十GB。
+
+验收仅限Windows本机、真实受控Node stdio MCP/正式Kernel/AttachmentService/持久引用/SQLite及session file冷重开/受控provider最终wire、原native compaction与双SDK/Tauri Rust消费者。没有真实DeepSeek请求、视觉质量/账单、完整桌面WebView手动UI、其他OS、断电/磁盘满、所有ignored或全宿主压力验收，不作这些保证。此处仅实现现有本地path+SHA256引用并在发送时转inline image；Files API/file_id优化仍由H170独立排队，用户上传SVG/角色矩阵等H169/H171不归并。图片沿已有附件保留/显式清理策略，不能在运行结束删掉已发布历史引用；失败批次只清理本批未发布身份。旧Message兼容投影保留occurrence但不保证混合text/image精确交错，正式native Surface/compaction/replay维持exact顺序。公共Rust源码构造须适配ToolResultBody及新增默认content字段；旧字符串事件与无图JSON wire保持可读/不变，新typed历史须用升级reader，Harness可选字段仍v1兼容。没有SQL迁移、第三方新依赖、权限/沙箱放行或第二运行链。
+
+H127按以上范围关闭，H173同根归并，不另算第二修复。本轮新增验收1、历史跳过0、归并1、撤销0；306唯一编号重算为207验收、28历史跳过、10归并、3撤销、58待修（含H180授权跳过，实际57有效未关），0修复中。本项代码/测试/当时双文即将独立提交，取得hash后另做文档回填，不反复amend；清理随后单列，未完成清理不宣称产物已清空。下一准备H138，先重跑原metadata探针确认当前可达性，当前未修改。全部剩余修复与验收仍为170–430低置信有效小时历史分组粗估，未逐项校准，不机械扣减成精确预测；编译/测试、设备/依赖及策略等待单列，无可靠总上界，不承诺日期。整体goal继续active。
+
 **级别：中（P2；仅当 MCP 工具返回 `type: image` 内容且后续模型需要检查图像时触发；调用本身仍可成功，但模型无法按图像语义观察结果）。** 当前跨层证明限定在 DeepSeek Responses 请求路径，不外推所有 provider adapter。
 
 - 规范能力依据：DeepSeek 官方 [Responses API 指南](https://api-docs.deepseek.com/guides/responses_api/)明确允许 `input_image` 出现在 `function_call_output` 与 `custom_tool_call_output` 的 `output` 列表中，并说明 `deepseek-flash` 会将其作为真实图像处理；[Vision 指南](https://api-docs.deepseek.com/guides/vision/)也列出工具输出图像形式。也就是说，工具调用配对不要求把图片压成文本，Responses 有原生多模态结果形状。
@@ -6625,6 +6672,8 @@ Finding F-H167（E01～03）：provider-image输出在URL和inline分支共同�
 - **验证收尾：** `cargo test -p deepagent-models --offline` 整体通过，**85 passed / 40 ignored**（含新 target 默认 **1 passed / 1 ignored**）；显式新 target 为 **1 passed / 1 failed（预期）**。首次 fmt check 只提示新增测试的3处排版，运行 cargo fmt 后 `cargo fmt --all -- --check` 与 `git diff --check` 通过，无生产文件被格式化改动。实际执行 `cargo clippy -p deepagent-models --test responses_text_format_audit --offline -- -D warnings`，被未修改 `src/client.rs:355` 的既有 clone_on_copy 拒绝，不能报告 lint 通过。未运行全 workspace、桌面构建、真实 DeepSeek、跨平台或参考工程。code-audit 将判断限定为可达的 provider wire 及已读设置规则，不把公网返回行为、模型不服从 schema 或默认 UI 失效写成复现结果。
 
 ### H-173：Responses 工具输出图片无法保留，公共消息边界静默降为纯文本
+
+**当前状态（2026-11-09）：归并到H-127，不独立重复计数。** 当前原Models探针仍实际失败；该公共工具输出字符串边界正是H-127真实MCP图片要经过的同一根因，必须共同改动才可修复，不另造MCP专用请求链。实施、TDD与最终验收统一见E-H127系列；H127已按E04限定范围验收，H173仅归并、不另计新增修复。以下原失败证据保留。
 
 **级别：中（P2，条件性多模态能力丢失）；触发条件：工具结果以 `Message::Tool` 携带图片附件，或未来 Harness/SDK 将图片工具结果投影到现有 `Message`/`ResponseItem` 边界。** 当前默认 `input_runtime` 主要把工具结果 JSON 转成字符串，因此本项没有证明现有桌面工具已经产生可达图片附件；它证明一旦上游已有工具图片，Responses 请求会把模型可见内容改写成文本而不是保留图片，也没有显式失败。
 
