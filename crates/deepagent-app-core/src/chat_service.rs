@@ -1589,6 +1589,35 @@ mod tests {
         last_body: Arc<std::sync::Mutex<Option<String>>>,
     }
 
+    #[derive(Clone, Default)]
+    struct RetryThenSuccessTransport {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl HttpTransport for RetryThenSuccessTransport {
+        async fn stream(&self, _: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            let attempt = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let events: &[&str] = if attempt == 0 {
+                &[
+                    r#"{"type":"response.failed","response":{"id":"retry-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"failed","error":{"code":"server_error","message":"HTTP 503 synthetic transient failure"}}}"#,
+                ]
+            } else {
+                &[
+                    r#"{"type":"response.output_text.delta","delta":"Recovered successfully."}"#,
+                    r#"{"type":"response.completed","response":{"id":"retry-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#,
+                ]
+            };
+            let mut sink = crate::test_sequence::sink(sink);
+            for event in events {
+                if sink.on_event(event)? {
+                    break;
+                }
+            }
+            Ok(())
+        }
+    }
+
     #[async_trait::async_trait]
     impl HttpTransport for RecordingTransport {
         async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
@@ -2876,11 +2905,11 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    #[ignore = "audit H-117: an API error ending a turn must dispatch StopFailure"]
     async fn audit_provider_error_dispatches_stop_failure_hook() {
         let mut mismatches = Vec::new();
         for (label, api_failure, expected_events) in [
             ("completed-control", false, vec!["SessionStart", "Stop"]),
+            ("retry-recovered", false, vec!["SessionStart", "Stop"]),
             (
                 "provider-failure",
                 true,
@@ -2906,6 +2935,7 @@ mod tests {
                     .to_string(),
                 )
                 .unwrap();
+            let mut retry_calls = None;
             let transport: Arc<dyn HttpTransport> = if api_failure {
                 Arc::new(crate::test_sequence::mock([serde_json::json!({
                     "type": "response.failed",
@@ -2918,6 +2948,10 @@ mod tests {
                     }
                 })
                 .to_string()]))
+            } else if label == "retry-recovered" {
+                let transport = Arc::new(RetryThenSuccessTransport::default());
+                retry_calls = Some(transport.calls.clone());
+                transport
             } else {
                 chat_transport()
             };
@@ -2942,6 +2976,9 @@ mod tests {
                 assert!(error.to_string().contains("audit invalid request"));
             } else {
                 result.unwrap();
+            }
+            if let Some(calls) = retry_calls {
+                assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
             }
             let store = deepagent_persistence::run_store::RunStore::new(&db);
             let run = store.get(&run_id).unwrap().expect("run was admitted");

@@ -9,7 +9,7 @@
 //! phases are represented as explicit hooks that later phases flesh out.
 
 use deepagent_core::clock::Clock;
-use deepagent_core::error::Result;
+use deepagent_core::error::{CoreError, Result};
 use deepagent_core::event::EventPayload;
 use deepagent_core::id::TaskId;
 use deepagent_core::message::{Message, ToolCall};
@@ -697,7 +697,19 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     finished = true;
                     break;
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    if matches!(&e, CoreError::Provider { .. }) {
+                        if let Err(hook_error) =
+                            self.fire_stop_failure(session_id, "", &e.to_string()).await
+                        {
+                            tracing::warn!(
+                                error = %hook_error,
+                                "StopFailure hook failed; preserving the terminal provider error"
+                            );
+                        }
+                    }
+                    return Err(e);
+                }
             };
             self.events.checkpoint()?;
             if self.is_cancelled() {

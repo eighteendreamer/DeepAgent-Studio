@@ -4859,6 +4859,8 @@ E03原始复验日志均留在上述target目录，SHA256：`runtime-lifecycle.l
 
 ### H-117：API 错误终止未派发 StopFailure，反而只在完成被拒绝时触发
 
+**当前状态（2026-11-09）：已修复并验收（仅所列Windows本机离线范围）。** 原API失败probe默认执行通过；增加了瞬时Provider 503恢复成功、普通Agent错误、取消和hook自身失败对照。workspace仅剩未改H-306失败，Runtime/AppCore严格Clippy仍被既有诊断阻断，详E-H117-02。
+
 **级别：中（P2，条件性生命周期缺陷）；触发条件：配置 `StopFailure` hook，并依赖它处理结束本轮的模型 API 错误。** 未配置该 hook 时不改变模型错误本身及规范终态。
 
 - 根因与生产路径：`RuntimeEngine::run()` 对模型思考返回的普通错误直接 `return Err(e)`；Kernel 负责最终失败落盘，但没有派发 StopFailure。全仓库的生产 StopFailure 派发点仅在 `completion_gate()` → `fire_stop_failure()`，当 BeforeResponse/Stop 返回 Deny 或 Ask 时调用。这是把“完成 gate 要求继续”与“API 错误结束”映射到了同一个事件名。
@@ -4866,6 +4868,29 @@ E03原始复验日志均留在上述target目录，SHA256：`runtime-lifecycle.l
 - 成熟实现对照：Claude Code `utils/hooks/hooksConfigManager.ts` 明确把 StopFailure 定义为 API 错误（限流、鉴权等）结束 turn 时替代 Stop 的通知，输出与退出码被忽略；`query.ts` 在错误恢复耗尽并退出前调用 `executeStopFailureHooks`，`utils/hooks.ts` 从 API error message 构造 `error` / `error_details`。不把 Claude 的内部错误枚举直接套到 DeepSeek，本系统仍需在自己的 provider seam 映射分类。
 - 影响及限制：依赖该事件的失败通知、诊断收集和外部自动化在本次真实 API 失败路径没有运行；H-106 已动态证明正常回答被 Stop 拒绝后反而派发 StopFailure，可能导致误报。H-106 的 payload 缺 `error` 与本项触发时机错误是两条独立验收项。本探针未验证限流重试耗尽、鉴权 HTTP 状态、取消或进程总时限，也没有证明数据库把 API 失败写成成功——本次失败落盘正确。
 - 收敛方向（尚未实施，本地设计）：在既有运行失败收尾入口按最终 provider 错误原因派发一次有类型的 StopFailure；可恢复重试和 Stop 要求继续不触发终结性失败通知。明确 hook 的时限、取消和异常处理不得破坏原失败及单一终态，验证错误恢复成功、恢复耗尽、鉴权/限流、普通成功及 Stop 拒绝重试。
+
+**E-H117-01（2026-11-09，H-116后按序复核原probe）**：基线`3ffa2b56edd963301eabde170cbace7de8756d1d`；工作区tracked干净，仅既有未跟踪内容不动。使用`target\h116-reverify-20261109`中的当前AppCore测试binary，离线、合成Responses `response.failed/invalid_request_error`、MockTransport、临时DB/HOME，无真实模型、内网、凭据或用户数据。实际执行`cargo test --target-dir $build -p deepagent-app-core --lib --offline -j 2 -- chat_service::tests::audit_provider_error_dispatches_stop_failure_hook --ignored --exact --nocapture --test-threads=1`，exit101、0通过/1失败/0忽略。成功对照真实终态`succeeded`且hook为`SessionStart, Stop`；API失败组终态正确为`failed`且恰有一个`run_terminal`，调用方收到原`audit invalid request`错误，但真实hook仅`SessionStart`。原断言汇总`API error lifecycle hooks do not match their trigger: ["provider-failure"]`，原复核日志SHA256=`E677CD5C21FF01806AAE053B65D1C6996F2B76C7C76399B8E496534E73BE3BE4`。问题仍成立，不作历史跳过。根因复核确认`RuntimeEngine::run()`的Agent `think`终态错误被直接return，Kernel随后独立提交failed terminal；`StopFailure`现派发点只覆盖BeforeResponse/Stop的Deny/Ask，不能覆盖模型请求失败。H-106的StopFailure payload缺error字段仍独立。下一步应先补Provider最终失败/取消与正常完成及错误恢复成功对照的真实红测，再改共享Runtime收敛边界；hook自身失败必须保留原Provider终态原因且不重复终态。
+
+**E-H117-02（2026-11-09，TDD、根因修复与最终验收）**：只修改Runtime最终Agent错误分支、原H-117 ChatService probe与新增Runtime边界测试。修改前默认AppCore probe实际exit101、0通过/1失败/0忽略：完成对照`succeeded`且`SessionStart → Stop`；合成Responses Provider error已落唯一`failed` terminal并由调用方收到原错误，但hook只有`SessionStart`。新增Runtime先红后绿：修复前3项中Agent error/cancel对照通过，Provider通知及StopFailure hook失败保留原始Provider原因两项失败；修复后3/0/0。原红测日志SHA256：`h117-regression-red.log`=`D0B64539B28E31994F5D87A604DBCAD3CEA278EA9FE456AE07270B888C89E869`；`h117-runtime-red.log`=`3102E75CBE1C96CFA80184B826424843F3BBE2A961BB455FE92707429356C00C`。首次probe复核日志=`h117-original-probe.log` SHA256=`E677CD5C21FF01806AAE053B65D1C6996F2B76C7C76399B8E496534E73BE3BE4`。
+
+根因改动复用`RuntimeEngine::run()`现有`think_streaming_cancelled`错误边界和`fire_stop_failure()`，只在最终`CoreError::Provider`分支派发一次；ModelAgent内部的可恢复重试/fallback必须先结束，`think`成功则不会触发。现有取消优先分支、普通Agent错误维持原行为。StopFailure hook若返回错误，只记不含Provider原文的warning并保留原Provider error交给Kernel，因此唯一规范terminal与原失败原因不被hook故障覆盖；不增加新状态机、派发链、DTO、错误类型、配置、依赖或持久化迁移。`HookData::Response`仍走现有payload，H-106要求的独立`error`字段未混修。
+
+AppCore正式ChatService → Responses ModelClient → RuntimeEngine/Kernel → SystemHookRunner probe移除ignore并成为默认执行，含真实command marker与文件SQLite：成功完成为`SessionStart, Stop`；首请求合成HTTP 503、ModelAgent实际发2次请求后成功，仍为`SessionStart, Stop`且无StopFailure；终止性`invalid_request_error`为`SessionStart, StopFailure`，最终run failed、单一`run_terminal`、调用方保留原错误。最终probe `h117-appcore-original-green.log` SHA256=`20F490E0615D50DAC4C09903A529CE3C987A58561D12FE40A00D205577321BEB`。Runtime边界测试覆盖Provider一次派发、Agent error/cancel零派发、hook自身失败保留原cause，`h117-runtime-regressions.log` SHA256=`5BE6BA0C6131E38B9AD47A212B3660A0745A7ECA09EB0D7A47F26FE930A34BA6`。
+
+| 实际命令（仓库根） | 结果 |
+|---|---|
+| `cargo fmt --all -- --check`；`git diff --check` | 均exit 0 |
+| `cargo test --target-dir $build -p deepagent-runtime --test stop_failure_lifecycle --offline -j 2 -- --nocapture --test-threads=1` | exit 0；3/0/0 |
+| `cargo test --target-dir $build -p deepagent-app-core --lib --offline -j 2 -- chat_service::tests::audit_provider_error_dispatches_stop_failure_hook --exact --nocapture --test-threads=1` | exit 0；1/0/0；含完成、可恢复503成功、终止Provider失败 |
+| `cargo test --target-dir $build -p deepagent-runtime --offline --no-fail-fast -j 2 -- --quiet --test-threads=2` | exit 0；9个结果块合计484通过/0失败/7忽略 |
+| `cargo test --target-dir $build -p deepagent-app-core --offline --no-fail-fast -j 2 -- --quiet --test-threads=2` | exit 0；33个结果块合计2200通过/0失败/110忽略 |
+| `cargo test --target-dir $build --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=2` | exit 101；157个结果块合计5039通过/1失败/183忽略。唯一失败是未改H-306 `creative.video-edit.v1`空`defaultUserPrompt`；H-117相关目标通过。 |
+| `cargo clippy --target-dir $build -p deepagent-runtime --all-targets --no-deps --offline -j 2 -- -D warnings` | exit 101；被既有未改`model_agent.rs:298 clone_on_copy`及`workflow/canvas.rs:32 derivable_impls`阻断。 |
+| `cargo clippy --target-dir $build -p deepagent-app-core --all-targets --no-deps --offline -j 2 -- -D warnings` | exit 101；12条lib与14条lib-test既有诊断，包括模型usage clone、http needless_return、plugin类型复杂度、RunAssembler参数数及未改测试诊断；不涉及H-117文件。 |
+
+最终Runtime/AppCore/workspace/Clippy日志均留在`target\h116-reverify-20261109`，分别为`h117-runtime-package.log`=`8DE0A24CE6C233FBE964E2DED6122861860396DEF259397D96518328E1356FD0`、`h117-appcore-package.log`=`65951A4BEFC5111816BBD91BB39EEF7876DFEEDA9BE7A2D8A0C8FFBCCF20EDE5`、`h117-workspace.log`=`C5B43EBDE65AE6A31F15F29FE7EA91CD25A02EEE9D086094ACC6A9B8BB0F9318`、`h117-runtime-clippy.log`=`278E6B91EF4394BE933200EBAFDFECA935786B9DE56E42CAFD302F631BF18F20`、`h117-appcore-clippy.log`=`E2968973C00670EE05D8D942637CA8AB52B132C203C74C4AA835AA4B9509D365`。本项未测试真实供应商/公网/内网/凭据/用户数据；未逐项测试401/429或HTTP transport unstructured `CoreError::Other`，当前只匹配终态结构化`CoreError::Provider`；外部hook effect与Kernel terminal commit无跨系统事务，故不承诺exactly-once；无Tauri/UI字段改动，无前端构建或手工UI验收。H-117本机代码/测试验收余0，commit及hash回填随后完成。
+
+本轮新增修复验收1、历史跳过/归并/撤销新增均0；按306台账为206验收、28历史跳过、9归并、3撤销、60待修（含H-180授权跳过，实际59项）、0修复中。下一项按有效优先级复核P2 H-127；H-180不执行，仍是独立授权跳过。全余有效修复与验收暂估162–418小时，由H-116后168–424小时历史低置信范围扣除本项2–6小时估算；这不是逐项重估、不提供完成率或精确完工日期。设备/依赖/编译/环境等待另计且无可靠总上界，整体goal继续active。
 
 ### H-118：Responses 流式失败丢弃供应商错误码，上下文溢出恢复依赖消息措辞（已修复）
 
