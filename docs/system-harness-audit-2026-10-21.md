@@ -5362,7 +5362,7 @@ workspace唯一失败仍为未修改H-306的 canvas_prompt::tests::every_node_ki
 
 ### H-132：Chat Completions 的合法内容过滤终态被当作未知 provider 错误，usage 未进入运行账本
 
-**当前状态（2026-11-10）：已修复并验收，仅限E-H132-04本机离线范围；提交hash取得后另回填。原probe/TDD红保留，当前旧canonical账本已入账，不重复修记账；本轮修唯一Chat终态/空过滤/工具采用边界。全仓5118/5/173与strict旧阻断均未全绿，额外构建就绪失败隔离复核过但未定因；详本条E04及[修复台账](system-harness-repair-progress.md)。以下原文为历史失败快照，不代表当前仍完全漏账。**
+**当前状态（2026-11-10）：已修复并验收，仅限E-H132-04本机离线范围；修复commit=`10fb5f9849abf269369599d64cfcca3d55e2dbfb`，E05确认本轮31.37 GB逻辑产物清理及双文回填。原probe/TDD红保留，当前旧canonical账本已入账，不重复修记账；本轮修唯一Chat终态/空过滤/工具采用边界。全仓5118/5/173与strict旧阻断均未全绿，额外构建就绪失败隔离复核过但未定因；详本条E04及[修复台账](system-harness-repair-progress.md)。以下原文为历史失败快照，不代表当前仍完全漏账。**
 
 **级别：低（P3，条件性）；触发条件：调用方使用公开 `WireMode::ChatCompletions` 路由，DeepSeek 对该请求返回合法 `finish_reason=content_filter`，且响应包含 usage。** 桌面 `model_runtime::select_run_model()` 默认使用 Responses，因此该项不解释桌面默认协议的过滤行为。
 
@@ -5408,6 +5408,19 @@ PowerShell仓库根执行，`$build='G:\Code_Warehouse\DeepAgent-Studio\target\h
 兼容性：公开Chat client现能返回typed ContentFilter及可选usage，Runtime仍明确失败而非成功/未知终态，过滤内容可空且不能授权工具；原Stop/Length/tool_calls及未知拒绝策略保持。默认Responses、公共Rust类型/协议版本/SQL/TS/Tauri DTO/权限与取消不变，无依赖或数据迁移；Chat公开raw_usage原wire策略未改，不以本项宣称任意raw字段安全。未执行真实provider/计费、其他OS、外部用户SDK和UI手动验证；无前端/桥接变化，未执行pnpm build。SDK/全仓临时CLI hash为`92393B94F25C7AF6909FD904B82D85AA81A070D803F77F0BAF757624F6A9CAB8`，finally与补验后默认CLI原SHA256均恢复为`8C03E6A63D3E64EBF14DF4AC67C4DC56FB87C2D8B9C35949D3CBA9BC391F30A4`。
 
 306唯一行核对：本轮新增修复1、历史跳过/归并/撤销各新增0；累计215验收/28历史跳过/10归并/3撤销/50待修含H180授权不修，修复中0，实际有效剩余49。下一准备H144的aborted/insufficient_system_resource终态与恢复策略，独立核对原probe后另轮修，不把它并入本项。全部剩余暂沿用170–430有效小时低置信区间，依据剩余跨层/事件/模型/持久化复杂度、未逐项校准；本项代码验收余0，提交/清理另记E05。设备/编译/依赖/环境等待另计，未来无法可靠量化；本轮全仓约25.0分钟/Tauri约4.3分钟仅机器实测，不承诺日期。修复hash取得后另回填、不反复amend；整个goal未完成。
+
+
+**E-H132-05（独立提交、实际清理与双文回填，2026-11-10）**：修复commit=`10fb5f9849abf269369599d64cfcca3d55e2dbfb`，仅六份本项Rust实现/测试与双文共8文件。提交前核对本项白名单、全部源码冻结hash、diff/306唯一台账/E04双文一致；显式pathspec add与commit --only，未纳入六项用户untracked，不推送、不建PR、不执行数据迁移。取得真实hash后另做本次文档回填，不反复amend自引用；E01原probe、E02账本实测与红、E03候选、E04全仓额外失败和测试等价lint改写后的补验范围均保留。
+
+清理前核对17道矩阵终态及必需项exit0、6份最终源hash、末次测试lint/fmt/跨层/CLI/Tauri与额外就绪隔离gate exit0、delivery commit/ownership及CLI原hash恢复。三个目标为绝对确切白名单，根与所有祖先/逐个后代均无reparse或越界、target无Git跟踪文件且无本轮活动Cargo/测试进程；原snapshot baseline=[]，生成快照路径/hash与全仓证据一致且仍untracked。dry-run原生0；`& 'G:\Code_Warehouse\DeepAgent-Studio\target\h132-repair-20261110\cleanup.ps1' -Execute`原生0，实际清单与dry-run一致：
+
+| 确切目标 | 文件数 | 逻辑字节 |
+|---|---:|---:|
+| G:\Code_Warehouse\DeepAgent-Studio\target\h132-repair-20261110 | 18,896 | 29,777,599,909 |
+| G:\h132-fixtures-20261110 | 2,300 | 1,595,174,234 |
+| G:\Code_Warehouse\DeepAgent-Studio\apps\cli\src\tui\snapshots\deepagent__tui__app__tests__viewport_snapshot_with_a_pending_approval.snap.new | 1 | 946 |
+
+合计21,197文件、31,372,775,089逻辑字节（约31.37 GB），未测物理空闲空间回收量。三个Test-Path最终均false，runner/矩阵日志/一次性脚本随本轮target删除；默认CLI原SHA256仍为`8C03E6A63D3E64EBF14DF4AC67C4DC56FB87C2D8B9C35949D3CBA9BC391F30A4`。未删源码、原快照、用户文档、六项用户untracked或C盘共享Cargo/Rustup缓存；仅证明本轮三个确切目标清理，不泛称整机垃圾已净。使用当前用户已有权限，未取得/声称管理员提权。清理后tracked干净，本次仅双文回填再提交；215验收/28历史跳过/10归并/3撤销、实际有效剩余49再次按306唯一行核对。下一准备H144，全部剩余工时/等待与未验范围沿E04，整个goal仍未完成。
 
 ### H-133：Responses `response.failed` 携带 usage 时未进入运行用量
 
