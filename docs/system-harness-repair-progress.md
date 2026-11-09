@@ -6547,7 +6547,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-295：TypeScript SDK 以客户端全局审批屏障结束单个 turn，另一会话的待答审批会阻塞已完成流](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E01当前2/1与TDD7/11留证；E03原探针默认执行及完整消费验收，非历史跳过 | 原局部view消费匹配terminal即收尾；审批留原显式snapshot owner，不join全局、不自动代答 | SDK177/0/0、原3/0、新18/0、owned21/0、代次16/0、真实stdio2/0+JSONL1/0；fmt/typecheck/3MJS过；E03命令与未验 | `3becdf8547d2715632c23486d4443fe12986c3f6`；文档回填另提交，不amend | 本机修复/验收/提交余0；E04清理策略阻塞251,443,695字节；流自然结束不再隐式保证审批settled；下一H215；全余200–400历史粗估、等待另计 |
 | [H-296：模型能力解析以 context_window 是否存在决定整份元数据来源，单独公布的输出上限被 fallback 覆盖](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-297：默认字符密度计数低估官方离线文本，冷计量可漏过既定压缩压力阈值](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-298：Harness 超出存储表示域的读取游标回绕，错误重放全部旧 run events](system-harness-audit-2026-10-21.md) | P3 | 已修复并验收 | 原CLI随H218/ea319511消除，共享API同根残余按E-H298-01～04修复，不计额外历史跳过 | 两读取共用唯一排他下界转换，超域未来游标空成功；正常覆盖/分页契约保留 | 存储214/0、公开6/0、cursor10/0含76观察；V1全仓5077/4/178保留旧失败；V2仅测试lint整理，CLI全套214/1/10、CLI strict0，详E04 | 待取得独立commit后回填 | 本机范围；JS精度/真实UI/其他OS未验；本项验收余0，清理/提交待收尾 |
+| [H-298：Harness 超出存储表示域的读取游标回绕，错误重放全部旧 run events](system-harness-audit-2026-10-21.md) | P3 | 已修复并验收 | 原CLI随H218/ea319511消除，共享API同根残余按E-H298-01～05修复，不计额外历史跳过 | 两读取共用唯一排他下界转换，超域未来游标空成功；正常覆盖/分页契约保留 | 存储214/0、公开6/0、cursor10/0含76观察；V1全仓5077/4/178保留旧失败；V2仅测试lint整理，CLI全套214/1/10、CLI strict0，详E04 | 96096683dcb0c02b7364a72a67faa3ce856e2851 | 本机范围；JS精度/真实UI/其他OS未验；本项余0，E05已清理 |
 | [H-299：桌面端工具循环的实时用量与会话重载显示不一致](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-300：Embedding 工作流执行器存在，但画布契约/图注册表没有注册 embedding 节点](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H300-01～12保留原graph/批量/成本失败；仅所列Windows本机范围，H-163/H-164不重复计数 | 复用专业registry/schema、graph、executor/gateway、取消树、canonical计量与run_events；批量全解析/次序/数量校验 | workflow41/0/39、gateway47/0/5、runtime68/0；真实桌面DTO1/0、text取消1/0；UI真实交互恢复/前端build/Tauri/fmt通过；workspace3659/7/309与严格lint失败保留，同binary整组AppCore1230/0/62、Kernel159/1/79（MCP通知）；当前及HEAD快照MCP对照各2/0/1不抹去整组失败；见E-12 | `39c61767` | 无SQL迁移/新依赖；Rust enum新增vectors仓外穷尽调用方需适配，原vector与节点DTO保留；完整Tauri/真实供应商/其他OS/断电未验；剩余212，下一H-287，总200–400未校准有效小时，等待另计 |
 | [H-301：Audio 合成取消没有打断共享 Canvas HTTP 响应](system-harness-audit-2026-10-21.md) | P1 | 历史已修复跳过 | 原探针已通过；H-164 的共享取消修复及 E-H164-03 已含音频验收，不重复计功 | 生产实现归 63cfffa4；本轮只将原探针转默认并补半正文取消/正常对照/SQLite 重开 | E-H301-01～07；媒体25/0/13、AppCore1323/0/57、workflow30/0/25、重开6/0/0、Runtime339/0/9；fmt通过，严格及全test lint既有失败保留 | 生产修复 63cfffa4；本轮测试/文档 `8a7df621bf9be1144be514231d46968ba560a17e` | 仅所列Windows本机范围；新增生产修复0；无API/迁移/权限变化；194有效未关闭，下一候选H-302；总200–400未校准有效小时，等待另计 |
@@ -9113,3 +9113,15 @@ V1 CLI非严格Clippy虽然exit0，却指出新测试两处unnecessary_map_or，
 根因已在唯一存储边界消除，两API/公开ChatService/Tauri薄包装/CLI投影共用原内核。无签名、wire字段、SQL格式、配置或权限变化；外部若依赖超域值误回放，须改用None显式全量读取。保留现有过滤覆盖规则、分页预算与无游标正常历史。未验证其他OS、真实UI/供应商/服务/凭据、TS stdio；没有前端契约变化，未跑pnpm build。未改变JS number精度/编码、legacy全量读的大小预算，也不自动修复旧消费者已重复显示的数据；不操作真实历史。
 
 本轮新增修复1、历史跳过新增0、归并/撤销新增0。台账306唯一行：210验收/28历史跳过/10归并/3撤销/55待修（含H180授权不修），修复中0，实际有效剩余54。下一准备H140输入hook上下文丢弃，先核对原probe与执行契约，不混入本项。全余170–430有效小时为沿用的低置信规划区间，依据余项跨层/模型/事件与持久化复杂度、尚未逐项校准；编译/设备/依赖/策略等待另计，本轮全仓约27.7分钟、Tauri约5.5分钟只作为实际机器耗时，未来等待无法可靠量化，不承诺日期。修复hash取得后另双文回填，不反复amend；本轮两根和生成快照清理结果另记E05。整个goal未完成。
+
+**E-H298-05（独立提交与实际清理，2026-11-09）**：修复commit为`96096683dcb0c02b7364a72a67faa3ce856e2851`，仅本项8份Rust/测试及双文共10文件；使用显式pathspec的git commit --only，未纳入两份正在修改的用户Linux VM文档或既有untracked，未推送/PR/迁移。取得hash后本次双文另行提交，不反复amend。
+
+验收及所有进程终态后，清理脚本核对完整绝对路径与每级祖先、ownership.json的H298/根路径、snapshot-ownership.json原本不存在、快照SHA256、8份V2源码hash、原CLI hash、无Git跟踪文件与本项活跃进程。遍历不跟随reparse，遇到reparse/越根/策略拒绝即停止；不改ACL或换工具绕过。dry-run返回清单后，实际执行`& 'G:\Code_Warehouse\DeepAgent-Studio\target\h298-repair-20261109\cleanup.ps1' -Execute`原生exit0：
+
+| 确切删除目标 | 文件数 | 目录数（含根） | 逻辑字节 |
+|---|---:|---:|---:|
+| `G:\h298-fixtures-20261109` | 2,381 | 2,489 | 1,020,224,793 |
+| `G:\Code_Warehouse\DeepAgent-Studio\target\h298-repair-20261109`（含日志、V1/V2源清单、脚本及CLI备份） | 19,331 | 3,779 | 28,558,605,405 |
+| `G:\Code_Warehouse\DeepAgent-Studio\apps\cli\src\tui\snapshots\deepagent__tui__app__tests__viewport_snapshot_with_a_pending_approval.snap.new` | 1 | 0 | 946 |
+
+合计21,713文件、29,578,831,144逻辑字节，约29.58 GB；未测物理回收，不声称同量磁盘释放。三个目标Test-Path均false，默认CLI原hash仍匹配，脚本自身也已随target删除。使用当前用户已有权限完成，未发起或声称管理员提权；未删除源码、原.snap、用户文档、C盘共享工具链/缓存或六项既有用户untracked。只证明本轮三个确切目标清理，不泛称整机无历史垃圾。双文diff、306行唯一性与最终Git范围再次核对后提交回填；H298闭环，下一准备H140，整个goal保持未完成。
