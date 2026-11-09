@@ -1,4 +1,7 @@
 //! Formal offline ChatService + real write_file, including reopened control/session stores.
+#[path = "event_persistence/cursor_range.rs"]
+mod cursor_range;
+
 use super::*;
 use deepagent_core::{event::EventPayload, id::SessionId};
 use deepagent_models::ModelRole;

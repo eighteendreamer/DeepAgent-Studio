@@ -1317,14 +1317,18 @@ async fn durable_tail_and_in_range_future_cursors_do_not_replay_run_events() {
 }
 
 #[tokio::test]
-#[ignore = "H-298: a u64 cursor outside SQLite i64 range must not wrap and replay old run events"]
 async fn audit_out_of_storage_range_cursors_never_rewind_run_history() {
     let observations = cursor_range_observations(true).await;
-    assert!(observations.iter().all(|observed| {
-        observed.error == Some(ERR_INVALID_PARAMS)
-            || (observed.error.is_none() && observed.run_events == 0)
-    }), "out-of-range cursors must be rejected or return no later events, never rewind: {observations:?}");
+    assert!(
+        observations
+            .iter()
+            .all(|observed| { observed.error.is_none() && observed.run_events == 0 }),
+        "future cursors must return an empty successful suffix, never rewind: {observations:?}"
+    );
 }
+
+#[path = "terminal_audit/cursor_range.rs"]
+mod cursor_range;
 
 #[derive(Debug, Clone, Copy)]
 enum ForkBoundary {

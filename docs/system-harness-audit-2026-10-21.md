@@ -16448,6 +16448,12 @@ H295本机修复、E03所列验收及代码提交余0；E04本轮C盘251,443,695
 
 ### H-298：Harness 超出存储表示域的读取游标回绕，错误重放全部旧 run events
 
+**修复状态（2026-11-09）：已修复并验收，限本机共享读取与Harness投影。** 原CLI探针当前1/0，12项超域观察全部run events=0：H218/ea319511已消除这个入口，不能继续称当前CLI仍失败。共享RunStore::events_after及ChatService/Tauri仍有同根遗漏，补测试时存储两组0/2、公开真实write_file/第二run组0/1，i64::MAX+1分别回放5/40条旧事件；不把整个H298误计历史跳过。现让events_page/events_after共用唯一event_after_bound：全部u64接受，超出SQLite序号域的未来游标返回空成功增量，保持None/排他比较及原SQL诊断路径；不增第二读链、不改wire/SQL格式/权限，正常游标与覆盖顺序兼容，只纠正错误回放。
+
+存储完整214/0/0、公开event_persistence组6/0/0、CLI cursor组10/0/0（双run、四入口、76次完整分页及覆盖观察）、协议25/0/0通过。8源V1冻结全仓157结果块5077/4/178，exit101、1660.135秒；四失败仍为既有两DACL恢复、隔离HOME快照及H306空提示词，不称全绿。CLI新测试两项map_or警告随后按本机官方Rust文档/CLI已有1.88 MSRV改is_none_or；V2唯一变化是该测试文件两处等价表达式，其他7源和全部生产实现未变。V2已复验CLI全套214/1/10（仅同一旧快照失败）、cursor10/0/0及CLI严格Clippy通过，不将V1全仓冒充V2单次全仓重跑。存储/协议严格Clippy、fmt/diff、当前CLI build及Tauri Rust check通过；workspace strict仍由models/client.rs:483旧clone_on_copy、AppCore all-targets由旧mcp_discovery_restore.rs:776 panicking_unwrap阻断，AppCore lib非严格exit0含12原警告。V1测试/检查无漂移，V2源终检0；默认CLI原哈希已恢复。完整命令、失败证据及两个冻结版本说明见[进度E-H298-04](system-harness-repair-progress.md)，修复hash及清理结果随后回填，原失败证据保持。
+
+残余：未执行其他OS、真实UI/服务/凭据或TS stdio；未改前端契约，未跑pnpm build。未改变JS number精度或wire编码，也未把legacy events_after改成有界分页；只修读取值缩窄，不操作真实历史或证明旧客户端显示副作用自动消失。累计210验收/28历史跳过/10归并/3撤销，55待修含H180授权不修，实际54。下一准备H140输入hook上下文丢弃，优先执行契约；全余170–430低置信有效小时，编译/设备/依赖/策略等待另计，不承诺日期、不宣称整个goal完成。以下原始失败记录保留。
+
 **2026-10-25，首次有效复现后即时记录；P3、条件性读取正确性缺陷，未修复。** 本轮不是重跑 H-218 的无界分页、H-205 的 SDK 通知身份或 H-285 的分叉文件恢复；没有调用 fork/rewind，没有修改用户文件或生产实现。
 
 #### 正式调用与首次实测

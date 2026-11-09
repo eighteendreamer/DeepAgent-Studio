@@ -21,6 +21,10 @@ mod capability_tests;
 #[path = "run_store/admission_tests.rs"]
 mod admission_tests;
 
+#[cfg(test)]
+#[path = "run_store/cursor_tests.rs"]
+mod cursor_tests;
+
 #[path = "run_store/scheduled.rs"]
 mod scheduled;
 pub use scheduled::ScheduledRunOrigin;
@@ -922,6 +926,8 @@ impl<'db> RunStore<'db> {
         },session_id,cursor,budget,|row| run_from_row(row).map_err(map_sqlite))
     }
 
+    /// An exclusive u64 lower bound. Any future sequence, including one above
+    /// SQLite's signed representation, has an empty suffix (never a rewind).
     pub fn events_page(
         &self,
         run_id: &str,
@@ -941,25 +947,34 @@ impl<'db> RunStore<'db> {
                 descending: false,
             },
             run_id,
-            after.map(|value| value.min(i64::MAX as u64) as i64),
+            after.map(event_after_bound),
             cursor,
             budget,
             |row| run_event_from_row(row).map_err(map_sqlite),
         )
     }
 
+    /// Read the exclusive suffix, using the same future-cursor semantics as
+    /// `events_page`. None includes the initial sequence-zero event.
     pub fn events_after(&self, run_id: &str, after: Option<u64>) -> Result<Vec<StoredRunEvent>> {
         self.db.with_conn(|conn| {
             let mut stmt = conn
                 .prepare("SELECT run_id, sequence, timestamp, phase, status, event_type, data FROM run_events WHERE run_id=?1 AND sequence>?2 ORDER BY sequence")
                 .map_err(map_sqlite)?;
             let rows = stmt
-                .query_map(params![run_id, after.map(|v| v as i64).unwrap_or(-1)], run_event_from_row)
+                .query_map(params![run_id, after.map(event_after_bound).unwrap_or(-1)], run_event_from_row)
                 .map_err(map_sqlite)?;
             rows.collect::<std::result::Result<Vec<_>, _>>()
                 .map_err(map_sqlite)
         })
     }
+}
+
+// With strict `sequence > bound`, i64::MAX and any larger u64 both select no
+// SQLite INTEGER sequence. This is the explicit future-cursor policy shared by
+// both readers, not a wrapping conversion or a protocol range rejection.
+fn event_after_bound(after: u64) -> i64 {
+    i64::try_from(after).unwrap_or(i64::MAX)
 }
 
 fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunRecord> {

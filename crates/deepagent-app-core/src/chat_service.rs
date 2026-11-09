@@ -516,6 +516,8 @@ impl ChatService {
     }
 
     /// Ordered Agent Kernel v2 events for reconnect/replay consumers.
+    /// The cursor is exclusive; all u64 values are accepted. A future cursor,
+    /// including one above the SQLite sequence domain, returns an empty suffix.
     pub fn run_events(
         &self,
         run_id: &str,

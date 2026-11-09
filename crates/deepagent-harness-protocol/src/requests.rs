@@ -138,6 +138,10 @@ pub struct ThreadReadRequest {
     /// Retry is read-only; omit the initial sequence filters or repeat them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
+    /// Exclusive lower bound for both streams. All u64 values are accepted;
+    /// values beyond a stream's durable sequence domain select no events.
+    /// Stream-specific fields below override this fallback, and a per-run entry
+    /// overrides runAfterSequence for that run (including when its value is 0).
     #[serde(
         rename = "afterSequence",
         default,
