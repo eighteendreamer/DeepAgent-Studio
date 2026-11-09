@@ -5141,7 +5141,7 @@ H126代码行为限E03本机范围已验收，但上述C/G残余清理是明确�
 
 ### H-127：MCP image 工具结果被降格成 Responses 普通 JSON 字符串，模型收不到图像输入
 
-**当前状态（2026-11-09）：已修复并验收，仅E-H127-04所列Windows本机范围；H-173同根归并到本项，只计一个新增修复。提交与清理见后续回填，原失败及候选记录保留。** H-127的真实MCP图片必须通过H-173所指出的公共工具输出边界，二者均由字符串型结果丢失typed图片发生，不能在MCP侧另造专用模型请求链。只计一个有效修复，原始失败证据和H-173编号保留。
+**当前状态（2026-11-09）：已修复并验收，仅E-H127-04所列Windows本机范围；H-173同根归并到本项，只计一个新增修复。修复提交`641f24d6f13af984a5bbb395ab86174957351b70`，清理策略阻断见E05；原失败及候选记录保留。** H-127的真实MCP图片必须通过H-173所指出的公共工具输出边界，二者均由字符串型结果丢失typed图片发生，不能在MCP侧另造专用模型请求链。只计一个有效修复，原始失败证据和H-173编号保留。
 
 **E-H127-01（2026-11-09，当前原探针与增强TDD红）**：基线`2e4d5a7211f674e92c4ab43516e36defa49b873f`，tracked起始干净，原六项用户untracked只列名、不读改暂存。复用现存`target/h116-reverify-20261109`，未另建大型Cargo target。实际原`cargo test --target-dir target/h116-reverify-20261109 -p deepagent-models --test modalities_audit audit_responses_tool_output_images_are_preserved_before_transport --offline -j 2 -- --ignored --exact --nocapture`为exit101、0/1/0，`output_image_parts=0`、wire为`"screenshot ready"`。原AppCore命令同target、`-p deepagent-app-core --test kernel_v2_e2e mcp_image_output::audit_mcp_image_result_is_not_serialized_as_text_json --offline -j 2 -- --ignored --exact --nocapture`为exit101、0/1/0，真实Node stdio经过正式McpService/Adapter/ChatService/Kernel后仍为`wire_output_kind=string, typed_input_image=false, raw_json_string=true, raw_image_data_present=true`。清除凭据/代理环境继承，只使用合成provider/临时SQLite/本机MCP，不访问真实服务或数据。
 
@@ -5187,6 +5187,25 @@ H127仍修复中，归并H173不另计完成：本轮新增验收0、历史跳�
 验收仅限Windows本机、真实受控Node stdio MCP/正式Kernel/AttachmentService/持久引用/SQLite及session file冷重开/受控provider最终wire、原native compaction与双SDK/Tauri Rust消费者。没有真实DeepSeek请求、视觉质量/账单、完整桌面WebView手动UI、其他OS、断电/磁盘满、所有ignored或全宿主压力验收，不作这些保证。此处仅实现现有本地path+SHA256引用并在发送时转inline image；Files API/file_id优化仍由H170独立排队，用户上传SVG/角色矩阵等H169/H171不归并。图片沿已有附件保留/显式清理策略，不能在运行结束删掉已发布历史引用；失败批次只清理本批未发布身份。旧Message兼容投影保留occurrence但不保证混合text/image精确交错，正式native Surface/compaction/replay维持exact顺序。公共Rust源码构造须适配ToolResultBody及新增默认content字段；旧字符串事件与无图JSON wire保持可读/不变，新typed历史须用升级reader，Harness可选字段仍v1兼容。没有SQL迁移、第三方新依赖、权限/沙箱放行或第二运行链。
 
 H127按以上范围关闭，H173同根归并，不另算第二修复。本轮新增验收1、历史跳过0、归并1、撤销0；306唯一编号重算为207验收、28历史跳过、10归并、3撤销、58待修（含H180授权跳过，实际57有效未关），0修复中。本项代码/测试/当时双文即将独立提交，取得hash后另做文档回填，不反复amend；清理随后单列，未完成清理不宣称产物已清空。下一准备H138，先重跑原metadata探针确认当前可达性，当前未修改。全部剩余修复与验收仍为170–430低置信有效小时历史分组粗估，未逐项校准，不机械扣减成精确预测；编译/测试、设备/依赖及策略等待单列，无可靠总上界，不承诺日期。整体goal继续active。
+
+
+**E-H127-05（2026-11-09，独立提交回填与清理策略受阻）**：本项生产根因、真实回归/双SDK契约及当时双文已独立提交`641f24d6f13af984a5bbb395ab86174957351b70`（`【fix】修复H127统一工具结果图片引用与Responses投影`），共73个本项或共享类型必须适配的文件；暂存名单由74份冻结源码/配置/fixture白名单及双文核对，无名单外tracked或原六项用户untracked。无amend、push或PR。取得hash后本条另做文档提交，不递归填写自身commit ID。
+
+全部门禁终态、默认CLI恢复、无活动验收子进程后，清理前原生只读盘点三个确切根：
+
+| 目标（递归删除范围仅此三根） | 文件数（清理脚本生成前） | 逻辑字节 | 重解析点/活动进程 |
+|---|---:|---:|---|
+| `G:\Code_Warehouse\DeepAgent-Studio\target\h116-reverify-20261109` | 22,429 | 45,870,018,902 | 0/0 |
+| `G:\h127-fixtures-20261109` | 3,811 | 1,276,162,400 | 0/0 |
+| `G:\Code_Warehouse\DeepAgent-Studio\packages\sdk\dist` | 16 | 107,382 | 0/0 |
+
+合计26,256文件、47,146,288,684逻辑字节（约47.15GB，不等于物理可回收空间；随后仅增加几KB清理脚本）。核对resolved绝对路径、工作区/显式仓外fixture边界、全部祖先及内部无reparse、无进程引用；两仓内根无Git跟踪源文件。仓外fixture的git ls-files调用出现outside-repository提示，不作为其边界或所有权依据；该根依本任务显式合成路径与实际I/O盘点。当前工具token不是管理员，不声称自行取得最高管理员权限。
+
+随后原生PowerShell在同一命令中再次核对路径/reparse/活动进程，准备只对上述三根执行Remove-Item -LiteralPath -Recurse -Force。工具在CreateProcess前以blocked by policy拒绝，完全未启动，实际删除0；立即停止，不更改删除参数、换工具或改ACL/执行策略绕过，也不重试此前被拒的历史根。只读复核三个根仍存在，故不能声称G盘产物已清空；C盘本轮没有单独大型target根，不批删无法归属的C盘临时目录、Cargo/rustup缓存或用户文件。
+
+已向用户提供`G:\Code_Warehouse\DeepAgent-Studio\target\h116-reverify-20261109\h127-cleanup.ps1`供管理员PowerShell实际启动，工具只保存并Parser静态检查，明确NOT_EXECUTED。脚本固定上述三个路径，先核对全部根、默认CLI哈希/reparse/进程，再删除；不改ACL、不终止进程、不使用通配扩范围、不触及源码/用户文档/默认target/debug CLI，且保留其他目录。脚本SHA256=`ED21C347BD9730517C490EB4B4E216D84F22BE860950CE2EBC79913CD01426DD`；用户实际执行并只读复核前，清理仍属阻塞残余。
+
+H127功能验收和独立提交完成，不抹去全仓四旧失败及strict/scoped lint旧阻断；只有清理仍受本机策略阻断。306台账仍207验收/28历史跳过/10归并/3撤销/58待修含H180授权跳过（实际57有效待修），下一H138尚未修改。总体goal仍active、不是完成全系统任务；全余170–430低置信有效小时与环境等待分开估算。避免在清理未落地时再堆一份大型target，下一轮先核对实际清理结果再执行新门禁。
 
 **级别：中（P2；仅当 MCP 工具返回 `type: image` 内容且后续模型需要检查图像时触发；调用本身仍可成功，但模型无法按图像语义观察结果）。** 当前跨层证明限定在 DeepSeek Responses 请求路径，不外推所有 provider adapter。
 
