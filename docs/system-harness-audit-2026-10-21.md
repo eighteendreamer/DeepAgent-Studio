@@ -5783,7 +5783,7 @@ H-142提交回填（2026-10-28，E-H142-08）：代码、默认测试、SDK READ
 
 ### H-144：DeepSeek Chat 合法终态 `aborted` / `insufficient_system_resource` 被当作未知错误
 
-**当前状态（2026-11-10）：已修复并验收，仅限E-H144-04本机离线范围；修复hash取得后另回填。最终18源/必要消费迁移、typed终态与统一恢复预算已验，供应商中断不伪造本地用户取消；原双probe/预算/side与legacy Workflow红、第一版与最终矩阵均保留。最终全仓5138/5/171及strict旧阻断未全绿，额外cold gate同二进制隔离过但未定因；详本条E04及[修复台账](system-harness-repair-progress.md)。下文为历史失败快照，不代表当前完全漏账。**
+**当前状态（2026-11-10）：已修复并验收，仅限E-H144-04本机离线范围；修复commit=`22e3b328d77dc8ff75ec9ef4bb69042cc3033a28`，E05确认本轮34.89 GB逻辑产物已清理及双文回填。最终18源/必要消费迁移、typed终态与统一恢复预算已验，供应商中断不伪造本地用户取消；原双probe/预算/side与legacy Workflow红、第一版与最终矩阵均保留。最终全仓5138/5/171及strict旧阻断未全绿，额外cold gate同二进制隔离过但未定因；详本条E04及[修复台账](system-harness-repair-progress.md)。下文为历史失败快照，不代表当前完全漏账。**
 
 **级别：中（P2，Chat 路由的终态语义和恢复策略错误）；触发条件：调用方使用 `WireMode::ChatCompletions`，DeepSeek 返回官方允许的 `finish_reason=aborted` 或 `finish_reason=insufficient_system_resource`。** 这与 H-132 的 `content_filter` 过滤终态不同，覆盖的是用户/服务端中断和推理资源不足两个独立原因。
 
@@ -5847,6 +5847,19 @@ H-142提交回填（2026-10-28，E-H142-08）：代码、默认测试、SDK READ
 第二版SDK/全仓临时CLI SHA256=`DCBE62CD66F3471D040B8BC7B3E6E1E4497DC1AB5789573B2716A52FD86AADC8`；finally与Tauri后原默认CLI hash恢复为`8C03E6A63D3E64EBF14DF4AC67C4DC56FB87C2D8B9C35949D3CBA9BC391F30A4`，第一版hash BA408B18仅是历史受测CLI，不冒充最终版。第二版20道gate前后18源哈希相同，补充隔离后再次终检一致；本项验收仅限以上真实范围。
 
 306唯一行核对：本轮新增修复1，历史跳过/归并/撤销各新增0；累计216验收/28历史跳过/10归并/3撤销，49待修含H180授权不修、修复中0，实际有效剩余48。下一准备H66 Flash原生搜索与既有本地工具可用性，涉及默认执行意图/能力一致性P2，先重新核对审计、最新官方及原probe，尚未修改。不因这个排序把条件性P3或旧全仓失败静默丢弃。全部剩余暂沿用170–430有效小时低置信区间，依据剩余跨层/模型/事件/持久化复杂度，尚未逐项校准；本项代码验收余0，提交/清理另记E05。设备/依赖/编译/环境等待另计，无可靠总上界；最终全仓约22.2分钟（第一版24.8分钟）、Tauri首冷4.1分钟/末次10.5秒仅实测机器耗时，不承诺完工日期。修复hash取得后另双文回填，不反复amend；整个goal未完成。
+
+
+**E-H144-05（独立提交、产物实际清理与双文回填，2026-11-10）**：修复commit=`22e3b328d77dc8ff75ec9ef4bb69042cc3033a28`，仅18份本项Rust实现/必要消费方/真实测试与双文共20文件。提交前逐份核对最终源码hash、白名单/diff/306唯一台账与E04双文一致，显式pathspec add/commit --only，未纳入六项用户untracked，不推送/PR/迁移。取得hash后另做本次双文回填，不反复amend自引用；原probe、消费方/预算/legacy错误成功TDD、两版完整矩阵及额外cold gate同二进制隔离/未定因限制全部保留。
+
+清理前核对20道最终矩阵真实终态与本项必需gate exit0、18源最终冻结hash、cold-compiler隔离exit0、delivery commit/ownership、CLI原hash及备份恢复。target无Git跟踪文件、两根无本轮活动Cargo/测试进程；原snapshot baseline=[]，本轮生成快照最终hash一致且仍untracked。根、所有祖先与逐个后代无reparse/越界才允许原生Remove-Item，不泛扫整盘、不改ACL/提权或换手段绕策略。dry-run原生0；实际`& 'G:\Code_Warehouse\DeepAgent-Studio\target\h144-repair-20261110\cleanup.ps1' -Execute`原生0，清单与预检相同：
+
+| 确切目标 | 文件数 | 逻辑字节 |
+|---|---:|---:|
+| G:\Code_Warehouse\DeepAgent-Studio\target\h144-repair-20261110 | 19,137 | 31,707,792,131 |
+| G:\h144-fixtures-20261110 | 4,506 | 3,183,269,544 |
+| G:\Code_Warehouse\DeepAgent-Studio\apps\cli\src\tui\snapshots\deepagent__tui__app__tests__viewport_snapshot_with_a_pending_approval.snap.new | 1 | 946 |
+
+合计23,644文件、34,891,062,621逻辑字节（约34.89 GB），未测物理空间回收量。三个Test-Path最终均false，本轮runner/两版矩阵日志/一次性脚本与CLI备份随target删除；默认CLI原SHA256仍为`8C03E6A63D3E64EBF14DF4AC67C4DC56FB87C2D8B9C35949D3CBA9BC391F30A4`。未动源码、原快照、用户文档、六项用户untracked或C盘共享Cargo/Rustup缓存，只证明本轮三确切目标已清理，不泛称整机垃圾全净。使用当前用户已有权限，未取得/声称管理员提权。清理后tracked干净，仅本次双文回填待提交；306唯一行/216验收/28历史跳过/10归并/3撤销、实际有效剩余48再次核对。下一准备H66，全部余项工时/等待及未验范围沿E04，整个goal仍未完成。
 
 ### H-145：Thinking 模式下不支持的 Chat `tool_choice` 组合未在请求前拒绝
 
