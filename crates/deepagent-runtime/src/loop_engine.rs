@@ -96,6 +96,12 @@ pub enum PromptDecision {
     /// The prompt is accepted (possibly rewritten by a `Modify` hook). Carries
     /// the effective prompt text to turn into a task.
     Accept(String),
+    /// Separate, bounded hook output, to be committed with the source input.
+    AcceptWithContext {
+        prompt: String,
+        contexts: Vec<deepagent_hooks::HookAdditionalContext>,
+        truncated: bool,
+    },
     /// A hook requested approval before the prompt may proceed.
     NeedsApproval {
         /// The (unmodified) prompt awaiting approval.
@@ -114,14 +120,19 @@ impl PromptDecision {
     /// The accepted prompt text, if accepted.
     pub fn accepted(&self) -> Option<&str> {
         match self {
-            PromptDecision::Accept(p) => Some(p),
+            PromptDecision::Accept(p) | PromptDecision::AcceptWithContext { prompt: p, .. } => {
+                Some(p)
+            }
             _ => None,
         }
     }
 
     /// Whether the prompt was accepted.
     pub fn is_accepted(&self) -> bool {
-        matches!(self, PromptDecision::Accept(_))
+        matches!(
+            self,
+            PromptDecision::Accept(_) | PromptDecision::AcceptWithContext { .. }
+        )
     }
 }
 
@@ -507,6 +518,17 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         point: HookPoint,
         data: HookData,
     ) -> Result<HookOutcome> {
+        self.fire_hook_report(session_id, point, data)
+            .await
+            .map(|report| report.outcome)
+    }
+
+    async fn fire_hook_report(
+        &self,
+        session_id: deepagent_core::id::SessionId,
+        point: HookPoint,
+        data: HookData,
+    ) -> Result<deepagent_hooks::HookReport> {
         self.events.checkpoint()?;
         match self.hooks {
             Some(reg) => {
@@ -517,9 +539,9 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 } else {
                     ToolExecutionContext::new(cancel)
                 };
-                reg.dispatch_with_context(&ctx, execution).await
+                reg.dispatch_report(&ctx, execution).await
             }
-            None => Ok(HookOutcome::Continue),
+            None => Ok(deepagent_hooks::HookReport::decision(HookOutcome::Continue)),
         }
     }
 
@@ -1323,15 +1345,15 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         prompt: impl Into<String>,
     ) -> Result<PromptDecision> {
         let prompt = prompt.into();
-        let outcome = self
-            .fire_hook(
+        let report = self
+            .fire_hook_report(
                 session_id,
                 HookPoint::UserPromptSubmit,
                 HookData::prompt(prompt.clone()),
             )
             .await?;
 
-        let decision = match outcome {
+        let decision = match report.outcome {
             HookOutcome::Continue | HookOutcome::AsyncPending { .. } => {
                 PromptDecision::Accept(prompt)
             }
@@ -1353,7 +1375,16 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             HookOutcome::Ask { reason, .. } => PromptDecision::NeedsApproval { prompt, reason },
             HookOutcome::Deny { reason, .. } => PromptDecision::Rejected { reason },
         };
-        Ok(decision)
+        Ok(match decision {
+            PromptDecision::Accept(prompt) if !report.additional_context.is_empty() => {
+                PromptDecision::AcceptWithContext {
+                    prompt,
+                    contexts: report.additional_context,
+                    truncated: report.context_truncated,
+                }
+            }
+            other => other,
+        })
     }
 
     /// Persist a provider tool call that could not be started because the user

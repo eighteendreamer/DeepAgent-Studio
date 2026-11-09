@@ -3,6 +3,61 @@ use deepagent_core::clock::FixedClock;
 use deepagent_core::message::{Message, ToolCall};
 
 #[test]
+fn h140_admitted_prompt_context_is_one_replay_branch_and_rewind_group() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("context.sqlite");
+    let clock = FixedClock::new(1);
+    let context = ResponseItem::Message {
+        role: "user".into(),
+        content: r#"{"kind":"hook_additional_context","contexts":[{"text":"synthetic"}]}"#.into(),
+    };
+    let (id, anchor) = {
+        let db = Database::open(&path).unwrap();
+        let mut session = Session::create(&db, &clock, None).unwrap();
+        let anchor = session
+            .append_user_prompt(Message::user("unchanged source"), Some(context.clone()))
+            .unwrap()
+            .sequence;
+        (session.id(), anchor)
+    };
+    let db = Database::open(&path).unwrap();
+    let store = EventStore::new(&db);
+    let events = store.load_session(id).unwrap();
+    assert_eq!(events.last().unwrap().sequence, anchor + 2);
+    assert_eq!(
+        store.resolve_branch_sequence(id, anchor).unwrap(),
+        anchor + 2
+    );
+    assert!(
+        matches!(&events.last().unwrap().payload,EventPayload::ResponseItemAppended {item} if *item==context)
+    );
+    let child = SessionId::new();
+    store.fork_session(id, child, anchor, clock.now()).unwrap();
+    let copied = store.load_session(child).unwrap();
+    assert_eq!(
+        events.iter().map(|e| &e.payload).collect::<Vec<_>>(),
+        copied.iter().map(|e| &e.payload).collect::<Vec<_>>()
+    );
+    let mut session = Session::recover(&db, &clock, id).unwrap();
+    session
+        .append(EventPayload::MessageAppended {
+            message: Message::assistant("later"),
+        })
+        .unwrap();
+    session.rewind(anchor).unwrap();
+    assert_eq!(store.load_session(id).unwrap(), events);
+    let before = store.load_session(id).unwrap();
+    let bad = ResponseItem::Message {
+        role: "system".into(),
+        content: "not user data".into(),
+    };
+    assert!(session
+        .append_user_prompt(Message::user("must not partially commit"), Some(bad))
+        .is_err());
+    assert_eq!(store.load_session(id).unwrap(), before);
+}
+
+#[test]
 fn admitted_images_keep_native_refs_and_legacy_mirror_branch_boundaries() {
     use deepagent_core::message::MessageAttachment;
     let root = tempfile::tempdir().unwrap();

@@ -17,9 +17,8 @@ use deepagent_tools::ToolRegistry;
 /// the model transcript.
 ///
 /// This adapter keeps the temporary RuntimeEngine dependency out of
-/// ChatService while the v2 kernel is still being split out. Hook stdout remains
-/// inside the lifecycle result; callers decide whether the accepted prompt
-/// replaces the recorded user message.
+/// ChatService while the v2 kernel is still being split out. Context remains
+/// distinct from source input; callers commit both in one admission group.
 pub(crate) async fn submit_user_prompt(
     registry: &ToolRegistry,
     hooks: &HookRegistry,
@@ -32,6 +31,26 @@ pub(crate) async fn submit_user_prompt(
             .with_hooks(hooks)
             .with_cancel(cancel);
     prompt_gate.submit_prompt(session_id, prompt).await
+}
+
+/// Local source envelope serialized as ordinary user data, never a new provider
+/// item type or system/developer instruction. JSON escapes text within its field.
+pub(crate) fn prompt_context_item(
+    contexts: &[deepagent_hooks::HookAdditionalContext],
+    truncated: bool,
+) -> Result<deepagent_core::response_item::ResponseItem> {
+    Ok(deepagent_core::response_item::ResponseItem::Message {
+        role: "user".into(),
+        content: format!(
+            "{}{}",
+            deepagent_core::response_item::HOOK_CONTEXT_PREFIX,
+            serde_json::to_string(&serde_json::json!({
+                "kind":"hook_additional_context", "version":1,
+                "event":"UserPromptSubmit", "trust":"hook_output_unprivileged",
+                "truncated":truncated, "contexts":contexts,
+            }))?
+        ),
+    })
 }
 
 /// Persist and emit the short terminal turn used when UserPromptSubmit blocks

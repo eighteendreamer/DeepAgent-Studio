@@ -401,6 +401,35 @@ impl<'db> EventStore<'db> {
         self.append_locked_projection(session_id, payload, Some(items), now)
     }
 
+    /// Admit source input and native hook context in the existing atomic
+    /// Projection frame. Failed writes must not leave an orphan context item.
+    pub fn append_user_prompt_with_context(
+        &self,
+        session_id: SessionId,
+        message: deepagent_core::message::Message,
+        context: deepagent_core::response_item::ResponseItem,
+        now: Timestamp,
+    ) -> Result<Vec<Event>> {
+        use deepagent_core::response_item::ResponseItem;
+        if message.role != deepagent_core::message::Role::User
+            || !matches!(&context,ResponseItem::Message {role,content} if role=="user" && !content.is_empty() && content.len()<=512*1024)
+        {
+            return Err(CoreError::invalid(
+                "admitted prompt context must be bounded user data",
+            ));
+        }
+        let _activity = self.acquire_activity(session_id)?;
+        let _io = self.db.lock_session_io()?;
+        let _file_lock = session_files::lock_session(&self.db.session_files_root(), session_id)?;
+        let items = vec![ResponseItem::from_message_content(&message), context];
+        self.append_locked_projection(
+            session_id,
+            EventPayload::MessageAppended { message },
+            Some(items),
+            now,
+        )
+    }
+
     /// Project the committed run outcome, never a finalizer's competing proposal.
     /// File inspection, deduplication, append and ledger acknowledgement share
     /// the existing session lock. The file is authoritative even if SQLite's

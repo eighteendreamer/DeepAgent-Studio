@@ -40,7 +40,10 @@ pub use external_hooks::{
     HookCommandResult, HookCommandRunner, HookCommandShell, HookDefinitions, HookEvent,
     HookMatcherGroup, OnceHook, SystemHookRunner, DEFAULT_HOOK_TIMEOUT_SECS,
 };
-pub use hook::{DecisionSource, Hook, HookOutcome};
+pub use hook::{
+    DecisionSource, Hook, HookAdditionalContext, HookOutcome, HookReport, MAX_HOOK_CONTEXTS,
+    MAX_HOOK_CONTEXT_BYTES, MAX_HOOK_CONTEXT_TOTAL_BYTES,
+};
 pub use lifecycle::{HookContext, HookData, HookPoint, ToolBatchItem};
 pub use permission_rules::{
     bash_prefix_rule, rule_command_prefix, PermissionRules, PermissionRulesHook, RuleDecision,

@@ -76,7 +76,7 @@ use serde::{Deserialize, Serialize};
 use deepagent_core::error::{CoreError, Result};
 use deepagent_tools::ToolExecutionContext;
 
-use crate::hook::{DecisionSource, Hook, HookOutcome};
+use crate::hook::{DecisionSource, Hook, HookOutcome, HookReport};
 use crate::lifecycle::{HookContext, HookData, HookPoint};
 use crate::registry::HookRegistry;
 
@@ -1238,16 +1238,26 @@ impl Hook for OnceHook {
         ctx: &HookContext,
         execution: ToolExecutionContext,
     ) -> Result<HookOutcome> {
+        self.run_report(ctx, execution)
+            .await
+            .map(|report| report.outcome)
+    }
+
+    async fn run_report(
+        &self,
+        ctx: &HookContext,
+        execution: ToolExecutionContext,
+    ) -> Result<HookReport> {
         if !self.applies(ctx) {
-            return Ok(HookOutcome::Continue);
+            return Ok(HookReport::decision(HookOutcome::Continue));
         }
         if execution.is_cancelled() {
             return Err(CoreError::other("one-shot hook cancelled before admission"));
         }
         if self.fired.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            return Ok(HookOutcome::Continue);
+            return Ok(HookReport::decision(HookOutcome::Continue));
         }
-        self.inner.run_with_context(ctx, execution).await
+        self.inner.run_report(ctx, execution).await
     }
 }
 
@@ -1441,8 +1451,18 @@ impl Hook for ExternalCommandHook {
         ctx: &HookContext,
         execution: ToolExecutionContext,
     ) -> Result<HookOutcome> {
+        self.run_report(ctx, execution)
+            .await
+            .map(|report| report.outcome)
+    }
+
+    async fn run_report(
+        &self,
+        ctx: &HookContext,
+        execution: ToolExecutionContext,
+    ) -> Result<HookReport> {
         if !self.applies(ctx) {
-            return Ok(HookOutcome::Continue);
+            return Ok(HookReport::decision(HookOutcome::Continue));
         }
 
         let payload = self.build_payload(ctx);
@@ -1459,7 +1479,7 @@ impl Hook for ExternalCommandHook {
             )
             .await?;
 
-        Ok(interpret_result_for_event(&result, Some(self.event)))
+        Ok(interpret_report_for_event(&result, self.event))
     }
 }
 
@@ -1755,6 +1775,42 @@ fn interpret_result_for_event(
         }
     }
 }
+
+/// Context is an admitted result channel, never arbitrary diagnostic stdout.
+/// Reuse the existing decision parser so allow/ask/deny semantics cannot fork.
+fn interpret_report_for_event(result: &HookCommandResult, event: HookEvent) -> HookReport {
+    let outcome = interpret_result_for_event(result, Some(event));
+    if result.exit_code != 0
+        || event != HookEvent::UserPromptSubmit
+        || matches!(outcome, HookOutcome::AsyncPending { .. })
+    {
+        return HookReport::decision(outcome);
+    }
+    let text = result.stdout.trim();
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(value) => {
+            let context = value
+                .get("hookSpecificOutput")
+                .filter(|specific| {
+                    specific.get("hookEventName").and_then(|v| v.as_str()) == Some(event.label())
+                })
+                .and_then(|specific| specific.get("additionalContext"))
+                .and_then(|v| v.as_str());
+            context.map_or_else(
+                || HookReport::decision(outcome.clone()),
+                |text| HookReport::with_context(outcome.clone(), text),
+            )
+        }
+        // JSON-shaped but malformed protocol data is not model context. Nor
+        // are valid JSON scalars/arrays/unknown diagnostic objects above.
+        Err(_) if text.starts_with('{') || text.starts_with('[') => HookReport::decision(outcome),
+        Err(_) => HookReport::with_context(outcome, text),
+    }
+}
+
+#[cfg(test)]
+#[path = "external_context_tests.rs"]
+mod external_context_tests;
 
 /// Parse a structured decision from a hook's stdout, if any.
 /// Parse the common structured decision protocol used by command, MCP,

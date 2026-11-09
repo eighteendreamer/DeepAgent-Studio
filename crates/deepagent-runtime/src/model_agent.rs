@@ -1279,6 +1279,16 @@ impl ModelAgent {
         self
     }
 
+    /// Adopt context already committed with this input, in the same source then
+    /// context order as durable replay. Existing Surface metering handles it.
+    pub fn with_admitted_input_context(mut self, context: Option<ResponseInputItem>) -> Self {
+        if let Some(item) = context {
+            self.response_history.items.push(item);
+            self.sync_message_projection();
+        }
+        self
+    }
+
     /// The current conversation (for inspection / persistence).
     pub fn conversation(&self) -> &[Message] {
         &self.messages

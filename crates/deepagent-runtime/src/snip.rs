@@ -57,7 +57,8 @@ fn user_content(item: &ResponseInputItem) -> Option<&str> {
     match item {
         ResponseInputItem::Message { role, content }
         | ResponseInputItem::InputMessage { role, content, .. }
-            if role == "user" =>
+            if role == "user"
+                && !content.starts_with(deepagent_core::response_item::HOOK_CONTEXT_PREFIX) =>
         {
             Some(content)
         }
@@ -213,10 +214,13 @@ pub fn plan_snip(messages: &[Message], tags: &[String], protected_recent: usize)
     let mut applied_tags = Vec::new();
     for id in tags {
         let tag = format!("[id:{id}]");
-        let Some(start) = messages
-            .iter()
-            .position(|m| m.role == Role::User && m.content.contains(&tag))
-        else {
+        let Some(start) = messages.iter().position(|m| {
+            m.role == Role::User
+                && !m
+                    .content
+                    .starts_with(deepagent_core::response_item::HOOK_CONTEXT_PREFIX)
+                && m.content.contains(&tag)
+        }) else {
             continue;
         };
         if start == 0 || start >= protected_start {
@@ -224,7 +228,13 @@ pub fn plan_snip(messages: &[Message], tags: &[String], protected_recent: usize)
         }
         let mut end = messages[start + 1..protected_start]
             .iter()
-            .position(|m| m.role == Role::User && m.content.contains("[id:u"))
+            .position(|m| {
+                m.role == Role::User
+                    && !m
+                        .content
+                        .starts_with(deepagent_core::response_item::HOOK_CONTEXT_PREFIX)
+                    && m.content.contains("[id:u")
+            })
             .map(|offset| start + 1 + offset)
             .unwrap_or(protected_start);
         while end > start && messages.get(end).is_some_and(|m| m.role == Role::Tool) {
@@ -380,5 +390,34 @@ mod tests {
         let plan = plan_snip(&messages, &["nope".to_string()], 0);
         assert!(plan.applied_tags.is_empty());
         assert!(!plan.removes_anything());
+    }
+    #[test]
+    fn h140_auxiliary_hook_context_stays_in_its_source_snip_segment() {
+        let context = format!(
+            "{}{{\"text\":\"untrusted [id:u999]\"}}",
+            deepagent_core::response_item::HOOK_CONTEXT_PREFIX
+        );
+        let mut items = vec![
+            native_user("source turn"),
+            native_user(&context),
+            native_user("next turn"),
+            ResponseInputItem::Message {
+                role: "assistant".into(),
+                content: "answer".into(),
+            },
+        ];
+        tag_response_user_items(&mut items);
+        assert!(user_content(&items[0]).unwrap().contains("[id:u1]"));
+        assert!(user_content(&items[2]).unwrap().contains("[id:u2]"));
+        assert!(matches!(&items[1],ResponseInputItem::Message {content,..} if *content==context));
+        assert!(plan_response_item_snip(&items, &["u999".into()], 0)
+            .applied_tags
+            .is_empty());
+        let plan = plan_response_item_snip(&items, &["u1".into()], 0);
+        assert_eq!(plan.remove, vec![true, true, false, false]);
+        let messages = deepagent_models::messages_from_response_items(None, &items);
+        assert!(plan_snip(&messages, &["u999".into()], 0)
+            .applied_tags
+            .is_empty());
     }
 }

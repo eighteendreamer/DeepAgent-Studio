@@ -109,12 +109,22 @@ impl Hook for TrustedProjectHook {
         ctx: &HookContext,
         execution: ToolExecutionContext,
     ) -> Result<HookOutcome> {
+        self.run_report(ctx, execution)
+            .await
+            .map(|report| report.outcome)
+    }
+
+    async fn run_report(
+        &self,
+        ctx: &HookContext,
+        execution: ToolExecutionContext,
+    ) -> Result<deepagent_hooks::HookReport> {
         if !self.trust.is_trusted()? {
             tracing::info!(project = %self.trust.root.display(), point = ctx.point.label(),
                 "skipping project hook without current trust grant");
-            return Ok(HookOutcome::Continue);
+            return Ok(deepagent_hooks::HookReport::decision(HookOutcome::Continue));
         }
-        self.inner.run_with_context(ctx, execution).await
+        self.inner.run_report(ctx, execution).await
     }
 }
 

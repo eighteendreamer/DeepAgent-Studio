@@ -1,5 +1,8 @@
 //! Successful input-hook output must reach the model independently of its decision.
 
+#[path = "prompt_hook_context/h140_lifecycle.rs"]
+mod h140_lifecycle;
+
 use super::*;
 use deepagent_core::event::EventPayload;
 use deepagent_core::id::SessionId;
@@ -195,7 +198,6 @@ async fn prompt_hook_context_controls_preserve_direct_input_and_block_main_reque
 }
 
 #[tokio::test]
-#[ignore = "audit: successful UserPromptSubmit context must enter the actual model request"]
 async fn audit_successful_prompt_hook_context_reaches_model_request() {
     let mut missing = Vec::new();
     for mode in [OutputMode::PlainText, OutputMode::Structured] {

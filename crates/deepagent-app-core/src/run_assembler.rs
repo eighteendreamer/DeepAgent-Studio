@@ -792,8 +792,23 @@ impl<'a> RunAssembler<'a> {
             cancellation.flag(),
         )
         .await?;
+        let mut prompt_context = None;
+        if let PromptDecision::AcceptWithContext {
+            contexts,
+            truncated,
+            ..
+        } = &prompt_decision
+        {
+            prompt_context = Some(crate::prompt_gate::prompt_context_item(
+                contexts, *truncated,
+            )?);
+        }
         match prompt_decision {
-            PromptDecision::Accept(effective_prompt) => {
+            PromptDecision::Accept(effective_prompt)
+            | PromptDecision::AcceptWithContext {
+                prompt: effective_prompt,
+                ..
+            } => {
                 append_runtime_log(
                     self.runtime_logs,
                     NewRuntimeLogEntry::info("hook", "user_prompt_submit_accepted")
@@ -884,10 +899,10 @@ impl<'a> RunAssembler<'a> {
             return Err(CoreError::other("cancelled before persisting user input"));
         }
         let admitted_attachments = message_attachments(&self.attachments);
-        session.append(EventPayload::MessageAppended {
-            message: Message::user(&prompt_to_record)
-                .with_attachments(admitted_attachments.clone()),
-        })?;
+        session.append_user_prompt(
+            Message::user(&prompt_to_record).with_attachments(admitted_attachments.clone()),
+            prompt_context.clone(),
+        )?;
         let task = session.create_task(&prompt_to_record)?;
         deepagent_persistence::run_store::RunStore::new(self.db).bind_task(
             &run_id,
@@ -1117,6 +1132,7 @@ impl<'a> RunAssembler<'a> {
         .with_reactive_compactor(reactive_compactor)
         .with_history(history)
         .with_response_history(response_history)
+        .with_admitted_input_context(prompt_context)
         .with_surface_persistence(Arc::new(crate::context_runtime::SessionSurfaceStore {
             db: self.db.clone(),
             session_id: session.id(),

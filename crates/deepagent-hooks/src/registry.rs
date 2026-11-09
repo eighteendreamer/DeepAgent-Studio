@@ -21,7 +21,10 @@ use std::sync::Arc;
 use deepagent_core::error::Result;
 use deepagent_tools::ToolExecutionContext;
 
-use crate::hook::{Hook, HookOutcome};
+use crate::hook::{
+    bounded_context, Hook, HookOutcome, HookReport, MAX_HOOK_CONTEXTS, MAX_HOOK_CONTEXT_BYTES,
+    MAX_HOOK_CONTEXT_TOTAL_BYTES,
+};
 use crate::lifecycle::{HookContext, HookPoint};
 
 /// Registers hooks per lifecycle point and dispatches them.
@@ -84,8 +87,20 @@ impl HookRegistry {
         ctx: &HookContext,
         execution: ToolExecutionContext,
     ) -> Result<HookOutcome> {
+        self.dispatch_report(ctx, execution)
+            .await
+            .map(|report| report.outcome)
+    }
+
+    /// The same single dispatch/reduction, with bounded prompt-only context.
+    /// join_all preserves registration order, not process completion order.
+    pub async fn dispatch_report(
+        &self,
+        ctx: &HookContext,
+        execution: ToolExecutionContext,
+    ) -> Result<HookReport> {
         let Some(registered) = self.hooks.get(&ctx.point) else {
-            return Ok(HookOutcome::Continue);
+            return Ok(HookReport::decision(HookOutcome::Continue));
         };
 
         let mut seen = std::collections::HashSet::new();
@@ -99,7 +114,7 @@ impl HookRegistry {
                 &execution,
                 &child,
                 None,
-                hook.run_with_context(ctx, child.clone()),
+                hook.run_report(ctx, child.clone()),
             )
             .await
         }))
@@ -108,9 +123,36 @@ impl HookRegistry {
         let vetoable = ctx.point.is_vetoable();
         // Accumulator: the highest-precedence non-terminal outcome so far.
         let mut effective = HookOutcome::Continue;
+        let mut report = HookReport::decision(HookOutcome::Continue);
+        let mut bytes = 0;
 
-        for (hook, result) in hooks.into_iter().zip(results) {
-            let outcome = result?;
+        for (ordinal, (hook, result)) in hooks.into_iter().zip(results).enumerate() {
+            let result = result?;
+            let outcome = result.outcome;
+            if ctx.point == HookPoint::UserPromptSubmit
+                && !matches!(outcome, HookOutcome::AsyncPending { .. })
+            {
+                report.context_truncated |= result.context_truncated;
+                for mut entry in result.additional_context {
+                    if report.additional_context.len() == MAX_HOOK_CONTEXTS
+                        || bytes == MAX_HOOK_CONTEXT_TOTAL_BYTES
+                    {
+                        report.context_truncated = true;
+                        break;
+                    }
+                    let limit = MAX_HOOK_CONTEXT_BYTES.min(MAX_HOOK_CONTEXT_TOTAL_BYTES - bytes);
+                    let (text, truncated) = bounded_context(&entry.text, limit);
+                    entry.text = text;
+                    entry.truncated |= truncated;
+                    entry.hook = hook.name().chars().take(128).collect();
+                    entry.ordinal = ordinal;
+                    bytes += entry.text.len();
+                    report.context_truncated |= entry.truncated;
+                    if !entry.text.trim().is_empty() {
+                        report.additional_context.push(entry);
+                    }
+                }
+            }
             if matches!(
                 outcome,
                 HookOutcome::Continue | HookOutcome::AsyncPending { .. }
@@ -144,7 +186,7 @@ impl HookRegistry {
                         source = source.label(),
                         "hook denied operation"
                     );
-                    return Ok(outcome);
+                    return Ok(HookReport::decision(outcome));
                 }
                 HookOutcome::Ask { reason, source } => {
                     tracing::info!(
@@ -176,9 +218,17 @@ impl HookRegistry {
                 }
             }
         }
-        Ok(effective)
+        if effective.is_ask() {
+            return Ok(HookReport::decision(effective));
+        }
+        report.outcome = effective;
+        Ok(report)
     }
 }
+
+#[cfg(test)]
+#[path = "registry/context_tests.rs"]
+mod context_tests;
 
 #[cfg(test)]
 mod tests {

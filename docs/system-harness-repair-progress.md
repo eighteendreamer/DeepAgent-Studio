@@ -2,25 +2,27 @@
 
 ## 当前状态与计数口径（2026-11-09）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；当前210项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；该次只纠正汇总，不计为新增修复。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；当前211项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；该次只纠正汇总，不计为新增修复。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 210 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-30、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-47、H-48、H-49、H-50、H-51、H-52、H-53、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-69、H-70、H-71、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-82、H-84、H-87、H-88、H-91、H-92、H-95、H-96、H-97、H-116、H-117、H-125、H-126、H-127、H-130、H-131、H-133、H-134、H-135、H-136、H-137、H-138、H-139、H-142、H-143、H-147、H-148、H-149、H-150、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-167、H-175、H-176、H-178、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-196、H-197、H-198、H-199、H-200、H-204、H-205、H-206、H-207、H-208、H-209、H-210、H-212、H-213、H-214、H-215、H-216、H-218、H-219、H-221、H-222、H-223、H-224、H-225、H-226、H-227、H-228、H-229、H-233、H-234、H-235、H-236、H-237、H-239、H-240、H-241、H-242、H-244、H-245、H-247、H-248、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-256、H-257、H-258、H-259、H-260、H-261、H-265、H-266、H-267、H-268、H-270、H-271、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-290、H-292、H-293、H-295、H-298、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 211 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-30、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-47、H-48、H-49、H-50、H-51、H-52、H-53、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-69、H-70、H-71、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-82、H-84、H-87、H-88、H-91、H-92、H-95、H-96、H-97、H-116、H-117、H-125、H-126、H-127、H-130、H-131、H-133、H-134、H-135、H-136、H-137、H-138、H-139、H-140、H-142、H-143、H-147、H-148、H-149、H-150、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-167、H-175、H-176、H-178、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-196、H-197、H-198、H-199、H-200、H-204、H-205、H-206、H-207、H-208、H-209、H-210、H-212、H-213、H-214、H-215、H-216、H-218、H-219、H-221、H-222、H-223、H-224、H-225、H-226、H-227、H-228、H-229、H-233、H-234、H-235、H-236、H-237、H-239、H-240、H-241、H-242、H-244、H-245、H-247、H-248、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-256、H-257、H-258、H-259、H-260、H-261、H-265、H-266、H-267、H-268、H-270、H-271、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-290、H-292、H-293、H-295、H-298、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 28 | 17项原审计历史修复；另H77/H83/H238/H246/H301/H232/H68/H177/H174/H54/H55在独立复核前已随共享边界或ReasoningEffort历史迁移消除，来源和独立验收另列，不重复记新生产修复 |
 | 归并 | 10 | H173同根归并H127；H243归并H53；只在唯一有效项修复，不增加完成数 |
 | 撤销 | 3 | H-211/H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | H298按E-H298-04完成本机范围验收 |
-| 待修复 | 55 | 含H-180授权跳过，实际54项有效待处理 |
+| 修复中 | 0 | H140按E-H140-04完成本机范围验收 |
+| 待修复 | 54 | 含H-180授权跳过，实际53项有效待处理 |
 | 阻塞待处理 | 0 | 无功能阻塞项；H131当前全仓三旧失败、strict lint旧阻断及清理残余另列，不称全绿 |
 
-有效未关闭条目当前为 **55（其中H-180授权跳过，实际待处理54项）**；不提供完成率。当前210项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301/H-232/H-68/H-177/H-174/H-54/H-55在各自复核前已随共享边界或ReasoningEffort迁移修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4/3cabd45f/f97db714/416df3e9/6bc2d660/0aa4fd06及真实复核单独列明，合计28项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。2026-11-05本轮H239新增验收1后，H287依据新D:继承控制位反例重新打开1，其后本轮H287按E21返修恢复验收，当前161，其后H213新增验收1，当前162，其后H212新增验收1，当前163，其后H221新增验收1，当前164，其后H222新增验收1为165，H150新增验收1为166，本轮H223新增验收1为167，其后H267按E03新增验收1为168；其后H268按E04新增验收1为169；其后H293按E06新增验收1为170；本轮H84按E03新增验收1为171；本轮H70按E07新增验收1为172；本轮H68按E04新增历史跳过1，修复数仍172；本轮H69按E06新增验收1为173；本轮H71按E06新增验收1为174；本轮H82按E04新增验收1为175；本轮H209按E04新增验收1为176；本轮H210按E05新增验收1为177；本轮H200按E04新增验收1为178；本轮H204按E04新增验收1为179，H90同根归并使归并数为8；11-07本轮H205按E03新增验收1为180；本轮H206按E03新增验收1为181；本轮H207按E03新增验收1为182；本轮H256按E03新增验收1为183；本轮H265按E03新增验收1为184；本轮H266按E03新增验收1为185；本轮H295按E03新增验收1为186；本轮H215按E03新增验收1为187；本轮H216按E03新增验收1为188；本轮H126按E03新增验收1为189；本轮H167按E03新增验收1为190；本轮H248按E03新增验收1为191；本轮H292按E03新增验收1为192；本轮H177按E02历史跳过1，修复数仍192；本轮H176按E03新增验收1为193；本轮H174按E02历史跳过1，修复数仍193；本轮H228按E03新增验收1为194；本轮H91按E04新增验收1为195；历史f2efc1b5与E-H287-01～20不删除。本轮H-116新增验收1，累计205项；本轮H-117新增验收1，累计206项；其后H173同根归并H127；H127按E04新增验收1，累计207，修复中0；58个未关闭槽位含H-180授权跳过，实际待处理57项。
+有效未关闭条目当前为 **54（其中H-180授权跳过，实际待处理53项）**；不提供完成率。当前211项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301/H-232/H-68/H-177/H-174/H-54/H-55在各自复核前已随共享边界或ReasoningEffort迁移修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4/3cabd45f/f97db714/416df3e9/6bc2d660/0aa4fd06及真实复核单独列明，合计28项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。2026-11-05本轮H239新增验收1后，H287依据新D:继承控制位反例重新打开1，其后本轮H287按E21返修恢复验收，当前161，其后H213新增验收1，当前162，其后H212新增验收1，当前163，其后H221新增验收1，当前164，其后H222新增验收1为165，H150新增验收1为166，本轮H223新增验收1为167，其后H267按E03新增验收1为168；其后H268按E04新增验收1为169；其后H293按E06新增验收1为170；本轮H84按E03新增验收1为171；本轮H70按E07新增验收1为172；本轮H68按E04新增历史跳过1，修复数仍172；本轮H69按E06新增验收1为173；本轮H71按E06新增验收1为174；本轮H82按E04新增验收1为175；本轮H209按E04新增验收1为176；本轮H210按E05新增验收1为177；本轮H200按E04新增验收1为178；本轮H204按E04新增验收1为179，H90同根归并使归并数为8；11-07本轮H205按E03新增验收1为180；本轮H206按E03新增验收1为181；本轮H207按E03新增验收1为182；本轮H256按E03新增验收1为183；本轮H265按E03新增验收1为184；本轮H266按E03新增验收1为185；本轮H295按E03新增验收1为186；本轮H215按E03新增验收1为187；本轮H216按E03新增验收1为188；本轮H126按E03新增验收1为189；本轮H167按E03新增验收1为190；本轮H248按E03新增验收1为191；本轮H292按E03新增验收1为192；本轮H177按E02历史跳过1，修复数仍192；本轮H176按E03新增验收1为193；本轮H174按E02历史跳过1，修复数仍193；本轮H228按E03新增验收1为194；本轮H91按E04新增验收1为195；历史f2efc1b5与E-H287-01～20不删除。本轮H-116新增验收1，累计205项；本轮H-117新增验收1，累计206项；其后H173同根归并H127；H127按E04新增验收1，累计207，修复中0；58个未关闭槽位含H-180授权跳过，实际待处理57项。
 
 本轮H138按E-H138-03新增验收1，累计208；其后H137按E-H137-04新增验收1，累计209。28历史跳过、10归并、3撤销不变，修复中0，56待修含H180授权跳过，实际55项有效待处理。
 
 其后H298按E-H298-04新增验收1，累计210；当前55待修（含H180授权不修）、修复中0，实际有效剩余54项；历史跳过/归并/撤销不变。
+
+其后H140按E-H140-04新增验收1，累计211；当前54待修含H180授权不修、修复中0，实际有效剩余53；历史跳过/归并/撤销不变。
 
 ## H-205 Rust通知序号（已修复并验收，2026-11-07，限E03范围）
 
@@ -6389,7 +6391,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-137：MCP 工具目录变更通知被丢弃，后续运行继续发布旧工具](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H137-01～05原失败、冻结验收与清理；不归并其他编号 | 单一连接目录后台刷新，宿主/插件共享owner；run冻结schema/路由，config/read共用修订 | wire4/0/0；MCP173/0/2；宿主17/0；全仓5071/5/179保留失败；fmt/MCP strict/CLI/Tauri通过，旧lint阻断见E04 | 5cfdc09432e19d3dff5dee64ae374e671cf15bfe | 仅本机stdio，find_tool owned源码迁移；远程推送/真实供应商/其他OS未验；本项剩余0，E05已清理 |
 | [H-138：MCP 结果整对象进入模型上下文，客户端元数据没有独立可见性边界](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H138-01～03；不归并其他编号 | adapter公开投影与host-only字段分离，复用run_events.meta；旧历史不迁移 | 原探针0/1→最终MCP8/0；全仓5056/6/180，额外时序失败同二进制串行7/0；fmt/CLI/Tauri通过，lint旧阻断保留 | `21a9babb7fd938f8e33d59285efa51e65c307779` | Windows离线新生成结果范围；旧正文不自动清除，完整MCP Apps/其他平台未验；功能剩余0，清理另列 |
 | [H-139：后置 hook 报错跳过已执行工具的结果提交，重开后成功写入变成结果缺失](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-28，E-H139-01～06所列Windows本机范围；原失败保留 | 统一完成边界先收尾action/Session，同组结果全提交后才运行可失败post-hook，原错误仍传播 | 原专项2/0/0、新runtime9/0/0默认通过；workspace3558/1既有H-306/316 ignored，Tauri Rust check/fmt通过，严格lint旧阻断保留 | `93a412d049f7a41be129d528f9b043f9978e80c9` | 所列范围剩余0；未验UI/供应商/其他OS/DB故障与强杀窗口，不宣称exactly-once；总工时粗估不机械扣减 |
-| [H-140：输入 hook 成功输出的上下文被丢弃，主模型只收到原始输入](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-140：输入 hook 成功输出的上下文被丢弃，主模型只收到原始输入](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H140-01～04原红/候选与冻结验收；不归并H111/H141 | 单一Hook report分离决定/有界上下文，输入原子Projection后进入Surface，原输入不改写 | 基础373/0、正式wire6/0、snip1/0；全仓5088/4/177保留旧失败；scope strict/CLI/Tauri通过，旧lint阻断见E04 | 待独立commit后回填 | 仅同步命令UserPromptSubmit；外部PromptDecision match需适配；本项验收余0，清理/提交待收尾 |
 | [H-141：周期 todo reminder 在独立用户回合之间被重置，长期会话永不触发](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-142：运行事件持久化失败被吞掉，实时事件与回放事件发生分叉](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H142-01保留原探针0/1/0；非跳过/归并项；限E-H142-06～07所列Windows本机范围，H-143独立未修 | 单sink首错锁存/checkpoint与原取消树收敛；保留已执行工具事实、结清未派发action，统一聊天/工作流准入收尾 | 正式专项5/0/0、Runtime327/0/12、准入2/0/0、E2E156/0/78；fmt/Tauri Rust check通过；workspace3587/1既有H-306/313 ignored及lint既有阻断保留 | `e1370f9db521556eb10c4719ffaa2b08dd1503ec` | 本机所列范围剩余0；provisional delta非完成回执，不承诺exactly-once；其他OS/UI/供应商/断电强杀/跨进程锁未验；下一P1 H-143；总200–400有效小时未校准粗估及等待另计不变 |
 | [H-143：终态持久化失败前已经发布实时完成事件](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H143-01原探针0/1/0为修前证据；E-H143-03～05为本轮正式验收，非跳过/归并项 | 规范终态与生命周期通知共用原事务，提交后才delivery；Kernel、预检短路、ChatService/工作流及CLI共用 | 持久化/Kernel/AppCore/恢复/CLI专项通过；真实OS子进程重开与cursor通过；workspace/lint基线阻断见E-H143-05 | `7bf6bae11a97296953f1f61f092949cba2a8800d` | 仅Windows本机/离线mock与正式消费者范围；其他OS、供应商、UI、断电强杀、锁争用、压力和exactly-once未验；总200–400有效小时未校准粗估及等待另计 |
@@ -9125,3 +9127,61 @@ V1 CLI非严格Clippy虽然exit0，却指出新测试两处unnecessary_map_or，
 | `G:\Code_Warehouse\DeepAgent-Studio\apps\cli\src\tui\snapshots\deepagent__tui__app__tests__viewport_snapshot_with_a_pending_approval.snap.new` | 1 | 0 | 946 |
 
 合计21,713文件、29,578,831,144逻辑字节，约29.58 GB；未测物理回收，不声称同量磁盘释放。三个目标Test-Path均false，默认CLI原hash仍匹配，脚本自身也已随target删除。使用当前用户已有权限完成，未发起或声称管理员提权；未删除源码、原.snap、用户文档、C盘共享工具链/缓存或六项既有用户untracked。只证明本轮三个确切目标清理，不泛称整机无历史垃圾。双文diff、306行唯一性与最终Git范围再次核对后提交回填；H298闭环，下一准备H140，整个goal保持未完成。
+
+## H-140 输入hook上下文（已修复并验收，2026-11-09，限E04范围）
+
+**E-H140-01（当前红证据与候选设计，未验收）**：上一轮H298修复96096683/双文56cac43f及29.58 GB逻辑清理为实际进展。当前起始HEAD56cac43faf64bcdeeae630be83e543566d5d7986，tracked初始干净、六项用户untracked不读改；其他工作正在修改Linux VM文档/图表，Git仅列名、未读改/纳入。本轮核对原审计/台账、HookOutcome/trait/Registry并行去重及决定归并、真实command runner/observable日志、RuntimeEngine prompt gate、RunAssembler输入提交/历史、Session原子Projection及ModelAgent Surface/meter、Cargo/CI/格式规则和仓内消费者。参考本地Claude Code的来源附件、Codex的独立additional_context通道；不复制对方业务代码，不把hook输出当system指令。
+
+唯一target=`G:\Code_Warehouse\DeepAgent-Studio\target\h140-repair-20261109`，唯一合成HOME/TEMP/APPDATA/data根=`G:\h140-fixtures-20261109`；ownership与7份原源码hash在target。offline -j 2、只顶层target-dir、清除继承CARGO_TARGET_DIR与敏感名称环境变量，不改profile/debug、不读真实凭据/访问真实内网或用户数据。
+
+原命令`cargo test --target-dir <本项target> -p deepagent-app-core --test kernel_v2_e2e prompt_hook_context --offline -j 2 -- --include-ignored --nocapture --test-threads=1`原生101、**1/1/0**，436.828秒含冷编译、行为5.31秒。PlainText/Structured两组各真实hook退出0/continued、1次model请求、wire_context=false/history_context=false；直接输入对照两者true、block对照model0，均唯一终态。没有以HookCompleted stdout冒充持久模型历史。
+
+仅补测试/去ignore，`cargo test --target-dir <本项target> -p deepagent-app-core --test kernel_v2_e2e prompt_hook_context --offline -j 2 -- --nocapture --test-threads=1`原生101、**3/3/0**，106.488秒含编译、行为16.00秒。原probe、多hook顺序/冷重开、长Unicode三组实际失败在上下文未到wire；block/ask不接纳、错误事件/未知JSON/非零/async负对照及原正常对照通过。冷重开组在第一轮缺少上下文处提前失败，不能说初始红阶段已到达冷重开断言；Unicode组同样未到达限长断言。
+
+候选采用本地收敛设计：保留HookOutcome决定API，在同一Hook trait/Registry dispatch内增加完整HookReport；并行执行/去重/现有取消owner复用，按注册次序归并来源。命令成功UserPromptSubmit的普通文本或匹配事件的标准additionalContext才可进入独立通道；JSON形未知/畸形、非零、async不作为上下文，其他事件不借此扩范围。单条16KiB/总64KiB/最多16条，UTF-8边界截断并标记truncated，来源名/ordinal由registry覆盖，模型可见内容只作unprivileged user数据。Deny/Ask聚合后不接纳任何上下文；Modify仍保留决定。Once与项目Trust包装转发同一report，不重复执行、不建旁路。
+
+Runtime PromptDecision新增AcceptWithContext变体，原Accept和accepted/is_accepted正常语义保留；这是Rust穷举匹配源码影响，仓内消费者需同步验证。RunAssembler只在接受后渲染单个版本化JSON来源batch，Session/EventStore沿既有Projection帧把原MessageAppended与用户原生投影、上下文同时提交；不另建事件库或先写孤立上下文。失败拒绝不拼接原消息，附加内容不升为system/developer。ModelAgent在已接纳Surface末尾采用同一item，原meter/compaction/replay仍为可信边界；只新增原子接纳适配，不改SQL/存储格式/前端wire或引入依赖。候选尚未取得终态，新加registry限长/权限/取消、parser及Session关闭重开/分叉/回退测试待跑，不计修复。
+
+当前仍210验收/28历史跳过/10归并/3撤销，54待修加本项修复中1，含H180授权不修，实际有效54。本项余4–12有效小时为跨层/持久化候选后低置信估算；全部余170–430有效小时未逐项校准，编译/设备/依赖/环境等待另计，不承诺日期。验收及双文提交后只清理本轮两个确切根/生成快照，不动用户文档与共享C盘工具链。整个goal未完成。
+
+**E-H140-02（候选证据与Surface交互，未关闭）**：首候选`prompt_hook_context`原生101、4/2/0，206.948秒含编译、行为12.87秒。原stdout/structured probe已实际wire/history=true、阻断/负对照正常，但新batch解析的长输出/多hook测试仍0项。核对到原snip为每个非meta user消息追加`[id:uN]`，使新JSON来源batch不再是完整JSON，且给附加内容错误分配独立用户turn ID。没有放宽新测试去吞掉任意后缀，而是沿现有辅助user数据约定加唯一`[Hook output context (unprivileged)]`前缀，snip共用源turn边界，附加文本中伪造[id:u999]也不能成为分段锚点；不使用带system指令含义的system-reminder。这是本根因的Surface消费方修正，不归并H141或其他问题。新增实际tag/snips回归；写测试时位置误插在cfg test模块外已移入，未执行该错误版本测试，不声称生产编译通过。
+
+第二候选同原命令退出0、6/0/0，178.622秒含编译、行为14.66秒：多hook按配置次序交付（首hook故意慢于第二），原始用户消息不含附加内容，单个user-role batch进入实际wire且保留来源/顺序；原服务/Settings/Database全部drop后冷重开并禁用hook，下一run重放恰一份batch、不再执行hook；正式ContextUsage原Surface参与计量。长Unicode在UTF-8边界16KiB内且truncated=true、末尾canary不进入wire；block/ask不保存任何batch且model0；错事件/未知JSON/畸形JSON/非零/async负对照正常。原正常输入与block对照保持。没有把live hook stdout当持久回放。
+
+boundary-candidate hooks完整91/0/0（70单元+5取消+8去重+8once，69.527秒）、session22/0/0（27.658秒）通过；包括registry总64KiB/最多16条、来源不可伪造、去重、Modify与内容并存、取消前不执行、观察点不接纳，以及新Session文件关闭重开/源锚点fork/rewind保留完整3事件Projection、非法system-role接纳不部分写入。实际日志仅证明当次候选，后加snip新回归与诊断Debug隐藏正文仍需最终验证。明确手交付上限不等于修复SystemHookRunner既有stdout捕获峰值；HTTP/MCP/model hook上下文、其他hook事件不在本项已验范围。局部strict/共享生产方消费方回归及最终全仓/fmt/lint/Tauri仍在进行，尚无冻结最终矩阵/独立提交/清理，保持修复中。
+
+**E-H140-03（冻结最终矩阵进行中，2026-11-09，未关闭）**：最后将粗略“surface_tokens>100”断言强化为对真实序列化wire原生items/instructions用同一生产meter独立计量，并要求live ContextUsage.surface_tokens精确相等。`prompt_hook_context`实际原生0、6/0/0，150.817秒含编译、行为13.00秒；未因meter验收不便而弱化断言。新增short20处理器限16条、Once report不重复执行和Debug不输出正文测试。Scope strict候选四crate退出0（48.86秒）；runtime全部targets非严格exit0仅2原警告，AppCore全部targets仍101、115.580秒，旧mcp_discovery_restore.rs:776 panicking_unwrap阻断，无本项文件新增lint诊断。
+
+原子接纳适配复用现有Projection记录结构/锁/写入恢复和branch边界，不是新增存储格式。Public Hook trait加run_report有默认实现；Once和Trust外层转发，不新建执行路径。PromptDecision新增AcceptWithContext对外Rust穷举match有源码兼容影响，仓内消费者全局核对并将随全仓/CLI/Tauri验证；旧accepted/is_accepted及无上下文Accept保持。公开ContextSurfacePersistence未改、SQL/Tauri wire/TS类型不变；新ModelAgent builder只采用已经与原输入一起持久化的item。交付上限16KiB/64KiB/16条是本地明确策略，不称协议规定；批量JSON封装最坏转义上限由原子存储适配512KiB再次检查，超过则明确失败而非静默丢内容。
+
+18份本项Rust源码已冻结final-sources.json，开始最终顺序矩阵；第一道四crate no-deps严格Clippy退出0、3.010秒。后续完整core/hooks/session/persistence测试、snip真实回归、六组正式wire、当前CLI build/全仓及fmt/strict/非strict/Tauri仍在运行或待执行；仅SDK验收阶段按备份临时替换默认CLI，finally必须恢复。未取得最终源hash检查、全仓终态与清理/双文提交前不计新增验收。原候选与TDD失败均保留E01～02，当前仍210验收、实际有效54项。
+
+**E-H140-04（冻结验收，2026-11-09）**：18源冻结后完整矩阵结束；源码在测试/检查后两次sourceDrift=0，不以旧候选可执行文件验新代码。默认`target/debug/deepagent.exe`只在Rust SDK验收阶段临时替换，finally已恢复，实测SHA256=`8C03E6A63D3E64EBF14DF4AC67C4DC56FB87C2D8B9C35949D3CBA9BC391F30A4`与原值/备份相同。观察超时只续读同一进程，没有重复启动活跃Cargo。
+
+下列实际命令在仓库根执行；`$build='G:\Code_Warehouse\DeepAgent-Studio\target\h140-repair-20261109'`，合成环境与E01相同；耗时为真实墙钟含编译，不等于有效编码时间。
+
+| 实际命令 | 原生结果 | 秒 |
+|---|---|---:|
+| `cargo clippy --target-dir $build -p deepagent-hooks -p deepagent-session -p deepagent-persistence -p deepagent-core --all-targets --no-deps --offline -j 2 -- -D warnings` | 0 | 3.010 |
+| `cargo test --target-dir $build -p deepagent-hooks -p deepagent-session -p deepagent-persistence -p deepagent-core --offline -j 2 -- --test-threads=2 --quiet` | 0；12结果块373/0/0：core45、hooks92、persistence214、session22，doc0 | 48.716 |
+| `cargo test --target-dir $build -p deepagent-runtime --lib h140_ --offline -j 2 -- --nocapture --test-threads=1` | 0；1/0/0，真实snip分段/伪造ID对照 | 0.590 |
+| `cargo test --target-dir $build -p deepagent-app-core --test kernel_v2_e2e prompt_hook_context --offline -j 2 -- --nocapture --test-threads=1` | 0；6/0/0，原故障probe去ignore | 12.959 |
+| `cargo build --target-dir $build -p deepagent-cli --offline -j 2` | 0，当前冻结生产实现 | 109.257 |
+| `cargo test --target-dir $build --workspace --offline --no-fail-fast -j 2 -- --test-threads=2 --quiet` | **101**；157结果块5088/4/177（含子测试块，不称唯一测试ID） | 1578.070 |
+| `cargo fmt --all -- --check` | 0 | 5.187 |
+| `cargo clippy --target-dir $build --workspace --all-features --all-targets --offline -j 2 -- -D warnings` | **101**；原models/client.rs:483 clone_on_copy | 49.657 |
+| `cargo clippy --target-dir $build -p deepagent-runtime --all-targets --no-deps --offline -j 2` | 0，含原model_agent.rs:298 clone_on_copy与CanvasPromptPolicy可derive两警告 | 0.916 |
+| `cargo clippy --target-dir $build -p deepagent-app-core --lib --no-deps --offline -j 2` | 0，含12原警告 | 21.800 |
+| `cargo clippy --target-dir $build -p deepagent-app-core --all-targets --no-deps --offline -j 2` | **101**；原mcp_discovery_restore.rs:776 panicking_unwrap，其他原警告保留 | 45.362 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --target-dir $build --offline -j 2` | 0 | 273.685 |
+| `git diff --check -- <本项源码与双文>` | 0，仅原有LF/CRLF提示 | 已执行 |
+
+全仓四失败与H298上一轮同形，未降低标准、更新原快照或以默认跳过故障probe伪称修复：image_preparation::read_failure::real_read_data_dacl_denial_fails_without_sampling_and_recovers在image_read_failure.rs:286报`original DACL must be restored exactly`；checkpoint::access::native::tests::restrictive_tree_is_protected_before_copying_any_bytes在access.rs:364报`restored test DACL differs`；tui::app::tests::viewport_snapshot_with_a_pending_approval在app.rs:1285因隔离HOME显示`G:\h140-fixture…`与原C盘路径不同；canvas_prompt::tests::every_node_kind_owns_exactly_one_profile在canvas_prompt.rs:310报creative.video-edit.v1默认提示词为空（待修H306）。kernel E2E339/1/16唯一失败是上述DACL；原H140故障与扩展组默认实际执行。Rust SDK stdio13/0/0（18.34秒）、协议20/0/0通过，仓内CLI/SDK/Tauri对新PromptDecision消费者均已验证编译/执行。全仓未全绿、全特性strict也未通过，不把本项关闭等同系统完成。
+
+最终证据：生产命令parser→受控registry顺序归并→prompt决定→同源原子Projection→ModelAgent原生Surface→离线正式provider wire均实际覆盖；多hook来源次序不依赖进程完成顺序，截断明确、16KiB条/64KiB总/16条单元门禁，Deny/Ask不提交另一个handler内容，非零/async/错事件/未知JSON不进入模型。Once/Trust沿同一report方法，不额外执行，旧取消/去重/once完整组通过；新增取消前不运行、Debug只显示字节不正文。实际Session冷重开/源锚点分叉与回退保留完整接纳组，非法system上下文在写前拒绝；本项未测试真实断电或完整OS进程崩溃，不把文件关闭重开夸大为崩溃实验。正式ContextUsage与真实wire Surface独立计量结果精确相同，附加内容不绕过原计量/压缩边界。
+
+清理前日志SHA256：原probe=`EBF9F8DB735980801A344445A986EAA1863E10EC2649AD6B5B70124AB0AC5652`；扩展TDD红=`759D978BC478CED4E4972CFA93629751B68588787E3255E11F62D46810A371DA`；冻结正式wire=`97E2A6EAD1AFE0FDCF9B7FA333D0BA9FEC687211ED8799E979876F4A688F5008`；全仓=`57E1880E7B1BA2417B32A7114334E73BD00E8FE12F38C0B4DD5A35AB937CCF06`；18源清单=`80AA5EC1D95629DC084AD91F7A51E655719177D1A2514E8AD67A80508647FA7C`。按用户要求target原日志/脚本会在提交后删除，关键失败/命令/结果保留双文，不伪称清理后临时日志仍可打开。
+
+兼容性：原HookOutcome不增变体、Hook trait新run_report有默认适配；外部PromptDecision穷举匹配须增加AcceptWithContext处理（不能忽略已接纳上下文）。原无context Accept/accepted/is_accepted正常保持。新user来源封装是本地数据、不是provider类型；没有新增SQL格式/依赖/前端wire、权限或数据迁移。仅同步command UserPromptSubmit交付，未验HTTP/MCP/model hook的上下文、SessionStart/工具hook等其他事件、真实供应商/UI/其他OS/凭据、TS stdio；没有前端契约变化，未跑pnpm build。交付限长不修既有stdout全量捕获峰值，不保证消除所有提示词注入；可执行权限仍由原内核控制。不据此关闭独立H111/H141。
+
+本轮新增修复1、历史跳过/归并/撤销各新增0；306唯一行应为211验收/28历史跳过/10归并/3撤销/54待修含H180授权不修、修复中0，实际有效剩余53。下一准备H111 PreCompact输出指令交付，先复核原probe，不混本项。全部余项170–430有效小时为沿用低置信区间，按剩余跨层/持久化/模型契约复杂度、未逐项校准；编译/设备/依赖/策略等待另计，未来无法可靠量化；本轮全仓26.3分钟与Tauri4.6分钟只是实测机器耗时，不承诺日期。修复hash取得后另双文回填、不反复amend；清理结果E05续记。整体goal未完成。

@@ -25,6 +25,74 @@ use deepagent_tools::ToolExecutionContext;
 
 use crate::lifecycle::HookContext;
 
+/// Model-context handoff limits, not a subprocess stdout capture limit.
+pub const MAX_HOOK_CONTEXT_BYTES: usize = 16 * 1024;
+pub const MAX_HOOK_CONTEXT_TOTAL_BYTES: usize = 64 * 1024;
+pub const MAX_HOOK_CONTEXTS: usize = 16;
+
+/// A bounded, unprivileged context entry. The registry assigns source/order;
+/// output cannot choose its own authority or impersonate a different handler.
+#[derive(Clone, PartialEq, Eq, Serialize)]
+pub struct HookAdditionalContext {
+    pub hook: String,
+    pub ordinal: usize,
+    pub text: String,
+    pub truncated: bool,
+}
+
+impl std::fmt::Debug for HookAdditionalContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HookAdditionalContext")
+            .field("hook", &self.hook)
+            .field("ordinal", &self.ordinal)
+            .field("text_bytes", &self.text.len())
+            .field("truncated", &self.truncated)
+            .finish()
+    }
+}
+
+/// Context is independent of the permission/input decision. Legacy callers can
+/// still consume only the outcome; prompt admission consumes the complete report.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HookReport {
+    pub outcome: HookOutcome,
+    pub additional_context: Vec<HookAdditionalContext>,
+    pub context_truncated: bool,
+}
+
+impl HookReport {
+    pub fn decision(outcome: HookOutcome) -> Self {
+        Self {
+            outcome,
+            additional_context: Vec::new(),
+            context_truncated: false,
+        }
+    }
+
+    pub(crate) fn with_context(outcome: HookOutcome, text: &str) -> Self {
+        let mut report = Self::decision(outcome);
+        if !text.trim().is_empty() {
+            let (text, truncated) = bounded_context(text, MAX_HOOK_CONTEXT_BYTES);
+            report.additional_context.push(HookAdditionalContext {
+                hook: String::new(),
+                ordinal: 0,
+                text,
+                truncated,
+            });
+            report.context_truncated = truncated;
+        }
+        report
+    }
+}
+
+pub(crate) fn bounded_context(text: &str, limit: usize) -> (String, bool) {
+    let mut end = text.len().min(limit);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (text[..end].to_owned(), end < text.len())
+}
+
 /// Where a hook decision originated (§13 `source`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -201,6 +269,18 @@ pub trait Hook: Send + Sync {
         _execution: ToolExecutionContext,
     ) -> Result<HookOutcome> {
         self.run(ctx).await
+    }
+
+    /// Complete handoff through the same cancellation/execution boundary. The
+    /// default preserves existing hooks without assuming their output is text.
+    async fn run_report(
+        &self,
+        ctx: &HookContext,
+        execution: ToolExecutionContext,
+    ) -> Result<HookReport> {
+        self.run_with_context(ctx, execution)
+            .await
+            .map(HookReport::decision)
     }
 }
 

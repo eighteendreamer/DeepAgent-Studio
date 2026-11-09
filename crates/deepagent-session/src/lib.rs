@@ -206,6 +206,30 @@ impl<'db, C: Clock> Session<'db, C> {
         self.append_with_response_projection(EventPayload::ResponseItemAppended { item }, false)
     }
 
+    /// Preserve source input and its admitted hook context in one native group.
+    pub fn append_user_prompt(
+        &mut self,
+        message: deepagent_core::message::Message,
+        context: Option<ResponseItem>,
+    ) -> Result<Event> {
+        let Some(context) = context else {
+            return self.append(EventPayload::MessageAppended { message });
+        };
+        let events = EventStore::new(self.db).append_user_prompt_with_context(
+            self.id,
+            message,
+            context,
+            self.clock.now(),
+        )?;
+        for event in &events {
+            self.state.apply(&event.payload);
+        }
+        Ok(events
+            .into_iter()
+            .next()
+            .expect("committed input has a source"))
+    }
+
     fn append_with_response_projection(
         &mut self,
         payload: EventPayload,

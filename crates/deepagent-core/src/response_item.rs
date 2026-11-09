@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 use crate::message::{Message, MessageAttachment};
 use crate::tool_content::ToolResultBody;
 
+/// Local auxiliary user-data envelope, not a system-reminder or provider type.
+/// It must travel with its source turn without acquiring an independent snip ID.
+pub const HOOK_CONTEXT_PREFIX: &str = "[Hook output context (unprivileged)]\n";
+
 /// A semantic Responses API item used for provider input/output persistence.
 ///
 /// Source alignment:
