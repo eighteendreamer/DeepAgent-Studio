@@ -181,6 +181,18 @@ mod native {
         )
     }
 
+    /// Open an existing regular entry with only the rights needed to restore
+    /// its DACL. Authorization remains enforced by the filesystem.
+    pub fn open_policy_update(path: &Path) -> io::Result<File> {
+        regular_entry(
+            std::fs::OpenOptions::new()
+                .access_mode(READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(path)?,
+        )
+    }
+
     impl WindowsDacl {
         /// Read policy from a stable READ_CONTROL | FILE_READ_ATTRIBUTES handle.
         pub fn capture(file: &File) -> io::Result<Self> {
@@ -1003,4 +1015,6 @@ mod native {
 }
 
 #[cfg(windows)]
-pub use native::{create_snapshot_target, open_policy_source, open_snapshot_source};
+pub use native::{
+    create_snapshot_target, open_policy_source, open_policy_update, open_snapshot_source,
+};

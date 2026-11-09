@@ -261,7 +261,45 @@ mod native {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use std::io::Write;
+        use deepagent_persistence::fs_commit::access::open_policy_update;
+        use std::io::{self, Write};
+
+        #[derive(Default)]
+        struct AclRecovery(Vec<(PathBuf, WindowsDacl)>);
+
+        impl AclRecovery {
+            fn track(&mut self, path: PathBuf, policy: WindowsDacl) {
+                self.0.push((path, policy));
+            }
+
+            fn restore(&mut self) -> io::Result<()> {
+                self.0.sort_by_key(|(path, _)| path.components().count());
+                let mut first_error = None;
+                for (path, policy) in &self.0 {
+                    let result = open_policy_update(path).and_then(|file| {
+                        policy.apply(&file, false)?;
+                        if WindowsDacl::capture(&file)? != *policy {
+                            return Err(io::Error::other("restored test DACL differs"));
+                        }
+                        Ok(())
+                    });
+                    if first_error.is_none() {
+                        first_error = result.err();
+                    }
+                }
+                if let Some(error) = first_error {
+                    return Err(error);
+                }
+                self.0.clear();
+                Ok(())
+            }
+        }
+
+        impl Drop for AclRecovery {
+            fn drop(&mut self) {
+                let _ = self.restore();
+            }
+        }
 
         fn policy(sddl: &str) -> WindowsDacl {
             serde_json::from_value(serde_json::json!({"version":1,"protected":true,"sddl":sddl}))
@@ -271,11 +309,18 @@ mod native {
         #[test]
         fn restrictive_tree_is_protected_before_copying_any_bytes() {
             let temporary = tempfile::tempdir().unwrap();
+            let cleanup_path = temporary.path().to_owned();
             let source = temporary.path().join("source");
             let destination = temporary.path().join("destination");
             let directory = create_snapshot_target(&source, true).unwrap();
             let mut file = create_snapshot_target(&source.join("child"), false).unwrap();
             file.write_all(b"synthetic checkpoint body").unwrap();
+            let original_directory = WindowsDacl::capture(&directory).unwrap();
+            let original_file = WindowsDacl::capture(&file).unwrap();
+            let original_policies = [original_directory.clone(), original_file.clone()];
+            let mut recovery = AclRecovery::default();
+            recovery.track(source.clone(), original_directory);
+            recovery.track(source.join("child"), original_file);
             // Deny content/add-child writes, not GENERIC_WRITE: the latter
             // also denies READ_CONTROL/SYNCHRONIZE and would forbid reads.
             let restricted = policy("D:P(D;;0x6;;;WD)(A;;GR;;;WD)");
@@ -295,7 +340,12 @@ mod native {
                     })
                     .collect(),
             };
+            assert_eq!(tree.entries.len(), original_policies.len());
+            for (entry, original) in tree.entries.iter().zip(&original_policies) {
+                recovery.track(entry_path(&destination, &entry.relative), original.clone());
+            }
             let plan = CopyPlan::prepare(sources, &destination, &tree).unwrap();
+            assert_eq!(plan.leases.len(), tree.entries.len());
             assert_eq!(fs::metadata(destination.join("child")).unwrap().len(), 0);
             for (lease, entry) in plan.leases.iter().zip(&tree.entries) {
                 assert!(
@@ -311,6 +361,12 @@ mod native {
             for lease in leases {
                 lease.publish_policy(&lease.staged).unwrap();
             }
+            recovery.restore().unwrap();
+            drop(temporary);
+            assert!(
+                !cleanup_path.exists(),
+                "restricted ACL test left its temporary directory behind"
+            );
         }
 
         #[test]
