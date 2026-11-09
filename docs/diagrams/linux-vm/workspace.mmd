@@ -1,0 +1,38 @@
+sequenceDiagram
+  autonumber
+  participant K as 原 Kernel / 权限
+  participant P as WorkspaceProjection
+  participant F as 原文件提交边界
+  participant H as 用户宿主文件
+  participant G as Linux 工作副本
+  participant R as 原事件 / 产物索引
+  K->>P: 已批准输入范围与 scope；并非任意宿主路径
+  P->>F: I05 检查 workspace / 文件身份 / 读取授权
+  F->>H: 受控读取，记录基线摘要
+  H-->>P: 有界内容 + 观察版本
+  P->>G: workspace/import；相对路径和基线
+  Note over P,G: 不复制宿主 .venv / node_modules / 凭据；依赖在 Linux 重建
+  G->>G: 命令在 /data/workspaces/scope 中修改
+  opt 用户同时编辑宿主文件
+    H->>H: 宿主权威副本更新
+  end
+  G-->>P: workspace/changes；仅是不可信候选
+  P->>P: 校验条目、长度、名称、链接、摘要
+  P->>K: 提交具体变更集，复核已有 grant 范围
+  opt 变更超出已有写入授权
+    K->>K: 原审批路由；拒绝则不写宿主
+  end
+  K-->>P: 已授权的精确变更集
+  P->>F: bytes-safe 提交契约；扩展同一边界
+  F->>F: 路径提交锁 + 取消检查 + 身份复核
+  F->>H: 复读当前内容，比较基线
+  alt 文件变更 / 路径替换 / 名称不支持
+    F-->>P: WorkspaceConflict / PathDenied；不覆盖
+    P->>R: 冲突与候选产物引用
+  else 基线和权限仍有效
+    F->>H: 同目录 staging，逐文件原子发布
+    F->>R: 实际变更 / hash / 产物引用；失效观察缓存
+    F-->>P: 每项结果与可恢复记录
+  end
+  Note over F,H: 不承诺项目多文件事务；部分提交必须可查询、可恢复
+  P->>R: 关联 runId / actionId / execId / projectionId

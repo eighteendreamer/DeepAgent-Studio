@@ -1,29 +1,52 @@
 sequenceDiagram
-  actor U as 用户
-  participant UI as Tauri 前端
-  participant K as 既有 AppCore / Kernel
-  participant S as VM 与空间协调服务
-  participant G as Linux 执行服务
-  participant F as 宿主文件提交边界
-  participant R as 既有事件和产物存储
-  U->>UI: 发送任务或指定环境
-  UI->>K: 现有聊天 / Harness 入口
-  K->>K: 固化目标、版本、权限和网络策略
-  K->>R: 保存准备与审批上下文
-  opt 权限要求审批
-    K-->>UI: 既有审批请求
-    UI->>K: 既有 approval/respond
+  autonumber
+  actor U as 用户 / Desktop
+  participant A as Tauri / Harness
+  participant K as AppCore / Kernel
+  participant P as RunAssembler / Plan
+  participant V as LinuxVmBackend / VmService
+  participant S as 空间 / 文件边界
+  participant G as worker / guest-agent
+  participant R as 原 RunStore / ArtifactStore
+  U->>A: 现有聊天入口，附任务目标偏好
+  A->>K: 同一 run admission / prepare
+  K->>P: 解析目标、工具要求、权限快照
+  P-->>K: 绑定不可变 host 或 linux_vm 计划
+  Note over K,R: 后续展示 Linux 分支；host 走原后端
+  K->>R: 保存准备上下文；原 run 记录
+  opt 原权限策略要求审批
+    K-->>U: 现有审批通道；展示实际执行目标
+    U->>K: 批准或拒绝原 action
   end
-  K->>S: 获得空间预留、工作区与 VM 租约
-  S->>G: 已授权 exec/start
-  loop 真实进程运行中
-    G-->>K: 带 exec 标识的输出 / 状态
-    K->>R: 有界日志与顺序稳定事件
-    R-->>UI: 事件投影和可重连读取
+  alt 被拒绝 / 已取消 / 目标不可用
+    K->>R: 原拒绝 / 失败 / 取消语义
+    Note over V,G: 不派发命令，不改用宿主执行
+  else 已获执行授权
+    K->>V: CommandExecutor.run_controlled 或 execute_code
+    V->>S: I08 申请预算、scope 和工作副本租约
+    alt 预算不足 / scope 忙 / 导入失败
+      S-->>V: 结构化错误；保留已发生的清理记录
+      V-->>K: 工具失败；不启动 guest 命令
+    else 前置条件满足
+      V->>G: I03/04 启动或复用同 scope；握手版本和 bootId
+      G-->>V: 实际能力与工具版本；不扩大权限
+      V->>G: exec/start，execId + scriptRef/argv + limits
+      loop 每个有界输出块
+        G-->>V: stdout/stderr + exec sequence
+        V->>R: I07 有界原文引用和执行观察
+        K-->>U: 既有工具进度；持久化后可 replay
+      end
+      opt 用户取消 / deadline
+        K->>V: 原 CancellationTree / deadline
+        V->>G: exec/signal；超期则监督器终止 worker
+        Note over V,G: ACK 不等于退出；确认退出前保留租约
+      end
+      G-->>V: 子进程退出/信号或 worker EOF
+      V->>S: I05 候选导出、复核、获准后提交
+      S-->>V: 已提交清单或 WorkspaceConflict
+      V-->>K: 真实工具结果；命令退出 23 保持 23
+      K->>R: Kernel 决定下一步或唯一 run 终态
+      V->>S: 确认进程/句柄释放；登记延迟回收
+    end
   end
-  G-->>S: 命令退出及变更清单
-  S->>F: 校验输出、基线与目标授权
-  F->>F: 冲突检测及受控提交
-  F->>R: 产物引用与修改摘要
-  K->>R: 唯一运行终态
-  S->>S: 释放租约，登记回收时间
+  Note over K,R: 命令结束不自动等于 run 结束；一个 run 可多次调用工具

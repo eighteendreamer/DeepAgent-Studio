@@ -1,0 +1,33 @@
+sequenceDiagram
+  autonumber
+  participant T as Rust 调度 / 手动清理
+  participant M as ManagedStorage
+  participant L as 维护锁 / 资源租约
+  participant D as 原 DB / 归属与引用
+  participant X as 删除者 / guest 缓存适配
+  participant U as 设置 / 历史 UI
+  T->>M: I09 启动后30秒 / 每15分钟 / 任务后60秒 / 压力
+  M->>L: 跨进程维护锁；合并重复触发
+  alt 锁未取得 / 数据根迁移中
+    L-->>M: 忙；不假定自己是 primary
+    M-->>U: 跳过原因与下次计划
+  else 获得维护权
+    M->>D: 资源、TTL、active / pinned / replay 引用
+    D-->>M: 候选及保护原因；不按目录名盲删
+    M->>L: 原子 claim 待删资源，阻止新租约
+    M->>X: 重验路径身份 / 实际进程 / 句柄 / scope
+    X-->>M: 实际可清单；路径被替换则跳过
+    M->>D: 清理意图和可恢复状态
+    M->>X: 删获准原文/暂存，或 guest cache/prune
+    X-->>M: 成功 / 失败；实际变化
+    Note over M,X: guest 删缓存释放客体块；固定 raw 宿主文件不缩小
+    M->>D: 原产物删除协议 / tombstone / 更新索引
+    M->>D: 原日志写入者保存原因、跳过项、回收量
+    M->>L: 删除确认后释放 claim 和维护锁
+    M-->>U: 占用、可回收、保护项、维护结果
+  end
+  opt 下次启动发现未完成清理意图
+    M->>X: 重新核实文件和进程身份
+    M->>D: 幂等重试或保留冲突；不凭旧路径盲删
+  end
+  Note over D,U: 原文过期仍有执行摘要；不删除 run_events 中间片段

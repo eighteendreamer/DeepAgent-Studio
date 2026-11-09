@@ -1,0 +1,40 @@
+flowchart TB
+  subgraph admission["01 · 同一份运行准备｜UP-01"]
+    settings["M · settings.rs / run_config.rs<br/>目标 + runtimePreference<br/>旧值保持宿主语义"]
+    resolve["M · execution_config.rs<br/>resolve_execution_config<br/>只读计划与正式准备共享解析"]
+    env["M · RunEnvironment / PreparedChatRun<br/>冻结 planId / imageDigest / policy<br/>已批准 run 不能换目标"]
+    settings --> resolve --> env
+  end
+  subgraph binding["02 · 目标绑定｜UP-05 / UP-07"]
+    select{"ExecutionTarget<br/>已解析且获授权"}
+    host["R · RuntimeBroker<br/>host_local / host_managed<br/>宿主 PathBuf 和 PATH"]
+    linux["N · GuestRuntimeBinding<br/>Linux 版本 / 路径 / scope<br/>不包含宿主解释器路径"]
+    wrap["M · base_registry_request<br/>仅 host 使用 RuntimeCommandExecutor<br/>Linux 环境由 guest binding 提供"]
+    code["M · workflow_code.rs<br/>SandboxCodeRequest 绑定分支<br/>strict code 与项目 shell 分隔"]
+    env --> select
+    select -->|"host"| host --> wrap
+    select -->|"linux_vm"| linux --> wrap
+    linux --> code
+    host --> code
+  end
+  subgraph execute["03 · 复用调用边界｜UP-04 / UP-05"]
+    bash["R · BashTool / CommandExecutor<br/>原工具 schema · 审批 · deadline"]
+    registry["M · SandboxBackendKind / Registry<br/>新增 LinuxVm / linux_vm<br/>显式目标不可用立即报错"]
+    backend["N · sandbox_backend/linux_vm.rs<br/>guest cwd handle / scriptRef<br/>退出码 · 输出限额 · 取消"]
+    service["N · vm_service.rs<br/>单 VM 排队 / scope 租约 / bootId<br/>进程监督与崩溃恢复"]
+    worker["N · vm-worker / guest-agent<br/>引擎启动与非 root 执行<br/>协议版本独立于 Harness"]
+    wrap --> bash --> registry --> backend --> service --> worker
+    code -->|"严格 execute_code profile"| registry
+  end
+  subgraph extensions["04 · 独立迁移批次｜UP-09；未验收的支持位为 false"]
+    terminal["M · TerminalSessionBackend<br/>新增 VM 实现<br/>保留 lease / epoch / cursor"]
+    integrations["M · MCP / plugin / hook<br/>逐调用点声明 host 或 guest<br/>stdio transport 单独验证"]
+    terminal -.-> service
+    integrations -.-> service
+  end
+  classDef retained fill:#f1f5f9,stroke:#64748b,color:#0f172a;
+  classDef modified fill:#eff6ff,stroke:#2563eb,color:#172554;
+  classDef added fill:#ecfdf5,stroke:#059669,color:#064e3b;
+  class settings,resolve,env,wrap,code,registry,terminal,integrations modified;
+  class host,bash retained;
+  class linux,backend,service,worker added;

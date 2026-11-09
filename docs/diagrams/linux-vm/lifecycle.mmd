@@ -1,0 +1,34 @@
+stateDiagram-v2
+  [*] --> UiReady: 窗口先加载；后台准备不阻塞 WebView
+  UiReady --> Probe: 首次需要 VM 或显式准备
+  Probe --> Unavailable: 平台虚拟化条件不满足
+  Probe --> VerifyEngine: 实际虚拟化分区探测成功
+  VerifyEngine --> Unavailable: ABI / 来源 / 完整性不匹配
+  VerifyEngine --> Reserve: 引擎正确；读取激活状态
+  Reserve --> Attention: 配额不足 / 宿主空间不足
+  Reserve --> Activate: 获得预算；首次离线激活
+  Reserve --> Boot: 已有完整且版本匹配的基盘
+  Activate --> Attention: 解压损坏 / 超限 / 取消
+  Activate --> Boot: 完整校验后原子发布
+  Boot --> Unavailable: 握手 / 真实 Linux 探测失败
+  Boot --> Ready: 协议、工具版本与实际能力通过
+  Ready --> Busy: 同 scope 任务获得 VM / 卷租约
+  Busy --> Ready: 确认子进程退出且状态已保存
+  Busy --> Recovering: 崩溃 / 取消后状态不确定
+  Recovering --> Attention: 资源或文件一致性无法确认
+  Recovering --> Probe: 无活动进程；记录恢复结果
+  Ready --> Stopped: 空闲180秒或应用退出；释放设备句柄
+  Stopped --> Probe: 新 scope 重新验证
+  Unavailable --> Probe: 用户处理必要系统条件后重试
+  Attention --> Reserve: 空间 / 资源问题处理后重试
+  note right of Unavailable
+    UI可用、诊断可导出
+    依赖测试标为阻塞
+    不自动启用系统功能
+    不静默改在宿主运行
+  end note
+  note right of Busy
+    默认最多1台运行VM
+    不同scope排队后销毁重建
+    strict code与项目shell隔离
+  end note

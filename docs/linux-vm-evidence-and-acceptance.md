@@ -167,3 +167,9 @@ P-storage-01（资源回收路径）：默认设置或压力事件 → AppCore �
 最新实验测试、耗时和包信息见 [RELIABILITY-REVIEW.md](G:/Code_Warehouse/DeepAgent-VM-Lab/tauri-demo/RELIABILITY-REVIEW.md) 与 [验证记录](G:/Code_Warehouse/DeepAgent-VM-Lab/tauri-demo/evidence/reliability-verification.json)。V01/V02/V17 的跨机器门槛继续保留；主项目业务后端未切换到 VM。
 
 0.1.1 已在本机实际执行 NSIS 安装并使用安装目录内的资源运行真实 Tauri 测试：前端 bridge 就绪 2.662 秒、后台首次准备与启动探测 16.317 秒，功能测试 19 通过、0 失败、1 未验收。5 项 Rust 回归、格式检查、Clippy、前端构建和 release 打包通过。人为移除引擎时为 0 通过、1 失败、19 阻塞。本机仍安装了 WSL2，因此上述结果不能替代干净目标机的验收；用户那台机器尚未复测，原始启动根因仍待诊断。
+
+## 10. 架构细化 v2 的证据与边界
+
+[实施蓝图](linux-vm-implementation-blueprint.md)增加 E31～E39 的当前源码定位，将改动细化为 UP-00～UP-12，并通过 I01～I09 定义生产方、消费方、传输及权威。它特别补明宿主 SDK 环境注入、workflow code 的宿主路径绑定、文件提交接口可见性与二进制语义、跨进程空间预留及双版本升级峰值，不能把这些写成“已有后端直接复用即可”。
+
+[七视图图册](diagrams/linux-vm/index.html)区分保留、扩展、新增与待验证。图源、SVG、离线图册和复现脚本位于 `docs/diagrams/linux-vm/`；[图册说明](diagrams/linux-vm/README.md)记录文档/渲染验证。本轮没有修改业务代码，也没有重新运行 VM 或产品兼容性测试；V01～V17 的实现验收状态不因画图或文档校验改变。

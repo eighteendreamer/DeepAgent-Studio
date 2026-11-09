@@ -1,33 +1,52 @@
 flowchart TB
-  subgraph ui["桌面展示边界"]
-    web["Tauri / React<br/>聊天、审批、终端、文件、设置"]
+  subgraph entry["A · 入口层｜不授予执行权限"]
+    direction TB
+    ui["R · Desktop WebView<br/>React / api.ts<br/>聊天 · 审批 · 终端 · 设置"]
+    cli["R · CLI / SDK / app-server<br/>同一 Harness 协议"]
   end
-  subgraph host["宿主 Rust 控制边界"]
-    entry["Tauri commands / Harness"]
-    kernel["AppCore / AgentKernel<br/>审批、取消、工具注册"]
-    plan["按 run 固化执行计划"]
-    files["现有文件权限与提交边界"]
-    network["宿主网络策略与代理"]
-    storage["资源安装 / 配额 / 定时清理"]
-    records["现有 RunStore / run_events<br/>ArtifactStore / RuntimeLogStore"]
-    native["宿主执行适配<br/>Direct / Sandboxie / Windows Sandbox"]
-    supervisor["VM 监督器与受控 IPC"]
+  subgraph host["B · 宿主 Rust 进程｜控制与授权的最终权威"]
+    direction TB
+    adapter["M · 传输适配<br/>Tauri / Harness adapter"]
+    core["R · ChatService / RunCoordinator<br/>AgentKernel · ToolRegistry<br/>审批 · 取消 · 输入租约"]
+    plan["M · RunAssembler / RunEnvironment<br/>目标 + 运行时 + 权限快照<br/>UP-01 / UP-05"]
+    route["M · SandboxBackendRegistry<br/>CommandExecutor / execute_code"]
+    native["R · 宿主后端<br/>Direct / Sandboxie / Windows Sandbox"]
+    vm["N · LinuxVmBackend + VmService<br/>工作副本 · 租约 · worker 监督<br/>UP-04 / UP-05"]
+    persistence[("R/M · 既有持久化<br/>RunStore / run_events<br/>ArtifactStore / RuntimeLogStore")]
+    files["M · 宿主文件提交边界<br/>fs_guard + fs_commit<br/>基线复核 · UP-06"]
+    net["N · GuestNetworkBroker<br/>目的地策略 · 凭据留宿主<br/>UP-08"]
+    storage["N/M · ManagedStorage<br/>RuntimeService / 归属索引<br/>3 GB · 租约 · 清理 · UP-02/03/10"]
   end
-  subgraph vm["独立 worker 与 Linux 边界"]
-    worker["Rust vm-worker<br/>固定引擎与磁盘句柄"]
-    guest["Linux 内受控执行服务<br/>进程、文件传输、PTY"]
-    tools["Python / JDK / Node / Git<br/>受限工作副本与缓存"]
+  subgraph worker_boundary["C · 独立宿主子进程｜固定引擎与磁盘句柄"]
+    worker["N · vm-worker<br/>VMM / 固件 ABI<br/>有界通道 · 随监督器退出"]
+    platform["G · OS 虚拟化适配<br/>WHP / KVM / macOS<br/>逐平台验收 · UP-00"]
   end
-  project["用户授权的宿主项目"]
-  internet["获准的外部服务"]
-  web --> entry --> kernel --> plan
-  plan --> native
-  plan --> supervisor --> worker --> guest --> tools
-  kernel --> records
-  supervisor --> records
-  supervisor --> storage
-  guest -->|"文件请求与变更提案"| files
-  files --> project
-  guest -->|"已授权网络请求"| network --> internet
-  storage --> worker
-  records -.->|"事件投影 / replay"| entry
+  subgraph guest_boundary["D · Linux VM｜客体输出视为不可信输入"]
+    guest["N · Rust guest-agent<br/>控制帧与输出分离<br/>非 root 进程 · generation"]
+    tools["N · Linux 开发环境<br/>Python / JDK / Node / Git<br/>工作副本 + scope 数据卷"]
+  end
+  project["用户项目 / 已交付文件<br/>宿主权威副本；不由 VM 清理器删除"]
+  internet["获准网络目的地<br/>模型 API 仍走宿主模型服务"]
+  ui -->|"I01 invoke / 既有事件"| adapter
+  cli -->|"I02 JSON-RPC / JSONL"| adapter
+  adapter --> core --> plan --> route
+  route -->|"host"| native
+  route -->|"linux_vm"| vm
+  vm -->|"I03 私有监督 IPC"| worker
+  worker --> platform
+  worker -->|"I04 guest 协议；传输待 P0 验证"| guest
+  guest --> tools
+  core -->|"I07 唯一终态 / replay"| persistence
+  vm -.->|"I07 执行观察 / 原文引用"| persistence
+  vm -->|"I05 变更提案；宿主验权"| files --> project
+  guest -->|"I06 默认禁网；连接申请"| net --> internet
+  storage -.->|"I08 预算 / 资源租约"| vm
+  storage -.->|"原索引 / 清理审计"| persistence
+  classDef retained fill:#f1f5f9,stroke:#64748b,color:#0f172a;
+  classDef modified fill:#eff6ff,stroke:#2563eb,color:#172554;
+  classDef added fill:#ecfdf5,stroke:#059669,color:#064e3b;
+  classDef gate fill:#fffbeb,stroke:#d97706,color:#78350f,stroke-dasharray:5 4;
+  class ui,cli,core,native,project,internet retained;
+  class adapter,plan,route,persistence,files modified;
+  class vm,storage,net,worker,guest,tools added;
+  class platform gate;

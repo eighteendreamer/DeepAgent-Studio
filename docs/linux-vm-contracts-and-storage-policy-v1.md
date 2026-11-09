@@ -2,6 +2,7 @@
 
 > 本文定义未来实现，不是当前已存在的 API。所有新增名称、字段、错误码均为本地设计。
 > 设计背景、模块责任及平台门槛见[主方案](G:/Code_Warehouse/DeepAgent-Studio/docs/2026-11-09_linux-vm-architecture-upgrade-report.md)。
+> 源码改造位置、接口调用权威及交付依赖见[实施蓝图 v2](linux-vm-implementation-blueprint.md)；I01～I09 是本文契约的交互索引，UP-00～UP-12 是实施单元，均不是已注册 API。
 
 ## 1. 先保留现有入口
 

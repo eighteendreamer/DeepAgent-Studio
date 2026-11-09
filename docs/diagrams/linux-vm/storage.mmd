@@ -1,0 +1,35 @@
+flowchart TB
+  cap["D01 · Linux 受管池硬上限 3,000 MB<br/>十进制；全项目合计；写前原子预留<br/>受管字节 + 未完成写入承诺 ≤ 3,000 MB"]
+  subgraph install["安装目录｜安装器所有；仍计入 Linux 池"]
+    seed["350 MB · vm-seed<br/>压缩镜像 / manifest / SBOM"]
+    engine["60 MB · worker / engine 增量<br/>按 manifest 核算；不重复计量"]
+  end
+  subgraph user["UserPaths.root｜既有数据根；新增目录为本地设计"]
+    base["1,000 MB · files/runtimes/<br/>linux-vm/images/digest<br/>只读基盘；旧版本占同一池"]
+    raw["1,000 MB · files/vm/volumes/<br/>全部固定上界 raw 卷<br/>所有项目、scope 合计"]
+    log["100 MB · files/tool-results/<br/>VM stdout/stderr 大原文<br/>产物引用 + TTL + 上限"]
+    temp["300 MB · cache/vm + vm/exports<br/>下载 / staging / 脚本 / 回传<br/>写前预留；失败仍可追踪"]
+    reserve["190 MB · 事务与控制余量<br/>终态 / 恢复 / 升级弹性<br/>不是额外可用下载空间"]
+    db[("既有 deepagent.db / runtime-logs.db<br/>run_events / 资源控制 / 摘要<br/>原写入者负责；不保存无界原文")]
+  end
+  subgraph inside["Linux 内部｜raw 卷内部；不再次累计宿主预算"]
+    work["/data/workspaces/scope<br/>项目工作副本"]
+    env["/data/envs/id<br/>活动依赖；有租约不可删"]
+    cache["/data/cache<br/>包缓存；空闲 LRU / TTL"]
+    memory["/run / /tmp → 有界 tmpfs<br/>计入 VM 内存；无 swap / 内存快照"]
+  end
+  owner["I08 · ManagedStorage 协调<br/>InstallLedger：安装归属<br/>Inventory：观测，不是配额锁<br/>ArtifactStore：结果引用 / 删除协议"]
+  original["池外 · 用户项目 / 已交付文件<br/>原生命周期；VM 清理器不得删除"]
+  cap --> seed & engine & base & raw & log & temp & reserve
+  raw --> work & env & cache
+  base -.-> memory
+  owner -.-> seed & base & raw & log & temp & db
+  work -->|"I05 宿主提交后才成为用户产物"| original
+  classDef pool fill:#eff6ff,stroke:#2563eb,color:#172554;
+  classDef guest fill:#ecfdf5,stroke:#059669,color:#064e3b;
+  classDef meta fill:#f1f5f9,stroke:#64748b,color:#0f172a;
+  classDef hard fill:#fffbeb,stroke:#d97706,color:#78350f;
+  class seed,engine,base,raw,log,temp pool;
+  class work,env,cache,memory guest;
+  class owner,db,original meta;
+  class cap,reserve hard;

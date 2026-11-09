@@ -5,6 +5,8 @@
 > 范围：DeepAgent Studio 当前 Rust/Tauri 架构与独立 VM Lab；不修改业务实现。
 > 阅读顺序：本文明确架构和实施顺序；[接口与清理策略附录](G:/Code_Warehouse/DeepAgent-Studio/docs/linux-vm-contracts-and-storage-policy-v1.md)定义拟议契约；[证据与验收索引](G:/Code_Warehouse/DeepAgent-Studio/docs/linux-vm-evidence-and-acceptance.md)区分代码事实、实测与未验收能力。
 
+本方案的**实施入口**已细化为[升级实施蓝图 v2](linux-vm-implementation-blueprint.md)和[七视图架构图册](diagrams/linux-vm/index.html)。本文负责总体策略与预算；蓝图固定 UP-00～UP-12 的源码改造、依赖与验收；接口附录固定拟议字段；证据索引负责当前事实与未验收状态。未来实现以这些明确边界推进，不能把图中新增组件当成现有能力。
+
 ## 1. 决策与交付边界
 
 采用 **Tauri/React 界面 + 宿主 Rust 控制后端 + 独立 Rust VMM worker + Linux 执行环境**。保留现有 AgentKernel、RunStore、run_events、审批、取消、工具注册、MCP 与终端租约。Linux 是新增执行目标，不是第二个 Agent 系统。
@@ -13,7 +15,7 @@
 
 关键约束如下，均作为实现验收条件：
 
-1. 安装包目标仍小于 1 GB；当前独立 Demo 安装包实测为 **313,237,475 字节**，不等于完整产品安装包的测量值。
+1. 安装包目标仍小于 1 GB；独立 Demo 0.1.1 release 安装包实测为 **312,747,582 字节**，不等于完整产品安装包的测量值。
 2. Linux 相关受管资源池默认硬上限为 **3,000,000,000 字节**，约 2.79 GiB；全体项目、任务和 VM 合计，而非每个 VM 各 3 GB。
 3. 默认优先使用满足要求且已获宿主执行授权的本机环境；缺失或不兼容时使用内置 Linux。任务执行目标确定后保持稳定。
 4. 显式指定 Linux 而不可用时返回错误，不能静默在宿主执行；用户选择宿主同样不能偷偷改成 Linux。
@@ -52,40 +54,61 @@
 
 ## 3. 总体框架与信任边界
 
+图例：R 灰＝保留；M 蓝＝扩展现有模块；N 绿＝新增；G 琥珀虚线＝发布前验证。I01～I09 的调用方、契约和权威在[蓝图 §3](linux-vm-implementation-blueprint.md#3-九个交互边界谁调用谁传什么)逐项定义；组件、文件、存储、清理与生命周期分别有独立视图，不能用总览图替代实现设计。
+
 ```mermaid
 flowchart TB
-  subgraph ui["桌面展示边界"]
-    web["Tauri / React<br/>聊天、审批、终端、文件、设置"]
+  subgraph entry["A · 入口层｜不授予执行权限"]
+    direction TB
+    ui["R · Desktop WebView<br/>React / api.ts<br/>聊天 · 审批 · 终端 · 设置"]
+    cli["R · CLI / SDK / app-server<br/>同一 Harness 协议"]
   end
-  subgraph host["宿主 Rust 控制边界"]
-    entry["Tauri commands / Harness"]
-    kernel["AppCore / AgentKernel<br/>审批、取消、工具注册"]
-    plan["按 run 固化执行计划"]
-    files["现有文件权限与提交边界"]
-    network["宿主网络策略与代理"]
-    storage["资源安装 / 配额 / 定时清理"]
-    records["现有 RunStore / run_events<br/>ArtifactStore / RuntimeLogStore"]
-    native["宿主执行适配<br/>Direct / Sandboxie / Windows Sandbox"]
-    supervisor["VM 监督器与受控 IPC"]
+  subgraph host["B · 宿主 Rust 进程｜控制与授权的最终权威"]
+    direction TB
+    adapter["M · 传输适配<br/>Tauri / Harness adapter"]
+    core["R · ChatService / RunCoordinator<br/>AgentKernel · ToolRegistry<br/>审批 · 取消 · 输入租约"]
+    plan["M · RunAssembler / RunEnvironment<br/>目标 + 运行时 + 权限快照<br/>UP-01 / UP-05"]
+    route["M · SandboxBackendRegistry<br/>CommandExecutor / execute_code"]
+    native["R · 宿主后端<br/>Direct / Sandboxie / Windows Sandbox"]
+    vm["N · LinuxVmBackend + VmService<br/>工作副本 · 租约 · worker 监督<br/>UP-04 / UP-05"]
+    persistence[("R/M · 既有持久化<br/>RunStore / run_events<br/>ArtifactStore / RuntimeLogStore")]
+    files["M · 宿主文件提交边界<br/>fs_guard + fs_commit<br/>基线复核 · UP-06"]
+    net["N · GuestNetworkBroker<br/>目的地策略 · 凭据留宿主<br/>UP-08"]
+    storage["N/M · ManagedStorage<br/>RuntimeService / 归属索引<br/>3 GB · 租约 · 清理 · UP-02/03/10"]
   end
-  subgraph vm["独立 worker 与 Linux 边界"]
-    worker["Rust vm-worker<br/>固定引擎与磁盘句柄"]
-    guest["Linux 内受控执行服务<br/>进程、文件传输、PTY"]
-    tools["Python / JDK / Node / Git<br/>受限工作副本与缓存"]
+  subgraph worker_boundary["C · 独立宿主子进程｜固定引擎与磁盘句柄"]
+    worker["N · vm-worker<br/>VMM / 固件 ABI<br/>有界通道 · 随监督器退出"]
+    platform["G · OS 虚拟化适配<br/>WHP / KVM / macOS<br/>逐平台验收 · UP-00"]
   end
-  project["用户授权的宿主项目"]
-  internet["获准的外部服务"]
-  web --> entry --> kernel --> plan
-  plan --> native
-  plan --> supervisor --> worker --> guest --> tools
-  kernel --> records
-  supervisor --> records
-  supervisor --> storage
-  guest -->|"文件请求与变更提案"| files
-  files --> project
-  guest -->|"已授权网络请求"| network --> internet
-  storage --> worker
-  records -.->|"事件投影 / replay"| entry
+  subgraph guest_boundary["D · Linux VM｜客体输出视为不可信输入"]
+    guest["N · Rust guest-agent<br/>控制帧与输出分离<br/>非 root 进程 · generation"]
+    tools["N · Linux 开发环境<br/>Python / JDK / Node / Git<br/>工作副本 + scope 数据卷"]
+  end
+  project["用户项目 / 已交付文件<br/>宿主权威副本；不由 VM 清理器删除"]
+  internet["获准网络目的地<br/>模型 API 仍走宿主模型服务"]
+  ui -->|"I01 invoke / 既有事件"| adapter
+  cli -->|"I02 JSON-RPC / JSONL"| adapter
+  adapter --> core --> plan --> route
+  route -->|"host"| native
+  route -->|"linux_vm"| vm
+  vm -->|"I03 私有监督 IPC"| worker
+  worker --> platform
+  worker -->|"I04 guest 协议；传输待 P0 验证"| guest
+  guest --> tools
+  core -->|"I07 唯一终态 / replay"| persistence
+  vm -.->|"I07 执行观察 / 原文引用"| persistence
+  vm -->|"I05 变更提案；宿主验权"| files --> project
+  guest -->|"I06 默认禁网；连接申请"| net --> internet
+  storage -.->|"I08 预算 / 资源租约"| vm
+  storage -.->|"原索引 / 清理审计"| persistence
+  classDef retained fill:#f1f5f9,stroke:#64748b,color:#0f172a;
+  classDef modified fill:#eff6ff,stroke:#2563eb,color:#172554;
+  classDef added fill:#ecfdf5,stroke:#059669,color:#064e3b;
+  classDef gate fill:#fffbeb,stroke:#d97706,color:#78350f,stroke-dasharray:5 4;
+  class ui,cli,core,native,project,internet retained;
+  class adapter,plan,route,persistence,files modified;
+  class vm,storage,net,worker,guest,tools added;
+  class platform gate;
 ```
 
 宿主保留模型连接、凭据、会话与权限决策。VMM worker 只负责虚拟化和设备桥接；guest 执行服务只执行已经被宿主授权的任务，不持有第二份业务权限配置。guest 回报是观察材料，不能直接修改审批、运行终态、配额或宿主路径。
@@ -99,6 +122,8 @@ libkrun 官方明确指出，VM 设备可能用 VMM 的宿主权限代理 guest 
 [打开架构图 SVG](G:/Code_Warehouse/DeepAgent-Studio/docs/diagrams/linux-vm/architecture.svg) · [可编辑图源](G:/Code_Warehouse/DeepAgent-Studio/docs/diagrams/linux-vm/architecture.mmd)
 
 ## 4. 源码模块怎么划分
+
+下表定义责任；可直接执行的文件级改造与验收见[蓝图 §4～§5](linux-vm-implementation-blueprint.md#4-当前源码暴露的真实改造缺口)。特别注意：RuntimeCommandExecutor 当前注入宿主 SDK 环境，workflow_code 当前解析宿主 SDK，file_mutation::apply 当前为 crate 内文本提交接口，这三处必须真正改造，不能只新增 LinuxVmBackend 后宣称复用完成。
 
 | 位置（拟议） | 责任 | 不承担的责任 |
 |---|---|---|
@@ -235,34 +260,57 @@ Windows x64 是本次 Demo 的原生实测目标；Linux/KVM 的历史实验经 
 
 ```mermaid
 sequenceDiagram
-  actor U as 用户
-  participant UI as Tauri 前端
-  participant K as 既有 AppCore / Kernel
-  participant S as VM 与空间协调服务
-  participant G as Linux 执行服务
-  participant F as 宿主文件提交边界
-  participant R as 既有事件和产物存储
-  U->>UI: 发送任务或指定环境
-  UI->>K: 现有聊天 / Harness 入口
-  K->>K: 固化目标、版本、权限和网络策略
-  K->>R: 保存准备与审批上下文
-  opt 权限要求审批
-    K-->>UI: 既有审批请求
-    UI->>K: 既有 approval/respond
+  autonumber
+  actor U as 用户 / Desktop
+  participant A as Tauri / Harness
+  participant K as AppCore / Kernel
+  participant P as RunAssembler / Plan
+  participant V as LinuxVmBackend / VmService
+  participant S as 空间 / 文件边界
+  participant G as worker / guest-agent
+  participant R as 原 RunStore / ArtifactStore
+  U->>A: 现有聊天入口，附任务目标偏好
+  A->>K: 同一 run admission / prepare
+  K->>P: 解析目标、工具要求、权限快照
+  P-->>K: 绑定不可变 host 或 linux_vm 计划
+  Note over K,R: 后续展示 Linux 分支；host 走原后端
+  K->>R: 保存准备上下文；原 run 记录
+  opt 原权限策略要求审批
+    K-->>U: 现有审批通道；展示实际执行目标
+    U->>K: 批准或拒绝原 action
   end
-  K->>S: 获得空间预留、工作区与 VM 租约
-  S->>G: 已授权 exec/start
-  loop 真实进程运行中
-    G-->>K: 带 exec 标识的输出 / 状态
-    K->>R: 有界日志与顺序稳定事件
-    R-->>UI: 事件投影和可重连读取
+  alt 被拒绝 / 已取消 / 目标不可用
+    K->>R: 原拒绝 / 失败 / 取消语义
+    Note over V,G: 不派发命令，不改用宿主执行
+  else 已获执行授权
+    K->>V: CommandExecutor.run_controlled 或 execute_code
+    V->>S: I08 申请预算、scope 和工作副本租约
+    alt 预算不足 / scope 忙 / 导入失败
+      S-->>V: 结构化错误；保留已发生的清理记录
+      V-->>K: 工具失败；不启动 guest 命令
+    else 前置条件满足
+      V->>G: I03/04 启动或复用同 scope；握手版本和 bootId
+      G-->>V: 实际能力与工具版本；不扩大权限
+      V->>G: exec/start，execId + scriptRef/argv + limits
+      loop 每个有界输出块
+        G-->>V: stdout/stderr + exec sequence
+        V->>R: I07 有界原文引用和执行观察
+        K-->>U: 既有工具进度；持久化后可 replay
+      end
+      opt 用户取消 / deadline
+        K->>V: 原 CancellationTree / deadline
+        V->>G: exec/signal；超期则监督器终止 worker
+        Note over V,G: ACK 不等于退出；确认退出前保留租约
+      end
+      G-->>V: 子进程退出/信号或 worker EOF
+      V->>S: I05 候选导出、复核、获准后提交
+      S-->>V: 已提交清单或 WorkspaceConflict
+      V-->>K: 真实工具结果；命令退出 23 保持 23
+      K->>R: Kernel 决定下一步或唯一 run 终态
+      V->>S: 确认进程/句柄释放；登记延迟回收
+    end
   end
-  G-->>S: 命令退出及变更清单
-  S->>F: 校验输出、基线与目标授权
-  F->>F: 冲突检测及受控提交
-  F->>R: 产物引用与修改摘要
-  K->>R: 唯一运行终态
-  S->>S: 释放租约，登记回收时间
+  Note over K,R: 命令结束不自动等于 run 结束；一个 run 可多次调用工具
 ```
 
 命令执行前必须具备 `runId/actionId/execId`、目标与镜像标识、工作区投影、批准的权限/网络策略、版本清单、取消上下文和空间预留。将现有 `ToolExecutionContext` 的取消与 deadline 传到底，不再增加一套独立任务超时。
@@ -357,7 +405,7 @@ guest 无权调整块设备容量、追加新卷或直接写宿主路径。worke
 | 弹性/事务与控制预留 | 190 | 高压时保留终态、清理和恢复所需空间 |
 | **总计** | **3,000** | 全部 VM 共享，不是每个任务一份 |
 
-预算是同一池内的分配方案，升级可在无活动租约时调整份额，但总量不能突破硬上限。默认 raw 卷内部可按工作副本、可再生缓存、已安装环境设置子配额，防止单个包管理器挤占全部空间；块、inode、临时内存分别计量。
+预算是同一池内的分配方案，升级可在无活动租约时调整份额，但总量不能突破硬上限。同一物理文件只计一次：首次解压产生的基盘 `.partial` 从创建时就按候选基盘的上界预留，校验后同卷重命名发布，不再另复制一份；它不是挤入 300 MB 暂存预算的额外 1 GB。升级时旧基盘、新候选、数据卷、随包 seed 和下载文件的实际共存峰值全部计入，无法容纳时暂停升级，不能假设重命名能消除双版本占用。默认 raw 卷内部可按工作副本、可再生缓存、已安装环境设置子配额，防止单个包管理器挤占全部空间；块、inode、临时内存分别计量。
 
 当前实测基础磁盘仍为 2,147,483,648 字节，已用约 781 MB。它能在严格压低其他资源时进行有限实验，但**不能套上上述生产预算并宣称完成**。基础镜像缩容、只读启动、raw 数据卷与非 root 执行均是发布前门槛。
 
@@ -460,6 +508,8 @@ libkrun 2.0 `main` 的 ABI 仍在变化，不能用“当前 main 的头文件�
 Demo 使用的 smolvm Windows CLI 控制链曾失败；当前原生成功依赖直接 libkrun C ABI，不应描述成“smolvm Windows SDK 已完整验证”。可保留驱动适配层以便后续切换经验证的稳定引擎，避免业务层依赖某个 CLI 私有参数。
 
 ## 17. 实施阶段、门槛与回退
+
+P0～P5 是发布门槛，不是足以直接排期的任务列表。[实施蓝图 §5](linux-vm-implementation-blueprint.md#5-可以直接排期的改造单元)将其拆为 UP-00～UP-12，每项列出修改文件、消费方、依赖、失败行为和验收。首批先做 UP-00 平台闭环与 UP-01 统一计划，再做 UP-03 预算；UP-05 正式命令接入依赖 UP-06 文件边界，不能先给 VM 任意宿主写权限。
 
 | 阶段 | 实施内容 | 必须拿到的证据 |
 |---|---|---|
