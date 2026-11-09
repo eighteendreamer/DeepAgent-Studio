@@ -6384,7 +6384,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-134：被替代的画布 run 迟到节点事件可覆盖当前状态](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H134-01～06保留原失配夹具与真实TDD8/6；H41/H43历史边界不重复计功，仅所列本机范围 | 原owner单次取消/前驱屏障、迟到ACK绑定及旧错误/停止收尾隔离；保留一个无监听closed owner身份 | 默认owner17/0、workflow105/0、桌面296/build、订阅2/0、Rust30/重开6/媒体26与Tauri通过；workspace3861/1/288唯一既有H306，旧lint/fmt失败保留 | 9c0b11f751f817cb034ce45b27cf756b5722d8d7 | 取消ACK不等终态；未知ACK仍可短暂重叠，不保证真实供应商停止；native/其他OS/断电/跨窗口未验；187有效未关闭，下一H224；历史200–400有效小时未校准、等待另计 |
 | [H-135：stdio MCP 隐式继承宿主凭据，配置环境不是授权边界](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H135-01保留原失败/正常对照；非历史或归并项；限所列Windows本机范围 | 唯一spawn先env_clear、叠固定OS基础环境及原显式env；测试/准备/重连共用，代理CA/自定义变量须显式配置 | E-H135-01～06：默认环境5/0/1、全特性MCP126/0/6、正式服务1/0/1；MCP严格lint/fmt/桌面Rust通过；workspace3572/2/314与全仓lint旧失败保留 | `b51529f05bfdb669bac6dbaf7755594b6c4ff3b2` | 本机所列范围剩余0；非OS沙箱，真实代理TLS/其他OS/UI/供应商未验；H-64冷就绪仍未定位，下一P1 H-142；总工时原粗估未机械扣减 |
 | [H-136：stdio MCP 请求写入受背压阻塞时，停止信号无法结束发送等待](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原本地背压随H-09消除不重复计功；本轮新增锁排队反例修前0/1/0，见E-02～06 | 单一MessageWrite局部Queued/Writing/Flushed证据，未发出不通知/不报未知，写入中仍退役 | 默认原专项2/0/0、dispatch14/0/0、全MCP121/0/8、MCP严格lint/fmt/Tauri check通过；workspace3564/2/315及冷门禁复核见E-05 | `ab32b8db28f4546e4d95cd7da46eb92072145532`；历史实现46ba0fd7 | 本机范围剩余0；远端停止best-effort/可能迟到字节，未验UI/供应商/其他OS；下一项先复核H-64就绪失败，总工时原粗估不机械扣减 |
-| [H-137：MCP 工具目录变更通知被丢弃，后续运行继续发布旧工具](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H137-01～04原失败与冻结验收；不归并其他编号 | 单一连接目录后台刷新，宿主/插件共享owner；run冻结schema/路由，config/read共用修订 | wire4/0/0；MCP173/0/2；宿主17/0；全仓5071/5/179保留失败；fmt/MCP strict/CLI/Tauri通过，旧lint阻断见E04 | 待取得独立commit后回填 | 仅本机stdio，find_tool owned源码迁移；远程推送/真实供应商/其他OS未验；本项验收剩余0，清理/提交待收尾 |
+| [H-137：MCP 工具目录变更通知被丢弃，后续运行继续发布旧工具](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H137-01～05原失败、冻结验收与清理；不归并其他编号 | 单一连接目录后台刷新，宿主/插件共享owner；run冻结schema/路由，config/read共用修订 | wire4/0/0；MCP173/0/2；宿主17/0；全仓5071/5/179保留失败；fmt/MCP strict/CLI/Tauri通过，旧lint阻断见E04 | 5cfdc09432e19d3dff5dee64ae374e671cf15bfe | 仅本机stdio，find_tool owned源码迁移；远程推送/真实供应商/其他OS未验；本项剩余0，E05已清理 |
 | [H-138：MCP 结果整对象进入模型上下文，客户端元数据没有独立可见性边界](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H138-01～03；不归并其他编号 | adapter公开投影与host-only字段分离，复用run_events.meta；旧历史不迁移 | 原探针0/1→最终MCP8/0；全仓5056/6/180，额外时序失败同二进制串行7/0；fmt/CLI/Tauri通过，lint旧阻断保留 | `21a9babb7fd938f8e33d59285efa51e65c307779` | Windows离线新生成结果范围；旧正文不自动清除，完整MCP Apps/其他平台未验；功能剩余0，清理另列 |
 | [H-139：后置 hook 报错跳过已执行工具的结果提交，重开后成功写入变成结果缺失](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-28，E-H139-01～06所列Windows本机范围；原失败保留 | 统一完成边界先收尾action/Session，同组结果全提交后才运行可失败post-hook，原错误仍传播 | 原专项2/0/0、新runtime9/0/0默认通过；workspace3558/1既有H-306/316 ignored，Tauri Rust check/fmt通过，严格lint旧阻断保留 | `93a412d049f7a41be129d528f9b043f9978e80c9` | 所列范围剩余0；未验UI/供应商/其他OS/DB故障与强杀窗口，不宣称exactly-once；总工时粗估不机械扣减 |
 | [H-140：输入 hook 成功输出的上下文被丢弃，主模型只收到原始输入](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
@@ -9034,3 +9034,15 @@ stdio在加入通知分发时保留原typed JsonRpcResponse反序列化，不用
 本项以当前真实stdio生产方→刷新→宿主/插件→run manifest/provider wire及真实dispatch验收关闭，不以编译或局部成功代替。受控in-flight夹具确认当前run保持旧目录，下一run才切换；旧config ID拒绝、权限不提升、禁用/替换旧任务不回写、超时/失败不自动重放业务调用，正常静态目录保持。兼容性：find_tool由借用返回owned，外部显式Rust签名需迁移，仓内消费者已验证；无持久化迁移、前端DTO、新依赖或权限放宽。未执行远程HTTP常驻推送、真实供应商/凭据、真实UI、其他OS；本项未改前端，未跑pnpm build/TS stdio。异步30秒deadline不承诺同步schema校验的OS级CPU硬预算。
 
 本轮新增验收1、历史跳过新增0、归并/撤销新增0；台账306唯一行：209验收/28历史跳过/10归并/3撤销/56待修（含H180授权不修），修复中0，**实际有效剩余55项**。下一准备H298读取游标表示域，先核对审计/原probe，优先事件重放正确性；尚未修改下一项。全部剩余修复及验收仍为170–430有效小时的低置信规划区间，依据余项跨层/协议/持久化/模型与真实验收复杂度，未逐项校准；冷编译、设备/依赖/策略等待另计，不编造日期。本轮全仓29.1分钟、Tauri约5分钟属于机器运行时间，不算承诺后续同耗时。修复commit待取得后另做双文回填，不反复amend；清理结果另记E05。
+
+**E-H137-05（提交与实际清理，2026-11-09）**：独立修复commit为`5cfdc09432e19d3dff5dee64ae374e671cf15bfe`，只含17份本项Rust与双文共19文件；没有推送、PR或迁移。取得hash后本次双文回填另行提交，不为自引用反复amend。
+
+验收全部终态、默认CLI按原SHA256恢复后，原生PowerShell清理脚本先核对三个完整绝对路径、ownership.json归属H137、17份源码hash、快照hash、无Git跟踪文件、无本项活跃进程；遍历各根逐个检查且不跟随reparse，遇到reparse或拒绝即停止，不改ACL、不换工具绕过。dry-run核对清单后实际执行`& 'G:\Code_Warehouse\DeepAgent-Studio\target\h137-repair-20261109\cleanup.ps1' -Execute`，原生exit0：
+
+| 确切删除目标 | 文件数 | 目录数（含根） | 逻辑字节 |
+|---|---:|---:|---:|
+| `G:\h137-fixtures-20261109` | 2,085 | 1,713 | 966,056,056 |
+| `G:\Code_Warehouse\DeepAgent-Studio\target\h137-repair-20261109`（含本轮全部日志、脚本与备份） | 18,415 | 3,657 | 29,035,881,805 |
+| `G:\Code_Warehouse\DeepAgent-Studio\apps\cli\src\tui\snapshots\deepagent__tui__app__tests__viewport_snapshot_with_a_pending_approval.snap.new` | 1 | 0 | 946 |
+
+总计20,501文件、30,001,938,807逻辑字节，约30.00 GB；仅逻辑大小，不声称同量物理回收。脚本最后三个Test-Path均false、原CLI hash仍匹配；清理脚本本身也在已删除target内。使用当前用户已有权限完成，未取得或声称管理员提权；未删除源码/原快照/用户文档、C盘共享Cargo/Rustup缓存或六项用户untracked。再次Git状态和双文diff/306行唯一性核对后提交本次回填。H137交付闭环，不表示全仓已全绿或整体goal已完成；下一仍准备H298。
