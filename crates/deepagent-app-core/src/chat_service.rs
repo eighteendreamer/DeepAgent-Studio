@@ -1181,7 +1181,8 @@ impl ChatService {
         let mut observer = CallbackObserver { on_token };
         let response = client
             .stream_response_observed(request, &mut observer)
-            .await?;
+            .await?
+            .into_generation_result()?;
         Ok(response.output_text_projection())
     }
 
@@ -1278,7 +1279,8 @@ impl ChatService {
         let mut observer = CallbackObserver { on_token };
         let response = client
             .stream_response_observed(request, &mut observer)
-            .await?;
+            .await?
+            .into_generation_result()?;
         Ok(response.output_text_projection())
     }
 

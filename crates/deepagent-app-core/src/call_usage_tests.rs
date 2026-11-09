@@ -17,6 +17,9 @@ mod side_calls;
 #[path = "chat_filter_usage_tests.rs"]
 mod chat_filter;
 
+#[path = "chat_interrupt_usage_tests.rs"]
+mod chat_interrupt;
+
 #[derive(Default)]
 struct Events(Mutex<Vec<RuntimeEvent>>);
 impl RuntimeEventSink for Events {

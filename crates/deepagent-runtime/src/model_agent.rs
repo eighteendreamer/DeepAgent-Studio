@@ -1110,6 +1110,8 @@ impl ModelAgent {
         self
     }
 
+    /// Bound transient-failure attempts per think step, including fallback.
+    /// Zero is clamped to one; Length/context recovery keep their own bounds.
     pub fn with_max_model_attempts(mut self, attempts: usize) -> Self {
         self.max_model_attempts = attempts.max(1);
         self
@@ -2571,26 +2573,19 @@ impl ModelAgent {
             )
             .await;
             tools = returned_tools;
+            // All non-authorizing provider terminals use the existing error
+            // policy. Account/anchor their measured context before deciding
+            // retry, fallback or failure; none may reach tool commit/Length.
+            let result = result.and_then(|response| {
+                self.record_provider_response_usage(
+                    &response,
+                    request_fingerprint,
+                    request_surface,
+                );
+                response.into_generation_result()
+            });
             match result {
                 Ok(response) => {
-                    self.record_provider_response_usage(
-                        &response,
-                        request_fingerprint,
-                        request_surface,
-                    );
-                    // Item/argument completion only prepares a tool call.
-                    // A filtered response cannot authorize commit or length
-                    // recovery, even if it contains fully completed calls.
-                    if response.finish_reason == Some(FinishReason::ContentFilter) {
-                        if let Some(tools) = tools.as_deref_mut() {
-                            tools.abort(attempt, "model stopped due to content filter");
-                        }
-                        return Err(CoreError::provider(
-                            None,
-                            Some("content_filter".into()),
-                            "model stopped due to content filter",
-                        ));
-                    }
                     if response.finish_reason == Some(FinishReason::Length)
                         && !max_output_escalated
                         && attempt < self.max_model_attempts
@@ -2768,6 +2763,11 @@ impl ModelAgent {
                             }
                         }
                     }
+                    // Retry and fallback share this admission budget. A
+                    // fallback is not a bonus paid request after exhaustion.
+                    if attempt >= self.max_model_attempts || !failure.retryable() {
+                        return Err(error);
+                    }
                     if failure.should_fallback() && !fallback_used {
                         if let Some(fallback) = self.fallback_model.clone() {
                             let primary = request.model.clone();
@@ -2784,9 +2784,6 @@ impl ModelAgent {
                             );
                             continue;
                         }
-                    }
-                    if attempt >= self.max_model_attempts || !failure.retryable() {
-                        return Err(error);
                     }
                     // Rate-limit low cap (Grok retry.rs RATE_LIMIT_RETRY_THRESHOLD):
                     // 429 waits can be long, so cap 429-driven attempts below
@@ -3099,6 +3096,8 @@ mod tests {
 
     // Keep the shared real serializer/attempt fixtures in one test boundary.
     include!("model_output_limit_tests.rs");
+
+    include!("model_chat_interrupt_tests.rs");
 
     #[test]
     fn repeated_responses_requests_keep_the_same_prefix_and_old_tool_outputs() {

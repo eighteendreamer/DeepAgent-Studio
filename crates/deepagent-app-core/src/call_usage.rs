@@ -255,6 +255,7 @@ impl SideModelCall {
         }
         // Book independently of output parsing, acceptance or provider success.
         drop(self.observer.take());
+        let response = response.and_then(deepagent_models::Response::into_generation_result);
         if response.is_err()
             || self
                 .sink

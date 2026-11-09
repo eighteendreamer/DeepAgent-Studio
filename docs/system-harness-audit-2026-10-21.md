@@ -5783,6 +5783,8 @@ H-142提交回填（2026-10-28，E-H142-08）：代码、默认测试、SDK READ
 
 ### H-144：DeepSeek Chat 合法终态 `aborted` / `insufficient_system_resource` 被当作未知错误
 
+**当前状态（2026-11-10）：已修复并验收，仅限E-H144-04本机离线范围；修复hash取得后另回填。最终18源/必要消费迁移、typed终态与统一恢复预算已验，供应商中断不伪造本地用户取消；原双probe/预算/side与legacy Workflow红、第一版与最终矩阵均保留。最终全仓5138/5/171及strict旧阻断未全绿，额外cold gate同二进制隔离过但未定因；详本条E04及[修复台账](system-harness-repair-progress.md)。下文为历史失败快照，不代表当前完全漏账。**
+
 **级别：中（P2，Chat 路由的终态语义和恢复策略错误）；触发条件：调用方使用 `WireMode::ChatCompletions`，DeepSeek 返回官方允许的 `finish_reason=aborted` 或 `finish_reason=insufficient_system_resource`。** 这与 H-132 的 `content_filter` 过滤终态不同，覆盖的是用户/服务端中断和推理资源不足两个独立原因。
 
 #### 生产链与动态证据
@@ -5801,6 +5803,50 @@ H-142提交回填（2026-10-28，E-H142-08）：代码、默认测试、SDK READ
 - `aborted` 会被误报为不支持的 provider failure，调用方无法区分用户/服务端中断与网络失败；`insufficient_system_resource` 也无法进入有界退避或换模型的专门策略。两者在当前边界都不能稳定形成 `Response`，provider 返回的 usage 也不会随该响应交给上层 `Response` 记账路径。
 - 应在 `FinishReason` 中增加与协议语义对应的终态（或等价的 typed provider outcome），在 Chat adapter 中保留这两个值，并允许无文本终态继续完成 usage 解析；运行层再明确 `aborted` 的取消归属、资源不足的重试预算和最终事件映射。不能把它们误判成 `Length`，也不能无条件自动重试用户主动取消。
 - 本轮只添加缺陷探针和审计记录，生产行为未修改。当前证据是正式 adapter 的离线 wire 复现，未调用真实 DeepSeek、未验证具体供应商在不同模型/非流式模式下的频率，也未覆盖默认 Responses 路由；因此不把该项扩大为桌面默认路径必现。
+
+
+**E-H144-04（最终本机验收，2026-11-10，仅关闭本项）**：最终18份Rust实现/消费方/测试逐份SHA256与第二冻结矩阵前后完全一致，未在矩阵后修改生产或测试文本。E01原双probe、E02编译/fixture与预算红、E03辅助消费方红、E03b legacy Workflow真实错误成功及第一版矩阵全部保留；不能把第一版17源全仓当作最终18源验证。原双probe已移除ignore并加强typed reason/usage断言，默认完整组和exact都实际通过；不以忽略数减少冒充验收。当前canonical ledger在原生产红阶段已经入账，本轮只修终态保真、采用边界及恢复预算，不重复宣称旧“完全漏账”已由本项新增修复。
+
+修复收敛到原内核：FinishReason新增Aborted/InsufficientSystemResource，Chat同一accumulator映射且允许明确中断无文本，统一permits_tool_completion同时控制observer完成与返回工具投影；partial/完整tool builder都不能成为中断后的可执行调用。Response::into_generation_result是唯一明确失败采用门禁，保留静态structured code，调用方先完成原usage结算/anchor再决定失败/原恢复；ModelAgent、legacy Workflow、ModelCompactor、SideModelCall、prompt hook、规划、one-shot、知识捕获和advisory classifier同步消费，不复制取消/重试/账本/事件链。无HTTP状态的精确aborted→独立非重试Aborted、资源不足→原Overloaded；HTTP401等状态仍优先。供应商中断无本地取消标记时原Kernel Failed，本地RunHandle请求才Cancelled；资源不足主循环复用原抖动退避/一次fallback，retry与fallback共用max_model_attempts预算；legacy工作流与辅助one-shot沿原非重试失败策略，不能为“统一”额外制造付费重派。
+
+以下均为PowerShell仓库根实际执行，`$build='G:\Code_Warehouse\DeepAgent-Studio\target\h144-repair-20261110'`。隔离HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/data，清凭据/代理名称及继承CARGO_TARGET_DIR，仅顶层target、offline/-j2，未改profile；本地合成wire/真实Kernel与内置文件工具、临时SQLite/自有CLI/构建夹具，不访问真实provider/凭据/内网/用户数据。
+
+| 最终实际命令 | 原生结果（通过/失败/忽略） | 墙钟秒，含编译 |
+|---|---|---:|
+| `cargo fmt --all -- --check` | 0 | 6.595 |
+| `rustfmt --check --config-path rustfmt.toml crates/deepagent-runtime/src/model_chat_interrupt_tests.rs` | 0；include文件另显式检查 | 0.109 |
+| `cargo test --target-dir $build -p deepagent-models -p deepagent-context -p deepagent-runtime -p deepagent-app-core --lib h144_ --offline --no-fail-fast -j 2 -- --nocapture --test-threads=1` | 0；Models4/0/0、Context1/0/0、Runtime6/0/0、AppCore7/0/0，共18 | 12.799 |
+| `cargo test --target-dir $build -p deepagent-models --features http --offline -j 2 -- --test-threads=2 --quiet` | 0；22块259/0/20，其中lib189/0/10 | 39.609 |
+| `cargo test --target-dir $build -p deepagent-models --lib client::tests::audit_chat_aborted_finish_is_not_rejected_as_unknown --offline -j 2 -- --exact --nocapture` | 0；1/0/0，默认非ignored | 0.491 |
+| `cargo test --target-dir $build -p deepagent-models --lib client::tests::audit_chat_insufficient_system_resource_finish_is_not_rejected_as_unknown --offline -j 2 -- --exact --nocapture` | 0；1/0/0，默认非ignored | 0.443 |
+| `cargo test --target-dir $build -p deepagent-context --offline -j 2 -- --test-threads=2 --quiet` | 0；lib66/0/0、integration1/0/2、doc0/0/0 | 0.683 |
+| `cargo test --target-dir $build -p deepagent-runtime --lib model_agent::tests:: --offline -j 2 -- --nocapture --test-threads=2` | 0；96/0/1，H82/H132/原overload等实际回归 | 33.172 |
+| `cargo test --target-dir $build -p deepagent-app-core --lib call_usage:: --offline -j 2 -- --nocapture --test-threads=1` | 0；38/0/0 | 31.642 |
+| `cargo build --target-dir $build -p deepagent-cli --offline -j 2` | 0 | 68.759 |
+| `cargo test --target-dir $build -p deepagent-harness-sdk --offline -j 2 -- --test-threads=2 --quiet`（当前CLI临时接管） | 0；lib72/0/5、stdio13/0/0、doc2/0/0 | 65.874 |
+| `cargo test --target-dir $build --workspace --offline --no-fail-fast -j 2 -- --test-threads=2 --quiet` | **101**；157结果块5138/5/171，非全绿 | 1333.513 |
+| `cargo clippy --target-dir $build --workspace --all-targets --all-features --offline -j 2 -- -D warnings` | **101**；旧Models client.rs:494 clone_on_copy | 13.151 |
+| `cargo clippy --target-dir $build -p deepagent-models --features http --all-targets --no-deps --offline -j 2 -- -D warnings` | **101**；同旧clone_on_copy | 3.888 |
+| `cargo clippy --target-dir $build -p deepagent-models --features http --all-targets --no-deps --offline -j 2` | 0；原1警告 | 5.229 |
+| `cargo clippy --target-dir $build -p deepagent-context --all-targets --no-deps --offline -j 2 -- -D warnings` | 0；无警告 | 3.189 |
+| `cargo clippy --target-dir $build -p deepagent-runtime --all-targets --no-deps --offline -j 2` | 0；原2警告 | 9.568 |
+| `cargo clippy --target-dir $build -p deepagent-app-core --lib --no-deps --offline -j 2` | 0；原6警告 | 23.056 |
+| `cargo clippy --target-dir $build -p deepagent-app-core --all-targets --no-deps --offline -j 2` | **101**；旧mcp_discovery_restore.rs:776 panicking_unwrap及其他旧警告 | 39.231 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --target-dir $build --offline -j 2` | 0 | 10.460 |
+
+20道矩阵终态之外，最终原生失败AppCore二进制SHA256=`67EDEDC24321BB680838998B0B03E05E3A3F08FCEC8506907EFC9EB144D5E034`隔离执行`& "$build\debug\deps\deepagent_app_core-32f391e263e6c0fa.exe" verification_commands::lifecycle_tests::production_cold_compiler_gate_normal_cancel_and_deadline --exact --nocapture --test-threads=1`，同一隔离runner环境、不编译/不改时限，原生0、1/0/0、14.832秒：cold gate三次2502/1182/1206ms就绪，正常Succeeded真实写入、Cancel/Deadline分别cancelled/budget_exceeded且原生父子进程已退、无终态后写入、action已结算。只能证明该次隔离复核通过，不能抹除全仓失败或宣称解决此独立不稳定。
+
+最终全仓四旧失败与第一版同形：kernel image_read_failure.rs:286原DACL精确恢复、Runtime checkpoint/access.rs:364 restored test DACL differs、CLI pending approval snapshot因隔离HOME、Prompts H306 creative.video-edit.v1空defaultUserPrompt。额外第五失败为未修改的verification_commands/lifecycle_tests.rs:300 cold compiler fixture：首None成功，下一场景4.007秒未到compiler-started、compiler_stages=[]/无cargo lock，夹具诊断确认cleanup_cancel_accepted/settled=true、动作终态，随后断言Err。该路径使用Responses、未到本项legacy工作流；第一版同测试默认过、最终同二进制隔离三场景过，但具体调度/负载/进程启动因果仍未确认，不武断归环境或产品已修。全仓157结果块含一个H92嵌套helper，并非唯一测试ID计数；171 ignored不算过。strict/scope旧诊断未混修、未加allow或放宽门禁，本项18源无新增lint诊断。
+
+实际验收包括：合法空/partial中断、完整/缺失/null usage、精确serde终态、unknown/empty stop/缺DONE仍拒绝，完整与截断工具builder均无Completed或可执行投影；normal tool_calls仍可完成。原physical observer一次记账，Runtime begin→abort不commit、不增加输出上限或注入Length续写、不把partial工具带入fallback。重试/单次fallback与旧HTTP529对照预算0/1/2/3均实际物理数受限；local cancel在backoff与已选fallback后/物理dispatch前阻断下一请求。供应商Abort/真实RunHandle local cancel、资源耗尽/付费后预算拒绝/成功fallback及真实write_file对照，经原Kernel/Finalizer得到唯一终态，forbidden.txt零创建、effect.txt一次写入，动作/审批、receipt/cost/session/run事件全部关库重开一致且零重派。resource耗尽两物理请求分别入账、fallback按真实primary/pro两路归属，缺失/null只记明确不完整receipt而不伪造收费。
+
+辅助消费者使用合法partial JSON做反例→转绿：ModelCompactor不以中断摘要替换历史、保留原heuristic，usage9/2仍结算；stall一次failed生命周期及账本、不采中断有效JSON；DAG拒绝中断计划；prompt hook不接受中断批准；advisory command classifier沿原错误Safe策略，不以中断INJECTION文本制造判定。知识捕获与两个one-shot采用点已共享同一门禁、全仓正常消费者及Tauri编译验证，未声称逐个做其独立中断输入/UI操作。legacy Workflow start→llm→end十二组合在原Kernel/Observer/Owner/Finalizer实际三失败×full/missing/null均llm Failed/end Skipped，stop三对照Completed；每次只1调用/1receipt，full 9input/CNY0.00544，missing/null0 row，失败run_events不含partial输出、全部账本与节点事件冷重开相等。
+
+兼容性/未验范围：FinishReason新增两个variants、ModelFailureKind新增Aborted，外部Rust穷举match须更新；serde用官方snake_case值，不改协议版本/SQL/TS/Tauri字段。公开raw client组装Ok仍保留typed失败供检查，外部调用须按文档在采用前调用共享门禁并尊重原Length/tool策略；内部消费者已同步。max_model_attempts=0/1不再允许旧fallback额外一次，原0仍clamp到1；该上限是每think的transient恢复预算，Length/context恢复与多step/模型工具后请求仍有各自原边界，不能把它宣传为整run总调用数上限。默认Responses parser/wire不改；共享精确无状态code与failure adoption对同类Responses结果也一致适用，原H82/H132通过。partial delta此前可能已展示，不回滚已显示文本或先前合法工具副作用；本项保证不把中断结果采用为成功/执行调用。Chat raw_usage仍原wire，owned receipt原numeric sanitizer不变，不宣称任意raw字段安全。无新依赖/迁移/权限默认放行/第二事件或执行链；真实provider/费用/模型资源不足频率、其他OS、外部SDK和UI手动未执行；无前端或桥接变更，未执行pnpm build。
+
+第二版SDK/全仓临时CLI SHA256=`DCBE62CD66F3471D040B8BC7B3E6E1E4497DC1AB5789573B2716A52FD86AADC8`；finally与Tauri后原默认CLI hash恢复为`8C03E6A63D3E64EBF14DF4AC67C4DC56FB87C2D8B9C35949D3CBA9BC391F30A4`，第一版hash BA408B18仅是历史受测CLI，不冒充最终版。第二版20道gate前后18源哈希相同，补充隔离后再次终检一致；本项验收仅限以上真实范围。
+
+306唯一行核对：本轮新增修复1，历史跳过/归并/撤销各新增0；累计216验收/28历史跳过/10归并/3撤销，49待修含H180授权不修、修复中0，实际有效剩余48。下一准备H66 Flash原生搜索与既有本地工具可用性，涉及默认执行意图/能力一致性P2，先重新核对审计、最新官方及原probe，尚未修改。不因这个排序把条件性P3或旧全仓失败静默丢弃。全部剩余暂沿用170–430有效小时低置信区间，依据剩余跨层/模型/事件/持久化复杂度，尚未逐项校准；本项代码验收余0，提交/清理另记E05。设备/依赖/编译/环境等待另计，无可靠总上界；最终全仓约22.2分钟（第一版24.8分钟）、Tauri首冷4.1分钟/末次10.5秒仅实测机器耗时，不承诺完工日期。修复hash取得后另双文回填，不反复amend；整个goal未完成。
 
 ### H-145：Thinking 模式下不支持的 Chat `tool_choice` 组合未在请求前拒绝
 

@@ -1176,7 +1176,7 @@ impl WorkflowAgent {
             .await;
         drop(observer);
         crate::usage::CallUsageSink::checkpoint(self.usage.as_ref())?;
-        let response = response?;
+        let response = response?.into_generation_result()?;
         let text = response.output_text_projection();
 
         Ok(serde_json::json!({

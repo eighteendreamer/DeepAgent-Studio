@@ -265,7 +265,7 @@ impl ModelCompactor {
                     usage: spent,
                 })?;
             }
-            match response {
+            match response.and_then(deepagent_models::Response::into_generation_result) {
                 Ok(response) => {
                     if cancel
                         .as_ref()
@@ -520,6 +520,46 @@ mod tests {
             r#"<analysis>private</analysis>"{\"completed\":[\"string wrapper\"]}""#,
         ] {
             assert!(parse_summary_json(body).is_none(), "must reject: {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn h144_interrupted_chat_summary_does_not_replace_history_with_partial_json() {
+        for reason in [
+            "aborted",
+            "insufficient_system_resource",
+            "content_filter",
+            "stop",
+        ] {
+            let events=vec![
+                serde_json::json!({"choices":[{"delta":{"content":"{\"completed\":[\"H144_PARTIAL_MODEL_FACT\"]}"},"finish_reason":null}]}).to_string(),
+                serde_json::json!({"choices":[{"delta":{},"finish_reason":reason}],"usage":{"prompt_tokens":9,"completion_tokens":2,"total_tokens":11}}).to_string(),
+                "[DONE]".into(),
+            ];
+            let client = Arc::new(ModelClient::new(
+                Arc::new(crate::test_sequence::mock(events)),
+                ModelConfig::deepseek_chat("synthetic"),
+            ));
+            let (summary, usage) = ModelCompactor::new(client, "deepseek-flash")
+                .summarize_accounted(
+                    "task",
+                    &TaskSummary::default(),
+                    &["Created H144_ORIGINAL_SOURCE_FACT".into()],
+                )
+                .await;
+            assert_eq!(
+                summary
+                    .to_context_block()
+                    .contains("H144_PARTIAL_MODEL_FACT"),
+                reason == "stop",
+                "{reason}"
+            );
+            assert_eq!((usage.prompt_tokens, usage.completion_tokens), (9, 2));
+            if reason != "stop" {
+                assert!(summary
+                    .to_context_block()
+                    .contains("H144_ORIGINAL_SOURCE_FACT"));
+            }
         }
     }
 

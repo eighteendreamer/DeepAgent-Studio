@@ -151,6 +151,33 @@ async fn invalid_json_does_not_erase_prompt_or_agent_usage() {
 }
 
 #[tokio::test]
+async fn h144_prompt_hook_must_not_accept_interrupted_approval_json() {
+    for reason in [
+        "aborted",
+        "insufficient_system_resource",
+        "content_filter",
+        "stop",
+    ] {
+        let (owner, _) = setup();
+        let (mut host, _) = executor(owner.clone(), Answer::Valid);
+        host.client = super::chat_interrupt::text_client(reason, r#"{"ok":true}"#).0;
+        host.model = "deepseek-flash".into();
+        let result = host
+            .execute(
+                &action(HookActionType::Prompt),
+                json!({"hook_event_name":"PreToolUse"}),
+            )
+            .await;
+        assert_eq!(result.is_ok(), reason == "stop", "{reason}");
+        let receipts = CostStore::new(&owner.db)
+            .run_call_receipts(&owner.session_id, "run")
+            .unwrap();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].report["usage"]["prompt_tokens"], 9);
+    }
+}
+
+#[tokio::test]
 async fn failed_prompt_keeps_measured_usage_but_does_not_invent_unmeasured_usage() {
     for (answer, expected) in [
         (Answer::FailedMeasured, 1000),

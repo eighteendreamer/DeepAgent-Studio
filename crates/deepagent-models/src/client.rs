@@ -22,6 +22,10 @@ mod request_body;
 #[path = "chat_content_filter_tests.rs"]
 mod content_filter_tests;
 
+#[cfg(test)]
+#[path = "chat_interrupt_tests.rs"]
+mod interrupt_tests;
+
 /// Stable provider identity exposed by the Harness layer.
 pub const DEEPSEEK_OFFICIAL_PROVIDER: &str = "deepseek-official";
 // Shared Responses/Chat image occurrence limit (Vision Limits, retrieved
@@ -249,6 +253,9 @@ impl ModelClient {
     /// The request is forced into streaming mode. Each SSE payload is parsed and
     /// folded by a [`ResponseAccumulator`]; the final assembled [`Response`]
     /// retains `reasoning_content` for Thinking Mode persistence.
+    /// Assembly success preserves typed failure outcomes too. Before adopting
+    /// a result, use [`Response::into_generation_result`] and apply the caller's
+    /// existing Length/tool policy; raw partial output is not a completed answer.
     pub async fn stream_response(&self, request: ResponseRequest) -> Result<Response> {
         self.stream_response_observed(request, &mut crate::stream::NoopObserver)
             .await
@@ -1734,7 +1741,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: preserve documented Chat aborted terminal"]
     async fn audit_chat_aborted_finish_is_not_rejected_as_unknown() {
         let client = ModelClient::new(
             Arc::new(crate::test_sequence::mock([
@@ -1755,10 +1761,12 @@ mod tests {
             result.is_ok(),
             "documented Chat finish_reason=aborted must remain a typed terminal: {result:?}"
         );
+        let response = result.unwrap();
+        assert_eq!(response.finish_reason, Some(crate::FinishReason::Aborted));
+        assert_eq!(response.usage.unwrap().prompt_tokens, 9);
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: preserve documented Chat insufficient-system-resource terminal"]
     async fn audit_chat_insufficient_system_resource_finish_is_not_rejected_as_unknown() {
         let client = ModelClient::new(
             Arc::new(crate::test_sequence::mock([
@@ -1779,6 +1787,12 @@ mod tests {
             result.is_ok(),
             "documented Chat finish_reason=insufficient_system_resource must remain a typed terminal: {result:?}"
         );
+        let response = result.unwrap();
+        assert_eq!(
+            response.finish_reason,
+            Some(crate::FinishReason::InsufficientSystemResource)
+        );
+        assert_eq!(response.usage.unwrap().prompt_tokens, 9);
     }
 
     async fn run_chat_thinking_tool_choice(

@@ -353,7 +353,7 @@ impl AppHookActionExecutor {
         // Settle before parsing JSON, including errors and cancellation.
         drop(observer);
         usage.checkpoint()?;
-        let response = response?;
+        let response = response?.into_generation_result()?;
         parse_model_hook_decision(&response.output_text_projection())
     }
 

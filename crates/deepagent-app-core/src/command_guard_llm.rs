@@ -108,6 +108,7 @@ impl CommandClassifier for ModelCommandClassifier {
             self.client.stream_response(request),
         )
         .await
+        .map(|result| result.and_then(deepagent_models::Response::into_generation_result))
         {
             Ok(Ok(response)) => response,
             Ok(Err(error)) => {

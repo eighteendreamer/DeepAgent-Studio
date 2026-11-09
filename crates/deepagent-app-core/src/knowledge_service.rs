@@ -846,7 +846,11 @@ async fn summarize_recovery(
             .with_temperature(0.2)
             .with_max_output_tokens(600);
 
-    let response = match client.stream_response(request).await {
+    let response = match client
+        .stream_response(request)
+        .await
+        .and_then(deepagent_models::Response::into_generation_result)
+    {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(error = %e, "auto-capture summarization call failed");
@@ -924,7 +928,11 @@ async fn summarize_session_digest(
             .with_temperature(0.2)
             .with_max_output_tokens(600);
 
-    let response = match client.stream_response(request).await {
+    let response = match client
+        .stream_response(request)
+        .await
+        .and_then(deepagent_models::Response::into_generation_result)
+    {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(error = %e, "session-digest summarization call failed");

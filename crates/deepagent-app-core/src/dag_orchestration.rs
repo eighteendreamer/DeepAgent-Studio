@@ -68,7 +68,10 @@ pub(crate) async fn plan_dag_via_model(
     .streaming()
     .with_max_output_tokens(1024)
     .with_reasoning_effort(ReasoningEffort::None);
-    let response = client.stream_response(request).await?;
+    let response = client
+        .stream_response(request)
+        .await?
+        .into_generation_result()?;
     let planned = parse_planned_nodes(&response.output_text_projection())?;
     if planned.is_empty() {
         return Err(CoreError::invalid("planner returned no subtasks"));

@@ -5,6 +5,8 @@ use deepagent_core::error::CoreError;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelFailureKind {
     Cancelled,
+    /// A provider-reported interruption without a local cancellation request.
+    Aborted,
     Authentication,
     Permission,
     RateLimited,
@@ -45,6 +47,15 @@ pub fn classify_model_error(error: &CoreError) -> ModelFailureKind {
 }
 
 fn classify_provider(status: Option<u16>, code: Option<&str>, message: &str) -> ModelFailureKind {
+    // In-band Chat generation outcomes carry no HTTP error status. Respect
+    // their exact code, not words in provider text or a fabricated local stop.
+    if status.is_none() {
+        match code {
+            Some("aborted") => return ModelFailureKind::Aborted,
+            Some("insufficient_system_resource") => return ModelFailureKind::Overloaded,
+            _ => {}
+        }
+    }
     let detail = format!("{} {}", code.unwrap_or_default(), message).to_ascii_lowercase();
     if is_context_overflow(&detail) || status == Some(413) && detail.contains("token") {
         return ModelFailureKind::ContextOverflow;

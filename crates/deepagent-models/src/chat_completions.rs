@@ -368,19 +368,24 @@ impl ChatCompletionAccumulator {
             if self.finish_reason.is_none() {
                 self.finish_reason = Some(FinishReason::Stop);
             }
-            // Length or content filtering stopped the current assistant turn
+            // An interrupted generation stopped the current assistant turn
             // without authorizing its tools. Chat Completions has no separate
             // `arguments.done` event, so a tool-call builder cannot be
             // distinguished from a call whose JSON was cut off.  Do not
             // promote such builders to completed calls: doing so would make
             // the runtime prepare/commit an invocation that never finished.
-            if !matches!(
-                self.finish_reason,
-                Some(FinishReason::Length | FinishReason::ContentFilter)
-            ) {
+            if permits_tool_completion(self.finish_reason) {
                 self.complete_tool_calls(observer);
             }
-            if self.finish_reason != Some(FinishReason::ContentFilter)
+            let permits_empty = matches!(
+                self.finish_reason,
+                Some(
+                    FinishReason::ContentFilter
+                        | FinishReason::Aborted
+                        | FinishReason::InsufficientSystemResource
+                )
+            );
+            if !permits_empty
                 && self.content.is_empty()
                 && self.reasoning.is_empty()
                 && self.tool_calls.is_empty()
@@ -540,13 +545,10 @@ impl ChatCompletionAccumulator {
             });
         }
         // There is no explicit tool-call completion event in this protocol.
-        // Length and content-filter terminals invalidate buffered calls;
-        // retain text/reasoning without promoting filtered or incomplete
+        // Interrupted terminals invalidate buffered calls; retain
+        // text/reasoning without promoting rejected or incomplete
         // arguments into executable invocations. Runtime decides recovery.
-        if !matches!(
-            self.finish_reason,
-            Some(FinishReason::Length | FinishReason::ContentFilter)
-        ) {
+        if permits_tool_completion(self.finish_reason) {
             for (index, builder) in self.tool_calls {
                 output_items.push(ResponseOutputItem::FunctionCall {
                     call_id: builder.id.unwrap_or_else(|| format!("call_stream_{index}")),
@@ -587,12 +589,28 @@ fn parse_tool_arguments(raw: &str) -> serde_json::Value {
     })
 }
 
+// Both semantic completion events and the returned projection must obey the
+// same Chat boundary. This protocol has no separate arguments.done authority.
+fn permits_tool_completion(reason: Option<FinishReason>) -> bool {
+    !matches!(
+        reason,
+        Some(
+            FinishReason::Length
+                | FinishReason::ContentFilter
+                | FinishReason::Aborted
+                | FinishReason::InsufficientSystemResource
+        )
+    )
+}
+
 fn map_finish_reason(reason: &str) -> Result<FinishReason> {
     match reason {
         "stop" => Ok(FinishReason::Stop),
         "tool_calls" => Ok(FinishReason::ToolCalls),
         "length" => Ok(FinishReason::Length),
         "content_filter" => Ok(FinishReason::ContentFilter),
+        "aborted" => Ok(FinishReason::Aborted),
+        "insufficient_system_resource" => Ok(FinishReason::InsufficientSystemResource),
         other => Err(CoreError::provider(
             None,
             Some(other.to_string()),

@@ -608,6 +608,10 @@ pub enum FinishReason {
     ToolCalls,
     /// Filtered by content policy.
     ContentFilter,
+    /// Generation was interrupted by the provider; not proof of local user cancellation.
+    Aborted,
+    /// The provider interrupted generation because inference resources were unavailable.
+    InsufficientSystemResource,
 }
 
 /// Token accounting returned by the provider.
@@ -668,6 +672,31 @@ pub struct Response {
 }
 
 impl Response {
+    /// Reject explicit provider-failure terminals before adopting an answer.
+    /// Raw client assembly deliberately preserves these typed outcomes and
+    /// partial text/usage for inspection. Callers must not interpret `Ok(Response)`
+    /// as generation success. Length keeps its existing caller-owned recovery;
+    /// this method does not retry, cancel a run, or authorize any tool.
+    pub fn into_generation_result(self) -> Result<Self> {
+        let failure = match self.finish_reason {
+            Some(FinishReason::ContentFilter) => {
+                Some(("content_filter", "model stopped due to content filter"))
+            }
+            Some(FinishReason::Aborted) => {
+                Some(("aborted", "model generation aborted by provider"))
+            }
+            Some(FinishReason::InsufficientSystemResource) => Some((
+                "insufficient_system_resource",
+                "model generation stopped due to insufficient system resource",
+            )),
+            _ => None,
+        };
+        match failure {
+            Some((code, message)) => Err(CoreError::provider(None, Some(code.into()), message)),
+            None => Ok(self),
+        }
+    }
+
     pub(crate) fn from_parts(
         output_items: Vec<ResponseOutputItem>,
         finish_reason: Option<FinishReason>,
