@@ -82,8 +82,14 @@ impl ToolInvocation {
 }
 
 /// The outcome of a tool invocation.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolOutput {
+    /// Host/client-only data. Deliberately excluded from generic ToolOutput
+    /// serialization (including nested tool results) and Debug diagnostics.
+    /// The runtime explicitly publishes it through run-event `meta` only;
+    /// model observations, Session results and budget artifacts use value/content.
+    #[serde(skip)]
+    pub client_metadata: Option<serde_json::Value>,
     /// Whether the tool succeeded.
     pub ok: bool,
     /// JSON-encoded result (or error detail when `ok == false`).
@@ -100,6 +106,7 @@ impl ToolOutput {
     /// A successful result.
     pub fn success(value: serde_json::Value) -> Self {
         Self {
+            client_metadata: None,
             ok: true,
             value,
             content: Vec::new(),
@@ -110,11 +117,24 @@ impl ToolOutput {
     /// A failure result with a message.
     pub fn failure(message: impl Into<String>) -> Self {
         Self {
+            client_metadata: None,
             ok: false,
             value: serde_json::json!({ "error": message.into() }),
             content: Vec::new(),
             truncated: false,
         }
+    }
+}
+
+impl std::fmt::Debug for ToolOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolOutput")
+            .field("ok", &self.ok)
+            .field("value", &self.value)
+            .field("content", &self.content)
+            .field("truncated", &self.truncated)
+            .field("client_metadata_present", &self.client_metadata.is_some())
+            .finish()
     }
 }
 
@@ -353,6 +373,20 @@ pub trait Tool: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn h138_client_metadata_is_explicit_not_generic_serialization_or_debug() {
+        let mut output = ToolOutput::success(serde_json::json!({"public":true}));
+        output.client_metadata = Some(serde_json::json!({"detail":"h138-private-canary"}));
+        let encoded = serde_json::to_string(&output).unwrap();
+        assert!(!encoded.contains("client_metadata"));
+        assert!(!format!("{output:?}").contains("h138-private-canary"));
+        let nested = serde_json::json!({"nested":[output.clone()]});
+        assert!(!nested.to_string().contains("h138-private-canary"));
+        let decoded: ToolOutput = serde_json::from_str(&encoded).unwrap();
+        assert!(decoded.client_metadata.is_none());
+        assert_eq!(decoded.value, output.value);
+    }
 
     #[test]
     fn output_helpers() {

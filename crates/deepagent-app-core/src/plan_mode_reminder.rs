@@ -82,6 +82,7 @@ mod tests {
 
     fn ok_with(value: serde_json::Value) -> ToolOutput {
         ToolOutput {
+            client_metadata: None,
             content: Vec::new(),
             ok: true,
             value,
@@ -157,6 +158,7 @@ mod tests {
         assert!(out.ok);
 
         let mut err = ToolOutput {
+            client_metadata: None,
             content: Vec::new(),
             ok: false,
             value: json!({"error": "denied"}),

@@ -1008,7 +1008,8 @@ impl<'a> ToolExecutionPipeline<'a> {
             .apply(&prepared.name, &prepared.call_id, output)
             .await;
 
-        let metadata = tool_ui_metadata(&prepared.name, &prepared.arguments, Some(&output.value));
+        let metadata = tool_ui_metadata(&prepared.name, &prepared.arguments, Some(&output.value))
+            .with_client_metadata(output.client_metadata.as_ref());
         self.events.emit(RuntimeEvent::ToolCompleted {
             content: output.content.clone(),
             name: prepared.name.clone(),

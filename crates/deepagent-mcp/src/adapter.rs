@@ -40,6 +40,7 @@ fn tool_output(
         Ok(result) => result,
         Err(error @ CoreError::McpUnavailable { .. }) => {
             return Ok(ToolOutput {
+                client_metadata: None,
                 content: Vec::new(),
                 ok: false,
                 value: serde_json::json!({
@@ -62,6 +63,7 @@ fn tool_output(
                 source,
             };
             return Ok(ToolOutput {
+                client_metadata: None,
                 content: Vec::new(),
                 ok: false,
                 value: serde_json::json!({
@@ -77,6 +79,25 @@ fn tool_output(
         }
         Err(error) => return Err(error),
     };
+    // Only explicit public result fields cross the model boundary. Preserve
+    // opaque top-level extensions locally, without recursively stripping
+    // business data named `_meta` inside public structuredContent.
+    let structured = result.extra.remove("structuredContent");
+    let host_fields = std::mem::take(&mut result.extra);
+    if let Some(structured) = structured {
+        result.extra.insert("structuredContent".into(), structured);
+    }
+    let mut output = project_tool_result(result, image_store)?;
+    if !host_fields.is_empty() {
+        output.client_metadata = Some(serde_json::json!({"mcp":host_fields}));
+    }
+    Ok(output)
+}
+
+fn project_tool_result(
+    mut result: crate::protocol::ToolCallResult,
+    image_store: Option<&dyn McpImageStore>,
+) -> Result<ToolOutput> {
     let images: Vec<_> = result
         .content
         .iter()
@@ -138,6 +159,7 @@ fn tool_output(
         value["error"] = text.into();
     }
     Ok(ToolOutput {
+        client_metadata: None,
         content,
         ok: !is_error,
         value,
@@ -233,6 +255,44 @@ mod tests {
     use crate::client::McpClient;
     use crate::transport::MockTransport;
 
+    #[test]
+    fn h138_host_extensions_survive_public_projection_and_image_rejection() {
+        for image in [false, true] {
+            let mut raw = serde_json::json!({
+                "content":[{"type":"text","text":"public-text"}], "isError":true,
+                "structuredContent":{"_meta":"public-business-data"},
+                "_meta":{"ui":{"detail":"h138-private-canary"}},
+                "futureField":{"id":42}
+            });
+            if image {
+                raw["content"] =
+                    serde_json::json!([{"type":"image","mimeType":"image/png","data":"invalid"}]);
+            }
+            let result: crate::protocol::ToolCallResult =
+                serde_json::from_value(raw.clone()).unwrap();
+            assert_eq!(
+                serde_json::to_value(&result).unwrap(),
+                raw,
+                "protocol DTO stays lossless"
+            );
+            let output = tool_output(Ok(result), None).unwrap();
+            assert!(!output.ok);
+            assert!(output.value.get("_meta").is_none());
+            assert!(output.value.get("futureField").is_none());
+            let metadata = output.client_metadata.as_ref().unwrap();
+            assert_eq!(metadata["mcp"]["_meta"], raw["_meta"]);
+            assert_eq!(metadata["mcp"]["futureField"], raw["futureField"]);
+            assert!(!serde_json::to_string(&output)
+                .unwrap()
+                .contains("h138-private-canary"));
+            if !image {
+                assert_eq!(output.value["structuredContent"], raw["structuredContent"]);
+                assert_eq!(output.value["content"], raw["content"]);
+                assert_eq!(output.value["error"], "public-text");
+            }
+        }
+    }
+
     async fn registry_with_tools() -> Arc<McpRegistry> {
         let transport = MockTransport::new()
             .with_result(
@@ -294,7 +354,12 @@ mod tests {
             out.value["structuredContent"]["evidence_id"],
             "success-evidence"
         );
-        assert_eq!(out.value["_meta"]["provenance"]["untrusted_content"], true);
+        assert!(out.value.get("_meta").is_none());
+        assert_eq!(
+            out.client_metadata.as_ref().unwrap()["mcp"]["_meta"]["provenance"]
+                ["untrusted_content"],
+            true
+        );
     }
 
     #[tokio::test]
@@ -324,7 +389,12 @@ mod tests {
             out.value["structuredContent"]["evidence_id"],
             "failure-evidence"
         );
-        assert_eq!(out.value["_meta"]["provenance"]["untrusted_content"], true);
+        assert!(out.value.get("_meta").is_none());
+        assert_eq!(
+            out.client_metadata.as_ref().unwrap()["mcp"]["_meta"]["provenance"]
+                ["untrusted_content"],
+            true
+        );
     }
 
     #[tokio::test]

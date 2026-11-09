@@ -420,6 +420,7 @@ impl<E: CommandExecutor> ExitWorktreeTool<E> {
         if (!uncommitted.is_empty() || unmerged_commits > 0) && !discard {
             let listed: Vec<&str> = uncommitted.iter().take(MAX_LISTED_FILES).copied().collect();
             return Ok(ToolOutput {
+                client_metadata: None,
                 content: Vec::new(),
                 ok: false,
                 value: serde_json::json!({

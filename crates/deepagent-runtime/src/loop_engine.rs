@@ -2128,7 +2128,8 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     self.metrics.incr(names::TOOL_FAILURES, 1);
                 }
                 let metadata =
-                    tool_ui_metadata(&tool_name, &invocation.arguments, Some(&out.value));
+                    tool_ui_metadata(&tool_name, &invocation.arguments, Some(&out.value))
+                        .with_client_metadata(out.client_metadata.as_ref());
                 self.emit(RuntimeEvent::ToolCompleted {
                     content: out.content.clone(),
                     name: tool_name.clone(),

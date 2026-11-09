@@ -100,6 +100,7 @@ mod tests {
 
     fn ok_with(value: serde_json::Value) -> ToolOutput {
         ToolOutput {
+            client_metadata: None,
             content: Vec::new(),
             ok: true,
             value,

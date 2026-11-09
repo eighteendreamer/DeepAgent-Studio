@@ -306,6 +306,43 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn h138_budget_preview_and_saved_artifact_exclude_client_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = ToolResultBudgetConfig {
+            max_tokens: 8,
+            preview_tokens: 4,
+            output_dir: dir.path().to_owned(),
+            ..Default::default()
+        };
+        let mut output = ToolOutput::success(serde_json::json!({"public":"a".repeat(400)}));
+        output.client_metadata =
+            Some(serde_json::json!({"mcp":{"_meta":{"detail":"h138-private-canary"}}}));
+        let metadata = output.client_metadata.clone();
+        let budgeted =
+            budget_tool_result(&config, "session", "mcp__svc__tool", "call", output).await;
+        assert!(budgeted.output.truncated);
+        assert_eq!(budgeted.output.client_metadata, metadata);
+        assert!(!budgeted
+            .output
+            .value
+            .to_string()
+            .contains("h138-private-canary"));
+        let saved = std::fs::read_to_string(&budgeted.saved.unwrap().path).unwrap();
+        assert!(saved.contains(&"a".repeat(400)));
+        assert!(!saved.contains("h138-private-canary"));
+
+        let mut small = ToolOutput::success(serde_json::json!(1));
+        small.client_metadata = Some(serde_json::json!({"ui":"x".repeat(4000)}));
+        let budgeted =
+            budget_tool_result(&config, "session", "mcp__svc__tool", "small", small).await;
+        assert!(
+            !budgeted.output.truncated,
+            "host metadata must not consume the model budget"
+        );
+        assert!(budgeted.saved.is_none());
+    }
+
+    #[tokio::test]
     async fn large_output_is_truncated_and_persisted() {
         let dir = tempfile::tempdir().unwrap();
         let config = ToolResultBudgetConfig {

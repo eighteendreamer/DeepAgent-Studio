@@ -121,6 +121,7 @@ impl Tool for SandboxedTool {
                     Ok(value) => {
                         let is_error = value.get("error").map(|e| !e.is_null()).unwrap_or(false);
                         Ok(ToolOutput {
+                            client_metadata: None,
                             content: Vec::new(),
                             ok: !is_error,
                             value,

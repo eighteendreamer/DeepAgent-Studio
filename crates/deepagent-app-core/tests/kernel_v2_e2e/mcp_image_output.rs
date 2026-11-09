@@ -8,6 +8,7 @@ use deepagent_core::event::EventPayload;
 use deepagent_persistence::event_store::EventStore;
 use deepagent_persistence::run_control::{RunActionState, RunControlStore};
 use deepagent_persistence::run_store::RunStore;
+use deepagent_persistence::runtime_log_store::RuntimeLogStore;
 use std::time::Duration;
 
 const CALL: &str = "audit-image-call";
@@ -274,9 +275,53 @@ async fn mcp_execution_error_is_preserved_through_events_storage_and_model_input
 }
 
 #[tokio::test]
-#[ignore = "audit: client-only MCP result _meta must not become model-visible tool output"]
 async fn audit_mcp_client_metadata_is_not_sent_to_model() {
     assert_metadata_projection(true).await;
+}
+
+#[tokio::test]
+async fn h138_error_and_image_metadata_stay_client_only_after_cold_reopen() {
+    const DATA: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jZh0AAAAASUVORK5CYII=";
+    for is_error in [false, true] {
+        let observed = mcp_result_observation(serde_json::json!({
+            "content":[{"type":"text","text":"public-diagnostic"},
+                {"type":"image","mimeType":"image/png","data":DATA}],
+            "structuredContent":{"_meta":{"business":"public-nested-field"}},
+            "isError":is_error,
+            "_meta":{"ui":{"detail":"h138-private-image-canary"}},
+            "futureExtension":{"detail":"h138-private-extension-canary"}
+        }))
+        .await;
+        assert_eq!(observed.session_ok, !is_error);
+        for private in ["h138-private-image-canary", "h138-private-extension-canary"] {
+            assert!(!observed.requests[1].to_string().contains(private));
+            assert!(!observed.replayed_output.to_string().contains(private));
+            assert!(!observed.history_json.contains(private));
+            assert!(!observed.diagnostic_json.contains(private));
+            assert!(
+                observed.run_events_json.contains(private),
+                "host audit metadata must survive SQLite reopen"
+            );
+        }
+        assert!(observed
+            .replayed_output
+            .to_string()
+            .contains("public-nested-field"));
+        assert!(observed
+            .replayed_output
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["type"] == "input_image"));
+        assert_eq!(
+            observed.host_metadata["mcp"]["_meta"]["ui"]["detail"],
+            "h138-private-image-canary"
+        );
+        assert_eq!(
+            observed.host_metadata["mcp"]["futureExtension"]["detail"],
+            "h138-private-extension-canary"
+        );
+    }
 }
 
 async fn assert_metadata_projection(include_meta: bool) {
@@ -293,7 +338,8 @@ async fn assert_metadata_projection(include_meta: bool) {
             "audit.example/clientState": { "privateDetail": PRIVATE }
         });
     }
-    let requests = mcp_result_requests(result).await;
+    let observed = mcp_result_observation(result).await;
+    let requests = &observed.requests;
     let first_wire = requests[0].to_string();
     let next_wire = requests[1].to_string();
     let private_before = first_wire.contains(PRIVATE);
@@ -318,6 +364,18 @@ async fn assert_metadata_projection(include_meta: bool) {
         !private_after,
         "client-only MCP result metadata must not enter the provider request"
     );
+    assert!(!observed.replayed_output.to_string().contains(PRIVATE));
+    assert!(!observed.history_json.contains(PRIVATE));
+    assert!(!observed.diagnostic_json.contains(PRIVATE));
+    assert_eq!(observed.run_events_json.contains(PRIVATE), include_meta);
+    if include_meta {
+        assert_eq!(
+            observed.host_metadata["mcp"]["_meta"]["audit.example/clientState"]["privateDetail"],
+            PRIVATE
+        );
+    } else {
+        assert!(observed.host_metadata.is_null());
+    }
 }
 
 async fn mcp_result_requests(result: serde_json::Value) -> Vec<serde_json::Value> {
@@ -334,6 +392,8 @@ struct McpResultObservation {
     history_json: String,
     run_events_json: String,
     replayed_output: serde_json::Value,
+    host_metadata: serde_json::Value,
+    diagnostic_json: String,
 }
 
 async fn mcp_result_observation(result: serde_json::Value) -> McpResultObservation {
@@ -414,7 +474,10 @@ setTimeout(() => process.exit(2), 15000).unref();
         calls: AtomicUsize::new(0),
         requests: Mutex::new(Vec::new()),
     });
-    let chat = ChatService::new(db.clone(), settings, model.clone(), root.path()).with_mcp(mcp);
+    let logs = Arc::new(RuntimeLogStore::open_in_memory().unwrap());
+    let chat = ChatService::new(db.clone(), settings, model.clone(), root.path())
+        .with_mcp(mcp)
+        .with_runtime_logs(logs.clone());
     let outcome = tokio::time::timeout(
         Duration::from_secs(5),
         chat.run_in_session(
@@ -440,6 +503,11 @@ setTimeout(() => process.exit(2), 15000).unref();
         .collect();
     assert_eq!(live_tools.len(), 1);
     let event_ok = live_tools[0].data["ok"].as_bool().unwrap();
+    let diagnostics = logs.recent_for_session(&session, 1000).unwrap();
+    assert!(diagnostics
+        .iter()
+        .any(|entry| entry.event == "tool_completed"));
+    let diagnostic_json = serde_json::to_string(&diagnostics).unwrap();
     drop(chat);
     drop(db);
     let reopened = Arc::new(Database::open(&db_path).unwrap());
@@ -450,6 +518,7 @@ setTimeout(() => process.exit(2), 15000).unref();
         .collect();
     assert_eq!(stored_tools.len(), 1);
     assert_eq!(stored_tools[0].data["ok"], event_ok);
+    let host_metadata = stored_tools[0].data["meta"]["client_metadata"].clone();
     let terminals: Vec<_> = events
         .iter()
         .filter(|event| event.event_type == "run_terminal")
@@ -544,5 +613,7 @@ setTimeout(() => process.exit(2), 15000).unref();
         history_json: serde_json::to_string(&history).unwrap(),
         run_events_json: serde_json::to_string(&events).unwrap(),
         replayed_output,
+        host_metadata,
+        diagnostic_json,
     }
 }

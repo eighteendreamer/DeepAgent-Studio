@@ -65,6 +65,17 @@ pub struct ToolUiMetadata {
     pub meta: Option<serde_json::Value>,
 }
 
+impl ToolUiMetadata {
+    /// Explicit host projection, never part of a model Observation/Session body.
+    pub(crate) fn with_client_metadata(mut self, client: Option<&serde_json::Value>) -> Self {
+        if let Some(client) = client {
+            let meta = self.meta.get_or_insert_with(|| serde_json::json!({}));
+            meta["client_metadata"] = client.clone();
+        }
+        self
+    }
+}
+
 /// A live event emitted during a run, mirroring the loop's phases.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

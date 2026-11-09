@@ -65,7 +65,7 @@ pub(crate) fn redact_runtime_log_value(value: serde_json::Value) -> serde_json::
         serde_json::Value::Object(map) => serde_json::Value::Object(
             map.into_iter()
                 .map(|(key, value)| {
-                    let redacted = if is_secret_log_key(&key) {
+                    let redacted = if key == "client_metadata" || is_secret_log_key(&key) {
                         serde_json::Value::String("<redacted>".into())
                     } else if is_prompt_log_key(&key) {
                         redact_text_payload(value)
@@ -582,6 +582,17 @@ fn runtime_event_message(event: &RuntimeEvent) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn h138_client_metadata_is_not_duplicated_into_diagnostic_logs() {
+        let logs = Arc::new(RuntimeLogStore::open_in_memory().unwrap());
+        append_runtime_log(&Some(logs.clone()), NewRuntimeLogEntry::info("tool", "tool_completed")
+            .with_data(serde_json::json!({"meta":{"path":"public-path", "client_metadata":{"mcp":{"_meta":{"detail":"h138-private-canary"}}}}})));
+        let entries = logs.recent(1).unwrap();
+        assert_eq!(entries[0].data["meta"]["path"], "public-path");
+        assert_eq!(entries[0].data["meta"]["client_metadata"], "<redacted>");
+        assert!(!entries[0].data.to_string().contains("h138-private-canary"));
+    }
 
     #[tokio::test]
     async fn sequence_gap_delta_is_logged_without_changing_ordinary_delta_batching() {

@@ -5547,6 +5547,12 @@ E-H136-07（独立提交回填）：生产、默认回归和当时两文档已�
 
 ### H-138：MCP 结果整对象进入模型上下文，客户端元数据没有独立可见性边界
 
+**修复状态（2026-11-09）：已修复并验收，仅限本机新生成结果及其重放。** 当前基线原探针0/1、扩展TDD6/2，候选曾编译漏字段，均保留E-H138-01/02原失败记录。最终adapter从顶层公开content/isError/structuredContent及兼容text/error形成模型结果，把顶层_meta/未知扩展放host-only ToolOutput.client_metadata；通用/嵌套serde与Debug不输出该通道，沿原ToolCompleted.meta.client_metadata.mcp进入run_events/Harness，诊断日志整通道隐藏。Session/Observation/重放和预算文件只消费公开value/content，不递归删业务structuredContent._meta，不另建存储/工具链。Rust ToolOutput literal新增字段已同步仓内；外部literal需设None，旧serde形状兼容但不再能用generic roundtrip保存host字段。
+
+最终真实Node→MCP→Kernel→provider wire→SQLite冷重开组8/0/0（含错误/图片/未知扩展/正常对照，原probe已去ignore），host数据保存而不进入模型/Session/诊断，调用唯一配对且无重执行；typed图片、公开structuredContent及同名业务_meta保留。相关四crate合计696/1/9，唯一旧DACL失败；全仓157结果块5056/6/180、exit101，真实Rust SDK stdio13/0/0与协议20/0/0通过。6失败为4个H127既有同形失败和2个verification启动标记超时；后两项默认feature及同全仓二进制串行均7/0/0，不抹去原失败、不降低4秒门槛或称全仓稳定。fmt/diff、当前CLI构建和Tauri Rust check通过；严格Clippy旧models/client.rs:483 clone_on_copy、范围all-targets旧mcp_discovery_restore.rs:776 panicking_unwrap仍阻断，lib范围非严格诊断exit0含原警告。19冻结源文件未漂移、临时CLI替换后原哈希已恢复；实际命令、哈希、耗时和失败原因见[进度文档](system-harness-repair-progress.md) E-H138-03。修复提交待本项独立提交后回填，产物清理另记。
+
+残余：未迁移真实历史，旧版本已把metadata写进Session/ResponseItem正文或预算文件的内容不会自动清除；续聊旧会话前需另行审查。只分离顶层宿主通道，不承诺公开content/嵌套业务数据自动识密，不是完整MCP Apps。未验远程HTTP/SSE、真实供应商/凭据、真实UI、其他OS；本轮未改前端类型/组件，未跑pnpm build/TS stdio。当前仅关闭H138新结果边界，累计208验收/28历史跳过/10归并/3撤销，57待修含H180授权跳过（实际56）；下一H137尚未修改。全余170–430低置信有效小时与环境等待分计，不承诺日期，不宣布整个goal完成。以下原始审计证据保留。
+
 **级别：中（P2，有条件的数据最小化与上下文隔离风险）；触发条件：MCP 把仅供客户端/UI 使用的数据放在结果顶层 `_meta`，并通过本系统执行工具。** 这不是任意 MCP 元数据天然包含秘密，也不代表本系统已经支持完整 MCP Apps 协议。
 
 #### 生产链与实测

@@ -8,6 +8,38 @@ use deepagent_harness_protocol::{
 use deepagent_runtime::RuntimeEvent;
 
 #[test]
+fn h138_client_metadata_remains_separate_in_harness_wire() {
+    let runtime = RuntimeEvent::ToolCompleted {
+        name: "mcp__synthetic__tool".into(),
+        call_id: "h138-call".into(),
+        ok: true,
+        output: serde_json::json!({"content":[{"type":"text","text":"public-result"}]}),
+        content: Vec::new(),
+        duration_ms: 1,
+        tool_kind: None,
+        file_path: None,
+        summary: None,
+        meta: Some(
+            serde_json::json!({"client_metadata":{"mcp":{"_meta":{"detail":"h138-client-canary"}}}}),
+        ),
+    };
+    let event = project_runtime_event(
+        &runtime,
+        &EventContext::new(Some("thread".into()), Some("turn".into())),
+    )
+    .unwrap();
+    let wire = serde_json::to_value(&event).unwrap();
+    assert!(!wire["item"]["output"]
+        .to_string()
+        .contains("h138-client-canary"));
+    assert_eq!(
+        wire["item"]["meta"]["client_metadata"]["mcp"]["_meta"]["detail"],
+        "h138-client-canary"
+    );
+    assert_eq!(serde_json::from_value::<HarnessEvent>(wire).unwrap(), event);
+}
+
+#[test]
 fn h127_tool_image_refs_survive_runtime_harness_and_wire_roundtrip() {
     use deepagent_core::message::MessageAttachment;
     use deepagent_core::tool_content::ToolResultPart;

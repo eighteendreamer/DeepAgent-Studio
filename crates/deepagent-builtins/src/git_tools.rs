@@ -53,6 +53,7 @@ async fn run_git<E: CommandExecutor>(executor: &E, cwd: &str, command: &str) -> 
                 "stderr": cap(out.stderr),
             });
             Ok(ToolOutput {
+                client_metadata: None,
                 content: Vec::new(),
                 ok,
                 value,
@@ -257,6 +258,7 @@ impl<E: CommandExecutor> Tool for GitCommitTool<E> {
             if let Ok(o) = &add {
                 if o.exit_code != Some(0) {
                     return Ok(ToolOutput {
+                        client_metadata: None,
                         content: Vec::new(),
                         ok: false,
                         value: serde_json::json!({
@@ -286,6 +288,7 @@ impl<E: CommandExecutor> Tool for GitCommitTool<E> {
                     .collect();
                 if !blocking.is_empty() {
                     return Ok(ToolOutput {
+                        client_metadata: None,
                         content: Vec::new(),
                         ok: false,
                         value: serde_json::json!({

@@ -233,6 +233,7 @@ mod tests {
 
     fn ok_write(path: &Path) -> ToolOutput {
         ToolOutput {
+            client_metadata: None,
             content: Vec::new(),
             ok: true,
             value: json!({
@@ -269,6 +270,7 @@ mod tests {
         let dec = VerificationDecorator::new(dispatcher, Some(dir.path().to_path_buf()));
         // Failed write: ok = false → no verification.
         let mut out = ToolOutput {
+            client_metadata: None,
             content: Vec::new(),
             ok: false,
             value: json!({"path": p.to_string_lossy(), "error": "denied"}),
@@ -394,6 +396,7 @@ mod tests {
         let dispatcher = Arc::new(VerificationDispatcher::new(vec![]));
         let dec = VerificationDecorator::new(dispatcher, None);
         let mut out = ToolOutput {
+            client_metadata: None,
             content: Vec::new(),
             ok: true,
             value: json!({"replacements": 1}), // missing "path"
