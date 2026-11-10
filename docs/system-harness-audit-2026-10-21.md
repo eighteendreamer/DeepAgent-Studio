@@ -6167,7 +6167,7 @@ Models自身all-target/all-feature/no-deps严格lint exit101/7.747秒，唯一�
 
 ### H-152：官方 `tool_search_call` 在 Responses adapter 中被静默丢弃
 
-**当前状态（2026-11-10）：已修复并验收，限E-H152-04 Windows本机离线范围。用户确认保持Responses；原生typed/装配/配对/截断7项、真实MCP发现整组9项、原子projection/冷恢复和压缩回放通过；最终workspace、CLI、check、lint/Tauri结果及既有失败分别保留。没有真实DeepSeek线上启用/回传或其他OS/GUI验收，不将本地兼容契约冒称供应商在线互通。提交hash在取得后另行回填。**
+**当前状态（2026-11-10）：已修复并验收，限E-H152-04 Windows本机离线范围。用户确认保持Responses；原生typed/装配/配对/截断7项、真实MCP发现整组9项、原子projection/冷恢复和压缩回放通过；最终workspace、CLI、check、lint/Tauri结果及既有失败分别保留。没有真实DeepSeek线上启用/回传或其他OS/GUI验收，不将本地兼容契约冒称供应商在线互通。修复提交`559f0cddefa0abc0050b211fd6656449102918f5`，文档另回填、不amend、不推送。**
 
 **级别：中（P2，条件性协议能力缺口）；触发条件：provider 的 Responses 流返回原生 `tool_search_call` output item。** DeepSeek 官方输出 schema 和流事件表都声明了该类型，但当前公开请求工具 schema 没有说明普通 function/custom/web-search 配置如何启用它，因此本项不能扩大为默认请求必现。
 
