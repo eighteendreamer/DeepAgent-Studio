@@ -6809,7 +6809,7 @@ Finding F-H167（E01～03）：provider-image输出在URL和inline分支共同�
 
 ### H-171：Responses 图片角色沿用 Chat 规则，合法 `developer` 图丢失且非法 `assistant` 图静默成功
 
-**修复结论（2026-11-10，已修复并验收，仅E-H171-04本机离线范围）**：原始失败证据保留如下；本轮原探针再次失败、TDD先红后绿，已移入默认回归。Models统一协议角色矩阵在读取、Chat投影与序列化前检查，Responses保留user/developer图，非法system/assistant图明确拒绝，Chat仍仅user；不新增Core角色或Files链。新增四项Models、两项真实Kernel热冷恢复/重试fallback、一项原生压缩cold replay及一项ModelAgent压缩/snip回归通过。Models/http合计272/0/18忽略、Session23/0、workspace check/CLI build/Tauri check/前端完整构建/fmt通过；完整workspace为5233通过/5失败/173忽略，四个既有失败及额外构建夹具4秒就绪失败、strict与all-target lint旧阻断均详列台账，不称全仓全绿。末次仅测试断言等价改写后重验图片整组13/1/2（H171通过，旧DACL失败保留）、fmt通过，本项新lint警告已消除。Files生命周期（H170）、MIME（H169）、真实供应商及其他OS未验；本轮不外推，独立修复提交取得后回填。
+**修复结论（2026-11-10，已修复并验收，仅E-H171-04本机离线范围）**：原始失败证据保留如下；本轮原探针再次失败、TDD先红后绿，已移入默认回归。Models统一协议角色矩阵在读取、Chat投影与序列化前检查，Responses保留user/developer图，非法system/assistant图明确拒绝，Chat仍仅user；不新增Core角色或Files链。新增四项Models、两项真实Kernel热冷恢复/重试fallback、一项原生压缩cold replay及一项ModelAgent压缩/snip回归通过。Models/http合计272/0/18忽略、Session23/0、workspace check/CLI build/Tauri check/前端完整构建/fmt通过；完整workspace为5233通过/5失败/173忽略，四个既有失败及额外构建夹具4秒就绪失败、strict与all-target lint旧阻断均详列台账，不称全仓全绿。末次仅测试断言等价改写后重验图片整组13/1/2（H171通过，旧DACL失败保留）、fmt通过，本项新lint警告已消除。Files生命周期（H170）、MIME（H169）、真实供应商及其他OS未验；本轮不外推；独立修复提交`383c50a969a0568372f88d4ac75796bd5e8dbf48`，未推送，清理限制见台账E04。
 
 **级别：中（P2，模型输入内容完整性；当前桌面常规触发概率低）；触发条件：公共 provider seam、未来 Harness/SDK 或导入的原生历史构造一个带图片附件的 `developer`、`system` 或 `assistant` message item。** 普通桌面附件目前由 `Role::User` 产生，因此本项不是现有 Composer 每次发图都会触发；但 `ResponseInputItem` 和 `ResponseRequest::from_response_items()` 是公开模型接口，当前适配层对可表达输入给出了成功却改变语义的结果。
 
