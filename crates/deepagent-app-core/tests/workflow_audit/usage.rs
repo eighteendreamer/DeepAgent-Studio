@@ -1,7 +1,7 @@
 //! H-163: real workflow/kernel/finalizer consumers, synthetic local providers.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -142,6 +142,10 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
+        Self::with_chat_transport(Arc::new(MockTransport::default())).await
+    }
+
+    async fn with_chat_transport(transport: Arc<dyn HttpTransport>) -> Self {
         let root = tempfile::tempdir().unwrap();
         let db = Arc::new(Database::open(root.path().join("usage.db")).unwrap());
         let secrets = Arc::new(MemorySecretStore::new());
@@ -155,14 +159,9 @@ impl Fixture {
         settings.initialize("sk-fixture-placeholder").await.unwrap();
         let providers = Arc::new(CanvasProviderService::new(db.clone(), secrets));
         let cost = Arc::new(CostService::new(db.clone()));
-        let chat = ChatService::new(
-            db.clone(),
-            settings,
-            Arc::new(MockTransport::default()),
-            root.path(),
-        )
-        .with_canvas_model(Arc::new(CanvasModelGateway::new(providers.clone())))
-        .with_cost(cost.clone());
+        let chat = ChatService::new(db.clone(), settings, transport, root.path())
+            .with_canvas_model(Arc::new(CanvasModelGateway::new(providers.clone())))
+            .with_cost(cost.clone());
         let session = chat.create_session(None).unwrap();
         Self {
             root,
@@ -277,6 +276,110 @@ fn assert_terminal(db: &Database, run: &str, kind: &str) {
             .filter(|e| e.sequence > cursor)
             .collect::<Vec<_>>()
     );
+}
+
+#[tokio::test]
+async fn h179_professional_llm_uses_the_existing_canvas_catalog_gateway_and_run_store() {
+    // This verifies the already-wired text route, not document ingestion.
+    // No file-format, OCR or extraction-limit decision is made by this test.
+    let provider = Provider::start(vec![
+        (200, Some(completion(100, 20, 80, 12))),
+        (200, Some(completion(50, 10, 0, 5))),
+    ])
+    .await;
+    #[derive(Default)]
+    struct MainModelTrap(AtomicUsize);
+    #[async_trait::async_trait]
+    impl HttpTransport for MainModelTrap {
+        async fn stream(
+            &self,
+            _: TransportRequest,
+            _: &mut dyn deepagent_models::transport::EventSink,
+        ) -> deepagent_core::error::Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(deepagent_core::error::CoreError::other(
+                "unexpected main-model dispatch",
+            ))
+        }
+    }
+    let main_model = Arc::new(MainModelTrap::default());
+    let fixture = Fixture::with_chat_transport(main_model.clone()).await;
+    let explicit = fixture.register(&provider, "openai", "audit-a", 0);
+    let provider_id = explicit.split_once("::").unwrap().0;
+    let request = |models: &[&str]| {
+        let mut request = workflow(models);
+        for node in &mut request.definition.nodes {
+            if node.kind == "text-gen" {
+                let model = node.config["model"].clone();
+                node.kind = "llm".into();
+                node.config = serde_json::from_value(json!({
+                    "llmModel": model,
+                    "llmSystemPrompt": "H179_PROFESSIONAL_SYSTEM",
+                    "llmPrompt": "H179_PROFESSIONAL_INPUT"
+                }))
+                .unwrap();
+            }
+        }
+        request
+    };
+    let (succeeded, live) = fixture
+        .run("h179-canvas-text", request(&[&explicit, ""]))
+        .await;
+    assert!(
+        succeeded,
+        "both explicit and default canvas routes must work"
+    );
+    let outputs: Vec<_> = live
+        .iter()
+        .filter_map(|event| match event {
+            RuntimeEvent::WorkflowNode { event }
+                if matches!(event.node_id.as_str(), "text-0" | "text-1")
+                    && event.status == super::NodeExecutionStatus::Completed =>
+            {
+                event.outputs.as_ref()
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(outputs.len(), 2);
+    for output in outputs {
+        assert_eq!(output["providerId"], provider_id);
+        assert_eq!(output["modelId"], "audit-a");
+        assert_eq!(output["text"], "answer");
+    }
+    {
+        let calls = provider.calls.lock().unwrap();
+        assert_eq!(
+            calls.len(),
+            2,
+            "one request per LLM node; no extra model loop"
+        );
+        for call in calls.iter() {
+            assert_eq!(call["model"], "audit-a");
+            let messages = call["messages"].as_array().unwrap();
+            assert!(messages.iter().any(|message| message["role"] == "system"
+                && message["content"] == "H179_PROFESSIONAL_SYSTEM"));
+            assert!(messages.iter().any(|message| message["role"] == "user"
+                && message["content"]
+                    .as_str()
+                    .is_some_and(|content| content.contains("H179_PROFESSIONAL_INPUT"))));
+        }
+    }
+    let missing = format!("{provider_id}::h179-unconfigured-model");
+    let (succeeded, _) = fixture
+        .run("h179-canvas-invalid-route", request(&[&missing]))
+        .await;
+    assert!(
+        !succeeded,
+        "invalid explicit route must not switch to the main model"
+    );
+    assert_eq!(provider.calls.lock().unwrap().len(), 2);
+    assert_eq!(main_model.0.load(Ordering::SeqCst), 0);
+    let (_root, db, session) = fixture.reopen();
+    assert_terminal(&db, "h179-canvas-text", "succeeded");
+    assert_terminal(&db, "h179-canvas-invalid-route", "failed");
+    let totals = CostService::new(db.clone()).summary(&session).unwrap();
+    assert_eq!((totals.input_tokens, totals.output_tokens), (150, 30));
 }
 
 #[tokio::test]
