@@ -1415,13 +1415,16 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             "error_type": "cancelled_by_user",
             "error": "The user cancelled this tool call before it completed. The operation may have run partially; inspect the current state before retrying.",
         });
-        session.append(EventPayload::ToolCallCompleted {
-            content: Vec::new(),
-            call_id: call_id.clone(),
-            ok: false,
-            output: output.clone(),
-            duration_ms: 0,
-        })?;
+        self.append_tool_completion(
+            session,
+            EventPayload::ToolCallCompleted {
+                content: Vec::new(),
+                call_id: call_id.clone(),
+                ok: false,
+                output: output.clone(),
+                duration_ms: 0,
+            },
+        )?;
         let metadata = tool_ui_metadata(&invocation.name, &invocation.arguments, Some(&output));
         self.emit(RuntimeEvent::ToolCompleted {
             content: Vec::new(),
@@ -1755,6 +1758,26 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         }
     }
 
+    fn append_tool_completion(
+        &self,
+        session: &mut Session<'a, C>,
+        payload: EventPayload,
+    ) -> Result<deepagent_core::event::Event> {
+        session.append_tool_completion(payload, &|name| {
+            let spec = self.registry.get(name)?;
+            self.config
+                .permissions
+                .grants_all(&spec.descriptor.required_permissions)
+                .then(|| {
+                    serde_json::json!({
+                        "type":"function", "name":spec.descriptor.name,
+                        "description":spec.descriptor.description,
+                        "parameters":spec.descriptor.parameters,
+                    })
+                })
+        })
+    }
+
     /// Record the durable session projection for a result already finalized by
     /// the canonical [`ToolExecutionPipeline`]. Runtime events, result policy,
     /// action state are owned by that pipeline. All results in an executed
@@ -1792,13 +1815,16 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         if !ok {
             self.metrics.incr(names::TOOL_FAILURES, 1);
         }
-        session.append(EventPayload::ToolCallCompleted {
-            content: output.content.clone(),
-            call_id: call_id.clone(),
-            ok,
-            output: value.clone(),
-            duration_ms: *duration_ms,
-        })?;
+        self.append_tool_completion(
+            session,
+            EventPayload::ToolCallCompleted {
+                content: output.content.clone(),
+                call_id: call_id.clone(),
+                ok,
+                output: value.clone(),
+                duration_ms: *duration_ms,
+            },
+        )?;
         Ok(Observation {
             content: output.content.clone(),
             tool: tool_name.clone(),
@@ -1888,13 +1914,16 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         if !result.output.ok {
             self.metrics.incr(names::TOOL_FAILURES, 1);
         }
-        session.append(EventPayload::ToolCallCompleted {
-            content: result.output.content.clone(),
-            call_id: result.call_id.clone(),
-            ok: result.output.ok,
-            output: result.output.value.clone(),
-            duration_ms: result.duration_ms,
-        })?;
+        self.append_tool_completion(
+            session,
+            EventPayload::ToolCallCompleted {
+                content: result.output.content.clone(),
+                call_id: result.call_id.clone(),
+                ok: result.output.ok,
+                output: result.output.value.clone(),
+                duration_ms: result.duration_ms,
+            },
+        )?;
         self.finish_pipeline_result(session_id, result).await?;
         pipeline.post_execution(&completion).await?;
         let result = completion.result;
@@ -1950,13 +1979,16 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                         arguments: invocation.arguments,
                     },
                 })?;
-                session.append(EventPayload::ToolCallCompleted {
-                    content: Vec::new(),
-                    call_id: call_id.clone(),
-                    ok: false,
-                    output: value.clone(),
-                    duration_ms: 0,
-                })?;
+                self.append_tool_completion(
+                    session,
+                    EventPayload::ToolCallCompleted {
+                        content: Vec::new(),
+                        call_id: call_id.clone(),
+                        ok: false,
+                        output: value.clone(),
+                        duration_ms: 0,
+                    },
+                )?;
                 return Ok(Observation {
                     content: Vec::new(),
                     tool: tool_name,
@@ -2086,13 +2118,16 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     arguments: invocation.arguments.clone(),
                 },
             })?;
-            session.append(EventPayload::ToolCallCompleted {
-                content: Vec::new(),
-                call_id: call_id.clone(),
-                ok: false,
-                output: err_value.clone(),
-                duration_ms: 0,
-            })?;
+            self.append_tool_completion(
+                session,
+                EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
+                    call_id: call_id.clone(),
+                    ok: false,
+                    output: err_value.clone(),
+                    duration_ms: 0,
+                },
+            )?;
             self.fire_hook(
                 session_id,
                 HookPoint::PermissionDenied,
@@ -2197,13 +2232,16 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     }
                 }
 
-                session.append(EventPayload::ToolCallCompleted {
-                    content: out.content.clone(),
-                    call_id: call_id.clone(),
-                    ok: out.ok,
-                    output: out.value.clone(),
-                    duration_ms,
-                })?;
+                self.append_tool_completion(
+                    session,
+                    EventPayload::ToolCallCompleted {
+                        content: out.content.clone(),
+                        call_id: call_id.clone(),
+                        ok: out.ok,
+                        output: out.value.clone(),
+                        duration_ms,
+                    },
+                )?;
                 Observation {
                     content: out.content,
                     tool: tool_name.clone(),
@@ -2233,13 +2271,16 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     summary: metadata.summary,
                     meta: metadata.meta,
                 });
-                session.append(EventPayload::ToolCallCompleted {
-                    content: Vec::new(),
-                    call_id: call_id.clone(),
-                    ok: false,
-                    output: err_value.clone(),
-                    duration_ms,
-                })?;
+                self.append_tool_completion(
+                    session,
+                    EventPayload::ToolCallCompleted {
+                        content: Vec::new(),
+                        call_id: call_id.clone(),
+                        ok: false,
+                        output: err_value.clone(),
+                        duration_ms,
+                    },
+                )?;
                 Observation {
                     content: Vec::new(),
                     tool: tool_name.clone(),
@@ -2283,13 +2324,16 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 arguments: arguments.clone(),
             },
         })?;
-        session.append(EventPayload::ToolCallCompleted {
-            content: Vec::new(),
-            call_id: call_id.clone(),
-            ok: false,
-            output: value.clone(),
-            duration_ms: 0,
-        })?;
+        self.append_tool_completion(
+            session,
+            EventPayload::ToolCallCompleted {
+                content: Vec::new(),
+                call_id: call_id.clone(),
+                ok: false,
+                output: value.clone(),
+                duration_ms: 0,
+            },
+        )?;
         self.fire_hook(
             session_id,
             HookPoint::PermissionDenied,

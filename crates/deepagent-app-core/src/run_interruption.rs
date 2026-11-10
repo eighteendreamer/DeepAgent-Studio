@@ -85,7 +85,9 @@ fn classify_items<'a>(
             | ResponseItem::FunctionCallOutput { .. }
             | ResponseItem::CustomToolCall { .. }
             | ResponseItem::CustomToolCallOutput { .. }
-            | ResponseItem::WebSearchCall { .. } => return Some("interrupted_turn"),
+            | ResponseItem::WebSearchCall { .. }
+            | ResponseItem::ToolSearchCall { .. }
+            | ResponseItem::ToolSearchOutput { .. } => return Some("interrupted_turn"),
             ResponseItem::Reasoning { .. } => continue,
         }
     }

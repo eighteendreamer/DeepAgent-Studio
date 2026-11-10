@@ -16,6 +16,15 @@ use crate::tool_content::ToolResultBody;
 /// It must travel with its source turn without acquiring an independent snip ID.
 pub const HOOK_CONTEXT_PREFIX: &str = "[Hook output context (unprivileged)]\n";
 
+/// Execution ownership of a native discovery item. Provider execution does
+/// not authorize the host to invoke or register the returned tool definitions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolSearchExecution {
+    Client,
+    Server,
+}
+
 /// A semantic Responses API item used for provider input/output persistence.
 ///
 /// Source alignment:
@@ -74,12 +83,91 @@ pub enum ResponseItem {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         action: Option<serde_json::Value>,
     },
+    /// Native compatibility vocabulary aligned with the inspected Codex
+    /// reference, separate from an ordinary function named `tool_search`.
+    ToolSearchCall {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(default)]
+        call_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+        execution: ToolSearchExecution,
+        arguments: serde_json::Value,
+    },
+    ToolSearchOutput {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(default)]
+        call_id: Option<String>,
+        status: String,
+        execution: ToolSearchExecution,
+        #[serde(default)]
+        tools: Vec<serde_json::Value>,
+    },
 }
 
 pub type ResponseInputItem = ResponseItem;
 pub type ResponseOutputItem = ResponseItem;
 
 impl ResponseItem {
+    /// Build a host discovery result from the real tool result and the host's
+    /// authorized catalog. Provider-returned schemas are never a lookup source.
+    pub fn native_tool_search_output(
+        call_id: String,
+        ok: bool,
+        output: &serde_json::Value,
+        mut schema: impl FnMut(&str) -> Option<serde_json::Value>,
+    ) -> Self {
+        let tools = output
+            .get("matches")
+            .and_then(serde_json::Value::as_array)
+            .filter(|_| ok)
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item.get("name").and_then(serde_json::Value::as_str))
+            .filter_map(&mut schema)
+            .collect();
+        Self::ToolSearchOutput {
+            id: None,
+            call_id: Some(call_id),
+            status: if ok { "completed" } else { "failed" }.into(),
+            execution: ToolSearchExecution::Client,
+            tools,
+        }
+    }
+
+    /// Pairing identity of a host-executed call. Server discovery is provider
+    /// data and must never acquire local execution or pairing ownership.
+    pub fn client_tool_call_id(&self) -> Option<&str> {
+        match self {
+            Self::FunctionCall { call_id, .. } | Self::CustomToolCall { call_id, .. } => {
+                Some(call_id)
+            }
+            Self::ToolSearchCall {
+                call_id,
+                execution: ToolSearchExecution::Client,
+                ..
+            } => call_id.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Identity paired with `client_tool_call_id`, shared by validation,
+    /// history repair, snipping and compaction.
+    pub fn client_tool_output_call_id(&self) -> Option<&str> {
+        match self {
+            Self::FunctionCallOutput { call_id, .. }
+            | Self::CustomToolCallOutput { call_id, .. } => Some(call_id),
+            Self::ToolSearchOutput {
+                call_id,
+                execution: ToolSearchExecution::Client,
+                ..
+            } => call_id.as_deref(),
+            _ => None,
+        }
+    }
+
     /// References present in the canonical Surface, regardless of whether
     /// they originated in user input or in an executed tool result.
     pub fn image_attachments(&self) -> Vec<&MessageAttachment> {

@@ -2206,6 +2206,35 @@ mod tests {
                 sid,
                 2,
                 EventPayload::ResponseItemAppended {
+                    item: ResponseItem::ToolSearchCall {
+                        id: Some("tsc_1".into()),
+                        call_id: Some("search_1".into()),
+                        status: Some("completed".into()),
+                        execution: deepagent_core::response_item::ToolSearchExecution::Client,
+                        arguments: serde_json::json!({"query": "calendar"}),
+                    },
+                },
+            ),
+            event(
+                sid,
+                3,
+                EventPayload::ResponseItemAppended {
+                    item: ResponseItem::ToolSearchOutput {
+                        id: None,
+                        call_id: Some("search_1".into()),
+                        status: "completed".into(),
+                        execution: deepagent_core::response_item::ToolSearchExecution::Client,
+                        tools: vec![serde_json::json!({
+                            "type": "function",
+                            "name": "calendar_create"
+                        })],
+                    },
+                },
+            ),
+            event(
+                sid,
+                4,
+                EventPayload::ResponseItemAppended {
                     item: ResponseItem::Message {
                         role: "assistant".into(),
                         content: "found".into(),
@@ -2216,7 +2245,7 @@ mod tests {
 
         let items = response_items_from_events(&events);
 
-        assert_eq!(items.len(), 3);
+        assert_eq!(items.len(), 5);
         assert!(matches!(
             &items[1],
             ResponseItem::WebSearchCall {
@@ -2226,6 +2255,24 @@ mod tests {
             } if id == "ws_1"
                 && status == "completed"
                 && action["query"] == "DeepSeek Responses"
+        ));
+        assert!(matches!(
+            &items[2],
+            ResponseItem::ToolSearchCall {
+                call_id: Some(call_id),
+                execution: deepagent_core::response_item::ToolSearchExecution::Client,
+                arguments,
+                ..
+            } if call_id == "search_1" && arguments["query"] == "calendar"
+        ));
+        assert!(matches!(
+            &items[3],
+            ResponseItem::ToolSearchOutput {
+                call_id: Some(call_id),
+                status,
+                tools,
+                ..
+            } if call_id == "search_1" && status == "completed" && tools.len() == 1
         ));
     }
 

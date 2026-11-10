@@ -16,6 +16,7 @@ const CANARY: &str = "AUDIT_DISCOVERY_CANARY";
 #[derive(Clone, Copy)]
 enum DiscoveryStep {
     Search(&'static str),
+    NativeSearch(&'static str),
     Inspect(&'static str),
     Finish,
 }
@@ -66,6 +67,11 @@ impl HttpTransport for DiscoveryModel {
             .ok_or_else(|| CoreError::other("unexpected discovery audit request"))?;
         let id = format!("discovery-item-{attempt}");
         let item = match step {
+            DiscoveryStep::NativeSearch(call_id) => serde_json::json!({
+                "type":"tool_search_call", "id":id, "call_id":call_id,
+                "execution":"client", "status":"completed",
+                "arguments":{"query":format!("select:{INSPECT}"), "max_results":1}
+            }),
             DiscoveryStep::Search(call_id) => serde_json::json!({
                 "type":"function_call", "id":id, "call_id":call_id,
                 "name":"tool_search", "status":"completed",
@@ -542,11 +548,175 @@ fn assert_capability_generations(chat: &ChatService, run: &str, requests: &[serd
 
 #[tokio::test]
 async fn deferred_mcp_discovery_survives_turns_and_database_reopen_without_session_leak() {
+    check_discovery_reopen(false).await;
+}
+
+#[tokio::test]
+async fn h152_native_discovery_executes_once_and_cold_replays_its_catalog() {
+    check_discovery_reopen(true).await;
+}
+
+#[tokio::test]
+async fn h152_native_discovery_respects_permission_denial_and_cancellation() {
+    struct HeldDiscovery {
+        model: Arc<DiscoveryModel>,
+        streamed: tokio::sync::Notify,
+    }
+    #[async_trait]
+    impl HttpTransport for HeldDiscovery {
+        async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            self.model.stream(request, sink).await?;
+            self.streamed.notify_one();
+            std::future::pending().await
+        }
+    }
+    for cancel in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let (script, report_path) = fixture(root.path());
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let settings = settings(&db, &Arc::new(MemorySecretStore::new()));
+        settings
+            .initialize("offline-h152-placeholder")
+            .await
+            .unwrap();
+        settings
+            .set_tool_search_mode(ToolSearchMode::Enabled)
+            .unwrap();
+        if !cancel {
+            settings
+                .set_permission_rules(deepagent_hooks::PermissionRules::new(
+                    [],
+                    [],
+                    ["tool_search".to_string()],
+                ))
+                .unwrap();
+        }
+        let mcp = Arc::new(McpService::new(db.clone()));
+        register_fixture(&mcp, &script, &report_path);
+        prepare(&mcp).await;
+        let model = Arc::new(DiscoveryModel {
+            steps: vec![
+                DiscoveryStep::NativeSearch("discovery-search"),
+                DiscoveryStep::Finish,
+            ],
+            requests: Mutex::new(Vec::new()),
+        });
+        let held = Arc::new(HeldDiscovery {
+            model: model.clone(),
+            streamed: tokio::sync::Notify::new(),
+        });
+        let transport: Arc<dyn HttpTransport> = if cancel { held.clone() } else { model.clone() };
+        let chat =
+            ChatService::new(db.clone(), settings, transport, root.path()).with_mcp(mcp.clone());
+        let session = chat.create_session(None).unwrap();
+        let run = tokio::time::timeout(
+            Duration::from_secs(5),
+            chat.run_in_session(
+                "Discover the synthetic tool.",
+                Some(&session),
+                None,
+                None,
+                Vec::new(),
+                None,
+                false,
+                Some("h152-native-gate"),
+                |_| {},
+                |_| {},
+            ),
+        );
+        let cancellation = async {
+            if cancel {
+                tokio::time::timeout(Duration::from_secs(3), held.streamed.notified())
+                    .await
+                    .unwrap();
+                assert!(chat.request_cancel("h152-native-gate").unwrap().accepted);
+            }
+        };
+        let (result, ()) = tokio::join!(run, cancellation);
+        mcp.ready_registry().close_all().await.unwrap();
+        result.unwrap().unwrap();
+        assert!(chat.discovered_tool_names(&session).is_empty());
+        assert!(discovery_events(&db, &session).is_empty());
+        assert_eq!(report(&report_path)["calls"], serde_json::json!([]));
+        let requests = model.requests.lock().unwrap();
+        assert_eq!(requests.len(), if cancel { 1 } else { 2 });
+        if !cancel {
+            let native = requests[1]["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["type"] == "tool_search_output")
+                .unwrap();
+            assert_eq!(native["status"], "failed");
+            assert_eq!(native["tools"], serde_json::json!([]));
+        }
+        let events = chat.run_events("h152-native-gate", None).unwrap();
+        let terminal: Vec<_> = events
+            .iter()
+            .filter(|event| event.event_type == "run_terminal")
+            .collect();
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(
+            terminal[0].data["kind"],
+            if cancel { "cancelled" } else { "succeeded" }
+        );
+    }
+}
+
+fn assert_native_search_pair(request: &serde_json::Value) {
+    let input = request["input"].as_array().unwrap();
+    let calls: Vec<_> = input
+        .iter()
+        .filter(|item| item["type"] == "tool_search_call")
+        .collect();
+    let outputs: Vec<_> = input
+        .iter()
+        .filter(|item| item["type"] == "tool_search_output")
+        .collect();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(calls[0]["call_id"], "discovery-search");
+    assert_eq!(outputs[0]["call_id"], calls[0]["call_id"]);
+    assert_eq!(outputs[0]["execution"], "client");
+    assert_eq!(outputs[0]["status"], "completed");
+    let tools = outputs[0]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0]["name"], INSPECT);
+    assert_eq!(
+        tools[0]["parameters"]["required"],
+        serde_json::json!(["value"])
+    );
+    assert!(!input.iter().any(
+        |item| item["type"] == "function_call_output" && item["call_id"] == "discovery-search"
+    ));
+}
+
+fn native_items(db: &Database, session: &str) -> Vec<serde_json::Value> {
+    EventStore::new(db)
+        .load_session(session.parse().unwrap())
+        .unwrap()
+        .into_iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::ResponseItemAppended { item }
+                if matches!(
+                    item,
+                    deepagent_core::response_item::ResponseItem::ToolSearchCall { .. }
+                        | deepagent_core::response_item::ResponseItem::ToolSearchOutput { .. }
+                ) =>
+            {
+                Some(serde_json::to_value(item).unwrap())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+async fn check_discovery_reopen(native: bool) {
     let root = tempfile::tempdir().unwrap();
     let (script, report_path) = fixture(root.path());
     let database_path = root.path().join("state.sqlite");
     let secrets = Arc::new(MemorySecretStore::new());
-    let (session, previous_tools, previous_discovery) = {
+    let (session, previous_tools, previous_discovery, previous_native) = {
         let db = Arc::new(Database::open(&database_path).unwrap());
         let settings = settings(&db, &secrets);
         settings
@@ -562,7 +732,11 @@ async fn deferred_mcp_discovery_survives_turns_and_database_reopen_without_sessi
         let mcp = Arc::new(McpService::new(db.clone()));
         register_fixture(&mcp, &script, &report_path);
         prepare(&mcp).await;
-        let model = Arc::new(DiscoveryModel::discovering([DiscoveryStep::Finish]));
+        let mut model = DiscoveryModel::discovering([DiscoveryStep::Finish]);
+        if native {
+            model.steps[0] = DiscoveryStep::NativeSearch("discovery-search");
+        }
+        let model = Arc::new(model);
         let chat = ChatService::new(db.clone(), settings, model.clone(), root.path())
             .with_mcp(mcp.clone());
         let session = chat.create_session(None).unwrap();
@@ -591,6 +765,9 @@ async fn deferred_mcp_discovery_survives_turns_and_database_reopen_without_sessi
         for request in &requests[1..] {
             assert_eq!(advertised(request), [INSPECT]);
             assert_eq!(request["tools"], requests[1]["tools"]);
+            if native {
+                assert_native_search_pair(request);
+            }
         }
         assert_replayed_call(&requests[2], "discovery-inspect");
         assert_replayed_call(&requests[3], "discovery-inspect");
@@ -609,7 +786,19 @@ async fn deferred_mcp_discovery_survives_turns_and_database_reopen_without_sessi
             requests.len(),
             server
         );
-        (session, requests[1]["tools"].clone(), discovered)
+        let native_history = native_items(&db, &session);
+        assert_eq!(native_history.len(), if native { 2 } else { 0 });
+        if native {
+            for item in &native_history {
+                assert!(requests[1]["input"].as_array().unwrap().contains(item));
+            }
+        }
+        (
+            session,
+            requests[1]["tools"].clone(),
+            discovered,
+            native_history,
+        )
     };
 
     // All first-host service/database handles left scope; no injected discovery state.
@@ -640,6 +829,7 @@ async fn deferred_mcp_discovery_survives_turns_and_database_reopen_without_sessi
     assert_eq!(restored_names, [INSPECT]);
     assert!(chat.discovered_tool_names(&fresh).is_empty());
     assert_eq!(discovery_events(&db, &session), previous_discovery);
+    assert_eq!(native_items(&db, &session), previous_native);
     assert!(discovery_events(&db, &fresh).is_empty());
     assert_terminal(&chat, "audit-discovery-reopened");
     assert_terminal(&chat, "audit-discovery-fresh");
@@ -650,6 +840,9 @@ async fn deferred_mcp_discovery_survives_turns_and_database_reopen_without_sessi
     assert_eq!(advertised(&requests[0]), [INSPECT]);
     assert_eq!(requests[0]["tools"], previous_tools);
     assert_replayed_call(&requests[0], "discovery-inspect");
+    if native {
+        assert_native_search_pair(&requests[0]);
+    }
     assert!(advertised(&requests[1]).is_empty());
     assert!(!requests[1]["input"].to_string().contains(CANARY));
     assert!(requests.iter().all(|r| !advertised(r).contains(&OTHER)));

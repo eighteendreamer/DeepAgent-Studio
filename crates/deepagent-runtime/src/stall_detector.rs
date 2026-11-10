@@ -498,6 +498,14 @@ pub fn render_stall_transcript_from_response_items(
                     truncate_snippet(&action)
                 ));
             }
+            ResponseInputItem::ToolSearchCall { .. }
+            | ResponseInputItem::ToolSearchOutput { .. } => {
+                out.push_str("[native tool discovery] ");
+                out.push_str(&truncate_snippet(
+                    &serde_json::to_string(item).unwrap_or_default(),
+                ));
+                out.push('\n');
+            }
             ResponseInputItem::Reasoning { .. } | ResponseInputItem::Message { .. } => {}
         }
     }

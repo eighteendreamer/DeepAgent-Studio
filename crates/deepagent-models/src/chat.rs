@@ -321,6 +321,9 @@ fn response_input_items_to_wire(
                 }
                 value
             }
+            ResponseInputItem::ToolSearchCall { .. }
+            | ResponseInputItem::ToolSearchOutput { .. } => serde_json::to_value(item)
+                .expect("native discovery items contain serializable data"),
         })
         .collect()
 }
@@ -777,6 +780,20 @@ impl Response {
                         name.clone(),
                         serde_json::json!({ "patch": input }),
                     ));
+                }
+                ResponseOutputItem::ToolSearchCall {
+                    call_id: Some(call_id),
+                    execution: deepagent_core::response_item::ToolSearchExecution::Client,
+                    status,
+                    arguments,
+                    ..
+                } if status
+                    .as_deref()
+                    .map_or(true, |status| status == "completed")
+                    && !call_id.trim().is_empty()
+                    && arguments.is_object() =>
+                {
+                    invocations.push((call_id.clone(), "tool_search".into(), arguments.clone()));
                 }
                 _ => {}
             }

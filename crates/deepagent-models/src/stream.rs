@@ -23,6 +23,9 @@ mod sequence;
 #[path = "stream_metadata.rs"]
 mod metadata;
 
+#[path = "stream_tool_search.rs"]
+mod tool_search;
+
 /// Responses API semantic SSE accumulator. DeepSeek sends an event object in
 /// each `data:` payload; the event's `type` selects the semantic delta.
 #[derive(Debug, Default)]
@@ -30,6 +33,7 @@ pub struct ResponseAccumulator {
     sequence: sequence::Sequence,
     metadata: metadata::Metadata,
     text_items: text::TextItems,
+    native_search: tool_search::ToolSearchItems,
     reasoning: String,
     tool_calls: Vec<ToolCallBuilder>,
     output_items: Vec<ResponseOutputItem>,
@@ -282,6 +286,23 @@ impl ResponseAccumulator {
             .and_then(serde_json::Value::as_str)
             .unwrap_or("");
         let item_id = item.get("id").and_then(serde_json::Value::as_str);
+        if matches!(kind, "tool_search_call" | "tool_search_output") {
+            if self.tool_calls.iter().any(|builder| {
+                item_id.is_some_and(|id| builder.item_id.as_deref() == Some(id))
+                    || item
+                        .get("call_id")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|id| builder.id == id)
+                    || output_index.is_some_and(|index| builder.output_index == Some(index))
+            }) {
+                return Err(CoreError::Serialization(
+                    "native discovery conflicts with an existing function call".into(),
+                ));
+            }
+            self.native_search
+                .record(item, output_index, false, &mut self.output_items)?;
+            return Ok(None);
+        }
         // Output item ids locate stream fragments; only the explicit call_id
         // pairs an executable tool call with its output. Never synthesize one.
         let identity = if matches!(kind, "function_call" | "custom_tool_call") {
@@ -293,6 +314,11 @@ impl ResponseAccumulator {
             None
         };
         let call_id = identity.map(|(id, _)| id);
+        if identity.is_some() && self.native_search.conflicts(item_id, call_id, output_index) {
+            return Err(CoreError::Serialization(
+                "function call conflicts with native discovery identity".into(),
+            ));
+        }
         let matches: Vec<_> = self
             .tool_calls
             .iter()
@@ -418,7 +444,22 @@ impl ResponseAccumulator {
                 }
                 self.complete_item(item, Some(output_index as u64), observer)?;
                 self.record_output_item(item, Some(index), Some(output_index as u64))?;
-            } else if item.get("type").and_then(serde_json::Value::as_str) == Some("message") {
+            } else if matches!(
+                item.get("type").and_then(serde_json::Value::as_str),
+                Some("message" | "tool_search_call" | "tool_search_output")
+            ) {
+                // As with function/custom calls, an incomplete terminal may
+                // replay explicit done items but cannot promote a snapshot to
+                // a newly executable host call.
+                if self.is_incomplete()
+                    && matches!(
+                        item.get("type").and_then(serde_json::Value::as_str),
+                        Some("tool_search_call" | "tool_search_output")
+                    )
+                    && !self.native_search.completed_at(output_index as u64)
+                {
+                    continue;
+                }
                 self.record_output_item(item, None, Some(output_index as u64))?;
             }
         }
@@ -470,6 +511,11 @@ impl ResponseAccumulator {
         let Some(kind) = item.get("type").and_then(serde_json::Value::as_str) else {
             return Ok(());
         };
+        if matches!(kind, "tool_search_call" | "tool_search_output") {
+            return self
+                .native_search
+                .record(item, output_index, true, &mut self.output_items);
+        }
         if kind == "message" {
             return self
                 .text_items
@@ -593,6 +639,9 @@ fn response_item_already_present(
     candidate: &ResponseOutputItem,
 ) -> bool {
     match candidate {
+        ResponseOutputItem::ToolSearchCall { .. } | ResponseOutputItem::ToolSearchOutput { .. } => {
+            items.contains(candidate)
+        }
         // Messages are reconciled by provider identity, never text equality.
         // InputMessage is input-only and is never produced as a model output.
         ResponseOutputItem::Message { .. } | ResponseOutputItem::InputMessage { .. } => false,

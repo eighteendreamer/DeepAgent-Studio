@@ -3,6 +3,62 @@ use deepagent_core::clock::FixedClock;
 use deepagent_core::message::{Message, ToolCall};
 
 #[test]
+fn h152_native_discovery_completion_is_one_durable_projection_group() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("native.sqlite");
+    let clock = FixedClock::new(1);
+    let (id, source, expected) = {
+        let db = Database::open(&path).unwrap();
+        let mut session = Session::create(&db, &clock, None).unwrap();
+        session
+            .append_response_item(
+                serde_json::from_value(serde_json::json!({
+                    "type":"tool_search_call", "call_id":"native", "execution":"client",
+                    "status":"completed", "arguments":{"query":"calendar"}
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        let result =
+            serde_json::json!({"matches":[{"name":"calendar_create"},{"name":"unregistered"}]});
+        let schema = serde_json::json!({"type":"function", "name":"calendar_create", "parameters":{"type":"object"}});
+        let completion = session
+            .append_tool_completion(
+                EventPayload::ToolCallCompleted {
+                    call_id: "native".into(),
+                    ok: true,
+                    output: result,
+                    content: Vec::new(),
+                    duration_ms: 1,
+                },
+                &|name| (name == "calendar_create").then(|| schema.clone()),
+            )
+            .unwrap();
+        let store = EventStore::new(&db);
+        let events = store.load_session_for_model(session.id()).unwrap();
+        let tail = events.last().unwrap();
+        assert_eq!(tail.sequence, completion.sequence + 1);
+        assert!(
+            matches!(&tail.payload, EventPayload::ResponseItemAppended { item: ResponseItem::ToolSearchOutput { tools, .. }} if tools == &vec![schema])
+        );
+        assert_eq!(
+            store
+                .resolve_branch_sequence(session.id(), completion.sequence)
+                .unwrap(),
+            tail.sequence
+        );
+        (session.id(), completion.sequence, events)
+    };
+    let db = Database::open(&path).unwrap();
+    let store = EventStore::new(&db);
+    assert_eq!(store.load_session_for_model(id).unwrap(), expected);
+    assert_eq!(
+        store.resolve_branch_sequence(id, source).unwrap(),
+        source + 1
+    );
+}
+
+#[test]
 fn h140_admitted_prompt_context_is_one_replay_branch_and_rewind_group() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("context.sqlite");

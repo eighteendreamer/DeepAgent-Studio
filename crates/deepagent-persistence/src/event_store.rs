@@ -383,6 +383,19 @@ impl<'db> EventStore<'db> {
         project: bool,
         now: Timestamp,
     ) -> Result<Vec<Event>> {
+        self.append_with_tool_schema_projection(session_id, payload, project, now, &|_| None)
+    }
+
+    /// The same atomic source/native frame, with catalog lookup supplied by
+    /// the executing host. The lookup is synchronous and must not perform I/O.
+    pub fn append_with_tool_schema_projection(
+        &self,
+        session_id: SessionId,
+        payload: EventPayload,
+        project: bool,
+        now: Timestamp,
+        schema: &dyn Fn(&str) -> Option<serde_json::Value>,
+    ) -> Result<Vec<Event>> {
         let _activity = self.acquire_activity(session_id)?;
         let _io = self.db.lock_session_io()?;
         let _file_lock = session_files::lock_session(&self.db.session_files_root(), session_id)?;
@@ -394,7 +407,7 @@ impl<'db> EventStore<'db> {
             } else {
                 Vec::new()
             };
-            crate::event_projection::response_items_for_payload(&history, &payload)?
+            crate::event_projection::response_items_with_tool_schemas(&history, &payload, schema)?
         } else {
             Vec::new()
         };

@@ -1287,16 +1287,13 @@ fn pairing_safe_response_item_compaction_split(items: &[ResponseInputItem]) -> O
     loop {
         let before = split;
         for (index, item) in items[..split].iter().enumerate() {
-            let call_id = match item {
-                ResponseInputItem::FunctionCall { call_id, .. }
-                | ResponseInputItem::CustomToolCall { call_id, .. } => call_id,
-                _ => continue,
+            let Some(call_id) = item.client_tool_call_id() else {
+                continue;
             };
-            if items[split..].iter().any(|item| match item {
-                ResponseInputItem::FunctionCallOutput { call_id: id, .. }
-                | ResponseInputItem::CustomToolCallOutput { call_id: id, .. } => id == call_id,
-                _ => false,
-            }) {
+            if items[split..]
+                .iter()
+                .any(|item| item.client_tool_output_call_id() == Some(call_id))
+            {
                 split = split.min(index);
             }
         }
@@ -1377,6 +1374,9 @@ fn render_response_item_for_compaction(item: &ResponseInputItem) -> String {
                 .map(serde_json::Value::to_string)
                 .unwrap_or_default();
             format!("web_search_call id={id} status={status} action={action}")
+        }
+        ResponseInputItem::ToolSearchCall { .. } | ResponseInputItem::ToolSearchOutput { .. } => {
+            serde_json::to_string(item).unwrap_or_default()
         }
     }
 }
@@ -2829,6 +2829,70 @@ mod tests {
             after.len() > before.len(),
             "original events remain in the log"
         );
+    }
+
+    #[tokio::test]
+    async fn h152_native_compaction_preserves_discovery_pair_and_catalog() {
+        use crate::session_memory::testing::{scripted_client, ScriptedTransport};
+        let call: ResponseInputItem = serde_json::from_value(serde_json::json!({
+            "type":"tool_search_call", "call_id":"discovery", "execution":"client",
+            "status":"completed", "arguments":{"query":"calendar"}
+        }))
+        .unwrap();
+        let output: ResponseInputItem = serde_json::from_value(serde_json::json!({
+            "type":"tool_search_output", "call_id":"discovery", "execution":"client",
+            "status":"completed", "tools":[{"type":"function", "name":"calendar_create", "parameters":{"type":"object"}}]
+        })).unwrap();
+        let mut items = vec![
+            ResponseInputItem::Message {
+                role: "user".into(),
+                content: "old detail ".repeat(15_000),
+            },
+            call.clone(),
+        ];
+        for index in 0..5 {
+            items.push(ResponseInputItem::Message {
+                role: if index % 2 == 0 { "user" } else { "assistant" }.into(),
+                content: "tail ".repeat(2_200),
+            });
+            if index == 0 {
+                items.push(output.clone());
+            }
+        }
+        assert_eq!(pairing_safe_response_item_compaction_split(&items), Some(1));
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let clock = deepagent_core::clock::SystemClock;
+        let mut session = deepagent_session::Session::create(&db, &clock, None).unwrap();
+        for item in &items {
+            session.append_response_item(item.clone()).unwrap();
+        }
+        let events = deepagent_persistence::event_store::EventStore::new(&db)
+            .load_session(session.id())
+            .unwrap();
+        let items = crate::input_runtime::response_items_from_events(&events);
+        let compactor = HookedReactiveContextCompactor::new(
+            scripted_client(vec![ScriptedTransport::text(
+                "{\"goal\":\"calendar\",\"completed\":[\"old work\"]}",
+            )]),
+            "deepseek-flash".into(),
+            Arc::new(HookRegistry::new()),
+            session.id(),
+            db.clone(),
+        );
+        let compacted = compactor
+            .compact_response_items(None, &items, CompactionTrigger::ContextOverflow)
+            .await
+            .unwrap()
+            .unwrap();
+        let kept = compacted.response_items.unwrap();
+        assert!(kept.contains(&call));
+        assert!(kept.contains(&output));
+        assert!(compacted.tokens_after < compacted.tokens_before);
+        let events = deepagent_persistence::event_store::EventStore::new(&db)
+            .load_session(session.id())
+            .unwrap();
+        let replay = crate::input_runtime::response_items_from_events(&events);
+        assert_eq!(replay, kept);
     }
 
     #[tokio::test]

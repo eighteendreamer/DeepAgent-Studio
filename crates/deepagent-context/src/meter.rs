@@ -132,6 +132,14 @@ pub fn measure_response_surface_with<C: TokenCounter + ?Sized>(
                         .and_then(|value| serde_json::to_string(value).ok())
                         .map_or(0, |text| counter.count(&text));
             }
+            ResponseInputItem::ToolSearchCall { .. } => {
+                out.tool_calls +=
+                    4 + counter.count(&serde_json::to_string(item).unwrap_or_default());
+            }
+            ResponseInputItem::ToolSearchOutput { .. } => {
+                out.tool_outputs +=
+                    4 + counter.count(&serde_json::to_string(item).unwrap_or_default());
+            }
         }
     }
     out

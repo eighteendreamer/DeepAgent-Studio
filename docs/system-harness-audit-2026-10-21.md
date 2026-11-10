@@ -6167,7 +6167,7 @@ Models自身all-target/all-feature/no-deps严格lint exit101/7.747秒，唯一�
 
 ### H-152：官方 `tool_search_call` 在 Responses adapter 中被静默丢弃
 
-**当前状态（2026-11-10）：阻塞待处理，完整支持协议待资料。用户已明确选择“完整支持，先补齐协议依据”，不接受以显式拒绝作为本项交付。原探针当前仍0/1失败，正常stream对照28/0；未改生产代码、未关闭，见修复台账E-H152-01。**
+**当前状态（2026-11-10）：已修复并验收，限E-H152-04 Windows本机离线范围。用户确认保持Responses；原生typed/装配/配对/截断7项、真实MCP发现整组9项、原子projection/冷恢复和压缩回放通过；最终workspace、CLI、check、lint/Tauri结果及既有失败分别保留。没有真实DeepSeek线上启用/回传或其他OS/GUI验收，不将本地兼容契约冒称供应商在线互通。提交hash在取得后另行回填。**
 
 **级别：中（P2，条件性协议能力缺口）；触发条件：provider 的 Responses 流返回原生 `tool_search_call` output item。** DeepSeek 官方输出 schema 和流事件表都声明了该类型，但当前公开请求工具 schema 没有说明普通 function/custom/web-search 配置如何启用它，因此本项不能扩大为默认请求必现。
 
@@ -6198,6 +6198,18 @@ Models自身all-target/all-feature/no-deps严格lint exit101/7.747秒，唯一�
 - [DeepSeek接口中英文](https://api-docs.deepseek.com/zh-cn/api/create-response/)均列出该输出和关联call_id，但请求tools仅列function/custom/web_search，支持的input项不含tool-search call/output；未找到完整execution、arguments和结果回传定义。[官方指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)确认added/done可携该输出，并区分它与usage.server_tool_use.tool_search的网页检索计数。因此不能用网页搜索API或计费字段补造工具发现协议，也不能仅据文档缺项断言服务端一定400或绝对不支持。
 - 本地Codex参考具有独立ToolSearchCall/ToolSearchOutput（可空call_id、execution、结构化arguments/tools）及专用router/pairing；[OpenAI官方工具发现指南](https://developers.openai.com/api/docs/guides/tools-tool-search)给出客户端/服务端执行和结果回传机制，但这是OpenAI模型的契约，不证明DeepSeek接受相同声明/字段。对当前`借鉴/deepseek-harness/packages`的ts/md定向检索未找到原生call/output实现；未将“无匹配”扩大成该参考全部版本都不支持。
 - 用户明确要求完整支持。当前具体缺项：DeepSeek可达启用声明与适用模型；call完整结构及client/server、空call_id/状态/增量规则；成功接受的结果回传格式、工具目录schema与错误/取消语义。已一次请求现成官方补充契约或脱敏成功请求→SSE→后续回传样例，不需要真实Key，也不要求发起收费/真实服务测试。取得前不改生产解析器、不实现猜测DTO、不切换供应商、不把“明确拒绝”或现有本地function当成完成。标记本项阻塞待资料，但整个修复目标保持active，其他独立问题不因此全部阻塞。
+
+#### E-H152-02～04：Responses原生适配与真实运行闭环（2026-11-10，本机范围验收完成）
+
+- 保留E01及原始失败证据。用户明确保持Responses，不新增Messages；参考真实ToolSearch query/max_results及延迟披露设计，原生具体item词汇以本地兼容契约明确标识，不冒称DeepSeek在线已验。
+- Core typed client/server call/output进入原Accumulator、request serializer和共享Surface；普通function名为tool_search仍为function；client原生调用复用现有ToolRegistry/工具管线，server目录不注册/执行。共享身份/配对、snip、compaction、context meter及interruption消费方同步。
+- 动态schema真实形状红测0/1（53.59秒）、正式Kernel冷开首次0/1（287.99秒）分别揭示顶层matches/刷新时序及持久化错写function输出。根因统一为原生发现未贯通既有Surface和原子projection，不另建运行/事件/凭据链。EventStore同一source/native原子帧接收执行端授权目录，ModelAgent与持久化共用Core映射；失败生成本地failed状态、空目录。
+- Models原生6/0/0（27.93秒）；正式`cargo test --target-dir target/h66-repair-20261110 -p deepagent-app-core --features web --test kernel_v2_e2e mcp_discovery_restore::h152_native_discovery --offline -j 2 -- --nocapture --test-threads=1`2/0/0、144.72秒含编译，体2.91秒，真实stdio发现/调用唯一、次轮与SQLite/服务冷重开保留目录、新会话隔离及拒绝/取消零发现副作用。中途1/1的取消夹具异步回调时序错误保留并校正，不改生产取消边界。
+- 原探针转为默认正向typed回归，另加原子projection及snip/compaction回归；最终workspace/http/runtime/session/AppCore/lint/Tauri矩阵未结束，不以候选局部通过记验收。源码enum新增变体需外部Rust穷举消费者迁移；旧JSON和普通function历史不重写，无真实数据库迁移、真实provider请求或费用/token节省承诺。详情和最终结果继续同步台账。
+
+- **E04最终结果**：追加截断snapshot无item.done不得执行的真实红测0/1，修正后原生组7/0；未重新打开或重复计H18。20份源码冻结后Models/http lib197/0/9忽略及集成组通过、Session23/0、原生compaction1/0、MCP整组9/0；workspace check、当前CLI build、fmt、Tauri check均0。首次workspace编译因整个隔离目录被清理而LNK1104，用户明确确认“刚才清理了”；没有修改生产代码或掩盖该失败。
+- 补建原隔离目录后，同一冻结源码`cargo test --target-dir target/h66-repair-20261110 --workspace --features deepagent-app-core/web --offline --no-fail-fast -j 1 -- --test-threads=2 --quiet`完整运行，exit101/1769.38秒，156顶层target **5225 passed / 4 failed / 174 ignored**（嵌套helper不重复计数）。AppCore lib1639/0/53、Kernel353/1/15、Models197/0/9、Persistence205/0/0、Session23/0/0、Runtime472/1/6；4个失败分别为既有图像DACL恢复、CLI pending-approval快照、H306空defaultUserPrompt、Runtime checkpoint DACL恢复，未混修。500+工具调用长程组5/0、321.62秒。
+- strict clippy exit101（原`models/client.rs:493 clone_on_copy`）；补跑7个改动crate lib的`clippy --no-deps ... --features deepagent-app-core/web --lib --offline -j 2`exit0/40.66秒，保留9个既有warning，不称strict通过。CLI/用户原快照在finally恢复且SHA256一致，20源hash全部一致。逐命令/用时、原红绿、残余限制和提交回填见台账E04；不声明整个系统全绿。
 
 ### H-153：Responses 规范思考档位贯通缺陷（规范值链路已修复；别名见 H-155）
 

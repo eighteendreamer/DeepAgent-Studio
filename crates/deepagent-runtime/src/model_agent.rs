@@ -916,6 +916,30 @@ impl ModelAgent {
         }
     }
 
+    fn push_native_tool_search_observation(
+        &mut self,
+        call_id: String,
+        output: &serde_json::Value,
+        succeeded: bool,
+    ) {
+        let item =
+            ResponseInputItem::native_tool_search_output(call_id, succeeded, output, |name| {
+                self.tools
+                    .iter()
+                    .find(|schema| schema.function.name == name)
+                    .map(|schema| {
+                        serde_json::json!({
+                            "type": "function",
+                            "name": schema.function.name,
+                            "description": schema.function.description,
+                            "parameters": schema.function.parameters,
+                        })
+                    })
+            });
+        self.response_history.items.push(item);
+        self.sync_message_projection();
+    }
+
     fn adopt_compacted_history(&mut self, compacted: &ReactiveCompaction) {
         self.reset_tool_context("compaction");
         self.invalidate_memory_prefetch();
@@ -1401,11 +1425,24 @@ impl ModelAgent {
         };
         let content = serde_json::to_string(&envelope).unwrap_or_else(|_| obs.output.to_string());
         if let Some(call_id) = call_id {
-            self.push_tool_observation(
-                call_id,
-                &obs.tool,
-                deepagent_core::tool_content::ToolResultBody::with_parts(content, &obs.content),
-            );
+            let native_discovery = self.response_history.items.iter().any(|item| {
+                matches!(
+                    item,
+                    ResponseInputItem::ToolSearchCall {
+                        execution: deepagent_core::response_item::ToolSearchExecution::Client,
+                        ..
+                    }
+                ) && item.client_tool_call_id() == Some(call_id.as_str())
+            });
+            if obs.tool == "tool_search" && native_discovery {
+                self.push_native_tool_search_observation(call_id, &obs.output, obs.ok);
+            } else {
+                self.push_tool_observation(
+                    call_id,
+                    &obs.tool,
+                    deepagent_core::tool_content::ToolResultBody::with_parts(content, &obs.content),
+                );
+            }
         } else {
             // Verification, Stop-hook and CompletionGate feedback is generated
             // by the kernel, not by a model tool_use block. Sending it as a
@@ -2471,14 +2508,16 @@ impl ModelAgent {
             return Err(CoreError::other("request cancelled by user"));
         }
         self.request_max_output_override = None;
+        // Tool execution has already updated the host's discovery set. Read
+        // its committed schema generation before producing native catalogs.
+        if let Some(source) = &self.tool_schema_source {
+            self.tools = source()?;
+        }
         // Feed back every tool result from the previous step (more than one when
         // the previous turn ran tools in parallel). Order matters: tool results
         // must follow the assistant turn that requested them.
         for obs in last {
             self.record_observation(obs);
-        }
-        if let Some(source) = &self.tool_schema_source {
-            self.tools = source()?;
         }
 
         // Gather the completed Surface mutations and pending reminders before
@@ -5604,6 +5643,139 @@ mod tests {
         assert!(loaded
             .iter()
             .any(|tool| tool["name"] == "mcp__rea__inspect"));
+    }
+
+    #[tokio::test]
+    async fn native_tool_search_observation_uses_paired_output_and_existing_discovery_set() {
+        let native = serde_json::json!({
+            "type": "tool_search_call",
+            "id": "tsc-runtime",
+            "call_id": "native-search",
+            "execution": "client",
+            "status": "completed",
+            "arguments": {"query": "rea managed", "max_results": 1}
+        });
+        let transport = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([
+                vec![
+                    serde_json::json!({
+                        "type":"response.output_item.done", "output_index":0, "item":native
+                    })
+                    .to_string(),
+                    response_completed(serde_json::json!([native])),
+                ],
+                response_text_completed("discovery loaded"),
+            ])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let client = Arc::new(ModelClient::new(
+            transport.clone(),
+            ModelConfig::deepseek("test"),
+        ));
+        let schema = ToolSchema::function(
+            "mcp__rea__inspect",
+            "Inspect a managed artifact",
+            serde_json::json!({"type":"object","properties":{}}),
+        );
+        let visible = Arc::new(Mutex::new(Vec::new()));
+        let source = visible.clone();
+        let mut agent = ModelAgent::new(client, "model", "system", "discover", vec![])
+            .with_tool_schema_source(Arc::new(move || source.lock().unwrap().clone()));
+        let first = agent.think(0, &[]).await.unwrap();
+        assert!(matches!(first, AgentDecision::CallTool(ref call) if call.name == "tool_search"));
+        visible.lock().unwrap().push(schema);
+        let observation = Observation {
+            content: Vec::new(),
+            tool: "tool_search".into(),
+            ok: true,
+            output: serde_json::json!({"matches":[{"name":"mcp__rea__inspect"}]}),
+            raw_output: None,
+            call_id: Some("native-search".into()),
+        };
+        agent
+            .think(1, std::slice::from_ref(&observation))
+            .await
+            .unwrap();
+        let requests = transport.requests.lock().unwrap();
+        let input = requests[1]["input"].as_array().unwrap();
+        let output = input
+            .iter()
+            .find(|item| item["type"] == "tool_search_output")
+            .expect("native client discovery must receive a paired output item");
+        assert_eq!(output["call_id"], "native-search");
+        assert_eq!(output["execution"], "client");
+        assert_eq!(output["tools"][0]["name"], "mcp__rea__inspect");
+        assert!(!input
+            .iter()
+            .any(|item| item["type"] == "function_call_output"));
+    }
+
+    #[tokio::test]
+    async fn failed_native_tool_search_observation_is_not_reported_as_completed() {
+        let native = serde_json::json!({
+            "type": "tool_search_call",
+            "id": "tsc-runtime-failed",
+            "call_id": "native-search-failed",
+            "execution": "client",
+            "status": "completed",
+            "arguments": {"query": "missing", "max_results": 1}
+        });
+        let transport = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([
+                vec![
+                    serde_json::json!({
+                        "type":"response.output_item.done", "output_index":0, "item":native
+                    })
+                    .to_string(),
+                    response_completed(serde_json::json!([native])),
+                ],
+                response_text_completed("search failed"),
+            ])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let client = Arc::new(ModelClient::new(
+            transport.clone(),
+            ModelConfig::deepseek("test"),
+        ));
+        let schema = ToolSchema::function(
+            "mcp__rea__inspect",
+            "Inspect a managed artifact",
+            serde_json::json!({"type":"object","properties":{}}),
+        );
+        let mut agent = ModelAgent::new(client, "model", "system", "discover", vec![schema]);
+        assert!(matches!(
+            agent.think(0, &[]).await.unwrap(),
+            AgentDecision::CallTool(ref call) if call.name == "tool_search"
+        ));
+        let observation = Observation {
+            content: Vec::new(),
+            tool: "tool_search".into(),
+            ok: false,
+            output: serde_json::json!({
+                "status":"error",
+                "tool":"tool_search",
+                "error":"search backend unavailable"
+            }),
+            raw_output: None,
+            call_id: Some("native-search-failed".into()),
+        };
+        agent
+            .think(1, std::slice::from_ref(&observation))
+            .await
+            .unwrap();
+        let requests = transport.requests.lock().unwrap();
+        let input = requests[1]["input"].as_array().unwrap();
+        let output = input
+            .iter()
+            .find(|item| item["type"] == "tool_search_output")
+            .expect("failed native discovery must still receive a paired output item");
+        assert_eq!(output["call_id"], "native-search-failed");
+        assert_eq!(output["execution"], "client");
+        assert_eq!(output["status"], "failed");
+        assert_eq!(output["tools"], serde_json::json!([]));
+        assert!(!input
+            .iter()
+            .any(|item| item["type"] == "function_call_output"));
     }
 
     #[tokio::test]

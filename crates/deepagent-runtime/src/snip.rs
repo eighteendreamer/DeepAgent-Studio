@@ -140,25 +140,13 @@ pub fn plan_response_item_snip(
             continue;
         }
         let crosses_pair = items.iter().enumerate().any(|(index, item)| {
-            let call_id = match item {
-                ResponseInputItem::FunctionCall { call_id, .. }
-                | ResponseInputItem::CustomToolCall { call_id, .. } => call_id,
-                _ => return false,
+            let Some(call_id) = item.client_tool_call_id() else {
+                return false;
             };
-            items
-                .iter()
-                .enumerate()
-                .any(|(result_index, result)| match result {
-                    ResponseInputItem::FunctionCallOutput {
-                        call_id: result, ..
-                    }
-                    | ResponseInputItem::CustomToolCallOutput {
-                        call_id: result, ..
-                    } if result == call_id => {
-                        (start..end).contains(&index) != (start..end).contains(&result_index)
-                    }
-                    _ => false,
-                })
+            items.iter().enumerate().any(|(result_index, result)| {
+                result.client_tool_output_call_id() == Some(call_id)
+                    && (start..end).contains(&index) != (start..end).contains(&result_index)
+            })
         });
         if crosses_pair {
             continue;
@@ -307,6 +295,36 @@ mod tests {
             },
         ];
         assert!(!plan_response_item_snip(&items, &["u1".into()], 0).removes_anything());
+    }
+
+    #[test]
+    fn h152_discovery_snip_retains_crossing_pair_and_removes_a_complete_pair() {
+        let call: ResponseInputItem = serde_json::from_value(serde_json::json!({
+            "type":"tool_search_call", "call_id":"discovery", "execution":"client",
+            "status":"completed", "arguments":{"query":"calendar"}
+        }))
+        .unwrap();
+        let output: ResponseInputItem = serde_json::from_value(serde_json::json!({
+            "type":"tool_search_output", "call_id":"discovery", "execution":"client",
+            "status":"completed", "tools":[]
+        }))
+        .unwrap();
+        let crossing = vec![
+            native_user("[id:u1] old"),
+            call.clone(),
+            native_user("[id:u2] next"),
+            output.clone(),
+        ];
+        assert!(!plan_response_item_snip(&crossing, &["u1".into()], 0).removes_anything());
+        let complete = vec![
+            native_user("[id:u1] old"),
+            call,
+            output,
+            native_user("[id:u2] next"),
+        ];
+        let plan = plan_response_item_snip(&complete, &["u1".into()], 1);
+        assert_eq!(plan.applied_tags, ["u1"]);
+        assert_eq!(plan.apply(complete), [native_user("[id:u2] next")]);
     }
 
     #[test]

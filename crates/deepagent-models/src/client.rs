@@ -666,6 +666,10 @@ mod tool_projection_tests;
 mod output_limit_tests;
 
 #[cfg(test)]
+#[path = "client_native_tool_search_tests.rs"]
+mod native_tool_search_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::chat_completions::ChatCompletionRequest;
@@ -1240,7 +1244,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: official tool_search_call output must not be silently dropped"]
     async fn audit_responses_tool_search_call_is_not_silently_dropped() {
         let client = client_with(vec![
             r#"{"type":"response.output_item.done","item":{"type":"tool_search_call","call_id":"search-1","execution":"client","arguments":{"query":"calendar create","limit":1}}}"#
@@ -1255,11 +1258,16 @@ mod tests {
                 vec![Message::user("find a calendar tool")],
             ))
             .await;
-        eprintln!("Responses tool_search_call audit: result={result:?}");
-        assert!(
-            result.is_err(),
-            "an unsupported official tool_search_call must be rejected instead of silently dropped"
+        let response = result.expect("native discovery must remain usable, not merely rejected");
+        let items = serde_json::to_value(&response.output_items).unwrap();
+        assert_eq!(items[0]["type"], "tool_search_call");
+        assert_eq!(items[0]["call_id"], "search-1");
+        assert_eq!(items[0]["execution"], "client");
+        assert_eq!(
+            items[0]["arguments"],
+            serde_json::json!({"query":"calendar create","limit":1})
         );
+        assert_eq!(response.tool_invocations_from_items().len(), 1);
     }
 
     #[test]

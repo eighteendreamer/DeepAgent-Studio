@@ -6,7 +6,9 @@
 //! metadata use these item semantics.
 
 use deepagent_core::message::{Message, Role};
-pub use deepagent_core::response_item::{ResponseInputItem, ResponseItem, ResponseOutputItem};
+pub use deepagent_core::response_item::{
+    ResponseInputItem, ResponseItem, ResponseOutputItem, ToolSearchExecution,
+};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
@@ -22,17 +24,35 @@ pub(crate) fn validate_tool_call_ids(
     for (index, item) in items.iter().enumerate() {
         let (call_id, kind, seen) = match item {
             ResponseInputItem::FunctionCall { call_id, .. } => {
-                (call_id, "function_call", &mut call_ids)
+                (call_id.as_str(), "function_call", &mut call_ids)
             }
             ResponseInputItem::FunctionCallOutput { call_id, .. } => {
-                (call_id, "function_call_output", &mut output_ids)
+                (call_id.as_str(), "function_call_output", &mut output_ids)
             }
             ResponseInputItem::CustomToolCall { call_id, .. } => {
-                (call_id, "custom_tool_call", &mut call_ids)
+                (call_id.as_str(), "custom_tool_call", &mut call_ids)
             }
             ResponseInputItem::CustomToolCallOutput { call_id, .. } => {
-                (call_id, "custom_tool_call_output", &mut output_ids)
+                (call_id.as_str(), "custom_tool_call_output", &mut output_ids)
             }
+            ResponseInputItem::ToolSearchCall {
+                call_id,
+                execution: ToolSearchExecution::Client,
+                ..
+            } => (
+                call_id.as_deref().unwrap_or_default(),
+                "tool_search_call",
+                &mut call_ids,
+            ),
+            ResponseInputItem::ToolSearchOutput {
+                call_id,
+                execution: ToolSearchExecution::Client,
+                ..
+            } => (
+                call_id.as_deref().unwrap_or_default(),
+                "tool_search_output",
+                &mut output_ids,
+            ),
             _ => continue,
         };
         if call_id.trim().is_empty() {
@@ -40,7 +60,7 @@ pub(crate) fn validate_tool_call_ids(
                 "Responses input item {index} ({kind}) requires a non-empty call_id"
             )));
         }
-        if let Some(previous) = seen.insert(call_id.as_str(), index) {
+        if let Some(previous) = seen.insert(call_id, index) {
             return Err(deepagent_core::error::CoreError::invalid(format!(
                 "Responses input item {index} ({kind}) repeats call_id from item {previous}"
             )));
@@ -59,22 +79,31 @@ pub(crate) fn normalize_tool_output_kinds(
     validate_tool_call_ids(items)?;
     let calls: HashMap<_, _> = items
         .iter()
-        .filter_map(|item| match item {
-            ResponseInputItem::FunctionCall { call_id, .. } => Some((call_id.as_str(), false)),
-            ResponseInputItem::CustomToolCall { call_id, .. } => Some((call_id.as_str(), true)),
-            _ => None,
-        })
+        .filter_map(|item| item.client_tool_call_id().map(|id| (id, item)))
         .collect();
     let mut normalized = Cow::Borrowed(items);
     for (index, item) in items.iter().enumerate() {
+        if let Some(call) = item
+            .client_tool_output_call_id()
+            .and_then(|id| calls.get(id))
+        {
+            if matches!(call, ResponseInputItem::ToolSearchCall { .. })
+                != matches!(item, ResponseInputItem::ToolSearchOutput { .. })
+            {
+                return Err(deepagent_core::error::CoreError::invalid(format!(
+                    "Responses input item {index} has a mismatched native discovery output kind"
+                )));
+            }
+        }
         let (call_id, output, custom) = match item {
             ResponseInputItem::FunctionCallOutput { call_id, output } => (call_id, output, false),
             ResponseInputItem::CustomToolCallOutput { call_id, output } => (call_id, output, true),
             _ => continue,
         };
-        let Some(&call_custom) = calls.get(call_id.as_str()) else {
+        let Some(call) = calls.get(call_id.as_str()) else {
             continue;
         };
+        let call_custom = matches!(call, ResponseInputItem::CustomToolCall { .. });
         if call_custom != custom {
             normalized.to_mut()[index] = if call_custom {
                 ResponseInputItem::CustomToolCallOutput {
@@ -214,6 +243,7 @@ pub fn repair_tool_call_pairs(items: &[ResponseInputItem]) -> Vec<ResponseInputI
     let items = normalized.as_ref();
     let mut call_ids = HashSet::new();
     let mut custom_call_ids = HashSet::new();
+    let mut search_call_ids = HashSet::new();
     let mut outputs = std::collections::HashMap::<String, ResponseInputItem>::new();
     let mut orphan_outputs = Vec::new();
 
@@ -221,13 +251,19 @@ pub fn repair_tool_call_pairs(items: &[ResponseInputItem]) -> Vec<ResponseInputI
     // output can precede its call after import/replay and is not an orphan.
     // Identity validation above makes each association unambiguous.
     for item in items {
+        if let Some(id) = item.client_tool_call_id() {
+            call_ids.insert(id.to_string());
+        }
         match item {
-            ResponseInputItem::FunctionCall { call_id, .. } => {
-                call_ids.insert(call_id.clone());
-            }
             ResponseInputItem::CustomToolCall { call_id, .. } => {
-                call_ids.insert(call_id.clone());
                 custom_call_ids.insert(call_id.clone());
+            }
+            ResponseInputItem::ToolSearchCall {
+                execution: ToolSearchExecution::Client,
+                call_id: Some(id),
+                ..
+            } => {
+                search_call_ids.insert(id.clone());
             }
             _ => {}
         }
@@ -235,16 +271,12 @@ pub fn repair_tool_call_pairs(items: &[ResponseInputItem]) -> Vec<ResponseInputI
     // Reconstruction below retains each contiguous provider call group and
     // emits its real results after the group, regardless of input result order.
     for item in items {
-        match item {
-            ResponseInputItem::FunctionCallOutput { call_id, .. }
-            | ResponseInputItem::CustomToolCallOutput { call_id, .. } => {
-                if call_ids.contains(call_id) {
-                    outputs.insert(call_id.clone(), item.clone());
-                } else {
-                    orphan_outputs.push(item.clone());
-                }
+        if let Some(call_id) = item.client_tool_output_call_id() {
+            if call_ids.contains(call_id) {
+                outputs.insert(call_id.to_string(), item.clone());
+            } else {
+                orphan_outputs.push(item.clone());
             }
-            _ => {}
         }
     }
 
@@ -252,28 +284,21 @@ pub fn repair_tool_call_pairs(items: &[ResponseInputItem]) -> Vec<ResponseInputI
     let mut emitted_outputs = HashSet::new();
     let mut pending_group = Vec::new();
     for (index, item) in items.iter().enumerate() {
-        match item {
-            ResponseInputItem::FunctionCall { call_id, .. }
-            | ResponseInputItem::CustomToolCall { call_id, .. } => {
-                repaired.push(item.clone());
-                pending_group.push(call_id.clone());
+        if let Some(call_id) = item.client_tool_call_id() {
+            repaired.push(item.clone());
+            pending_group.push(call_id.to_string());
+        } else if let Some(call_id) = item.client_tool_output_call_id() {
+            // Outputs are emitted after their call group. An output that
+            // has no call gets a placeholder pair below.
+            if !emitted_outputs.contains(call_id) {
+                tracing::debug!(call_id = %call_id, "deferring Responses tool output until its call");
             }
-            ResponseInputItem::FunctionCallOutput { call_id, .. }
-            | ResponseInputItem::CustomToolCallOutput { call_id, .. } => {
-                // Outputs are emitted after their call group. An output that
-                // has no call gets a placeholder pair below.
-                if !emitted_outputs.contains(call_id) {
-                    tracing::debug!(call_id = %call_id, "deferring Responses tool output until its call");
-                }
-            }
-            _ => repaired.push(item.clone()),
+        } else {
+            repaired.push(item.clone());
         }
-        let next_is_call = items.get(index + 1).is_some_and(|next| {
-            matches!(
-                next,
-                ResponseInputItem::FunctionCall { .. } | ResponseInputItem::CustomToolCall { .. }
-            )
-        });
+        let next_is_call = items
+            .get(index + 1)
+            .is_some_and(|next| next.client_tool_call_id().is_some());
         if !next_is_call {
             for call_id in pending_group.drain(..) {
                 if let Some(output) = outputs.get(&call_id) {
@@ -281,7 +306,15 @@ pub fn repair_tool_call_pairs(items: &[ResponseInputItem]) -> Vec<ResponseInputI
                 } else {
                     tracing::warn!(call_id = %call_id, "missing Responses tool output; synthesizing failure result");
                     let output = r#"{"status":"error","error":"tool result missing; the previous tool execution was interrupted or its result was not persisted"}"#.to_string();
-                    if custom_call_ids.contains(&call_id) {
+                    if search_call_ids.contains(&call_id) {
+                        repaired.push(ResponseInputItem::ToolSearchOutput {
+                            id: None,
+                            call_id: Some(call_id.clone()),
+                            status: "failed".into(),
+                            execution: ToolSearchExecution::Client,
+                            tools: Vec::new(),
+                        });
+                    } else if custom_call_ids.contains(&call_id) {
                         repaired.push(ResponseInputItem::CustomToolCallOutput {
                             call_id: call_id.clone(),
                             output: output.into(),
@@ -299,16 +332,23 @@ pub fn repair_tool_call_pairs(items: &[ResponseInputItem]) -> Vec<ResponseInputI
     }
 
     for item in orphan_outputs {
-        let call_id = match &item {
-            ResponseInputItem::FunctionCallOutput { call_id, .. }
-            | ResponseInputItem::CustomToolCallOutput { call_id, .. } => call_id.clone(),
-            _ => unreachable!("orphan_outputs only contains tool outputs"),
-        };
+        let call_id = item
+            .client_tool_output_call_id()
+            .expect("only client outputs are classified")
+            .to_string();
         if !emitted_outputs.insert(call_id.clone()) {
             continue;
         }
         tracing::warn!(call_id = %call_id, "missing Responses tool call; synthesizing placeholder call");
-        if matches!(item, ResponseInputItem::CustomToolCallOutput { .. }) {
+        if matches!(item, ResponseInputItem::ToolSearchOutput { .. }) {
+            repaired.push(ResponseInputItem::ToolSearchCall {
+                id: None,
+                call_id: Some(call_id.clone()),
+                status: Some("completed".into()),
+                execution: ToolSearchExecution::Client,
+                arguments: serde_json::json!({}),
+            });
+        } else if matches!(item, ResponseInputItem::CustomToolCallOutput { .. }) {
             repaired.push(ResponseInputItem::CustomToolCall {
                 call_id: call_id.clone(),
                 name: "apply_patch".to_string(),
@@ -342,18 +382,12 @@ pub(crate) fn chat_projection_history_is_safe(items: &[ResponseInputItem]) -> bo
     let mut pending_calls = HashSet::new();
 
     for item in items {
-        match item {
-            ResponseInputItem::FunctionCall { call_id, .. }
-            | ResponseInputItem::CustomToolCall { call_id, .. } => {
-                pending_calls.insert(call_id.as_str());
-            }
-            ResponseInputItem::FunctionCallOutput { call_id, .. }
-            | ResponseInputItem::CustomToolCallOutput { call_id, .. }
-                if !pending_calls.remove(call_id.as_str()) =>
-            {
+        if let Some(id) = item.client_tool_call_id() {
+            pending_calls.insert(id);
+        } else if let Some(id) = item.client_tool_output_call_id() {
+            if !pending_calls.remove(id) {
                 return false;
             }
-            _ => {}
         }
     }
 
@@ -484,7 +518,38 @@ pub fn messages_from_response_items(
                         .with_attachments(output.attachments().cloned().collect()),
                 );
             }
-            ResponseItem::WebSearchCall { .. } => {
+            ResponseItem::ToolSearchCall {
+                call_id: Some(call_id),
+                execution: ToolSearchExecution::Client,
+                arguments,
+                status,
+                ..
+            } if status
+                .as_deref()
+                .map_or(true, |status| status == "completed") =>
+            {
+                pending_tool_calls.push(deepagent_core::message::ToolCall {
+                    id: call_id.clone(),
+                    name: "tool_search".into(),
+                    arguments: arguments.clone(),
+                });
+            }
+            ResponseItem::ToolSearchOutput {
+                call_id: Some(call_id),
+                execution: ToolSearchExecution::Client,
+                tools,
+                status,
+                ..
+            } => {
+                flush_tool_calls(&mut pending_tool_calls, &mut out, &mut pending_reasoning);
+                out.push(Message::tool_result(
+                    call_id.clone(),
+                    serde_json::json!({"status":status,"tools":tools}).to_string(),
+                ));
+            }
+            ResponseItem::WebSearchCall { .. }
+            | ResponseItem::ToolSearchCall { .. }
+            | ResponseItem::ToolSearchOutput { .. } => {
                 flush_tool_calls(&mut pending_tool_calls, &mut out, &mut pending_reasoning);
             }
         }

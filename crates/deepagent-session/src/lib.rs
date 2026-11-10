@@ -206,6 +206,32 @@ impl<'db, C: Clock> Session<'db, C> {
         self.append_with_response_projection(EventPayload::ResponseItemAppended { item }, false)
     }
 
+    /// Record a completion with the executing host's authorized tool catalog.
+    /// Source and native result remain one ordinary atomic projection frame.
+    pub fn append_tool_completion(
+        &mut self,
+        payload: EventPayload,
+        schema: &dyn Fn(&str) -> Option<serde_json::Value>,
+    ) -> Result<Event> {
+        if !matches!(payload, EventPayload::ToolCallCompleted { .. }) {
+            return Err(CoreError::invalid("expected a tool completion"));
+        }
+        let events = EventStore::new(self.db).append_with_tool_schema_projection(
+            self.id,
+            payload,
+            true,
+            self.clock.now(),
+            schema,
+        )?;
+        for event in &events {
+            self.state.apply(&event.payload);
+        }
+        Ok(events
+            .into_iter()
+            .next()
+            .expect("committed completion has a source"))
+    }
+
     /// Preserve source input and its admitted hook context in one native group.
     pub fn append_user_prompt(
         &mut self,

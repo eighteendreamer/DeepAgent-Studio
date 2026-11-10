@@ -196,6 +196,14 @@ pub(crate) fn response_items_for_payload(
     history: &[Event],
     payload: &EventPayload,
 ) -> Result<Vec<ResponseItem>> {
+    response_items_with_tool_schemas(history, payload, &|_| None)
+}
+
+pub(crate) fn response_items_with_tool_schemas(
+    history: &[Event],
+    payload: &EventPayload,
+    schema: &dyn Fn(&str) -> Option<serde_json::Value>,
+) -> Result<Vec<ResponseItem>> {
     let mut items = Vec::new();
     match payload {
         EventPayload::MessageAppended { message } => {
@@ -262,6 +270,13 @@ pub(crate) fn response_items_for_payload(
             content,
             ..
         } => {
+            if history.iter().any(|event| matches!(&event.payload,
+                EventPayload::ResponseItemAppended { item: ResponseItem::ToolSearchCall {
+                    call_id: Some(id), execution: deepagent_core::response_item::ToolSearchExecution::Client, ..
+                }} if id == call_id)) {
+                items.push(ResponseItem::native_tool_search_output(call_id.clone(), *ok, output, schema));
+                return Ok(items);
+            }
             // Model-backed runs persist the provider-native call before the
             // legacy ToolCallRequested projection. Resolve the call kind from
             // whichever representation is newest so a completed custom call
