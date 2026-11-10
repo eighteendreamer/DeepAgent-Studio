@@ -6167,6 +6167,8 @@ Models自身all-target/all-feature/no-deps严格lint exit101/7.747秒，唯一�
 
 ### H-152：官方 `tool_search_call` 在 Responses adapter 中被静默丢弃
 
+**当前状态（2026-11-10）：阻塞待处理，完整支持协议待资料。用户已明确选择“完整支持，先补齐协议依据”，不接受以显式拒绝作为本项交付。原探针当前仍0/1失败，正常stream对照28/0；未改生产代码、未关闭，见修复台账E-H152-01。**
+
 **级别：中（P2，条件性协议能力缺口）；触发条件：provider 的 Responses 流返回原生 `tool_search_call` output item。** DeepSeek 官方输出 schema 和流事件表都声明了该类型，但当前公开请求工具 schema 没有说明普通 function/custom/web-search 配置如何启用它，因此本项不能扩大为默认请求必现。
 
 #### 生产路径与动态证据
@@ -6187,6 +6189,15 @@ Models自身all-target/all-feature/no-deps严格lint exit101/7.747秒，唯一�
 - 应扩展现有 `ResponseItem`/原生 Surface，加入 tool-search call/output 的 typed variant，并同步 provider parser、请求 serializer、历史回放、Context Meter、snip/compaction、工具配对和事件投影。客户端执行应复用既有 deferred-tool 索引与 ToolRegistry 生成 output；服务端执行应保留 provider 返回状态。若当前运行环境没有执行能力，adapter 必须返回结构化 unsupported-provider-item 错误，禁止静默成功。
 - 回归需覆盖 added/done 去重、client/server execution、结构化 arguments、可空 server call ID、call/output 配对、压缩与重启回放、工具目录变化、取消和 malformed item；真实 provider 验收还需先找到官方可达的启用方式。本轮只确认“收到该官方 item 后会丢失”，没有证明当前 DeepSeek 普通请求能主动触发它，也没有发送真实请求或测量回答质量。
 - 本轮只增加审计探针和报告，未修改生产 parser、Surface 或工具执行行为；H-57/H-137 记录的是已有目录在后续请求中的保留和动态刷新，本项记录的是 provider 原生工具检索协议项根本未进入系统。
+
+#### E-H152-01：原探针复核与完整支持协议核对（2026-11-10）
+
+- 主线`81dbacd2` tracked干净，用户untracked保留；H180已有提交`53a03f9bdfa2ebf797de7e8e465d6c6e055bbc97`按授权跳过。按影响先选本项模型输出/运行状态丢失，而非优先处理更容易的UI或配置缺陷。读取原审计、当前Core ResponseItem、Models parser/serializer/Client、ModelAgent观察/重试、既有ToolSearchTool及Cargo/CI/格式规则，未创建第二套运行或工具索引。
+- 复用既有唯一Cargo target和隔离合成环境，不新建编译目录。原探针`cargo test --target-dir target/h66-repair-20261110 -p deepagent-models --features http --lib client::tests::audit_responses_tool_search_call_is_not_silently_dropped --offline -j 2 -- --ignored --exact --nocapture`原生101，0 passed / 1 failed / 0 ignored（5.10秒含Cargo等待，体0.27秒）；当前实际`Ok(Response { output_items: [], finish_reason: Some(Stop), ... })`。历史曾观察到空assistant item，当前变为空output，但调用身份与参数仍丢失，不因表现差异直接改代码或判历史已修复。
+- 同一当前二进制正常对照`cargo test --target-dir target/h66-repair-20261110 -p deepagent-models --features http --lib stream::tests:: --offline -j 2 -- --test-threads=2 --quiet`原生0，28 passed / 0 failed / 0 ignored（2.31秒，体0.07秒）。没有重编译修改生产代码，也没有执行真实HTTP、工具副作用或用户数据操作。原探针仅是“不应静默丢弃”的负向守卫；其旧`is_err()`预期不能作为未来“完整支持”正向验收，后续须另验typed call/output及真实运行配对，不能改成宽松is_ok来凑绿。
+- [DeepSeek接口中英文](https://api-docs.deepseek.com/zh-cn/api/create-response/)均列出该输出和关联call_id，但请求tools仅列function/custom/web_search，支持的input项不含tool-search call/output；未找到完整execution、arguments和结果回传定义。[官方指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)确认added/done可携该输出，并区分它与usage.server_tool_use.tool_search的网页检索计数。因此不能用网页搜索API或计费字段补造工具发现协议，也不能仅据文档缺项断言服务端一定400或绝对不支持。
+- 本地Codex参考具有独立ToolSearchCall/ToolSearchOutput（可空call_id、execution、结构化arguments/tools）及专用router/pairing；[OpenAI官方工具发现指南](https://developers.openai.com/api/docs/guides/tools-tool-search)给出客户端/服务端执行和结果回传机制，但这是OpenAI模型的契约，不证明DeepSeek接受相同声明/字段。对当前`借鉴/deepseek-harness/packages`的ts/md定向检索未找到原生call/output实现；未将“无匹配”扩大成该参考全部版本都不支持。
+- 用户明确要求完整支持。当前具体缺项：DeepSeek可达启用声明与适用模型；call完整结构及client/server、空call_id/状态/增量规则；成功接受的结果回传格式、工具目录schema与错误/取消语义。已一次请求现成官方补充契约或脱敏成功请求→SSE→后续回传样例，不需要真实Key，也不要求发起收费/真实服务测试。取得前不改生产解析器、不实现猜测DTO、不切换供应商、不把“明确拒绝”或现有本地function当成完成。标记本项阻塞待资料，但整个修复目标保持active，其他独立问题不因此全部阻塞。
 
 ### H-153：Responses 规范思考档位贯通缺陷（规范值链路已修复；别名见 H-155）
 
