@@ -195,7 +195,7 @@ pub(crate) fn build_base_tool_registry(
     }
 
     let todo_store = register_builtins(&mut registry, config)?;
-    register_web_tools(&mut registry, &request.settings)?;
+    register_web_tools(&mut registry, request.settings.clone())?;
     registry.register(Arc::new(SessionSearchTool::new(
         request.db,
         request.project,
@@ -737,64 +737,68 @@ fn register_remote_ops_tools(
 }
 
 #[cfg(feature = "web")]
-fn register_web_tools(registry: &mut ToolRegistry, settings: &SettingsService) -> Result<()> {
-    use crate::settings::WebSearchProvider;
-    use deepagent_builtins::{ReqwestWebClient, WebFetchTool, WebSearchTool};
+fn register_web_tools(registry: &mut ToolRegistry, settings: Arc<SettingsService>) -> Result<()> {
+    use deepagent_builtins::{ReqwestWebClient, WebFetchTool};
 
     registry.register(Arc::new(WebFetchTool::new(ReqwestWebClient::new())))?;
-    let web_settings = settings.web_search_settings()?;
-    if !web_settings.enabled {
-        return Ok(());
-    }
-
-    let anysearch = if web_settings.anysearch_enabled {
-        anysearch_config(settings, web_settings.anysearch_base_url.clone())
-    } else {
-        None
-    };
-    let searxng_url = match web_settings.provider {
-        // DeepSeekFirst is executed by the model provider's native Responses
-        // `web_search` tool. Keep a local descriptor registered so the runtime
-        // advertises the capability, but never call the legacy Anthropic route.
-        WebSearchProvider::DeepSeekFirst => configured_searxng_url(web_settings.searxng_url),
-        WebSearchProvider::Searxng => configured_searxng_url(web_settings.searxng_url),
-        WebSearchProvider::DuckDuckGo => None,
-    };
-    registry.register(Arc::new(WebSearchTool::new(
-        ReqwestWebClient::with_search_chain(anysearch, searxng_url),
-    )))?;
+    // Registration is stable; the call-local snapshot decides whether search
+    // is enabled and reports the exact disabled error without engine requests.
+    registry.register(Arc::new(
+        deepagent_builtins::web_search::WebSearchTool::new(SettingsSearchConfig {
+            settings,
+            test_engine: None,
+        }),
+    ))?;
     Ok(())
 }
 
 #[cfg(not(feature = "web"))]
-fn register_web_tools(_registry: &mut ToolRegistry, _settings: &SettingsService) -> Result<()> {
+fn register_web_tools(_registry: &mut ToolRegistry, _settings: Arc<SettingsService>) -> Result<()> {
     Ok(())
 }
 
 #[cfg(feature = "web")]
-fn configured_searxng_url(setting: Option<String>) -> Option<String> {
-    setting
-        .or_else(|| std::env::var("DEEPAGENT_SEARXNG_URL").ok())
-        .or_else(|| std::env::var("SEARXNG_URL").ok())
-        .map(|s| s.trim().trim_end_matches('/').to_string())
-        .filter(|s| !s.is_empty())
+pub(crate) fn configure_web_search_test_engine(
+    registry: &mut ToolRegistry,
+    settings: Arc<SettingsService>,
+    engine: deepagent_builtins::web_search::types::EngineId,
+) -> Result<()> {
+    let tool = deepagent_builtins::web_search::WebSearchTool::new(SettingsSearchConfig {
+        settings,
+        test_engine: Some(engine),
+    });
+    registry.try_replace(Arc::new(tool))?;
+    Ok(())
 }
 
 #[cfg(feature = "web")]
-fn anysearch_config(
-    settings: &SettingsService,
-    base_url: Option<String>,
-) -> Option<deepagent_builtins::AnySearchConfig> {
-    use deepagent_builtins::AnySearchConfig;
+#[derive(Clone)]
+struct SettingsSearchConfig {
+    settings: Arc<SettingsService>,
+    test_engine: Option<deepagent_builtins::web_search::types::EngineId>,
+}
 
-    let api_key = settings.anysearch_api_key().ok().flatten()?;
-    if api_key.trim().is_empty() {
-        return None;
+#[cfg(feature = "web")]
+#[async_trait]
+impl deepagent_builtins::web_search::SearchConfigSource for SettingsSearchConfig {
+    async fn snapshot(&self) -> Result<deepagent_builtins::web_search::types::SearchRuntimeConfig> {
+        let mut config = self.settings.web_search_runtime_config()?;
+        if let Some(test_engine) = self.test_engine {
+            let selected = config
+                .settings
+                .engines
+                .iter()
+                .find(|engine| engine.id == test_engine)
+                .is_some_and(|engine| engine.enabled);
+            if !selected {
+                return Err(CoreError::invalid("web_search test engine is disabled"));
+            }
+            for engine in &mut config.settings.engines {
+                engine.enabled = engine.id == test_engine;
+            }
+        }
+        Ok(config)
     }
-    Some(AnySearchConfig::new(
-        Some(api_key),
-        base_url.unwrap_or_else(|| "https://api.anysearch.com".to_string()),
-    ))
 }
 
 #[derive(Clone)]

@@ -38,7 +38,7 @@ pub mod ranking;
 // second retrieval implementation somewhere else.
 mod bm25;
 mod chunking;
-mod fusion;
+pub mod fusion;
 mod hybrid;
 
 pub use contextual_retrieval::{ChunkReranker, ContextualRetriever, RetrievedChunk, ScoreReranker};

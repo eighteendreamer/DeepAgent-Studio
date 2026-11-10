@@ -21,6 +21,8 @@ use deepagent_core::event::EventPayload;
 use deepagent_core::message::{Message, ToolCall};
 #[cfg(test)]
 use deepagent_hooks::Hook;
+#[cfg(feature = "web")]
+use deepagent_hooks::{HookPoint, HookRegistry, PermissionRulesHook};
 use deepagent_models::transport::HttpTransport;
 #[cfg(test)]
 use deepagent_models::ToolSchema;
@@ -54,6 +56,8 @@ use crate::run_assembler::RunAssembler;
 use crate::run_coordinator::RunCoordinator;
 use crate::runtime_event_log::append_runtime_log;
 use crate::settings::SettingsService;
+#[cfg(feature = "web")]
+use crate::settings::WebSearchEngineId;
 #[cfg(test)]
 use crate::subagent_runner::{
     apply_runtime_agent_tool_filter, collect_runtime_agent_definitions, subagent_system_prompt,
@@ -194,6 +198,79 @@ pub struct ChatService {
     /// set, the run blocks on the answer instead. Permission profiles are
     /// deliberately not consulted — see [`crate::question_bridge`].
     question_notifier: Option<Arc<dyn Fn(crate::dto::QuestionRequestDto) + Send + Sync>>,
+}
+
+#[cfg(feature = "web")]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct WebSearchEngineTestResult {
+    pub engine: WebSearchEngineId,
+    pub run_id: String,
+    pub session_id: String,
+    pub ok: bool,
+    pub error: Option<String>,
+    pub count: Option<usize>,
+}
+
+#[cfg(feature = "web")]
+struct WebSearchTestRun<'a> {
+    engine: WebSearchEngineId,
+    run_id: &'a str,
+    session_id: &'a str,
+    observed: Arc<std::sync::Mutex<Option<(bool, serde_json::Value)>>>,
+    cancellation: &'a crate::run_coordinator::ActiveRunRegistration,
+}
+
+#[cfg(feature = "web")]
+struct WebSearchTestAgent {
+    invocation: Option<deepagent_tools::ToolInvocation>,
+    output: Arc<std::sync::Mutex<Option<(bool, serde_json::Value)>>>,
+}
+
+#[cfg(feature = "web")]
+impl WebSearchTestAgent {
+    fn new(output: Arc<std::sync::Mutex<Option<(bool, serde_json::Value)>>>) -> Self {
+        Self {
+            invocation: Some(
+                deepagent_tools::ToolInvocation::new(
+                    "web_search",
+                    serde_json::json!({
+                        "query": "DeepAgent Studio search engine test",
+                        "count": 1
+                    }),
+                )
+                .with_id(format!(
+                    "web-search-test_{}",
+                    deepagent_core::id::EventId::new()
+                )),
+            ),
+            output,
+        }
+    }
+}
+
+#[cfg(feature = "web")]
+#[async_trait::async_trait]
+impl deepagent_runtime::Agent for WebSearchTestAgent {
+    async fn think(
+        &mut self,
+        _step: usize,
+        last: &[deepagent_runtime::Observation],
+    ) -> Result<deepagent_runtime::AgentDecision> {
+        if let Some(invocation) = self.invocation.take() {
+            return Ok(deepagent_runtime::AgentDecision::CallTool(invocation));
+        }
+        let observation = last
+            .last()
+            .ok_or_else(|| CoreError::other("web_search test returned no tool observation"))?;
+        *self
+            .output
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) =
+            Some((observation.ok, observation.output.clone()));
+        Ok(deepagent_runtime::AgentDecision::Complete(
+            "Search engine test completed".to_string(),
+        ))
+    }
 }
 
 /// Factory that creates a [`CommandExecutor`] for a given connection id.
@@ -525,6 +602,215 @@ impl ChatService {
     ) -> Result<Vec<deepagent_persistence::run_store::StoredRunEvent>> {
         deepagent_persistence::run_store::RunStore::new(&self.db)
             .events_after(run_id, after_sequence)
+    }
+
+    #[cfg(feature = "web")]
+    pub async fn test_web_search_engine<F, A>(
+        &self,
+        engine: WebSearchEngineId,
+        run_id: &str,
+        on_event: F,
+        on_approval: A,
+    ) -> Result<WebSearchEngineTestResult>
+    where
+        F: Fn(RuntimeEvent) + Send + 'static,
+        A: Fn(ApprovalRequestDto) + Send + Sync + 'static,
+    {
+        let settings = self.settings.web_search_settings()?;
+        if !settings
+            .engines
+            .iter()
+            .any(|setting| setting.id == engine && setting.enabled)
+        {
+            return Err(CoreError::invalid("web_search test engine is disabled"));
+        }
+
+        let session_id = self.create_session(None)?;
+        self.coordinator.admit(run_id, &session_id)?;
+        let cancellation = self.coordinator.take_admission(run_id)?;
+        let observed = Arc::new(std::sync::Mutex::new(None));
+        let execution = self
+            .execute_web_search_engine_test(
+                WebSearchTestRun {
+                    engine,
+                    run_id,
+                    session_id: &session_id,
+                    observed: observed.clone(),
+                    cancellation: &cancellation,
+                },
+                on_event,
+                on_approval,
+            )
+            .await;
+        let session_id = crate::run_assembler::finish_admitted_run(
+            &self.db,
+            run_id,
+            session_id,
+            &cancellation.cancellation(),
+            execution,
+        )?;
+        let (ok, output) = observed
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone()
+            .ok_or_else(|| CoreError::other("web_search test produced no tool result"))?;
+        let error = (!ok).then(|| {
+            output
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("web_search test failed")
+                .to_string()
+        });
+        let count = ok
+            .then(|| output.get("count").and_then(serde_json::Value::as_u64))
+            .flatten()
+            .map(|count| count as usize);
+        Ok(WebSearchEngineTestResult {
+            engine,
+            run_id: run_id.to_string(),
+            session_id,
+            ok,
+            error,
+            count,
+        })
+    }
+
+    #[cfg(feature = "web")]
+    async fn execute_web_search_engine_test<F, A>(
+        &self,
+        run: WebSearchTestRun<'_>,
+        on_event: F,
+        on_approval: A,
+    ) -> Result<String>
+    where
+        F: Fn(RuntimeEvent) + Send + 'static,
+        A: Fn(ApprovalRequestDto) + Send + Sync + 'static,
+    {
+        let WebSearchTestRun {
+            engine,
+            run_id,
+            session_id,
+            observed,
+            cancellation,
+        } = run;
+        let (root, _project) = crate::run_assembler::resolve_run_location(
+            &self.db,
+            self.projects.as_deref(),
+            &self.workspace,
+            Some(session_id),
+        )?;
+        let project_trusted =
+            crate::trust_service::TrustService::new(self.db.clone()).is_trusted(&root);
+        let run_config = crate::run_config::RunConfigOverlay::load(&root, serde_json::json!({}));
+        let default_profile = self.settings.effective_permission_profile()?;
+        let default_backend = self
+            .sandbox_backend_registry
+            .as_ref()
+            .map(|registry| registry.default_kind());
+        let environment = crate::run_environment::RunEnvironment::resolve(
+            run_config.clone(),
+            default_profile,
+            project_trusted,
+            &self.runtime_logs,
+            self.sandboxie_executor.as_ref(),
+            default_backend,
+            run_id,
+        )?;
+        let mut hooks = HookRegistry::new();
+        let permission_rules =
+            run_config.merged_permission_rules(self.settings.permission_rules()?)?;
+        if !permission_rules.is_empty() {
+            hooks.register(
+                HookPoint::BeforeToolUse,
+                Arc::new(PermissionRulesHook::new(permission_rules)),
+            );
+        }
+        let (mut registry, _) = self.build_registry(
+            &root,
+            environment.access,
+            None,
+            None,
+            Some(environment.local_execution_mode),
+            matches!(
+                environment.policy,
+                crate::settings::ApprovalPolicy::FullAccess
+            ),
+        )?;
+        crate::tool_runtime::configure_web_search_test_engine(
+            &mut registry,
+            self.settings.clone(),
+            engine,
+        )?;
+
+        let mut session = deepagent_session::Session::recover(
+            &self.db,
+            &deepagent_core::clock::SystemClock,
+            session_id.parse()?,
+        )?;
+        let task = session.create_task(format!("web_search test: {}", engine.label()))?;
+
+        let action_persistence = Some(
+            deepagent_runtime::tool_pipeline::ToolActionPersistence::new(
+                self.db.clone(),
+                run_id,
+                run_id,
+            )?,
+        );
+        let artifact_persistence = Some(
+            deepagent_runtime::tool_pipeline::ToolArtifactPersistence::new(self.db.clone(), run_id),
+        );
+        let config = deepagent_runtime::RuntimeConfig {
+            permissions: PermissionSet::developer(),
+            tool_timeout: deepagent_tools::ToolExecutionContext::DEFAULT_TIMEOUT,
+            action_persistence,
+            artifact_persistence,
+            ..Default::default()
+        };
+        let (channel, receiver) = deepagent_runtime::ChannelSink::new();
+        let sink: Arc<dyn deepagent_runtime::RuntimeEventSink> = Arc::new(channel);
+        let event_pump = crate::runtime_event_log::spawn_runtime_event_pump(
+            receiver,
+            self.runtime_logs.clone(),
+            run_id.to_string(),
+            session_id.to_string(),
+            on_event,
+        );
+        let approval_gate = Arc::new(
+            crate::approval_bridge::PolicyGate::new(
+                environment.policy,
+                Arc::new(crate::approval_bridge::ChannelApprovalGate::new(
+                    self.coordinator.pending(),
+                    Arc::new(on_approval),
+                )),
+            )
+            .with_classifier(deepagent_builtins::SafetyClassifier::with_defaults()),
+        );
+        let mut agent = WebSearchTestAgent::new(observed);
+        let kernel = deepagent_runtime::AgentKernel::<deepagent_core::clock::SystemClock>::new(
+            self.db.clone(),
+            &registry,
+            Default::default(),
+            config,
+            run_id,
+        )
+        .with_events(sink.clone())
+        .with_approvals(approval_gate)
+        .with_hooks(&hooks)
+        .with_cancellation(cancellation.cancellation());
+        let result = kernel
+            .start(deepagent_runtime::RunRequest::new(
+                &mut session,
+                task,
+                &mut agent,
+            ))
+            .await
+            .and_then(|terminal| terminal.into_completion_result());
+        drop(kernel);
+        drop(agent);
+        drop(hooks);
+        drop(sink);
+        let _ = event_pump.await;
+        result.map(|_| session_id.to_string())
     }
 
     /// Attach an [`McpService`](crate::mcp_service::McpService) so enabled MCP
@@ -1249,11 +1535,6 @@ impl ChatService {
                 text: settings.responses.effective_text(),
                 tool_choice: settings.responses.effective_tool_choice(),
                 user: settings.responses.effective_user(),
-                native_web_search: settings.web_search.enabled
-                    && matches!(
-                        settings.web_search.provider,
-                        crate::settings::WebSearchProvider::DeepSeekFirst
-                    ),
             });
         let client = Arc::new(ModelClient::new(self.transport.clone(), config));
 
@@ -1632,6 +1913,243 @@ mod tests {
             sink.on_event(r#"{"type":"response.completed","response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#)?;
             Ok(())
         }
+    }
+
+    #[cfg(feature = "web")]
+    #[derive(Default)]
+    struct RejectModelTransport(std::sync::atomic::AtomicUsize);
+
+    #[cfg(feature = "web")]
+    #[async_trait::async_trait]
+    impl HttpTransport for RejectModelTransport {
+        async fn stream(&self, _: TransportRequest, _: &mut dyn EventSink) -> Result<()> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(CoreError::other(
+                "settings engine test must not call a model",
+            ))
+        }
+    }
+
+    #[cfg(feature = "web")]
+    #[tokio::test]
+    async fn web_search_engine_test_uses_kernel_run_without_model_or_fallback() {
+        use crate::settings::{WebSearchEngineId, WebSearchSettings};
+        use deepagent_persistence::run_control::{RunActionState, RunControlStore};
+        use deepagent_persistence::run_store::RunStore;
+        use deepagent_runtime::RuntimeEvent;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let directory = tempfile::tempdir().unwrap();
+        let db_path = directory.path().join("web-search-run.sqlite3");
+        let db = Arc::new(Database::open(&db_path).unwrap());
+        let settings = Arc::new(SettingsService::new(
+            db.clone(),
+            Arc::new(MockTransport::with_get_json(
+                r#"{"data":[{"id":"deepseek-flash"}]}"#,
+            )),
+            Arc::new(MemorySecretStore::new()),
+        ));
+        settings.initialize("synthetic-login-key").await.unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).await.unwrap();
+                assert_ne!(read, 0, "search client closed before sending headers");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let status_line = String::from_utf8_lossy(&request)
+                .lines()
+                .next()
+                .unwrap()
+                .to_string();
+            let body = r#"{"results":[{"title":"Local fixture","url":"https://example.test/local","content":"synthetic excerpt"}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            status_line
+        });
+        let mut search_settings = WebSearchSettings::default();
+        for engine in &mut search_settings.engines {
+            engine.enabled = engine.id == WebSearchEngineId::Searxng;
+            if engine.id == WebSearchEngineId::Searxng {
+                engine.base_url = Some(endpoint.clone());
+            }
+        }
+        settings.set_web_search_settings(search_settings).unwrap();
+
+        let no_model = Arc::new(RejectModelTransport::default());
+        let chat = ChatService::new(
+            db.clone(),
+            settings.clone(),
+            no_model.clone(),
+            directory.path(),
+        );
+        assert!(chat
+            .test_web_search_engine(
+                WebSearchEngineId::Anysearch,
+                "web-search-disabled-test",
+                |_| {},
+                |_| {},
+            )
+            .await
+            .is_err());
+        assert!(
+            RunStore::new(&db)
+                .get("web-search-disabled-test")
+                .unwrap()
+                .is_none(),
+            "disabled engine is rejected before run admission"
+        );
+        let observed_events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let event_copy = observed_events.clone();
+        let approval_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let approval_copy = approval_count.clone();
+        let approval_chat = chat.clone();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            chat.test_web_search_engine(
+                WebSearchEngineId::Searxng,
+                "web-search-settings-test",
+                move |event| event_copy.lock().unwrap().push(event),
+                move |approval| {
+                    approval_copy.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    approval_chat
+                        .resolve_approval_scoped(
+                            &approval.call_id,
+                            true,
+                            Some("single_call"),
+                            "synthetic_test",
+                        )
+                        .unwrap();
+                },
+            ),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            let labels = observed_events
+                .lock()
+                .unwrap()
+                .iter()
+                .map(RuntimeEvent::label)
+                .collect::<Vec<_>>();
+            panic!(
+                "search test timed out; approval_count={} events={labels:?}",
+                approval_count.load(std::sync::atomic::Ordering::SeqCst)
+            )
+        })
+        .unwrap();
+
+        assert!(result.ok, "{result:?}");
+        assert_eq!(result.count, Some(1));
+        assert_eq!(
+            server.await.unwrap(),
+            "GET /search?q=DeepAgent+Studio+search+engine+test&format=json HTTP/1.1"
+        );
+        assert_eq!(no_model.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(approval_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(observed_events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event, RuntimeEvent::ToolCompleted { name, ok: true, .. } if name == "web_search")));
+
+        let run = RunStore::new(&db).get(&result.run_id).unwrap().unwrap();
+        assert_eq!(run.terminal_kind.as_deref(), Some("succeeded"));
+        let actions = RunControlStore::new(&db)
+            .list_actions(&result.run_id)
+            .unwrap();
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].tool_name, "web_search");
+        assert_eq!(actions[0].state, RunActionState::Completed);
+        let event_types: Vec<_> = RunStore::new(&db)
+            .events_after(&result.run_id, None)
+            .unwrap()
+            .into_iter()
+            .map(|event| event.event_type)
+            .collect();
+        assert!(event_types
+            .iter()
+            .any(|kind| kind.contains("tool_completed")));
+        assert_eq!(
+            event_types
+                .iter()
+                .filter(|kind| *kind == "run_terminal")
+                .count(),
+            1
+        );
+
+        let denied_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let denied_endpoint = format!("http://{}", denied_listener.local_addr().unwrap());
+        let denied_server = tokio::spawn(async move {
+            tokio::time::timeout(
+                std::time::Duration::from_millis(300),
+                denied_listener.accept(),
+            )
+            .await
+        });
+        let mut denied_settings = settings.web_search_settings().unwrap();
+        denied_settings.engines[0].enabled = false;
+        for engine in &mut denied_settings.engines {
+            engine.enabled = engine.id == WebSearchEngineId::Searxng;
+            if engine.id == WebSearchEngineId::Searxng {
+                engine.base_url = Some(denied_endpoint.clone());
+            }
+        }
+        settings.set_web_search_settings(denied_settings).unwrap();
+        let project_config = directory.path().join(".deepagent");
+        std::fs::create_dir_all(&project_config).unwrap();
+        std::fs::write(
+            project_config.join("settings.json"),
+            r#"{"permissions":{"deny":["web_search"]}}"#,
+        )
+        .unwrap();
+        let denied_events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let denied_event_copy = denied_events.clone();
+        let denied = chat
+            .test_web_search_engine(
+                WebSearchEngineId::Searxng,
+                "web-search-permission-denied",
+                move |event| denied_event_copy.lock().unwrap().push(event),
+                |_| {},
+            )
+            .await
+            .unwrap();
+        assert!(!denied.ok, "permission deny must reject the direct call");
+        assert!(denied_events.lock().unwrap().iter().any(
+            |event| matches!(event, RuntimeEvent::ToolBlocked { name, .. } if name == "web_search")
+        ));
+        assert!(
+            matches!(
+                denied_server.await.unwrap(),
+                Err(tokio::time::error::Elapsed { .. })
+            ),
+            "permission denial must cause zero loopback HTTP requests"
+        );
+
+        drop(chat);
+        drop(settings);
+        drop(db);
+        let reopened = Database::open(&db_path).unwrap();
+        let restored = RunStore::new(&reopened)
+            .get(&result.run_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.terminal_kind.as_deref(), Some("succeeded"));
+        assert_eq!(
+            RunStore::new(&reopened)
+                .events_after(&result.run_id, None)
+                .unwrap()
+                .len(),
+            event_types.len()
+        );
     }
 
     #[derive(Debug, Default, Clone)]
@@ -3916,11 +4434,18 @@ mod tests {
 
     #[cfg(feature = "web")]
     #[tokio::test]
-    async fn disabled_web_search_settings_omit_web_search_tool() {
+    async fn disabled_web_search_settings_keep_web_search_tool_registered() {
         let (_db, settings, dir) = seeded().await;
         settings
             .set_web_search_settings(crate::settings::WebSearchSettings {
-                enabled: false,
+                engines: crate::settings::WebSearchSettings::default()
+                    .engines
+                    .into_iter()
+                    .map(|mut engine| {
+                        engine.enabled = false;
+                        engine
+                    })
+                    .collect(),
                 ..Default::default()
             })
             .unwrap();
@@ -3940,8 +4465,8 @@ mod tests {
             "web_fetch remains available for known URLs"
         );
         assert!(
-            registry.get("web_search").is_none(),
-            "web_search should honor the persisted disabled setting"
+            registry.get("web_search").is_some(),
+            "web_search must report disabled engines through the unified dispatcher"
         );
     }
 

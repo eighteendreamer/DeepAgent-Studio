@@ -8,7 +8,6 @@
 import type {
   ApiKeyInfo,
   AnySearchApiKeyInfo,
-  AnySearchTestResult,
   ApprovalRequest,
   ArchiveProjectResult,
   ArchivedConversation,
@@ -98,6 +97,8 @@ import type {
   Transcript,
   WorkspaceInfo,
   WebSearchSettings,
+  WebSearchEngineId,
+  WebSearchEngineTestResult,
   ResponsesApiSettings,
   RunAttachment,
 } from "./types";
@@ -1676,12 +1677,15 @@ export async function getWebSearchSettings(): Promise<WebSearchSettings> {
   const invoke = getInvoke();
   if (invoke) return invoke<WebSearchSettings>("get_web_search_settings");
   return {
-    enabled: true,
-    provider: "deepseek_first",
-    searxng_url: null,
-    anysearch_enabled: false,
-    anysearch_base_url: null,
-    anysearch_api_key_configured: false,
+    schema_version: 2,
+    strategy: "fallback",
+    engines: [
+      { id: "deepseek", enabled: true, base_url: null },
+      { id: "anysearch", enabled: false, base_url: "https://api.anysearch.com" },
+      { id: "searxng", enabled: true, base_url: null },
+      { id: "duckduckgo", enabled: true, base_url: null },
+    ],
+    ranking: { method: "system", profile: "balanced" },
   };
 }
 
@@ -1716,11 +1720,22 @@ export async function clearAnySearchApiKey(): Promise<void> {
   if (invoke) await invoke("clear_anysearch_api_key");
 }
 
-/** Run a tiny search to validate the configured AnySearch key. */
-export async function testAnySearchApiKey(): Promise<AnySearchTestResult> {
+/** Run one configured engine through the host's normal web_search run path. */
+export async function testWebSearchEngine(
+  engine: WebSearchEngineId,
+): Promise<WebSearchEngineTestResult> {
   const invoke = getInvoke();
-  if (invoke) return invoke<AnySearchTestResult>("test_anysearch_api_key");
-  return { ok: false, error: "desktop runtime is unavailable", provider: null, count: null };
+  if (invoke) {
+    return invoke<WebSearchEngineTestResult>("test_web_search_engine", { engine });
+  }
+  return {
+    engine,
+    run_id: "",
+    session_id: "",
+    ok: false,
+    error: "桌面运行环境不可用",
+    count: null,
+  };
 }
 
 // ---- vision settings ------------------------------------------------------

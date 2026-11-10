@@ -77,7 +77,7 @@ pub struct ThinkingToggle {
 /// A tool/function the model may call, in JSON-schema form.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolSchema {
-    /// Always `"function"` for current providers.
+    /// Registered function or provider projection (`custom` / `web_search`).
     #[serde(rename = "type")]
     pub kind: String,
     /// The function definition.

@@ -1113,15 +1113,16 @@ pub fn find_dynamic_command(rt: &SlashRuntime<'_>, name: &str) -> Result<Option<
 // ---------------------------------------------------------------------------
 
 fn web_search_summary(settings: &crate::settings::WebSearchSettings) -> String {
-    if !settings.enabled {
-        return "disabled".to_string();
-    }
-    let provider = settings.provider.label();
-    match settings.searxng_url.as_deref() {
-        Some(url) if !url.trim().is_empty() => {
-            format!("{provider} (SearXNG: {url})")
-        }
-        _ => provider.to_string(),
+    let enabled = settings
+        .engines
+        .iter()
+        .filter(|engine| engine.enabled)
+        .map(|engine| engine.id.label())
+        .collect::<Vec<_>>();
+    if enabled.is_empty() {
+        "disabled".to_string()
+    } else {
+        enabled.join(", ")
     }
 }
 

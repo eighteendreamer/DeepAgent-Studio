@@ -134,6 +134,8 @@ pub use approval_bridge::{
 };
 pub use archive_service::ArchiveService;
 pub use attachment_service::AttachmentService;
+#[cfg(feature = "web")]
+pub use chat_service::WebSearchEngineTestResult;
 pub use chat_service::{ChatService, HarnessRunOverrides};
 pub use commands::{
     builtin_commands, commands_from_roots, commands_from_roots_and_plugins, filter_commands,
@@ -208,7 +210,10 @@ pub use settings::{
     AppSettings, ApprovalPolicy, BalanceDto, BalanceInfoDto, EffectivePermissionProfile,
     ExecutionFeatures, LocalExecutionMode, OutputStyle, PermissionPreset,
     PermissionPresetVisibility, SandboxMode, SettingsService, SettingsView, TerminalShell,
-    VerificationPolicy, VisionMode, VisionSettings, WebSearchProvider, WebSearchSettings,
+    VerificationPolicy, VisionMode, VisionSettings, WebSearchConfigState, WebSearchEngineId,
+    WebSearchEngineSettings, WebSearchEngineStatus, WebSearchRankingMethod,
+    WebSearchRankingProfile, WebSearchRankingSettings, WebSearchRequest, WebSearchRuntimeConfig,
+    WebSearchSettings, WebSearchSettingsView, WebSearchStrategy,
 };
 pub use skill_catalog_reminder::SkillCatalogSendState;
 pub use skills_service::{

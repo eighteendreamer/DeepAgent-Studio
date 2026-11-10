@@ -610,7 +610,7 @@ async fn h219_prepared_run_consumes_admitted_tools_and_environment_once() {
 
 #[cfg(feature = "web")]
 #[tokio::test]
-async fn h219_actual_native_wire_hash_is_not_the_internal_function_hash() {
+async fn h219_actual_search_function_wire_hash_is_not_the_internal_catalog_hash() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("evidence.txt"), "synthetic").unwrap();
     let db = Arc::new(Database::open_in_memory().unwrap());
@@ -623,12 +623,12 @@ async fn h219_actual_native_wire_hash_is_not_the_internal_function_hash() {
         .unwrap();
     let model = Arc::new(CapabilityModel::default());
     let chat = ChatService::new(db, settings, model.clone(), root.path());
-    run_profile(&chat, "h219-custom-native", "full_access")
+    run_profile(&chat, "h219-search-function", "full_access")
         .await
         .unwrap();
     let requests = model.0.lock().unwrap();
     assert_eq!(requests.len(), 2);
-    let events = chat.run_events("h219-custom-native", None).unwrap();
+    let events = chat.run_events("h219-search-function", None).unwrap();
     let host = &events
         .iter()
         .find(|event| event.event_type == "capability.snapshot")
@@ -643,14 +643,14 @@ async fn h219_actual_native_wire_hash_is_not_the_internal_function_hash() {
     let saved = wire["tools"].as_array().unwrap();
     let catalog = host["tools"].as_array().unwrap();
     assert_eq!(actual.len(), saved.len());
-    // The real main registry has no apply_patch tool. Do not fabricate one to
-    // satisfy a test; custom conversion is covered at the adapter/runtime seam.
+    // H66 always exposes callable search. Responses' flattened function DTO
+    // still has a different hash domain from the internal nested catalog DTO.
     let index = saved
         .iter()
         .position(|entry| entry["name"] == "web_search")
         .unwrap();
-    assert_eq!(actual[index]["type"], "web_search");
-    assert_eq!(saved[index]["kind"], "web_search");
+    assert_eq!(actual[index]["type"], "function");
+    assert_eq!(saved[index]["kind"], "function");
     let hash = format!(
         "{:x}",
         Sha256::digest(serde_json::to_vec(&actual[index]).unwrap())
@@ -663,7 +663,9 @@ async fn h219_actual_native_wire_hash_is_not_the_internal_function_hash() {
             .find(|entry| entry["name"] == "web_search")
             .unwrap()["schemaHash"]
     );
-    assert!(actual[index].get("parameters").is_none());
+    assert_eq!(actual[index]["parameters"]["type"], "object");
+    assert!(actual[index]["parameters"]["properties"]["query"].is_object());
+    assert!(!actual.iter().any(|tool| tool["type"] == "web_search"));
     assert!(actual
         .iter()
         .any(|tool| tool["type"] == "function" && tool["name"] == "read_file"));

@@ -47,7 +47,7 @@ use deepagent_app_core::{
     SkillActivationDto, SkillDto, SkillsMpClientHandle, SkillsRoots, SkillsService, SpeechService,
     SqliteSecretStore, StoredRunEvent, TerminalResultDto, TerminalService, TerminalShell,
     TranscriptDto, TranscriptSegmentDto, TrustService, VisionRecognizeRequestDto,
-    VisionRecognizeResultDto, VisionService, VisionSettings, WebSearchSettings, WorkspaceInfoDto,
+    VisionRecognizeResultDto, VisionService, VisionSettings, WebSearchSettings, WebSearchSettingsView, WorkspaceInfoDto,
     WindowsSandboxBackend, WorkspaceService,
 };
 use deepagent_models::ReqwestTransport;
@@ -1124,46 +1124,57 @@ fn clear_anysearch_api_key(state: State<'_, AppState>) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-#[derive(Debug, serde::Serialize)]
-struct AnySearchTestResult {
-    ok: bool,
-    error: Option<String>,
-    provider: Option<String>,
-    count: Option<usize>,
-}
-
 #[tauri::command]
-async fn test_anysearch_api_key(state: State<'_, AppState>) -> Result<AnySearchTestResult, String> {
-    use deepagent_builtins::{AnySearchConfig, ReqwestWebClient, WebClient};
-
-    let key = state
-        .settings
-        .anysearch_api_key()
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "AnySearch API key not set".to_string())?;
-    let settings = state
-        .settings
-        .web_search_settings()
-        .map_err(|e| e.to_string())?;
-    let base_url = settings
-        .anysearch_base_url
-        .unwrap_or_else(|| "https://api.anysearch.com".to_string());
-    let client =
-        ReqwestWebClient::with_search_chain(Some(AnySearchConfig::new(Some(key), base_url)), None);
-    match client.search_response("test", 1).await {
-        Ok(resp) => Ok(AnySearchTestResult {
-            ok: true,
+async fn test_web_search_engine(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    engine: deepagent_app_core::WebSearchEngineId,
+) -> Result<deepagent_app_core::WebSearchEngineTestResult, String> {
+    let run_id = format!("web_search_test_{}", deepagent_core::id::EventId::new());
+    let event_run_id = run_id.clone();
+    let approval_run_id = run_id.clone();
+    let event_app = app.clone();
+    let approval_app = app.clone();
+    let result = state
+        .chat
+        .test_web_search_engine(
+            engine,
+            &run_id,
+            move |event| {
+                let _ = event_app.emit(
+                    "chat://event",
+                    RunEventEnvelope {
+                        run_id: event_run_id.clone(),
+                        payload: event,
+                    },
+                );
+            },
+            move |approval| {
+                let _ = approval_app.emit(
+                    "chat://approval",
+                    RunEventEnvelope {
+                        run_id: approval_run_id.clone(),
+                        payload: approval,
+                    },
+                );
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    let _ = app.emit(
+        "session://completed",
+        SessionCompletedPayload {
+            run_id,
+            session_id: Some(result.session_id.clone()),
+            status: if run_was_cancelled(&state.chat, &result.run_id) {
+                "cancelled".into()
+            } else {
+                "completed".into()
+            },
             error: None,
-            provider: Some(resp.provider),
-            count: Some(resp.results.len()),
-        }),
-        Err(e) => Ok(AnySearchTestResult {
-            ok: false,
-            error: Some(e.to_string()),
-            provider: None,
-            count: None,
-        }),
-    }
+        },
+    );
+    Ok(result)
 }
 
 /// Switch the active chat model to a discovered model id. Returns the updated
@@ -3286,10 +3297,10 @@ fn set_tool_search_threshold(
 // ---- web-search provider settings ----------------------------------------
 
 #[tauri::command]
-fn get_web_search_settings(state: State<'_, AppState>) -> Result<WebSearchSettings, String> {
+fn get_web_search_settings(state: State<'_, AppState>) -> Result<WebSearchSettingsView, String> {
     state
         .settings
-        .web_search_settings()
+        .web_search_settings_view()
         .map_err(|e| e.to_string())
 }
 
@@ -3297,14 +3308,14 @@ fn get_web_search_settings(state: State<'_, AppState>) -> Result<WebSearchSettin
 fn set_web_search_settings(
     state: State<'_, AppState>,
     settings: WebSearchSettings,
-) -> Result<WebSearchSettings, String> {
+) -> Result<WebSearchSettingsView, String> {
     state
         .settings
         .set_web_search_settings(settings)
         .map_err(|e| e.to_string())?;
     state
         .settings
-        .web_search_settings()
+        .web_search_settings_view()
         .map_err(|e| e.to_string())
 }
 
@@ -7438,7 +7449,7 @@ pub fn run() {
             get_anysearch_api_key,
             set_anysearch_api_key,
             clear_anysearch_api_key,
-            test_anysearch_api_key,
+            test_web_search_engine,
             set_chat_model,
             list_skills,
             reload_skills,

@@ -41,7 +41,15 @@ const API_KEY_NAME: &str = "deepseek_api_key";
 const VISION_API_KEY_NAME: &str = "vision_api_key";
 /// The AnySearch API key lives in the same SecretStore.
 const ANYSEARCH_API_KEY_NAME: &str = "anysearch_api_key";
-const ANYSEARCH_DEFAULT_BASE_URL: &str = "https://api.anysearch.com";
+
+pub use deepagent_builtins::web_search::types::{
+    EngineConfigState as WebSearchConfigState, EngineConfigStatus as WebSearchEngineStatus,
+    EngineId as WebSearchEngineId, EngineSettings as WebSearchEngineSettings,
+    RankingMethod as WebSearchRankingMethod, RankingProfile as WebSearchRankingProfile,
+    RankingSettings as WebSearchRankingSettings, SearchRequest as WebSearchRequest,
+    SearchRuntimeConfig as WebSearchRuntimeConfig, SearchSettings as WebSearchSettings,
+    SearchSettingsView as WebSearchSettingsView, SearchStrategy as WebSearchStrategy,
+};
 
 /// How tool-approval requests are resolved (maps to the 设置 → 权限 panel).
 ///
@@ -300,105 +308,6 @@ impl TerminalShell {
             "wsl" => Some(Self::Wsl),
             _ => None,
         }
-    }
-}
-
-/// Preferred backend for the `web_search` tool.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum WebSearchProvider {
-    /// Use DeepSeek server web-search first, then configured fallbacks.
-    #[default]
-    DeepSeekFirst,
-    /// Use the configured SearXNG bridge first, then DuckDuckGo.
-    Searxng,
-    /// Use DuckDuckGo HTML only.
-    DuckDuckGo,
-}
-
-impl WebSearchProvider {
-    /// Stable wire label.
-    pub const fn label(&self) -> &'static str {
-        match self {
-            WebSearchProvider::DeepSeekFirst => "deepseek_first",
-            WebSearchProvider::Searxng => "searxng",
-            WebSearchProvider::DuckDuckGo => "duckduckgo",
-        }
-    }
-
-    /// Parse from a wire string.
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "deepseek_first" | "deepseek" => Some(Self::DeepSeekFirst),
-            "searxng" => Some(Self::Searxng),
-            "duckduckgo" => Some(Self::DuckDuckGo),
-            _ => None,
-        }
-    }
-}
-
-/// Persisted, non-secret configuration for `web_search`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WebSearchSettings {
-    /// Whether the `web_search` tool is registered for chat runs.
-    #[serde(default = "default_web_search_enabled")]
-    pub enabled: bool,
-    /// Preferred provider chain.
-    #[serde(default)]
-    pub provider: WebSearchProvider,
-    /// Optional SearXNG base URL, for example `https://search.example.com`.
-    #[serde(default)]
-    pub searxng_url: Option<String>,
-    /// Whether AnySearch should be attempted before the selected fallback chain.
-    #[serde(default)]
-    pub anysearch_enabled: bool,
-    /// Optional AnySearch API base URL. Defaults to `https://api.anysearch.com`.
-    #[serde(default)]
-    pub anysearch_base_url: Option<String>,
-    /// Redacted view-only flag, populated by [`SettingsService`].
-    #[serde(default)]
-    pub anysearch_api_key_configured: bool,
-}
-
-impl Default for WebSearchSettings {
-    fn default() -> Self {
-        Self {
-            enabled: default_web_search_enabled(),
-            provider: WebSearchProvider::default(),
-            searxng_url: None,
-            anysearch_enabled: false,
-            anysearch_base_url: None,
-            anysearch_api_key_configured: false,
-        }
-    }
-}
-
-fn default_web_search_enabled() -> bool {
-    true
-}
-
-fn normalize_web_search_settings(mut settings: WebSearchSettings) -> WebSearchSettings {
-    settings.searxng_url = settings
-        .searxng_url
-        .map(|s| s.trim().trim_end_matches('/').to_string())
-        .filter(|s| !s.is_empty());
-    settings.anysearch_base_url = settings
-        .anysearch_base_url
-        .map(|s| normalize_anysearch_base_url(&s))
-        .filter(|s| !s.is_empty());
-    settings.anysearch_api_key_configured = false;
-    settings
-}
-
-fn normalize_anysearch_base_url(base_url: &str) -> String {
-    let trimmed = base_url.trim().trim_end_matches('/');
-    if matches!(
-        trimmed,
-        "https://www.anysearch.com" | "https://anysearch.com"
-    ) {
-        ANYSEARCH_DEFAULT_BASE_URL.to_string()
-    } else {
-        trimmed.to_string()
     }
 }
 
@@ -1496,7 +1405,7 @@ impl SettingsService {
             settings.catalog = catalog;
             settings.discovered_at = discovered_at;
             settings.pricing_catalog = pricing.clone();
-            settings.web_search = normalize_web_search_settings(settings.web_search);
+            settings.web_search = normalized_web_search_settings(settings.web_search);
             Ok(settings)
         })
     }
@@ -1771,17 +1680,81 @@ impl SettingsService {
         Ok(())
     }
 
-    /// Current web-search settings (default DeepSeek-first when uninitialized).
+    /// Current versioned engine settings; legacy documents are decoded compatibly.
     pub fn web_search_settings(&self) -> Result<WebSearchSettings> {
-        let settings =
-            normalize_web_search_settings(self.load()?.map(|s| s.web_search).unwrap_or_default());
-        self.web_search_settings_view(settings)
+        Ok(normalized_web_search_settings(
+            self.load()?
+                .map(|settings| settings.web_search)
+                .unwrap_or_default(),
+        ))
     }
 
-    /// Persist web-search settings.
-    pub fn set_web_search_settings(&self, settings_next: WebSearchSettings) -> Result<()> {
+    /// Redacted readiness view; ready means configured, not reachable.
+    pub fn web_search_settings_view(&self) -> Result<WebSearchSettingsView> {
+        let settings = self.web_search_settings()?;
+        let deepseek_ready = self.api_key()?.is_some_and(|key| !key.trim().is_empty());
+        let anysearch_ready = self
+            .anysearch_api_key()?
+            .is_some_and(|key| !key.trim().is_empty());
+        let engine_statuses = settings
+            .engines
+            .iter()
+            .map(|engine| WebSearchEngineStatus {
+                id: engine.id,
+                state: if !engine.enabled {
+                    WebSearchConfigState::Disabled
+                } else {
+                    match engine.id {
+                        WebSearchEngineId::Deepseek if !deepseek_ready => {
+                            WebSearchConfigState::NeedsConfiguration
+                        }
+                        WebSearchEngineId::Anysearch if !anysearch_ready => {
+                            WebSearchConfigState::NeedsConfiguration
+                        }
+                        WebSearchEngineId::Searxng if engine.base_url.is_none() => {
+                            WebSearchConfigState::NeedsConfiguration
+                        }
+                        _ => WebSearchConfigState::Ready,
+                    }
+                },
+            })
+            .collect();
+        Ok(WebSearchSettingsView {
+            settings,
+            engine_statuses,
+        })
+    }
+
+    /// Capture one call-local config/credential snapshot. It is never cached.
+    pub fn web_search_runtime_config(&self) -> Result<WebSearchRuntimeConfig> {
+        let settings = self.web_search_settings()?;
+        let deepseek_api_key = settings
+            .engines
+            .iter()
+            .any(|engine| engine.enabled && engine.id == WebSearchEngineId::Deepseek)
+            .then(|| self.api_key())
+            .transpose()?
+            .flatten();
+        let anysearch_api_key = settings
+            .engines
+            .iter()
+            .any(|engine| engine.enabled && engine.id == WebSearchEngineId::Anysearch)
+            .then(|| self.anysearch_api_key())
+            .transpose()?
+            .flatten();
+        Ok(WebSearchRuntimeConfig {
+            settings,
+            deepseek_api_key,
+            anysearch_api_key,
+        })
+    }
+
+    /// Persist one normalized, versioned engine list and priority order atomically.
+    pub fn set_web_search_settings(&self, mut settings_next: WebSearchSettings) -> Result<()> {
+        settings_next.normalize();
+        settings_next.validate()?;
         self.update_settings(|settings| {
-            settings.web_search = normalize_web_search_settings(settings_next.clone());
+            settings.web_search = settings_next.clone();
             Ok(())
         })?;
         Ok(())
@@ -1805,18 +1778,6 @@ impl SettingsService {
     pub fn clear_anysearch_api_key(&self) -> Result<()> {
         let _ = self.secrets.delete(ANYSEARCH_API_KEY_NAME);
         Ok(())
-    }
-
-    fn web_search_settings_view(
-        &self,
-        mut settings: WebSearchSettings,
-    ) -> Result<WebSearchSettings> {
-        settings.anysearch_api_key_configured = self
-            .secrets
-            .get(ANYSEARCH_API_KEY_NAME)?
-            .map(|key| !key.trim().is_empty())
-            .unwrap_or(false);
-        Ok(settings)
     }
 
     /// Current image-analysis settings.
@@ -2293,9 +2254,7 @@ impl SettingsService {
             terminal_shell: settings.terminal_shell.label().to_string(),
             reasoning_effort: settings.reasoning_effort.label().to_string(),
             responses: settings.responses.clone(),
-            web_search: self.web_search_settings_view(normalize_web_search_settings(
-                settings.web_search.clone(),
-            ))?,
+            web_search: normalized_web_search_settings(settings.web_search.clone()),
             vision: self.vision_settings_view(settings.vision.clone())?,
             execution_features: settings.execution_features,
             output_style: settings.output_style.as_str().to_string(),
@@ -2330,6 +2289,11 @@ fn now_ms() -> i64 {
     SystemClock.now().as_millis()
 }
 
+fn normalized_web_search_settings(mut settings: WebSearchSettings) -> WebSearchSettings {
+    settings.normalize();
+    settings
+}
+
 #[path = "settings/persistence.rs"]
 mod persistence;
 
@@ -2351,6 +2315,10 @@ mod process_tests;
 #[cfg(test)]
 #[path = "settings/credential_tests.rs"]
 mod credential_tests;
+
+#[cfg(test)]
+#[path = "settings/web_search_tests.rs"]
+mod web_search_tests;
 
 #[cfg(test)]
 #[path = "settings/credential_process_tests.rs"]
@@ -3062,31 +3030,103 @@ mod tests {
     async fn web_search_settings_default_and_round_trip() {
         let (svc, _) = service();
         let view = svc.initialize("sk-abcd1234").await.unwrap();
-        assert!(view.web_search.enabled);
-        assert_eq!(view.web_search.provider, WebSearchProvider::DeepSeekFirst);
-        assert!(view.web_search.searxng_url.is_none());
-
-        svc.set_web_search_settings(WebSearchSettings {
-            enabled: true,
-            provider: WebSearchProvider::Searxng,
-            searxng_url: Some(" https://search.example.com/ ".into()),
-            anysearch_enabled: true,
-            anysearch_base_url: Some(" https://api.anysearch.com/ ".into()),
-            anysearch_api_key_configured: false,
-        })
-        .unwrap();
-        let persisted = svc.web_search_settings().unwrap();
-        assert_eq!(persisted.provider, WebSearchProvider::Searxng);
+        assert_eq!(view.web_search.schema_version, 2);
+        assert_eq!(view.web_search.strategy, WebSearchStrategy::Fallback);
         assert_eq!(
-            persisted.searxng_url.as_deref(),
+            view.web_search
+                .engines
+                .iter()
+                .map(|engine| engine.id)
+                .collect::<Vec<_>>(),
+            [
+                WebSearchEngineId::Deepseek,
+                WebSearchEngineId::Anysearch,
+                WebSearchEngineId::Searxng,
+                WebSearchEngineId::Duckduckgo
+            ]
+        );
+        assert!(view.web_search.engines[0].enabled);
+        assert!(!view.web_search.engines[1].enabled);
+        assert!(view.web_search.engines[2].enabled && view.web_search.engines[3].enabled);
+
+        let settings = WebSearchSettings {
+            schema_version: 2,
+            strategy: WebSearchStrategy::Verify,
+            engines: vec![
+                WebSearchEngineSettings {
+                    id: WebSearchEngineId::Searxng,
+                    enabled: true,
+                    base_url: Some(" https://search.example.com/ ".into()),
+                },
+                WebSearchEngineSettings {
+                    id: WebSearchEngineId::Deepseek,
+                    enabled: false,
+                    base_url: None,
+                },
+                WebSearchEngineSettings {
+                    id: WebSearchEngineId::Duckduckgo,
+                    enabled: false,
+                    base_url: None,
+                },
+                WebSearchEngineSettings {
+                    id: WebSearchEngineId::Anysearch,
+                    enabled: true,
+                    base_url: Some(" https://api.anysearch.com/ ".into()),
+                },
+            ],
+            ranking: WebSearchRankingSettings {
+                method: WebSearchRankingMethod::System,
+                profile: WebSearchRankingProfile::Timely,
+            },
+        };
+        svc.set_web_search_settings(settings).unwrap();
+        let persisted = svc.web_search_settings().unwrap();
+        assert_eq!(persisted.strategy, WebSearchStrategy::Verify);
+        assert_eq!(persisted.ranking.profile, WebSearchRankingProfile::Timely);
+        assert_eq!(persisted.engines[0].id, WebSearchEngineId::Searxng);
+        assert_eq!(
+            persisted.engines[0].base_url.as_deref(),
             Some("https://search.example.com")
         );
 
         let refreshed = svc.refresh_models().await.unwrap();
-        assert_eq!(refreshed.web_search.provider, WebSearchProvider::Searxng);
+        assert_eq!(refreshed.web_search.strategy, WebSearchStrategy::Verify);
         assert_eq!(
-            refreshed.web_search.searxng_url.as_deref(),
+            refreshed.web_search.engines[0].id,
+            WebSearchEngineId::Searxng
+        );
+        assert_eq!(
+            refreshed.web_search.engines[0].base_url.as_deref(),
             Some("https://search.example.com")
+        );
+    }
+
+    #[tokio::test]
+    async fn web_search_runtime_config_uses_current_login_key_and_drops_it_after_sign_out() {
+        let (svc, _) = service();
+        svc.initialize("synthetic-old-login-key").await.unwrap();
+
+        assert_eq!(
+            svc.web_search_runtime_config()
+                .unwrap()
+                .deepseek_api_key
+                .as_deref(),
+            Some("synthetic-old-login-key")
+        );
+
+        svc.initialize("synthetic-new-login-key").await.unwrap();
+        assert_eq!(
+            svc.web_search_runtime_config()
+                .unwrap()
+                .deepseek_api_key
+                .as_deref(),
+            Some("synthetic-new-login-key")
+        );
+
+        svc.clear_key().unwrap();
+        assert_eq!(
+            svc.web_search_runtime_config().unwrap().deepseek_api_key,
+            None
         );
     }
 
@@ -3221,9 +3261,12 @@ mod tests {
         assert_eq!(parsed.skill_catalog_char_budget, 8_000);
         assert!(parsed.skill_install_ai_review_enabled);
         assert!(parsed.skill_install_ai_review_model.is_none());
-        assert!(parsed.web_search.enabled);
-        assert_eq!(parsed.web_search.provider, WebSearchProvider::DeepSeekFirst);
-        assert!(parsed.web_search.searxng_url.is_none());
+        assert_eq!(parsed.web_search.schema_version, 2);
+        assert!(parsed
+            .web_search
+            .engines
+            .iter()
+            .any(|engine| engine.id == WebSearchEngineId::Deepseek && engine.enabled));
     }
 
     #[tokio::test]

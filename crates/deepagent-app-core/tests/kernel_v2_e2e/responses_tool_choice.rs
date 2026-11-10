@@ -51,8 +51,7 @@ async fn unsupported_responses_named_tool_choices_are_rejected_before_transport(
         let transport = Arc::new(CountingTransport::default());
 
         if let Ok(settings) = parsed {
-            let mut config = ModelConfig::deepseek("audit-placeholder");
-            config.defaults.native_web_search = tool.function.name == "web_search";
+            let config = ModelConfig::deepseek("audit-placeholder");
             let client = ModelClient::new(transport.clone(), config);
             let request = ResponseRequest::new(
                 "deepseek-v4-pro",

@@ -73,7 +73,6 @@ pub struct ResponseDefaults {
     pub text: Option<serde_json::Value>,
     pub tool_choice: Option<serde_json::Value>,
     pub user: Option<String>,
-    pub native_web_search: bool,
 }
 
 impl ModelConfig {
@@ -450,19 +449,19 @@ impl ModelClient {
     /// This never resolves credentials, creates history, or sends a request.
     pub fn project_tool_schemas(
         &self,
-        model: &str,
+        _model: &str,
         tools: &[crate::ToolSchema],
     ) -> ProviderToolSchemas {
         let tools = match self.config.wire_mode {
             WireMode::Responses => {
                 let mut tools = tools.to_vec();
-                self.apply_tool_defaults(&mut tools);
+                Self::apply_tool_defaults(&mut tools);
                 crate::chat::response_tools_to_wire(&tools)
             }
             WireMode::ChatCompletions => crate::chat_completions::chat_tools_to_wire(tools),
         };
         ProviderToolSchemas {
-            model: model.to_owned(),
+            model: _model.to_owned(),
             wire_mode: self.config.wire_mode,
             tools,
         }
@@ -502,17 +501,10 @@ impl ModelClient {
         if request.user.is_none() {
             request.user = self.config.defaults.user.clone();
         }
-        self.apply_tool_defaults(&mut request.tools);
+        Self::apply_tool_defaults(&mut request.tools);
     }
 
-    fn apply_tool_defaults(&self, tools: &mut [crate::ToolSchema]) {
-        if self.config.defaults.native_web_search {
-            for tool in tools.iter_mut() {
-                if tool.function.name == "web_search" {
-                    tool.kind = "web_search".to_string();
-                }
-            }
-        }
+    fn apply_tool_defaults(tools: &mut [crate::ToolSchema]) {
         for tool in tools {
             if tool.function.name == "apply_patch" {
                 tool.kind = "custom".to_string();

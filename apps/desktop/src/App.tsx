@@ -1,3 +1,4 @@
+import { summarizeWebSearch } from "./components/chat-timeline/webSearchSummary";
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { SpringDisclosure } from "./components/ui/SpringDisclosure";
@@ -1661,31 +1662,6 @@ export function App() {
       };
 
       // Summarize a tool's JSON output into a short one-line detail string.
-      const summarizeWebSearch = (output: Record<string, unknown>): string => {
-        if (typeof output.error === "string") return output.error.slice(0, 200);
-        const provider = typeof output.provider === "string" ? output.provider : "unknown";
-        const count =
-          typeof output.count === "number"
-            ? output.count
-            : Array.isArray(output.results)
-            ? output.results.length
-            : 0;
-        const attempts = Array.isArray(output.attempts)
-          ? output.attempts
-              .map((item) => {
-                if (!item || typeof item !== "object") return null;
-                const attempt = item as Record<string, unknown>;
-                const name = typeof attempt.provider === "string" ? attempt.provider : null;
-                if (!name) return null;
-                return `${name}:${attempt.ok === true ? "ok" : "failed"}`;
-              })
-              .filter(Boolean)
-              .join(", ")
-          : "";
-        const suffix = attempts ? `; attempts: ${attempts}` : "";
-        return `web_search: ${provider} returned ${count} result(s)${suffix}`;
-      };
-
       const summarize = (toolName: string, output: unknown): string => {
         if (output == null) return "";
         if (typeof output === "string") return output.slice(0, 200);

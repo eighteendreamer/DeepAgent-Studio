@@ -2,7 +2,7 @@
 //!
 //! RRF merges multiple ranked lists into one without needing comparable score
 //! scales: each item accrues `1 / (k + rank)` from every list it appears in
-//! (rank is 0-based). Items appearing high in multiple lists rise to the top.
+//! (rank is 1-based). Items appearing high in multiple lists rise to the top.
 //! `k` (Cormack et al. use 60) dampens the contribution of top ranks so a
 //! single list cannot dominate.
 
@@ -21,12 +21,49 @@ where
     Id: Clone + Eq + Hash,
     F: Fn(&Id, &Id) -> std::cmp::Ordering,
 {
+    reciprocal_rank_fusion_many(&[primary, secondary], k, tiebreak)
+}
+
+/// Fuse any number of ranked lists while keeping ranks local to the original
+/// list. Duplicate ids within one list contribute only their first rank.
+pub fn reciprocal_rank_fusion_many<Id, F>(lists: &[&[Id]], k: f32, tiebreak: F) -> Vec<(Id, f32)>
+where
+    Id: Clone + Eq + Hash,
+    F: Fn(&Id, &Id) -> std::cmp::Ordering,
+{
+    let ranked: Vec<Vec<_>> = lists
+        .iter()
+        .map(|list| {
+            list.iter()
+                .cloned()
+                .enumerate()
+                .map(|(i, id)| (id, i + 1))
+                .collect()
+        })
+        .collect();
+    let lists: Vec<_> = ranked.iter().map(Vec::as_slice).collect();
+    reciprocal_rank_fusion_ranked(&lists, k, tiebreak)
+}
+
+/// Fuse lists with explicit original 1-based ranks. Filtering or deduplicating
+/// an upstream list must not promote the ranks of the remaining entries.
+pub fn reciprocal_rank_fusion_ranked<Id, F>(
+    lists: &[&[(Id, usize)]],
+    k: f32,
+    tiebreak: F,
+) -> Vec<(Id, f32)>
+where
+    Id: Clone + Eq + Hash,
+    F: Fn(&Id, &Id) -> std::cmp::Ordering,
+{
     let mut scores: HashMap<Id, f32> = HashMap::new();
-    for (rank, id) in primary.iter().enumerate() {
-        *scores.entry(id.clone()).or_insert(0.0) += 1.0 / (k + rank as f32 + 1.0);
-    }
-    for (rank, id) in secondary.iter().enumerate() {
-        *scores.entry(id.clone()).or_insert(0.0) += 1.0 / (k + rank as f32 + 1.0);
+    for list in lists {
+        let mut seen = std::collections::HashSet::new();
+        for (id, rank) in *list {
+            if seen.insert(id) {
+                *scores.entry(id.clone()).or_insert(0.0) += 1.0 / (k + *rank as f32);
+            }
+        }
     }
     let mut fused: Vec<(Id, f32)> = scores.into_iter().collect();
     fused.sort_by(|a, b| {
@@ -77,5 +114,20 @@ mod tests {
         let a = reciprocal_rank_fusion(&[5u32, 3], &[], 60.0, ord);
         let b = reciprocal_rank_fusion(&[5u32, 3], &[], 60.0, ord);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn three_sources_keep_their_original_ranks_and_ignore_duplicates_per_source() {
+        let fused = reciprocal_rank_fusion_many(&[&[1u32, 2, 2], &[3, 2], &[1, 3]], 60.0, ord);
+        let scores: HashMap<_, _> = fused.into_iter().collect();
+        assert_eq!(scores[&1], 2.0 / 61.0);
+        assert_eq!(scores[&2], 1.0 / 62.0 + 1.0 / 62.0);
+        assert_eq!(scores[&3], 1.0 / 61.0 + 1.0 / 62.0);
+    }
+
+    #[test]
+    fn explicit_ranks_keep_gaps_after_filtering() {
+        let fused = reciprocal_rank_fusion_ranked(&[&[(1u32, 1), (2, 3)]], 60.0, ord);
+        assert_eq!(fused, [(1, 1.0 / 61.0), (2, 1.0 / 63.0)]);
     }
 }

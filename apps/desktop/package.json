@@ -22,6 +22,7 @@
     "test:number-format": "node --test scripts/check-number-format.test.cjs",
     "test:knowledge-kinds": "node --test scripts/check-knowledge-kinds.test.cjs",
     "test:hover-info": "node --test scripts/check-hover-info.test.cjs",
+    "test:web-search-settings": "node --test scripts/check-web-search-settings.test.cjs scripts/check-web-search-summary.test.cjs",
     "test:timeline-memory": "node --test scripts/check-timeline-memory.test.cjs",
     "test:process-collapse": "node --test scripts/check-process-collapse.test.cjs",
     "test:run-completion-error": "node --test scripts/check-run-completion-error.test.cjs",
@@ -35,7 +36,7 @@
     "test:terminal-session": "node --test scripts/check-terminal-session.test.cjs",
     "test:ssh-host-trust": "node --test scripts/check-ssh-host-trust.test.cjs",
     "test:video-edit-persistence": "node --test scripts/check-video-edit-persistence.test.cjs",
-    "build": "pnpm prebundle-rea && pnpm test:continuous-corners && pnpm test:onboarding && pnpm test:workflow && pnpm test:canvas-ipc && pnpm test:video-edit-persistence && pnpm test:ssh-host-trust && pnpm test:terminal-session && pnpm test:plugin-logos && pnpm test:plugin-detail && pnpm test:plugin-page && pnpm test:plugin-toggle && pnpm test:sidebar && pnpm test:session-usage && pnpm test:session-control && pnpm test:mcp-response-budget && pnpm test:session-search && pnpm test:number-format && pnpm test:knowledge-kinds && pnpm test:hover-info && pnpm test:timeline-memory && pnpm test:process-collapse && pnpm test:run-completion-error && pnpm test:message-edit && pnpm test:composer-activity && pnpm test:image-integrity && pnpm check-plugin-licenses && pnpm prebundle-skills && tsc --noEmit && vite build",
+    "build": "pnpm prebundle-rea && pnpm test:continuous-corners && pnpm test:onboarding && pnpm test:workflow && pnpm test:canvas-ipc && pnpm test:video-edit-persistence && pnpm test:ssh-host-trust && pnpm test:terminal-session && pnpm test:plugin-logos && pnpm test:plugin-detail && pnpm test:plugin-page && pnpm test:plugin-toggle && pnpm test:sidebar && pnpm test:session-usage && pnpm test:session-control && pnpm test:mcp-response-budget && pnpm test:session-search && pnpm test:number-format && pnpm test:knowledge-kinds && pnpm test:hover-info && pnpm test:web-search-settings && pnpm test:timeline-memory && pnpm test:process-collapse && pnpm test:run-completion-error && pnpm test:message-edit && pnpm test:composer-activity && pnpm test:image-integrity && pnpm check-plugin-licenses && pnpm prebundle-skills && tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "review": "ocr"

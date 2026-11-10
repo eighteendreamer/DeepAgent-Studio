@@ -5630,7 +5630,6 @@ mod tests {
                     ModelConfig::deepseek("offline-placeholder")
                         .with_wire_mode(mode)
                         .with_defaults(deepagent_models::ResponseDefaults {
-                            native_web_search: true,
                             ..Default::default()
                         }),
                 ));

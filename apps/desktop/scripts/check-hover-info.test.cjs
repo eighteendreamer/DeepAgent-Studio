@@ -33,6 +33,23 @@ test("visible hover information does not use native title tooltips", () => {
   assert.deepEqual(offenders, []);
 });
 
+test("web search priority handle uses an accessible shadcn button without a title tooltip", () => {
+  const settings = fs.readFileSync(
+    path.join(sourceRoot, "components/settings/ConfigSettings.tsx"),
+    "utf8",
+  );
+  const handle = settings.match(/<Button\b(?=[^>]*\bdraggable)[\s\S]*?<\/Button>/);
+  assert.ok(handle, "priority handle must use the shared shadcn Button");
+  assert.match(handle[0], /aria-label=/);
+  assert.doesNotMatch(handle[0], /\btitle=/);
+  const section = settings.split("{/* Section: unified direct web_search engines */}")[1]
+    .split("{/* Section: 技能")[0];
+  assert.doesNotMatch(section, /<(?:input|button|select)\b/,
+    "new search controls must reuse shadcn components");
+  assert.match(section, /role="switch"/);
+  assert.match(section, /aria-checked=/);
+});
+
 test("shared Hover Card uses the requested shadcn Base UI primitive", () => {
   const card = fs.readFileSync(path.join(sourceRoot, "components/shadcn/hover-card.tsx"), "utf8");
   assert.match(card, /@base-ui\/react\/preview-card/);

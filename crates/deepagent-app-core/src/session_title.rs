@@ -20,7 +20,7 @@ use deepagent_persistence::Database;
 use crate::call_usage::{RunCallUsageOwner, SideModelCall};
 use crate::cost_service::CostService;
 use crate::input_runtime::full_history_from_events;
-use crate::settings::{SettingsService, WebSearchProvider};
+use crate::settings::SettingsService;
 
 const SESSION_TITLE_SYSTEM_PROMPT: &str = concat!(
     "You generate concise conversation titles for a coding assistant session.\n",
@@ -154,11 +154,6 @@ pub async fn generate_session_title(
             text: settings.responses.effective_text(),
             tool_choice: settings.responses.effective_tool_choice(),
             user: settings.responses.effective_user(),
-            native_web_search: settings.web_search.enabled
-                && matches!(
-                    settings.web_search.provider,
-                    WebSearchProvider::DeepSeekFirst
-                ),
         });
     let client = Arc::new(ModelClient::new(transport, config));
 

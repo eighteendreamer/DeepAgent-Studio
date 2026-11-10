@@ -16,8 +16,7 @@ pub(crate) struct RunModelSelection {
     pub(crate) fallback_model: Option<String>,
 }
 
-/// Credential-free, immutable selection. Reading configuration never opens the
-/// secret store; an admitted worker binds a credential only when it executes.
+/// Credential-free selection; the admitted worker binds credentials at execution time.
 pub(crate) struct RunModelPlan {
     pub(crate) model: String,
     pub(crate) reasoning_effort: ReasoningEffort,
@@ -67,19 +66,12 @@ pub(crate) fn build_model_client(
         text: loaded.responses.effective_text(),
         tool_choice: loaded.responses.effective_tool_choice(),
         user: loaded.responses.effective_user(),
-        native_web_search: loaded.web_search.enabled
-            && matches!(
-                loaded.web_search.provider,
-                crate::settings::WebSearchProvider::DeepSeekFirst
-            ),
     };
     let config = ModelConfig::from_catalog(api_key, &loaded.catalog, role).with_defaults(defaults);
     let client = Arc::new(ModelClient::new(transport, config));
     Ok((client, model, reasoning_effort))
 }
 
-/// Public wrapper for host layers (e.g. the Tauri hook-test command): build
-/// a Chat-role model client from persisted settings.
 pub fn build_chat_model_client(
     settings: &SettingsService,
     transport: Arc<dyn HttpTransport>,
@@ -110,7 +102,6 @@ pub(crate) fn select_run_model(
     .bind(settings, transport)
 }
 
-/// The sole model/default/fallback resolver used by both config/read and runs.
 pub(crate) fn resolve_run_model(
     loaded: &crate::settings::AppSettings,
     role: ModelRole,
@@ -120,9 +111,6 @@ pub(crate) fn resolve_run_model(
     reasoning_effort_override: Option<&str>,
 ) -> Result<RunModelPlan> {
     let reasoning_effort = resolve_reasoning_effort(loaded, reasoning_effort_override)?;
-    // Compatibility imports are adapted at the source-aware overlay. An exact
-    // selection reaching this sole resolver must never silently become a
-    // different role default, including config/read and prepared execution.
     let model = match model_override {
         Some(id) if loaded.catalog.has_model(id) => id.to_owned(),
         Some(id) => {
@@ -143,11 +131,6 @@ pub(crate) fn resolve_run_model(
         text: loaded.responses.effective_text(),
         tool_choice: loaded.responses.effective_tool_choice(),
         user: loaded.responses.effective_user(),
-        native_web_search: loaded.web_search.enabled
-            && matches!(
-                loaded.web_search.provider,
-                crate::settings::WebSearchProvider::DeepSeekFirst
-            ),
     };
     if let Some(provider) = provider_override {
         if provider != DEEPSEEK_OFFICIAL_PROVIDER {
@@ -156,10 +139,9 @@ pub(crate) fn resolve_run_model(
             )));
         }
     }
-    let wire_mode = WireMode::Responses;
     let config = ModelConfig::from_catalog("", &loaded.catalog, role)
         .with_defaults(defaults)
-        .with_wire_mode(wire_mode);
+        .with_wire_mode(WireMode::Responses);
     Ok(RunModelPlan {
         config,
         override_applied: model_override.is_some(),
@@ -181,7 +163,6 @@ fn resolve_reasoning_effort(
             ))
         });
     }
-
     let has_responses_effort = settings.responses.reasoning_effort.is_some()
         || settings.responses.developer.contains_key("reasoning");
     if has_responses_effort && response_effort.is_none() {
@@ -201,16 +182,10 @@ mod tests {
     #[test]
     fn reasoning_effort_resolution_uses_only_canonical_values() {
         let mut settings: AppSettings = serde_json::from_value(serde_json::json!({
-            "catalog": {
-                "base_url": deepagent_models::DEEPSEEK_BASE_URL,
-                "available": [],
-                "chat_model": "deepseek-v4-flash",
-                "reasoner_model": "deepseek-v4-pro"
-            },
-            "discovered_at": 0,
-            "sandbox_mode": "workspace_write"
-        }))
-        .unwrap();
+            "catalog": { "base_url": deepagent_models::DEEPSEEK_BASE_URL,
+                "available": [], "chat_model": "deepseek-v4-flash", "reasoner_model": "deepseek-v4-pro" },
+            "discovered_at": 0, "sandbox_mode": "workspace_write"
+        })).unwrap();
         settings.reasoning_effort = ReasoningEffort::Low;
         assert_eq!(
             resolve_reasoning_effort(&settings, None).unwrap(),
@@ -220,24 +195,21 @@ mod tests {
             resolve_reasoning_effort(&settings, Some("max")).unwrap(),
             ReasoningEffort::Max
         );
-
         settings.responses = ResponsesApiSettings {
-            reasoning_effort: Some("high".to_string()),
-            ..ResponsesApiSettings::default()
+            reasoning_effort: Some("high".into()),
+            ..Default::default()
         };
         assert_eq!(
             resolve_reasoning_effort(&settings, None).unwrap(),
             ReasoningEffort::High
         );
-
         for value in ["minimal", "medium", "xhigh", "simple", "deep"] {
             assert!(
                 resolve_reasoning_effort(&settings, Some(value)).is_err(),
                 "{value}"
             );
         }
-
-        settings.responses.reasoning_effort = Some("medium".to_string());
+        settings.responses.reasoning_effort = Some("medium".into());
         assert!(resolve_reasoning_effort(&settings, None).is_err());
     }
 }

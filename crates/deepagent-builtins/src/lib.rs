@@ -71,6 +71,7 @@ pub mod snip_tool;
 pub mod task_tool;
 pub mod todo_tool;
 pub mod tool_search;
+pub mod web_search;
 pub mod web_tools;
 pub mod worktree_tools;
 
@@ -168,9 +169,10 @@ pub use tool_search::{
     ToolSearchTool, TOOL_SEARCH_DEFAULT_MAX_RESULTS, TOOL_SEARCH_MAX_RESULTS_CAP,
     TOOL_SEARCH_TOOL_NAME,
 };
-pub use web_tools::{
-    SearchAttempt, SearchResponse, SearchResult, WebClient, WebFetchTool, WebSearchTool,
+pub use web_search::types::{
+    EngineAttempt, ResultEvidence, ResultSource, SearchEvidence, SearchOutput,
 };
+pub use web_tools::{SearchAttempt, SearchResponse, WebClient, WebFetchTool};
 pub use worktree_tools::{
     worktree_session_state, ActiveWorktree, EnterWorktreeTool, ExitWorktreeTool,
     WorktreeSessionState, ENTER_WORKTREE_TOOL_NAME, EXIT_WORKTREE_TOOL_NAME,
@@ -178,6 +180,8 @@ pub use worktree_tools::{
 
 #[cfg(feature = "http")]
 pub use reqwest_web::{AnySearchConfig, ReqwestWebClient};
+#[cfg(feature = "http")]
+pub use web_search::WebSearchTool;
 
 // Re-export the permission vocabulary callers need to grant access.
 pub use deepagent_tools::permission::{Permission, PermissionSet, RiskLevel};
@@ -351,13 +355,11 @@ pub fn register_guard_hooks_with_bash_full_access(
     );
 }
 
-/// Register the network web tools (`web_fetch` + `web_search`) backed by the
-/// real reqwest client. Requires the `http` feature. Both require the
-/// [`Permission::Network`] grant to be invoked.
+/// Register network web tools with legacy stateless search defaults.
+/// Application entrypoints should register the settings-backed web_search.
 #[cfg(feature = "http")]
 pub fn register_web_tools(registry: &mut ToolRegistry) -> Result<()> {
     registry.register(Arc::new(WebFetchTool::new(ReqwestWebClient::new())))?;
-    registry.register(Arc::new(WebSearchTool::new(ReqwestWebClient::new())))?;
     Ok(())
 }
 

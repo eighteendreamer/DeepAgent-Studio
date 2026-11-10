@@ -1139,10 +1139,41 @@ fn summarize_web_search_output(output: &serde_json::Value) -> String {
     if let Some(e) = output.get("error").and_then(|v| v.as_str()) {
         return e.to_string();
     }
-    let provider = output
-        .get("provider")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
+    let evidence = output
+        .get("evidence")
+        .and_then(serde_json::Value::as_object);
+    let raw_attempts = evidence
+        .and_then(|value| value.get("attempts"))
+        .or_else(|| output.get("attempts"))
+        .and_then(serde_json::Value::as_array);
+    let provider = if evidence.is_some() {
+        let contributing = raw_attempts
+            .into_iter()
+            .flatten()
+            .filter_map(|attempt| {
+                (attempt.get("ok").and_then(serde_json::Value::as_bool) == Some(true)
+                    && attempt
+                        .get("result_count")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0)
+                        > 0)
+                .then(|| attempt.get("engine").and_then(serde_json::Value::as_str))
+                .flatten()
+            })
+            .collect::<Vec<_>>()
+            .join(" + ");
+        if contributing.is_empty() {
+            "configured engines".to_string()
+        } else {
+            contributing
+        }
+    } else {
+        output
+            .get("provider")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown")
+            .to_string()
+    };
     let count = output
         .get("count")
         .and_then(|v| v.as_u64())
@@ -1153,14 +1184,18 @@ fn summarize_web_search_output(output: &serde_json::Value) -> String {
                 .map(|a| a.len() as u64)
         })
         .unwrap_or(0);
-    let attempts = output
-        .get("attempts")
-        .and_then(|v| v.as_array())
+    let attempts = raw_attempts
         .map(|items| {
             items
                 .iter()
                 .filter_map(|item| {
-                    let provider = item.get("provider").and_then(|v| v.as_str())?;
+                    let provider = item
+                        .get(if evidence.is_some() {
+                            "engine"
+                        } else {
+                            "provider"
+                        })
+                        .and_then(|v| v.as_str())?;
                     let ok = item.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
                     Some(format!("{provider}:{}", if ok { "ok" } else { "failed" }))
                 })
@@ -1169,11 +1204,20 @@ fn summarize_web_search_output(output: &serde_json::Value) -> String {
         })
         .filter(|s| !s.is_empty());
 
-    match attempts {
+    let summary = match attempts {
         Some(attempts) => {
             format!("web_search: {provider} returned {count} result(s); attempts: {attempts}")
         }
         None => format!("web_search: {provider} returned {count} result(s)"),
+    };
+    if evidence
+        .and_then(|value| value.get("incomplete"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        format!("{summary}; coverage incomplete")
+    } else {
+        summary
     }
 }
 
@@ -1864,6 +1908,18 @@ mod tests {
         let decoded: SessionDetailDto = serde_json::from_value(legacy).unwrap();
         assert_eq!(decoded.version, 0);
         assert!(decoded.project_path.is_none());
+    }
+
+    #[test]
+    fn unified_web_search_summary_reads_evidence_and_preserves_partial_coverage() {
+        let value = serde_json::json!({"count":2,"results":[{},{}],"evidence":{
+            "incomplete":true,"attempts":[
+                {"engine":"deepseek","ok":false,"result_count":0},
+                {"engine":"anysearch","ok":true,"result_count":2},
+                {"engine":"searxng","ok":true,"result_count":0}
+            ]
+        }});
+        assert_eq!(summarize_web_search_output(&value), "web_search: anysearch returned 2 result(s); attempts: deepseek:failed, anysearch:ok, searxng:ok; coverage incomplete");
     }
 
     #[test]

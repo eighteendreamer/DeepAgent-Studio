@@ -986,15 +986,19 @@ export interface ExecutionFeatures {
   adversarial_verify: boolean;
 }
 
-export type WebSearchProvider = "deepseek_first" | "searxng" | "duckduckgo";
-
+export type WebSearchEngineId = "deepseek" | "anysearch" | "searxng" | "duckduckgo";
+export type WebSearchStrategy = "fallback" | "verify";
+export type WebSearchRankingProfile = "balanced" | "timely";
+export type WebSearchRankingMethod = "system";
+export type WebSearchConfigState = "disabled" | "needs_configuration" | "ready";
+export interface WebSearchEngineSettings { id: WebSearchEngineId; enabled: boolean; base_url: string | null; }
+export interface WebSearchEngineStatus { id: WebSearchEngineId; state: WebSearchConfigState; }
 export interface WebSearchSettings {
-  enabled: boolean;
-  provider: WebSearchProvider;
-  searxng_url: string | null;
-  anysearch_enabled: boolean;
-  anysearch_base_url: string | null;
-  anysearch_api_key_configured: boolean;
+  schema_version: number;
+  strategy: WebSearchStrategy;
+  engines: WebSearchEngineSettings[];
+  ranking: { method: WebSearchRankingMethod; profile: WebSearchRankingProfile };
+  engine_statuses?: WebSearchEngineStatus[];
 }
 
 export interface ResponsesApiSettings {
@@ -1016,10 +1020,12 @@ export interface AnySearchApiKeyInfo {
   has_user_key: boolean;
 }
 
-export interface AnySearchTestResult {
+export interface WebSearchEngineTestResult {
+  engine: WebSearchEngineId;
+  run_id: string;
+  session_id: string;
   ok: boolean;
   error: string | null;
-  provider: string | null;
   count: number | null;
 }
 

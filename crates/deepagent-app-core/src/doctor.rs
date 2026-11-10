@@ -12,7 +12,9 @@ use deepagent_core::error::{CoreError, Result};
 use deepagent_persistence::Database;
 use serde::{Deserialize, Serialize};
 
-use crate::settings::{SettingsService, WebSearchProvider, WebSearchSettings};
+#[cfg(test)]
+use crate::settings::WebSearchSettings;
+use crate::settings::{SettingsService, WebSearchSettingsView};
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -98,7 +100,7 @@ pub async fn run_diagnostics(
 }
 
 fn check_web_search(settings: &SettingsService) -> DiagnosticResult {
-    match settings.web_search_settings() {
+    match settings.web_search_settings_view() {
         Ok(config) => diagnose_web_search_config(config),
         Err(e) => DiagnosticResult::warning(
             "Web search",
@@ -108,38 +110,41 @@ fn check_web_search(settings: &SettingsService) -> DiagnosticResult {
     }
 }
 
-fn diagnose_web_search_config(config: WebSearchSettings) -> DiagnosticResult {
-    if !config.enabled {
+fn diagnose_web_search_config(config: WebSearchSettingsView) -> DiagnosticResult {
+    let enabled: Vec<_> = config
+        .settings
+        .engines
+        .iter()
+        .filter(|engine| engine.enabled)
+        .collect();
+    if enabled.is_empty() {
         return DiagnosticResult::warning(
             "Web search",
-            "web_search is disabled; web_fetch remains available",
-            "Enable Web Search in Settings when current web results are needed.",
+            "all search engines are disabled; web_fetch remains available",
+            "Enable one or more search engines in Settings when current web results are needed.",
         );
     }
-    match config.provider {
-        WebSearchProvider::DeepSeekFirst => {
-            let fallback = config
-                .searxng_url
-                .as_deref()
-                .map(|url| format!("; SearXNG fallback: {url}"))
-                .unwrap_or_else(|| "; no SearXNG fallback configured".to_string());
-            DiagnosticResult::ok("Web search", format!("provider deepseek_first{fallback}"))
-        }
-        WebSearchProvider::Searxng => match config.searxng_url.as_deref() {
-            Some(url) if !url.trim().is_empty() => {
-                DiagnosticResult::ok("Web search", format!("provider searxng; bridge: {url}"))
-            }
-            _ => DiagnosticResult::warning(
-                "Web search",
-                "provider searxng is selected but no SearXNG URL is configured",
-                "Set a SearXNG bridge URL in Settings or switch provider to DeepSeek first.",
-            ),
-        },
-        WebSearchProvider::DuckDuckGo => DiagnosticResult::warning(
+    let pending = config
+        .engine_statuses
+        .iter()
+        .filter(|status| status.state == crate::settings::WebSearchConfigState::NeedsConfiguration)
+        .count();
+    if pending > 0 {
+        DiagnosticResult::warning(
             "Web search",
-            "provider duckduckgo uses keyless HTML scraping only",
-            "Prefer DeepSeek first or a SearXNG bridge for better reliability.",
-        ),
+            format!("{} enabled search engine(s) need configuration; readiness does not verify network availability", pending),
+            "Configure an API key or SearXNG instance in Settings, or disable that engine.",
+        )
+    } else {
+        let names = enabled
+            .iter()
+            .map(|engine| engine.id.label())
+            .collect::<Vec<_>>()
+            .join(", ");
+        DiagnosticResult::ok(
+            "Web search",
+            format!("configured engines: {names}; network reachability was not tested"),
+        )
     }
 }
 
@@ -504,24 +509,37 @@ mod tests {
     }
 
     #[test]
-    fn web_search_diagnostic_warns_when_searxng_url_missing() {
-        let result = diagnose_web_search_config(WebSearchSettings {
-            enabled: true,
-            provider: WebSearchProvider::Searxng,
-            searxng_url: None,
-            anysearch_enabled: false,
-            anysearch_base_url: None,
-            anysearch_api_key_configured: false,
+    fn web_search_diagnostic_warns_when_enabled_engine_needs_configuration() {
+        let mut settings = WebSearchSettings::default();
+        for engine in &mut settings.engines {
+            engine.enabled = engine.id == crate::settings::WebSearchEngineId::Searxng;
+        }
+        let result = diagnose_web_search_config(WebSearchSettingsView {
+            engine_statuses: vec![crate::settings::WebSearchEngineStatus {
+                id: crate::settings::WebSearchEngineId::Searxng,
+                state: crate::settings::WebSearchConfigState::NeedsConfiguration,
+            }],
+            settings,
         });
         assert_eq!(result.status, DiagStatus::Warning);
-        assert!(result.detail.contains("no SearXNG URL"));
+        assert!(result.detail.contains("need configuration"));
     }
 
     #[test]
     fn web_search_diagnostic_reports_deepseek_first() {
-        let result = diagnose_web_search_config(WebSearchSettings::default());
+        let mut settings = WebSearchSettings::default();
+        for engine in &mut settings.engines {
+            engine.enabled = engine.id == crate::settings::WebSearchEngineId::Duckduckgo;
+        }
+        let result = diagnose_web_search_config(WebSearchSettingsView {
+            settings,
+            engine_statuses: vec![crate::settings::WebSearchEngineStatus {
+                id: crate::settings::WebSearchEngineId::Duckduckgo,
+                state: crate::settings::WebSearchConfigState::Ready,
+            }],
+        });
         assert_eq!(result.status, DiagStatus::Ok);
-        assert!(result.detail.contains("deepseek_first"));
+        assert!(result.detail.contains("duckduckgo"));
     }
 
     #[tokio::test]

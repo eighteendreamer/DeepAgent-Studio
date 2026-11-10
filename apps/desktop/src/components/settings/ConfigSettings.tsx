@@ -1,7 +1,8 @@
 import { HoverInfo } from "../ui/HoverInfo";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { GripVertical } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   getSettings,
@@ -12,13 +13,11 @@ import {
   type ToolSearchMode,
   getToolSearchThreshold,
   setToolSearchThreshold,
-  getWebSearchSettings,
   getAnySearchApiKeyInfo,
   getVisionSettings,
   setAnySearchApiKey,
   clearAnySearchApiKey,
-  testAnySearchApiKey,
-  setWebSearchSettings,
+  testWebSearchEngine,
   setVisionSettings,
   getSkillCatalogEnabled,
   setSkillCatalogEnabled,
@@ -44,8 +43,8 @@ import type {
   RuntimeRoots,
   RuntimeStatus,
   VisionSettings,
-  WebSearchProvider,
   WebSearchSettings,
+  WebSearchEngineId,
   ResponsesApiSettings,
 } from "../../types";
 import packageJson from "../../../package.json";
@@ -55,6 +54,8 @@ import { Slider } from "../ui/Slider";
 import { TintButton } from "../ui/TintButton";
 import { Input } from "../shadcn/input";
 import { Label } from "../shadcn/label";
+import { Button } from "../shadcn/button";
+import { useWebSearchSettings } from "./useWebSearchSettings";
 import {
   Select,
   SelectContent,
@@ -68,7 +69,6 @@ import {
 const SKILL_REVIEW_MODEL_DEFAULT = "__default__";
 // Hard cap on the catalog reminder character budget input (R10.2 / task 21).
 const SKILL_CATALOG_BUDGET_MAX = 32000;
-const ANYSEARCH_DEFAULT_BASE_URL = "https://api.anysearch.com";
 const RESPONSE_SCENE_TEMPERATURES = {
   code: 0.4,
   email: 0.8,
@@ -1084,18 +1084,14 @@ export function ConfigSettings() {
   const [toolSearchModeState, setToolSearchModeState] = useState<ToolSearchMode>("disabled");
   const [toolSearchThresholdState, setToolSearchThresholdState] = useState<number>(8000);
   const [thresholdInput, setThresholdInput] = useState<string>("8000");
-  const [webSearchSettings, setWebSearchSettingsState] = useState<WebSearchSettings>({
-    enabled: true,
-    provider: "deepseek_first",
-    searxng_url: null,
-    anysearch_enabled: false,
-    anysearch_base_url: null,
-    anysearch_api_key_configured: false,
-  });
-  const [searxngInput, setSearxngInput] = useState<string>("");
-  const [anysearchBaseUrlInput, setAnysearchBaseUrlInput] = useState<string>(ANYSEARCH_DEFAULT_BASE_URL);
+  const searchEditor = useWebSearchSettings(() => message.error(t("settings.config.webSearch.saveFailed")));
+  const webSearchSettings = searchEditor.settings;
+  const [draggingSearchEngine, setDraggingSearchEngine] = useState<WebSearchSettings["engines"][number]["id"] | null>(null);
   const [anysearchApiKeyConfigured, setAnysearchApiKeyConfigured] = useState<boolean>(false);
   const [anysearchKeyInput, setAnysearchKeyInput] = useState<string>("");
+  const [testingWebSearchEngine, setTestingWebSearchEngine] = useState<WebSearchEngineId | null>(null);
+  const webSearchTestInFlight = useRef(false);
+  const [webSearchTestResults, setWebSearchTestResults] = useState<Partial<Record<WebSearchEngineId, { ok: boolean; error: string | null; count: number | null }>>>({});
 
   // Skill marketplace settings (R10.1-R10.5 / task 21).
   const [availableModels, setAvailableModels] = useState<string[]>([]);
@@ -1132,16 +1128,6 @@ export function ConfigSettings() {
         }
       })
       .catch((e) => console.error("get_tool_search_threshold failed:", e));
-    getWebSearchSettings()
-      .then((v) => {
-        if (!cancelled) {
-          setWebSearchSettingsState(v);
-          setSearxngInput(v.searxng_url ?? "");
-          setAnysearchBaseUrlInput(v.anysearch_base_url ?? ANYSEARCH_DEFAULT_BASE_URL);
-          setAnysearchApiKeyConfigured(v.anysearch_api_key_configured);
-        }
-      })
-      .catch((e) => console.error("get_web_search_settings failed:", e));
     getAnySearchApiKeyInfo()
       .then((v) => {
         if (!cancelled) setAnysearchApiKeyConfigured(v.has_user_key);
@@ -1222,54 +1208,62 @@ export function ConfigSettings() {
     },
   ];
 
-  const webSearchOptions = [
-    {
-      title: "deepseek_first",
-      description: t("settings.config.webSearch.providers.deepseekFirstDesc"),
-      displayTitle: t("settings.config.webSearch.providers.deepseekFirst"),
-    },
-    {
-      title: "searxng",
-      description: t("settings.config.webSearch.providers.searxngDesc"),
-      displayTitle: t("settings.config.webSearch.providers.searxng"),
-    },
-    {
-      title: "duckduckgo",
-      description: t("settings.config.webSearch.providers.duckduckgoDesc"),
-      displayTitle: t("settings.config.webSearch.providers.duckduckgo"),
-    },
-  ];
-
-  const persistWebSearchSettings = async (next: WebSearchSettings) => {
-    const previous = webSearchSettings;
-    setWebSearchSettingsState(next);
-    try {
-      const persisted = await setWebSearchSettings(next);
-      setWebSearchSettingsState(persisted);
-      setSearxngInput(persisted.searxng_url ?? "");
-      setAnysearchBaseUrlInput(persisted.anysearch_base_url ?? ANYSEARCH_DEFAULT_BASE_URL);
-      setAnysearchApiKeyConfigured(persisted.anysearch_api_key_configured);
-    } catch (e) {
-      setWebSearchSettingsState(previous);
-      setSearxngInput(previous.searxng_url ?? "");
-      setAnysearchBaseUrlInput(previous.anysearch_base_url ?? ANYSEARCH_DEFAULT_BASE_URL);
-      setAnysearchApiKeyConfigured(previous.anysearch_api_key_configured);
-      message.error(t("settings.config.webSearch.saveFailed"));
-      console.error("set_web_search_settings failed:", e);
-    }
+  const reorderSearchEngines = (
+    sourceId: WebSearchSettings["engines"][number]["id"],
+    targetId: WebSearchSettings["engines"][number]["id"],
+  ) => {
+    if (sourceId === targetId) return;
+    searchEditor.update((current) => {
+      const engines = [...current.engines];
+      const sourceIndex = engines.findIndex((engine) => engine.id === sourceId);
+      const targetIndex = engines.findIndex((engine) => engine.id === targetId);
+      if (sourceIndex < 0 || targetIndex < 0) return current;
+      const [source] = engines.splice(sourceIndex, 1);
+      engines.splice(targetIndex, 0, source);
+      return { ...current, engines };
+    });
   };
 
   const persistAnySearchApiKey = async (nextKey: string) => {
     const trimmed = nextKey.trim();
-    if (!trimmed) return;
+    if (!trimmed) return false;
     try {
       await setAnySearchApiKey(trimmed);
       setAnysearchApiKeyConfigured(true);
-      setWebSearchSettingsState((prev) => ({ ...prev, anysearch_api_key_configured: true }));
       setAnysearchKeyInput("");
-    } catch (e) {
+      await searchEditor.refresh();
+      return true;
+    } catch {
       message.error("AnySearch API Key 保存失败");
-      console.error("set_anysearch_api_key failed:", e);
+      return false;
+    }
+  };
+
+  const runWebSearchEngineTest = async (engineId: WebSearchEngineId) => {
+    if (webSearchTestInFlight.current) return;
+    webSearchTestInFlight.current = true;
+    setTestingWebSearchEngine(engineId);
+    try {
+      await searchEditor.flush();
+      if (engineId === "anysearch" && anysearchKeyInput.trim()
+        && !await persistAnySearchApiKey(anysearchKeyInput)) return;
+      const result = await testWebSearchEngine(engineId);
+      setWebSearchTestResults((current) => ({ ...current, [engineId]: result }));
+      if (result.ok) {
+        message.success(`${engineId} 测试通过：${result.count ?? 0} 条结果`);
+      } else {
+        message.error(result.error || `${engineId} 测试失败`);
+      }
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      setWebSearchTestResults((current) => ({
+        ...current,
+        [engineId]: { ok: false, error: text, count: null },
+      }));
+      message.error(text || `${engineId} 测试失败`);
+    } finally {
+      webSearchTestInFlight.current = false;
+      setTestingWebSearchEngine(null);
     }
   };
 
@@ -1277,8 +1271,8 @@ export function ConfigSettings() {
     try {
       await clearAnySearchApiKey();
       setAnysearchApiKeyConfigured(false);
-      setWebSearchSettingsState((prev) => ({ ...prev, anysearch_api_key_configured: false }));
       setAnysearchKeyInput("");
+      await searchEditor.refresh();
     } catch (e) {
       message.error("AnySearch API Key 清除失败");
       console.error("clear_anysearch_api_key failed:", e);
@@ -1428,209 +1422,112 @@ export function ConfigSettings() {
         </div>
       </div>
 
-      {/* Section: web_search provider */}
+      {/* Section: unified direct web_search engines */}
+      {webSearchSettings ? (
       <div className="mb-12 max-w-[700px]">
-        <h2 className="text-[15px] font-medium text-text-base mb-1">{t("settings.config.webSearch.title")}</h2>
-        <div className="text-[12px] text-text-secondary mb-6">
-          {t("settings.config.webSearch.descBefore")} <code className="font-mono px-1 py-0.5 bg-gray-100 rounded">web_search</code> {t("settings.config.webSearch.descAfter")}
+        <h2 className="text-[15px] font-medium text-text-base mb-1">web_search</h2>
+        <div className="text-[12px] text-text-secondary mb-6">一个工具，按配置调用四个独立搜索引擎；聊天模型不会选择引擎。</div>
+        <div className="border border-border-theme rounded-xl bg-white divide-y divide-border-theme">
+          {webSearchSettings.engines.map((engine, index) => {
+            const status = webSearchSettings.engine_statuses?.find((item) => item.id === engine.id)?.state;
+            const statusLabel = !engine.enabled ? "已关闭" : status === "ready" ? "已开启、配置完整（未联网验证）" : "已开启、待配置";
+            const label = { deepseek: "DeepSeek Search", anysearch: "AnySearch", searxng: "SearXNG", duckduckgo: "DuckDuckGo" }[engine.id];
+            const needsUrl = engine.id === "anysearch" || engine.id === "searxng";
+            const engineReady = engine.id === "anysearch" ? anysearchApiKeyConfigured : status === "ready";
+            const testResult = webSearchTestResults[engine.id];
+            return (
+              <div
+                key={engine.id}
+                data-search-engine={engine.id}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  const sourceId = draggingSearchEngine ?? event.dataTransfer.getData("text/plain") as WebSearchSettings["engines"][number]["id"];
+                  if (sourceId) reorderSearchEngines(sourceId, engine.id);
+                  setDraggingSearchEngine(null);
+                }}
+                className={`p-4 space-y-3 ${draggingSearchEngine && draggingSearchEngine !== engine.id ? "border-t border-dashed border-blue-300" : ""}`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      draggable
+                      aria-label={`拖动调整${label}优先级`}
+                      onDragStart={(event) => {
+                        setDraggingSearchEngine(engine.id);
+                        event.dataTransfer.effectAllowed = "move";
+                        event.dataTransfer.setData("text/plain", engine.id);
+                      }}
+                      onDragEnd={() => setDraggingSearchEngine(null)}
+                      onKeyDown={(event) => {
+                        if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+                        const target = webSearchSettings.engines[index + (event.key === "ArrowUp" ? -1 : 1)];
+                        if (!target) return;
+                        event.preventDefault();
+                        reorderSearchEngines(engine.id, target.id);
+                      }}
+                      className="h-7 w-7 shrink-0 rounded-md text-text-secondary hover:text-text-base cursor-grab active:cursor-grabbing"
+                    ><GripVertical size={16} aria-hidden="true" /></Button>
+                    <div className="min-w-0"><div className="text-[14px] font-medium text-text-base">{index + 1}. {label}</div><div className="text-[12px] text-text-secondary">{statusLabel}</div></div>
+                  </div>
+                  <div className="flex items-center gap-3 shrink-0">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={!engine.enabled || !engineReady || testingWebSearchEngine !== null}
+                      onClick={() => void runWebSearchEngineTest(engine.id)}
+                      className="h-7 rounded-md px-3 text-[12px] disabled:cursor-not-allowed"
+                    >{testingWebSearchEngine === engine.id ? "测试中…" : "测试"}</Button>
+                    <Button
+                      variant={engine.enabled ? "secondary" : "outline"}
+                      size="sm"
+                      role="switch"
+                      aria-checked={engine.enabled}
+                      aria-label={`${label}搜索开关`}
+                      onClick={() => searchEditor.update((current) => ({ ...current, engines: current.engines.map((item) => item.id === engine.id ? { ...item, enabled: !engine.enabled } : item) }))}
+                    >{engine.enabled ? "开启" : "关闭"}</Button>
+                  </div>
+                </div>
+                {testResult && (
+                  <div className={`text-[12px] ${testResult.ok ? "text-green-700" : "text-red-600"}`}>
+                    {testResult.ok ? `最近测试通过：${testResult.count ?? 0} 条结果` : `最近测试失败：${testResult.error || "未知错误"}`}
+                  </div>
+                )}
+                {needsUrl && engine.enabled && (
+                  <Input type="url" aria-label={`${label}实例地址`} value={engine.base_url ?? ""} placeholder={engine.id === "anysearch" ? "https://api.anysearch.com" : "https://search.example.com"} onChange={(event) => { const base_url = event.target.value || null; searchEditor.update((current) => ({ ...current, engines: current.engines.map((item) => item.id === engine.id ? { ...item, base_url } : item) })); }} className="font-mono" />
+                )}
+                {engine.id === "deepseek" && <div className="text-[12px] text-text-secondary">凭据：使用当前登录 API Key</div>}
+                {engine.id === "anysearch" && engine.enabled && (
+                  <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+                    <Input type="password" aria-label="AnySearch API Key" value={anysearchKeyInput} placeholder={anysearchApiKeyConfigured ? "已配置，重新输入可覆盖" : "请输入 AnySearch API Key"} onChange={(event) => setAnysearchKeyInput(event.target.value)} onBlur={() => void persistAnySearchApiKey(anysearchKeyInput)} className="min-w-0 font-mono" />
+                    <Button variant="outline" size="sm" onClick={clearAnySearchApiKeyLocal} disabled={!anysearchApiKeyConfigured}>清除</Button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
-        <div className="border border-border-theme rounded-xl shadow-[0_1px_2px_rgb(0,0,0,0.02)] bg-white">
-          <div className="flex items-center justify-between p-4 border-b border-border-theme">
-            <div>
-              <div className="text-[14px] font-medium text-text-base mb-1">{t("settings.config.webSearch.enableTitle")}</div>
-              <div className="text-[12px] text-text-secondary">
-                {t("settings.config.webSearch.enableDescBefore")} <code className="font-mono px-1 py-0.5 bg-gray-100 rounded">web_fetch</code> {t("settings.config.webSearch.enableDescAfter")}
-              </div>
-            </div>
-            <ToggleSwitch
-              checked={webSearchSettings.enabled}
-              onChange={() =>
-                persistWebSearchSettings({
-                  ...webSearchSettings,
-                  enabled: !webSearchSettings.enabled,
-                  searxng_url: searxngInput.trim() || null,
-                })
-              }
-            />
+        <div className="mt-4 flex items-center gap-4 text-[12px] text-text-secondary">
+          <div className="flex items-center gap-2">
+            <Label id="web-search-strategy-label">策略</Label>
+            <Select value={webSearchSettings.strategy} onValueChange={(value) => searchEditor.update((current) => ({ ...current, strategy: value as WebSearchSettings["strategy"] }))}>
+              <SelectTrigger aria-labelledby="web-search-strategy-label" className="h-8 w-auto"><SelectValue placeholder={webSearchSettings.strategy === "verify" ? "多源核验（并行）" : "按序兜底"} /></SelectTrigger>
+              <SelectContent><SelectItem value="fallback">按序兜底</SelectItem><SelectItem value="verify">多源核验（并行）</SelectItem></SelectContent>
+            </Select>
           </div>
-          <div
-            className={`flex items-center justify-between p-4 border-b border-border-theme ${
-              webSearchSettings.enabled ? "" : "opacity-50 pointer-events-none"
-            }`}
-          >
-            <div>
-              <div className="text-[14px] font-medium text-text-base mb-1">优先使用 AnySearch</div>
-              <div className="text-[12px] text-text-secondary">
-                启用后，web_search 会先尝试 AnySearch，再回退到当前 provider 链。
-              </div>
-            </div>
-            <ToggleSwitch
-              checked={webSearchSettings.anysearch_enabled}
-              onChange={() =>
-                persistWebSearchSettings({
-                  ...webSearchSettings,
-                  anysearch_enabled: !webSearchSettings.anysearch_enabled,
-                  anysearch_base_url: anysearchBaseUrlInput.trim() || null,
-                  searxng_url: searxngInput.trim() || null,
-                })
-              }
-            />
-          </div>
-          <div
-            className={`p-4 border-b border-border-theme ${
-              webSearchSettings.enabled && webSearchSettings.anysearch_enabled
-                ? ""
-                : "opacity-50 pointer-events-none"
-            }`}
-          >
-            <div className="min-w-0">
-              <div className="mb-1 flex items-center gap-2">
-                <div className="text-[14px] font-medium text-text-base">AnySearch API Key</div>
-                <span
-                  className={`inline-flex h-5 shrink-0 items-center rounded-full px-2 text-[11px] font-medium ${
-                    anysearchApiKeyConfigured
-                      ? "bg-emerald-50 text-emerald-700"
-                      : "bg-gray-100 text-text-secondary"
-                  }`}
-                >
-                  {anysearchApiKeyConfigured ? "已配置" : "未配置"}
-                </span>
-              </div>
-              <div className="text-[12px] text-text-secondary">
-                只保存到系统密钥串，不写入数据库；未配置时会继续回退到后备 provider。
-              </div>
-            </div>
-            <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2">
-              <input
-                type="password"
-                aria-label="AnySearch API Key"
-                value={anysearchKeyInput}
-                placeholder={anysearchApiKeyConfigured ? "已配置，重新输入可覆盖" : "请输入 AnySearch API Key"}
-                disabled={!webSearchSettings.enabled || !webSearchSettings.anysearch_enabled}
-                onChange={(e) => setAnysearchKeyInput(e.target.value)}
-                onBlur={() => {
-                  void persistAnySearchApiKey(anysearchKeyInput);
-                }}
-                className="h-9 min-w-0 w-full rounded-md border border-border-theme bg-white px-3 text-[13px] font-mono text-text-base placeholder:text-text-secondary/70 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-gray-50"
-              />
-              <button
-                type="button"
-                aria-label="测试 AnySearch API Key"
-                onClick={async () => {
-                  if (anysearchKeyInput.trim()) {
-                    await persistAnySearchApiKey(anysearchKeyInput);
-                  }
-                  const result = await testAnySearchApiKey();
-                  if (result.ok) {
-                    message.success(`AnySearch 可用${result.provider ? ` (${result.provider})` : ""}`);
-                  } else {
-                    message.error(result.error || "AnySearch 测试失败");
-                  }
-                }}
-                disabled={!webSearchSettings.enabled || !webSearchSettings.anysearch_enabled}
-                className="h-9 min-w-[64px] shrink-0 whitespace-nowrap rounded-md border border-blue-200 bg-blue-50 px-4 text-[12px] font-medium text-blue-600 transition-colors hover:border-blue-300 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                测试
-              </button>
-              <button
-                type="button"
-                aria-label="清除 AnySearch API Key"
-                onClick={clearAnySearchApiKeyLocal}
-                disabled={!anysearchApiKeyConfigured}
-                className="h-9 min-w-[64px] shrink-0 whitespace-nowrap rounded-md border border-border-theme bg-white px-4 text-[12px] font-medium text-text-secondary transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:hover:border-border-theme disabled:hover:bg-white disabled:hover:text-text-secondary disabled:opacity-50"
-              >
-                清除
-              </button>
-            </div>
-          </div>
-          <div
-            className={`flex items-center justify-between p-4 border-b border-border-theme ${
-              webSearchSettings.enabled && webSearchSettings.anysearch_enabled
-                ? ""
-                : "opacity-50 pointer-events-none"
-            }`}
-          >
-            <div>
-              <div className="text-[14px] font-medium text-text-base mb-1">AnySearch Base URL</div>
-              <div className="text-[12px] text-text-secondary">
-                默认使用 https://api.anysearch.com，可按需改成自建网关。
-              </div>
-            </div>
-            <input
-              type="url"
-              value={anysearchBaseUrlInput}
-              placeholder={ANYSEARCH_DEFAULT_BASE_URL}
-              disabled={!webSearchSettings.enabled || !webSearchSettings.anysearch_enabled}
-              onChange={(e) => setAnysearchBaseUrlInput(e.target.value)}
-              onBlur={() =>
-                persistWebSearchSettings({
-                  ...webSearchSettings,
-                  anysearch_enabled: webSearchSettings.anysearch_enabled,
-                  anysearch_base_url: anysearchBaseUrlInput.trim() || null,
-                  searxng_url: searxngInput.trim() || null,
-                })
-              }
-              className="w-[260px] px-2 py-1 text-[13px] font-mono border border-border-theme rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-blue-400 disabled:bg-gray-50"
-            />
-          </div>
-          <div
-            className={`flex items-center justify-between p-4 border-b border-border-theme ${
-              webSearchSettings.enabled ? "" : "opacity-50 pointer-events-none"
-            }`}
-          >
-            <div>
-              <div className="text-[14px] font-medium text-text-base mb-1">{t("settings.config.webSearch.providerTitle")}</div>
-              <div className="text-[12px] text-text-secondary">
-                {t("settings.config.webSearch.providerDesc")}
-              </div>
-            </div>
-            <ComplexDropdown
-              options={webSearchOptions}
-              selectedTitle={
-                webSearchOptions.find((o) => o.title === webSearchSettings.provider)
-                  ?.displayTitle ?? t("settings.config.webSearch.providers.deepseekFirst")
-              }
-              onChange={(display) => {
-                const opt = webSearchOptions.find((o) => o.displayTitle === display);
-                if (!opt) return;
-                persistWebSearchSettings({
-                  ...webSearchSettings,
-                  provider: opt.title as WebSearchProvider,
-                  searxng_url: searxngInput.trim() || null,
-                });
-              }}
-            />
-          </div>
-          <div
-            className={`flex items-center justify-between p-4 ${
-              webSearchSettings.enabled && webSearchSettings.provider !== "duckduckgo"
-                ? ""
-                : "opacity-50 pointer-events-none"
-            }`}
-          >
-            <div>
-              <div className="text-[14px] font-medium text-text-base mb-1">{t("settings.config.webSearch.searxngUrlTitle")}</div>
-              <div className="text-[12px] text-text-secondary">
-                {t("settings.config.webSearch.searxngUrlDescBefore")} <code className="font-mono px-1 py-0.5 bg-gray-100 rounded">https://search.example.com</code>.
-              </div>
-            </div>
-            <input
-              type="url"
-              value={searxngInput}
-              placeholder="https://search.example.com"
-              disabled={!webSearchSettings.enabled || webSearchSettings.provider === "duckduckgo"}
-              onChange={(e) => setSearxngInput(e.target.value)}
-              onBlur={() =>
-                persistWebSearchSettings({
-                  ...webSearchSettings,
-                  searxng_url: searxngInput.trim() || null,
-                })
-              }
-              className="w-[260px] px-2 py-1 text-[13px] font-mono border border-border-theme rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-blue-400 disabled:bg-gray-50"
-            />
+          <div className="flex items-center gap-2">
+            <Label id="web-search-ranking-label">系统排序</Label>
+            <Select value={webSearchSettings.ranking.profile} onValueChange={(value) => searchEditor.update((current) => ({ ...current, ranking: { ...current.ranking, profile: value as WebSearchSettings["ranking"]["profile"] } }))}>
+              <SelectTrigger aria-labelledby="web-search-ranking-label" className="h-8 w-auto"><SelectValue placeholder={webSearchSettings.ranking.profile === "timely" ? "时效性" : "均衡"} /></SelectTrigger>
+              <SelectContent><SelectItem value="balanced">均衡</SelectItem><SelectItem value="timely">时效性</SelectItem></SelectContent>
+            </Select>
           </div>
         </div>
+        <p className="mt-2 text-[12px] text-text-secondary">多源核验会增加请求数、耗时及可能费用；多个已开启引擎并行，共享现有 120 秒总预算。</p>
       </div>
+      ) : <div className="mb-12" role="status">{searchEditor.loadFailed ? "搜索设置加载失败，未修改已有配置。" : "正在读取搜索设置…"}{searchEditor.loadFailed && <Button variant="outline" size="sm" onClick={() => void searchEditor.refresh()}>重试读取</Button>}</div>}
 
       {/* Section: 技能 (skill marketplace) */}
       <div className="mb-12 max-w-[700px]">

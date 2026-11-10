@@ -1,7 +1,7 @@
 //! Native search is provider-owned history, not an executable local tool call.
 
 use super::*;
-use deepagent_app_core::{WebSearchProvider, WebSearchSettings};
+use deepagent_app_core::WebSearchSettings;
 use deepagent_core::{event::EventPayload, response_item::ResponseItem};
 use deepagent_models::ModelRole;
 use deepagent_persistence::event_store::EventStore;
@@ -75,7 +75,7 @@ impl HttpTransport for NativeSearchModel {
             .as_array()
             .unwrap()
             .iter()
-            .any(|tool| tool["type"] == "web_search"));
+            .any(|tool| tool["type"] == "function" && tool["name"] == "web_search"));
         let attempt = {
             let mut requests = self.requests.lock().unwrap();
             requests.push(request);
@@ -123,11 +123,7 @@ async fn settings(
             .set_tool_search_mode(deepagent_builtins::ToolSearchMode::Disabled)
             .unwrap();
         settings
-            .set_web_search_settings(WebSearchSettings {
-                enabled: true,
-                provider: WebSearchProvider::DeepSeekFirst,
-                ..Default::default()
-            })
+            .set_web_search_settings(WebSearchSettings::default())
             .unwrap();
     }
     settings

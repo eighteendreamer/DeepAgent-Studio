@@ -185,7 +185,7 @@ pub(crate) struct RunAssembler<'a> {
 // Chat and workflow share this admission boundary. Cleanup cancellation is
 // not evidence of a cancelled outcome: the kernel may have committed Failed
 // (for example after a durability barrier rejected an event).
-fn finish_admitted_run(
+pub(crate) fn finish_admitted_run(
     db: &Database,
     run_id: &str,
     session_id: String,
