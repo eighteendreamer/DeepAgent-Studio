@@ -3297,7 +3297,7 @@ E-H65-20261027-16（独立提交与真实hash回填）：生产修复、默认�
 
 ### H-66：Flash 开启 DeepSeek 原生搜索后，本地搜索函数被替换为该模型会忽略的原生工具
 
-**本轮状态（2026-11-10）：已修复（验收保留）。按用户及时收尾要求交付四引擎代码，不再重复耗时矩阵；不冒称完整验收通过，原始失败和中间方案证据保留。唯一 `web_search` 直接调度四个独立引擎，配置、凭据、权限、取消及持久化沿现有边界。实际红绿、构建、失败、兼容影响及保留项见[修复台账](system-harness-repair-progress.md) E-H66-04～08；本次代码提交ID随后回填，不推送。**
+**本轮状态（2026-11-10）：已修复（验收保留），代码提交`557c877f8a75b6b002e3f6472d9425575e1a53b2`，未推送。按用户及时收尾要求交付四引擎代码，不再重复耗时矩阵；不冒称完整验收通过，原始失败和中间方案证据保留。唯一 `web_search` 直接调度四个独立引擎，配置、凭据、权限、取消及持久化沿现有边界。实际红绿、构建、失败、兼容影响及保留项见[修复台账](system-harness-repair-progress.md) E-H66-04～08。**
 
 **级别：中（P2）；范围：启用 web feature、搜索 enabled 且 provider=DeepSeekFirst、有效模型为 deepseek-flash 的 Responses 请求。** 桌面启用了 web feature；搜索设置默认 enabled=true、provider=DeepSeekFirst。本项是能力选择与实际请求契约不一致，不声称所有模型或所有搜索配置均失效。
 
@@ -3317,6 +3317,7 @@ E-H65-20261027-16（独立提交与真实hash回填）：生产修复、默认�
 - E-H66-07：冻结矩阵完成，CLI/用户原快照已恢复并核对哈希；workspace原生101，4个失败target及5项失败测试全部记录。仅其中期待Hosted搜索的旧能力快照断言与H66直接相关，已同步为普通函数并保留wire/catalog哈希隔离，能力组14/0/0；其他DACL、CLI快照、canvas prompt失败未混修。全关闭新语义先取得0/2真实红测（实际unknown tool），再删除注册开关，正式Kernel搜索组6/0/0，fallback/verify全关闭固定错误进入下一模型请求、失败事件及冷恢复、回环零连接通过。改前ModelsHTTP/strict Builtins lint/Tauri check原生0，workspace/strict全仓lint/AppCore all-target lint非0；完整命令与限制见台账E07。两份临时UI夹具已核对后删除，H66仍修复中且未提交。
 - E-H66-07末次：AppCore搜索lib11/0/0，no-web check与Tauri check均0；修正H66新增host import的feature边界后no-web无warning。AppCore lib scoped clippy原生0但保留6个旧warning，非strict通过。fmt/diff-check0；306唯一台账行一致。修改后的整个workspace未重跑、DeepSeek后续实际HTTP凭据生命周期及最终验收未齐，不关闭H66。
 - E-H66-08：用户要求及时标记代码已修复并收尾，当前状态改为“已修复（验收保留）”，不计入216项完整验收，也不宣布整个任务完成。DeepSeek换Key/退出到真实HTTP的单条端到端组合、修改后完整workspace、Tauri实际窗口/IPC及最终跨入口穷尽复核保留；已有各层真实测试与失败记录继续有效，不把失败写成通过。源码/测试/双文独立提交，不推送；可再生产物清理及commit回填另记。
+- E-H66-08提交结果：代码/测试/双文52文件提交`557c877f8a75b6b002e3f6472d9425575e1a53b2`；收尾快速前端9/0、fmt/diff-check0。默认CLI/用户快照恢复且哈希复核。两精确任务目录只读统计约59.42GiB，清理命令被策略在CreateProcess前拒绝，零文件删除，未换方式规避；目录、字节数与未验范围见台账，不把清理说成已完成。
 
 ### H-67：当前轮图片未进入实时模型 Surface，原生镜像也丢附件，已有会话的图片在下一轮仍不出现
 
