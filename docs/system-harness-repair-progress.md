@@ -13,8 +13,8 @@
 | 归并 | 10 | H173同根归并H127；H243归并H53；只在唯一有效项修复，不增加完成数 |
 | 撤销 | 3 | H-211/H-263/H-305，不作为缺陷或修复成果 |
 | 已修复（验收保留） | 1 | H66按用户2026-11-10收尾要求交付代码；现有定向验证有效，不记作完整验收通过，残余范围见E-H66-08 |
-| 修复中 | 0 | H171按E-H171-04完成本机离线范围验收；H66不再持续扩验 |
-| 待修复 | 46 | 含H180授权不修，实际有效待修45；另H66验收保留1，未完整闭环槽位47，实际待处理46 |
+| 修复中 | 1 | H179原探针复现；用户选完整提取，格式/OCR/数组契约待决策；未改生产 |
+| 待修复 | 45 | 含H180授权不修，实际有效待修44；另H179修复中1、H66验收保留1，未完整闭环槽位47，实际待处理46 |
 | 阻塞待处理 | 0 | H152本地适配及离线闭环完成；不把参考Messages字段套给Responses，不外推真实DeepSeek在线互通 |
 
 未完整闭环槽位当前为 **47（其中H-180授权跳过；有效待修45项，另H-66验收保留1项）**；不提供完成率。当前218项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301/H-232/H-68/H-177/H-174/H-54/H-55在各自复核前已随共享边界或ReasoningEffort迁移修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4/3cabd45f/f97db714/416df3e9/6bc2d660/0aa4fd06及真实复核单独列明，合计28项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。2026-11-05本轮H239新增验收1后，H287依据新D:继承控制位反例重新打开1，其后本轮H287按E21返修恢复验收，当前161，其后H213新增验收1，当前162，其后H212新增验收1，当前163，其后H221新增验收1，当前164，其后H222新增验收1为165，H150新增验收1为166，本轮H223新增验收1为167，其后H267按E03新增验收1为168；其后H268按E04新增验收1为169；其后H293按E06新增验收1为170；本轮H84按E03新增验收1为171；本轮H70按E07新增验收1为172；本轮H68按E04新增历史跳过1，修复数仍172；本轮H69按E06新增验收1为173；本轮H71按E06新增验收1为174；本轮H82按E04新增验收1为175；本轮H209按E04新增验收1为176；本轮H210按E05新增验收1为177；本轮H200按E04新增验收1为178；本轮H204按E04新增验收1为179，H90同根归并使归并数为8；11-07本轮H205按E03新增验收1为180；本轮H206按E03新增验收1为181；本轮H207按E03新增验收1为182；本轮H256按E03新增验收1为183；本轮H265按E03新增验收1为184；本轮H266按E03新增验收1为185；本轮H295按E03新增验收1为186；本轮H215按E03新增验收1为187；本轮H216按E03新增验收1为188；本轮H126按E03新增验收1为189；本轮H167按E03新增验收1为190；本轮H248按E03新增验收1为191；本轮H292按E03新增验收1为192；本轮H177按E02历史跳过1，修复数仍192；本轮H176按E03新增验收1为193；本轮H174按E02历史跳过1，修复数仍193；本轮H228按E03新增验收1为194；本轮H91按E04新增验收1为195；历史f2efc1b5与E-H287-01～20不删除。本轮H-116新增验收1，累计205项；本轮H-117新增验收1，累计206项；其后H173同根归并H127；H127按E04新增验收1，累计207，修复中0；58个未关闭槽位含H-180授权跳过，实际待处理57项。
@@ -6435,7 +6435,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-176：工作流 `knowledgeBaseId` 是死字段，知识检索节点无条件混合 project/global vault](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | 原失败与TDD红保留，限E-H176-03本机范围；不归并H51 | typed scope贯穿原检索链，dense/BM25候选前资格过滤与单次运行内容快照；输出scope/revision/来源 | Memory42、Knowledge80、Runtime workflow124、workflow136/0/29；Desktop显式1/0、AppCore1592；workspace4923/1既有H306/198；前端build与Tauri通过，strict既有阻断见E03 | `1fc591993bafba88657aff2624ea1d12094a5b0f`；另docs回填 | 旧缺/空mixed、新建project、未知前置拒绝；Rust源码接口变化，无SQL迁移；未验跨OS/跨进程resume/真实用户UI，清理剩1,281,648,842字节拒绝后停止，E04；已独立fix、另docs回填；下一H174，本机行为剩余0；整体200–400有效小时低置信历史粗估，环境等待另计 |
 | [H-177：未知 `target_node_id` 被当作空工作流成功，重跑/恢复目标没有 admission 校验](system-harness-audit-2026-10-21.md) | P2 | 历史已修复跳过 | E01原probe已1/0，E02追溯H196准入生产416df3e9并独立验收，不新增生产修复 | 既有WorkflowAgent::new先查目标身份，错误走原唯一failed；本轮只转默认/补回归 | 原probe1/0、新默认2/0、完整workflow131/0/29忽略、Runtime workflow121/0、真实Desktop seam1/0；fmt过、strict旧失败，未验项见E02 | 历史生产416df3e9885cec1c3b16caf62e66ccc3cf49c222；本次回归`3d286e3db0859f0ee089cc0c8254645d64a4d489`；另docs回填 | v1 fresh recompute非resume，原失败保留；本项0，后续实际77，下一H176；总200–400低置信有效小时，等待另计 |
 | [H-178：专业画布 `code` 节点标记为 enabled，但脚本从未执行且错误被伪造成成功](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H178-M01～05；原red保留，限所列Windows受管Node范围 | 集成ede16557本项30文件；一次性私有句柄接通既有Kernel/Broker/严格LPAC SandboxBackend，保留主线即时计费 | Runtime工作流85/0；工作流41/0/27；真实八门禁各1/0/0；全仓4135/1/253仅H306；CLI/Tauri/前端/SDK/fmt过，严格lint旧诊断未过见M04 | `a51cab3c100af581c69196476de42d1c3bce7dfe`（源实现ede16557） | 无包身份宿主+Node24.21.0本机范围；Python/其他OS/GUI未验，其他后端无typed profile明确拒绝；无迁移；本项剩0，下一H-181；154有效未关闭含H180授权跳过，总200–400有效小时未校准，等待另计 |
-| [H-179：专业画布 `document-extractor` 标记为 enabled，但正式运行没有 executor](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-179：专业画布 `document-extractor` 标记为 enabled，但正式运行没有 executor](system-harness-audit-2026-10-21.md#h-179专业画布-document-extractor-标记为-enabled但正式运行没有-executor) | P2 | 修复中 | E-H179-01原正式探针再次失败；不采用reserved替代完整功能，不归并H180 | registry/schema/graph承认能力，WorkflowAgent没有执行器；现有预览不能当完整解析 | 原probe退出101、0/1、28.797秒；未改生产；待格式/OCR/数组契约后补真实artifact TDD | 本项尚无修复提交，仅准备证据 | 用户已选完整实现；待格式/OCR路线与数组text契约；不擅自发模型请求；本项工时待范围确认，全余170–430有效小时旧估，等待另计 |
 | [H-180：专业画布 `human-input` 节点不进入统一人工输入/审批生命周期](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 2026-11-02 用户明确要求提交后跳过；不是历史已修复、归并或撤销 | C盘现有实现已提交；本次合并源止于85d858af，不包含该实现，不继续开发 | 未完整验收；本轮不追加H-180测试，不把提交当验收 | C盘既有实现 `53a03f9bdfa2ebf797de7e8e465d6c6e055bbc97`，不在本次main合并中 | 保留未关闭事实并退出当前修复队列；后续恢复或删除功能须另行明确范围；本轮安排0小时 |
 | [H-181：专业画布 `iteration` 不消费前端输入数组，也没有真正调度迭代体](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H181-01～07；原red/中止/sidecar旧产物失败保留，限所列Windows范围 | typed item/done scope经普通WorkflowAgent接同一Kernel；有序聚合/三策略/flatten/嵌套50lane；保留权限/审批/即时计费与scoped持久事件 | 原探针/真实TS门禁各1/0，workflow54/0/28、Runtime392/0/11、全仓4166/1/254仅既有H306；CLI/Tauri/前端/SDK/fmt/夹具tsc及UI四步过，严格lint旧失败见E06 | `0855b1b24cf93ca45a0c33e53ce01bd059ea5ce7` | 单store/aggregate1MiB、活跃item store序列化共享50MiB非RSS；无透明续跑；H177/H196/loop独立，无迁移；本项剩0，153未关闭含H180授权跳过/实际152，200–400有效小时未校准，等待另计 |
 | [H-182：专业画布 `answer` 节点忽略 `answerTemplate`，成功运行却输出空答案](system-harness-audit-2026-10-21.md#h-182专业画布-answer-节点忽略-answertemplate成功运行却输出空答案) | P1 | 已修复并验收 | E-H182-01～05；原正式探针红→绿；非历史跳过 | 共享v1 typed answer契约；单次模板/引用解释，联合绑定及输出预算、非空完成门禁 | E04完整命令；原探针1/0、H182默认9/0、TS→Kernel1/0、Runtime392/0、重开/GUI/构建通过；全仓唯一H306及既有严格lint失败保留 | `d3a00714989b0045360625668ea4ff8ceb62594e`；E05 | 旧字段需显式迁移；无DB迁移；未验其他OS/真实provider/完整Tauri；本项剩余0，整体200–400有效小时历史粗估 |
@@ -9815,3 +9815,27 @@ LNK1104原文均为无法打开`G:\h66-fixtures-20261110\tmp\lnk{…}.tmp`：Bui
 末次只读占用核对：已解析普通目录`G:\Code_Warehouse\DeepAgent-Studio\target\h66-repair-20261110`为31,368文件、67,234,849,141字节（62.62GiB）；`G:\h66-fixtures-20261110`为4,277文件、1,986,109,672字节（1.85GiB），合计约64.47GiB，未发现Cargo/rustc/link进程。没有新建大target，fixture只补必要隔离目录；原清理策略拒绝未解除，不重复删除/换API/提权规避，也不声称释放空间。仅这两个精确根属于本轮可再生产物清理范围，父目录、默认target/debug、全局Cargo缓存、用户untracked及源码/原文档保留。提交仅8份Rust和双文共10个路径，取得hash后另文档回填，不amend、不推送或PR。
 
 **E04提交回填**：H171代码、测试和当时双文已独立提交`383c50a969a0568372f88d4ac75796bd5e8dbf48`（10路径），父提交`d0d8e7af`；仅另做本次文档hash回填，不amend。提交后8份受测源码哈希与交付冻结一致，tracked干净；用户原untracked均保留且未提交，默认CLI与原快照哈希再次核对一致。未push、未建PR、未改Git配置或绕hook。清理限制与64.47GiB占用按E04保留，不把Git提交成功冒称测试全绿或产物已删；整个goal仍active。
+
+## H-179 受控文档提取（修复中，2026-11-10，功能契约待决策）
+
+**E-H179-01（复现、现有边界与用户决策）**：基线`9e87811d`，tracked干净，无未完成合并；保留原用户untracked。已核对原审计/唯一台账、nodeRegistry与nodeSchemas、WorkflowAgent dispatch/pending tools/iteration child、graph output contract、v1 File输入、AppCore run assembler、现有office_read/FilePreview/AttachmentService、CanvasArtifactService的workspace/active owner/操作锁/SHA256物化，以及Cargo/格式/CI配置。仅本项复核，不修改H180或其他编号。
+
+实际命令`cargo test --target-dir target/h66-repair-20261110 -p deepagent-app-core --features web --test workflow_audit audit_workflow_enabled_document_extractor_has_executor --offline -j 2 -- --ignored --exact --nocapture --test-threads=1`退出101、0通过/1失败/0忽略、28.797秒含编译。使用原run-command隔离HOME/APPDATA/TEMP/数据根、清凭据/代理环境、offline复用缓存，不新建大target，不访问真实服务或用户数据。原输出完整关键字段：
+
+```text
+api_ok=false extractor_status=Failed extractor_outputs=None extractor_error=Some("invalid input: UnsupportedNode: kernel has no executor for node kind `document-extractor`") run_terminal=Some("failed")
+```
+
+断言`an enabled document-extractor must not fail as an unimplemented node`失败。探针已结束，本轮续接只读取其日志/结果，不重复执行，也不把无进程的文件当作仍在运行。
+
+根因已确认：前端enabled、支持文件/数组输入、text输出声明与编译认可，后端无执行器。原probe只放了`docExtractorFileVariable="input_file"`，没有真实文件、合法artifact输入或开始节点声明；因此它证明的是“未实现导致正式run失败”，不是支持任何格式、OCR或权限的验收。修复后必须补声明完整的start→extractor→end及真实合成artifact字节，保留本次原始失败，不改成config回显或空文本成功。
+
+可复用代码和限制：FilePreviewService支持部分文本/Office/PDF预览，但存在64MiB输入上限、1MiB输出截断、xlsx每sheet仅200行、图片无提取、PDF失败可能返回无text的预览说明；OfficeService::read_text又可把无文本变成空字符串，不能直接挂上后宣布完整提取。已有office_read需要宿主绝对path且其同步parser没有独立可终止生命周期；workflow File值明确只是artifact:// opaque引用、不是路径或访问授权。拟继续复用原Tool/Kernel、CanvasArtifactService完整性/namespace、RunStore/run_events及已有取消，不新造存储或绕过权限。具体worker、资源上限、MIME/格式allowlist、OCR引擎与输出DTO尚未选定；此段是实现约束与待设计项，不是已实现能力。
+
+本地参考只查证设计、不复制业务代码：Claude Code FileReadTool有读取权限、PDF页数及图片处理边界；DeepSeek Harness office-to-pdf将授权读取、maxBytes、AbortSignal、timeout和队列容量分开建模。它们不能证明本系统已有OCR或提供本项目数组输出契约。
+
+用户已明确选择**实现受控文档提取功能**，不以reserved/隐藏节点关闭本项；用户随后要求先解释完整问题，再判断OCR与数组输出。已说明文字PDF/文本/Office解析与扫描PDF/图片OCR的区别，以及当前text为string、数组模式缺少拼接或text[]契约。**待用户决定**：支持格式清单；是否包含OCR、若含是本地还是现有模型链（不得擅自发请求或增加费用）；数组text保持string并附来源边界还是改string[]并同步消费方。此前“本地OCR”“双换行拼接”只是建议，没有视作获准，也没有变成生产代码或公共Schema。
+
+本轮仅同步准备证据与状态，git diff/Markdown一致性和306行唯一编号核对后独立docs提交；未改生产/测试/前端，不重复跑全仓/lint/构建冒充进展。实际新增修复/历史跳过/归并/撤销均0；累计218验收、1验收保留、28历史跳过、10归并、3撤销、45待修含H180授权不修、H179修复中1；有效未修45（44待修+H179），另H66验收保留1，总体未完成。下一步仍H179，契约确定后先补真实artifact TDD再实现与跨层验收；不切换别项或擅自降低验收。
+
+本项完整工时需格式/OCR与输出契约确认后估算；全部剩余暂沿用历史低置信170–430有效工作小时，依据跨层执行/模型/持久化和逐项原probe/TDD/消费方验证，未逐项重新校准。等待用户决策、设备、依赖和编译的时间另计，无可靠总上限，不作精确日期承诺。H171所列原清理策略限制仍未解除，本轮不重试/绕过删除，不声称原64.47GiB已释放；仅复用原target与隔离根。此处不是整个goal blocked或complete，缺少决策时不空跑。
