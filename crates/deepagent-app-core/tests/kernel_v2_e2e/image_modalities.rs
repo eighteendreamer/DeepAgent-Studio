@@ -287,6 +287,188 @@ impl AttachmentDataResolver for CountingResolver {
 }
 
 #[tokio::test]
+async fn h171_native_image_roles_survive_database_reopen_without_silent_relabeling() {
+    use deepagent_core::response_item::ResponseInputItem;
+    use deepagent_persistence::event_store::EventStore;
+    use deepagent_session::Session;
+    for role in ["user", "developer", "system", "assistant"] {
+        let root = tempfile::tempdir().unwrap();
+        let dto = imported(root.path());
+        let original_bytes = std::fs::read(dto.original_path.as_ref().unwrap()).unwrap();
+        let native = ResponseInputItem::InputMessage {
+            role: role.into(),
+            content: "H171_IMAGE_REFERENCE".into(),
+            attachments: vec![reference(&dto)],
+        };
+        let database = root.path().join("h171.sqlite");
+        let model = Arc::new(Model::default());
+        let secrets = Arc::new(MemorySecretStore::new());
+        let mut session_id = None;
+        for phase in 0..2 {
+            let db = Arc::new(Database::open(&database).unwrap());
+            let settings = Arc::new(SettingsService::new(
+                db.clone(),
+                model.clone(),
+                secrets.clone(),
+            ));
+            if phase == 0 {
+                settings.initialize("synthetic-h171").await.unwrap();
+                settings
+                    .set_vision_settings(VisionSettings {
+                        mode: VisionMode::Off,
+                        ..Default::default()
+                    })
+                    .unwrap();
+                settings.set_model(ModelRole::Chat, "h71-vision").unwrap();
+            }
+            let chat = ChatService::new(db.clone(), settings, model.clone(), root.path());
+            if phase == 0 {
+                let id = chat.create_session(None).unwrap();
+                let clock = deepagent_core::clock::SystemClock;
+                Session::recover(&db, &clock, id.parse().unwrap())
+                    .unwrap()
+                    .append_response_item(native.clone())
+                    .unwrap();
+                session_id = Some(id);
+                if matches!(role, "system" | "assistant") {
+                    // A role error must precede attachment decoding as well as sampling.
+                    std::fs::write(dto.original_path.as_ref().unwrap(), []).unwrap();
+                }
+            }
+            let session = session_id.as_deref().unwrap();
+            let run_id = format!("h171-{role}-{phase}");
+            let result = run(&chat, Some(session), &run_id, None).await;
+            if matches!(role, "user" | "developer") {
+                result.unwrap();
+                terminal(&db, &run_id, "succeeded");
+                let requests = model.requests.lock().unwrap();
+                assert_eq!(requests.len(), phase + 1);
+                let images: Vec<_> = requests[phase]["input"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|item| {
+                        item["content"].as_array().is_some_and(|parts| {
+                            parts.iter().any(|part| part["type"] == "input_image")
+                        })
+                    })
+                    .collect();
+                assert_eq!(images.len(), 1);
+                assert_eq!(images[0]["role"], role);
+                assert!(images[0]["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("H171_IMAGE_REFERENCE"));
+                assert!(images[0]["content"][1]["image_url"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("data:image/png;base64,"));
+                use base64::Engine;
+                let url = images[0]["content"][1]["image_url"].as_str().unwrap();
+                assert_eq!(
+                    base64::engine::general_purpose::STANDARD
+                        .decode(url.split_once(',').unwrap().1)
+                        .unwrap(),
+                    original_bytes
+                );
+            } else {
+                assert!(result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("image_input_role_unsupported"));
+                terminal(&db, &run_id, "failed");
+                assert!(model.requests.lock().unwrap().is_empty());
+            }
+            let retained: Vec<_> = EventStore::new(&db)
+                .load_session(session.parse().unwrap())
+                .unwrap()
+                .into_iter()
+                .filter_map(|event| match event.payload {
+                    deepagent_core::event::EventPayload::ResponseItemAppended { item }
+                        if !item.image_attachments().is_empty() =>
+                    {
+                        Some(item)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                retained.as_slice(),
+                std::slice::from_ref(&native),
+                "the authoritative imported role/references must not be rewritten"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn h171_model_agent_role_policy_precedes_reads_retries_and_fallback() {
+    use deepagent_core::response_item::ResponseInputItem;
+    for mode in [WireMode::Responses, WireMode::ChatCompletions] {
+        for role in ["user", "developer", "system", "assistant"] {
+            for status in [503, 529] {
+                let root = tempfile::tempdir().unwrap();
+                let dto = imported(root.path());
+                let model = Arc::new(Model {
+                    failure_status: Some(status),
+                    ..Default::default()
+                });
+                let catalog = deepagent_models::ModelDiscovery::deepseek(model.clone())
+                    .discover("synthetic")
+                    .await
+                    .unwrap();
+                let client = Arc::new(ModelClient::new(
+                    model.clone(),
+                    ModelConfig::from_catalog("synthetic", &catalog, ModelRole::Chat)
+                        .with_wire_mode(mode),
+                ));
+                let resolver = Arc::new(CountingResolver(AtomicUsize::new(0)));
+                let native = ResponseInputItem::InputMessage {
+                    role: role.into(),
+                    content: "H171_IMAGE_REFERENCE".into(),
+                    attachments: vec![reference(&dto)],
+                };
+                let mut agent = ModelAgent::new(client, "h71-vision", "rules", "continue", vec![])
+                    .with_response_history(vec![native])
+                    .with_attachment_resolver(resolver.clone())
+                    .with_max_model_attempts(3);
+                if status == 529 {
+                    agent = agent.with_fallback_model(Some("deepseek-flash".into()));
+                }
+                let result = agent.think(0, &[]).await;
+                if role == "user" || mode == WireMode::Responses && role == "developer" {
+                    result.unwrap();
+                    let requests = model.requests.lock().unwrap();
+                    assert_eq!(requests.len(), 2);
+                    assert_eq!(resolver.0.load(Ordering::SeqCst), 3);
+                    for request in requests.iter() {
+                        let messages = request[if mode == WireMode::Responses {
+                            "input"
+                        } else {
+                            "messages"
+                        }]
+                        .as_array()
+                        .unwrap();
+                        let visual = messages
+                            .iter()
+                            .find(|message| message["content"].is_array())
+                            .unwrap();
+                        assert_eq!(visual["role"], role);
+                    }
+                } else {
+                    assert!(result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("image_input_role_unsupported"));
+                    assert!(model.requests.lock().unwrap().is_empty());
+                    assert_eq!(resolver.0.load(Ordering::SeqCst), 0);
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn effective_model_gate_precedes_resolver_and_survives_retry_fallback_cancel() {
     for mode in [WireMode::Responses, WireMode::ChatCompletions] {
         for scenario in [

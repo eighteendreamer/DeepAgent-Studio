@@ -43,6 +43,8 @@ impl Serialize for ChatCompletionRequest {
     where
         S: Serializer,
     {
+        self.validate_image_roles()
+            .map_err(serde::ser::Error::custom)?;
         let mut map = serializer.serialize_map(None)?;
         map.serialize_entry("model", &self.model)?;
         map.serialize_entry(
@@ -176,6 +178,7 @@ impl ChatCompletionRequest {
     }
 
     pub fn validate(&self) -> Result<()> {
+        self.validate_image_roles()?;
         if self
             .thinking
             .as_ref()
@@ -204,6 +207,20 @@ impl ChatCompletionRequest {
             ));
         }
         validate_function_tool_schemas(&self.tools)?;
+        Ok(())
+    }
+
+    pub(crate) fn validate_image_roles(&self) -> Result<()> {
+        for message in &self.messages {
+            if message
+                .attachments
+                .iter()
+                .any(|attachment| attachment.kind == "image")
+            {
+                crate::client::WireMode::ChatCompletions
+                    .validate_image_role(message.role.as_str())?;
+            }
+        }
         Ok(())
     }
 }

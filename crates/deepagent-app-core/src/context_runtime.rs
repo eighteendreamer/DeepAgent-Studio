@@ -2728,8 +2728,21 @@ mod tests {
 
     #[tokio::test]
     async fn native_summary_keeps_exact_tool_metadata_and_image_refs_across_replay() {
+        assert_native_summary_retains_image_role(None).await;
+    }
+
+    #[tokio::test]
+    async fn h171_native_summary_retains_imported_image_roles_across_cold_replay() {
+        for role in ["user", "developer", "system", "assistant"] {
+            assert_native_summary_retains_image_role(Some(role)).await;
+        }
+    }
+
+    async fn assert_native_summary_retains_image_role(native_role: Option<&str>) {
         use crate::session_memory::testing::{scripted_client, ScriptedTransport};
-        let db = Arc::new(Database::open_in_memory().unwrap());
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("native-image-summary.db");
+        let db = Arc::new(Database::open(&path).unwrap());
         let clock = deepagent_core::clock::SystemClock;
         let mut session = deepagent_session::Session::create(&db, &clock, None).unwrap();
         let sid = session.id();
@@ -2750,11 +2763,20 @@ mod tests {
                 media_type: Some("image/png".into()),
             },
         ]);
-        session
-            .append(EventPayload::MessageAppended {
-                message: image_message.clone(),
-            })
-            .unwrap();
+        let image_item = ResponseInputItem::InputMessage {
+            role: native_role.unwrap_or("user").into(),
+            content: image_message.content.clone(),
+            attachments: image_message.attachments.clone(),
+        };
+        if native_role.is_some() {
+            session.append_response_item(image_item.clone()).unwrap();
+        } else {
+            session
+                .append(EventPayload::MessageAppended {
+                    message: image_message,
+                })
+                .unwrap();
+        }
         let call = ResponseInputItem::FunctionCall {
             call_id: "retained-c1".into(),
             name: "read_file".into(),
@@ -2780,6 +2802,18 @@ mod tests {
         let store = deepagent_persistence::event_store::EventStore::new(&db);
         let before = store.load_session(sid).unwrap();
         let items = crate::input_runtime::response_items_from_events(&before);
+        // Replay decorates user content with the existing stable snip tag;
+        // compare compaction with that authoritative Surface, not raw events.
+        let retained_image = items
+            .iter()
+            .find(|item| {
+                matches!(item,
+            ResponseInputItem::InputMessage { role, .. }
+                if role == native_role.unwrap_or("user")
+                    && item.image_attachments() == image_item.image_attachments())
+            })
+            .expect("replay must retain the imported role and references")
+            .clone();
         let compactor = HookedReactiveContextCompactor::new(
             scripted_client(vec![ScriptedTransport::text(
                 "{\"goal\":\"ship\",\"completed\":[\"checked files\"]}",
@@ -2800,9 +2834,10 @@ mod tests {
             .unwrap();
         assert!(compacted.tokens_after < compacted.tokens_before);
         let compacted_items = compacted.response_items.unwrap();
-        assert!(compacted_items.iter().any(|item| matches!(item,
-            ResponseInputItem::InputMessage { attachments, .. }
-                if attachments == &image_message.attachments)));
+        assert!(
+            compacted_items.contains(&retained_image),
+            "native role, text and ordered references must remain exact"
+        );
         assert!(
             compacted_items.contains(&call),
             "arguments must not be reserialized through Message"
@@ -2828,6 +2863,18 @@ mod tests {
         assert!(
             after.len() > before.len(),
             "original events remain in the log"
+        );
+        drop(compactor);
+        drop(session);
+        drop(db);
+        let reopened = Database::open(&path).unwrap();
+        let cold = deepagent_persistence::event_store::EventStore::new(&reopened)
+            .load_session(sid)
+            .unwrap();
+        assert_eq!(
+            crate::input_runtime::response_items_from_events(&cold),
+            compacted_items,
+            "cold compaction replay must not relabel imported images"
         );
     }
 

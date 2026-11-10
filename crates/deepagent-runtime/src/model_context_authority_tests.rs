@@ -277,6 +277,77 @@ fn h127_tool_images_survive_native_and_legacy_compaction_adoption_and_metering()
     }
 }
 
+#[test]
+fn h171_native_compaction_adoption_and_snip_preserve_image_roles() {
+    use deepagent_core::message::MessageAttachment;
+    for role in ["user", "developer", "system", "assistant"] {
+        let client = Arc::new(ModelClient::new(
+            Arc::new(crate::test_sequence::mock(vec![])),
+            ModelConfig::deepseek("synthetic"),
+        ));
+        let mut history: Vec<_> = (0..12)
+            .map(|index| ResponseInputItem::Message {
+                role: if index % 2 == 0 { "user" } else { "assistant" }.into(),
+                content: format!("turn {index}"),
+            })
+            .collect();
+        let image = ResponseInputItem::InputMessage {
+            role: role.into(),
+            content: "retained native image".into(),
+            attachments: ["left", "right"]
+                .into_iter()
+                .map(|id| MessageAttachment {
+                    id: id.into(),
+                    kind: "image".into(),
+                    media_type: Some("image/png".into()),
+                    path: Some(format!("{id}.png")),
+                    sha256: Some("a".repeat(64)),
+                })
+                .collect(),
+        };
+        history.push(image);
+        crate::snip::tag_response_user_items(&mut history);
+        let image = history.last().unwrap().clone();
+        let mut agent = ModelAgent::new(client, "deepseek-flash", "rules", "current", vec![])
+            .with_response_history(history.clone())
+            .with_snip_tool("snip_history")
+            .with_attachment_resolver(Arc::new(ImageResolver));
+        agent.adopt_compaction(
+            ReactiveCompaction {
+                messages: deepagent_models::messages_from_response_items(None, &history),
+                response_items: Some(history),
+                tokens_before: 10000,
+                tokens_after: 100,
+                summary: "summary".into(),
+                usage: Default::default(),
+            },
+            "h171-native-role",
+        );
+        let before = agent.response_history.items.len();
+        agent.apply_snip_from_output(&serde_json::json!({"ids":["u1"]}));
+        assert!(agent.response_history.items.len() < before);
+        assert_eq!(agent.response_history.items.last(), Some(&image));
+        let prepared = agent.request_for_current_history();
+        if matches!(role, "user" | "developer") {
+            let request = prepared.unwrap();
+            assert!(request.input.contains(&image));
+            let wire = serde_json::to_value(request).unwrap();
+            let item = wire["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["role"] == role && item["content"].is_array())
+                .unwrap();
+            assert_eq!(item["content"].as_array().unwrap().len(), 3);
+        } else {
+            assert!(prepared
+                .unwrap_err()
+                .to_string()
+                .contains("image_input_role_unsupported"));
+        }
+    }
+}
+
 #[derive(Default)]
 struct SurfaceStore {
     reject: AtomicBool,

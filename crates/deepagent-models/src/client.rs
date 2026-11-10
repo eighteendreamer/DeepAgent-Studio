@@ -39,6 +39,23 @@ pub enum WireMode {
     ChatCompletions,
 }
 
+impl WireMode {
+    /// DeepSeek's Responses and Chat endpoints have different image-role
+    /// contracts. Validate before projection/materialization, never erase an
+    /// unsupported image or silently relabel its author.
+    pub(crate) fn validate_image_role(self, role: &str) -> Result<()> {
+        match (self, role) {
+            (_, "user") | (Self::Responses, "developer") => Ok(()),
+            (Self::Responses, _) => Err(deepagent_core::error::CoreError::invalid(
+                "image_input_role_unsupported: Responses images require a user or developer message, or a function/custom tool output",
+            )),
+            (Self::ChatCompletions, _) => Err(deepagent_core::error::CoreError::invalid(
+                "image_input_role_unsupported: Chat Completions images require a user message",
+            )),
+        }
+    }
+}
+
 /// Only the provider's tool face, without prompts, history, URLs or credentials.
 /// Hosts may hash this transient projection; it is not a request or permission.
 pub struct ProviderToolSchemas {
@@ -186,6 +203,7 @@ impl ModelClient {
     /// Runtime preparation and final provider dispatch use this same gate.
     /// A cached URL unreferenced by the current input is not an image input.
     pub fn validate_response_input_modalities(&self, request: &ResponseRequest) -> Result<()> {
+        request.validate_image_roles(self.config.wire_mode)?;
         self.validate_image_input(
             &request.model,
             request
@@ -226,6 +244,7 @@ impl ModelClient {
                 "image_input_tool_output_unsupported: Chat Completions tool images require Responses",
             ));
         }
+        request.validate_image_roles()?;
         Ok(())
     }
 
@@ -600,6 +619,7 @@ fn log_response_input_pairs(request: &ResponseRequest) {
 
 fn response_to_chat_completion(request: ResponseRequest) -> Result<ChatCompletionRequest> {
     request.validate_input_presence()?;
+    request.validate_image_roles(WireMode::ChatCompletions)?;
     crate::responses::validate_tool_call_history(&request.input)?;
     if request.top_logprobs.is_some() {
         return Err(deepagent_core::error::CoreError::invalid(

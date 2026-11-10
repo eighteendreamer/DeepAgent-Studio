@@ -158,6 +158,203 @@ fn rejected(error: CoreError) {
     assert!(!kind.should_fallback());
 }
 
+#[tokio::test]
+async fn h171_roles_follow_the_selected_protocol_without_losing_images() {
+    for route in 0..3 {
+        for role in [
+            "user",
+            "developer",
+            "system",
+            "assistant",
+            "tool",
+            "unknown",
+        ] {
+            for entry in 0..4 {
+                let transport = Arc::new(Recorder::default());
+                let client = client(
+                    transport.clone(),
+                    "deepseek-flash",
+                    Some(json!(["text", "image"])),
+                    route,
+                );
+                let request = image("deepseek-flash", role);
+                let result = send(&client, request, route, entry, false).await;
+                let allowed = role == "user" || route == 0 && role == "developer";
+                if allowed {
+                    result.unwrap();
+                    let requests = transport.0.lock().unwrap();
+                    assert_eq!(requests.len(), 1);
+                    let message = &requests[0][if route == 0 { "input" } else { "messages" }][0];
+                    assert_eq!(message["role"], role);
+                    let parts = message["content"]
+                        .as_array()
+                        .expect("legal image must remain typed");
+                    assert_eq!(parts.len(), 2);
+                    assert_eq!(parts[0]["text"], "PRIVATE_TEXT");
+                    if route == 0 {
+                        assert_eq!(parts[1]["type"], "input_image");
+                        assert_eq!(parts[1]["image_url"], PIXEL);
+                    } else {
+                        assert_eq!(parts[1]["type"], "image_url");
+                        assert_eq!(parts[1]["image_url"]["url"], PIXEL);
+                    }
+                } else {
+                    rejected(result.unwrap_err());
+                    assert!(transport.0.lock().unwrap().is_empty());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn h171_public_serialization_rejects_illegal_roles_and_unresolved_images() {
+    for role in ["user", "developer", "system", "assistant"] {
+        let mut request = image("deepseek-flash", role);
+        let result = serde_json::to_value(&request);
+        if matches!(role, "user" | "developer") {
+            assert_eq!(result.unwrap()["input"][0]["role"], role);
+        } else {
+            assert!(
+                result.is_err(),
+                "serializer must not erase illegal {role} images"
+            );
+        }
+        request.attachment_data_urls.clear();
+        assert!(
+            serde_json::to_value(&request).is_err(),
+            "a missing URL is not a text-only message"
+        );
+    }
+    for role in [
+        deepagent_core::message::Role::System,
+        deepagent_core::message::Role::Assistant,
+    ] {
+        let mut chat = ChatCompletionRequest::new(
+            "deepseek-flash",
+            vec![Message::text(role, "PRIVATE_TEXT").with_attachments(vec![reference()])],
+        );
+        chat.attachment_data_urls
+            .insert(reference().id, PIXEL.into());
+        assert!(
+            serde_json::to_value(&chat).is_err(),
+            "Chat serializer must also preserve the rejection boundary"
+        );
+    }
+}
+
+#[tokio::test]
+async fn h171_image_only_multiple_images_and_text_controls_keep_their_order() {
+    for role in ["user", "developer"] {
+        for text in ["", "PRIVATE_TEXT"] {
+            let transport = Arc::new(Recorder::default());
+            let client = client(
+                transport.clone(),
+                "deepseek-flash",
+                Some(json!(["text", "image"])),
+                0,
+            );
+            let mut request = image("deepseek-flash", role);
+            if let ResponseInputItem::InputMessage {
+                content,
+                attachments,
+                ..
+            } = &mut request.input[0]
+            {
+                *content = text.into();
+                let mut other = reference();
+                other.id = "second-image".into();
+                attachments.push(other);
+            }
+            request.attachment_data_urls.insert(
+                "second-image".into(),
+                "https://images.example.invalid/second.png".into(),
+            );
+            client.stream_response(request).await.unwrap();
+            let requests = transport.0.lock().unwrap();
+            let parts = requests[0]["input"][0]["content"].as_array().unwrap();
+            let offset = usize::from(!text.is_empty());
+            assert_eq!(parts.len(), offset + 2);
+            assert_eq!(parts[offset]["image_url"], PIXEL);
+            assert_eq!(
+                parts[offset + 1]["image_url"],
+                "https://images.example.invalid/second.png"
+            );
+        }
+    }
+    for role in ["system", "assistant", "user", "developer"] {
+        let transport = Arc::new(Recorder::default());
+        let client = client(
+            transport.clone(),
+            "deepseek-flash",
+            Some(json!(["text", "image"])),
+            0,
+        );
+        let request = ResponseRequest::from_response_items(
+            "deepseek-flash",
+            None,
+            vec![ResponseInputItem::Message {
+                role: role.into(),
+                content: "plain control".into(),
+            }],
+        );
+        client.stream_response(request).await.unwrap();
+        assert_eq!(
+            transport.0.lock().unwrap()[0]["input"][0],
+            json!({"type":"message", "role":role, "content":"plain control"})
+        );
+    }
+}
+
+#[tokio::test]
+async fn h171_direct_chat_entries_reject_non_user_images_before_transport() {
+    for role in [
+        deepagent_core::message::Role::System,
+        deepagent_core::message::Role::Assistant,
+        deepagent_core::message::Role::Tool,
+    ] {
+        for entry in 0..4 {
+            let transport = Arc::new(Recorder::default());
+            let client = client(
+                transport.clone(),
+                "deepseek-flash",
+                Some(json!(["text", "image"])),
+                0,
+            );
+            let mut request = ChatCompletionRequest::new(
+                "deepseek-flash",
+                vec![Message::text(role, "PRIVATE_TEXT").with_attachments(vec![reference()])],
+            );
+            request
+                .attachment_data_urls
+                .insert(reference().id, PIXEL.into());
+            let mut observer = crate::stream::NoopObserver;
+            let cancel = Arc::new(AtomicBool::new(false));
+            let result = match entry {
+                0 => client.stream_chat_completion(request).await,
+                1 => {
+                    client
+                        .stream_chat_completion_observed(request, &mut observer)
+                        .await
+                }
+                2 => {
+                    client
+                        .stream_chat_completion_cancelled(request, cancel)
+                        .await
+                }
+                3 => {
+                    client
+                        .stream_chat_completion_observed_cancelled(request, &mut observer, cancel)
+                        .await
+                }
+                _ => unreachable!(),
+            };
+            rejected(result.unwrap_err());
+            assert!(transport.0.lock().unwrap().is_empty());
+        }
+    }
+}
+
 #[test]
 fn h71_modalities_survive_partial_capacity_and_roundtrip_without_name_guessing() {
     for declared in [

@@ -530,7 +530,6 @@ async fn audit_declared_input_modalities_constrain_requests() {
 }
 
 #[tokio::test]
-#[ignore = "audit probe: Responses image roles must follow the DeepSeek contract"]
 async fn audit_responses_image_roles_preserve_or_reject_content() {
     let developer = sample_image_role("developer").await;
     let assistant = sample_image_role("assistant").await;
