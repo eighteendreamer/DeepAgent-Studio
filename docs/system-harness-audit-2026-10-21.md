@@ -11892,7 +11892,7 @@ SDK前核对原共享CLI hash、无reparse/零活进程后备份到本轮root，
 
 ### H-230：单文件验证只按扩展名选择严格 JSON，合法 TypeScript 配置被误报并在 Strict 模式记为失败动作
 
-**级别：中（P2，验证正确性与 Agent 反馈污染）；状态：2026-11-12 根因修复及本机验收完成，仅可再生产物清理受策略阻塞，尚未关闭；原始失败证据保留。** 默认 Enabled 模式把 TypeScript 接受的带注释 `tsconfig.json` 告诉模型为 `JSON parse error` 并要求修复；Strict 模式进一步把已成功写盘的工具结果改为错误，持久化 action 为 Failed。缺陷在于验证器的语法依据与实际配置消费者不一致，不是要求关闭验证，也不意味着 JSON 普通数据文件应接受任意注释。
+**级别：中（P2，验证正确性与 Agent 反馈污染）；状态：2026-11-12 已修复并在本机验收，清理核验完成；原始失败证据保留。** 默认 Enabled 模式把 TypeScript 接受的带注释 `tsconfig.json` 告诉模型为 `JSON parse error` 并要求修复；Strict 模式进一步把已成功写盘的工具结果改为错误，持久化 action 为 Failed。缺陷在于验证器的语法依据与实际配置消费者不一致，不是要求关闭验证，也不意味着 JSON 普通数据文件应接受任意注释。
 
 #### 即时证据（2026-10-24，首个编译器对照完成后登记）
 
@@ -11946,7 +11946,9 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_dialect:: --o
 
 兼容与限制：JsonVerifier unit构造改为default/new，仓内同步；公共工具/SQL/Tauri/TS/事件协议未改。已识别TS配置执行项目消费者检查而非只验JSON语法；角色发现支持标准/tsconfig.*等命名及工作区祖先相对extends/references，不解析外部包、非祖先子项目关联/任意CLI自定义名或编辑器扩展关联，不能确认角色时明确未验。只实测当前Windows/PowerShell、TS5.9.3、Node22.22.1；未验非Windows、旧TS、Sandboxie/远程后端、全特性CI或UI/前端构建（无UI改动）。H231和H180未混修。
 
-本轮仅剩约12.41GiB两根可再生产物清理：target/h230-repair-20261111与G:/h230-fixtures-20261111；原生PowerShell删除在CreateProcess前被策略拒绝、零删除，01:54:04（UTC+08:00）只读确认仍存在；不重试/绕过。共享CLI/用户snapshot已恢复核原hash，七项用户untracked保留。暂标阻塞待处理，仅待用户实际清理后核对并回填提交/关闭；本项独立修复commit **7b034796bfe3f61dac13d143c5007552e4ef4169**，仅十份白名单实现/测试/依赖锁/双文；取得hash后另做双文回填，不amend/推送。仍仅清理阻塞，不提前正式关闭。不能据本项局部验收宣称全系统修复完成。
+本轮于2026-11-12 06:52（UTC+08:00）只读核验 target/h230-repair-20261111 与 G:/h230-fixtures-20261111 均不存在，确认清理闭环完成；不把此前PowerShell命令被策略拒绝误记为已删除，不声称物理空闲量等于此前12.41GiB逻辑大小。共享CLI/用户snapshot已恢复核原hash，七项用户untracked保留。本项独立修复commit **7b034796bfe3f61dac13d143c5007552e4ef4169**，清理及台账收尾另提交；没有amend/推送。H-230正式关闭，但不代表全系统审计修复完成。
+
+**E-H230-07（清理核验并关闭，2026-11-12）**：用户授权执行本机清理后，小怪只读检查两根精确路径，Test-Path均为False：G:/Code_Warehouse/DeepAgent-Studio/target/h230-repair-20261111、G:/h230-fixtures-20261111。确认目标目录不存在，无需也未重跑代码验收；不测算物理磁盘释放量、不触碰源码、正式文档、共享依赖缓存、默认CLI、用户snapshot或untracked内容。E01～06原始失败、候选反例、最终完整门禁和两次策略阻断证据均保留。修复代码commit为7b034796bfe3f61dac13d143c5007552e4ef4169；首次双文提交f69c009f77e86e1dae7a911652697fbeaaedd17；本次清理闭环与当前状态回填另做文档提交。H-230计为本阶段新增修复验收1；下一项H-231，不因此关闭整体goal。
 
 ### H-231：可选 ruff 未安装时真实 shell 返回非零结果，被 Python 验证器误报为源代码失败
 
