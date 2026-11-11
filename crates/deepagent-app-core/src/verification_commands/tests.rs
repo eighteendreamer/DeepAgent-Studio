@@ -149,6 +149,41 @@ async fn cancelled_checks_and_outside_cwd_never_enter_executor() {
 }
 
 #[tokio::test]
+async fn h230_config_compiler_cannot_bypass_command_permissions_hooks_or_cancel() {
+    use crate::verification_dispatcher::{JsonVerifier, VerificationOutcome, Verifier};
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("tsconfig.json");
+    std::fs::write(&path, "{/* note */\"compilerOptions\":{},}").unwrap();
+    let exec = Arc::new(RecordingExecutor::default());
+    for (outcome, permissions, cancel) in [
+        (
+            HookOutcome::deny("fixture denied"),
+            PermissionSet::developer(),
+            false,
+        ),
+        (
+            HookOutcome::ask("fixture approval"),
+            PermissionSet::developer(),
+            false,
+        ),
+        (HookOutcome::Continue, PermissionSet::read_only(), false),
+        (HookOutcome::Continue, PermissionSet::developer(), true),
+    ] {
+        let mut commands = fixture(temp.path(), exec.clone(), outcome);
+        commands.config.permissions = permissions;
+        if cancel {
+            commands.context.cancellation.cancel();
+        }
+        let verifier = JsonVerifier::new(Arc::new(commands));
+        assert!(matches!(
+            verifier.verify(&path).await,
+            VerificationOutcome::Failed { .. }
+        ));
+        assert!(exec.0.lock().unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
 async fn generated_argv_and_nested_cwd_preserve_literal_paths_in_real_shell() {
     let temp = tempfile::tempdir().unwrap();
     let nested = temp.path().join("nested 空格 $literal 'quote");

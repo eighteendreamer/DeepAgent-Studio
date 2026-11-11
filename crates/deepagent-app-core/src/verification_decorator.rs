@@ -119,7 +119,10 @@ impl ToolResultDecorator for VerificationDecorator {
             .unwrap_or(&path)
             .display()
             .to_string();
-        let outcome = self.dispatcher.verify_file(&path).await;
+        let outcome = self
+            .dispatcher
+            .verify_file_in_workspace(&path, self.workspace_root.as_deref())
+            .await;
         match outcome {
             VerificationOutcome::Passed => {
                 append_to_tool_result(&mut output.value, &wrap(&format!("verified: {display}")));
@@ -159,6 +162,10 @@ impl ToolResultDecorator for VerificationDecorator {
                 append_to_tool_result(&mut output.value, &wrap(&body));
             }
             VerificationOutcome::Skipped { reason } => {
+                if reason.starts_with("configuration verification incomplete:") {
+                    append_to_tool_result(&mut output.value, &wrap(&reason));
+                    return;
+                }
                 // Only surface the FIRST per-toolchain "missing" hint. Others
                 // (no Cargo.toml / unknown extension) stay silent so we don't
                 // spam every tool result.

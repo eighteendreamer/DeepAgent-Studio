@@ -11892,7 +11892,7 @@ SDK前核对原共享CLI hash、无reparse/零活进程后备份到本轮root，
 
 ### H-230：单文件验证只按扩展名选择严格 JSON，合法 TypeScript 配置被误报并在 Strict 模式记为失败动作
 
-**级别：中（P2，验证正确性与 Agent 反馈污染）；状态：正式聊天工具链及真实编译器对照已复现，未修复。** 默认 Enabled 模式把 TypeScript 接受的带注释 `tsconfig.json` 告诉模型为 `JSON parse error` 并要求修复；Strict 模式进一步把已成功写盘的工具结果改为错误，持久化 action 为 Failed。缺陷在于验证器的语法依据与实际配置消费者不一致，不是要求关闭验证，也不意味着 JSON 普通数据文件应接受任意注释。
+**级别：中（P2，验证正确性与 Agent 反馈污染）；状态：2026-11-12 根因修复及本机验收完成，仅可再生产物清理受策略阻塞，尚未关闭；原始失败证据保留。** 默认 Enabled 模式把 TypeScript 接受的带注释 `tsconfig.json` 告诉模型为 `JSON parse error` 并要求修复；Strict 模式进一步把已成功写盘的工具结果改为错误，持久化 action 为 Failed。缺陷在于验证器的语法依据与实际配置消费者不一致，不是要求关闭验证，也不意味着 JSON 普通数据文件应接受任意注释。
 
 #### 即时证据（2026-10-24，首个编译器对照完成后登记）
 
@@ -11937,6 +11937,16 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_dialect:: --o
 `cargo test -p deepagent-app-core --lib --offline --quiet`：**1091 passed / 50 ignored**；`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**43 passed / 50 ignored**。`cargo fmt --all -- --check`、`git diff --check` 通过。实际执行的 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 被未修改的 `models/src/client.rs:355`（clone_on_copy）、`persistence/src/run_store.rs:127`（explicit_counter_loop）阻断，未到本轮测试检查，不能报告 lint 通过。
 
 本轮仅新增隔离审计测试、测试入口及文档，未修改验证器、配置策略或生产状态；按 docs-generator 的 Evidence → Finding → Path 要求首个真实编译对照后立即登记，再补完整矩阵。未执行全 workspace、Desktop build/UI、真实供应商、自定义 tsconfig/extends、edit_file/multi_edit、重启与 LSP 服务测试。DeepSeek 官方四份接入文档的既有审计结论本轮没有改变，本项不涉及 provider 参数或缓存行为；全系统审计目标仍未完成。
+
+#### 修复与本机验收（2026-11-11～12，仅清理阻塞）
+
+原始失败证据及上方旧审计结果全部保留；本轮先重跑原probe完整1通过/1失败（预期）、新增TDD0通过/3失败（预期），后续包路径/相对路径红测和候选反例亦保留。用户明确确认TypeScript配置采用真实消费者而不是近似JSONC解析；最终在原JsonVerifier/Dispatcher/Decorator统一路径上下文和配置角色，复用同一个CommandExecutor与ToolExecutionPipeline。TypeScript以真实`tsc --noEmit --pretty false --tsBuildInfoFile <宿主独占临时目录>/verification.tsbuildinfo --project <原配置>`验证，不改原件、不在用户项目写增量缓存，不用已证实会对缺括号exit0的showConfig当验证结果；缺工具链明确未验，权限/取消/超时和动作/事件仍走原内核。普通JSON/package.json严格、VS Code/显式JSONC独立解析，未新增运行/审批/事件链。
+
+最终冻结八份实现/测试/依赖源并复核hash不变：专项10/0/0，原Kernel模块显式include-ignored **5/0/0**（111组合应用运行，18组真实消费者，三入口/三策略/真实SQLite冷重开与下一wire），真非法配置TS1005/Strict失败不丢失。最终workspace **5257通过/4失败/166忽略，157顶层target全终态**；AppCore库1656/0/52，H230默认回归无失败。四项旧失败为图片/受限树DACL恢复、CLI HOME快照及H306空提示词；独立共享验证冷ready门禁失败完整保留，不把全仓随后同名通过抹去前失败。CLI构建、Tauri check、fmt/diff通过；strict lint仍有既有AppCore六处/Runtime两处及其他测试阻断，没有称全仓全绿。完整命令/时长、原红测/候选纠正和剩余边界见[进度E-H230-01～06](system-harness-repair-progress.md#h-230-修复证据2026-11-11-开始尚未验收)。
+
+兼容与限制：JsonVerifier unit构造改为default/new，仓内同步；公共工具/SQL/Tauri/TS/事件协议未改。已识别TS配置执行项目消费者检查而非只验JSON语法；角色发现支持标准/tsconfig.*等命名及工作区祖先相对extends/references，不解析外部包、非祖先子项目关联/任意CLI自定义名或编辑器扩展关联，不能确认角色时明确未验。只实测当前Windows/PowerShell、TS5.9.3、Node22.22.1；未验非Windows、旧TS、Sandboxie/远程后端、全特性CI或UI/前端构建（无UI改动）。H231和H180未混修。
+
+本轮仅剩约12.41GiB两根可再生产物清理：target/h230-repair-20261111与G:/h230-fixtures-20261111；原生PowerShell删除在CreateProcess前被策略拒绝、零删除，01:54:04（UTC+08:00）只读确认仍存在；不重试/绕过。共享CLI/用户snapshot已恢复核原hash，七项用户untracked保留。暂标阻塞待处理，仅待用户实际清理后核对并回填提交/关闭；本项独立提交取得hash后另做双文回填，不amend/推送。不能据本项局部验收宣称全系统修复完成。
 
 ### H-231：可选 ruff 未安装时真实 shell 返回非零结果，被 Python 验证器误报为源代码失败
 

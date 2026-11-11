@@ -13,7 +13,8 @@
 //!   ancestor `tsconfig.json`.
 //! - [`PythonVerifier`] — runs `python -m py_compile <file>`, then optionally
 //!   `ruff check <file>` when `ruff` is on PATH.
-//! - [`JsonVerifier`] — pure-Rust [`serde_json`] parse, no subprocess.
+//! - [`JsonVerifier`] — strict JSON / JSONC syntax, or the actual TypeScript consumer
+//!   via the same command executor for identified TypeScript configurations.
 //!
 //! The TOML and YAML verifiers from the spec are deferred: the workspace has
 //! no `toml` / `serde_yaml` dependency yet and the project rule says "no new
@@ -47,6 +48,13 @@ use async_trait::async_trait;
 
 use crate::verification_commands::quote_argument;
 use deepagent_builtins::{CommandExecutor, CommandOutcome, SystemExecutor};
+
+mod json;
+pub use json::JsonVerifier;
+
+#[cfg(test)]
+#[path = "verification_dispatcher/json_tests.rs"]
+mod json_dialect_tests;
 
 /// Default per-file verification budget. Verifiers that exceed this duration
 /// yield [`VerificationOutcome::TimedOut`].
@@ -91,6 +99,16 @@ pub trait Verifier: Send + Sync + std::fmt::Debug {
     /// timeout — the dispatcher races them against
     /// [`VerificationDispatcher::timeout`].
     async fn verify(&self, path: &Path) -> VerificationOutcome;
+
+    /// Supply the existing tool workspace for local configuration-role discovery.
+    /// Other verifiers keep their existing execution boundary unchanged.
+    async fn verify_in_workspace(
+        &self,
+        path: &Path,
+        _workspace_root: Option<&Path>,
+    ) -> VerificationOutcome {
+        self.verify(path).await
+    }
 }
 
 /// Top-level verification entry point. Holds the registered verifiers and the
@@ -126,8 +144,8 @@ impl VerificationDispatcher {
         Self::new(vec![
             Arc::new(RustVerifier::new(executor.clone())),
             Arc::new(TypeScriptVerifier::new(executor.clone())),
-            Arc::new(PythonVerifier::new(executor)),
-            Arc::new(JsonVerifier),
+            Arc::new(PythonVerifier::new(executor.clone())),
+            Arc::new(JsonVerifier::new(executor)),
         ])
     }
 
@@ -169,6 +187,15 @@ impl VerificationDispatcher {
     /// Verify a single file against the first matching verifier. Returns
     /// [`VerificationOutcome::Skipped`] when no verifier handles the file.
     pub async fn verify_file(&self, path: &Path) -> VerificationOutcome {
+        self.verify_file_in_workspace(path, None).await
+    }
+
+    /// Verify with the tool's workspace boundary, without a second registry or timeout.
+    pub async fn verify_file_in_workspace(
+        &self,
+        path: &Path,
+        workspace_root: Option<&Path>,
+    ) -> VerificationOutcome {
         let Some(verifier) = self.verifiers.iter().find(|v| v.handles(path)) else {
             return VerificationOutcome::Skipped {
                 reason: format!(
@@ -180,7 +207,7 @@ impl VerificationDispatcher {
                 ),
             };
         };
-        let fut = verifier.verify(path);
+        let fut = verifier.verify_in_workspace(path, workspace_root);
         match tokio::time::timeout(self.timeout, fut).await {
             Ok(outcome) => match outcome {
                 VerificationOutcome::Failed { detail, .. } => {
@@ -321,6 +348,84 @@ impl TypeScriptVerifier {
     pub fn new(executor: Arc<dyn CommandExecutor>) -> Self {
         Self { executor }
     }
+
+    /// Check an explicitly identified configuration with its actual consumer.
+    /// --noEmit checks the actual consumer. Redirect incremental state to a
+    /// disposable host-owned directory, never the user's project. --showConfig
+    /// is not a validation verdict (TS 5.9 can exit 0 for malformed JSON).
+    /// The availability marker is emitted only by our host-generated shell,
+    /// not inferred from localized compiler stderr or arbitrary exit codes.
+    async fn verify_config(&self, path: &Path, root: Option<&Path>) -> VerificationOutcome {
+        const MISSING: &str = "__DEEPAGENT_TSC_UNAVAILABLE_V1__";
+        let Some(dir) = path.parent() else {
+            return VerificationOutcome::Skipped {
+                reason: "tsc toolchain not found: configuration has no parent; not verified".into(),
+            };
+        };
+        let scratch = match tempfile::Builder::new()
+            .prefix("deepagent-tsconfig-check-")
+            .tempdir()
+        {
+            Ok(directory) => directory,
+            Err(error) => {
+                return VerificationOutcome::Failed {
+                    detail: format!("prepare TypeScript verification scratch directory: {error}"),
+                    truncated: false,
+                }
+            }
+        };
+        let mut local = None;
+        for ancestor in dir
+            .ancestors()
+            .take_while(|dir| root.map_or(true, |root| dir.starts_with(root)))
+        {
+            let candidate = ancestor.join(if cfg!(windows) {
+                "node_modules/.bin/tsc.cmd"
+            } else {
+                "node_modules/.bin/tsc"
+            });
+            if candidate.is_file() {
+                local = Some(candidate);
+                break;
+            }
+            if root.is_none() {
+                break;
+            }
+        }
+        let args = format!(
+            "--noEmit --pretty false --tsBuildInfoFile {} --project {}",
+            quote_argument(
+                &scratch
+                    .path()
+                    .join("verification.tsbuildinfo")
+                    .to_string_lossy()
+            ),
+            quote_argument(&path.to_string_lossy())
+        );
+        let command = match (cfg!(windows), local) {
+            (true, Some(local)) => format!("$ErrorActionPreference = 'Stop'; & {} {args}; exit $LASTEXITCODE", quote_argument(&local.to_string_lossy())),
+            (false, Some(local)) => format!("{} {args}", quote_argument(&local.to_string_lossy())),
+            (true, None) => format!("$ErrorActionPreference = 'Stop'; $compiler = Get-Command -Name tsc -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1; if ($null -eq $compiler) {{ Write-Output '{MISSING}'; exit 0 }}; & $compiler.Source {args}; exit $LASTEXITCODE"),
+            (false, None) => format!("if command -v tsc >/dev/null 2>&1; then tsc {args}; else printf '%s\\n' '{MISSING}'; fi"),
+        };
+        match self.executor.run(&command, &dir.to_string_lossy()).await {
+            Ok(outcome) if outcome.exit_code == Some(0) && outcome.stdout.trim() == MISSING && outcome.stderr.trim().is_empty() => VerificationOutcome::Skipped {
+                reason: "tsc toolchain not found; TypeScript configuration was not verified (未完成验证); install TypeScript to enable this check".into(),
+            },
+            Ok(outcome) if outcome.exit_code == Some(0) => VerificationOutcome::Passed,
+            Ok(outcome) => {
+                // tsc writes diagnostics to stdout. A shell warning on stderr
+                // must not hide the actual compiler error.
+                let detail = [outcome.stdout.trim(), outcome.stderr.trim()]
+                    .into_iter().filter(|text| !text.is_empty()).collect::<Vec<_>>().join("\n");
+                VerificationOutcome::Failed {
+                    detail: format!("TypeScript verification failed:\n{}", if detail.is_empty() { pick_error_block(&outcome) } else { detail }),
+                    truncated: false,
+                }
+            },
+            Err(error) => VerificationOutcome::Failed { detail: format!("TypeScript verification execution failed: {error}"), truncated: false },
+        }
+    }
 }
 
 #[async_trait]
@@ -425,42 +530,6 @@ impl Verifier for PythonVerifier {
     }
 }
 
-// ---- JSON ----
-
-/// Pure-Rust JSON parse check (no subprocess).
-#[derive(Debug, Clone)]
-pub struct JsonVerifier;
-
-#[async_trait]
-impl Verifier for JsonVerifier {
-    fn name(&self) -> &str {
-        "json"
-    }
-
-    fn handles(&self, path: &Path) -> bool {
-        path.extension().and_then(|s| s.to_str()) == Some("json")
-    }
-
-    async fn verify(&self, path: &Path) -> VerificationOutcome {
-        let content = match tokio::fs::read_to_string(path).await {
-            Ok(c) => c,
-            Err(e) => {
-                return VerificationOutcome::Failed {
-                    detail: format!("read failed: {e}"),
-                    truncated: false,
-                };
-            }
-        };
-        match serde_json::from_str::<serde_json::Value>(&content) {
-            Ok(_) => VerificationOutcome::Passed,
-            Err(e) => VerificationOutcome::Failed {
-                detail: format!("JSON parse error: {e}"),
-                truncated: false,
-            },
-        }
-    }
-}
-
 /// Convert a subprocess outcome into a verification outcome.
 fn command_outcome_to_verification(outcome: CommandOutcome) -> VerificationOutcome {
     if outcome.exit_code == Some(0) {
@@ -504,7 +573,7 @@ mod tests {
     /// Test executor that returns canned outcomes (or an error simulating
     /// "command not found") keyed by the prefix of the command line.
     #[derive(Default)]
-    struct MockExecutor {
+    pub(super) struct MockExecutor {
         responses: StdMutex<Vec<MockEntry>>,
     }
 
@@ -514,7 +583,7 @@ mod tests {
     }
 
     impl MockExecutor {
-        fn with(self, prefix: &str, result: Result<CommandOutcome, String>) -> Self {
+        pub(super) fn with(self, prefix: &str, result: Result<CommandOutcome, String>) -> Self {
             self.responses.lock().unwrap().push(MockEntry {
                 prefix: prefix.to_string(),
                 result,
@@ -543,7 +612,7 @@ mod tests {
         }
     }
 
-    fn ok_exit(stdout: &str, stderr: &str) -> CommandOutcome {
+    pub(super) fn ok_exit(stdout: &str, stderr: &str) -> CommandOutcome {
         CommandOutcome {
             exit_code: Some(0),
             stdout: stdout.into(),
@@ -551,7 +620,7 @@ mod tests {
         }
     }
 
-    fn fail_exit(code: i32, stdout: &str, stderr: &str) -> CommandOutcome {
+    pub(super) fn fail_exit(code: i32, stdout: &str, stderr: &str) -> CommandOutcome {
         CommandOutcome {
             exit_code: Some(code),
             stdout: stdout.into(),
@@ -607,7 +676,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("a.json");
         std::fs::write(&p, r#"{"k":1,"v":[true,null]}"#).unwrap();
-        let outcome = JsonVerifier.verify(&p).await;
+        let outcome = JsonVerifier::default().verify(&p).await;
         assert_eq!(outcome, VerificationOutcome::Passed);
     }
 
@@ -616,7 +685,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("a.json");
         std::fs::write(&p, "{ bad }").unwrap();
-        let outcome = JsonVerifier.verify(&p).await;
+        let outcome = JsonVerifier::default().verify(&p).await;
         match outcome {
             VerificationOutcome::Failed { detail, .. } => {
                 assert!(detail.contains("JSON parse error"));
@@ -627,7 +696,7 @@ mod tests {
 
     #[test]
     fn json_verifier_handles_only_json_extension() {
-        let v = JsonVerifier;
+        let v = JsonVerifier::default();
         assert!(v.handles(Path::new("foo.json")));
         assert!(!v.handles(Path::new("foo.rs")));
         assert!(!v.handles(Path::new("foo")));
