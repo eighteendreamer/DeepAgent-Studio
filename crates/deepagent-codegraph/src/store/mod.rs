@@ -193,6 +193,18 @@ impl GraphStore {
         schema::applied_version(&self.conn)
     }
 
+    /// Commit a graph update once. Batch writers participate in an enclosing
+    /// update; their errors must propagate so the outer transaction rolls back.
+    pub(crate) fn atomic<T>(&self, update: impl FnOnce(&Self) -> Result<T>) -> Result<T> {
+        if !self.conn.is_autocommit() {
+            return update(self);
+        }
+        let tx = self.conn.unchecked_transaction().map_err(map_sqlite)?;
+        let value = update(self)?;
+        tx.commit().map_err(map_sqlite)?;
+        Ok(value)
+    }
+
     // -----------------------------------------------------------------------
     // Writes
     // -----------------------------------------------------------------------
@@ -228,9 +240,9 @@ impl GraphStore {
         if files.is_empty() {
             return Ok(());
         }
-        let tx = self.conn.unchecked_transaction().map_err(map_sqlite)?;
-        {
-            let mut stmt = tx
+        self.atomic(|store| {
+            let mut stmt = store
+                .conn
                 .prepare(
                     "INSERT OR REPLACE INTO files
                      (path, content_hash, language, size, modified_at, indexed_at)
@@ -248,9 +260,8 @@ impl GraphStore {
                 ])
                 .map_err(map_sqlite)?;
             }
-        }
-        tx.commit().map_err(map_sqlite)?;
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Batch-insert nodes inside a single transaction with a reused prepared
@@ -265,9 +276,9 @@ impl GraphStore {
             return Ok(());
         }
         let now = current_timestamp();
-        let tx = self.conn.unchecked_transaction().map_err(map_sqlite)?;
-        {
-            let mut stmt = tx
+        self.atomic(|store| {
+            let mut stmt = store
+                .conn
                 .prepare(
                     "INSERT OR REPLACE INTO nodes (
                         id, kind, name, qualified_name, file_path, language,
@@ -301,9 +312,8 @@ impl GraphStore {
                 ])
                 .map_err(map_sqlite)?;
             }
-        }
-        tx.commit().map_err(map_sqlite)?;
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Batch-insert unresolved references inside a single transaction with a
@@ -317,9 +327,9 @@ impl GraphStore {
         if refs.is_empty() {
             return Ok(());
         }
-        let tx = self.conn.unchecked_transaction().map_err(map_sqlite)?;
-        {
-            let mut stmt = tx
+        self.atomic(|store| {
+            let mut stmt = store
+                .conn
                 .prepare(
                     "INSERT INTO unresolved_refs
                         (from_node_id, reference_name, reference_kind, line, file_path)
@@ -336,9 +346,8 @@ impl GraphStore {
                 ])
                 .map_err(map_sqlite)?;
             }
-        }
-        tx.commit().map_err(map_sqlite)?;
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Batch-insert edges inside a single transaction with a reused prepared
@@ -350,9 +359,9 @@ impl GraphStore {
         if edges.is_empty() {
             return Ok(());
         }
-        let tx = self.conn.unchecked_transaction().map_err(map_sqlite)?;
-        {
-            let mut stmt = tx
+        self.atomic(|store| {
+            let mut stmt = store
+                .conn
                 .prepare(
                     "INSERT INTO edges (source, target, kind, metadata, line, provenance)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -373,9 +382,8 @@ impl GraphStore {
                 ])
                 .map_err(map_sqlite)?;
             }
-        }
-        tx.commit().map_err(map_sqlite)?;
-        Ok(())
+            Ok(())
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -390,21 +398,58 @@ impl GraphStore {
     /// file path directly. All steps run in one transaction so the file is
     /// either fully removed or left untouched.
     pub fn delete_file_cascade(&self, path: &str) -> Result<()> {
-        let tx = self.conn.unchecked_transaction().map_err(map_sqlite)?;
-        // Nodes first: their FK cascade removes dependent edges and
-        // unresolved_refs (those referencing a deleted from_node_id).
-        tx.execute("DELETE FROM nodes WHERE file_path = ?1", params![path])
+        self.atomic(|store| {
+            // Nodes first: their FK cascade removes dependent edges and
+            // unresolved_refs (those referencing a deleted from_node_id).
+            store
+                .conn
+                .execute("DELETE FROM nodes WHERE file_path = ?1", params![path])
+                .map_err(map_sqlite)?;
+            // Any unresolved_refs tracked by file path but not tied to a deleted
+            // node (defensive: from_node_id cascade may not cover all of them).
+            store
+                .conn
+                .execute(
+                    "DELETE FROM unresolved_refs WHERE file_path = ?1",
+                    params![path],
+                )
+                .map_err(map_sqlite)?;
+            store
+                .conn
+                .execute("DELETE FROM files WHERE path = ?1", params![path])
+                .map_err(map_sqlite)?;
+            Ok(())
+        })
+    }
+
+    /// Remove a caller batch's old call bindings, including AST-local edges.
+    /// The facade restores local extraction edges before matching parked refs.
+    pub(crate) fn delete_calls_for_files(&self, files: &[String]) -> Result<()> {
+        self.atomic(|store| {
+            let mut stmt = store
+                .conn
+                .prepare(
+                    "DELETE FROM edges WHERE kind = 'calls' AND source IN
+                 (SELECT id FROM nodes WHERE file_path = ?1)",
+                )
+                .map_err(map_sqlite)?;
+            for file in files {
+                stmt.execute([file]).map_err(map_sqlite)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// File-to-file import edges are derived. Keep extraction-time edges to
+    /// import symbols while rebuilding dependencies on replaced file nodes.
+    pub(crate) fn delete_resolved_imports(&self) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM edges WHERE kind = 'imports' AND target IN
+             (SELECT id FROM nodes WHERE kind = 'file')",
+                [],
+            )
             .map_err(map_sqlite)?;
-        // Any unresolved_refs tracked by file path but not tied to a deleted
-        // node (defensive: from_node_id cascade may not cover all of them).
-        tx.execute(
-            "DELETE FROM unresolved_refs WHERE file_path = ?1",
-            params![path],
-        )
-        .map_err(map_sqlite)?;
-        tx.execute("DELETE FROM files WHERE path = ?1", params![path])
-            .map_err(map_sqlite)?;
-        tx.commit().map_err(map_sqlite)?;
         Ok(())
     }
 
@@ -742,7 +787,7 @@ impl GraphStore {
     /// (matched on `unresolved_refs.file_path`), ordered deterministically.
     ///
     /// Used by [`crate::resolution::Resolver::resolve_for_files`] during an
-    /// incremental sync so only references in changed files are re-resolved.
+    /// incremental sync for changed files and invalidated caller files.
     /// An empty `files` slice yields an empty result without touching the
     /// database.
     pub fn unresolved_refs_for_files(&self, files: &[String]) -> Result<Vec<UnresolvedRef>> {

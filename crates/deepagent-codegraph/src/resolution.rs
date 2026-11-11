@@ -24,6 +24,8 @@ pub mod name_matcher;
 pub use import_resolver::{ImportAlias, ImportResolver, ImportResolverConfig, ResolveImportReport};
 pub use name_matcher::{CallMatchReport, DefinitionIndex};
 
+use std::collections::BTreeSet;
+
 use deepagent_core::error::Result;
 
 use crate::store::GraphStore;
@@ -59,10 +61,8 @@ impl<'a> Resolver<'a> {
     ///
     /// Definition candidates are all callable nodes in the graph. Unresolved
     /// references are left in place (no error edge). Resolved-reference rows
-    /// are intentionally *kept* in `unresolved_refs`: `resolve_all` runs once
-    /// on a fresh full index, and incremental syncs re-process only the
-    /// references they re-extract, so leaving the rows is the lowest-complexity
-    /// choice that never double-emits edges.
+    /// are intentionally *kept* in `unresolved_refs` so a definition change can
+    /// invalidate and rebuild bindings in unchanged callers as well.
     pub fn resolve_all(&self) -> Result<ResolveStats> {
         let index = self.definition_index()?;
         let refs = self.store.all_unresolved_refs()?;
@@ -74,10 +74,10 @@ impl<'a> Resolver<'a> {
     /// Resolve only the parked call references whose call site lives in one of
     /// `files`, persisting the resulting `calls` edges.
     ///
-    /// Used by incremental sync: definition candidates are still drawn from the
-    /// whole graph (so calls into unchanged files resolve), but only references
-    /// belonging to the changed files are matched. An empty `files` slice is a
-    /// no-op.
+    /// Used by incremental sync after clearing the batch's previous bindings:
+    /// candidates come from the whole graph, while call sites include changed
+    /// files and unchanged callers affected by definition changes. An empty
+    /// `files` slice is a no-op.
     pub fn resolve_for_files(&self, files: &[String]) -> Result<ResolveStats> {
         if files.is_empty() {
             return Ok(ResolveStats::default());
@@ -87,6 +87,33 @@ impl<'a> Resolver<'a> {
         let report = name_matcher::match_calls(&refs, &index);
         self.store.insert_edges(&report.edges)?;
         Ok(stats(&report))
+    }
+
+    /// Candidate selection depends on the simple name, even when a qualified
+    /// reference falls back to another same-name definition. Invalidate callers
+    /// of every old/new callable name, including currently unresolved calls.
+    pub(crate) fn dependent_files<'n>(
+        &self,
+        definitions: impl IntoIterator<Item = &'n Node>,
+    ) -> Result<BTreeSet<String>> {
+        let names: BTreeSet<&str> = definitions
+            .into_iter()
+            .filter(|node| matches!(node.kind, NodeKind::Function | NodeKind::Method))
+            .map(|node| node.name.as_str())
+            .collect();
+        if names.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        Ok(self
+            .store
+            .all_unresolved_refs()?
+            .into_iter()
+            .filter(|reference| {
+                reference.reference_kind == name_matcher::CALL_REFERENCE_KIND
+                    && names.contains(name_matcher::split_reference(&reference.reference_name).0)
+            })
+            .map(|reference| reference.file_path)
+            .collect())
     }
 
     /// Build a [`DefinitionIndex`] over every callable node in the graph.

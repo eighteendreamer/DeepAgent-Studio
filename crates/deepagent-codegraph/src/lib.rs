@@ -42,7 +42,7 @@ use crate::query::{
 use crate::resolution::import_resolver::ImportResolver;
 use crate::resolution::Resolver;
 use crate::store::GraphStore;
-use crate::types::{Edge, FileRecord, Node, NodeKind, UnresolvedRef};
+use crate::types::{Edge, EdgeKind, FileRecord, Node, NodeKind, UnresolvedRef};
 
 pub use scanner::{FileScanner, ScannedFile};
 
@@ -196,89 +196,128 @@ impl CodeGraph {
 
     /// Incremental sync: diff the current tree against the stored `files` table
     /// by content hash, drop graph data for deleted/modified files, re-extract
-    /// added/modified files, and re-resolve imports for the changed files.
+    /// added/modified files, and re-resolve affected call/import dependencies.
     ///
-    /// The changed-file set is recorded in project metadata (best-effort change
-    /// marking). Returns post-run [`IndexStats`] with `is_incremental = true`.
+    /// Graph data and the changed-file metadata commit together. Returns
+    /// post-run [`IndexStats`] with `is_incremental = true`.
     pub fn sync(&mut self) -> Result<IndexStats> {
         let start = Instant::now();
 
         let scanner = FileScanner::new(&self.project_root)?;
         let scanned = scanner.scan(&self.project_root)?;
-        let change = self.store.changed_files(&scanned);
+        self.store.atomic(|store| {
+            let change = store.changed_files(&scanned);
 
-        // Remove graph data for files that vanished or changed; the file node's
-        // FK cascade also clears its outgoing edges and unresolved refs.
-        for path in change.deleted.iter().chain(change.modified.iter()) {
-            self.store.delete_file_cascade(path)?;
-        }
-
-        // Re-extract added + modified files.
-        let touched: std::collections::BTreeSet<&String> =
-            change.added.iter().chain(change.modified.iter()).collect();
-        let mut nodes: Vec<Node> = Vec::new();
-        let mut edges: Vec<Edge> = Vec::new();
-        let mut refs: Vec<UnresolvedRef> = Vec::new();
-        let mut files: Vec<FileRecord> = Vec::new();
-        let mut to_extract: Vec<ScannedFile> = Vec::new();
-
-        for file in &scanned {
-            let rel = posix_relative(file);
-            if !touched.contains(&rel) {
-                continue;
+            if change.added.is_empty() && change.modified.is_empty() && change.deleted.is_empty() {
+                self.record_git_commit();
+                self.record_changed_files(&change)?;
+                return Ok(IndexStats {
+                    files_indexed: 0,
+                    nodes: self.store.node_count()?,
+                    edges: self.store.edge_count()?,
+                    duration: start.elapsed(),
+                    is_incremental: true,
+                });
             }
-            to_extract.push(file.clone());
-        }
 
-        for extracted in extract_files_parallel(to_extract)? {
-            let file_record = file_record(&extracted.file_info);
-            nodes.extend(extracted.nodes);
-            edges.extend(extracted.edges);
-            refs.extend(extracted.unresolved_refs);
-            files.push(file_record);
-        }
+            // Re-extract added + modified files.
+            let touched: std::collections::BTreeSet<&String> =
+                change.added.iter().chain(change.modified.iter()).collect();
+            let mut nodes: Vec<Node> = Vec::new();
+            let mut edges: Vec<Edge> = Vec::new();
+            let mut refs: Vec<UnresolvedRef> = Vec::new();
+            let mut files: Vec<FileRecord> = Vec::new();
+            let mut to_extract: Vec<ScannedFile> = Vec::new();
 
-        self.store.insert_nodes(&nodes)?;
-        self.store.insert_edges(&edges)?;
-        self.store.insert_unresolved_refs(&refs)?;
-        self.store.upsert_files(&files)?;
+            for file in &scanned {
+                let rel = posix_relative(file);
+                if !touched.contains(&rel) {
+                    continue;
+                }
+                to_extract.push(file.clone());
+            }
 
-        // Local import resolution: resolve over the full current node set (so
-        // targets in unchanged files are visible) but only persist edges whose
-        // source is a changed file. Changed files had their old edges cascade-
-        // deleted above, so no duplicates are introduced.
-        if !nodes.is_empty() {
-            let changed_sources: std::collections::BTreeSet<String> = nodes
+            for extracted in extract_files_parallel(to_extract)? {
+                let file_record = file_record(&extracted.file_info);
+                nodes.extend(extracted.nodes);
+                edges.extend(extracted.edges);
+                refs.extend(extracted.unresolved_refs);
+                files.push(file_record);
+            }
+
+            // Capture both sides of the definition change before any cascade. A
+            // newly added candidate can replace a still-valid old binding, and an
+            // unresolved caller can become resolvable without changing its source.
+            let replaced: std::collections::BTreeSet<&String> = change
+                .deleted
                 .iter()
-                .filter(|n| n.kind == NodeKind::File)
-                .map(|n| n.id.clone())
+                .chain(change.modified.iter())
                 .collect();
-            let all_nodes = self.store.all_nodes()?;
-            let import_edges: Vec<Edge> = ImportResolver::default()
-                .resolve_edges(&all_nodes)
-                .edges
+            let old_nodes = store.all_nodes()?;
+            let dependent_files = Resolver::new(store).dependent_files(
+                old_nodes
+                    .iter()
+                    .filter(|node| replaced.contains(&node.file_path))
+                    .chain(nodes.iter()),
+            )?;
+            let unchanged_dependents: Vec<_> = scanned
+                .iter()
+                .filter(|file| {
+                    let path = posix_relative(file);
+                    dependent_files.contains(&path) && !touched.contains(&path)
+                })
+                .cloned()
+                .collect();
+            // Reuse extraction for just the affected callers' local AST edges.
+            // Their nodes/refs/file hashes stay intact. Removing every outgoing
+            // call before restoring AST + resolved edges avoids ownership guesses
+            // and preserves local/external calls that happen to share one line.
+            let dependent_paths: Vec<String> =
+                unchanged_dependents.iter().map(posix_relative).collect();
+            let local_calls: Vec<Edge> = extract_files_parallel(unchanged_dependents)?
                 .into_iter()
-                .filter(|e| changed_sources.contains(&e.source))
+                .flat_map(|file| file.edges)
+                .filter(|edge| edge.kind == EdgeKind::Calls)
                 .collect();
-            self.store.insert_edges(&import_edges)?;
-        }
+            let call_files: Vec<String> = touched
+                .iter()
+                .map(|path| (*path).clone())
+                .chain(dependent_paths.iter().cloned())
+                .collect();
 
-        // Local call resolution: re-resolve only the call references that live
-        // in the changed files. Definition candidates still come from the whole
-        // graph (so calls into unchanged files resolve), and the changed files'
-        // old `calls` edges were cascade-deleted above, so no duplicates arise.
-        let changed_files: Vec<String> = touched.iter().map(|s| (*s).clone()).collect();
-        Resolver::new(&self.store).resolve_for_files(&changed_files)?;
+            tracing::debug!(
+                changed = touched.len(),
+                dependent_callers = dependent_paths.len(),
+                "refreshing incremental graph dependencies"
+            );
 
-        self.record_git_commit();
-        self.record_changed_files(&change);
+            for path in change.deleted.iter().chain(change.modified.iter()) {
+                store.delete_file_cascade(path)?;
+            }
+            store.insert_nodes(&nodes)?;
+            store.insert_edges(&edges)?;
+            store.insert_unresolved_refs(&refs)?;
+            store.upsert_files(&files)?;
+            store.delete_calls_for_files(&dependent_paths)?;
+            store.insert_edges(&local_calls)?;
+            Resolver::new(store).resolve_for_files(&call_files)?;
 
-        Ok(IndexStats {
-            files_indexed: touched.len(),
-            nodes: self.store.node_count()?,
-            edges: self.store.edge_count()?,
-            duration: start.elapsed(),
-            is_incremental: true,
+            // Replacing a file node also invalidates unchanged importers' file
+            // edges. They share this cascade dependency; retain AST import
+            // symbols and recompute only the derived file-to-file import set.
+            store.delete_resolved_imports()?;
+            let all_nodes = store.all_nodes()?;
+            let import_edges = ImportResolver::default().resolve_edges(&all_nodes).edges;
+            store.insert_edges(&import_edges)?;
+            self.record_git_commit();
+            self.record_changed_files(&change)?;
+            Ok(IndexStats {
+                files_indexed: touched.len(),
+                nodes: self.store.node_count()?,
+                edges: self.store.edge_count()?,
+                duration: start.elapsed(),
+                is_incremental: true,
+            })
         })
     }
 
@@ -339,21 +378,14 @@ impl CodeGraph {
     }
 
     /// Record the incremental change set (added/modified/deleted POSIX paths)
-    /// in project metadata. Best-effort: a serialisation/store failure is
-    /// logged, not propagated.
-    fn record_changed_files(&self, change: &crate::store::ChangeSet) {
+    /// in project metadata, inside the same transaction as the graph update.
+    fn record_changed_files(&self, change: &crate::store::ChangeSet) -> Result<()> {
         let mut changed: Vec<&String> = Vec::new();
         changed.extend(change.added.iter());
         changed.extend(change.modified.iter());
         changed.extend(change.deleted.iter());
-        match serde_json::to_string(&changed) {
-            Ok(json) => {
-                if let Err(err) = self.store.set_metadata(CHANGED_FILES_KEY, &json) {
-                    tracing::warn!(error = %err, "failed to record changed files");
-                }
-            }
-            Err(err) => tracing::warn!(error = %err, "failed to serialise changed files"),
-        }
+        self.store
+            .set_metadata(CHANGED_FILES_KEY, &serde_json::to_string(&changed)?)
     }
 }
 

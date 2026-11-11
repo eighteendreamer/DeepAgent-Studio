@@ -15935,6 +15935,8 @@ E-H288-11（独立提交与回填，2026-10-29）：本项代码、默认回归�
 
 ### H-289：CodeGraph 定义文件变更后不会重新连接未修改 caller 的调用边
 
+**本轮状态（2026-11-11，阻塞待处理，仅产物清理）**：E01原探针及TDD红测真实复现；旧/新定义依赖caller和同根imports在原SQLite事务中更新。E03最终CodeGraph151/0/0、严格lint/fmt/CLI/Tauri通过，workspace5295/4既有失败/169忽略、全仓旧strict阻断保留。代码与本机验收完成，E04自动清理被策略拒绝，两根约10.62GiB仍在；不提前关闭或宣布整个目标完成。
+
 **级别：中（P2，增量索引一致性与影响分析失真）；状态：正式 `CodeGraph` facade、临时 SQLite 和 Rust fixture 已复现，未修复。** 触发条件是先完成全量索引，随后只修改被调用函数所在文件；caller 文件本身没有内容变化。它不是网络、模型权限或工具执行漏洞，也不代表所有增量同步都会失效。
 
 #### 即时 Evidence（2026-10-25，首次复现后立即登记）
@@ -15980,6 +15982,38 @@ E-H288-11（独立提交与回填，2026-10-29）：本项代码、默认回归�
 #### 同轮未登记项
 
 - 文件编码审查确认 `read_file` 的公开契约明确为 UTF-8，读失败不会成功获得新的已读资格；没有仅凭不支持 UTF-16/非 UTF-8 登记“数据损坏”。混合换行、BOM 与 NUL 的具体字节保真仍需独立复现，本轮没有用静态疑点编造结果。
+
+#### 修复记录（2026-11-11）
+
+**E-H289-01（当前复现与TDD，2026-11-11）**：从3a5d3986的干净tracked状态开始，保留原七项untracked；只处理本项，不触碰H180。原命令 `cargo test --target-dir G:/Code_Warehouse/DeepAgent-Studio/target/h289-repair-20261111 -p deepagent-codegraph --test incremental_resolution_audit audit_definition_change_reconnects_unchanged_caller --offline -j 2 --config profile.dev.debug=0 --config profile.test.debug=0 -- --ignored --exact --nocapture` 实际exit101、49.324秒含冷编译，0通过/1失败：initial=1、restored=0、after_caller_touch=1，原断言真实失败。随后原探针去掉ignore，新增正式facade回归，同一公共Cargo参数、取消单项filter与ignored后实际1通过/6失败/0忽略；正常同批caller/target更新通过，恢复、候选替换、未改caller、跨语言及失败注入均红。Rust qualified_name保留现有`impl`前缀，候选断言改为检查真实后缀，不修改解析语义。首轮候选整包138库+7回归+5集成=150通过/0失败/0忽略；原探针为1/1/1。其后加强事务读取边界与元数据故障测试，最终版本尚待冻结验收，不能用首轮绿测提前关闭。
+
+本地设计依据为当前extractor只将未绑定调用停放到unresolved_refs、name_matcher按simple name取候选，以及原Store的外键级联；复用这三处权威边界。以旧/新callable名称查找依赖caller（含qualified fallback与尚未解析者），只为受影响未改caller重新提取本地calls，再替换其出边并复用Resolver；不删除caller节点或改其文件hash。相同File节点级联同时会删掉未改importer的文件依赖边，所以在同一批次重算派生file→file imports，保留AST file→import符号边；这是同一失效根因，非新增独立问题。读取/删除/写入/解析/changed metadata收敛到原SQLite的一个事务，批量写复用外层事务，失败整批回滚；无新schema、依赖或第二图链路。无变更sync不做AST提取或依赖重建，仍沿用既有扫描/哈希，未声称整个文件扫描为O(1)。仅操作隔离合成源与临时SQLite；下一步最终相关crate/跨层与workspace门禁，不访问真实数据库或外部服务。
+
+**E-H289-02（最终版本冻结准备）**：924份源码冻结、首批定向门禁与原红测hash详见进度文档同名节；完整终态结果统一见下面E03，不把此前“进行中”记录当成已完成。
+
+**E-H289-03（最终冻结验收，2026-11-11）**：全部七个门禁终态，runner exit0仅代表编排完成，不代表子门禁全绿；924份冻结源码在每门禁前及全部结束后漂移0，manifest SHA256为1CF0C63E9D159946A662842970A2D990E021BC1E66BBD5F7D4F5339559C56D50。所有Cargo除fmt外共用 `--target-dir G:/Code_Warehouse/DeepAgent-Studio/target/h289-repair-20261111 --offline -j 2 --config profile.dev.debug=0 --config profile.test.debug=0`，下面仅省略这些公共参数。通过子进程环境隔离HOME/USERPROFILE/AppData/TEMP/数据目录并移除凭据、代理及DEEPAGENT继承项；CARGO_TARGET_DIR不传给嵌套Cargo，依赖缓存只读复用现有离线缓存。仅测试合成文件/临时SQLite及既有自建回环，不操作真实项目数据库或外部服务。
+
+| 实际命令（加上述公共参数） | 实际结果 | 墙钟秒，含编译/等待 |
+|---|---|---:|
+| `cargo fmt --all -- --check` | exit0 | 6.253 |
+| `cargo test -p deepagent-codegraph -- --test-threads=2 --nocapture` | exit0；138库+8回归+5集成=151通过/0失败/0忽略 | 10.306 |
+| `cargo clippy -p deepagent-codegraph --all-targets --all-features -- -D warnings` | exit0；本项完整严格lint通过 | 13.748 |
+| `cargo build -p deepagent-cli` | exit0 | 243.052 |
+| `cargo test --workspace --features deepagent-app-core/web --no-fail-fast -- --test-threads=2 --quiet` | exit101；156目标全部终态，5295通过/4既有失败/169忽略 | 1412.407 |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | exit101；未改Runtime两处旧lint阻断 | 80.586 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml` | exit0；Tauri Rust消费方通过，Cargo.lock无变更 | 272.374 |
+
+按每个Running/Doc-tests块最后summary计数，156块无缺失，排除AppCore内H92嵌套helper额外1通过；没有把169忽略计为执行。原H289 probe已是默认回归并真正通过，不靠过滤ignored跳过。四个失败与H170的E03完全同项且源码未改：Kernel的 `image_preparation::read_failure::real_read_data_dacl_denial_fails_without_sampling_and_recovers`（361/1/13，原DACL精确恢复）；CLI的 `tui::app::tests::viewport_snapshot_with_a_pending_approval`（214/1/9，隔离HOME快照）；Prompts的 `canvas_prompt::tests::every_node_kind_owns_exactly_one_profile`（27/1/0，H306空视频提示词）；Runtime的 `checkpoint::access::native::tests::restrictive_tree_is_protected_before_copying_any_bytes`（473/1/6，原DACL恢复）。全仓strict实际停在Runtime model_agent.rs:298的clone_on_copy和workflow/canvas.rs:32的derivable_impls，不顺手修改；本项CodeGraph strict真正通过。全仓还执行了既有AppCore项目图、Builtins工具、CLI及SDK消费测试；本项正式facade覆盖查询与实际UA JSON产物，不以编译替代行为验收。
+
+SDK既有夹具固定读取共享target/debug/deepagent.exe，故全仓期间仅临时放置本轮已构建CLI，finally已恢复原件及用户原.snap.new。最后SHA256分别为8C03E6A63D3E64EBF14DF4AC67C4DC56FB87C2D8B9C35949D3CBA9BC391F30A4与D514BFE28BA6F207C714DDAD2FEFE9E521B3AA1FD7DF1AF243FA2CC2ED911F17，均与开始一致。结果JSON SHA256为755899C5F170D9C95346BCE67538160003C568F34E0B6DFC652E116ACA3534CD；workspace完整日志为96D0563C812038E423EF4B6AFB059653C6441EFEBF0F4FFACD12055B7F81A62B；CodeGraph完整日志为B3FE6B95A3BA73243B783838CF9EED844A600FC6A731858545102BDBBA9C20E0。原红测和默认TDD红日志hash及实际失败保留E01～02，清理不抹去报告中的原始失败证据。
+
+兼容与限制：公开DTO/工具/IPC/查询结构、数据库schema和依赖均未改变；仅修派生依赖图，caller节点/停放引用/hash保持，files_indexed仍只统计实际变动源文件。changed metadata写入失败由旧best-effort改为显式失败并回滚，与图同一次提交。仍使用现有名称启发式，不是编译器语义绑定；高扇出名称可能使许多依赖caller重新解析，派生imports在有变化时全量解析，无变化时不重建。扫描仍O(文件数)，未承诺整个sync为O(1)。无变化快路不主动回填升级前已缺边的旧缓存，该情形需显式重建；本轮不迁移或改写真实索引。未验其他OS、MSRV、超大真实项目、持续并发改写源树、断电/磁盘满和打包桌面；未调用模型/真实服务/凭据。无前端或IPC变更，本轮不重复pnpm build/UI截图；实际UA JSON和Tauri消费方已验证。本项代码与本机验收完成，清理和独立提交续记E04，不提前宣称整个goal完成。
+
+**E-H289-04（清理阻塞与交付，2026-11-11）**：全部门禁终态后，确认无可见命令行指向本轮target/fixture的存活进程；精确Resolve-Path匹配预期两根，祖先和所有后代均无reparse，后代路径均位于对应根下。清理前独立target为16692文件/3355目录/10441508173逻辑字节（约9.72GiB），fixture为2123文件/1749目录/963005600字节（约0.90GiB），合计11404513773字节、约10.62GiB；未测物理空间差，不将逻辑量当作实际释放量。C盘Temp顶层未发现h289目录。原CLI与用户.snap.new恢复并核hash，原七项untracked保留；所有显式Cargo均使用本轮独立target，不删除共享target整根。
+
+随后计划由原生PowerShell在重复路径/reparse核对后对两根运行Remove-Item -LiteralPath <两精确根> -Recurse -Force -ErrorAction Stop，工具在CreateProcess前拒绝：`rejected: blocked by policy`。整个脚本未启动，零删除；20:04:57（UTC+08:00）只读Test-Path复核 G:/Code_Warehouse/DeepAgent-Studio/target/h289-repair-20261111 与 G:/h289-fixtures-20261111 均true。没有改用其他工具/语言/改ACL/提权/改名/cargo clean绕过，也没有重试。待用户实际清理或提供策略已放行的执行方式后仅只读复核，不重跑矩阵、不再索取代码授权。人工命令为在获准PowerShell执行 `Remove-Item -LiteralPath 'G:\Code_Warehouse\DeepAgent-Studio\target\h289-repair-20261111', 'G:\h289-fixtures-20261111' -Recurse -Force -ErrorAction Stop`；需要实际结果，单回复“允许”不会执行。
+
+H289代码及E03范围内本机验收已完成，当前状态“阻塞待处理（仅产物清理）”；先将5份Rust实现/回归与当时双文独立提交，取得ID后另文档回填，不amend、不推送、不创建PR。306唯一编号复核为221已验收、28历史跳过、10归并、3撤销、42待修（含H180授权不修）、1阻塞H289、1验收保留H66；本轮H289新增正式关闭0、历史跳过/归并/撤销0。剩余41个有效待修，加H289清理及H66保留共43项未闭环；本会话此前H170收尾新增关闭1另记其E05，不重复计数。下一先完成H289清理，再准备H220（会话列表无界返回，原probe尚未运行），不进入新项开发。H289剩余清理核对/文档约0.2–0.5有效小时，人工/策略等待另计。全部剩余170–430有效小时仍为旧低置信分组粗估，依据剩余模型/Hook执行状态、Harness持久化/分页、画布和验证器的跨层工作，未逐项校准；构建、设备、依赖、策略和人工等待另计且无可靠总上界，不给精确完工承诺，整体goal仍active。
 
 ### H-290：画布供应商保存先提交配置、后写密钥，密钥持久化失败后发布新配置与旧凭据的混合身份
 

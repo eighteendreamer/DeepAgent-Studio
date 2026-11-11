@@ -183,7 +183,7 @@ fn is_callable(kind: NodeKind) -> bool {
 ///
 /// Both `::` (Rust/TS) and `.` (Python/JS member access) are treated as path
 /// separators.
-fn split_reference(name: &str) -> (&str, Option<String>) {
+pub(super) fn split_reference(name: &str) -> (&str, Option<String>) {
     let has_separator = name.contains("::") || name.contains('.');
     let simple = name
         .rsplit([':', '.'])
