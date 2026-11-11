@@ -11946,7 +11946,7 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_dialect:: --o
 
 兼容与限制：JsonVerifier unit构造改为default/new，仓内同步；公共工具/SQL/Tauri/TS/事件协议未改。已识别TS配置执行项目消费者检查而非只验JSON语法；角色发现支持标准/tsconfig.*等命名及工作区祖先相对extends/references，不解析外部包、非祖先子项目关联/任意CLI自定义名或编辑器扩展关联，不能确认角色时明确未验。只实测当前Windows/PowerShell、TS5.9.3、Node22.22.1；未验非Windows、旧TS、Sandboxie/远程后端、全特性CI或UI/前端构建（无UI改动）。H231和H180未混修。
 
-本轮仅剩约12.41GiB两根可再生产物清理：target/h230-repair-20261111与G:/h230-fixtures-20261111；原生PowerShell删除在CreateProcess前被策略拒绝、零删除，01:54:04（UTC+08:00）只读确认仍存在；不重试/绕过。共享CLI/用户snapshot已恢复核原hash，七项用户untracked保留。暂标阻塞待处理，仅待用户实际清理后核对并回填提交/关闭；本项独立提交取得hash后另做双文回填，不amend/推送。不能据本项局部验收宣称全系统修复完成。
+本轮仅剩约12.41GiB两根可再生产物清理：target/h230-repair-20261111与G:/h230-fixtures-20261111；原生PowerShell删除在CreateProcess前被策略拒绝、零删除，01:54:04（UTC+08:00）只读确认仍存在；不重试/绕过。共享CLI/用户snapshot已恢复核原hash，七项用户untracked保留。暂标阻塞待处理，仅待用户实际清理后核对并回填提交/关闭；本项独立修复commit **7b034796bfe3f61dac13d143c5007552e4ef4169**，仅十份白名单实现/测试/依赖锁/双文；取得hash后另做双文回填，不amend/推送。仍仅清理阻塞，不提前正式关闭。不能据本项局部验收宣称全系统修复完成。
 
 ### H-231：可选 ruff 未安装时真实 shell 返回非零结果，被 Python 验证器误报为源代码失败
 
