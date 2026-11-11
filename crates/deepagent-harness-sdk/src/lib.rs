@@ -26,7 +26,7 @@
 //!
 //! Archive uses the existing shared AppCore activity/control gate: busy owners
 //! are refused, not cancelled. `thread_list()` selects active identities;
-//! `thread_list_with_options(ThreadListRequest { archived: Some(true) })` selects
+//! `thread_list_with_options(ThreadListRequest { archived: Some(true), ..Default::default() })` selects
 //! only archived ones. Explicit views require matching archive projection flags.
 //! `thread_unarchive` restores visibility/admission eligibility without loading
 //! or replaying a thread; call `thread_resume` afterwards. Archived identities
@@ -34,6 +34,13 @@
 //! stays read-only and available. No new event store or migration is involved.
 //! `HarnessRequest` gains an additive v1 unarchive variant; `ThreadListRequest`
 //! literals need `archived` (or `Default`) and exhaustive matches need updating.
+//!
+//! Catalog lists are now one bounded page (default 25, max 100), never an
+//! automatic full download. The typed `thread_list_page` validates v1 paging;
+//! raw list responses keep `hasMore`/`nextCursor`. Filters/order are scoped to
+//! the opaque continuation; catalog changes require explicit first-page refresh.
+//! Empty provider-filter pages may still have a continuation. SQLite V23 adds
+//! a change epoch/indexes in the existing database, not a second session store.
 //!
 //! ## Example
 //!

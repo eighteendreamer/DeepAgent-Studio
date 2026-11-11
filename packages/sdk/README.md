@@ -159,7 +159,8 @@ foreground run ends. Failed archive publication does not unload the thread.
 `{ archived: false }` for an explicit active view. Rows carry an additive
 `archived` boolean; an explicit view rejects missing/conflicting markers from
 an older peer rather than silently presenting its active list as archived.
-The existing list-size/pagination limitation (H-220) is not fixed here.
+The catalog is bounded as described below; list convenience calls return only
+one page, not the entire history.
 
 Archived identities cannot resume, start, steer or fork, even through a stale
 loaded server, another host sharing the data root, an equivalent SessionId
@@ -183,11 +184,67 @@ This is an additive v1 operation/filter, but active-list and archived-admission
 behavior intentionally changes. AppCore/Desktop archive now rejects a busy
 owner instead of hiding live work; existing UI errors remain the handling path.
 Rust callers retain `thread_list()` and gain
-`thread_list_with_options(ThreadListRequest { archived: Some(true) })` plus
+`thread_list_with_options(ThreadListRequest { archived: Some(true), ..Default::default() })` plus
 `thread_unarchive(ThreadUnarchiveRequest { thread_id })`.
-Rust `ThreadListRequest {}` literals must use `::default()` or supply `archived`;
+Rust `ThreadListRequest` literals must use `::default()` for omitted options;
 exhaustive `HarnessRequest` matches must handle the new variant. No database
 migration, model/provider change or automatic restore/replay is introduced.
+
+### Bounded thread catalog (H-220)
+
+`await agent.listThreadsPage(options)` and Rust `thread_list_page(request)` fetch
+exactly one typed v1 page: `threads`, `listPageVersion: 1`, `hasMore`,
+`nextCursor` (null at the end). Defaults are 25 items and 256 KiB for the complete
+JSON-RPC response; `limit` is 1–100 and `maxBytes` is 4096–1048576. A single
+oversized metadata row fails explicitly, never silently truncates or disappears.
+The older TypeScript `listThreads()` returns **only the first page** as an array;
+use the page method to see continuations. Rust raw list responses retain all page
+fields. Nothing automatically downloads the catalog or restarts failed paging.
+
+```ts
+const first = await agent.listThreadsPage({ limit: 25, provider: "deepseek" });
+if (first.hasMore) {
+  const next = await agent.listThreadsPage({ cursor: first.nextCursor! });
+  // Consume one page, then decide whether another request is needed.
+}
+```
+
+Optional server filters are `archived` (default false), exact persisted `cwd`,
+literal title substring `search`, exclusive epoch-millisecond `updatedAfter`,
+and **explicit pinned** `provider`. A missing/default provider is not inferred
+from settings or the last run. `sortKey` is `updated_at` (default) or
+`created_at`; `sortDirection` is `desc` (default) or `asc`. Both use the session
+identity as a stable same-direction tiebreaker. Paths match stored strings
+exactly, including Windows canonical-path spelling; they are not access grants.
+Filter strings are nonblank, no NUL, with UTF-8 byte limits 1024 for cwd and
+128 for provider/search. Unknown options and invalid types are rejected.
+
+Provider filtering reads the existing bounded, CRC-checked authority header;
+it does not replay the transcript or save a second provider configuration.
+Each request inspects at most 100 candidates. A sparse filter can return an
+**empty page with hasMore=true**: continue using its advancing cursor, not by
+repeating the same request. Header frames over 1 MiB or unreadable provider
+metadata fail explicitly; metadata rows above 64 KiB are rejected before cloning.
+
+Continuations are integrity-protected with the existing pagination-only key,
+scoped to this database/catalog version, ordering, filters and last identity.
+They survive a process restart; omit filters or repeat them unchanged. Changing
+filters, tampering or foreign/history cursors fail. Repeating a valid cursor is
+a read-only retry, not a mutation; callers must not create unbounded retry loops.
+Any cooperating catalog mutation (including insertion, sorting/title/project,
+file generation or archive/recycle changes) invalidates old cursors with
+JSON-RPC -32602 and a stale-cursor message. Refresh explicitly from the first
+page. It is a strict epoch, not a persistent historical MVCC snapshot; unrelated
+threads can invalidate it too. Arbitrary out-of-band filesystem edits are not
+tracked by SQLite triggers.
+
+This introduces SQLite V23: one metadata epoch and indexes/triggers in the
+existing database, no second session/run/event store or credential collection.
+The migration is idempotent and does not rewrite session files/history. Code
+and tests exercise upgrades only on synthetic databases; deploying the new
+binary applies the repository's existing migration lifecycle. No real-user
+database migration is executed by the repair task. Existing Desktop-specific
+session-list DTOs are separate from this machine protocol and unchanged.
 
 ### CLI JSONL process ownership
 

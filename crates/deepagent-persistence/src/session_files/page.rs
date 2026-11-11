@@ -13,6 +13,22 @@ const MAX_SCAN_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_SCAN_FRAMES: usize = 256;
 const READ_CHUNK: usize = 4096;
 
+/// Read only the first bounded, CRC-checked authority frame. No transcript
+/// materialization or provider inference is needed for metadata filtering.
+pub(crate) fn catalog_header(root: &Path, session: SessionId) -> Result<Option<SessionFileHeader>> {
+    let Some((generation, path)) = current_generation(root, session)? else {
+        return Ok(None);
+    };
+    let mut file = File::open(path).map_err(io_error)?;
+    let size = file.metadata().map_err(io_error)?.len();
+    let frame = read_frame_bounded(&mut file, 0, size.min(1024 * 1024), 0, Some(1024 * 1024))?;
+    let header = parse_header(frame.records.into_iter().next(), generation, session)?;
+    if let Some(config) = &header.execution_config {
+        config.validate()?;
+    }
+    Ok(Some(header))
+}
+
 /// Storage continuation. Fields are private so ordinary callers cannot invent
 /// positions; deserialize only after the transport validates its envelope.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -492,6 +508,16 @@ impl RecordWindow {
 }
 
 fn read_frame(file: &mut File, offset: u64, through: u64, skip: usize) -> Result<DecodedFrame> {
+    read_frame_bounded(file, offset, through, skip, None)
+}
+
+fn read_frame_bounded(
+    file: &mut File,
+    offset: u64,
+    through: u64,
+    skip: usize,
+    decoded_limit: Option<u64>,
+) -> Result<DecodedFrame> {
     let available = through
         .checked_sub(offset)
         .filter(|bytes| *bytes > 0)
@@ -520,6 +546,11 @@ fn read_frame(file: &mut File, offset: u64, through: u64, skip: usize) -> Result
         decoded_bytes = decoded_bytes
             .checked_add(read as u64)
             .ok_or_else(|| CoreError::EventLog("history frame size overflow".into()))?;
+        if decoded_limit.is_some_and(|limit| decoded_bytes > limit) {
+            return Err(CoreError::invalid(
+                "catalog_header_too_large: provider metadata frame exceeds 1MiB",
+            ));
+        }
         window.consume(&chunk[..read], offset)?;
     }
     window.finish_line(offset)?;

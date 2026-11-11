@@ -15,8 +15,8 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "pnpm build && node --test tests/sdk.test.mjs tests/early-events-audit.test.mjs tests/owned-stream.test.mjs tests/version-contract.test.mjs tests/initialize-contract.test.mjs tests/result-contract.test.mjs tests/restart-audit.test.mjs tests/generation-contract.test.mjs tests/jsonl-lifecycle-audit.test.mjs tests/jsonl-owner.test.mjs tests/jsonl-exit-audit.test.mjs tests/jsonl-result.test.mjs tests/approval-isolation-audit.test.mjs tests/approval-lifetime.test.mjs",
-    "test:stdio": "pnpm build && node --test tests/real-cli-stream.test.mjs tests/real-cli-generation.test.mjs tests/real-cli-archive.test.mjs tests/real-cli-fork.test.mjs",
+    "test": "pnpm build && node --test tests/sdk.test.mjs tests/catalog-page.test.mjs tests/early-events-audit.test.mjs tests/owned-stream.test.mjs tests/version-contract.test.mjs tests/initialize-contract.test.mjs tests/result-contract.test.mjs tests/restart-audit.test.mjs tests/generation-contract.test.mjs tests/jsonl-lifecycle-audit.test.mjs tests/jsonl-owner.test.mjs tests/jsonl-exit-audit.test.mjs tests/jsonl-result.test.mjs tests/approval-isolation-audit.test.mjs tests/approval-lifetime.test.mjs",
+    "test:stdio": "pnpm build && node --test tests/real-cli-stream.test.mjs tests/real-cli-generation.test.mjs tests/real-cli-archive.test.mjs tests/real-cli-fork.test.mjs tests/real-cli-catalog.test.mjs",
     "test:jsonl": "pnpm build && node --test tests/real-cli-jsonl-owner.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

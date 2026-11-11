@@ -450,6 +450,55 @@ const MIGRATIONS: &[&str] = &[
         source_body  TEXT NOT NULL
     );
     "#,
+    // V23: one metadata epoch in the existing SQLite database. Cursors store
+    // coordinates, never a duplicate session catalog or persisted page list.
+    r#"
+    CREATE TABLE IF NOT EXISTS session_catalog_state (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+        identity TEXT NOT NULL,
+        revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision>=0)
+    );
+    INSERT OR IGNORE INTO session_catalog_state VALUES (1, lower(hex(randomblob(16))), 0);
+    CREATE INDEX IF NOT EXISTS idx_sessions_catalog_updated ON sessions(updated_at DESC,id DESC);
+    CREATE INDEX IF NOT EXISTS idx_sessions_catalog_created ON sessions(created_at DESC,id DESC);
+    CREATE INDEX IF NOT EXISTS idx_sessions_catalog_project ON sessions(project,updated_at DESC,id DESC);
+    CREATE TRIGGER IF NOT EXISTS session_catalog_session_insert AFTER INSERT ON sessions BEGIN
+        UPDATE session_catalog_state SET revision=revision+1 WHERE singleton=1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS session_catalog_session_delete AFTER DELETE ON sessions BEGIN
+        UPDATE session_catalog_state SET revision=revision+1 WHERE singleton=1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS session_catalog_session_update AFTER UPDATE ON sessions
+    WHEN OLD.id IS NOT NEW.id OR OLD.title IS NOT NEW.title OR OLD.project IS NOT NEW.project
+      OR OLD.created_at IS NOT NEW.created_at OR OLD.updated_at IS NOT NEW.updated_at
+      OR OLD.ended_at IS NOT NEW.ended_at BEGIN
+        UPDATE session_catalog_state SET revision=revision+1 WHERE singleton=1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS session_catalog_file_insert AFTER INSERT ON session_file_state BEGIN
+        UPDATE session_catalog_state SET revision=revision+1 WHERE singleton=1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS session_catalog_file_delete AFTER DELETE ON session_file_state BEGIN
+        UPDATE session_catalog_state SET revision=revision+1 WHERE singleton=1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS session_catalog_file_update AFTER UPDATE ON session_file_state
+    WHEN OLD.generation IS NOT NEW.generation OR OLD.last_sequence IS NOT NEW.last_sequence
+      OR OLD.byte_size IS NOT NEW.byte_size BEGIN
+        UPDATE session_catalog_state SET revision=revision+1 WHERE singleton=1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS session_catalog_archive_insert AFTER INSERT ON documents
+    WHEN NEW.collection='archived_conversations' BEGIN
+        UPDATE session_catalog_state SET revision=revision+1 WHERE singleton=1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS session_catalog_archive_delete AFTER DELETE ON documents
+    WHEN OLD.collection='archived_conversations' BEGIN
+        UPDATE session_catalog_state SET revision=revision+1 WHERE singleton=1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS session_catalog_archive_update AFTER UPDATE ON documents
+    WHEN (OLD.collection='archived_conversations' OR NEW.collection='archived_conversations')
+     AND (OLD.collection IS NOT NEW.collection OR OLD.id IS NOT NEW.id OR OLD.body IS NOT NEW.body) BEGIN
+        UPDATE session_catalog_state SET revision=revision+1 WHERE singleton=1;
+    END;
+    "#,
 ];
 
 /// The highest schema version defined by this build.
@@ -694,7 +743,7 @@ mod tests {
         .unwrap();
 
         // Re-apply the final script the way a version rollback would.
-        conn.execute_batch(MIGRATIONS[MIGRATIONS.len() - 1])
+        conn.execute_batch(MIGRATIONS[21])
             .expect("V22 must be replayable without `already exists`");
 
         let kept: String = conn
@@ -706,5 +755,59 @@ mod tests {
             .unwrap();
         assert_eq!(kept, "global:m1", "replay must not drop recorded rows");
         assert_eq!(LATEST_VERSION, MIGRATIONS.len() as i64);
+    }
+
+    #[test]
+    fn v23_catalog_epoch_upgrade_replay_and_changes_are_transactional() {
+        let conn = Connection::open_in_memory().unwrap();
+        for script in &MIGRATIONS[..22] {
+            conn.execute_batch(script).unwrap();
+        }
+        conn.execute_batch("PRAGMA user_version=22; INSERT INTO sessions(id,created_at,updated_at) VALUES('synthetic',1,1);").unwrap();
+        run(&conn).unwrap();
+        let snapshot = || {
+            conn.query_row(
+                "SELECT identity,revision FROM session_catalog_state",
+                [],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+            )
+            .unwrap()
+        };
+        let initial = snapshot();
+        conn.execute_batch(MIGRATIONS[22]).unwrap();
+        assert_eq!(
+            snapshot(),
+            initial,
+            "migration replay must not reset cursors"
+        );
+        conn.execute_batch("UPDATE sessions SET updated_at=updated_at; INSERT INTO documents VALUES('other','other','{}',NULL,1,1);").unwrap();
+        assert_eq!(
+            snapshot(),
+            initial,
+            "no-op and unrelated docs are not catalog mutations"
+        );
+        conn.execute_batch("BEGIN; UPDATE sessions SET title='changed'; ROLLBACK;")
+            .unwrap();
+        assert_eq!(
+            snapshot(),
+            initial,
+            "rolled back mutation must not invalidate cursors"
+        );
+        conn.execute_batch("UPDATE sessions SET title='changed';")
+            .unwrap();
+        assert_eq!(snapshot().1, initial.1 + 1);
+        conn.execute_batch("INSERT INTO documents VALUES('synthetic','archived_conversations','malformed display body',NULL,1,1);").unwrap();
+        assert_eq!(
+            snapshot().1,
+            initial.1 + 2,
+            "archive identity is independent of display body parsing"
+        );
+        conn.execute_batch("DELETE FROM documents WHERE collection='archived_conversations';")
+            .unwrap();
+        assert_eq!(snapshot().1, initial.1 + 3);
+        let kept: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept, 1, "upgrade never rewrites session history");
     }
 }

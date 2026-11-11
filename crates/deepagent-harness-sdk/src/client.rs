@@ -225,18 +225,33 @@ impl HarnessClient {
         self.call(HarnessRequest::ThreadResume(request)).await
     }
 
-    /// List persisted threads.
+    /// One bounded page of persisted threads; raw response preserves
+    /// hasMore/nextCursor. Does not automatically collect the catalog.
     pub async fn thread_list(&self) -> Result<RpcResponse, SdkError> {
         self.thread_list_with_options(ThreadListRequest::default())
             .await
     }
 
-    /// Select the archived view explicitly; the default remains active threads.
+    /// Page/filter the active or archived view. Mutation makes old cursors stale;
+    /// restart explicitly from the first page, never silently restart a loop.
     pub async fn thread_list_with_options(
         &self,
         request: ThreadListRequest,
     ) -> Result<RpcResponse, SdkError> {
         self.call(HarnessRequest::ThreadList(request)).await
+    }
+
+    /// Typed v1 catalog page. Unlike the raw compatibility entry point, this
+    /// rejects a peer that does not implement bounded paging.
+    pub async fn thread_list_page(
+        &self,
+        request: ThreadListRequest,
+    ) -> Result<deepagent_harness_protocol::ThreadListPage, SdkError> {
+        let response = self.thread_list_with_options(request.clone()).await?;
+        Ok(deepagent_harness_protocol::decode_thread_list_page(
+            &request,
+            response.result(),
+        )?)
     }
 
     /// Read one bounded thread-history page. Inspect `hasMore`/`nextCursor`;

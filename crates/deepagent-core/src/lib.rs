@@ -25,6 +25,7 @@ pub mod id;
 pub mod message;
 pub mod redaction;
 pub mod response_item;
+pub mod session_catalog;
 pub mod session_mode;
 pub mod task;
 pub mod tool_content;

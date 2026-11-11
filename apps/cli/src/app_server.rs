@@ -35,6 +35,8 @@ mod connection;
 mod history_cursor;
 #[path = "app_server/history_page.rs"]
 mod history_page;
+#[path = "app_server/list_page.rs"]
+mod list_page;
 #[cfg(test)]
 use connection::complete_turn_dispatch;
 use connection::run_stdio_with_io;
@@ -51,6 +53,9 @@ mod history_page_tests;
 #[cfg(test)]
 #[path = "app_server/history_test_support.rs"]
 mod history_test_support;
+#[cfg(test)]
+#[path = "app_server/list_page_tests.rs"]
+mod list_page_tests;
 #[cfg(test)]
 #[path = "app_server/sequence_tests.rs"]
 mod sequence_tests;
@@ -555,44 +560,18 @@ impl ServerState {
         id: serde_json::Value,
         params: ThreadListRequest,
     ) -> (RpcResponse, Option<TurnLaunch>) {
-        let sessions = match EventStore::new(&self.database).list_sessions() {
-            Ok(sessions) => sessions,
+        let response = match list_page::read(&self.database, id.clone(), params) {
+            Ok(response) => response,
             Err(error) => {
-                return (
-                    RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
-                    None,
-                )
+                let code = if matches!(error, CoreError::Invalid(_)) {
+                    ERR_INVALID_PARAMS
+                } else {
+                    ERR_INTERNAL
+                };
+                return (RpcResponse::error(id, code, error.to_string()), None);
             }
         };
-        let archived = match ArchiveService::new(self.database.clone()).archived_ids() {
-            Ok(archived) => archived,
-            Err(error) => {
-                return (
-                    RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
-                    None,
-                )
-            }
-        };
-        let archived_view = params.archived.unwrap_or(false);
-        let threads = sessions
-            .into_iter()
-            .filter(|session| archived.contains(&session.id.to_string()) == archived_view)
-            .map(|session| {
-                serde_json::json!({
-                    "threadId": session.id.to_string(),
-                    "title": session.title,
-                    "cwd": session.project,
-                    "createdAt": session.created_at.as_millis(),
-                    "updatedAt": session.updated_at.as_millis(),
-                    "ended": session.ended_at.is_some(),
-                    "archived": archived_view
-                })
-            })
-            .collect::<Vec<_>>();
-        (
-            RpcResponse::success(id, serde_json::json!({ "threads": threads })),
-            None,
-        )
+        (response, None)
     }
 
     fn thread_read(
@@ -2869,7 +2848,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit H-220: thread/list must return a bounded page with an opaque continuation"]
     fn audit_thread_list_has_bounded_page() {
         let temporary = tempfile::tempdir().unwrap();
         let workspace = temporary.path().join("workspace");

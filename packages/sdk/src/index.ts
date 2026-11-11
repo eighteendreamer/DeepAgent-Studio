@@ -230,6 +230,29 @@ export interface ThreadInfo {
   archived?: boolean;
 }
 
+export interface ThreadListOptions {
+  archived?: boolean;
+  /** Default 25, range 1..100. */
+  limit?: number;
+  cursor?: string;
+  /** Exact persisted path; never an authorization grant. */
+  cwd?: string;
+  /** Explicit pinned provider; unknown/default provider is not inferred. */
+  provider?: string;
+  search?: string;
+  updatedAfter?: number;
+  sortKey?: "created_at" | "updated_at";
+  sortDirection?: "asc" | "desc";
+  maxBytes?: number;
+}
+
+export interface ThreadListPage {
+  threads: ThreadInfo[];
+  listPageVersion: 1;
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+
 export interface ThreadReadOptions {
   /** Total items including run envelopes; default/max 500. Atomic groups must fit. */
   pageSize?: number;
@@ -745,11 +768,34 @@ export class DeepAgent {
     return new Thread(this, threadId, result.configuration);
   }
 
-  async listThreads(options: { archived?: boolean } = {}): Promise<ThreadInfo[]> {
+  /** Compatibility: returns only the first page, never the entire catalog.
+   * Use listThreadsPage to observe hasMore and continue explicitly. */
+  async listThreads(options: Omit<ThreadListOptions, "cursor"> = {}): Promise<ThreadInfo[]> {
     const result = (await this.request("thread/list", options)) as {
       threads: ThreadInfo[];
     };
     return result.threads;
+  }
+
+  /** Exactly one bounded page. Empty pages can still have a continuation when
+   * sparse provider filtering consumes the 100-candidate scan budget. Catalog
+   * mutation invalidates old cursors: refresh explicitly, never auto-restart. */
+  async listThreadsPage(options: ThreadListOptions = {}): Promise<ThreadListPage> {
+    const result = await this.request("thread/list", options) as Partial<ThreadListPage> | null;
+    const rows = result?.threads;
+    const valid = result?.listPageVersion === 1 && typeof result.hasMore === "boolean"
+      && Array.isArray(rows) && rows.length <= (options.limit ?? 100) && rows.length <= 100
+      && (result.hasMore ? typeof result.nextCursor === "string" && !!result.nextCursor.length
+        && result.nextCursor.length <= 4096 && result.nextCursor !== options.cursor : result.nextCursor === null)
+      && rows.every((row) => row && typeof row.threadId === "string" && !!row.threadId.trim()
+        && (row.title === null || typeof row.title === "string")
+        && (row.cwd === null || typeof row.cwd === "string")
+        && Number.isSafeInteger(row.createdAt) && Number.isSafeInteger(row.updatedAt)
+        && typeof row.ended === "boolean" && typeof row.archived === "boolean"
+        && (options.archived === undefined || row.archived === options.archived))
+      && new Set(rows.map((row) => row.threadId)).size === rows.length;
+    if (!valid) throw new HarnessTransportError("server did not return a supported bounded catalog page");
+    return result as ThreadListPage;
   }
 
   /** Archive refuses busy owners; it never cancels or deletes their work. */

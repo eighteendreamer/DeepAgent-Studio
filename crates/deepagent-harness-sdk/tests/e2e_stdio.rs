@@ -65,6 +65,70 @@ async fn spawn_server(tag: &str) -> (HarnessProcess, deepagent_harness_sdk::Harn
 }
 
 #[tokio::test]
+async fn h220_real_catalog_page_is_bounded_and_reopens_without_duplicates() {
+    let Some(bin) = isolated_cli(
+        "h220_real_catalog_page_is_bounded_and_reopens_without_duplicates",
+        "h220-catalog",
+    )
+    .await
+    else {
+        return;
+    };
+    let workspace = temp_workspace("h220-workspace");
+    let host = HarnessProcess::spawn(&bin, &workspace).await.unwrap();
+    let client = host.client();
+    client.initialize("h220", "1").await.unwrap();
+    let mut expected = Vec::new();
+    for _ in 0..42 {
+        let result = client
+            .thread_start(
+                serde_json::from_value(serde_json::json!({"provider":"deepseek"})).unwrap(),
+            )
+            .await
+            .unwrap();
+        expected.push(result.result()["threadId"].as_str().unwrap().to_owned());
+    }
+    let first = client
+        .thread_list_page(ThreadListRequest::default())
+        .await
+        .unwrap();
+    assert_eq!(first.threads.len(), 25);
+    assert!(first.has_more);
+    assert!(host.wait().await.unwrap().success());
+    let host = HarnessProcess::spawn(&bin, &workspace).await.unwrap();
+    let client = host.client();
+    client.initialize("h220-reopen", "1").await.unwrap();
+    let second = client
+        .thread_list_page(ThreadListRequest {
+            cursor: first.next_cursor,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(!second.has_more);
+    assert!(second.next_cursor.is_none());
+    let mut actual: Vec<_> = first
+        .threads
+        .into_iter()
+        .chain(second.threads)
+        .map(|row| row.thread_id)
+        .collect();
+    actual.sort();
+    expected.sort();
+    assert_eq!(actual, expected);
+    let provider = client
+        .thread_list_page(ThreadListRequest {
+            provider: Some("deepseek".into()),
+            limit: Some(100),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(provider.threads.len(), 42);
+    assert!(host.wait().await.unwrap().success());
+}
+
+#[tokio::test]
 async fn h216_real_cold_fork_is_ready_before_resume_and_keeps_durable_configuration() {
     let Some(bin) = isolated_cli(
         "h216_real_cold_fork_is_ready_before_resume_and_keeps_durable_configuration",
@@ -234,6 +298,7 @@ async fn h215_real_archive_unarchive_is_durable_and_restored_thread_requires_exp
     let archived = client
         .thread_list_with_options(ThreadListRequest {
             archived: Some(true),
+            ..Default::default()
         })
         .await
         .unwrap();

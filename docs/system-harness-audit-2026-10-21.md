@@ -11137,6 +11137,8 @@ prepared-input-domain-candidate-valid同命令6过0败/0忽略、141.55秒，新
 
 ### H-220：`thread/list` 无界返回全部 session，缺少列表分页与服务端过滤
 
+**本轮状态（2026-11-11，阻塞待处理，仅产物清理）**：原探针真实复现后完成有界keyset、严格epoch及存储/协议/Rust/TS SDK统一分页，默认25/max100、provider仅按显式头信息。E03最终原probe、289库/协议、6分页、Rust/TS原生链及TS183通过，专项strict/CLI/Tauri通过；workspace5307/5基线同项失败/168忽略及全仓旧strict阻断完整保留。E04约11.82GiB三个产物根删除在CreateProcess前被策略拒绝，代码与本机验收已完成，仅清理未完成，不提前关闭。
+
 **级别：中（P2，控制面规模与客户端刷新稳定性）；触发条件：** app-server 的 durable session 数量超过一个普通列表窗口，客户端周期性调用 `thread/list` 刷新历史、恢复入口或归档视图。当前 `ThreadListRequest` 是空结构，服务端没有 limit、cursor、排序、workspace/provider/archived 过滤或快照语义。
 
 #### 生产路径与正式复现
@@ -11160,6 +11162,50 @@ prepared-input-domain-candidate-valid同命令6过0败/0忽略、141.55秒，新
 - 列表分页不能替代 H-218 的 thread history 分页，也不能让客户端为恢复而下载所有 run events；列表只返回 metadata，详情、事件和控制投影继续沿现有 `thread/read` 或新的分页视图读取。回归覆盖空列表、恰好边界、超页、插入/归档并发、排序稳定性、cursor 重启、过滤组合和旧客户端兼容。
 
 本轮只新增正式失败探针和审计文档，未修改 `thread/list` 生产行为。H-218 关注单 thread 的历史 response 无界，H-220 关注跨 thread 的 session catalog 无界；两者查询对象和修复接口不同。
+
+#### 本轮修复记录（2026-11-11）
+
+**E-H220-01（当前复现与范围）**：从3eab0f42开始，tracked干净、原七项untracked保留；只处理H220，不修改/测试H180。复核发现H215已把archived筛选补到内存侧，原报告“空ThreadListRequest/无归档筛选”已过时，但全量读取/序列化与无continuation根因仍在。原命令主体`cargo test -p deepagent-cli app_server::tests::audit_thread_list_has_bounded_page --offline -- --ignored --exact --nocapture`，本轮加`--target-dir G:/Code_Warehouse/DeepAgent-Studio/target/h220-repair-20261111 -j 2 --config profile.dev.debug=0 --config profile.test.debug=0`；实际exit101、307.420秒含冷编译，0通过/1失败，threads=120、serialized_bytes=26209、has_continuation=false。只使用合成workspace、临时SQLite和真实dispatcher，不启动模型或外部服务。
+
+**E-H220-02（TDD、用户决策与候选）**：首批4项回归首次因测试initialize漏clientVersion/protocolVersion全部停在-32001，这是夹具错误，不算产品红测；补齐现有协议必需字段后重跑，4项均在真实列表/筛选/游标断言失败，才修改生产行为。候选4/0，扩为6/0；Persistence/Protocol整组通过、Core/Persistence严格lint通过、TS SDK183/0。随后补真实Rust/TS→CLI门禁、存储预算/迁移故障与tamper/domain隔离，重新冻结最终源码验证；不拿旧候选替代最终版本。
+
+本地协议设计经用户确认：默认25/max100；保留threads数组并新增listPageVersion=1/hasMore/nextCursor；严格catalog epoch失效而非跨变更MVCC，provider只按文件头显式覆盖。复用EventStore有界SQL keyset、session_file_state可见性、DocumentStore现有archive标记、CRC受控header读取及现有history_cursor加密/数据库Key（专属catalog作用域，不使用真实凭据）。SQLite V23只增加一个epoch与查询索引/触发器，不建第二session/run/event表；schema升级只在合成数据库验收，本任务不打开真实用户数据库。metadata查询先SQL筛选归档/cwd/title/updatedAfter，再有限hydrate；最多100候选/页，稀疏provider可空页但游标前进，不循环到凑满。总response默认256KiB、4096～1MiB；单row原始metadata上限64KiB，header压缩/解压首frame各最多1MiB；超限明确失败，不截断/伪空。稳定排序created_at/updated_at、asc/desc及同方向id；本地cwd是精确持久字符串，不隐式canonicalize、猜供应商或授予访问权限。
+
+Rust保留raw list方法并新增typed thread_list_page；TS listThreads保留数组但明确只取首页，新增listThreadsPage暴露分页；两者都不自动汇总或重试。公共Rust struct literal须补Default；未知请求字段现在明确拒绝。Tauri Desktop现有UI session list不是本机器协议消费者，本轮不变更UI DTO；检查其Rust构建消费，SDK类型、协议与真实stdio必须验收。相关API/SQL依据为当前History有界读取与分页Key实现、ArchiveService/document语义及本地Codex ThreadListParams参考，不复制其业务代码；新页默认/严格epoch/显式provider语义为已确认本地设计。
+
+**E-H220-03（最终冻结验收，2026-11-11）**：13个门禁全部终态，runner exit0只表示编排完成，不代表子门禁全绿。1468份Rust/TS/Node测试、manifest/lock源码逐门禁前及结束后SHA漂移0，manifest SHA256为98BBE30DDD6BD85760BA6D1180E6686B32517C144A08CAD12651F4D97DBAC656；其后没有修改实现/测试。Rust1.96.0、Node22.22.1、pnpm11.7.0，仅Windows本机。所有Cargo除fmt外共用 `--target-dir G:/Code_Warehouse/DeepAgent-Studio/target/h220-repair-20261111 --offline -j 2 --config profile.dev.debug=0 --config profile.test.debug=0`；下表省略这些公共参数。HOME/AppData/临时与数据根均隔离至G:/h220-fixtures-20261111，移除凭据/代理/DEEPAGENT继承项；顶层独立target、不向嵌套Cargo继承CARGO_TARGET_DIR，不联网安装。
+
+| 实际命令（Cargo加上述公共参数） | 实际结果 | 墙钟秒（含编译/等待） |
+|---|---|---:|
+| `cargo fmt --all -- --check` | exit0 | 12.982 |
+| `cargo test -p deepagent-core -p deepagent-persistence -p deepagent-harness-protocol -- --test-threads=2 --quiet` | exit0；289通过/0失败/0忽略 | 68.558 |
+| `cargo test -p deepagent-cli h220 -- --test-threads=2 --nocapture` | exit0；6通过/0失败/0忽略 | 4.976 |
+| `cargo test -p deepagent-cli app_server::tests::audit_thread_list_has_bounded_page -- --exact --nocapture` | exit0；1通过/0失败，原probe默认执行，25条/5981字节/continuation=true | 3.239 |
+| `cargo clippy -p deepagent-core -p deepagent-persistence --all-targets -- -D warnings` | exit0 | 1.035 |
+| `cargo clippy --no-deps -p deepagent-cli -p deepagent-harness-protocol -p deepagent-harness-sdk --all-targets -- -D warnings` | exit0；相关消费者严格lint通过 | 112.043 |
+| `cargo build -p deepagent-cli` | exit0 | 102.864 |
+| `cargo test -p deepagent-harness-sdk --test e2e_stdio h220_real_catalog_page_is_bounded_and_reopens_without_duplicates -- --exact --nocapture` | exit0；1通过/0失败，真实42会话/冷重开/Rust typed page | 14.500 |
+| `pnpm --dir packages/sdk test` | exit0；183通过/0失败/0跳过，含tsc build及新版分页结果校验 | 7.153 |
+| `node --test packages/sdk/tests/real-cli-catalog.test.mjs` | exit0；1通过/0失败/0跳过，58会话三页无重复遗漏，显式provider29，归档/恢复/失效及冷重开 | 4.711 |
+| `cargo test --workspace --features deepagent-app-core/web --no-fail-fast -- --test-threads=2 --quiet` | exit101；157目标全部终态，5307通过/5失败/168忽略 | 1833.487 |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | exit101；未改Runtime两条旧lint阻断 | 114.470 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml` | exit0；Tauri Rust消费方通过，Cargo.lock无变化 | 301.777 |
+
+workspace按每target的最终summary核对；合并stdout/stderr使Tokenizer目标声明早于Context的66通过summary，不得把Context误认为缺失/嵌套；157目标均真正完成，排除AppCore H92 helper额外1通过，不把168 ignored计执行。本项原probe与6个dispatcher、2协议、3存储/迁移回归、真实SDK链均默认实际执行，不靠ignored变绿。四个前轮同项失败仍为Kernel原DACL精确恢复、CLI隔离HOME快照、Prompts的H306空视频提示词、Runtime checkpoint原DACL恢复。第5项是AppCore verification_commands::lifecycle_tests::production_cold_compiler_gate_normal_cancel_and_deadline：在Cancel阶段4.006秒未见compiler-started，cleanup_cancel_accepted/cleanup_settled/settled_actions_terminal均true，唯一终态Cancelled；不把它称为H220通过或隐去。全仓strict实际停在Runtime model_agent.rs:298的clone_on_copy和workflow/canvas.rs:32的derivable_impls；相关专项strict确实通过，不顺手修其他H。
+
+额外归因验收：全部门禁结束后，原workspace AppCore测试二进制直接执行上述冷编译用例，实际0/1、8.370秒，Stop::None阶段4.013秒未进入compiler gate，仍完成取消收敛。不能未经证据归因Cargo竞争。随后将Git HEAD 3eab0f4284343e0ad4b76762a83ebc924bca85e1的干净Cargo/crates/CLI源归档到独立fixture/baseline，用相同离线profile/环境/target执行 `cargo test --manifest-path G:/h220-fixtures-20261111/baseline/Cargo.toml -p deepagent-app-core --lib --features web verification_commands::lifecycle_tests::production_cold_compiler_gate_normal_cancel_and_deadline -- --exact --nocapture`（加公共target/offline/j2/profile）：初次因副本缺少两个compile-time plugin JSON而编译失败、未运行测试；从同一HEAD补归档bundled-plugins.json与host-plugin-registry.json后，同命令exit101、110.852秒含编译，实际0通过/1失败，Stop::None4.010秒、compiler_stages空、同一断言和完整取消收敛。因此已动态证明此故障在不含H220的基线也存在，不是本轮新增回归；具体环境/冷编译根因未解决，本轮不降低4秒标准或修改该项。基线副本/失败日志属于本轮可再生产物，工作区未回滚/覆盖/变更，冻结仍0漂移。未将“基线同样失败”等同整个系统无故障。
+
+额外双宿主：一次性two-hosts.mjs复用冻结CLI/已构建SDK，两个同时存活宿主共享同一合成SQLite，peer插入/归档/恢复后owner旧游标三次均-32602/stale，最终active=3。首脚本相对import多退一层而在启动CLI前失败，修正测试import后通过，不算产品红测、不改生产。Rust与TS native空安装副本字节相同，初次CLI SHA256为F64A59603F7C6AED9E263BA174596E45692983602E0C404055686B863FFBC73C；workspace因统一web特性重链接不同hash，不冒称与首次native二进制字节相同，源冻结一致。SDK旧夹具读共享target/debug/deepagent.exe，runner临时放本轮CLI后finally恢复；原CLI SHA256为8C03E6A63D3E64EBF14DF4AC67C4DC56FB87C2D8B9C35949D3CBA9BC391F30A4，用户原.snap.new为D514BFE28BA6F207C714DDAD2FEFE9E521B3AA1FD7DF1AF243FA2CC2ED911F17，终态恢复核对一致。没有推送、PR、真实服务/Key/用户数据库访问。
+
+兼容/残余：v1添加有界页字段与typed消费，旧TS数组便利方法只返回首页且不自循环，文档明确迁移到显式分页；Rust struct literal须补Default，未知字段拒绝，单row64KiB与总byte预算属于明确本地收紧。V23在既有SQLite加epoch/索引/触发器，非新session/event/配置真源；本任务只验证合成V22→V23与幂等/回滚，不执行真实数据库迁移，后续部署将走既有打开时迁移。epoch是整个catalog严格失效，不是MVCC，其他会话活跃也可能要求刷新；SQL title/provider稀疏筛选不承诺常数CPU，保证有限候选/元数据分配和输出，而非任意selectivity下绝对时限。外部未经过repo的文件改写不保证触发epoch。provider读现有首frame而不重放整个会话，但旧合并frame最多读1MiB，超过明确失败；未知/损坏provider不推断可用。未验其他OS/MSRV、Node20、真实大库/持续并发修改压力、断电/磁盘满、实际GUI或真实供应商。本轮未改Desktop UI/IPC DTO，因此未运行完整pnpm desktop build或截图；SDK tsc/build、真实stdio与Tauri检查均实际完成。
+
+关键日志SHA256：原红probe B06FDC39FB0CC0B32FD5EF05315AB645A2B29FB674B9E92D26A3A46B976E6E04；夹具初错7399C56D3437849621CE70BB6244E3937F7B226B4E6153FAC953158CCD3CB1D2；修正TDD真红8DF28E87A674B6890E6D33F50697FE96FC7450D03DA649FEA4846C8B8B3F9438；门禁结果DD2772D821855B5C302E2C05F439643E92572A5E2FDDAF44F11AB9910627AAE8；完整workspace A114D6EA90A60C8406440828471C7E4DDF730C04F35858626F25290845421F14；隔离冷编译B90FFD014868EF7A87B44524C6A8A171D1B3F3B7AED856B5C0B28ACB5D5AD497；干净基线同项EEF013BFE040ADBE7DDCBF5823FFD60145D9885FFD9FBDB4A3B27E07E169F5DD；双宿主0F0397FFBABFCD7ADCAEC0DA0BC3FC4A2FD0A7FDD45E3019640CF2F0673F18FF。完整失败断言、命令、实际结果与限制保留于本节，清理一次性日志不改写原失败事实。
+
+**E-H220-04（产物清理阻塞与交付，2026-11-11）**：门禁/对照终态后，核对无可见本轮存活进程、三根精确路径与祖先/全部后代无reparse，目录归属均为本轮可再生产物：G:/Code_Warehouse/DeepAgent-Studio/target/h220-repair-20261111 为17756文件/3447目录/11331147992逻辑字节（约10.553GiB）；G:/h220-fixtures-20261111 为3666文件/2200目录/1363088734字节（约1.269GiB，含干净基线源码副本而非用户源仓库）；G:/Code_Warehouse/DeepAgent-Studio/packages/sdk/dist 为本轮tsc生成的16文件/112176字节（全为四模块的js/d.ts及map）。合计12694348902字节、约11.82GiB，物理释放量未测。默认CLI与用户原.snap.new已恢复核hash；C盘Temp顶层未发现h220目录，不删除归属未知共享缓存或用户文件。
+
+尝试通过原生PowerShell在重复边界核对后执行Remove-Item -LiteralPath <上述三根> -Recurse -Force -ErrorAction Stop，工具在CreateProcess前拒绝 `rejected: blocked by policy`，整个脚本未启动、零删除。22:35:32（UTC+08:00）只读Test-Path三根均true；没有改工具/语言/提权/改ACL/改名/cargo clean绕过或重试。只缺实际清理，不缺代码授权；待用户在获准环境删除或提供实际放行方式后只读核对，单回复“允许”不代表删除已执行。需要的人工命令为 `Remove-Item -LiteralPath 'G:\Code_Warehouse\DeepAgent-Studio\target\h220-repair-20261111', 'G:\h220-fixtures-20261111', 'G:\Code_Warehouse\DeepAgent-Studio\packages\sdk\dist' -Recurse -Force -ErrorAction Stop`。
+
+本项代码与E03本机验收完成，暂标“阻塞待处理（仅产物清理）”；先以白名单独立提交实现/回归/兼容文档与当时双文，再取得commit ID另回填，不amend、不推送、不建PR。台账306唯一编号核对为222验收、28历史跳过、10归并、3撤销、41待修（含H180授权不修）、1阻塞H220、1验收保留H66；本轮H220新增正式关闭0、历史跳过/归并/撤销0，不重复计前轮H170/H289。40个有效待修，加H220清理与H66保留共42项未闭环。下一先完成H220清理，再准备H230合法TypeScript配置误报（只读预览过原审计，尚未运行probe或改代码）。本项剩余清理核对/文档约0.2–0.5有效小时；全余170–430有效小时沿旧低置信分组估算，依据剩余跨层模型/Hook执行状态/验证器/画布及持久化工作，尚未逐项重估。编译、设备、依赖、策略和人工等待单列且无可靠总上界，不承诺日期，不因已提交或暂时清理阻塞宣布goal完成/blocked，整体仍active。
 
 ### H-221：`config/read` 只返回静态协议 banner，无法读取有效执行配置
 

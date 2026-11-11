@@ -116,10 +116,42 @@ pub struct ThreadResumeRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ThreadListRequest {
     /// Omit for active threads; true selects only archived identities.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived: Option<bool>,
+    /// One bounded page: default 25, range 1..=100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    /// Exact persisted workspace path, not a recursive prefix or an access grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Explicit pinned provider only; absent/unknown providers are not inferred.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Literal title substring, not SQL LIKE syntax.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search: Option<String>,
+    #[serde(
+        rename = "updatedAfter",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub updated_after: Option<i64>,
+    #[serde(rename = "sortKey", default, skip_serializing_if = "Option::is_none")]
+    pub sort_key: Option<deepagent_core::session_catalog::SessionSortKey>,
+    #[serde(
+        rename = "sortDirection",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sort_direction: Option<deepagent_core::session_catalog::SessionSortDirection>,
+    /// Complete JSON-RPC bytes, default 256KiB; 4096..=1048576.
+    #[serde(rename = "maxBytes", default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

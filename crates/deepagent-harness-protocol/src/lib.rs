@@ -8,6 +8,9 @@ mod events;
 mod requests;
 mod results;
 
+pub use deepagent_core::session_catalog::{
+    SessionSortDirection, SessionSortKey, DEFAULT_SESSION_PAGE_SIZE, MAX_SESSION_PAGE_SIZE,
+};
 pub use events::{project_runtime_event, EventContext, HarnessEvent, ItemPayload};
 pub use requests::{
     ApprovalRespondRequest, ConfigReadRequest, EventAckRequest, HarnessRequest,
@@ -18,8 +21,9 @@ pub use requests::{
     TurnSteerRequest, JSONRPC_VERSION, PROTOCOL_VERSION,
 };
 pub use results::{
-    control_result_identity, validate_control_result, ApprovalRespondResult, ControlResultError,
-    EventAckResult, ThreadArchiveResult, ThreadForkResult, ThreadLifecycleResult, TurnResult,
+    control_result_identity, decode_thread_list_page, validate_control_result,
+    ApprovalRespondResult, ControlResultError, EventAckResult, ThreadArchiveResult,
+    ThreadForkResult, ThreadLifecycleResult, ThreadListEntry, ThreadListPage, TurnResult,
     TurnSteerResult,
 };
 

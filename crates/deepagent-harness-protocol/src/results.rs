@@ -6,6 +6,70 @@ use crate::HarnessRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ThreadListEntry {
+    pub thread_id: String,
+    pub title: Option<String>,
+    pub cwd: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub ended: bool,
+    pub archived: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadListPage {
+    pub threads: Vec<ThreadListEntry>,
+    pub list_page_version: u32,
+    pub has_more: bool,
+    pub next_cursor: Option<String>,
+}
+
+/// Explicit paged consumers fail closed against old or malformed peers. Raw
+/// legacy list methods keep their older shape compatibility; neither loops.
+pub fn decode_thread_list_page(
+    request: &crate::ThreadListRequest,
+    value: &Value,
+) -> Result<ThreadListPage, ControlResultError> {
+    let error = || ControlResultError {
+        method: "thread/list",
+        field: "page",
+        expected: "bounded catalog page v1",
+        actual: "unsupported page",
+    };
+    let page: ThreadListPage = serde_json::from_value(value.clone()).map_err(|_| error())?;
+    if page.list_page_version != 1
+        || page.threads.len() > request.limit.unwrap_or(crate::MAX_SESSION_PAGE_SIZE)
+        || page.threads.len() > crate::MAX_SESSION_PAGE_SIZE
+        || !value
+            .get("nextCursor")
+            .is_some_and(|v| v.is_null() || v.is_string())
+        || if page.has_more {
+            page.next_cursor.as_ref().map_or(true, |s| {
+                s.is_empty() || s.len() > 4096 || request.cursor.as_ref() == Some(s)
+            })
+        } else {
+            page.next_cursor.is_some()
+        }
+    {
+        return Err(error());
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for row in &page.threads {
+        if row.thread_id.trim().is_empty()
+            || !seen.insert(&row.thread_id)
+            || request
+                .archived
+                .is_some_and(|archived| row.archived != archived)
+        {
+            return Err(error());
+        }
+    }
+    Ok(page)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ThreadLifecycleResult {
     pub thread_id: String,
     pub status: String,

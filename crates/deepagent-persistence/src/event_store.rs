@@ -28,7 +28,11 @@ use sha2::{Digest, Sha256};
 use crate::session_files::{self, SessionFileCursor, SessionFileHeader};
 use crate::{map_sqlite, Database};
 
+mod catalog;
 mod plan_mode;
+pub use catalog::{
+    SessionCatalogFilter, SessionCatalogPage, SessionCatalogPosition, SessionCatalogRow,
+};
 mod search_health;
 mod search_selection;
 pub use search_health::{
@@ -964,11 +968,15 @@ impl<'db> EventStore<'db> {
                 "session {session_id} does not exist"
             )));
         }
-        session_files::move_to_trash(
+        let changed = session_files::move_to_trash(
             &self.db.session_files_root(),
             session_id,
             deleted_at.as_millis(),
-        )
+        )?;
+        if changed {
+            self.catalog_changed()?;
+        }
+        Ok(changed)
     }
 
     /// Ensure the authoritative file is active, restoring its newest recycled
@@ -979,7 +987,11 @@ impl<'db> EventStore<'db> {
         if session_files::current_cursor(&self.db.session_files_root(), session_id)?.is_some() {
             return Ok(true);
         }
-        session_files::restore_from_trash(&self.db.session_files_root(), session_id)
+        let changed = session_files::restore_from_trash(&self.db.session_files_root(), session_id)?;
+        if changed {
+            self.catalog_changed()?;
+        }
+        Ok(changed)
     }
 
     /// Inspect the recycle area for a session without altering its files.
