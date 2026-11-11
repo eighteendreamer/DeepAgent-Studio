@@ -311,6 +311,7 @@ impl ModelClient {
         log_response_input_pairs(&request);
         // Ask the provider to include a final usage chunk in the stream.
         let body = request_body::encode(&request)?;
+        crate::image_input::validate_response_payloads(request, None).await?;
         let transport_req = TransportRequest {
             url: self.config.endpoint(),
             api_key: self.config.api_key.clone(),
@@ -360,6 +361,7 @@ impl ModelClient {
         self.validate_response_input_modalities(&request)?;
         log_response_input_pairs(&request);
         let body = request_body::encode(&request)?;
+        crate::image_input::validate_response_payloads(request, Some(cancel.clone())).await?;
         let transport_req = TransportRequest {
             url: self.config.endpoint(),
             api_key: self.config.api_key.clone(),
@@ -398,6 +400,7 @@ impl ModelClient {
         self.validate_output_tokens(request.max_tokens)?;
         self.validate_chat_input_modalities(&request)?;
         let body = request_body::encode(&request)?;
+        crate::image_input::validate_chat_payloads(request, None).await?;
         let transport_req = TransportRequest {
             url: self.config.chat_endpoint(),
             api_key: self.config.api_key.clone(),
@@ -440,6 +443,7 @@ impl ModelClient {
         self.validate_output_tokens(request.max_tokens)?;
         self.validate_chat_input_modalities(&request)?;
         let body = request_body::encode(&request)?;
+        crate::image_input::validate_chat_payloads(request, Some(cancel.clone())).await?;
         let transport_req = TransportRequest {
             url: self.config.chat_endpoint(),
             api_key: self.config.api_key.clone(),

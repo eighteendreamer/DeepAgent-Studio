@@ -44,7 +44,7 @@ impl HttpTransport for McpOutputModel {
 
 #[tokio::test]
 async fn audit_mcp_image_result_is_not_serialized_as_text_json() {
-    const IMAGE_DATA: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jZh0AAAAASUVORK5CYII=";
+    const IMAGE_DATA: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=";
     let requests = mcp_result_requests(serde_json::json!({
         "content": [{ "type": "image", "data": IMAGE_DATA, "mimeType": "image/png" }],
         "isError": false
@@ -79,7 +79,7 @@ async fn audit_mcp_image_result_is_not_serialized_as_text_json() {
 
 #[tokio::test]
 async fn h127_mixed_mcp_images_keep_order_without_inline_bytes_in_history() {
-    const DATA: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jZh0AAAAASUVORK5CYII=";
+    const DATA: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=";
     let observed = mcp_result_observation(serde_json::json!({
         "content": [
             {"type":"text", "text":"before-image"},
@@ -175,7 +175,7 @@ async fn h127_invalid_mcp_images_return_paired_visible_failure_without_raw_data(
 
 #[tokio::test]
 async fn h127_failed_mcp_image_result_preserves_error_and_image_evidence() {
-    const DATA: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jZh0AAAAASUVORK5CYII=";
+    const DATA: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=";
     let observed = mcp_result_observation(serde_json::json!({
         "content":[{"type":"text","text":"image-diagnostic"},{"type":"image","data":DATA,"mimeType":"image/png"}],
         "isError":true, "structuredContent":{"reason":"synthetic-failure"}
@@ -281,7 +281,7 @@ async fn audit_mcp_client_metadata_is_not_sent_to_model() {
 
 #[tokio::test]
 async fn h138_error_and_image_metadata_stay_client_only_after_cold_reopen() {
-    const DATA: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jZh0AAAAASUVORK5CYII=";
+    const DATA: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=";
     for is_error in [false, true] {
         let observed = mcp_result_observation(serde_json::json!({
             "content":[{"type":"text","text":"public-diagnostic"},

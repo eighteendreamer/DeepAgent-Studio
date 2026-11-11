@@ -13,11 +13,11 @@
 | 归并 | 10 | H173同根归并H127；H243归并H53；只在唯一有效项修复，不增加完成数 |
 | 撤销 | 3 | H-211/H-263/H-305，不作为缺陷或修复成果 |
 | 已修复（验收保留） | 1 | H66按用户2026-11-10收尾要求交付代码；现有定向验证有效，不记作完整验收通过，残余范围见E-H66-08 |
-| 修复中 | 1 | H169原探针和新增上传/冷历史门禁已真实复现，处于TDD红测阶段；H179已按E14关闭 |
-| 待修复 | 44 | 含H180授权不修，实际有效待修43；另H169修复中1、H66验收保留1，未完整闭环槽位46，实际待处理45 |
-| 阻塞待处理 | 0 | H179原PDF页选择已被新范围取代；E13清理阻断已由用户实际删除并经E14核对解除，整体目标继续active |
+| 修复中 | 0 | H169代码及本机验收已完成，产物清理被策略在进程启动前拒绝，转清理阻塞而非完整关闭 |
+| 待修复 | 44 | 含H180授权不修，实际有效待修43；另H169清理阻塞1、H66验收保留1，未完整闭环槽位46，实际待处理45 |
+| 阻塞待处理 | 1 | H169仅余本轮三根产物及两份临时UI文件清理，见E04；不重试或绕过。H179的旧清理阻断已经E14解除，整体goal继续active |
 
-未完整闭环槽位当前为 **46（其中H-180授权跳过；有效未修44项（含H169修复中），另H-66验收保留1项）**；不提供完成率。当前219项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301/H-232/H-68/H-177/H-174/H-54/H-55在各自复核前已随共享边界或ReasoningEffort迁移修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4/3cabd45f/f97db714/416df3e9/6bc2d660/0aa4fd06及真实复核单独列明，合计28项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。2026-11-05本轮H239新增验收1后，H287依据新D:继承控制位反例重新打开1，其后本轮H287按E21返修恢复验收，当前161，其后H213新增验收1，当前162，其后H212新增验收1，当前163，其后H221新增验收1，当前164，其后H222新增验收1为165，H150新增验收1为166，本轮H223新增验收1为167，其后H267按E03新增验收1为168；其后H268按E04新增验收1为169；其后H293按E06新增验收1为170；本轮H84按E03新增验收1为171；本轮H70按E07新增验收1为172；本轮H68按E04新增历史跳过1，修复数仍172；本轮H69按E06新增验收1为173；本轮H71按E06新增验收1为174；本轮H82按E04新增验收1为175；本轮H209按E04新增验收1为176；本轮H210按E05新增验收1为177；本轮H200按E04新增验收1为178；本轮H204按E04新增验收1为179，H90同根归并使归并数为8；11-07本轮H205按E03新增验收1为180；本轮H206按E03新增验收1为181；本轮H207按E03新增验收1为182；本轮H256按E03新增验收1为183；本轮H265按E03新增验收1为184；本轮H266按E03新增验收1为185；本轮H295按E03新增验收1为186；本轮H215按E03新增验收1为187；本轮H216按E03新增验收1为188；本轮H126按E03新增验收1为189；本轮H167按E03新增验收1为190；本轮H248按E03新增验收1为191；本轮H292按E03新增验收1为192；本轮H177按E02历史跳过1，修复数仍192；本轮H176按E03新增验收1为193；本轮H174按E02历史跳过1，修复数仍193；本轮H228按E03新增验收1为194；本轮H91按E04新增验收1为195；历史f2efc1b5与E-H287-01～20不删除。本轮H-116新增验收1，累计205项；本轮H-117新增验收1，累计206项；其后H173同根归并H127；H127按E04新增验收1，累计207，修复中0；58个未关闭槽位含H-180授权跳过，实际待处理57项。
+未完整闭环槽位当前为 **46（其中H-180授权跳过；有效未闭环44项（43待修及H169清理阻塞），另H-66验收保留1项）**；不提供完成率。当前219项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301/H-232/H-68/H-177/H-174/H-54/H-55在各自复核前已随共享边界或ReasoningEffort迁移修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4/3cabd45f/f97db714/416df3e9/6bc2d660/0aa4fd06及真实复核单独列明，合计28项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。2026-11-05本轮H239新增验收1后，H287依据新D:继承控制位反例重新打开1，其后本轮H287按E21返修恢复验收，当前161，其后H213新增验收1，当前162，其后H212新增验收1，当前163，其后H221新增验收1，当前164，其后H222新增验收1为165，H150新增验收1为166，本轮H223新增验收1为167，其后H267按E03新增验收1为168；其后H268按E04新增验收1为169；其后H293按E06新增验收1为170；本轮H84按E03新增验收1为171；本轮H70按E07新增验收1为172；本轮H68按E04新增历史跳过1，修复数仍172；本轮H69按E06新增验收1为173；本轮H71按E06新增验收1为174；本轮H82按E04新增验收1为175；本轮H209按E04新增验收1为176；本轮H210按E05新增验收1为177；本轮H200按E04新增验收1为178；本轮H204按E04新增验收1为179，H90同根归并使归并数为8；11-07本轮H205按E03新增验收1为180；本轮H206按E03新增验收1为181；本轮H207按E03新增验收1为182；本轮H256按E03新增验收1为183；本轮H265按E03新增验收1为184；本轮H266按E03新增验收1为185；本轮H295按E03新增验收1为186；本轮H215按E03新增验收1为187；本轮H216按E03新增验收1为188；本轮H126按E03新增验收1为189；本轮H167按E03新增验收1为190；本轮H248按E03新增验收1为191；本轮H292按E03新增验收1为192；本轮H177按E02历史跳过1，修复数仍192；本轮H176按E03新增验收1为193；本轮H174按E02历史跳过1，修复数仍193；本轮H228按E03新增验收1为194；本轮H91按E04新增验收1为195；历史f2efc1b5与E-H287-01～20不删除。本轮H-116新增验收1，累计205项；本轮H-117新增验收1，累计206项；其后H173同根归并H127；H127按E04新增验收1，累计207，修复中0；58个未关闭槽位含H-180授权跳过，实际待处理57项。
 
 本轮H138按E-H138-03新增验收1，累计208；其后H137按E-H137-04新增验收1，累计209。28历史跳过、10归并、3撤销不变，修复中0，56待修含H180授权跳过，实际55项有效待处理。
 
@@ -6425,7 +6425,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-166：DeepSeek Responses 思考模式下 top_p 会被忽略或规范化，设置值不等于有效采样值](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-167：画布图片下载无响应字节上限，超预算数据被完整缓冲并持久化](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E01～03原红/旧URL被H165提前拒绝及校正真红保留，非历史跳过 | 单一provider-image输出策略覆盖URL/inline及原始JSON，复用媒体计数/原broker/staging/发布 | 专项13/0、原2/0、AppCore1575/0/47，workspace4885/1/201仅H306；CLI/SDK/Tauri过，旧strict失败保留 | `f02ed2fc5209cebab4eaf08001a152f82e6664bc`（独立fix；文档另回填E05） | 限E03本机；C产物残余权限阻塞见E04，无新DTO/SQL；默认32MiB兼容收紧，其他OS/真实服务/极限压力未验；下一H248；全余200–400有效小时低置信，等待另计 |
 | [H-168：易变 instructions 位于历史之前，动态变化截断多轮 KV cache 前缀](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-169：桌面接受任意 `image/*`，不支持的 SVG 被原样发送给 DeepSeek Responses](system-harness-audit-2026-10-21.md#h-169桌面接受任意-image不支持的-svg-被原样发送给-deepseek-responses) | P2 | 修复中 | E-H169-01复核仍失败，不是历史已修复；H67/H70/H127/H171分别处理投递/摘要/工具投影/角色，不能替代真实格式准入 | 初步根因：ingest信任kind/MIME且不解码；resolver在SHA验证后仍信任MIME/扩展名默认PNG；需统一字节身份、完整解码和声明一致性，不另建附件链 | 原probe0/1（旧H67对照先失败）；修正对照后0/1仍真失败；上传0/2、冷历史0/2；正常PNG投递1/0。仅TDD红测阶段，生产未改、验收未完成 | 尚无本项生产fix提交；新增红测保留工作区，不提交为完成；本次仅提交复现文档 | 需补四支持格式/伪造MIME/损坏与上限/历史/MCP/模型切换及消费方验收；暂估4–10有效小时，构建等待另计；全余170–430旧粗估 |
+| [H-169：桌面接受任意 `image/*`，不支持的 SVG 被原样发送给 DeepSeek Responses](system-harness-audit-2026-10-21.md#h-169桌面接受任意-image不支持的-svg-被原样发送给-deepseek-responses) | P2 | 阻塞待处理 | E01～04保留原失败与两轮完整矩阵；代码验收完成，仅本轮产物清理阻塞，未归并其他H | 上传、SHA后历史读取、MCP整批准入及双协议最终发送复用唯一字节/解码/MIME检查；不转换原件，取消/Drop不继续下一张 | 最终Models/http282/0/18、上传4/0、Kernel360/1旧DACL/14忽略；workspace156完整target、5264/5既有失败/171忽略；fmt/前端完整build/Tauri/scoped lib lint通过，strict与Kernel lint旧阻断保留；真实Composer SVG/AVIF拒绝截图已取得 | 代码/测试/双文独立提交待取得hash后另文档回填，不amend、不推送 | E04清理命令CreateProcess前被策略拒绝，约15.39GiB及两临时UI文件仍在，不绕过；best-effort内存/单张非硬抢占、其他OS/MSRV/真实供应商未验。仅清理核对/回填约0.2–0.5有效小时，策略等待无可靠上界；全余170–430旧粗估 |
 | [H-170：历史图片每轮重发完整 base64，未接入 DeepSeek Files API 的持久引用](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-171：Responses 图片角色沿用 Chat 规则，合法 `developer` 图丢失且非法 `assistant` 图静默成功](system-harness-audit-2026-10-21.md#h-171responses-图片角色沿用-chat-规则合法-developer-图丢失且非法-assistant-图静默成功) | P2 | 已修复并验收 | E-H171-01～04原红测保留；仅E04本机范围，不与H170归并 | 唯一WireMode角色矩阵；读取/投影/序列化前拒绝，Responses保留developer图片；原生压缩/恢复不改身份 | Models/http272/0/18；Kernel H171两项及原生压缩/snip通过；workspace5233/5/173；fmt/check/CLI build/前端/Tauri通过；lint旧阻断见E03～04 | `383c50a969a0568372f88d4ac75796bd5e8dbf48` | 原非法输入由静默成功改为显式失败；H169/H170独立未验，非全仓全绿；本项代码验收余0，下一准备H179，清理限制见E04 |
 | [H-172：Responses 数值参数只在设置层校验，公开 ModelClient 仍发送越界值](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
@@ -10068,7 +10068,7 @@ assertion failed: !serde_json::to_string(&events).unwrap().contains("H179_PROVID
 
 按用户批准的轻量范围，H179现标已修复并验收（限E11～12所列Windows本机、原件协议/预览边界），本阶段新增修复验收1、历史跳过/归并/撤销新增0。306行/306唯一编号核对：219验收、28历史跳过、10归并、3撤销、45待修（含H180授权不修）、H66验收保留1，0修复中/阻塞；有效待修44，另H66保留1。不提供完成率、不宣布全系统完成。本项实施、验收、修复提交与清理余0，双文同步提交后再进入H169原探针/当前输入边界复核。全余170–430有效小时仍为按跨层执行、模型及持久化风险分组的旧低置信粗估，未逐项重估；构建/设备/依赖/策略等待另计，无精确完工承诺，整体goal继续active。
 
-## H-169 图片身份与格式准入（修复中，2026-11-11）
+## H-169 图片身份与格式准入（2026-11-11）
 
 **E-H169-01（当前原探针、正常对照与TDD红测）**：起点`3b29fdf6`，H179实现/验收/独立提交及用户手动清理已闭环并先行汇报，tracked代码干净、无未完成合并；七项用户untracked仅列名保留，不读改/提交。仅进入H169，不重开H179或H180，不混修H170 Files生命周期。已读取原审计、AttachmentService/FileAttachmentResolver、Composer、MCP image store、ModelClient现有modality/role门禁、当前真实Kernel图片夹具、Cargo/格式/CI和既有图片签名辅助函数。
 
@@ -10106,3 +10106,89 @@ cargo test --target-dir target/h169-repair-20261111 `
 生产行为/依赖/UI尚无修改；工作区仅新增上述红测及修正原probe过时对照，等待根因实现后再与代码和当时文档独立提交，不把故意红测作为已完成修复提交。未运行本项lint、全仓、前端build、Tauri、四格式解码矩阵、MCP/模型切换fallback/压缩完整验收，因为仍处TDD红阶段；没有用H179的旧矩阵替代本项验收。root fmt和git diff --check需本阶段文档提交前检查。
 
 H169由待修复转修复中，不新增验收；306唯一槽位为219验收、28历史跳过、10归并、3撤销、44待修（含H180授权不修）、H169修复中1、H66验收保留1，0阻塞；有效未修仍44（43待修+H169），另H66保留1。下一步仍H169，不转其他编号。该项初估4–10有效小时，依据真实解码/共享根因、历史与MCP生产消费者、四格式/失败对照及跨层验收；构建/设备/依赖等待另计，当前初次冷编译3.5分钟只是本轮观测，完整矩阵未知。全部170–430有效小时仍为旧低置信分组粗估，不机械抵扣等待，不给精确完工承诺，goal继续active。
+
+**E-H169-02（共享字节校验候选、TDD转绿与冻结验收，2026-11-11，未关闭）**：在E01原SVG/损坏图片红测基础上实现根因修复，继续仅H169，不扩大到H170 Files生命周期、不改H180。候选尚未生产提交，不能用下面的定向通过替代完整交付。
+
+- Models新增唯一`image_input`校验：按实际字节探测JPEG/PNG/GIF/WebP，再解码实际栅格并比对声明MIME；data URL头和DTO声明分别验证，不信扩展名。输入非空/最多32MiB、base64解码前长度上限、每边8192像素门禁；最终请求15张及以上时每边4096。512MiB解码器分配记账是库的best-effort，不是OS/RSS/CPU硬沙箱，也不声称动画GIF每帧或整个容器的安全扫描。不会栅格化SVG、重编码合法图片或让模型生成替代内容。
+- AttachmentService先验证身份组件，再读/验证同一原件buffer，成功后才创建原OwnedDirectory；持久化和SHA来自该buffer，正常非图片路径不改。FileAttachmentResolver仍先验证原已准入SHA，再复用同一格式/解码检查，输出真实MIME，不再扩展名推断或默认PNG；旧历史缺MIME时从真实图片推导，显式错配或不支持/损坏则明确失败，不静默丢图后采样。MCP沿原16张/合计32MiB整批preflight，在首个写入前复用同一检查。
+- ModelClient的Responses/Chat、有无cancel四个最终发送入口复用同一验证。保持原48MiB JSON预算先行，再验证本次Surface实际引用的图片；未引用cache不访问。HTTP(S)远端图片不由本机额外抓取，其实际内容仍由上游判断，不冒称本地验证了未取得的远端字节。无第二套registry、run store、模型调用循环或凭据存储。
+- 最终发送的CPU解码经现有Tokio blocking pool执行，沿原cancel原子标志；局部Drop owner只让本请求验证任务停止，不是第二套运行取消中心。取消或请求被丢弃后不继续下一张、不进入transport；正在解码的单张不承诺可强杀。current_thread真实单元回归证明等待验证不阻塞异步运行时、future drop会通知worker；夹具另有ReleaseOnDrop防止失败后卡死测试。无图片调用不创建解码job；有图片的异步公开client需当前Tokio runtime，不存在时明确返回runtime_unavailable而不是panic，纯字节校验函数不要求runtime。
+- Composer沿原picker/drop/paste处理器和现有错误chip提前反馈四格式/32MiB；通用文本/文件上传不改，不用UI充当权威校验。没有新增UI控件或原生title tooltip；沿用现有shadcn组件。合成SVG/AVIF等不读FileReader、不调用ingest，损坏PNG仍由后端拒绝并保留错误状态。
+
+复用已锁`image 0.25.10`（MIT OR Apache-2.0）和现有base64，Models默认依赖图仅开启四个所需codec；AppCore仅dev-dependency复用image生成真实四格式测试样本，原可选runtimes image配置不改。Cargo.lock只有Models依赖列表新增两条，没有供应商/codec包版本升级。image当前声明Rust1.88；已锁time0.3.47同样声明1.88，当前机器编译验证不能冒称仓库rust-version=1.80已经通过，未顺手修改MSRV声明。
+
+新增provider直接输入红测先真实0/2、exit101、15.563秒：Responses接纳非法inline图，Chat虽然fixture返回非Chat SSE导致Result为Err，但transport数仍为1，因此明确证明未挡住采样，不把该Err说成安全拒绝。后为正常Chat对照补正确的Chat SSE fixture，实际验证两个协议各四种真实编码8组成功及字节原样；不是用错误SSE蒙混通过。UI真实addFiles处理器测试先3通过/1失败（SVG在拒绝前已读FileReader），接入提前检查后5/0，含四种支持MIME/普通文本、空/超32MiB和后端拒绝可见性。
+
+第一共享decoder定向为Models库2/0+provider2/0（19.575秒）；AppCore上传2/0（82.415秒）和两项冷历史2/0（67.813秒）。首次扩大Models为lib183/0/9、modalities7/2/0（40.397秒）：两项旧H127把h127-synthetic字符串当PNG。保留该失败，仅改成既有已真实解码的有效PNG，并同步精确payload断言，不放松生产检查；原库4字节PNG/任意synthetic content正常样本同样改为有效PNG，MCP旧PNG CRC错样本改为已验证正确CRC的同尺寸图片。旧H127的工具函数/自定义结果/回放、计数和错误语义仍断言不变。
+
+随后定向实跑（同E01 compact profile/offline/-j2/唯一target，阶段结果未冒称最终冻结矩阵）：
+
+| 实际选择 | 结果 | 秒 |
+|---|---|---|
+| Models全包含http（related-models-second） | exit0，lib203/0/9，其余integration/doc全部通过；早于最后worker生命周期增量 | 62.090 |
+| AppCore lib attachment_service（related-attachment） | exit0，16/0/0 | 66.481 |
+| AppCore lib mcp_image_store（related-mcp-image） | exit0，2/0/0，仍验证整批失败零写入 | 1.194 |
+| Kernel image_preparation完整组（related-kernel-image） | exit101，18/1/1；本项4种真实编码当前/冷重开、当前raw、两项冷历史与原探针均通过，唯一旧DACL恢复失败保留 | 83.694 |
+| Models lib+modalities（latest-model-controls） | exit0，183/0/9+11/0 | 29.094 |
+| AppCore lib attachment_service（latest-admission-controls） | exit0，18/0/0，含本地有界读取、扩展名无关、缺MIME推导及两个MIME声明一致性 | 70.686 |
+| Models lib+modalities，含worker owner（worker-and-send-final-local） | exit0，184/0/9+11/0；其后仅测试夹具增加ReleaseOnDrop，最终冻结组仍需实跑 | 31.251 |
+| Models/AppCore lib+modalities非strict scoped lint（scoped-lib-lint-local） | exit0，旧Models/Runtime/AppCore warnings保留，无新模块warning | 23.621 |
+
+另一次包含Kernel target的scoped clippy exit101、135.603秒，被未改的mcp_discovery_restore.rs:969既有panicking_unwrap deny阻断；bool_assert_comparison/drop_non_drop等旧警告保留，没有为本项抑制或混修它们。旧image_read_failure.rs:286 `original DACL must be restored exactly`仍失败，不能用其它图片通过说它已修复。
+
+当前已按final-sources.json冻结14份代码/依赖/测试文件，复核无漂移。final-gates.ps1串行执行root fmt、Models/http、AppCore本项门禁、CLI构建、workspace、前端build、strict/scoped/Kernel lint与Tauri check；仅更新文档和未提交的临时UI夹具，不改冻结源码。已取得fmt exit0/4.549秒、AppCore4/0/0 exit0/75.418秒、CLI build exit0/77.983秒；完整workspace任务在session29988中确认仍live，不能因观察间隔重新启动。
+
+独立Models/http最终组遇到真实链接错误，exit101/17.122秒：responses_terminal_contract_audit的link.exe返回0xc00000ba，该target未完成测试。[Microsoft NTSTATUS定义](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/596a1078-e883-4972-9bbc-49e60bebca55)将该数值定义为STATUS_FILE_IS_A_DIRECTORY；仅凭代码不能判断究竟哪条路径、目录为何存在，未据此归因用户清理或擅自修理VS/系统。原日志保留；待当前串行矩阵结束后才可对同源码/同命令复核，不并行Cargo或换target碰运气。不能用前次green或另一feature组合代替该未完成最终组。
+
+UI宿主自动启动曾在CreateProcess前被本机策略拒绝，未执行、未创建页面；没有换工具再次自动启动。用户询问“怎么操作”后，只通过正常文件编辑准备`apps/desktop/.h169-vite.mjs`与`.h169-ui.html`供其手动启动，node --check通过，未运行宿主。它只挂载生产Composer、浏览器mock、合成File/DragEvent和无操作onSubmit，不挂载App登录、不读取真实Key、不调用模型；envDir/cacheDir只指本项target，不读项目.env。已给用户两行启动命令和1432回环URL；等用户确认后再连接页面取实际结果，不提前称截图验收完成。两份临时文件不纳入生产提交，后续清理；其它用户untracked不动。
+
+本项继续修复中、暂无生产fix提交。UI真实结果、最终完整矩阵及相应失败甄别、双文同步、独立提交和清理尚未完成；不新增验收。306唯一编号仍219验收/28历史跳过/10归并/3撤销/44待修（含H180授权不修）/H169修复中1/H66验收保留1；有效未修44，另H66保留1。下一步仍H169，不进入其它问题。当前收尾暂估2–6有效小时，依据全仓/链接错误复核、实际UI、交付和可能的新反例；编译/用户启动/设备与策略等待另计，无可靠等待上界。全部170–430有效小时仍为旧低置信粗估，不作精确日期承诺，goal保持active。
+
+**E-H169-03（最终本机验收，2026-11-11）**：首轮session29988已经结束，编排脚本exit0不代表所有子门禁通过；原失败不覆盖。首轮workspace为156个顶层target、5258通过/8失败/171忽略，实际完成无缺失；前端完整build exit0/125.479秒、Tauri check exit0/290.497秒。8败中的4个MCP消费者不是无关失败：`mcp_image_output::{audit_mcp_image_result_is_not_serialized_as_text_json,h127_failed_mcp_image_result_preserves_error_and_image_evidence,h127_mixed_mcp_images_keep_order_without_inline_bytes_in_history,h138_error_and_image_metadata_stay_client_only_after_cold_reopen}` 使用了CRC损坏的旧PNG。仅修正这4处测试图片CRC（`O+jZh0`→`O+ip1s`），保留原测试所有配对、顺序、图文输出、错误、冷重开和client-only断言；不放松解码门禁、不改这4项生产实现。新增默认Models测试明确证明旧PNG签名有效但真实解码必须拒绝，另验证重复URL仍逐次计数/逐声明校验、15张4096像素门禁，以及无图片引用时无关坏cache不需要解码器或Tokio runtime。
+
+上述增量后重新冻结15份实现/依赖/测试源码，使用新的`verified-gates.ps1`和独立日志/结果，不覆盖首轮`final-*`。各gate前及全部终态后逐份SHA256核对，漂移0；仅测试增量，生产和前端候选未再改变。机器实际Rust为1.96.0，不能把它称为Rust1.80验证。唯一Cargo target仍为`G:\Code_Warehouse\DeepAgent-Studio\target\h169-repair-20261111`，隔离HOME/APPDATA/TEMP仍为`G:\h169-fixtures-20261111`，清凭据/代理环境，不继承CARGO_TARGET_DIR，只复用既有离线依赖缓存。未访问供应商、真实内网、真实凭据或用户数据。
+
+下表Cargo公共参数为`--config profile.dev.debug=0 --config profile.test.debug=0`，除fmt外均显式`--target-dir $Target --offline -j 2`；profile仍unoptimized且开启debug assertions，不修改仓库profile。参数按执行记录列出，不把编译或筛选跳过当已验：
+
+| 实际命令（另加上述公共参数） | 退出与结果 | 墙钟秒，含编译/等待 |
+|---|---|---:|
+| `cargo fmt --all -- --check` | 0 | 4.607 |
+| `cargo test -p deepagent-models --features http --no-fail-fast -- --test-threads=2 --quiet` | 0；22顶层target，282/0/18（含lib207/0/9、modalities11/0/0），无未完成target | 57.089 |
+| `cargo test -p deepagent-app-core --lib h169_ -- --test-threads=2 --nocapture` | 0；4/0/0 | 83.768 |
+| `cargo test -p deepagent-app-core --test kernel_v2_e2e --features web --no-fail-fast -- --test-threads=2 --quiet` | 101；360/1/14，四个MCP消费者恢复通过；唯一失败为原DACL恢复断言 | 299.190 |
+| `cargo build -p deepagent-cli` | 0 | 46.713 |
+| `cargo test --workspace --features deepagent-app-core/web --no-fail-fast -- --test-threads=2 --quiet` | 101；156顶层target，5264/5/171，无未完成target | 1114.371 |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | 101；既有Models client.rs:516 clone_on_copy | 16.763 |
+| `cargo clippy --no-deps -p deepagent-models -p deepagent-app-core --lib --test modalities_audit` | 0；旧warnings保留，不冒称严格lint通过 | 32.076 |
+| `cargo clippy --no-deps -p deepagent-app-core --test kernel_v2_e2e` | 101；既有mcp_discovery_restore.rs:969 panicking_unwrap deny | 12.748 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml` | 0 | 14.352 |
+
+第二轮Models/http整组重新实际执行了先前链接失败的`responses_terminal_contract_audit`，正常通过；不使用旧exe冒充重编译。首轮0xc00000ba仍保留E02，具体发生路径/根因未确定，不归咎用户清理。最终workspace按每个Running/Doc-tests块最后summary统计，排除H92嵌套helper多计的1通过。5败逐一保留：
+
+1. Kernel `image_preparation::read_failure::real_read_data_dacl_denial_fails_without_sampling_and_recovers`：未改image_read_failure.rs:286，`original DACL must be restored exactly`。
+2. Runtime `checkpoint::access::native::tests::restrictive_tree_is_protected_before_copying_any_bytes`：未改access.rs:364，`restored test DACL differs`。
+3. CLI `tui::app::tests::viewport_snapshot_with_a_pending_approval`：隔离HOME快照差异；保留用户原`.snap.new`，不accept。
+4. Prompts `canvas_prompt::tests::every_node_kind_owns_exactly_one_profile`：既有H306 `creative.video-edit.v1 has an empty defaultUserPrompt`，不混修。
+5. Builtins `fs_guard::windows_tests::mutation_tool_rechecks_parent_for_new_file_after_path_gate`：fs_guard_windows_tests.rs:133，mklink/J退出1、`Cannot create a file when that file already exists.`；本进度文档H137/H66已有相同失败记录。本项未改Builtins代码/依赖，Builtins无Models依赖。仅隔离执行本次全仓刚构建的同一`deepagent_builtins-a00e3a6171e360ed.exe --exact <完整测试名> --nocapture --test-threads=1`：exit0、1/0/0、0.169秒，`ok=false, outside_created=false`；前后SHA256均`2C3D59227173494507F186F28BE97CAFF8F86F1144D03EEDC35C8121BA0DE439`。只说明隔离未复现，不抹掉全仓失败、不宣称查明并发根因或重新修复H78。
+
+原默认CLI和用户原快照在workspace前备份、finally恢复后再次实查：SHA256分别为`8C03E6A63D3E64EBF14DF4AC67C4DC56FB87C2D8B9C35949D3CBA9BC391F30A4`、`D514BFE28BA6F207C714DDAD2FEFE9E521B3AA1FD7DF1AF243FA2CC2ED911F17`，与验收前一致。没有修改默认sidecar、接受快照、绕hook或抑制旧lint。
+
+**实际UI验收**：用户手动启动并明确确认1432回环页归属后，IAB真实打开生产Composer离线夹具，分别点击合成SVG/AVIF拖入按钮，均出现失败附件及`图片仅支持 JPEG、PNG、GIF 和 WebP，请选择受支持的图片。`；逐一移除后无失败附件、发送禁用，恢复正常。测试为真实组件、合成DOM DragEvent与浏览器mock，不是OS原生文件选择器或打包Desktop真实IPC；不登录、不读真实文件、不发送模型请求。夹具console有`Could not find icon Object`（主入口图标/翻译未注册），不宣称console零错误，不为夹具修改生产UI。前端源码与首轮完整`pnpm --dir apps/desktop build`所验SHA一致；其image-integrity真实处理器5项全过，tsc及Vite构建均通过，保留大chunk警告。精选截图[附件拒绝证据](evidence/h169-ui-rejected-svg-avif.jpg)为24342字节，SHA256 `C96A094342061D3B89301B6737443165D40D1409B20400533A56911F8DA3BD8F`，作为永久文档证据保留，其余页面/日志/缓存均可再生。
+
+**兼容与未验边界**：支持格式JPEG/PNG/GIF/WebP的合法原件字节保持不变；旧历史SVG、伪造MIME、损坏图现在明确失败，用户需重新附上支持格式，不静默丢图或转换。旧历史无MIME可按真实解码推导；远端HTTP(S)内容与file_id未获取原件的内容不冒称本地扫描。没有数据库schema/用户数据库迁移、第二套存储、模型调用或审批链。decoder max_alloc仅best-effort，不是硬内存/CPU隔离；单张解码不保证可强杀，动画不保证扫描所有帧。有图片的异步公开client现在要求Tokio runtime，无runtime明确错误；仓内调用方通过上述真实链验收。未执行其他OS、Rust1.80、真实供应商、真实用户文件、打包Desktop原生IPC、长期压力/断电验收；不将171忽略项说成已执行。
+
+**清理前核对**：全部Cargo已终态，无Cargo/rustc或本轮目录中的可见执行进程，1432已无监听；三个精确绝对根及后代无reparse点。target为22968文件/4103目录/14,141,368,507逻辑字节，仓外fixture为4987文件/4089目录/2,193,347,127字节，Desktop dist为3375文件/169目录/192,927,086字节，共16,527,642,720逻辑字节（约15.39GiB）。只清理这三根和两份本轮临时UI文件，不删除其父目录、默认target/debug、全局Cargo依赖、用户七项untracked或精选截图。当前尚待实际清理与独立提交，状态暂不计新增验收；实际结果续记E04。整体goal仍active。
+
+**E-H169-04（清理阻塞与交付，2026-11-11）**：完成E03验收和清理前只读核对后，首次PowerShell清理命令包含精确Resolve-Path核对、根/全部后代reparse与路径边界检查、运行进程及1432监听检查，计划再逐根`Remove-Item -LiteralPath <精确根> -Recurse -Force -ErrorAction Stop`和移除两份明确临时文件。工具在CreateProcess前返回`rejected: blocked by policy`，脚本没有启动，**零文件删除**。这是环境/执行策略阻塞，不是代码验收失败；不改ACL、提权、换工具/参数/脚本路线或循环重试。拒绝后仅只读Test-Path核对：上述三根及两临时文件均仍存在，不把计划动作说成完成。
+
+需要用户或获准环境实际清理后再回传结果的精确目标为：
+
+- `G:\Code_Warehouse\DeepAgent-Studio\target\h169-repair-20261111`
+- `G:\h169-fixtures-20261111`
+- `G:\Code_Warehouse\DeepAgent-Studio\apps\desktop\dist`
+- `G:\Code_Warehouse\DeepAgent-Studio\apps\desktop\.h169-vite.mjs`
+- `G:\Code_Warehouse\DeepAgent-Studio\apps\desktop\.h169-ui.html`
+
+前三项合计约15.39GiB逻辑文件量，另两项为临时UI文本；不是承诺同量物理磁盘释放。不删除源码、用户文件、默认CLI或精选证据截图。代码、测试、双文和精选截图提交为本项独立fix；取得hash后另做文档回填，不反复amend、不推送。**H169状态为阻塞待处理（仅产物清理），不增加已修复并验收计数**；306唯一行仍219验收/28历史跳过/10归并/3撤销/44待修（含H180授权不修）/H169阻塞1/H66保留1，修复中0。实际有效待修43项、另H169清理阻塞1和H66验收保留1，不提供完成率、不宣布整个目标完成。
+
+下一步先核对本轮清理结果再完整关闭H169，下一问题准备复核H170现有Files持久引用/原探针，不提前改变其状态、不修H180。H169仅余清理结果核对与文档回填约0.2–0.5有效小时；策略/设备等待另计，无可靠上界。全部剩余仍沿170–430有效小时旧低置信估算，依据43项待修涵盖模型转换/协议/缓存、hook生命周期、Harness、画布/状态、验证器及CodeGraph等跨层修复和回归，另H66验收保留；未逐项重读代码前不据本轮编译时间机械改成精确工期。编译/设备/依赖与用户处理策略的等待均不计入有效工时，也无可靠总等待范围。整体goal维持active，不为本次单一阻塞标记整体blocked或complete。

@@ -24,6 +24,10 @@ futures.workspace = true
 tracing.workspace = true
 tokio = { workspace = true }
 time = { workspace = true, optional = true }
+base64.workspace = true
+# Reuse the locked decoder, with only DeepSeek's four raster codecs in the
+# default model graph. Existing desktop image features remain unchanged.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
 reqwest = { version = "0.12", default-features = false, features = [
     "stream",

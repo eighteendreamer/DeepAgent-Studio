@@ -10,6 +10,7 @@ import { InputSurface } from "./ui/InputSurface";
 import { useMessageSendMotion } from "./ui/MessageSendMotionContext";
 import { ComposerAttachButton } from "./ComposerAttachButton";
 import { ComposerAttachmentList } from "./ComposerAttachmentList";
+import { validateComposerImage } from "./composerImageInput";
 import { MorphingMenuShell } from "./ui/MorphingMenuShell";
 import { MOTION } from "./ui/motion";
 import { MENU_ITEM_ATTR, SlidingMenuList } from "./ui/SlidingMenuList";
@@ -1061,7 +1062,7 @@ export function Composer({
 
     for (const file of accepted) {
       const id = attachmentId();
-      const isImage = file.type.startsWith("image/");
+      const isImage = file.type.toLowerCase().startsWith("image/");
       const isText = isTextLikeFile(file);
       const base: ComposerAttachment = {
         id,
@@ -1075,6 +1076,7 @@ export function Composer({
       addAttachment(base);
       try {
         if (isImage) {
+          validateComposerImage(file);
           const dataUrl = await readFileAsDataUrl(file);
           const persisted = await attachmentIngest({
             id,

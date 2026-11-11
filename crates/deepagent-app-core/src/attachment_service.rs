@@ -43,9 +43,16 @@ impl AttachmentService {
         }
     }
 
-    pub fn ingest(&self, input: AttachmentIngestDto) -> Result<AttachmentDto> {
+    pub fn ingest(&self, mut input: AttachmentIngestDto) -> Result<AttachmentDto> {
         let id = input.id.clone().unwrap_or_else(new_attachment_id);
         let relative = attachment_path(input.session_id.as_deref(), &id)?;
+        let prepared_image = if input.kind == "image" {
+            let (bytes, identity) = prepare_image(&input)?;
+            input.mime = identity.media_type.into();
+            Some(bytes)
+        } else {
+            None
+        };
         let directory = self
             .storage
             .directory(&relative, true)
@@ -55,11 +62,14 @@ impl AttachmentService {
         let storage_dir = self.root.join(relative);
 
         let name = clean_file_name(&input.name);
-        let original_path = self.persist_original(&directory, &name, &input)?;
+        let original_path =
+            self.persist_original(&directory, &name, &input, prepared_image.as_deref())?;
         let original_path_string = original_path
             .as_ref()
             .map(|_| storage_dir.join(&name).to_string_lossy().into_owned());
-        let (size_bytes, sha256) = if original_path.is_some() {
+        let (size_bytes, sha256) = if let Some(bytes) = &prepared_image {
+            (bytes.len() as u64, Some(hex_sha256(bytes)))
+        } else if original_path.is_some() {
             let bytes = directory
                 .read_file(&name)
                 .map_err(|e| CoreError::Other(format!("read attachment: {e}")))?;
@@ -120,7 +130,14 @@ impl AttachmentService {
         directory: &OwnedDirectory,
         name: &str,
         input: &AttachmentIngestDto,
+        prepared_image: Option<&[u8]>,
     ) -> Result<Option<PathBuf>> {
+        if let Some(bytes) = prepared_image {
+            return directory
+                .write_file(name, bytes)
+                .map(Some)
+                .map_err(|e| CoreError::Other(format!("write image attachment: {e}")));
+        }
         if let Some(text) = input.text.as_ref() {
             let path = directory
                 .write_file(name, text.as_bytes())
@@ -340,7 +357,40 @@ fn clean_file_name(value: &str) -> String {
 /// sampling. Legacy references remain deserializable but require reattachment.
 pub struct FileAttachmentResolver;
 
-const MAX_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_IMAGE_BYTES: u64 = deepagent_models::image_input::MAX_IMAGE_BYTES as u64;
+
+fn prepare_image(
+    input: &AttachmentIngestDto,
+) -> Result<(Vec<u8>, deepagent_models::image_input::ImageIdentity)> {
+    if input.text.is_some() {
+        return Err(CoreError::invalid(
+            "image_input_invalid: image must contain encoded raster bytes, not text",
+        ));
+    }
+    if let Some(url) = &input.data_url {
+        return deepagent_models::image_input::decode_image_data_url(url, Some(&input.mime));
+    }
+    let source = input
+        .local_path
+        .as_deref()
+        .ok_or_else(|| CoreError::invalid("image_input_invalid: image bytes are missing"))?;
+    let file = fs::File::open(source)
+        .map_err(|_| CoreError::invalid("image_input_invalid: image source is unreadable"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| CoreError::invalid("image_input_invalid: image metadata is unreadable"))?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_IMAGE_BYTES {
+        return Err(CoreError::invalid(
+            "image_input_byte_limit: image must be a nonempty file within 32 MiB",
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_IMAGE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| CoreError::invalid("image_input_invalid: image source read failed"))?;
+    let identity = deepagent_models::image_input::validate_image_bytes(&bytes, Some(&input.mime))?;
+    Ok((bytes, identity))
+}
 
 impl AttachmentDataResolver for FileAttachmentResolver {
     fn is_resolvable(&self, attachment: &MessageAttachment) -> bool {
@@ -398,11 +448,11 @@ impl AttachmentDataResolver for FileAttachmentResolver {
         if !hex_sha256(&bytes).eq_ignore_ascii_case(expected) {
             return Err(failure("image bytes do not match admitted SHA-256"));
         }
-        let mime = attachment
-            .media_type
-            .clone()
-            .or_else(|| sniff_image_mime(path))
-            .unwrap_or_else(|| "image/png".to_string());
+        let mime = deepagent_models::image_input::validate_image_bytes(
+            &bytes,
+            attachment.media_type.as_deref(),
+        )?
+        .media_type;
         let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
         Ok(Some(format!("data:{mime};base64,{encoded}")))
     }
@@ -412,33 +462,131 @@ impl AttachmentDataResolver for FileAttachmentResolver {
 #[path = "attachment_storage_tests.rs"]
 mod storage_tests;
 
-fn sniff_image_mime(path: &str) -> Option<String> {
-    let ext = std::path::Path::new(path)
-        .extension()?
-        .to_str()?
-        .to_ascii_lowercase();
-    let mime = match ext.as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        _ => return None,
-    };
-    Some(mime.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn valid_png() -> Vec<u8> {
+        base64::engine::general_purpose::STANDARD.decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII="
+        ).unwrap()
+    }
+
+    fn image_admission_must_reject(bytes: &[u8], mime: &str) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("attachments");
+        let service = AttachmentService::new(root.clone());
+        let result = service.ingest(AttachmentIngestDto {
+            id: Some("h169-invalid".into()),
+            session_id: None,
+            kind: "image".into(),
+            name: "claimed.png".into(),
+            mime: mime.into(),
+            source: "picker".into(),
+            local_path: None,
+            data_url: Some(format!(
+                "data:{mime};base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            )),
+            text: None,
+        });
+        assert!(result.is_err(), "invalid image was admitted: {mime}");
+        assert!(!root.exists(), "reject before creating durable storage");
+    }
+
+    #[test]
+    fn h169_upload_rejects_unsupported_svg_before_persistence() {
+        image_admission_must_reject(
+            b"<svg xmlns='http://www.w3.org/2000/svg'/>",
+            "image/svg+xml",
+        );
+    }
+
+    #[test]
+    fn h169_upload_rejects_a_signature_without_a_decodable_raster() {
+        image_admission_must_reject(b"\x89PNG\r\n\x1a\n", "image/png");
+    }
+
+    #[test]
+    fn h169_local_admission_and_missing_mime_use_bytes_not_the_display_extension() {
+        let fixture = tempfile::tempdir().unwrap();
+        let source = fixture.path().join("not-a-raster.extension");
+        let png = valid_png();
+        fs::write(&source, &png).unwrap();
+        let service = AttachmentService::new(fixture.path().join("attachments"));
+        let mut input = AttachmentIngestDto {
+            id: Some("h169-valid-local".into()),
+            session_id: None,
+            kind: "image".into(),
+            name: "display.jpg".into(),
+            mime: String::new(),
+            source: "picker".into(),
+            local_path: Some(source.to_string_lossy().into_owned()),
+            data_url: None,
+            text: None,
+        };
+        let dto = service.ingest(input.clone()).unwrap();
+        assert_eq!(dto.mime, "image/png");
+        assert_eq!(dto.sha256.as_deref(), Some(hex_sha256(&png).as_str()));
+        let reference = MessageAttachment {
+            id: dto.id,
+            kind: dto.kind,
+            path: dto.original_path,
+            sha256: dto.sha256,
+            media_type: None,
+        };
+        assert!(FileAttachmentResolver
+            .try_data_url(&reference)
+            .unwrap()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
+        input.id = Some("h169-wrong-mime".into());
+        input.mime = "image/jpeg".into();
+        assert!(service.ingest(input.clone()).is_err());
+        assert!(!fixture
+            .path()
+            .join("attachments/pending/h169-wrong-mime")
+            .exists());
+        fs::File::create(&source)
+            .unwrap()
+            .set_len(MAX_IMAGE_BYTES + 1)
+            .unwrap();
+        assert!(service.ingest(input).is_err());
+    }
+
+    #[test]
+    fn h169_data_url_and_dto_mime_claims_both_match_real_bytes() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("attachments");
+        let service = AttachmentService::new(root.clone());
+        let encoded = base64::engine::general_purpose::STANDARD.encode(valid_png());
+        for (header, declared) in [("image/jpeg", "image/png"), ("image/png", "image/jpeg")] {
+            assert!(service
+                .ingest(AttachmentIngestDto {
+                    id: Some("h169-mismatch".into()),
+                    session_id: None,
+                    kind: "image".into(),
+                    name: "not-authoritative.png".into(),
+                    mime: declared.into(),
+                    source: "paste".into(),
+                    local_path: None,
+                    text: None,
+                    data_url: Some(format!("data:{header};base64,{encoded}")),
+                })
+                .is_err());
+            assert!(!root.exists());
+        }
+    }
 
     #[test]
     fn file_attachment_resolver_encodes_png_data_url() {
         use deepagent_runtime::AttachmentDataResolver;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("shot.png");
-        std::fs::write(&path, [0x89u8, b'P', b'N', b'G']).unwrap();
+        let bytes = valid_png();
+        std::fs::write(&path, &bytes).unwrap();
         let attachment = MessageAttachment {
-            sha256: Some(hex_sha256(&[0x89u8, b'P', b'N', b'G'])),
+            sha256: Some(hex_sha256(&bytes)),
             id: "att_1".into(),
             kind: "image".into(),
             media_type: Some("image/png".into()),
@@ -473,14 +621,14 @@ mod tests {
     fn checked_image_resolution_binds_one_read_and_rejects_unverifiable_content() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("image.png");
-        let original = b"synthetic content";
-        fs::write(&path, original).unwrap();
+        let original = valid_png();
+        fs::write(&path, &original).unwrap();
         let mut reference = MessageAttachment {
             id: "fixture".into(),
             kind: "image".into(),
             media_type: Some("image/png".into()),
             path: Some(path.to_string_lossy().into_owned()),
-            sha256: Some(hex_sha256(original)),
+            sha256: Some(hex_sha256(&original)),
         };
         let url = FileAttachmentResolver
             .try_data_url(&reference)
@@ -493,7 +641,7 @@ mod tests {
                 .unwrap(),
             original
         );
-        reference.sha256 = Some(hex_sha256(original).to_uppercase());
+        reference.sha256 = Some(hex_sha256(&original).to_uppercase());
         assert!(FileAttachmentResolver
             .try_data_url(&reference)
             .unwrap()

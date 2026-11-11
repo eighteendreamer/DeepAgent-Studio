@@ -136,6 +136,8 @@ wasm = ["deepagent-tools/wasm"]
 [dev-dependencies]
 tokio = { workspace = true }
 wat = "1"
+# Real raster encoders for cross-layer image admission fixtures.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 # Deterministic named-zone tests must not depend on host zoneinfo installation.
 jiff = { version = "0.2.38", features = ["tzdb-bundle-always"] }
 

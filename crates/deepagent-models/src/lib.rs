@@ -35,6 +35,7 @@ pub mod chat_completions;
 pub mod client;
 pub mod discovery;
 pub mod failure;
+pub mod image_input;
 mod provider_error;
 pub mod responses;
 pub mod sse;

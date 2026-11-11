@@ -42,11 +42,7 @@ impl McpImageStore for McpAttachmentStore {
             if bytes.is_empty() || total > MAX_TOTAL_BYTES {
                 return Err(invalid("exceeds local byte limit or is empty"));
             }
-            if crate::canvas_model_gateway::sniff_image_mime(&bytes).as_deref()
-                != Some(image.mime_type)
-            {
-                return Err(invalid("MIME type does not match its image signature"));
-            }
+            deepagent_models::image_input::validate_image_bytes(&bytes, Some(image.mime_type))?;
         }
         let mut admitted = Vec::new();
         let mut ids = Vec::new();
@@ -98,7 +94,7 @@ mod tests {
     use crate::attachment_service::FileAttachmentResolver;
     use deepagent_runtime::AttachmentDataResolver;
 
-    const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jZh0AAAAASUVORK5CYII=";
+    const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=";
 
     #[test]
     fn h127_image_admission_is_bounded_and_persists_verifiable_refs() {
@@ -161,6 +157,8 @@ mod tests {
             ("image/png", "not-base64"),
             ("image/jpeg", PNG),
             ("image/png", ""),
+            ("image/png", "iVBORw0KGgo="),
+            ("image/png", "PHN2Zy8+"),
         ] {
             let error = store
                 .ingest(&[

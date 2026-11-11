@@ -14,6 +14,9 @@ mod read_failure;
 #[path = "image_modalities.rs"]
 mod modalities;
 
+#[path = "image_mime.rs"]
+mod mime;
+
 struct ImageAnswer {
     images_per_request: Arc<Mutex<Vec<usize>>>,
     request_bytes: Option<Arc<Mutex<Vec<usize>>>>,
@@ -408,92 +411,32 @@ async fn audit_new_image_reaches_first_model_request() {
 }
 
 #[tokio::test]
-#[ignore = "audit probe: unsupported image MIME types must be rejected before transport"]
 async fn audit_unsupported_image_mime_is_rejected_before_transport() {
-    use base64::Engine as _;
-
+    use base64::Engine;
+    // The original [[SVG],[SVG]] transport failure remains in E-H169-01.
+    // Upload now rejects before storage; the public/raw legacy path is also
+    // checked through the real kernel so this is not just a picker test.
     const SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1" fill="red"/></svg>"#;
     let root = tempfile::tempdir().unwrap();
-    let attachments = AttachmentService::new(root.path().join("attachments"));
-    let imported = attachments
-        .ingest(AttachmentIngestDto {
-            id: Some("audit-svg".into()),
-            session_id: None,
-            kind: "image".into(),
-            name: "pixel.svg".into(),
-            mime: "image/svg+xml".into(),
-            source: "picker".into(),
-            local_path: None,
-            data_url: Some(format!(
-                "data:image/svg+xml;base64,{}",
-                base64::engine::general_purpose::STANDARD.encode(SVG)
-            )),
-            text: None,
-        })
-        .unwrap();
-    assert_eq!(imported.status, "ready");
-    let path = PathBuf::from(imported.original_path.unwrap());
-    assert_eq!(std::fs::read(&path).unwrap(), SVG);
-
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let settings = image_settings(db.clone()).await;
-    let urls = Arc::new(Mutex::new(Vec::new()));
-    let chat = ChatService::new(
-        db,
-        settings,
-        Arc::new(ImageUrlAnswer {
-            urls_per_request: urls.clone(),
-        }),
-        root.path(),
-    );
-    let session = chat
-        .run_in_session_with_attachments(
-            "Retain this SVG attachment for the MIME audit.",
-            None,
-            None,
-            None,
-            Vec::new(),
-            None,
-            false,
-            Some("audit-svg-first"),
-            vec![InputAttachment::Image {
-                sha256: imported.sha256.clone(),
-                id: imported.id,
-                path,
-                media_type: "image/svg+xml".into(),
-            }],
-            |_| {},
-            |_| {},
-        )
-        .await
-        .unwrap();
-    chat.run_in_session(
-        "Use the retained attachment.",
-        Some(&session),
-        None,
-        None,
-        Vec::new(),
-        None,
-        false,
-        Some("audit-svg-continued"),
-        |_| {},
-        |_| {},
-    )
-    .await
-    .unwrap();
-
-    let urls = urls.lock().unwrap().clone();
-    eprintln!("image MIME audit: urls_per_request={urls:?}");
-    assert_eq!(urls.len(), 2);
-    assert!(urls[0].is_empty(), "H-67 control unexpectedly changed");
-    assert!(
-        urls[1]
-            .iter()
-            .all(|url| !url.starts_with("data:image/svg+xml")),
-        "DeepSeek Responses only accepts JPEG, PNG, GIF, or WebP image_url payloads"
-    );
+    let storage = root.path().join("attachments");
+    let result = AttachmentService::new(storage.clone()).ingest(AttachmentIngestDto {
+        id: Some("audit-svg".into()),
+        session_id: None,
+        kind: "image".into(),
+        name: "pixel.svg".into(),
+        mime: "image/svg+xml".into(),
+        source: "picker".into(),
+        local_path: None,
+        text: None,
+        data_url: Some(format!(
+            "data:image/svg+xml;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(SVG)
+        )),
+    });
+    assert!(result.is_err());
+    assert!(!storage.exists());
+    mime::invalid_reference_is_rejected(SVG, "image/svg+xml", "h169-original-raw", false).await;
 }
-
 #[tokio::test]
 #[ignore = "audit probe: retained images should reuse a DeepSeek Files API identity"]
 async fn audit_retained_image_reuses_deepseek_file_id() {

@@ -1585,9 +1585,11 @@ name = "deepagent-models"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "deepagent-core",
  "deepagent-tools",
  "futures",
+ "image",
  "reqwest",
  "serde",
  "serde_json",

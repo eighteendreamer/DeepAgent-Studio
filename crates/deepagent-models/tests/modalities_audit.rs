@@ -34,6 +34,63 @@ struct RoleImageTransport {
     requests: Mutex<Vec<serde_json::Value>>,
 }
 
+async fn reject_untrusted_inline_images(
+    wire_mode: deepagent_models::WireMode,
+    cancelled_entry: bool,
+) {
+    for url in [
+        "data:image/svg+xml;base64,PHN2Zy8+",
+        "data:image/png;base64,PHN2Zy8+",
+        "data:image/png;base64,iVBORw0KGgo=",
+    ] {
+        let transport = Arc::new(RoleImageTransport::default());
+        let mut config = ModelConfig::deepseek("offline-audit-placeholder");
+        config.wire_mode = wire_mode;
+        let client = ModelClient::new(transport.clone(), config);
+        let request = ResponseRequest::new(
+            "deepseek-flash",
+            vec![
+                Message::user("Inspect this image.").with_attachments(vec![MessageAttachment {
+                    id: "h169-untrusted".into(),
+                    kind: "image".into(),
+                    media_type: Some("image/png".into()),
+                    path: None,
+                    sha256: None,
+                }]),
+            ],
+        )
+        .with_attachment_data_urls(BTreeMap::from([("h169-untrusted".into(), url.into())]));
+        let result = if cancelled_entry {
+            client
+                .stream_response_cancelled(request, Arc::new(AtomicBool::new(false)))
+                .await
+        } else {
+            client.stream_response(request).await
+        };
+        assert!(
+            result.is_err(),
+            "invalid inline image reached {wire_mode:?}"
+        );
+        assert!(transport.requests.lock().unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn h169_responses_rejects_untrusted_inline_image_bytes_before_transport() {
+    reject_untrusted_inline_images(deepagent_models::WireMode::Responses, true).await;
+}
+
+#[tokio::test]
+async fn h169_chat_rejects_untrusted_inline_image_bytes_before_transport() {
+    reject_untrusted_inline_images(deepagent_models::WireMode::ChatCompletions, true).await;
+}
+
+#[tokio::test]
+async fn h169_non_cancel_send_entries_have_the_same_raster_gate() {
+    reject_untrusted_inline_images(deepagent_models::WireMode::Responses, false).await;
+    reject_untrusted_inline_images(deepagent_models::WireMode::ChatCompletions, false).await;
+}
+
 #[async_trait]
 impl HttpTransport for RoleImageTransport {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
@@ -41,6 +98,11 @@ impl HttpTransport for RoleImageTransport {
             .lock()
             .unwrap()
             .push(serde_json::from_str(&request.body).unwrap());
+        if request.url.ends_with("/chat/completions") {
+            sink.on_event(r#"{"id":"fixture-chat","object":"chat.completion.chunk","created":1,"model":"deepseek-flash","choices":[{"index":0,"delta":{"content":"Offline image."},"finish_reason":"stop"}]}"#)?;
+            sink.on_event("[DONE]")?;
+            return Ok(());
+        }
         for event in [
             r#"{"type":"response.output_text.delta","sequence_number":0,"delta":"Offline image-role audit."}"#,
             r#"{"type":"response.completed","sequence_number":1,"response":{"id":"fixture-response","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#,
@@ -50,6 +112,57 @@ impl HttpTransport for RoleImageTransport {
             }
         }
         Ok(())
+    }
+}
+
+#[tokio::test]
+async fn h169_both_protocols_keep_all_four_real_original_formats() {
+    use base64::Engine;
+    use deepagent_models::WireMode;
+    use std::io::Cursor;
+    for wire_mode in [WireMode::Responses, WireMode::ChatCompletions] {
+        for (format, mime) in [
+            (image::ImageFormat::Jpeg, "image/jpeg"),
+            (image::ImageFormat::Png, "image/png"),
+            (image::ImageFormat::Gif, "image/gif"),
+            (image::ImageFormat::WebP, "image/webp"),
+        ] {
+            let mut bytes = Cursor::new(Vec::new());
+            image::DynamicImage::new_rgb8(1, 1)
+                .write_to(&mut bytes, format)
+                .unwrap();
+            let url = format!(
+                "data:{mime};base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(bytes.into_inner())
+            );
+            let transport = Arc::new(RoleImageTransport::default());
+            let mut config = ModelConfig::deepseek("offline-audit-placeholder");
+            config.wire_mode = wire_mode;
+            let client = ModelClient::new(transport.clone(), config);
+            let request = ResponseRequest::new(
+                "deepseek-flash",
+                vec![Message::user("Read this raster.").with_attachments(vec![
+                    MessageAttachment {
+                        id: "original".into(),
+                        kind: "image".into(),
+                        media_type: Some(mime.into()),
+                        path: None,
+                        sha256: None,
+                    },
+                ])],
+            )
+            .with_attachment_data_urls(BTreeMap::from([("original".into(), url.clone())]));
+            client.stream_response(request).await.unwrap();
+            let requests = transport.requests.lock().unwrap();
+            assert_eq!(requests.len(), 1);
+            let sent = match wire_mode {
+                WireMode::Responses => &requests[0]["input"][0]["content"][1]["image_url"],
+                WireMode::ChatCompletions => {
+                    &requests[0]["messages"][0]["content"][1]["image_url"]["url"]
+                }
+            };
+            assert_eq!(sent, &serde_json::json!(url));
+        }
     }
 }
 
@@ -187,7 +300,7 @@ async fn audit_responses_tool_output_images_are_preserved_before_transport() {
     )
     .with_attachment_data_urls(BTreeMap::from([(
         "tool-image".into(),
-        "data:image/png;base64,aDEyNy1zeW50aGV0aWM=".into(),
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=".into(),
     )]));
     client
         .stream_response_cancelled(request, Arc::new(AtomicBool::new(false)))
@@ -222,7 +335,7 @@ async fn audit_responses_tool_output_images_are_preserved_before_transport() {
     assert_eq!(output["output"][0]["text"], "screenshot ready");
     assert_eq!(
         output["output"][1]["image_url"],
-        "data:image/png;base64,aDEyNy1zeW50aGV0aWM="
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII="
     );
 }
 
@@ -282,7 +395,7 @@ async fn h127_function_custom_and_replayed_tool_images_use_one_typed_wire_bounda
             let request = ResponseRequest::from_response_items("deepseek-flash", None, items)
                 .with_attachment_data_urls(BTreeMap::from([(
                     "native-tool-image".into(),
-                    "data:image/png;base64,aDEyNw==".into(),
+                    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=".into(),
                 )]));
             if cancelled_api {
                 client
@@ -314,7 +427,7 @@ async fn h127_function_custom_and_replayed_tool_images_use_one_typed_wire_bounda
             assert_eq!(outputs[0]["output"][1]["type"], "input_image");
             assert_eq!(
                 outputs[0]["output"][1]["image_url"],
-                "data:image/png;base64,aDEyNw=="
+                "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII="
             );
             assert_eq!(
                 outputs[0]["output"][2],
@@ -372,7 +485,7 @@ async fn h127_tool_image_rejections_are_explicit_before_transport_and_text_stays
             if resolved {
                 request.attachment_data_urls.insert(
                     "rejection-image".into(),
-                    "data:image/png;base64,aDEyNw==".into(),
+                    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=".into(),
                 );
             }
             request
@@ -438,7 +551,7 @@ async fn h127_complete_request_counts_repeated_tool_image_occurrences() {
     )
     .with_attachment_data_urls(BTreeMap::from([(
         "same-image".into(),
-        "data:image/png;base64,aDEyNw==".into(),
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=".into(),
     )]));
     let error = client
         .stream_response(request)
