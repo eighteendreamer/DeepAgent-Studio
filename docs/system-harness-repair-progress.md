@@ -13,7 +13,7 @@
 | 归并 | 10 | H173同根归并H127；H243归并H53；只在唯一有效项修复，不增加完成数 |
 | 撤销 | 3 | H-211/H-263/H-305，不作为缺陷或修复成果 |
 | 已修复（验收保留） | 1 | H66按用户2026-11-10收尾要求交付代码；现有定向验证有效，不记作完整验收通过，残余范围见E-H66-08 |
-| 修复中 | 1 | H179原件输入及下游传递已实现并取得本机验收结果，当前仅待独立提交、产物清理和hash回填，见E12；全仓4个既有失败保留 |
+| 修复中 | 1 | H179原件路线已验收并独立提交e8a60131；仅剩产物清理被本机策略拒绝，未全部交付，见E13；全仓4个既有失败保留 |
 | 待修复 | 45 | 含H180授权不修，实际有效待修44；另H179修复中1、H66验收保留1，未完整闭环槽位47，实际待处理46 |
 | 阻塞待处理 | 0 | E09旧PDF页策略阻塞已被用户新的无本地提取范围取代，目标已恢复active；不把新范围冒称实现完成 |
 
@@ -6435,7 +6435,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-176：工作流 `knowledgeBaseId` 是死字段，知识检索节点无条件混合 project/global vault](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | 原失败与TDD红保留，限E-H176-03本机范围；不归并H51 | typed scope贯穿原检索链，dense/BM25候选前资格过滤与单次运行内容快照；输出scope/revision/来源 | Memory42、Knowledge80、Runtime workflow124、workflow136/0/29；Desktop显式1/0、AppCore1592；workspace4923/1既有H306/198；前端build与Tauri通过，strict既有阻断见E03 | `1fc591993bafba88657aff2624ea1d12094a5b0f`；另docs回填 | 旧缺/空mixed、新建project、未知前置拒绝；Rust源码接口变化，无SQL迁移；未验跨OS/跨进程resume/真实用户UI，清理剩1,281,648,842字节拒绝后停止，E04；已独立fix、另docs回填；下一H174，本机行为剩余0；整体200–400有效小时低置信历史粗估，环境等待另计 |
 | [H-177：未知 `target_node_id` 被当作空工作流成功，重跑/恢复目标没有 admission 校验](system-harness-audit-2026-10-21.md) | P2 | 历史已修复跳过 | E01原probe已1/0，E02追溯H196准入生产416df3e9并独立验收，不新增生产修复 | 既有WorkflowAgent::new先查目标身份，错误走原唯一failed；本轮只转默认/补回归 | 原probe1/0、新默认2/0、完整workflow131/0/29忽略、Runtime workflow121/0、真实Desktop seam1/0；fmt过、strict旧失败，未验项见E02 | 历史生产416df3e9885cec1c3b16caf62e66ccc3cf49c222；本次回归`3d286e3db0859f0ee089cc0c8254645d64a4d489`；另docs回填 | v1 fresh recompute非resume，原失败保留；本项0，后续实际77，下一H176；总200–400低置信有效小时，等待另计 |
 | [H-178：专业画布 `code` 节点标记为 enabled，但脚本从未执行且错误被伪造成成功](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H178-M01～05；原red保留，限所列Windows受管Node范围 | 集成ede16557本项30文件；一次性私有句柄接通既有Kernel/Broker/严格LPAC SandboxBackend，保留主线即时计费 | Runtime工作流85/0；工作流41/0/27；真实八门禁各1/0/0；全仓4135/1/253仅H306；CLI/Tauri/前端/SDK/fmt过，严格lint旧诊断未过见M04 | `a51cab3c100af581c69196476de42d1c3bce7dfe`（源实现ede16557） | 无包身份宿主+Node24.21.0本机范围；Python/其他OS/GUI未验，其他后端无typed profile明确拒绝；无迁移；本项剩0，下一H-181；154有效未关闭含H180授权跳过，总200–400有效小时未校准，等待另计 |
-| [H-179：专业画布 `document-extractor` 标记为 enabled，但正式运行没有 executor](system-harness-audit-2026-10-21.md#h-179专业画布-document-extractor-标记为-enabled但正式运行没有-executor) | P2 | 修复中 | E01～12保留证据；用户接受现有协议首版格式范围，不做本地提取/不另选供应商；不归并H180 | 受管原件预览；只读工具准入与run-local一次性快照，经既有网关发原生document/file块；撤除本轮parser/worker；旧独立节点编译前明确拒绝 | E12库4/0/0；完整workflow144/0/28；完整workspace5246/4旧失败/172忽略；前端build、all-targets check、root/Tauri fmt、scoped lint与Tauri check通过；strict旧Models失败保留 | 本次准备独立fix提交；随后回填hash，不反复amend；准备/复核0095b1bd、6aa47952不是生产fix | 已验收范围见E11～12，Office仅预览、当前协议读取明确拒绝；待提交/安全清理，约0.5–1.5有效小时；全余170–430低置信旧粗估，设备/策略/依赖等待另计 |
+| [H-179：专业画布 `document-extractor` 标记为 enabled，但正式运行没有 executor](system-harness-audit-2026-10-21.md#h-179专业画布-document-extractor-标记为-enabled但正式运行没有-executor) | P2 | 修复中 | E01～13保留证据；用户接受现有协议首版格式范围，不做本地提取/不另选供应商；不归并H180 | 受管原件预览；只读工具准入与run-local一次性快照，经既有网关发原生document/file块；撤除本轮parser/worker；旧独立节点编译前明确拒绝 | E12库4/0/0；完整workflow144/0/28；完整workspace5246/4旧失败/172忽略；前端build、all-targets check、root/Tauri fmt、scoped lint与Tauri check通过；strict旧Models失败保留 | e8a60131c009a5e733d26fc6c1ff04a78fcc1e4e（26个本项文件）；本次另做docs回填，不amend、不推送 | 实现/验收/代码提交已完成；约79.08GiB可再生产物清理在CreateProcess前被策略拒绝，未绕过；确认清理后收尾约0.1–0.5有效小时，全余170–430旧粗估；策略等待另计 |
 | [H-180：专业画布 `human-input` 节点不进入统一人工输入/审批生命周期](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 2026-11-02 用户明确要求提交后跳过；不是历史已修复、归并或撤销 | C盘现有实现已提交；本次合并源止于85d858af，不包含该实现，不继续开发 | 未完整验收；本轮不追加H-180测试，不把提交当验收 | C盘既有实现 `53a03f9bdfa2ebf797de7e8e465d6c6e055bbc97`，不在本次main合并中 | 保留未关闭事实并退出当前修复队列；后续恢复或删除功能须另行明确范围；本轮安排0小时 |
 | [H-181：专业画布 `iteration` 不消费前端输入数组，也没有真正调度迭代体](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H181-01～07；原red/中止/sidecar旧产物失败保留，限所列Windows范围 | typed item/done scope经普通WorkflowAgent接同一Kernel；有序聚合/三策略/flatten/嵌套50lane；保留权限/审批/即时计费与scoped持久事件 | 原探针/真实TS门禁各1/0，workflow54/0/28、Runtime392/0/11、全仓4166/1/254仅既有H306；CLI/Tauri/前端/SDK/fmt/夹具tsc及UI四步过，严格lint旧失败见E06 | `0855b1b24cf93ca45a0c33e53ce01bd059ea5ce7` | 单store/aggregate1MiB、活跃item store序列化共享50MiB非RSS；无透明续跑；H177/H196/loop独立，无迁移；本项剩0，153未关闭含H180授权跳过/实际152，200–400有效小时未校准，等待另计 |
 | [H-182：专业画布 `answer` 节点忽略 `answerTemplate`，成功运行却输出空答案](system-harness-audit-2026-10-21.md#h-182专业画布-answer-节点忽略-answertemplate成功运行却输出空答案) | P1 | 已修复并验收 | E-H182-01～05；原正式探针红→绿；非历史跳过 | 共享v1 typed answer契约；单次模板/引用解释，联合绑定及输出预算、非空完成门禁 | E04完整命令；原探针1/0、H182默认9/0、TS→Kernel1/0、Runtime392/0、重开/GUI/构建通过；全仓唯一H306及既有严格lint失败保留 | `d3a00714989b0045360625668ea4ff8ceb62594e`；E05 | 旧字段需显式迁移；无DB迁移；未验其他OS/真实provider/完整Tauri；本项剩余0，整体200–400有效小时历史粗估 |
@@ -10043,3 +10043,19 @@ assertion failed: !serde_json::to_string(&events).unwrap().contains("H179_PROVID
 验收限Windows本机、离线合成文件/自建HTTP/临时SQLite及真实组件离线IPC；未执行其它OS、收费或真实供应商、真实内网/凭据、完整打包Desktop真实Rust IPC、全部ignored和七格式逐一GUI渲染。Office等预览复用未改的FilePreview renderer，不把有限交互手测称作全部格式/跨平台认证。运行附件移除只解除图引用，不擅自删除受管原件或历史资料。
 
 本项功能验收结果已取得，但独立commit/安全清理尚未完成，台账暂保持修复中、不提前增加关闭数。306行/306唯一H复核：218验收、28历史跳过、10归并、3撤销、45待修（含H180授权不修）、H179修复中1、H66验收保留1；与HEAD相比仅H179台账行改变。有效未修45，另H66保留1。下一步为本项白名单提交、清理和hash回填；交付后才准备H169。当前有效收尾约0.5–1.5小时，等待清理策略/设备时间另计；全余170–430有效小时仍是未逐项校准的旧粗估，不从19.6分钟全仓等待机械扣减，不承诺完工日期，goal继续active。
+
+**E-H179-13（独立提交回填与清理策略阻断，2026-11-11）**：当前用户已明确接受E11格式范围；代码、测试和当时双文已独立提交`e8a60131c009a5e733d26fc6c1ff04a78fcc1e4e`（【fix】复用画布模型链支持专业工作流原件附件），恰26个本项文件，未推送、未建PR。Desktop main此前只有换行/stat噪声，按git hash-object与HEAD blob完全相等核对后仅刷新stat，没有提交或覆盖实质用户改动。当前tracked代码干净，原用户untracked保持原样；默认CLI与用户.snap.new仍为E12的恢复后哈希。此处只回填真实commit与环境结果，不反复amend，不重跑编译或默认忽略原探针。
+
+清理前已逐一Resolve-Path核对绝对路径、根目录及所有后代无reparse point，盘点仅下列明确归属本目标的可再生产物；不涉及源码、真实上传文档、用户目录或现有共享Cargo依赖缓存：
+
+| 已核对路径 | 文件数 | 逻辑大小GiB（四舍五入） |
+|---|---|---|
+| `G:\Code_Warehouse\DeepAgent-Studio\target\h66-repair-20261110` | 32992 | 75.20 |
+| `G:\h66-fixtures-20261110` | 9069 | 3.70 |
+| `G:\Code_Warehouse\DeepAgent-Studio\apps\desktop\dist` | 3375 | 0.18 |
+
+本次拟使用原生PowerShell Remove-Item -LiteralPath逐个清理，另有无Cargo/rustc活动、用户CLI/快照已恢复哈希、路径完全相等的前置校验；**exec_command在CreateProcess前返回blocked by policy，脚本没有启动，三个目录没有删除、没有部分清理、没有释放空间的验收结果**。此前拒绝同样保留；本次后不再重试、不换API/工具、不提权绕过，不把用户已有授权说成本机策略已经放行。本轮没有新建大target，也不声称已清掉所有G/C盘历史产物。E12已将原始失败摘要、最终结果和哈希同步进文档，待合法执行清理后仍能追溯，但当前原日志也尚在。
+
+本项实现、范围内本机验收和代码提交完成；用户交付标准含产物清理，所以H179台账暂保留修复中（环境清理受阻），不提前记新增关闭数。不是整体goal完成，也不立即将goal标blocked：本轮有真实验收/提交进展，新的连续无进展阻塞条件尚未满足。下一步仅需本机实际放行清理或用户完成这三目录的删除并回传结果，确认后更新状态与计数；不再索取“允许”来假装改变策略，不重复构建、不进入H169生产修改。
+
+306唯一编号核对仍为218验收、28历史跳过、10归并、3撤销、45待修（含H180授权不修）、H179修复中1、H66验收保留1。本阶段新增完整交付/历史跳过/归并/撤销均0，有效未修45，另H66保留1。确认清理后的文档/状态收尾暂估0.1–0.5有效小时；策略/设备等待无可靠上界，单独计时；全部剩余170–430有效小时仍为旧低置信粗估，不提供完成率或精确完工日期。
