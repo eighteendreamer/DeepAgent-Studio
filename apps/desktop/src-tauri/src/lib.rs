@@ -26,29 +26,28 @@ use deepagent_app_core::{
     AppService, ArchiveProjectResultDto, ArchiveService, ArchivedConversationDto, AttachmentDto,
     AttachmentIngestDto, AttachmentService, BalanceDto, BudgetConfig, ChatService, CommandDto,
     ConversationMessageDto, CostService, CostSummary, CreatePluginDraftDto, DiagnosticResult,
-    DiffResult, DirectTerminalSessionBackend, FilePreviewService, ForkResultDto,
-    GitBatchCommitPreviewItemDto, GitBatchCommitTargetDto, GitBatchProjectResultDto, GitBranchDto,
-    GitChangesDto, GitCommitMessageDraftDto, GitDiffDto, GitLogEntryDto, GitOperationResultDto,
-    GitProjectStatusDto, GitPushPreviewDto, GitPushRiskScanDto, GitRefCompareDto, GitService,
-    GitWorktreeDto, KeychainStore, KnowledgeDraftDto, KnowledgeDto, KnowledgeHitDto,
-    KnowledgeService, LocalPtyHandle, ManagedFileInventory, McpServerDto, McpService,
-    NewRuntimeLogEntry, OfficeService, PdfRenderResultDto, PluginAppEntry, PluginDto,
+    DiffResult, DirectSandboxBackend, DirectTerminalSessionBackend, FilePreviewService,
+    ForkResultDto, GitBatchCommitPreviewItemDto, GitBatchCommitTargetDto, GitBatchProjectResultDto,
+    GitBranchDto, GitChangesDto, GitCommitMessageDraftDto, GitDiffDto, GitLogEntryDto,
+    GitOperationResultDto, GitProjectStatusDto, GitPushPreviewDto, GitPushRiskScanDto,
+    GitRefCompareDto, GitService, GitWorktreeDto, KeychainStore, KnowledgeDraftDto, KnowledgeDto,
+    KnowledgeHitDto, KnowledgeService, LocalPtyHandle, ManagedFileInventory, McpServerDto,
+    McpService, NewRuntimeLogEntry, OfficeService, PdfRenderResultDto, PluginAppEntry, PluginDto,
     PluginOutputStyleEntry, PluginRoots, PluginRuntimeInspectionDto, PluginScanReportDto,
     PluginService, PluginSummaryDto, PreflightToolCallDto, PreviewMetadataDto, PreviewResultDto,
     ProjectDto, ProjectMapGraphDto, ProjectMapHitDto, ProjectMapImpactDto, ProjectMapNeighborsDto,
     ProjectMapNodeDto, ProjectMapOverviewDto, ProjectMapRefreshDto, ProjectMapService,
     ProjectMapStatusDto, ProjectService, ProjectTrustDto, PtyReadChunk, RecordingService,
     RecordingSessionDto, RewindResultDto, RuntimeBroker, RuntimeLogEntry, RuntimeLogStore,
-    RuntimeProgressDto, RuntimeRootsDto, RuntimeService, RuntimeStatusDto, DirectSandboxBackend,
-    SandboxBackend, SandboxBackendRegistry,
-    SandboxieBackend, SandboxieExecutor, SandboxieService, SandboxieStatusDto, SecretStore,
-    SessionDetailDto, SessionSearchReportDto,
-    SessionStateService, SessionSummaryDto, SessionUiPrefsDto, SettingsService, SettingsView,
-    SkillActivationDto, SkillDto, SkillsMpClientHandle, SkillsRoots, SkillsService, SpeechService,
-    SqliteSecretStore, StoredRunEvent, TerminalResultDto, TerminalService, TerminalShell,
-    TranscriptDto, TranscriptSegmentDto, TrustService, VisionRecognizeRequestDto,
-    VisionRecognizeResultDto, VisionService, VisionSettings, WebSearchSettings, WebSearchSettingsView, WorkspaceInfoDto,
-    WindowsSandboxBackend, WorkspaceService,
+    RuntimeProgressDto, RuntimeRootsDto, RuntimeService, RuntimeStatusDto, SandboxBackend,
+    SandboxBackendRegistry, SandboxieBackend, SandboxieExecutor, SandboxieService,
+    SandboxieStatusDto, SecretStore, SessionDetailDto, SessionSearchReportDto, SessionStateService,
+    SessionSummaryDto, SessionUiPrefsDto, SettingsService, SettingsView, SkillActivationDto,
+    SkillDto, SkillsMpClientHandle, SkillsRoots, SkillsService, SpeechService, SqliteSecretStore,
+    StoredRunEvent, TerminalResultDto, TerminalService, TerminalShell, TranscriptDto,
+    TranscriptSegmentDto, TrustService, VisionRecognizeRequestDto, VisionRecognizeResultDto,
+    VisionService, VisionSettings, WebSearchSettings, WebSearchSettingsView, WindowsSandboxBackend,
+    WorkspaceInfoDto, WorkspaceService,
 };
 use deepagent_models::ReqwestTransport;
 use deepagent_ssh::SshService;
@@ -2313,14 +2312,12 @@ fn canvas_workflow_state_write(
     deepagent_app_core::canvas_workflow_store::CanvasWorkflowWriteReceipt,
     deepagent_app_core::canvas_workflow_store::CanvasWorkflowWriteError,
 > {
-    state
-        .canvas_workflows
-        .write_current(
-            &mode,
-            workspace_id.as_deref(),
-            &graph,
-            expected_revision.as_deref(),
-        )
+    state.canvas_workflows.write_current(
+        &mode,
+        workspace_id.as_deref(),
+        &graph,
+        expected_revision.as_deref(),
+    )
 }
 
 /// List saved workflows (newest first, live slots excluded).
@@ -2772,6 +2769,22 @@ fn canvas_artifact_data_url(
         .map_err(|e| e.to_string())
 }
 
+/// Bounded original document preview; no model call or general host-path access.
+#[tauri::command]
+async fn canvas_document_preview(
+    state: State<'_, AppState>,
+    reference: String,
+    workspace_id: Option<String>,
+) -> Result<String, String> {
+    let artifacts = state.canvas_artifacts.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        artifacts.document_preview(&reference, workspace_id.as_deref())
+    })
+    .await
+    .map_err(|_| "文档预览任务失败".to_string())?
+    .map_err(|_| "文档原件不可用或超过预览限制".to_string())
+}
+
 /// Read one canvas preference document (creative library, snippet library or
 /// workspace output directories). `None` means never written yet.
 #[tauri::command]
@@ -3108,7 +3121,10 @@ fn set_terminal_shell(state: State<'_, AppState>, shell: String) -> Result<Setti
 }
 
 #[tauri::command]
-fn set_reasoning_effort(state: State<'_, AppState>, effort: String) -> Result<SettingsView, String> {
+fn set_reasoning_effort(
+    state: State<'_, AppState>,
+    effort: String,
+) -> Result<SettingsView, String> {
     let parsed = deepagent_models::ReasoningEffort::parse(&effort).ok_or_else(|| {
         format!("unknown reasoning effort '{effort}'; expected none, low, high, or max")
     })?;
@@ -7525,6 +7541,7 @@ pub fn run() {
             canvas_video_trim,
             canvas_video_trim_cancel,
             canvas_artifact_data_url,
+            canvas_document_preview,
             canvas_preference_read,
             canvas_preference_write,
             resolve_approval,

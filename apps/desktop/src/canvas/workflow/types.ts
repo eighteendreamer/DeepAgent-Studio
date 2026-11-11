@@ -84,10 +84,11 @@ export interface NodeConfigSchema {
   maximum?: number;
   minLength?: number;
   minItems?: number;
+  maxItems?: number;
   pattern?: string;
   format?: string;
   additionalProperties?: boolean | NodeConfigSchema;
-  "x-widget"?: "textarea" | "code" | "variable" | "model" | "tool" | "json" | "password";
+  "x-widget"?: "textarea" | "code" | "variable" | "model" | "tool" | "json" | "password" | "documents";
   /** Model capability used by the model picker (defaults to text for legacy schemas). */
   "x-model-scenario"?: ModelScenario;
   "x-enum-labels"?: string[];
@@ -490,7 +491,6 @@ export const PROFESSIONAL_NODE_PICKER_TABS: ProfessionalNodePickerTab[] = [
           { kind: "code", label: "代码执行", icon: "code" },
           { kind: "template-transform", label: "模板转换", icon: "file-code" },
           { kind: "variable-aggregator", label: "变量聚合器", icon: "layer-group" },
-          { kind: "document-extractor", label: "文档提取器", icon: "file-text" },
           { kind: "variable-assigner", label: "变量赋值", icon: "equal" },
           { kind: "http-request", label: "HTTP 请求", icon: "globe" },
           { kind: "list-operator", label: "列表操作", icon: "list" },
@@ -554,7 +554,6 @@ export const PROFESSIONAL_NODE_CATEGORIES: ProfessionalNodeCategory[] = [
     items: [
       { kind: "knowledge-retrieval", label: "知识检索", icon: "book" },
       { kind: "knowledge-index", label: "知识库索引", icon: "database" },
-      { kind: "document-extractor", label: "文档提取", icon: "file-text" },
     ],
   },
   {

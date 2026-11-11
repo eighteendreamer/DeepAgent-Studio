@@ -337,6 +337,33 @@ test("Agent V2 stays visible for existing graphs but is explicitly reserved", ()
   assert.equal(definition.executor, "model");
 });
 
+test("H179 standalone document extraction stays recoverable but is absent from new-node catalogs", () => {
+  assert.equal(registry.getNodeDefinition("document-extractor").availability, "reserved");
+  const legacy = normalizeProfessionalData({ kind: "document-extractor", docExtractorFileVariable: "old-file", docExtractorIsArray: true });
+  assert.equal(legacy.kind, "document-extractor");
+  assert.equal(legacy.docExtractorFileVariable, "old-file");
+  assert.equal(legacy.docExtractorIsArray, true);
+  const types = loadTypeScript("../src/canvas/workflow/types.ts");
+  for (const catalog of [types.PROFESSIONAL_NODE_CATEGORIES, types.PROFESSIONAL_NODE_PICKER_TABS]) {
+    assert.ok(Array.isArray(catalog));
+    assert.ok(!JSON.stringify(catalog).includes('"document-extractor"'));
+  }
+});
+
+test("H179 professional LLM publishes a bounded document attachment field, without changing old prompts", () => {
+  const schema=schemas.NODE_CONFIG_SCHEMAS.llm.properties.llmDocuments;
+  assert.ok(schema, "LLM attachments are missing from the real schema");
+  assert.equal(schema["x-widget"],"documents");
+  assert.equal(schema.maxItems,5);
+  assert.deepEqual(createDefaultNodeData("llm").llmDocuments,[]);
+  const imported=normalizeProfessionalData({kind:"llm",llmPrompt:"existing prompt"});
+  assert.equal(imported.llmPrompt,"existing prompt");
+  assert.deepEqual(imported.llmDocuments,[]);
+  const document={reference:"artifact://one",name:"one.txt"};
+  assert.equal(validateSchemaValue(schema,[document]).length,0);
+  assert.ok(validateSchemaValue(schema,Array.from({length:6},(_,i)=>({reference:`artifact://${i}`,name:`${i}.txt`}))).length);
+});
+
 test("embedding schema reaches the real model editor with embedding-only options; legacy text schemas stay text", () => {
   const React = require("react");
   const { renderToStaticMarkup } = require("react-dom/server");
@@ -363,6 +390,7 @@ test("embedding schema reaches the real model editor with embedding-only options
     },
     "./VariablePicker": { VariablePicker: noop },
     "./NodeOutputPanel": { NodeOutputPanel: noop },
+    "./DocumentAttachments": { DocumentAttachments: noop },
   });
   for (const kind of ["embeddings", "llm"]) {
     renderToStaticMarkup(React.createElement(SchemaObjectEditor, {

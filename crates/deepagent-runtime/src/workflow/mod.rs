@@ -5,6 +5,7 @@ mod branches;
 pub mod canvas;
 pub mod code;
 mod conditions;
+pub mod documents;
 mod graph;
 mod inputs;
 mod iteration;

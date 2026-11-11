@@ -102,6 +102,9 @@ pub fn compile(definition: WorkflowDefinition) -> Result<CompiledWorkflow> {
     let mut handles = Vec::with_capacity(definition.nodes.len());
     let mut start = None;
     for (index, node) in definition.nodes.iter().enumerate() {
+        if node.kind == "document-extractor" {
+            return Err(CoreError::invalid("UnsupportedOperation: standalone document-extractor is retired; attach documents to an llm node instead"));
+        }
         validate_id(&node.id, "node ID")?;
         if indices.insert(node.id.as_str(), index).is_some() {
             return Err(CoreError::invalid(format!(
@@ -1317,7 +1320,14 @@ mod tests {
                         vec![edge("entry", "start", "n"), exit],
                     )
                 };
-                assert!(compile(definition).is_ok(), "{kind}");
+                if kind == "document-extractor" {
+                    assert!(compile(definition)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("UnsupportedOperation"));
+                } else {
+                    assert!(compile(definition).is_ok(), "{kind}");
+                }
             }
         }
         let unknown = node("n", "professional-llm", json!({}));

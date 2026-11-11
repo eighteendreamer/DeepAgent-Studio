@@ -27,6 +27,7 @@ use serde_json::{json, Map, Value};
 use super::code::{
     CodeBridge, CodeInvocation, CodeOutput, CodeRequest, CodeResponse, CODE_EXECUTE_TOOL,
 };
+use super::documents::{DocumentSelection, PreparedDocuments, DOCUMENT_READ_TOOL};
 use super::graph::CompiledWorkflow;
 use super::knowledge::KnowledgeRetriever;
 use super::node_events::{NodeEventPublisher, NodeExecutionEvent, NodeExecutionStatus};
@@ -54,6 +55,10 @@ struct PendingNodeTool {
 
 enum PendingNodeToolKind {
     Http,
+    Documents {
+        selection: DocumentSelection,
+        config: Map<String, Value>,
+    },
     Code {
         invocation: CodeInvocation,
         outputs: Vec<CodeOutput>,
@@ -64,6 +69,7 @@ impl PendingNodeToolKind {
     fn node_kind(&self) -> &'static str {
         match self {
             Self::Http => "http-request",
+            Self::Documents { .. } => "llm",
             Self::Code { .. } => "code",
         }
     }
@@ -71,6 +77,7 @@ impl PendingNodeToolKind {
     fn tool_name(&self) -> &'static str {
         match self {
             Self::Http => "http_request",
+            Self::Documents { .. } => DOCUMENT_READ_TOOL,
             Self::Code { .. } => CODE_EXECUTE_TOOL,
         }
     }
@@ -1047,6 +1054,18 @@ impl WorkflowAgent {
     }
 
     async fn execute_llm(&mut self, kind: &str, config: &Map<String, Value>) -> Result<Value> {
+        self.execute_llm_with_documents(kind, config, None).await
+    }
+
+    async fn execute_llm_with_documents(
+        &mut self,
+        kind: &str,
+        config: &Map<String, Value>,
+        documents: Option<&PreparedDocuments>,
+    ) -> Result<Value> {
+        if self.is_cancelled() {
+            return Err(CoreError::other("workflow cancelled before model dispatch"));
+        }
         let model_ref = config
             .get("llmModel")
             .or_else(|| config.get("model"))
@@ -1113,6 +1132,7 @@ impl WorkflowAgent {
                             .and_then(Value::as_u64)
                             .map(|value| value as u32),
                         images: Vec::new(),
+                        documents: documents.cloned(),
                     },
                     self.usage.clone(),
                 )
@@ -1989,6 +2009,23 @@ impl Agent for WorkflowAgent {
             let mut updates = BTreeMap::new();
             let result = match pending.kind {
                 PendingNodeToolKind::Http => result,
+                PendingNodeToolKind::Documents { selection, config } => {
+                    match result.and_then(|value| {
+                        let documents: PreparedDocuments =
+                            serde_json::from_value(value).map_err(|_| {
+                                super::documents::invalid("malformed document tool response")
+                            })?;
+                        documents.validate(&selection)?;
+                        Ok(documents)
+                    }) {
+                        Ok(documents) => {
+                            updates.insert("documents".into(), documents.receipts());
+                            self.execute_llm_with_documents("llm", &config, Some(&documents))
+                                .await
+                        }
+                        Err(error) => Err(error),
+                    }
+                }
                 PendingNodeToolKind::Code {
                     invocation,
                     outputs,
@@ -2114,6 +2151,33 @@ impl Agent for WorkflowAgent {
             return Ok(AgentDecision::CallTool(
                 deepagent_tools::ToolInvocation::new("http_request", arguments).with_id(call_id),
             ));
+        }
+
+        if node_kind == "llm" {
+            let selection = match DocumentSelection::from_config(&node_config, &self.outputs) {
+                Ok(selection) => selection,
+                Err(error) => return self.finish_node(node_id, Err(error), 0),
+            };
+            if !selection.documents.is_empty() {
+                if self.canvas_bridge.is_none() {
+                    return self.finish_node(node_id, Err(CoreError::invalid("DocumentInputInvalid: document attachments require the canvas model gateway")), 0);
+                }
+                let arguments = serde_json::to_value(&selection)?;
+                let call_id = format!("workflow_documents_{}", deepagent_core::id::EventId::new());
+                self.pending_tool = Some(PendingNodeTool {
+                    node_id,
+                    call_id: call_id.clone(),
+                    started: node_start,
+                    kind: PendingNodeToolKind::Documents {
+                        selection,
+                        config: self.resolve_config(&node_config)?,
+                    },
+                });
+                return Ok(AgentDecision::CallTool(
+                    deepagent_tools::ToolInvocation::new(DOCUMENT_READ_TOOL, arguments)
+                        .with_id(call_id),
+                ));
+            }
         }
 
         if node_kind == "code" {

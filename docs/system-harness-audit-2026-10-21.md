@@ -7198,7 +7198,7 @@ Finding F-H177（原失败与E01～02）：原“未知target空跑succeeded”�
 
 ### H-179：专业画布 `document-extractor` 标记为 enabled，但正式运行没有 executor
 
-**修复跟踪（2026-11-11，修复中：用户轻量定位与文档输入范围澄清）**：原probe再次101、0/1、UnsupportedNode的失败证据保留。用户随后要求参考本地Dify、定位轻量专业工作流，并明确还需LLM读取上传文档、先确认输入范围；不再将此前完整独立提取器/OCR讨论当作已定需求。现已新增真实本地HTTP/SQLite/Kernel复核，证明专业LLM显式及默认路由复用现有画布catalog/gateway、错误路由不切主聊天模型、用量与唯一终态冷重开可恢复；1项复核及usage16项、前端123项通过，fmt/scoped lint通过但有旧警告。仍未实现文档附件输入，提出的格式/5份/10MiB/10万字符及是否停用独立提取节点都只是待批准建议；不据模型接入复核关闭本项。详见台账E-H179-01～03，原始失败保留如下。
+**修复跟踪（2026-11-11，修复中：功能已验收，待独立提交与清理）**：用户确认「A→B→C，B即使用现有画布服务的LLM节点，提示词和附件同次发送」，并明确接受现有协议的首版格式范围，不再另选供应商或扩协议。已撤除本轮未提交的本地parser/worker、宿主flag及新增解析依赖；复用原Tool/Kernel只读权限、受管artifact完整性/namespace、run-local一次性快照及CanvasModelGateway。现有OpenAI Chat发PDF file块，Anthropic Messages发PDF或纯文本document块，Gemini generateContent发PDF/纯文本inline_data；不为附件偷偷换端点/模型，不转换Office或丢附件。七种格式可上传预览，但Office原件读取明确UnsupportedCapability、零请求。最终24份冻结源码无漂移；库4/0/0、完整workflow144/0/28，完整workspace156目标5246/4/172（四项既有DACL/CLI快照/H306失败保留），前端build、root/Tauri fmt、all-targets check、scoped lint及Tauri check通过；strict lint被旧Models clone_on_copy阻断，不宣称全仓全绿。待独立commit和安全清理后回填，见[进度E-H179-11～12](system-harness-repair-progress.md#h-179-文档输入与轻量工作流修复中2026-11-11原件路线已实现最终验收进行中)。原审计与E01～10证据保留；旧本地解析测试不作为新原件路线验收。
 
 **级别：中（P2，公开能力与工作流可用性）；触发条件：在专业画布选择“文档提取”节点并提交工作流。** 前端提供文件变量、数组模式和 `text` 输出，用户可以把它接入图；后端图编译接受该 kind，但运行时没有文档解析器，节点进入 `Failed`，工作流不能完成。
 

@@ -58,6 +58,9 @@ pub struct CanvasCompletionRequest {
     pub max_tokens: Option<u32>,
     /// Data URLs of resolved image inputs, for vision prompts.
     pub images: Vec<String>,
+    /// One-use admission receipt for original documents. No bytes or extracted text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documents: Option<super::documents::PreparedDocuments>,
 }
 
 /// Completion result, including which model actually answered so the node
@@ -346,6 +349,11 @@ pub trait CanvasModelBridge: Send + Sync {
         request: CanvasCompletionRequest,
         usage: Arc<dyn CanvasUsageSink>,
     ) -> Result<CanvasCompletionResponse> {
+        if request.documents.is_some() {
+            return Err(deepagent_core::error::CoreError::invalid(
+                "UnsupportedCapability: this canvas bridge has not implemented original document input",
+            ));
+        }
         usage.before_call()?;
         let response = self.complete(request).await?;
         usage.record(CanvasUsageReport {

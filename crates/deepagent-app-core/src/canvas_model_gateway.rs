@@ -50,6 +50,7 @@ mod media_byte_limit;
 use media_byte_limit::{MediaByteLimit, MediaLimitKind};
 
 mod speech_output;
+pub use crate::canvas_documents::AdmittedDocuments;
 use speech_output::{GatewayOutput, SpeechOutputPolicy, SpeechOutputTarget};
 
 /// Stable error codes surfaced to the UI, CLI and events.
@@ -568,6 +569,8 @@ pub struct CanvasModelRequest {
     /// the provider-specific field.
     pub max_tokens: Option<u32>,
     pub images: Vec<CanvasImageInput>,
+    /// Immutable original snapshots admitted through this run's read-only tool.
+    pub documents: Option<Arc<AdmittedDocuments>>,
     pub texts: Vec<String>,
     pub size: Option<String>,
     pub audio: CanvasAudioInput,
@@ -583,6 +586,7 @@ impl CanvasModelRequest {
             temperature: None,
             max_tokens: None,
             images: Vec::new(),
+            documents: None,
             texts: Vec::new(),
             size: None,
             audio: CanvasAudioInput::default(),
@@ -681,6 +685,7 @@ pub struct CanvasModelGateway {
     /// Where generated media is stored. Without it, image calls have nowhere to
     /// put their bytes, so they fail instead of emitting inline base64.
     artifacts: Option<std::sync::Arc<crate::canvas_artifact_service::CanvasArtifactService>>,
+    document_inputs: Arc<crate::canvas_documents::DocumentInputs>,
     /// Immutable namespace captured at workflow admission, never active-project state.
     workspace_id: Option<String>,
     pending_artifacts: Arc<Mutex<HashMap<String, PendingArtifact>>>,
@@ -870,6 +875,7 @@ impl CanvasModelGateway {
             providers,
             http,
             artifacts: None,
+            document_inputs: Arc::new(Default::default()),
             workspace_id: None,
             pending_artifacts: Arc::new(Mutex::new(HashMap::new())),
             public_http: Arc::new(PublicHttpClient::default()),
@@ -890,6 +896,7 @@ impl CanvasModelGateway {
             providers: self.providers.clone(),
             http: self.http.clone(),
             artifacts: self.artifacts.clone(),
+            document_inputs: Arc::new(Default::default()),
             workspace_id: crate::canvas_scope::normalize_workspace_id(workspace_id)?,
             pending_artifacts: Arc::new(Mutex::new(HashMap::new())),
             public_http: self.public_http.clone(),
@@ -1203,6 +1210,14 @@ impl CanvasModelGateway {
             kind: ArtifactFetchKind::Image,
             enabled: true,
         }
+    }
+
+    pub(crate) fn document_read_tool(&self) -> crate::canvas_documents::DocumentReadTool {
+        crate::canvas_documents::DocumentReadTool::new(
+            self.artifacts.clone(),
+            self.workspace_id.clone(),
+        )
+        .with_inputs(self.document_inputs.clone())
     }
 
     /// Bind the same resolved backend capability as the existing typed HTTP tool.
@@ -1549,9 +1564,17 @@ impl CanvasModelGateway {
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok());
             record_response_usage(candidate, kind, value.as_ref(), usage_sink)?;
+            let body = body?;
+            let diagnostic = String::from_utf8_lossy(&body);
+            // A file-capable provider may echo original content in errors.
+            // Preserve the existing status classification, never its body.
             return Err(classify_status(
                 status.as_u16(),
-                &String::from_utf8_lossy(&body?),
+                if request.documents.is_some() {
+                    "document request rejected; provider error content omitted"
+                } else {
+                    &diagnostic
+                },
             ));
         }
         if kind == CanvasRequestKind::SpeechSynthesize {
@@ -1600,7 +1623,14 @@ impl CanvasModelGateway {
             )
         })?;
         if let Some(err) = provider_error_message(&value) {
-            return Err(CanvasError::new(CanvasErrorCode::ProviderFailure, err));
+            return Err(CanvasError::new(
+                CanvasErrorCode::ProviderFailure,
+                if request.documents.is_some() {
+                    "document request failed; provider error content omitted".to_owned()
+                } else {
+                    err
+                },
+            ));
         }
         parse_output(candidate, kind, &value, self.image_output_limit)
             .await
@@ -1871,6 +1901,7 @@ impl CanvasModelGateway {
         );
         let endpoint = endpoint_result.unwrap_or_default();
         let request = CanvasModelRequest {
+            documents: None,
             audio: Default::default(),
             operation: match scenario {
                 CanvasScenario::Embedding => CanvasOperation::Embedding,
@@ -2190,6 +2221,7 @@ fn build_request_body(
     request: &CanvasModelRequest,
 ) -> CanvasResult<Value> {
     validate_generation_options(protocol, kind, request)?;
+    validate_native_document_inputs(protocol, kind, request)?;
     Ok(match (protocol, kind) {
         (CanvasProtocol::OpenAi, CanvasRequestKind::Chat) => {
             let mut messages = Vec::new();
@@ -2249,7 +2281,7 @@ fn build_request_body(
             let mut body = json!({
                 "model": model_id,
                 "max_tokens": 4096,
-                "messages": [{ "role": "user", "content": anthropic_user_content(request) }],
+                "messages": [{ "role": "user", "content": anthropic_user_content(request)? }],
             });
             if let Some(max_tokens) = request.max_tokens {
                 body["max_tokens"] = json!(max_tokens);
@@ -2397,17 +2429,29 @@ fn validate_generation_options(
 const MAX_ANTHROPIC_IMAGES: usize = 20;
 
 fn openai_user_content(request: &CanvasModelRequest) -> Value {
-    if request.images.is_empty() {
+    if request.images.is_empty() && request.documents.is_none() {
         return json!(request.prompt);
     }
     let mut parts = vec![json!({ "type": "text", "text": request.prompt })];
     for image in &request.images {
         parts.push(json!({ "type": "image_url", "image_url": { "url": image.data_url } }));
     }
+    if let Some(documents) = &request.documents {
+        for file in &documents.files {
+            parts.push(json!({
+                "type": "file",
+                "file": {
+                    "filename": file.name,
+                    "file_data": format!("data:{};base64,{}", file.mime,
+                        base64::engine::general_purpose::STANDARD.encode(&file.bytes))
+                }
+            }));
+        }
+    }
     Value::Array(parts)
 }
 
-fn anthropic_user_content(request: &CanvasModelRequest) -> Value {
+fn anthropic_user_content(request: &CanvasModelRequest) -> CanvasResult<Value> {
     let mut parts = vec![json!({ "type": "text", "text": request.prompt })];
     for image in &request.images {
         if let Some((mime, data)) = split_data_url(&image.data_url) {
@@ -2417,7 +2461,27 @@ fn anthropic_user_content(request: &CanvasModelRequest) -> Value {
             }));
         }
     }
-    Value::Array(parts)
+    if let Some(documents) = &request.documents {
+        for file in &documents.files {
+            let source = if file.mime == "application/pdf" {
+                json!({
+                    "type": "base64", "media_type": "application/pdf",
+                    "data": base64::engine::general_purpose::STANDARD.encode(&file.bytes)
+                })
+            } else {
+                // A plain-text document source is a native Messages content
+                // block, not text extracted from a binary document or a prompt.
+                json!({
+                    "type": "text", "media_type": "text/plain",
+                    "data": std::str::from_utf8(&file.bytes).map_err(|_| {
+                        CanvasError::invalid("native text document is not valid UTF-8")
+                    })?
+                })
+            };
+            parts.push(json!({"type":"document","title":file.name,"source":source}));
+        }
+    }
+    Ok(Value::Array(parts))
 }
 
 fn gemini_parts(request: &CanvasModelRequest) -> Vec<Value> {
@@ -2427,7 +2491,75 @@ fn gemini_parts(request: &CanvasModelRequest) -> Vec<Value> {
             parts.push(json!({ "inline_data": { "mime_type": mime, "data": data } }));
         }
     }
+    if let Some(documents) = &request.documents {
+        for file in &documents.files {
+            parts.push(json!({
+                "inline_data": {
+                    "mime_type": file.mime,
+                    "data": base64::engine::general_purpose::STANDARD.encode(&file.bytes)
+                }
+            }));
+        }
+    }
     parts
+}
+
+/// Protocol capabilities only; the configured upstream remains authoritative
+/// about the selected model. Never convert unsupported binary files to text,
+/// switch protocols/models, or retry without attachments.
+fn validate_native_document_inputs(
+    protocol: CanvasProtocol,
+    kind: CanvasRequestKind,
+    request: &CanvasModelRequest,
+) -> CanvasResult<()> {
+    let Some(documents) = &request.documents else {
+        return Ok(());
+    };
+    if matches!(protocol, CanvasProtocol::OpenAi | CanvasProtocol::Gemini)
+        && documents
+            .files
+            .iter()
+            .map(|file| file.bytes.len() as u64)
+            .sum::<u64>()
+            >= 50_000_000
+    {
+        return Err(CanvasError::invalid(
+            "original document batch reaches the protocol's 50MB inline limit; split the selection explicitly, no automatic extra model calls",
+        ));
+    }
+    if kind != CanvasRequestKind::Chat {
+        return Err(CanvasError::new(
+            CanvasErrorCode::UnsupportedCapability,
+            "original documents require a text-model node",
+        ));
+    }
+    for file in &documents.files {
+        let plain = matches!(file.mime, "text/plain" | "text/markdown" | "text/csv");
+        let supported = match protocol {
+            CanvasProtocol::OpenAi => file.mime == "application/pdf",
+            CanvasProtocol::Anthropic | CanvasProtocol::Gemini => {
+                file.mime == "application/pdf" || plain
+            }
+        };
+        if !supported {
+            return Err(CanvasError::new(
+                CanvasErrorCode::UnsupportedCapability,
+                format!(
+                    "{} document input does not support {}; the original remains previewable; no local text extraction or model substitution was performed",
+                    protocol.as_str(), file.mime
+                ),
+            ));
+        }
+        if protocol == CanvasProtocol::Anthropic
+            && plain
+            && std::str::from_utf8(&file.bytes).is_err()
+        {
+            return Err(CanvasError::invalid(
+                "native text document is not valid UTF-8",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Embedding input: text list when present, otherwise a single image payload.
@@ -3332,6 +3464,11 @@ impl CanvasModelGateway {
             temperature: request.temperature,
             max_tokens: request.max_tokens,
             images: self.resolve_image_inputs(&request.images)?,
+            documents: request
+                .documents
+                .as_ref()
+                .map(|receipt| self.document_inputs.take(receipt))
+                .transpose()?,
             texts: Vec::new(),
             size: None,
             timeout_ms: 120_000,
@@ -3423,6 +3560,7 @@ impl CanvasModelGateway {
             temperature: None,
             max_tokens: None,
             images,
+            documents: None,
             texts: Vec::new(),
             size: request.size.clone(),
             audio: CanvasAudioInput::default(),
@@ -3590,6 +3728,7 @@ impl CanvasModelBridge for CanvasModelGateway {
             temperature: None,
             max_tokens: None,
             images: self.resolve_image_inputs(&request.reference_images)?,
+            documents: None,
             texts: Vec::new(),
             size: request.size.clone(),
             timeout_ms: 300_000,
@@ -3692,6 +3831,7 @@ impl CanvasModelBridge for CanvasModelGateway {
         let model_request = CanvasModelRequest {
             operation,
             prompt: request.text.clone(),
+            documents: None,
             system_prompt: None,
             temperature: None,
             max_tokens: None,
@@ -3907,6 +4047,7 @@ impl CanvasModelGateway {
             max_tokens: None,
             images: Vec::new(),
             texts: request.texts.clone(),
+            documents: None,
             size: None,
             timeout_ms: 120_000,
         };
@@ -4685,6 +4826,7 @@ mod tests {
     #[test]
     fn body_builders_put_the_model_only_in_the_body() {
         let request = CanvasModelRequest {
+            documents: None,
             audio: Default::default(),
             operation: CanvasOperation::Embedding,
             prompt: "hello".to_string(),
@@ -4816,6 +4958,7 @@ mod tests {
     #[test]
     fn image_edit_body_requires_reference_images() {
         let request = CanvasModelRequest {
+            documents: None,
             audio: Default::default(),
             operation: CanvasOperation::ImageEdit,
             prompt: "change the sky".to_string(),
@@ -5156,6 +5299,7 @@ mod tests {
             .expect("provider");
         let gateway = CanvasModelGateway::new(providers);
         let request = CanvasModelRequest {
+            documents: None,
             operation: CanvasOperation::ImageEdit,
             prompt: "把两张图合成".to_string(),
             system_prompt: None,
@@ -5287,6 +5431,7 @@ mod tests {
     #[test]
     fn image_operations_route_to_their_own_endpoints() {
         let request = CanvasModelRequest {
+            documents: None,
             audio: Default::default(),
             operation: CanvasOperation::ImageGenerate,
             prompt: "a cube".to_string(),
@@ -5399,6 +5544,7 @@ mod tests {
         let (gateway, _) = local_text_gateway(base_url, "other-text-model");
 
         let result = rt.block_on(gateway.complete(CanvasCompletionRequest {
+            documents: None,
             model_ref: "deepseek-chat".to_string(),
             node_kind: String::new(),
             prompt_policy: CanvasPromptPolicy::Professional,
@@ -5437,6 +5583,7 @@ mod tests {
 
         let response = rt
             .block_on(gateway.complete(CanvasCompletionRequest {
+                documents: None,
                 model_ref: format!("{provider_id}::deepseek-flash"),
                 node_kind: String::new(),
                 prompt_policy: CanvasPromptPolicy::Professional,
@@ -5480,6 +5627,7 @@ mod tests {
         let (gateway, provider_id) = local_text_gateway(base_url, "deepseek-flash");
 
         let result = rt.block_on(gateway.complete(CanvasCompletionRequest {
+            documents: None,
             model_ref: format!("{provider_id}::deepseek-flash"),
             node_kind: String::new(),
             prompt_policy: CanvasPromptPolicy::Professional,
@@ -5612,6 +5760,7 @@ mod tests {
 
         let response = rt
             .block_on(gateway.complete(CanvasCompletionRequest {
+                documents: None,
                 model_ref: format!("{provider_id}::deepseek-flash"),
                 node_kind: String::new(),
                 prompt_policy: CanvasPromptPolicy::Professional,
@@ -5947,6 +6096,7 @@ mod tests {
             max_tokens: None,
             images: Vec::new(),
             texts: vec!["ping".to_string()],
+            documents: None,
             size: None,
             timeout_ms: 5000,
         };

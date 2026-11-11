@@ -1593,6 +1593,7 @@ impl<'a> RunAssembler<'a> {
             .map(|gateway| gateway.scoped_for_run(workspace_id.as_deref()))
             .transpose()?;
         if let Some(gateway) = canvas_run_gateway.as_ref() {
+            tool_registry.register(Arc::new(gateway.document_read_tool()))?;
             // Provider-controlled image URLs are deferred by the gateway and
             // consumed only through the canonical kernel tool pipeline.  The
             // signed URL never enters the invocation arguments or events.

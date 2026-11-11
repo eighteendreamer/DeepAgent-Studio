@@ -31,7 +31,7 @@
     "test:composer-activity": "node --test scripts/check-composer-activity.test.cjs",
     "test:continuous-corners": "node --test scripts/check-continuous-corners.test.mjs",
     "test:onboarding": "node --test scripts/check-onboarding-entrance.test.cjs",
-    "test:workflow": "node --test scripts/check-workflow.test.cjs scripts/audit-workflow-isolation.test.cjs",
+    "test:workflow": "node --test scripts/check-workflow.test.cjs scripts/check-workflow-documents.test.cjs scripts/audit-workflow-isolation.test.cjs",
     "test:canvas-ipc": "node --test scripts/check-canvas-ipc.test.cjs scripts/check-canvas-media-scope.test.cjs scripts/check-virtual-list.test.cjs scripts/check-canvas-persistence.test.cjs scripts/check-canvas-overlay-events.test.cjs scripts/audit-canvas-preference-read-failure.test.cjs scripts/audit-canvas-preference-legacy-migration-loss.test.cjs scripts/audit-canvas-preference-edit-during-hydration.test.cjs",
     "test:terminal-session": "node --test scripts/check-terminal-session.test.cjs",
     "test:ssh-host-trust": "node --test scripts/check-ssh-host-trust.test.cjs",

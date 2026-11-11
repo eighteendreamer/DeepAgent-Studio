@@ -13,9 +13,9 @@
 | 归并 | 10 | H173同根归并H127；H243归并H53；只在唯一有效项修复，不增加完成数 |
 | 撤销 | 3 | H-211/H-263/H-305，不作为缺陷或修复成果 |
 | 已修复（验收保留） | 1 | H66按用户2026-11-10收尾要求交付代码；现有定向验证有效，不记作完整验收通过，残余范围见E-H66-08 |
-| 修复中 | 1 | H179按用户轻量定位重新核对；LLM复用网关真实回归通过，文档输入首版范围仍待确认 |
+| 修复中 | 1 | H179原件输入及下游传递已实现并取得本机验收结果，当前仅待独立提交、产物清理和hash回填，见E12；全仓4个既有失败保留 |
 | 待修复 | 45 | 含H180授权不修，实际有效待修44；另H179修复中1、H66验收保留1，未完整闭环槽位47，实际待处理46 |
-| 阻塞待处理 | 0 | H179新需求澄清带来可验证进展，尚未完成，见E-H179-03；不把建议当已批准 |
+| 阻塞待处理 | 0 | E09旧PDF页策略阻塞已被用户新的无本地提取范围取代，目标已恢复active；不把新范围冒称实现完成 |
 
 未完整闭环槽位当前为 **47（其中H-180授权跳过；有效待修45项，另H-66验收保留1项）**；不提供完成率。当前218项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301/H-232/H-68/H-177/H-174/H-54/H-55在各自复核前已随共享边界或ReasoningEffort迁移修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4/3cabd45f/f97db714/416df3e9/6bc2d660/0aa4fd06及真实复核单独列明，合计28项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。2026-11-05本轮H239新增验收1后，H287依据新D:继承控制位反例重新打开1，其后本轮H287按E21返修恢复验收，当前161，其后H213新增验收1，当前162，其后H212新增验收1，当前163，其后H221新增验收1，当前164，其后H222新增验收1为165，H150新增验收1为166，本轮H223新增验收1为167，其后H267按E03新增验收1为168；其后H268按E04新增验收1为169；其后H293按E06新增验收1为170；本轮H84按E03新增验收1为171；本轮H70按E07新增验收1为172；本轮H68按E04新增历史跳过1，修复数仍172；本轮H69按E06新增验收1为173；本轮H71按E06新增验收1为174；本轮H82按E04新增验收1为175；本轮H209按E04新增验收1为176；本轮H210按E05新增验收1为177；本轮H200按E04新增验收1为178；本轮H204按E04新增验收1为179，H90同根归并使归并数为8；11-07本轮H205按E03新增验收1为180；本轮H206按E03新增验收1为181；本轮H207按E03新增验收1为182；本轮H256按E03新增验收1为183；本轮H265按E03新增验收1为184；本轮H266按E03新增验收1为185；本轮H295按E03新增验收1为186；本轮H215按E03新增验收1为187；本轮H216按E03新增验收1为188；本轮H126按E03新增验收1为189；本轮H167按E03新增验收1为190；本轮H248按E03新增验收1为191；本轮H292按E03新增验收1为192；本轮H177按E02历史跳过1，修复数仍192；本轮H176按E03新增验收1为193；本轮H174按E02历史跳过1，修复数仍193；本轮H228按E03新增验收1为194；本轮H91按E04新增验收1为195；历史f2efc1b5与E-H287-01～20不删除。本轮H-116新增验收1，累计205项；本轮H-117新增验收1，累计206项；其后H173同根归并H127；H127按E04新增验收1，累计207，修复中0；58个未关闭槽位含H-180授权跳过，实际待处理57项。
 
@@ -6435,7 +6435,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-176：工作流 `knowledgeBaseId` 是死字段，知识检索节点无条件混合 project/global vault](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | 原失败与TDD红保留，限E-H176-03本机范围；不归并H51 | typed scope贯穿原检索链，dense/BM25候选前资格过滤与单次运行内容快照；输出scope/revision/来源 | Memory42、Knowledge80、Runtime workflow124、workflow136/0/29；Desktop显式1/0、AppCore1592；workspace4923/1既有H306/198；前端build与Tauri通过，strict既有阻断见E03 | `1fc591993bafba88657aff2624ea1d12094a5b0f`；另docs回填 | 旧缺/空mixed、新建project、未知前置拒绝；Rust源码接口变化，无SQL迁移；未验跨OS/跨进程resume/真实用户UI，清理剩1,281,648,842字节拒绝后停止，E04；已独立fix、另docs回填；下一H174，本机行为剩余0；整体200–400有效小时低置信历史粗估，环境等待另计 |
 | [H-177：未知 `target_node_id` 被当作空工作流成功，重跑/恢复目标没有 admission 校验](system-harness-audit-2026-10-21.md) | P2 | 历史已修复跳过 | E01原probe已1/0，E02追溯H196准入生产416df3e9并独立验收，不新增生产修复 | 既有WorkflowAgent::new先查目标身份，错误走原唯一failed；本轮只转默认/补回归 | 原probe1/0、新默认2/0、完整workflow131/0/29忽略、Runtime workflow121/0、真实Desktop seam1/0；fmt过、strict旧失败，未验项见E02 | 历史生产416df3e9885cec1c3b16caf62e66ccc3cf49c222；本次回归`3d286e3db0859f0ee089cc0c8254645d64a4d489`；另docs回填 | v1 fresh recompute非resume，原失败保留；本项0，后续实际77，下一H176；总200–400低置信有效小时，等待另计 |
 | [H-178：专业画布 `code` 节点标记为 enabled，但脚本从未执行且错误被伪造成成功](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H178-M01～05；原red保留，限所列Windows受管Node范围 | 集成ede16557本项30文件；一次性私有句柄接通既有Kernel/Broker/严格LPAC SandboxBackend，保留主线即时计费 | Runtime工作流85/0；工作流41/0/27；真实八门禁各1/0/0；全仓4135/1/253仅H306；CLI/Tauri/前端/SDK/fmt过，严格lint旧诊断未过见M04 | `a51cab3c100af581c69196476de42d1c3bce7dfe`（源实现ede16557） | 无包身份宿主+Node24.21.0本机范围；Python/其他OS/GUI未验，其他后端无typed profile明确拒绝；无迁移；本项剩0，下一H-181；154有效未关闭含H180授权跳过，总200–400有效小时未校准，等待另计 |
-| [H-179：专业画布 `document-extractor` 标记为 enabled，但正式运行没有 executor](system-harness-audit-2026-10-21.md#h-179专业画布-document-extractor-标记为-enabled但正式运行没有-executor) | P2 | 修复中 | E-H179-01～03保留原失败；用户改为轻量工作流定位，要求LLM读取文档，首版范围待确认 | 原节点没有执行器；已证明专业LLM复用现有画布catalog/gateway，缺的是文档输入与准备，不另建模型链 | 原probe101、0/1；新增真实回环LLM复核1/0，usage16/0、前端123/0、fmt/scoped lint通过但保留旧警告；无文档读取验收 | 无生产修复提交；准备证据`0095b1bd`及本轮回归另提交 | E03所列格式/5份/10MiB/10万字符只是建议；是否停用独立提取节点也未确认；不新增OCR/模型请求；全余170–430有效小时旧估，等待另计 |
+| [H-179：专业画布 `document-extractor` 标记为 enabled，但正式运行没有 executor](system-harness-audit-2026-10-21.md#h-179专业画布-document-extractor-标记为-enabled但正式运行没有-executor) | P2 | 修复中 | E01～12保留证据；用户接受现有协议首版格式范围，不做本地提取/不另选供应商；不归并H180 | 受管原件预览；只读工具准入与run-local一次性快照，经既有网关发原生document/file块；撤除本轮parser/worker；旧独立节点编译前明确拒绝 | E12库4/0/0；完整workflow144/0/28；完整workspace5246/4旧失败/172忽略；前端build、all-targets check、root/Tauri fmt、scoped lint与Tauri check通过；strict旧Models失败保留 | 本次准备独立fix提交；随后回填hash，不反复amend；准备/复核0095b1bd、6aa47952不是生产fix | 已验收范围见E11～12，Office仅预览、当前协议读取明确拒绝；待提交/安全清理，约0.5–1.5有效小时；全余170–430低置信旧粗估，设备/策略/依赖等待另计 |
 | [H-180：专业画布 `human-input` 节点不进入统一人工输入/审批生命周期](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 2026-11-02 用户明确要求提交后跳过；不是历史已修复、归并或撤销 | C盘现有实现已提交；本次合并源止于85d858af，不包含该实现，不继续开发 | 未完整验收；本轮不追加H-180测试，不把提交当验收 | C盘既有实现 `53a03f9bdfa2ebf797de7e8e465d6c6e055bbc97`，不在本次main合并中 | 保留未关闭事实并退出当前修复队列；后续恢复或删除功能须另行明确范围；本轮安排0小时 |
 | [H-181：专业画布 `iteration` 不消费前端输入数组，也没有真正调度迭代体](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H181-01～07；原red/中止/sidecar旧产物失败保留，限所列Windows范围 | typed item/done scope经普通WorkflowAgent接同一Kernel；有序聚合/三策略/flatten/嵌套50lane；保留权限/审批/即时计费与scoped持久事件 | 原探针/真实TS门禁各1/0，workflow54/0/28、Runtime392/0/11、全仓4166/1/254仅既有H306；CLI/Tauri/前端/SDK/fmt/夹具tsc及UI四步过，严格lint旧失败见E06 | `0855b1b24cf93ca45a0c33e53ce01bd059ea5ce7` | 单store/aggregate1MiB、活跃item store序列化共享50MiB非RSS；无透明续跑；H177/H196/loop独立，无迁移；本项剩0，153未关闭含H180授权跳过/实际152，200–400有效小时未校准，等待另计 |
 | [H-182：专业画布 `answer` 节点忽略 `answerTemplate`，成功运行却输出空答案](system-harness-audit-2026-10-21.md#h-182专业画布-answer-节点忽略-answertemplate成功运行却输出空答案) | P1 | 已修复并验收 | E-H182-01～05；原正式探针红→绿；非历史跳过 | 共享v1 typed answer契约；单次模板/引用解释，联合绑定及输出预算、非空完成门禁 | E04完整命令；原探针1/0、H182默认9/0、TS→Kernel1/0、Runtime392/0、重开/GUI/构建通过；全仓唯一H306及既有严格lint失败保留 | `d3a00714989b0045360625668ea4ff8ceb62594e`；E05 | 旧字段需显式迁移；无DB迁移；未验其他OS/真实provider/完整Tauri；本项剩余0，整体200–400有效小时历史粗估 |
@@ -9816,7 +9816,7 @@ LNK1104原文均为无法打开`G:\h66-fixtures-20261110\tmp\lnk{…}.tmp`：Bui
 
 **E04提交回填**：H171代码、测试和当时双文已独立提交`383c50a969a0568372f88d4ac75796bd5e8dbf48`（10路径），父提交`d0d8e7af`；仅另做本次文档hash回填，不amend。提交后8份受测源码哈希与交付冻结一致，tracked干净；用户原untracked均保留且未提交，默认CLI与原快照哈希再次核对一致。未push、未建PR、未改Git配置或绕hook。清理限制与64.47GiB占用按E04保留，不把Git提交成功冒称测试全绿或产物已删；整个goal仍active。
 
-## H-179 文档输入与轻量工作流（修复中，2026-11-11，首版范围待确认）
+## H-179 文档输入与轻量工作流（修复中，2026-11-11，原件路线已实现、最终验收进行中）
 
 **E-H179-01（复现、现有边界与用户决策）**：基线`9e87811d`，tracked干净，无未完成合并；保留原用户untracked。已核对原审计/唯一台账、nodeRegistry与nodeSchemas、WorkflowAgent dispatch/pending tools/iteration child、graph output contract、v1 File输入、AppCore run assembler、现有office_read/FilePreview/AttachmentService、CanvasArtifactService的workspace/active owner/操作锁/SHA256物化，以及Cargo/格式/CI配置。仅本项复核，不修改H180或其他编号。
 
@@ -9867,3 +9867,179 @@ api_ok=false extractor_status=Failed extractor_outputs=None extractor_error=Some
 已向用户提出但**尚未批准的本地V1建议**：文档作为专业LLM附件，不单独提供提取节点；TXT/MD/CSV、DOCX正文表格、XLSX各sheet单元格、PPTX页文字、PDF文字层；不做OCR/旧Office/加密/压缩包；最多5份、每份10MiB、总10万Unicode字符且受实际模型预算约束，超限/失败前置明确拒绝、不静默截断；只有明确选入的文件才发送，按来源分别标识，无额外模型预处理调用。LLM仍输出回答text，不要求用户再裁定独立提取节点的string[]。用户尚未确认该格式/阈值或节点停用，不把自动goal续接当批准，不在生产写死它们。
 
 本轮新增修复/历史跳过/归并/撤销仍0；306唯一行：218验收、1验收保留、28历史跳过、10归并、3撤销、45待修含H180、1修复中、0阻塞，实际未修45另H66保留1。当前有新事实/真实回归，目标active；下一步仍H179，待范围确认后补真实artifact读取TDD/实现/持久化/UI验收。整体剩余170–430有效小时旧低置信估计未重校，用户决策/依赖/设备/编译等待另计；不作完工承诺。
+
+**E-H179-04（用户确认首版与首批根因实现，2026-11-11，未完整验收）**：用户已明确同意E03首版：上传可点击预览、LLM选择附件；TXT/MD/CSV、DOCX/XLSX/PPTX及文字PDF；5份/每份10MiB/合计10万Unicode字符；不做OCR、旧Office或加密文档；退役独立提取节点，新目录不再提供，旧图不删除并前置提示。此确认替代E01～03的待决策状态，不擅自减少所选格式。随后用户明确“不需要上下文窗口，一次性、每次重新执行”，因此不新增模型上下文窗口设置、不把历史聊天拼入后续工作流；已向用户区分单次供应商容量仍有限，保留固定输入限额、供应商超限明确失败，不静默截断/分批增加模型请求；不宣称任意未知模型一定容纳10万字符。运行事件仍按原内核审计持久化，不作为下一轮模型记忆。
+
+先新增真实回环/合成artifact/SQLite/Kernel TDD `usage::documents::h179_`，未改生产时`cargo test --target-dir target/h66-repair-20261110 -p deepagent-app-core --features web --test workflow_audit usage::documents::h179_ --offline --no-fail-fast -j 2 -- --nocapture --test-threads=1`退出101、0通过/3失败、27.007秒。原失败包括`selected artifact bytes never reached the model`；9组wrong-type/raw-path/remote-url/too-many/foreign/modified/unsupported/text-limit/byte-limit全为`true, 1`（附件被忽略，实际仍发送一次模型请求）；旧document-extractor仍compile成功。保留这些失败证据，不把夹具错误或普通编译当红测。
+
+首批实现的**本地契约**：`llmDocuments`为`[{reference:"artifact://…", name:"…"}]`，name是展示元数据，不是路径授权；只有reference可解析已声明的工作流文件变量，正文不会再进入变量替换。Runtime共享typed selection/prepared bundle，拒绝错误类型/重复引用/超过5份/正文总量超限。WorkflowAgent通过原CallTool/pending observation机制请求唯一`canvas_document_read`；AppCore在原run-owned registry注册该只读工具，走原权限/审批/超时/取消/结果预算，原始有界值通过既有retain_raw_tool_output传给内部consumer，不拿模型预览截断值当全文。工具只读当前workspace的active document artifact，复用原path-operation/受管路径/不可变SHA256 gate，当前行大小先检查再分配快照；不接URL、不接宿主path、不读凭据，不新建数据库、存储或模型调用循环。
+
+首批只完成严格UTF-8的TXT/MD/CSV文本通路（实际正例已验TXT/MD），控制字符/无正文/完整性/数量/10MiB/10万字符失败均明确拒绝；解析按原ToolExecutionContext的取消和总预算检查，drop工具future向本地worker撤销；Office/PDF还没有实现，不能据此称整个首版已实现。正文以带来源的JSON资料加入本次user prompt，不改system设置，原提示词标记在文档中逐字保留。节点updates保存不含正文的reference/name/format/SHA256/字符数收据，沿原run_events持久化。独立提取节点前端改reserved、从两个新节点目录移除，旧类型/schema/config仍可恢复；后端compile明确UnsupportedOperation并建议把文件交给LLM，未静默删改旧图。
+
+同原命令首批绿测退出0、3通过/0失败、76.076秒含编译；真实文件文本和来源进入唯一一次provider请求，未选文档不发送，9组非法输入均0请求，旧节点compile前置拒绝。前端先加目录/旧图保留回归，单脚本初次98/1、exit1、7.184秒，原availability为enabled；修改后两脚本124/0、exit0、7.095秒。首轮`cargo test -p deepagent-app-core --features web --test workflow_audit --no-fail-fast -- --test-threads=2 --quiet`（同target/offline/-j2）exit0、140/0/29、118.557秒；`cargo test -p deepagent-runtime --lib workflow:: -- --test-threads=2 --quiet`（同选项）exit0、124/0、23.514秒。29项忽略保留，其中旧独立提取审计probe对应已被用户退役的功能，不用忽略它证明新附件读取通过。
+
+随后增强收据冷重开断言、两次工作流各自只发送本次所选文件的回归、共享只读权限/预取消检查，并在实际模型dispatch前复用取消门禁。实际`cargo test -p deepagent-app-core --features web --lib canvas_documents::tests::h179_ -- --nocapture --test-threads=1`（同target/offline/-j2）exit0、2/0、103.893秒；同原集成命令去掉--no-fail-fast重跑`usage::documents::h179_` exit0、4/0、69.310秒，明确验证第二次请求不含第一次文档文本、cold run_events收据存在且不含正文；`cargo clippy --no-deps -p deepagent-app-core -p deepagent-runtime --features deepagent-app-core/web --lib --test workflow_audit --offline -j 2 --target-dir target/h66-repair-20261110` exit0、26.285秒，保留原Models/Runtime/AppCore及usage三个Iterator::last warning，无新文件warning，不称strict全绿。此增量后尚未重跑完整workflow/前端build/workspace，不将首轮矩阵冒称最终验收。测试Fixture将TempDir放在SQLite/service owner字段之后，避免Windows关库前析构临时根；原手动reopen仍按既有顺序释放所有owner。无本项生产fix提交；待全部已确认格式、UI上传/原件预览、权限取消/持久化及最终矩阵完成后，才独立提交代码/测试/双文，不以本阶段临时绿测关闭H179。
+
+当前未完成清单：Office/文字PDF受控解析与真实正反例；文档上传、附件选择、点击原件预览UI；资源边界和取消/权限完整矩阵；前端build、Tauri、workspace和最终lint/fmt。已知以前的全仓失败/lint阻断仍需本项最终实际记录，不能用H171矩阵替代。本轮未新建大target，复用原target/隔离根，原清理拒绝不绕过；当前阶段产物不宣称已删。修复/历史跳过/归并/撤销新增均0，累计218验收、1验收保留、28历史跳过、10归并、3撤销、45待修含H180、H179修复中1，实际未修45另H66保留1。下一步仍本项，不切换编号；全部剩余170–430有效小时仍是历史低置信估计，未逐项重估，编译/设备/依赖等待另计，不作精确承诺。
+
+**E-H179-05（Office/PDF、解析进程与附件界面增量，2026-11-11，未最终验收）**：在E04唯一工具/运行边界内补齐DOCX/XLSX/PPTX/文字PDF。采用仓内已锁定的quick-xml 0.31/lopdf 0.34直接依赖（没有升级包），分别查阅本机crate源码确认实际API；Unix资源限制复用已锁定libc。DOCX提取正文/表格、XML实体；PPTX按presentation关系顺序而非文件名；XLSX读取所有工作表缓存单元格（不计算公式，错误cell明确失败）；PDF按真实页树提取，拒绝加密/无文字页，不启用OCR。没有调用预览器的截断文本、不调用宏/渲染器/网络/模型辅助。未知编码、无正文、畸形结构、DTD、宏标记、路径穿越、展开/页数/深度/字符上限明确失败。保守限制：含无文字页的混合PDF也拒绝，不宣称能区分扫描页和空白页；Office图像/图表/批注等不冒充可读正文。ZIP4096项/声明展开64MiB/XML16MiB/深度256/工作表100万cells/1000页为本地资源设计，第三方解析另有进程内存上限，不宣称安全沙箱。
+
+解析从宿主进程移入可信宿主自身worker入口，CLI/Desktop在初始化DB/凭据/GUI前分流；stdin只传已经验证的字节快照及格式/字符预算，不传宿主路径/数据库/凭据。env_clear只保留SystemRoot/WINDIR/TEMP/TMP；Windows self-owned Job在读输入前设置512MiB进程内存和1进程上限，父进程按原工具总预算timeout/cancel/kill+wait，drop采用kill_on_drop。Unix设RLIMIT_AS/CPU，仅编译条件实现，未作跨OS实测。回复有界、错误不含原件内容，禁止失败后重试/把部分正文发模型；本地worker不是第二套审批/运行/模型循环。
+
+真实TDD/回归日志保留于原target/h66-repair-20261110，继续复用唯一target和G盘隔离根：
+
+- `cargo test --target-dir target/h66-repair-20261110 -p deepagent-app-core --features web --test workflow_audit usage::documents::h179_ --offline --no-fail-fast -j 2 -- --nocapture --test-threads=1`：七格式新增前红测0/1、exit101、29.005秒（CSV可读，其余四种二进制格式被拒绝）；实现期间两次quick-xml API/类型编译错误单独保留，不当行为红测；direct阶段5/0、64.490秒，worker阶段5/0/1内部入口忽略、70.053秒。
+- 真实畸形/DTD/空/超限Office测试先0/1、29.725秒，发现空XLSX的表名被当正文；修正真正正文tracking后同定向集6/0/1、exit0、68.684秒（`h179-office-invalid-green-20261111`）。真实XLSX验证第205行和第二工作表，PPTX故意倒置关系顺序，PDF为有效xref和文字流，不是预览mock字符串。
+- 最新 `cargo test --target-dir target/h66-repair-20261110 -p deepagent-app-core --features web --test workflow_audit h179_ --offline -j 2 -- --nocapture --test-threads=2`：9通过/0失败/1内部worker入口忽略，exit0、30.647秒；补充真实图像页PDF、合成Encrypt字典门禁、宏标记/路径穿越、10万中文字符恰好边界成功、两文件合计100001拒绝且0新增模型请求、供应商容量400只调用一次并失败、不截断/分块增加调用。首跑因lopdf递归宏缺import编译失败45.153秒，修测试import后通过；不隐瞒、不改生产门禁去迁就测试。旧独立提取原probe按用户退役方案转默认ChatService回归：compile错误含UnsupportedOperation及LLM迁移指引，连start节点也不执行；原审计失败仍保留。
+- `cargo test --target-dir target/h66-repair-20261110 -p deepagent-app-core --features web --lib h179_ --offline -j 2 -- --nocapture --test-threads=1`：5通过/0失败/1内部worker夹具忽略，exit0、106.456秒。真实worker受2秒总预算、取消及future abort后，使用事先持有的进程句柄确认同一子进程退出；真实try_reserve超过512MiB失败、子进程spawn失败、不继承USERPROFILE。该fixture由父测试真实启动，不把默认ignore算作实际执行证据。随后追加遗留AtomicBool父取消的工具级复核，尚待收取结果。
+- UI先保留schema红测99/1、7.310秒；production handler四项红测0/4（组件未存在），实现后 `node --test apps/desktop/scripts/check-workflow-documents.test.cjs apps/desktop/scripts/check-workflow.test.cjs`：104/0、exit0、7.116秒。校验整批后才import、保存仅reference/name、异步失败不改图、切节点/外部编辑/卸载后的迟到结果不覆盖、关闭预览后迟到响应不重开。LLM新建和历史配置附件默认[]，旧prompt不变；maxItems5与Rust一致，同名不同ref不被错误合并。
+- `pnpm --dir apps/desktop build`：exit0、122.435秒，全部脚本/tsc/Vite完成；保留原大chunk警告。设置组件全用既有shadcn，只有file input为语义必要原生控件，没有title属性。
+- 通过CUA在自建127.0.0.1:1429离线IPC夹具加载真实SchemaConfigForm/DocumentAttachments/PreviewBody，实际选择合成TXT上传，看到2/5，点击其文件名显示原件标记，再关闭和移除回到1/5；预览不发模型请求。截图`h179-ui-upload-preview-20261111.jpg`保留于同target。此为真实UI配合mock IPC，不冒称打包Tauri全链手测；后端preview真实artifact单测独立检查scope/kind/10MiB/篡改gate。临时UI服务已停止，源码目录临时HTML移至target后移除，不提交。未访问真实用户数据。
+
+AppCore新增有界`document_preview`复用同一snapshot gate；Tauri薄command在blocking pool读取原件，不读取任意路径、不回传宿主路径；图不保存dataURL/正文。仍需最终workspace/Rust完整相关回归、strict/scoped lint、CLI build、Tauri check及最终fmt；目前没有本项生产fix提交，双文仍修复中，修复数不增加。全部剩余170–430有效小时仍为历史粗估，等待环境/编译单列，不给精确完成承诺。
+
+**E-H179-06（本轮补强与最终矩阵启动，2026-11-11，未收齐最终结果）**：工具级遗留AtomicBool取消红测确实失败：`h179_document_tool_preserves_legacy_parent_cancellation_after_worker_started` 0/1、exit101、99.591秒，错误`document preparation timed out`而不是cancelled。根因是多余`ToolExecutionContext::child()`派生保留token却替换了旧flag。现在第三方解析已交给kill-on-drop子进程，不再需要旧blocking-parser的CancelWorker护栏，因此移除这两层，将原context完整传给统一worker，不修改共享取消语义、不另造取消信号。`cargo test --target-dir target/h66-repair-20261110 -p deepagent-app-core --features web --lib h179_ --offline -j 2 -- --nocapture --test-threads=2`：6/0/1内部入口忽略、exit0、97.675秒；两种父取消及同一进程退出均通过。
+
+另补真实组件非法历史附件输入测试，`node --test apps/desktop/scripts/check-workflow-documents.test.cjs`先4/1、exit1、0.675秒，复现null条目直接读name导致设置崩溃；渲染端现保留坏条目并明确提示、允许移除，添加前先处理坏引用，不静默修复存储内容。再次完整`pnpm --dir apps/desktop build`退出0、117.618秒，所有脚本合计352通过/0失败，tsc与Vite通过，原浏览器兼容externalization/大chunk警告保留。其后未改前端源码。
+
+最终矩阵冻结所有本项Rust/TS/manifest及新增文件hash，复用原target/offline/G盘隔离根：root fmt与Tauri fmt均exit0；Runtime全lib473通过/1失败/6忽略（40.993秒），失败为原checkpoint测试恢复DACL不一致，并非工作流附件路径；完整workflow_audit145通过/0失败/29忽略（126.790秒），原退役probe已默认执行；CLI build exit0（54.784秒）。workspace正在真实重编译/执行，strict/scoped lint、Tauri及实际CLI worker门禁尚待收齐。全仓期间临时替换默认CLI，只复用已核对hash的H171原件备份，并在finally恢复原CLI和用户原.snap.new，不把替换后的版本留给用户。当前所有结果仍不能被称作最终全绿，未提交生产fix，计数不变。
+
+**E-H179-07（跨层矩阵实收，2026-11-11，PDF页策略待确认、尚未交付）**：E06最终脚本已结束，没有遗留Cargo/测试/UI服务任务。本轮相关结果与未通过项目完整分开：
+
+| 实际命令（均复用`--target-dir target/h66-repair-20261110`、`--offline -j 2`，fmt除外） | 结果 |
+|---|---|
+| `cargo fmt --all -- --check`；`cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check` | 均exit0，4.680/0.240秒 |
+| `cargo test -p deepagent-runtime --lib -- --test-threads=2 --quiet` | exit101，473通过/1失败/6忽略，40.993秒；原checkpoint DACL恢复测试失败 |
+| `cargo test -p deepagent-app-core --features web --test workflow_audit --no-fail-fast -- --test-threads=2 --quiet` | exit0，145通过/0失败/29忽略，126.790秒；退役probe默认执行，内部worker由宿主真实调用 |
+| `cargo build -p deepagent-cli` | exit0，54.784秒；随后实际新CLI `--deepagent-document-worker-v1`读取合成stdin，返回`H179_HOST_WORKER`，没有DB/凭据初始化或模型请求 |
+| `cargo test --workspace --features deepagent-app-core/web --no-fail-fast -- --test-threads=2 --quiet` | exit101，157顶层targets，5249通过/5失败/174忽略，1201.863秒含5分28秒编译；全部失败原样保留，不用quiet或ignore掩盖 |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | exit101，5.649秒；原`deepagent-models/src/client.rs:512` Option<ReasoningEffort>.clone触发clone_on_copy，未改无关代码 |
+| `cargo clippy --no-deps -p deepagent-runtime -p deepagent-app-core --features deepagent-app-core/web --lib --test workflow_audit` | 首次exit0、30.328秒，发现本轮测试唯一新增write_with_newline；仅将`write!(..."\n")`改为等价`writeln!`，末次exit0、4.789秒，无本轮新文件warning，保留Runtime/AppCore/usage旧warning |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml` | exit0，38.786秒；包含新增Tauri预览command及Desktop worker入口 |
+| 最后`cargo test -p deepagent-app-core --features web --test workflow_audit h179_ -- --nocapture --test-threads=2`；`cargo fmt --all -- --check` | 9通过/0失败/1内部入口忽略、exit0、34.742秒；fmt exit0、4.510秒。仅测试夹具等价换行发生在完整矩阵后，未重跑20分钟全仓，不冒称冻结hash未变 |
+
+全仓5项均与H171已有记录对应，未顺手修改：AppCore `completion_plan::audit_tests::discovered_real_build_completes_after_release`（真实build夹具4秒ready门禁）、Kernel `image_preparation::read_failure::real_read_data_dacl_denial_fails_without_sampling_and_recovers`（测试DACL恢复）、CLI `tui::app::tests::viewport_snapshot_with_a_pending_approval`、Prompts `canvas_prompt::tests::every_node_kind_owns_exactly_one_profile`（H306既有空defaultUserPrompt）、Runtime `checkpoint::access::native::tests::restrictive_tree_is_protected_before_copying_any_bytes`（测试DACL恢复）。这只说明失败名称/断言和既有证据一致，不把未充分归因的build readiness直接断言为环境问题。原默认CLI SHA256 `8C03E6A63D3E64EBF14DF4AC67C4DC56FB87C2D8B9C35949D3CBA9BC391F30A4`、用户原.snap.new SHA256 `D514BFE28BA6F207C714DDAD2FEFE9E521B3AA1FD7DF1AF243FA2CC2ED911F17`均已恢复并再次实查一致。前端最终352/0及真实UI配合离线IPC的证据见E06/E05，未冒称打包Desktop的GUI端到端验收，也未访问收费服务/真实凭据。
+
+本轮尚有一项产品边界需用户决定：含无文字页（可能空白/扫描/纯图）的PDF，是整份明确拒绝还是跳过并向用户/模型标明未读取页码。当前保守拒绝，已一次提问，不在没有答复时自行放宽；两条路线都不做OCR。用户选定后补页码说明或显式不完整收据并定向验证，再独立提交本项代码/测试/双文、文档回填hash。当前无生产fix commit，不标记已修复，不切到下一H。清理：本轮临时UI源码文件已移出、服务/子进程已退出；复用原大target，原目录批量清理的策略拒绝未重新尝试、未换API或提权绕过，不宣称大产物已删。
+
+台账实际重算306行：218已修复并验收、28历史跳过、10归并、3撤销、1验收保留（H66）、1修复中（H179）、45待修（含H180授权不修）；本阶段新增修复/跳过/归并/撤销均0，有效未修45另验收保留1。当前H179确认后收尾预计0.5–2有效小时，若选择跳过页则需补不完整证据契约/回归，可能增加；不含等待用户决策。全部剩余170–430有效小时仍为旧低置信粗估，依据剩余跨层协议/持久化/模型/工作流条目复杂度，未逐条重估；等待设备/依赖/授权时长无可靠上界，另计，不作精确承诺。下一步仍完成H179；交付后优先复核H169附件输入协议边界，不修H180。
+
+**E-H179-08（受控解析的宿主接线补强，2026-11-11，未关闭）**：本轮重新检查Git、E07已结束进程/结果、当前worker和全部生产创建点。上轮有生产修改和完整实跑证据，属于进展；并非等待仍在运行的Cargo。PDF页策略没有新用户答复，但宿主接线存在不依赖该选择的必要补强，因此不空转、不提前blocked，也不切换H编号。
+
+根因：`DocumentWorker::default()`在嵌入AppCore的未知库宿主中也自动取`current_exe()`并发送内部flag，可能重启不认识此模式的宿主；只有CLI/Desktop的main明确实现了flag分流。先加`h179_unregistered_library_host_is_not_relaunched_as_a_parser`，`cargo test --target-dir target/h66-repair-20261110 -p deepagent-app-core --features web --lib h179_unregistered_library_host --offline -j 2 -- --nocapture --test-threads=1`退出101、0通过/1失败、90.966秒，失败内容为`document parser failed or exceeded its memory budget`而不是未绑定错误；该错误来自实际spawn后的退出状态，并非假设。
+
+根因补强（本地宿主接线设计）：默认worker现在为未绑定，不再自行猜测/启动嵌入程序；可信应用通过原`with_document_worker` seam显式注入。`for_current_host()`仅集中绑定真实宿主路径和原内部flag；Desktop在唯一CanvasModelGateway生产创建点明确调用，main仍在初始化DB/凭据/GUI前分流。SDK/自定义宿主可复用原`for_host`注入自身已实现的可信入口，否则文档节点在spawn前明确失败；不新增全局状态、执行链、权限旁路或设置字段。CLI本身保留同一worker入口，不增加新的画布运行链。这是H179新增受控解析实现的接线修正，不把SDK未配置视为已有用户功能被停用。
+
+实际增量验收全部复用原target/G盘隔离根，没有新建大target：
+
+- `cargo test --target-dir target/h66-repair-20261110 -p deepagent-app-core --features web --lib h179_ --offline -j 2 -- --nocapture --test-threads=2`：8通过/0失败/1内部入口忽略、exit0、93.541秒；包含未注册宿主拒绝、显式入口绑定及原权限/预取消/旧flag取消/真实worker资源与退出门禁。此后仅rustfmt及新增集成测试，没有再修改生产逻辑。
+- `cargo test --target-dir target/h66-repair-20261110 -p deepagent-app-core --features web --test workflow_audit --offline --no-fail-fast -j 2 -- --test-threads=2 --quiet`：146通过/0失败/29忽略、exit0、111.904秒。新增正式Kernel对照：未配置worker的文档节点失败、0模型请求，随后同一网关普通无附件调用成功且仅1请求；SQLite冷重开分别保存failed/succeeded，未改写历史。
+- `cargo clippy --no-deps --target-dir target/h66-repair-20261110 -p deepagent-runtime -p deepagent-app-core --features deepagent-app-core/web --lib --test workflow_audit --offline -j 2`：exit0、19.976秒，无本轮新文件warning；旧Runtime/AppCore/usage warnings保留。
+- `cargo build --target-dir target/h66-repair-20261110 -p deepagent-cli --offline -j 2`：exit0、43.075秒。随后给新CLI的同一`--deepagent-document-worker-v1`传合成TXT stdin，实际退出0且返回`H179_HOST_WORKER`；未替换默认CLI、未初始化业务DB/凭据。
+- `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --target-dir target/h66-repair-20261110 --offline -j 2`：exit0、14.033秒，验证Desktop显式生产接线；root fmt check exit0、4.088秒，Tauri fmt已按原manifest运行。
+
+前端类型/UI无本轮修改，不重复pnpm build；E06的352/0与E05真实组件离线UI证据仍对应当前前端。E07全仓/strict矩阵没有在本增量后重跑，不能宣称其冻结版本就是当前worker版本；本增量以上述受影响生产方/消费方回归收口，原5项全仓失败和strict阻断不隐瞒，也不顺手修复。Linux/macOS资源门禁、打包Desktop GUI端到端仍未执行，不用Windows本机证据代替跨平台保证。
+
+PDF策略仍是唯一待确认的产品选择：原问答尚未回复，不重复索取已知格式/限额、不把自动goal续接当作用户选定。当前不扩大或静默跳过页、不新增OCR、上下文窗口或跨次记忆。代码/测试/双文均未生产提交；H179仍修复中，等待选择后补相应页码证据并独立交付。清理未重试原被策略拒绝的批量目录删除，不冒称已清空缓存；没有新建大目录或遗留本轮解析进程。
+
+本阶段新增修复/历史跳过/归并/撤销均0；累计与E07一致：218验收、28历史跳过、10归并、3撤销、45有效未修（含H179修复中、不含授权不修H180），另H66验收保留1。下一步仍H179，交付后复核H169。H179选择确认后的收尾仍估0.5–2有效小时，若需跳过页契约则重估；全余170–430有效小时仅旧粗估，等待用户/设备/依赖时间不计入，不作精确承诺。
+
+**E-H179-09（两页PDF诊断与连续决策阻塞审计，2026-11-11）**：E08上一轮有红绿测试和宿主接线生产修改，属于进展，不是仍有进程在运行的verified wait。本轮重新检查Git/代码/结果文件及系统进程，E08的Cargo和UI任务均已结束，没有活跃工具句柄需继续等。原PDF页策略问题从E07首次询问，到E08复核及本轮连续三轮均无用户新答复；goal自动续接不构成产品选择授权。期间只完成不依赖该选择的必要收尾，没有把拒绝/跳过任何一个建议说成用户已批准。
+
+本轮最后一处独立诊断缺口已按TDD收口：新增自建真实两页PDF（第1页文字、第2页image XObject），经正式ChatService/Kernel/受控worker复核。首次编译因lopdf MediaBox要求Object数组失败4.402秒，按已读本机源码修正夹具类型，不算行为红测。`cargo test --target-dir target/h66-repair-20261110 -p deepagent-app-core --features web --test workflow_audit h179_unreadable_pdf_page --offline -j 2 -- --nocapture --test-threads=1`随后0通过/1失败、exit101、25.256秒：失败为错误未识别真实第2页，0模型请求保护已成立。只把原`PDF page has no text`改为含真实页号的诊断，没有改变当前fail-closed行为、没有静默跳页或新增OCR。真实两页回归还断言冷重开run=failed、已读第一页文本不会被发送冒充完整文档。
+
+增量实跑（全部原target/offline/-j2，不新建大目录）：完整`workflow_audit --no-fail-fast -- --test-threads=2 --quiet`退出0，147通过/0失败/29忽略，101.162秒；`clippy --no-deps -p deepagent-runtime -p deepagent-app-core --features deepagent-app-core/web --lib --test workflow_audit`退出0、19.655秒，原warnings保留、无本轮新文件warning；`build -p deepagent-cli`退出0、44.271秒；Tauri原manifest `cargo check`退出0、6.465秒；`cargo fmt --all -- --check`退出0、4.382秒。前端和库其它逻辑未改，不重复原矩阵；E07 workspace/strict仍为已记录旧失败，不宣称本增量后全仓全绿。无本轮新依赖/新协议/权限变更，也未再替换默认CLI/用户.snap.new。
+
+**阻塞判定**：首版产品选择确实缺失；目前可独立完成的实现、TDD与影响范围验收已完成，重复读状态/重跑绿测/追加新抽象都不能替代用户决定。按每轮仅一个问题和有疑问先问的约定，不静默跳过H179去修其它编号。连续三轮条件已满足且当前无其他有意义的独立进展可做，将H179和整个目标转为`blocked/阻塞待处理`，不是paused、不是complete。工具返回状态以实际update_goal结果为准，不冒称用户要求暂停。解除条件明确：选择「整份拒绝并指出页码」或「跳过无文字页并向用户/模型标明未读取页码」。前者需同步最终范围文档后提交，后者需补不完整收据/展示及回归；两者都不启用OCR。
+
+当前未生产提交（不把未确认策略修复交付）；代码、测试及双文原地保留，用户untracked和原始审计证据保留。不在此时删除后续仍需使用且曾被策略拒绝清理的target，不换API/提权绕过。没有遗留本轮Cargo/解析进程。双文同步为阻塞，306行总数不变：218验收、28历史跳过、10归并、3撤销、1验收保留、45待修（含H180授权不修）、1阻塞（H179）、0修复中。本轮新增验收/历史跳过/归并/撤销均0；有效未修45另H66验收保留1。等待用户决策时间无可靠上界，不计入有效工时；H179恢复后的0.5–2有效小时与全部剩余170–430有效小时仍为旧粗估，未逐项重估、不承诺精确日期。解除后先完成H179独立提交，再复核H169。
+
+**E-H179-10（用户否定本地提取路线、原件输入能力复核，2026-11-11）**：用户回复原PDF页策略问题时明确「不需要提取，直接可以预览，工作流要用的话直接发给大模型提取」，随后将目标恢复active。最新用户范围优先：不再要求在本机把文档解析成文本，也不新建提取节点/解析进程作为交付；上传原件可点击预览，模型节点需要资料时按其真实原生文件输入能力交付原件。原E09拒绝/跳过无文字页的二选一已失效，不继续追问、不把未选当阻塞。E04～09对本地提取的批准、实现和实跑仅作为历史过程保留，不能据其9格式/字符预算/页策略的测试声称新原件输入完成；特别是旧「仅文字型PDF」和「提取文本10万字符」需要随原生输入契约重新校正，而不是静默沿用为新限制。5份/每份10MiB暂保留为已有准入设计，若供应商真实单次总量更小还须提前校验，不能靠更换模型/分批增加请求绕过。
+
+本轮先读取当前Git、AGENTS、`CanvasCompletionRequest`及所有网关生产方/consumer、provider配置类型、本地未提交提取链、参考deepseek-harness的attachment设计、Dify目录；没有读取真实用户数据库/模型设置/凭据。事实：Runtime seam当前只有prompt/images，AppCore的OpenAI兼容分支明确走`/chat/completions`，Anthropic走Messages、Gemini走generateContent；三者没有现成的原件document DTO或映射，不能只把PDF/Office base64放进image字段或prompt便称已支持。用户文件预览能力和供应商原生读取能力是两个边界。
+
+查证日期2026-11-11，仅浏览官方公开文档，不发送原件/Key或调用收费接口：
+
+- [DeepSeek 上传文件](https://api-docs.deepseek.com/zh-cn/api/create-file/)明确Files API上传的是JPEG/PNG/GIF/WebP图片；[Responses兼容指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)明确不支持文件输入，[Responses请求定义](https://api-docs.deepseek.com/api/create-response/)同样声明此限制。因此不能把DeepSeek网页产品能上传文档当成API已接受PDF/Office，也不把有file_id误判为通用文件能力。
+- [OpenAI官方文件输入](https://developers.openai.com/api/docs/guides/file-inputs)区分端点：Chat Completions原件仅PDF；Responses还支持非PDF文档和表格，服务端处理方式不同。现有画布协议标签OpenAi并不等于实际部署是官方OpenAI，不能擅自将所有兼容网关切Responses、不能保证自定义同名模型接受官方原件契约。
+- [Claude PDF文档](https://platform.claude.com/docs/en/build-with-claude/pdf-support)与[Files API](https://platform.claude.com/docs/en/build-with-claude/files)的document支持按格式区分，不意味着原生Office通用支持；[Gemini官方文档输入](https://ai.google.dev/gemini-api/docs/document-processing)当前跳转到官方AI Studio文档，文档原件能力与模型/端点相关。未依此自行选用某供应商或新增协议。
+
+已向用户只问一个实际需要的缺项：准备使用的供应商/模型或网关协议名称；不索取base_url、Key、凭据或真实请求，不将DeepSeek限制误当所有模型都不支持。预期边界已明确：不做本地提取/OCR、不自动切换供应商、不添加独立提取模型请求、不假装不支持的接口已读取文档。原native输入路径需要根据该回答实现/确认。当前未提交的parser/worker不再作为交付，新代码尚未替换或删除；保持暂存外状态以避免在未知原生契约时半接线/虚假展示，也不宣称已撤掉。选择后同一H179内撤除这批不符合新需求的本地解析代码/依赖/宿主分流，复用上传、只读准入/完整性、现有网关、事件/取消/权限边界，不另外开链。
+
+本轮没有运行旧提取链测试，不为失效方案重复消耗编译时间；仅docs变更，`git diff --check`及306行状态一致性需检查。没有新依赖、构建目录或删除动作，不对真实内网、凭据或收费服务做测试。原测试记录不删除但明确非新原件方案验收，原5项全仓失败/strict阻断仍保留。本项修复中、目标active，不提前再次blocked；新范围缺项从本次恢复按新阻塞审计计数。当前新增验收/跳过/归并/撤销均0；累计218验收、28历史跳过、10归并、3撤销、45有效未修（含H179，不含授权不修H180），另H66验收保留1；306行一一对应不变。下一步仍H179，不提交或推送未完成路线。旧H179收尾0.5–2小时估计因实现路线改变而失效，原生映射工作需选定目标后重估；全余170–430有效小时仅历史低置信粗估、未逐条重估，等待用户/设备/依赖单独计时、不承诺精确日期。
+
+**E-H179-11（复用现有画布服务的原件输入，2026-11-11，最终验收进行中）**：用户已纠正E10中不必要的供应商选择问题：专业工作流的B就是LLM节点，使用已有画布模型配置，提示词和附件同一次请求，结果传给C；不新建模型循环，不跨次保留上下文。现在按此实现，而非继续索取已有配置、改用另一供应商或把E10当阻塞。E01原探针失败、E04～09旧提取路线和E10能力调查全部保留为历史，不与本次原件验收混算。
+
+**根因与实现路径**：公开目录曾把无executor的独立提取节点标为enabled。按用户最新轻量范围，新建目录不再提供该节点，旧图字段保留但编译前明确UnsupportedOperation、零节点执行；专业LLM新增可选附件。上传/预览继续复用受管artifact和现有FilePreview组件；图中只保存reference/name。原件在既有ToolExecutionPipeline取得ReadOnly许可后物化，检查workspace、active状态、受管路径、SHA256与每份10MiB上限；不解析PDF/ZIP/Office、不OCR、不创建parser进程。随机一次性收据只在同run的gateway可消费；跨run、伪造和重放均拒绝。一个run最多保留一批五份原件，容量等待沿已有timeout/cancel，避免并行节点无界保留文件。事件仅写来源收据，不写base64、原件内容或宿主路径；供应商文件错误可能回显原件，因此仅保留错误分类，省略其正文。
+
+Runtime `CanvasCompletionRequest.documents` 是可选版本化收据，无附件行为和历史图保持兼容；默认自定义bridge不能静默忽略附件。AppCore唯一gateway取原件快照后，按节点所选模型现有协议映射；未新增provider或偷偷替换endpoint。此次撤除未提交的本地解析模块、worker、CLI/Desktop flag及本轮新增解析依赖，Cargo manifest/lock不再有本项解析依赖变更。
+
+| 现有端点 | 原生输入实现 | 明确限制 |
+|---|---|---|
+| OpenAI兼容 Chat Completions | PDF `file`，含filename和data URL | 不是Responses；TXT/Office原件不冒称支持 |
+| Anthropic Messages | PDF base64 document；TXT/MD/CSV原始UTF8 text document，`source.data` | 不本地提取Office；非UTF8纯文本明确拒绝 |
+| Gemini generateContent | PDF、TXT/MD/CSV的inline_data | 不将Interactions的Office协议套在generateContent |
+
+DOCX/XLSX/PPTX仍可上传与预览，当前三端点原件读取均明确UnsupportedCapability、零HTTP，不另发转换请求；不能据PDF成功称七格式原生读取全可用。模型配置所指的真实服务是否接受原生块仍由其能力决定；“协议名兼容”不是可用性保证。最多5份/份10MiB保留，OpenAI/Gemini另在原件合计达到50,000,000字节时明确拒绝，不自动拆分增加请求。用户不再要求提取字符预算、PDF页检测或上下文窗口设置。
+
+协议依据为本轮已实际查阅的[OpenAI文件输入](https://developers.openai.com/api/docs/guides/file-inputs)、[Anthropic PDF](https://platform.claude.com/docs/en/build-with-claude/pdf-support)、[text document source](https://platform.claude.com/docs/en/build-with-claude/citations)、[Gemini generateContent](https://aistudio.google.com/api-reference/generate-content)及[文件输入方式](https://aistudio.google.com/docs/file-input-methods)。其中Anthropic字段按官方核对为source.data，不是source.text；Gemini新的[Office指南](https://aistudio.google.com/docs/document-processing)使用Interactions，未据此扩大现有协议。
+
+**TDD与真实结果**：`h179-no-local-extraction-red-20261111` exit101、0/1、47.855秒，旧实现仍本地提取，证明不符合新意图；随后撤除旧路线，以三协议原件正常/错误对照替换过渡拒绝断言。`h179-native-error-echo-red-20261111` exit101、0/1、49.646秒，真实provider错误正文进入持久事件；修复后覆盖HTTP400和HTTP200业务error，两者都不落回显正文。中途新字段literal遗漏、Option输出访问、fixture future借用导致的编译失败和取消测试误把Host Result当run终态均原样保留，不算产品红测；取消最终按RunStore权威终态和下游事件验收。
+
+所有命令在原target/h66-repair-20261110执行、offline/-j2，复用原隔离HOME/APPDATA/TEMP和临时SQLite；仅自建回环、合成文档与假凭据，不访问真实服务/凭据/内网。阶段已实际取得：
+
+| 命令（省略公共target参数） | 原生结果 |
+|---|---|
+| `cargo test -p deepagent-app-core --features web --test workflow_audit --offline --no-fail-fast -j 2 -- --test-threads=2 --quiet` | exit0，144通过/0失败/28忽略，68.343秒；6项原件测试全部默认执行 |
+| `cargo test -p deepagent-app-core --features web --lib h179_ --offline -j 2 -- --test-threads=2` | 前次4/0/0、104.631秒；新增总量门禁后的最终复验正在运行，不冒称旧结果就是最终矩阵 |
+| `cargo check --workspace --all-targets --features deepagent-app-core/web --offline -j 2` | exit0，38.275秒；所有request生产方/消费者通过，既有dead_code警告保留 |
+| `cargo clippy --no-deps -p deepagent-runtime -p deepagent-app-core --features deepagent-app-core/web --lib --test workflow_audit --offline -j 2` | exit0，4.807秒；既有warning保留，不声称严格lint全绿 |
+| `pnpm --dir apps/desktop build` | exit0，124.393秒；所有前端脚本、tsc和Vite通过，Node外部化/大chunk警告保留 |
+| Tauri manifest `cargo check --offline -j 2` | exit0，36.325秒；撤除worker后的Desktop原生桥接通过 |
+
+六项真实Kernel/ChatService回归：有效扫描PDF（image XObject、无可提取文本）字节原样进入三协议；Office明确失败且仍可预览；Anthropic/Gemini原生纯文本及两次run隔离；A→B→C的C消费B.text；模型请求中取消落同一run cancelled、C不执行；非法引用、跨scope、篡改、6份和超10MiB输入零模型请求；供应商错误回显不进事件，冷重开核对收据和终态。函数数为6，场景组不重复算独立测试。库门禁另覆盖权限拒绝、预取消、一次性收据/伪造/重放、内存容量等待取消与释放。前端使用shadcn，真实组件离线IPC交互已验证上传→原件预览→关闭/移除（E05截图h179-ui-upload-preview-20261111.jpg）；不是打包Desktop真实Rust IPC全链手测。
+
+当前最终冻结矩阵已启动（h179-native-final-gates.ps1），包含root/Tauri fmt、最新准入库测试、CLI构建、完整workspace、strict/scoped lint及Tauri check，尚未取得终态，不以E07旧本地提取版本的5249/5/174当成本版本结果。源码冻结不含文档，执行中仅同步双文；不重复启动Cargo。未执行收费/真实供应商、真实用户数据库、完整桌面真实IPC、其它OS或全部ignored验收；不作这些保证。
+
+本项仍修复中、尚无生产fix提交，当前新增验收/历史跳过/归并/撤销均0；306唯一槽位核对待最终交付再次执行。218验收、28历史跳过、10归并、3撤销、45待修（含H180授权不修）、H179修复中1、H66验收保留1；有效未修45，另H66保留1。下一步仍H179最终矩阵/提交，再复核H169。收尾暂估1–3有效小时，依据结果核对/跨层兼容/双文和独立提交，未知反例会扩大；当前构建等待参考历史全仓约15–30分钟另计，非保证。全部剩余170–430有效小时仍为旧低置信粗估，未逐项重估，设备/依赖/策略等待另列；不宣布整个goal完成。原清理策略拒绝未被绕过，不删除后续验收必需target或用户untracked。
+
+**E-H179-12（原件路线最终本机验收，2026-11-11，等待独立提交与产物清理）**：用户已明确接受E11首版格式范围，不扩展协议；不再以Office能力作为待用户选择项，也不宣称Office原件可被当前模型端点读取。24份生产/测试/前端文件SHA256冻结，在整个串行矩阵前后均无漂移。以下结果属于当前原件路线，不再借用E07本地提取版本的旧全仓数。
+
+实际runner为`target/h66-repair-20261110/h179-native-final-gates.ps1`；环境与E11相同。所有Cargo都显式复用原target，公共参数`--offline -j 2`，workspace有`--no-fail-fast -- --test-threads=2 --quiet`。
+
+| 实际命令主体 | 退出与结果 | 秒 |
+|---|---|---|
+| `cargo fmt --all -- --check` | 0，通过 | 4.105 |
+| `cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check` | 0，通过 | 0.239 |
+| `cargo test -p deepagent-app-core --features web --lib h179_ -- --test-threads=2 --nocapture` | 0，4通过/0失败/0忽略 | 84.155 |
+| `cargo build -p deepagent-cli` | 0，通过 | 48.819 |
+| `cargo test --workspace --features deepagent-app-core/web --no-fail-fast -- --test-threads=2 --quiet` | 101，156个顶层target，5246通过/4失败/172忽略；无未完成target | 1174.694 |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | 101，既有Models client.rs:512 clone_on_copy阻断 | 13.202 |
+| `cargo clippy --no-deps -p deepagent-runtime -p deepagent-app-core --features deepagent-app-core/web --lib --test workflow_audit` | 0，通过；2项Runtime/6项AppCore/3项usage夹具既有warning保留，无新增附件文件warning | 25.217 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml` | 0，通过 | 18.862 |
+
+全仓按每个Running/Doc-tests目标最后一个summary汇总，排除嵌套H92 child的额外1通过，不能直接相加所有test result行。当前完整AppCore为1644/0/53；workflow_audit为144/0/28（含6项新原件回归与默认执行的旧节点退役探针）；Kernel为355/1/15，Runtime为473/1/6，CLI为214/1/9。四个失败均已出现在E07旧矩阵，相关生产/夹具没有本轮修改：
+
+- Kernel `image_preparation::read_failure::real_read_data_dacl_denial_fails_without_sampling_and_recovers`：image_read_failure.rs:286 `original DACL must be restored exactly`。
+- Runtime `checkpoint::access::native::tests::restrictive_tree_is_protected_before_copying_any_bytes`：checkpoint/access.rs:364 `restored test DACL differs`。
+- CLI `tui::app::tests::viewport_snapshot_with_a_pending_approval`：隔离HOME显示G盘fixture而快照含真实用户HOME，未accept快照或改用户文件。
+- Prompts `canvas_prompt::tests::every_node_kind_owns_exactly_one_profile`：creative.video-edit.v1的defaultUserPrompt为空（独立H306）。
+
+不把这些失败隐藏、skip或顺手修复，不声称全仓/strict lint全绿。E07曾失败的completion_plan启动夹具在本次完整AppCore已通过，原旧失败记录不删除。前端`pnpm --dir apps/desktop build`仍对应当前未再修改的前端，124.393秒exit0；workspace all-targets check为38.275秒exit0。正常无附件、原网关usage/预算/取消与其它工作流控制回归通过；Rust公开构造体新增可选documents字段意味着外部Rust literal需补`documents:None`，仓内全部生产/测试消费者已同步，旧序列化请求/图继续默认无附件；未改SQL或操作真实数据库。
+
+全仓前为旧CLI位置相关夹具临时换入本次CLI，finally恢复并重新核对：默认CLI SHA256 `8C03E6A63D3E64EBF14DF4AC67C4DC56FB87C2D8B9C35949D3CBA9BC391F30A4`；原用户.snap.new `D514BFE28BA6F207C714DDAD2FEFE9E521B3AA1FD7DF1AF243FA2CC2ED911F17`。两者均与备份一致，不将测试生成快照混入提交。最终runner已结束，无遗留本轮Cargo/rustc/模型请求。
+
+供产物清理后追溯的原始红测摘要（各0通过/1失败/0忽略、exit101）：
+
+```text
+h179_native_document_mapping_is_not_replaced_by_local_text_extraction:
+unconfigured native file support must not fall back to local text extraction
+h179_document_provider_errors_do_not_persist_echoed_original_content:
+assertion failed: !serde_json::to_string(&events).unwrap().contains("H179_PROVIDER_ECHO_MUST_NOT_PERSIST")
+```
+
+原件路线全仓日志SHA256 `E0822766E0418B087275345A3F748CFEEB1294B4DC1E6CF3B48694A27F7FA824`；最终结果JSON `E7118EA7B29D6D86DB1E7293FFB079A47442A866FAD025EF1BC3A64FA8066580`；两份上述红测日志分别为`254E6F45CB9AE31B52606029DF1D5C7C7FCBFC0F2410FC89444F61BBA7A48B8E`、`E5E895EEF4DA2709C2B31B2B6A623574E6D31ECF407FAA75C44E97BE4429D66C`。原E01失败输出、旧路线证据、修正夹具/编译失败经过和本轮四个全仓失败均保留在双文，不以清理可再生产物撤销这些事实。
+
+验收限Windows本机、离线合成文件/自建HTTP/临时SQLite及真实组件离线IPC；未执行其它OS、收费或真实供应商、真实内网/凭据、完整打包Desktop真实Rust IPC、全部ignored和七格式逐一GUI渲染。Office等预览复用未改的FilePreview renderer，不把有限交互手测称作全部格式/跨平台认证。运行附件移除只解除图引用，不擅自删除受管原件或历史资料。
+
+本项功能验收结果已取得，但独立commit/安全清理尚未完成，台账暂保持修复中、不提前增加关闭数。306行/306唯一H复核：218验收、28历史跳过、10归并、3撤销、45待修（含H180授权不修）、H179修复中1、H66验收保留1；与HEAD相比仅H179台账行改变。有效未修45，另H66保留1。下一步为本项白名单提交、清理和hash回填；交付后才准备H169。当前有效收尾约0.5–1.5小时，等待清理策略/设备时间另计；全余170–430有效小时仍是未逐项校准的旧粗估，不从19.6分钟全仓等待机械扣减，不承诺完工日期，goal继续active。

@@ -442,6 +442,59 @@ impl CanvasArtifactService {
         self.with_record(id, workspace_id, integrity::read_bytes)
     }
 
+    /// A bounded document snapshot under the existing namespace, state and
+    /// path-operation gate. Check the current row before allocating any bytes.
+    pub(crate) fn read_document_snapshot(
+        &self,
+        reference: &str,
+        workspace_id: Option<&str>,
+        max_bytes: u64,
+    ) -> Result<(ArtifactRecord, Vec<u8>)> {
+        let id = artifact_id_from_uri(reference).ok_or_else(|| {
+            CoreError::invalid("DocumentInputInvalid: expected artifact reference")
+        })?;
+        self.with_required_record(id, workspace_id, |record| {
+            if record.kind != ArtifactKind::Document
+                || record.byte_size <= 0
+                || record.byte_size as u64 > max_bytes
+            {
+                return Err(CoreError::invalid(
+                    "DocumentInputInvalid: unsupported artifact kind or document exceeds 10MiB",
+                ));
+            }
+            if !self.owns_deletion_path(record)? || !verify_file_for_deletion(record)? {
+                return Err(CoreError::invalid(
+                    "DocumentInputInvalid: document is not an unchanged managed artifact",
+                ));
+            }
+            Ok((record.clone(), integrity::read_bytes(record)?))
+        })
+    }
+
+    /// Explicit UI preview of the unchanged original, never a text extraction
+    /// or arbitrary host-path read. Shares the LLM document materialization gate.
+    pub fn document_preview(&self, reference: &str, workspace_id: Option<&str>) -> Result<String> {
+        let (record, bytes) = self.read_document_snapshot(
+            reference,
+            workspace_id,
+            deepagent_runtime::workflow::documents::MAX_DOCUMENT_BYTES,
+        )?;
+        // Do not interpolate imported MIME metadata into the data URL header.
+        let mime = match Path::new(&record.path)
+            .extension()
+            .and_then(|value| value.to_str())
+        {
+            Some("txt" | "md" | "csv") => "text/plain",
+            Some("pdf") => "application/pdf",
+            Some("docx" | "xlsx" | "pptx") => "application/octet-stream",
+            _ => return Err(CoreError::invalid("unsupported document preview format")),
+        };
+        Ok(format!(
+            "data:{mime};base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        ))
+    }
+
     /// Resolve any node-stored reference into something a provider accepts:
     /// `data:` / `http(s)` pass through, `artifact://id` becomes a data URL.
     pub fn resolve_for_provider(
@@ -832,6 +885,53 @@ mod tests {
             "data:image/png;base64,{}",
             STANDARD.encode([0x89u8, b'P', b'N', b'G', 1, 2, 3])
         )
+    }
+
+    #[test]
+    fn h179_document_preview_returns_original_bytes_under_the_same_bounded_artifact_gate() {
+        let (_root, service) = service("h179-document-preview");
+        let import = |name: &str, bytes: &[u8], kind: &str| {
+            service
+                .import(&CanvasArtifactImport {
+                    kind: kind.into(),
+                    data_url: Some(format!(
+                        "data:application/octet-stream;base64,{}",
+                        STANDARD.encode(bytes)
+                    )),
+                    local_path: None,
+                    file_name: Some(name.into()),
+                    media_type: None,
+                    workspace_id: Some("preview-workspace".into()),
+                })
+                .unwrap()
+        };
+        let original = "原件 {{#literal.content#}}".as_bytes();
+        let document = import("original.txt", original, "document");
+        let preview = service
+            .document_preview(&document.uri, Some("preview-workspace"))
+            .unwrap();
+        assert_eq!(
+            STANDARD.decode(preview.split_once(',').unwrap().1).unwrap(),
+            original
+        );
+        for scope in [None, Some("other-workspace")] {
+            assert!(service.document_preview(&document.uri, scope).is_err());
+        }
+        assert!(service
+            .document_preview("https://synthetic.invalid/document", None)
+            .is_err());
+        let image = import("image.png", b"not a document", "image");
+        assert!(service
+            .document_preview(&image.uri, Some("preview-workspace"))
+            .is_err());
+        let large = import("large.txt", &vec![b'x'; 10 * 1024 * 1024 + 1], "document");
+        assert!(service
+            .document_preview(&large.uri, Some("preview-workspace"))
+            .is_err());
+        std::fs::write(&document.path, b"replaced").unwrap();
+        assert!(service
+            .document_preview(&document.uri, Some("preview-workspace"))
+            .is_err());
     }
 
     #[test]

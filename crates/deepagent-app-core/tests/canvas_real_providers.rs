@@ -163,6 +163,7 @@ async fn anthropic_messages_answer_and_keep_reasoning() {
     );
     let gateway = CanvasModelGateway::new(providers);
     let request = CanvasModelRequest {
+        documents: None,
         audio: Default::default(),
         operation: CanvasOperation::TextGenerate,
         prompt: "回答且只回答：pong".to_string(),
@@ -280,6 +281,7 @@ async fn embedding_model_returns_a_real_vector() {
     );
     let gateway = CanvasModelGateway::new(providers);
     let request = CanvasModelRequest {
+        documents: None,
         audio: Default::default(),
         operation: CanvasOperation::Embedding,
         prompt: "画布向量测试".to_string(),
@@ -507,6 +509,7 @@ async fn image_generation_returns_downloadable_bytes() {
     );
     let gateway = CanvasModelGateway::new(providers);
     let request = CanvasModelRequest {
+        documents: None,
         audio: Default::default(),
         operation: CanvasOperation::ImageGenerate,
         prompt: "一个红色小立方体放在白色背景上".to_string(),
@@ -649,6 +652,7 @@ async fn speech_transcription_uploads_audio_and_returns_text() {
     );
     let gateway = CanvasModelGateway::new(providers);
     let request = CanvasModelRequest {
+        documents: None,
         operation: CanvasOperation::SpeechTranscribe,
         prompt: String::new(),
         system_prompt: None,

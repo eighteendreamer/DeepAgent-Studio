@@ -237,6 +237,14 @@ export const NODE_CONFIG_SCHEMAS: Record<ProfessionalNodeKind, NodeConfigSchema>
     llmModel: CHAT_MODEL,
     llmSystemPrompt: { ...text("系统提示词"), "x-widget": "textarea" },
     llmPrompt: { ...text("用户提示词"), "x-widget": "textarea" },
+    llmDocuments: {
+      type: "array", title: "文档附件", default: [], maxItems: 5, "x-widget": "documents",
+      description: "点击文件名预览原件，预览不调用模型。运行时将所选原件与提示词交给本节点模型，不做本地文本提取；仅支持该模型接口接受的格式，不支持时明确失败。最多 5 份、每份 10 MiB。",
+      items: {
+        type: "object", required: ["reference", "name"], additionalProperties: false,
+        properties: { reference: { type: "string", pattern: "^artifact://.+$" }, name: { type: "string", minLength: 1 } },
+      },
+    },
     llmTemperature: { type: "number", title: "温度", default: 0.7, minimum: 0, maximum: 2 },
     llmMaxTokens: { type: "integer", title: "最大输出令牌数", default: 4096, minimum: 1, maximum: 128000 },
   }),

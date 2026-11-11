@@ -47,9 +47,10 @@ export function validateSchemaValue(schema: NodeConfigSchema, value: unknown, pa
   }
   if (Array.isArray(value)) {
     const issues = schema.minItems !== undefined && value.length < schema.minItems ? issue(`至少 ${schema.minItems} 项`) : [];
+    if (schema.maxItems !== undefined && value.length > schema.maxItems) issues.push(...issue(`最多 ${schema.maxItems} 项`));
     const names = new Set<string>();
     value.forEach((entry, index) => {
-      if (entry && typeof entry === "object" && typeof entry.name === "string" && entry.name) {
+      if (schema["x-widget"] !== "documents" && entry && typeof entry === "object" && typeof entry.name === "string" && entry.name) {
         if (names.has(entry.name)) issues.push({ path: `${path}.${index}.name`, message: "名称不能重复" });
         names.add(entry.name);
       }

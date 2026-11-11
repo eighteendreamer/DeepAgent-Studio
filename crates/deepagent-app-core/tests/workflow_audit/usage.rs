@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use deepagent_app_core::canvas_artifact_service::CanvasArtifactService;
 use deepagent_app_core::canvas_model_gateway::CanvasModelGateway;
 use deepagent_app_core::canvas_provider_service::{
     CanvasModelConfig, CanvasProviderInput, CanvasProviderService, CanvasScenario,
@@ -26,6 +27,8 @@ use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
+#[path = "documents.rs"]
+mod documents;
 #[path = "budget.rs"]
 mod measured_budget;
 
@@ -132,12 +135,14 @@ fn workflow(models: &[&str]) -> WorkflowRequest {
 }
 
 struct Fixture {
-    root: tempfile::TempDir,
     db: Arc<Database>,
     chat: ChatService,
     providers: Arc<CanvasProviderService>,
     cost: Arc<CostService>,
     session: String,
+    artifacts: Arc<CanvasArtifactService>,
+    // Windows must release SQLite/service owners before TempDir cleanup.
+    root: tempfile::TempDir,
 }
 
 impl Fixture {
@@ -159,8 +164,13 @@ impl Fixture {
         settings.initialize("sk-fixture-placeholder").await.unwrap();
         let providers = Arc::new(CanvasProviderService::new(db.clone(), secrets));
         let cost = Arc::new(CostService::new(db.clone()));
+        let artifacts = Arc::new(
+            CanvasArtifactService::new(root.path().join("artifacts"), db.clone()).unwrap(),
+        );
         let chat = ChatService::new(db.clone(), settings, transport, root.path())
-            .with_canvas_model(Arc::new(CanvasModelGateway::new(providers.clone())))
+            .with_canvas_model(Arc::new(
+                CanvasModelGateway::new(providers.clone()).with_artifacts(artifacts.clone()),
+            ))
             .with_cost(cost.clone());
         let session = chat.create_session(None).unwrap();
         Self {
@@ -170,6 +180,7 @@ impl Fixture {
             providers,
             cost,
             session,
+            artifacts,
         }
     }
 
@@ -236,6 +247,7 @@ impl Fixture {
         drop(self.chat);
         drop(self.providers);
         drop(self.cost);
+        drop(self.artifacts);
         drop(self.db);
         let db = Arc::new(Database::open(path).unwrap());
         (self.root, db, self.session)

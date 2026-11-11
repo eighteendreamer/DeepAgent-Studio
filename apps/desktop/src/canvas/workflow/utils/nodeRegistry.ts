@@ -103,6 +103,7 @@ register({
     llmModel: "",
     llmSystemPrompt: "你是一个有帮助的 AI 助手。请根据用户提供的上下文准确完成任务。",
     llmPrompt: "",
+    llmDocuments: [],
     llmTemperature: 0.7,
     llmMaxTokens: 4096,
   }),
@@ -414,7 +415,7 @@ register({
   label: "文档提取",
   category: "知识",
   icon: "file-text",
-  availability: "enabled",
+  availability: "reserved",
   executor: "retrieval",
   outputs: [
     { name: "text", type: "string", description: "提取的文本内容" },

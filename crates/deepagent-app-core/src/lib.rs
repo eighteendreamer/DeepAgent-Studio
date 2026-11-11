@@ -23,6 +23,7 @@ pub mod builtin_resources;
 mod call_usage;
 pub mod canvas_artifact_service;
 pub mod canvas_artifact_uploads;
+mod canvas_documents;
 pub mod canvas_model_gateway;
 pub mod canvas_node_contract;
 pub mod canvas_preferences;

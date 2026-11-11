@@ -666,9 +666,10 @@ async fn audit_workflow_code_node_executes_script_or_fails_loudly() {
 }
 
 #[tokio::test]
-#[ignore = "audit: an enabled document extractor must have a real executor"]
-async fn audit_workflow_enabled_document_extractor_has_executor() {
-    let (_root, db, chat, session) = workflow_fixture().await;
+async fn h179_retired_document_extractor_is_rejected_before_any_node_execution() {
+    // Original audit failure is retained in H-179. The user-approved lightweight
+    // replacement retires this node, rather than pretending it now has an executor.
+    let (_root, _db, chat, session) = workflow_fixture().await;
     let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
         "definition": {
             "version": 1,
@@ -702,26 +703,17 @@ async fn audit_workflow_enabled_document_extractor_has_executor() {
             |_| {},
         )
         .await;
-    let run = RunStore::new(&db)
-        .get("audit-workflow-document-extractor")
-        .unwrap()
-        .unwrap();
-    let events = events.lock().unwrap();
-    let extractor_terminal = events
-        .iter()
-        .find(|event| event.node_id == "extract" && event.status.is_terminal())
-        .unwrap();
-    eprintln!(
-        "api_ok={} extractor_status={:?} extractor_outputs={:?} extractor_error={:?} run_terminal={:?}",
-        result.is_ok(),
-        extractor_terminal.status,
-        extractor_terminal.outputs,
-        extractor_terminal.error,
-        run.terminal_kind
+    let error = result
+        .expect_err("retired legacy nodes must fail during compile")
+        .to_string();
+    assert!(error.contains("UnsupportedOperation"), "{error}");
+    assert!(
+        error.to_ascii_lowercase().contains("llm"),
+        "the error must direct users to supported document attachments: {error}"
     );
     assert!(
-        result.is_ok() && extractor_terminal.status == NodeExecutionStatus::Completed,
-        "an enabled document-extractor must not fail as an unimplemented node"
+        events.lock().unwrap().is_empty(),
+        "not even the start node may execute"
     );
 }
 

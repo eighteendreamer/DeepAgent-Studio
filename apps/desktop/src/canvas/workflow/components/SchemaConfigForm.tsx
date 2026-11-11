@@ -8,6 +8,7 @@ import { scenarioModelOptions, useCanvasSettingsStore } from "../store/canvasSet
 import { CANVAS_BUTTON_CLASS, CanvasField, CanvasInput, CanvasSelect, CanvasTextarea } from "./CanvasFields";
 import { VariablePicker } from "./VariablePicker";
 import { NodeOutputPanel } from "./NodeOutputPanel";
+import { DocumentAttachments } from "./DocumentAttachments";
 
 type EditorProps = {
   nodeId: string;
@@ -87,6 +88,7 @@ function SchemaEditor(props: EditorProps) {
   const widget = schema["x-widget"];
   if (widget === "json") return <JsonEditor {...props} />;
   if (widget === "model") return <ModelEditor {...props} />;
+  if (widget === "documents") return <DocumentAttachments key={nodeId} nodeId={nodeId} value={value} onChange={onChange} />;
   if (schema.type === "object" && schema.properties) {
     return <SchemaObjectEditor {...props} />;
   }
@@ -165,7 +167,9 @@ export function SchemaConfigForm({ nodeId, data, onUpdate }: { nodeId: string; d
   const issues = getNodeConfigIssues(data.kind, data);
   return <div className="nodrag nopan nowheel max-h-[65vh] overflow-y-auto pr-1" onPointerDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
     {definition.availability === "reserved" && <p className="mb-3 text-[11px] text-amber-200/80">
-      {data.kind === "agent-v2"
+      {data.kind === "document-extractor"
+        ? "独立文档提取节点已停用。请将文档添加到 LLM 节点；旧节点及配置仍保留，但不能执行。"
+        : data.kind === "agent-v2"
         ? "Agent V2 当前仅保留配置形状，工具循环、审批、取消、记忆和结构化输出执行链尚未启用。"
         : "该节点的外部连接尚未启用，配置不会自动启动服务。"}
     </p>}
