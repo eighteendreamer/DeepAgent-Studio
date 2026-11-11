@@ -12,7 +12,9 @@ use std::time::Duration;
 use deepagent_core::error::{CoreError, Result};
 
 use crate::sse::SseParser;
-use crate::transport::{EventSink, HttpTransport, TransportRequest};
+use crate::transport::{
+    EventSink, FileUploadRequest, HttpTransport, TransportRequest, UploadedFile,
+};
 
 /// `reqwest`-backed transport with connection reuse.
 #[derive(Debug, Clone)]
@@ -36,6 +38,12 @@ pub struct TransportTimeouts {
 const MAX_PROVIDER_ERROR_BODY_BYTES: usize = 64 * 1024;
 const MAX_GET_BODY_BYTES: usize = 16 * 1024 * 1024;
 const GET_TOTAL_TIMEOUT_CAP: Duration = Duration::from_secs(30);
+
+#[derive(serde::Deserialize)]
+struct FileUploadResponse {
+    id: String,
+    expires_at: Option<i64>,
+}
 
 impl Default for TransportTimeouts {
     fn default() -> Self {
@@ -84,6 +92,48 @@ impl ReqwestTransport {
 
 #[async_trait]
 impl HttpTransport for ReqwestTransport {
+    fn supports_file_upload(&self) -> bool {
+        true
+    }
+
+    async fn upload_file(&self, request: FileUploadRequest) -> Result<UploadedFile> {
+        tokio::time::timeout(self.timeouts.total, self.upload_file_inner(request, None))
+            .await
+            .map_err(|_| CoreError::other("DeepSeek Files upload deadline exceeded"))?
+    }
+
+    async fn upload_file_cancelled(
+        &self,
+        request: FileUploadRequest,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<UploadedFile> {
+        tokio::time::timeout(
+            self.timeouts.total,
+            self.upload_file_inner(request, Some(cancel)),
+        )
+        .await
+        .map_err(|_| CoreError::other("DeepSeek Files upload deadline exceeded"))?
+    }
+
+    async fn delete_file(&self, url: &str, api_key: &str, file_id: &str) -> Result<()> {
+        self.delete_file_inner(url, api_key, file_id, None).await
+    }
+
+    async fn delete_file_cancelled(
+        &self,
+        url: &str,
+        api_key: &str,
+        file_id: &str,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<()> {
+        tokio::time::timeout(
+            self.timeouts.total,
+            self.delete_file_inner(url, api_key, file_id, Some(cancel)),
+        )
+        .await
+        .map_err(|_| CoreError::other("DeepSeek file cleanup deadline exceeded"))?
+    }
+
     async fn get_json(&self, url: &str, api_key: &str) -> Result<String> {
         tokio::time::timeout(
             self.timeouts.total.min(GET_TOTAL_TIMEOUT_CAP),
@@ -122,6 +172,108 @@ impl HttpTransport for ReqwestTransport {
 }
 
 impl ReqwestTransport {
+    async fn delete_file_inner(
+        &self,
+        url: &str,
+        api_key: &str,
+        file_id: &str,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Result<()> {
+        if !crate::file_references::valid_file_id(file_id) {
+            return Err(CoreError::invalid("DeepSeek Files reference ID is invalid"));
+        }
+        if is_cancelled(cancel.as_ref()) {
+            return Err(CoreError::other("request cancelled"));
+        }
+        let send = self
+            .client
+            .delete(format!("{}/{}", url.trim_end_matches('/'), file_id))
+            .bearer_auth(api_key)
+            .header("accept", "application/json")
+            .send();
+        let response = self
+            .await_cancelable_timeout(
+                send,
+                cancel.as_ref(),
+                self.timeouts.first_byte.min(self.timeouts.total),
+                "DeepSeek file cleanup timeout",
+            )
+            .await?
+            .map_err(|_| CoreError::other("DeepSeek file cleanup failed"))?;
+        if !response.status().is_success() {
+            return Err(provider_error_with_metadata(
+                response.status().as_u16(),
+                "DeepSeek file cleanup failed",
+                None,
+                provider_response_metadata(&response).1,
+            ));
+        }
+        Ok(())
+    }
+
+    async fn upload_file_inner(
+        &self,
+        request: FileUploadRequest,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Result<UploadedFile> {
+        if is_cancelled(cancel.as_ref()) {
+            return Err(CoreError::other("request cancelled"));
+        }
+        let part = reqwest::multipart::Part::bytes(request.bytes)
+            .file_name(request.filename)
+            .mime_str(&request.mime)
+            .map_err(|_| CoreError::invalid("image_file_upload: invalid multipart metadata"))?;
+        let form = reqwest::multipart::Form::new()
+            .text("purpose", "user_data")
+            .text("expires_after[anchor]", "created_at")
+            .text(
+                "expires_after[seconds]",
+                crate::file_references::FILES_TTL_SECONDS.to_string(),
+            )
+            .part("file", part);
+        let send = self
+            .client
+            .post(&request.url)
+            .bearer_auth(&request.api_key)
+            .multipart(form)
+            .send();
+        let response = self
+            .await_cancelable_timeout(
+                send,
+                cancel.as_ref(),
+                self.timeouts.first_byte.min(self.timeouts.total),
+                "DeepSeek Files upload timeout",
+            )
+            .await?
+            .map_err(|_| CoreError::other("DeepSeek Files upload transport failed"))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let request_id = provider_response_metadata(&response).1;
+            // Do not forward provider multipart errors; retain only status and ID.
+            let _ = self
+                .read_provider_error_body(response, cancel.as_ref())
+                .await?;
+            return Err(provider_error_with_metadata(
+                status.as_u16(),
+                "DeepSeek Files image upload failed",
+                None,
+                request_id,
+            ));
+        }
+        let body = self.read_get_body(response, cancel.as_ref()).await?;
+        let metadata: FileUploadResponse = serde_json::from_str(&body)
+            .map_err(|_| CoreError::other("DeepSeek Files response has invalid metadata"))?;
+        if !crate::file_references::valid_file_id(&metadata.id) {
+            return Err(CoreError::other(
+                "DeepSeek Files response omitted a valid file id",
+            ));
+        }
+        Ok(UploadedFile {
+            id: metadata.id,
+            expires_at: metadata.expires_at,
+        })
+    }
+
     async fn get_json_inner(
         &self,
         url: &str,
@@ -514,6 +666,225 @@ async fn wait_for_cancel(cancel: Arc<AtomicBool>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn read_complete_file_request(socket: &mut tokio::net::TcpStream) -> Vec<u8> {
+        use tokio::io::AsyncReadExt;
+        let mut received = Vec::new();
+        loop {
+            let mut buffer = [0; 1024];
+            let read = socket.read(&mut buffer).await.unwrap();
+            assert!(read > 0);
+            received.extend_from_slice(&buffer[..read]);
+            assert!(received.len() < 32 * 1024);
+            if let Some(end) = received.windows(4).position(|part| part == b"\r\n\r\n") {
+                let headers = std::str::from_utf8(&received[..end]).unwrap();
+                let length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (key, value) = line.split_once(':')?;
+                        key.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap_or(0);
+                if received.len() >= end + 4 + length {
+                    return received;
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn files_errors_never_echo_credentials_and_delete_uses_the_files_route() {
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_complete_file_request(&mut socket).await;
+            assert!(request.starts_with(b"POST /files "));
+            let body = r#"{"error":{"message":"Bearer synthetic-secret sk-synthetic-secret","code":"unsafe-provider-body"}}"#;
+            socket.write_all(format!(
+                "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 2\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()
+            ).as_bytes()).await.unwrap();
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_complete_file_request(&mut socket).await;
+            assert!(request.starts_with(b"DELETE /files/file-api-cleanup "));
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let transport =
+            ReqwestTransport::with_client(reqwest::Client::builder().no_proxy().build().unwrap());
+        let files_url = format!("http://{address}/files");
+        let error = transport
+            .upload_file(FileUploadRequest {
+                url: files_url.clone(),
+                api_key: "synthetic-secret".into(),
+                filename: "image.png".into(),
+                mime: "image/png".into(),
+                bytes: b"synthetic".to_vec(),
+            })
+            .await
+            .unwrap_err();
+        let display = error.to_string();
+        assert!(matches!(
+            error,
+            CoreError::Provider {
+                status: Some(429),
+                ..
+            }
+        ));
+        assert!(!display.contains("synthetic-secret"));
+        assert!(!display.contains("unsafe-provider-body"));
+        transport
+            .delete_file(&files_url, "synthetic-secret", "file-api-cleanup")
+            .await
+            .unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn files_upload_header_wait_uses_existing_cancellation_and_deadline() {
+        use tokio::net::TcpListener;
+        for cancel_request in [true, false] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (entered, ready) = tokio::sync::oneshot::channel();
+            let (release, held) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                read_complete_file_request(&mut socket).await;
+                entered.send(()).unwrap();
+                held.await.unwrap();
+            });
+            let transport = ReqwestTransport::with_client(
+                reqwest::Client::builder().no_proxy().build().unwrap(),
+            )
+            .with_timeouts(TransportTimeouts {
+                connect: Duration::from_secs(1),
+                first_byte: Duration::from_millis(300),
+                idle: Duration::from_millis(300),
+                total: Duration::from_millis(500),
+            });
+            let cancel = Arc::new(AtomicBool::new(false));
+            let flag = cancel.clone();
+            let operation = tokio::spawn(async move {
+                transport
+                    .upload_file_cancelled(
+                        FileUploadRequest {
+                            url: format!("http://{address}/files"),
+                            api_key: "synthetic-key".into(),
+                            filename: "image.png".into(),
+                            mime: "image/png".into(),
+                            bytes: b"synthetic".to_vec(),
+                        },
+                        flag,
+                    )
+                    .await
+            });
+            ready.await.unwrap();
+            if cancel_request {
+                cancel.store(true, Ordering::Release);
+            }
+            let error = tokio::time::timeout(Duration::from_secs(2), operation)
+                .await
+                .expect("upload must settle")
+                .unwrap()
+                .unwrap_err();
+            assert!(error.to_string().contains(if cancel_request {
+                "cancelled"
+            } else {
+                "timeout"
+            }));
+            release.send(()).unwrap();
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn files_upload_uses_documented_multipart_contract_and_parses_expiration() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut received = Vec::new();
+            let header_end;
+            let body_length;
+            loop {
+                let mut chunk = [0; 1024];
+                let count = socket.read(&mut chunk).await.unwrap();
+                assert!(count > 0);
+                received.extend_from_slice(&chunk[..count]);
+                if let Some(end) = received.windows(4).position(|part| part == b"\r\n\r\n") {
+                    header_end = end + 4;
+                    let headers = std::str::from_utf8(&received[..end]).unwrap();
+                    assert!(headers
+                        .to_ascii_lowercase()
+                        .contains("authorization: bearer synthetic-files-key"));
+                    assert!(headers
+                        .to_ascii_lowercase()
+                        .contains("content-type: multipart/form-data; boundary="));
+                    body_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap();
+                    break;
+                }
+            }
+            while received.len() < header_end + body_length {
+                let mut chunk = [0; 1024];
+                let count = socket.read(&mut chunk).await.unwrap();
+                assert!(count > 0);
+                received.extend_from_slice(&chunk[..count]);
+            }
+            let body = String::from_utf8_lossy(&received[header_end..header_end + body_length]);
+            for expected in [
+                "name=\"purpose\"",
+                "user_data",
+                "name=\"expires_after[anchor]\"",
+                "created_at",
+                "name=\"expires_after[seconds]\"",
+                &crate::file_references::FILES_TTL_SECONDS.to_string(),
+                "name=\"file\"; filename=\"image.png\"",
+                "image/png",
+                "SYNTHETIC_IMAGE_PAYLOAD",
+            ] {
+                assert!(body.contains(expected), "multipart form missing {expected}");
+            }
+            let response_body = r#"{"id":"file-api-offline-1","expires_at":1800000000}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        let transport =
+            ReqwestTransport::with_client(reqwest::Client::builder().no_proxy().build().unwrap());
+        let uploaded = transport
+            .upload_file(FileUploadRequest {
+                url: format!("http://{address}/v1/files"),
+                api_key: "synthetic-files-key".into(),
+                filename: "image.png".into(),
+                mime: "image/png".into(),
+                bytes: b"SYNTHETIC_IMAGE_PAYLOAD".to_vec(),
+            })
+            .await
+            .unwrap();
+        server.await.unwrap();
+        assert_eq!(uploaded.id, "file-api-offline-1");
+        assert_eq!(uploaded.expires_at, Some(1_800_000_000));
+    }
 
     #[tokio::test]
     async fn audit_active_provider_stream_is_not_cut_off_by_total_deadline() {

@@ -40,6 +40,7 @@ pub mod cost_service;
 pub mod cron_service;
 pub(crate) mod dag_orchestration;
 pub mod data_root;
+mod deepseek_file_store;
 pub mod diff;
 pub mod doctor;
 pub mod dto;

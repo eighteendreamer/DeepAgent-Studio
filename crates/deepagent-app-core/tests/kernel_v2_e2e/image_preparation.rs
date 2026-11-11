@@ -2,6 +2,7 @@
 
 use super::*;
 use deepagent_app_core::{AttachmentIngestDto, AttachmentService, VisionMode, VisionSettings};
+use deepagent_models::transport::{FileUploadRequest, UploadedFile};
 use deepagent_models::ModelRole;
 use deepagent_runtime::InputAttachment;
 
@@ -36,10 +37,35 @@ struct ImageReferenceObservation {
 
 struct ImageReferenceAnswer {
     observations: Arc<Mutex<Vec<ImageReferenceObservation>>>,
+    uploads: Arc<AtomicUsize>,
+    upload_details: Arc<Mutex<Vec<(String, String, usize)>>>,
 }
 
 #[async_trait]
 impl HttpTransport for ImageReferenceAnswer {
+    fn supports_file_upload(&self) -> bool {
+        true
+    }
+
+    async fn upload_file(
+        &self,
+        request: FileUploadRequest,
+    ) -> Result<deepagent_models::transport::UploadedFile> {
+        let upload_id = self.uploads.fetch_add(1, Ordering::SeqCst) + 1;
+        self.upload_details.lock().unwrap().push((
+            request.filename,
+            request.mime,
+            request.bytes.len(),
+        ));
+        Ok(UploadedFile {
+            id: format!("file-api-audit-{upload_id}"),
+            expires_at: Some(
+                deepagent_models::file_references::DeepSeekImageFileCache::now_unix_seconds()
+                    + deepagent_models::file_references::FILES_TTL_SECONDS as i64,
+            ),
+        })
+    }
+
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
         let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
         let parts: Vec<&serde_json::Value> = body["input"]
@@ -178,12 +204,19 @@ impl HttpTransport for ImageAnswer {
 }
 
 pub(super) async fn image_settings(db: Arc<Database>) -> Arc<SettingsService> {
+    image_settings_with_secrets(db, Arc::new(MemorySecretStore::new())).await
+}
+
+async fn image_settings_with_secrets(
+    db: Arc<Database>,
+    secrets: Arc<MemorySecretStore>,
+) -> Arc<SettingsService> {
     let settings = Arc::new(SettingsService::new(
         db,
         Arc::new(MockTransport::with_get_json(
             r#"{"data":[{"id":"deepseek-flash","object":"model","owned_by":"deepseek"}]}"#,
         )),
-        Arc::new(MemorySecretStore::new()),
+        secrets,
     ));
     settings
         .initialize("offline-audit-placeholder")
@@ -199,6 +232,19 @@ pub(super) async fn image_settings(db: Arc<Database>) -> Arc<SettingsService> {
         })
         .unwrap();
     settings
+}
+
+fn reopened_image_settings(
+    db: Arc<Database>,
+    secrets: Arc<MemorySecretStore>,
+) -> Arc<SettingsService> {
+    Arc::new(SettingsService::new(
+        db,
+        Arc::new(MockTransport::with_get_json(
+            r#"{"data":[{"id":"deepseek-flash","object":"model","owned_by":"deepseek"}]}"#,
+        )),
+        secrets,
+    ))
 }
 
 async fn imported_image_across_turns(seed_plain_turn: bool) -> Vec<usize> {
@@ -438,8 +484,7 @@ async fn audit_unsupported_image_mime_is_rejected_before_transport() {
     mime::invalid_reference_is_rejected(SVG, "image/svg+xml", "h169-original-raw", false).await;
 }
 #[tokio::test]
-#[ignore = "audit probe: retained images should reuse a DeepSeek Files API identity"]
-async fn audit_retained_image_reuses_deepseek_file_id() {
+async fn retained_image_reuses_deepseek_file_id() {
     let root = tempfile::tempdir().unwrap();
     let attachments = AttachmentService::new(root.path().join("attachments"));
     let imported = attachments
@@ -461,17 +506,19 @@ async fn audit_retained_image_reuses_deepseek_file_id() {
     assert_eq!(imported.status, "ready");
     assert_eq!(imported.size_bytes, 68);
 
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let settings = image_settings(db.clone()).await;
+    let db_path = root.path().join("state.sqlite");
+    let db = Arc::new(Database::open(&db_path).unwrap());
+    let secrets = Arc::new(MemorySecretStore::new());
+    let settings = image_settings_with_secrets(db.clone(), secrets.clone()).await;
     let observations = Arc::new(Mutex::new(Vec::new()));
-    let chat = ChatService::new(
-        db,
-        settings,
-        Arc::new(ImageReferenceAnswer {
-            observations: observations.clone(),
-        }),
-        root.path(),
-    );
+    let uploads = Arc::new(AtomicUsize::new(0));
+    let upload_details = Arc::new(Mutex::new(Vec::new()));
+    let transport = Arc::new(ImageReferenceAnswer {
+        observations: observations.clone(),
+        uploads: uploads.clone(),
+        upload_details: upload_details.clone(),
+    });
+    let chat = ChatService::new(db.clone(), settings, transport.clone(), root.path());
     let session = chat
         .run_in_session_with_attachments(
             "Retain this PNG for the file-reference audit.",
@@ -493,6 +540,14 @@ async fn audit_retained_image_reuses_deepseek_file_id() {
         )
         .await
         .unwrap();
+    drop(chat);
+    drop(db);
+
+    // Reopen the real SQLite authority with a new SettingsService and
+    // ChatService while retaining only the synthetic credential provider.
+    let db = Arc::new(Database::open(&db_path).unwrap());
+    let settings = reopened_image_settings(db.clone(), secrets);
+    let chat = ChatService::new(db, settings, transport, root.path());
     for (prompt, run_id) in [
         (
             "Use the retained PNG in the first continuation.",
@@ -521,11 +576,6 @@ async fn audit_retained_image_reuses_deepseek_file_id() {
 
     let observations = observations.lock().unwrap();
     assert_eq!(observations.len(), 3);
-    assert!(
-        observations[0].inline_urls.is_empty(),
-        "H-67 control changed"
-    );
-    assert!(observations[0].file_ids.is_empty(), "H-67 control changed");
     let inline_counts: Vec<_> = observations
         .iter()
         .map(|item| item.inline_urls.len())
@@ -535,28 +585,29 @@ async fn audit_retained_image_reuses_deepseek_file_id() {
         .map(|item| item.file_ids.len())
         .collect();
     let request_bytes: Vec<_> = observations.iter().map(|item| item.request_bytes).collect();
-    let repeated_inline_chars = observations[1]
-        .inline_urls
-        .iter()
-        .chain(observations[2].inline_urls.iter())
-        .map(String::len)
-        .sum::<usize>();
-    let same_inline_payload = observations[1].inline_urls == observations[2].inline_urls;
     eprintln!(
-        "image file-reference audit: inline_counts={inline_counts:?} file_id_counts={file_id_counts:?} request_bytes={request_bytes:?} repeated_inline_chars={repeated_inline_chars} same_inline_payload={same_inline_payload}"
-    );
-    assert!(
-        same_inline_payload,
-        "the control image bytes changed between turns"
+        "image file-reference regression: inline_counts={inline_counts:?} file_id_counts={file_id_counts:?} request_bytes={request_bytes:?} uploads={} upload_details={:?}",
+        uploads.load(Ordering::SeqCst),
+        upload_details.lock().unwrap().as_slice()
     );
     assert_eq!(
         (inline_counts, file_id_counts),
-        (vec![0, 0, 0], vec![0, 1, 1]),
-        "retained images should be uploaded once and reuse the same provider file_id instead of resending complete data URLs"
+        (vec![0, 0, 0], vec![1, 1, 1]),
+        "every real image-bearing turn should use the same uploaded provider file identity"
+    );
+    assert_eq!(
+        observations[0].file_ids, observations[1].file_ids,
+        "the uploaded file identity must persist into the first continuation"
     );
     assert_eq!(
         observations[1].file_ids, observations[2].file_ids,
-        "the provider file identity must stay stable across unchanged requests"
+        "the uploaded file identity must persist into later continuations"
+    );
+    assert_eq!(uploads.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        upload_details.lock().unwrap().as_slice(),
+        &[("image.png".into(), "image/png".into(), 68)],
+        "one exact validated PNG should be uploaded once with its original MIME"
     );
 }
 

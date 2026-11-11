@@ -172,6 +172,8 @@ pub struct ResponseRequest {
     /// attachment storage. Used to materialize `input_image` content parts;
     /// empty when the turn carries no image attachments.
     pub attachment_data_urls: std::collections::BTreeMap<String, String>,
+    /// Per-request DeepSeek Files API identities; durable history keeps local references.
+    pub image_file_ids: std::collections::BTreeMap<String, String>,
     /// Original item order used by the compatibility Chat projection.
     ///
     /// `input` is repaired at the Responses provider boundary so every tool
@@ -189,8 +191,12 @@ impl Serialize for ResponseRequest {
         use serde::ser::SerializeMap;
         self.validate_tool_image_resolution()
             .map_err(serde::ser::Error::custom)?;
-        let input = response_input_items_to_wire(&self.input, &self.attachment_data_urls)
-            .map_err(serde::ser::Error::custom)?;
+        let input = response_input_items_to_wire(
+            &self.input,
+            &self.attachment_data_urls,
+            &self.image_file_ids,
+        )
+        .map_err(serde::ser::Error::custom)?;
         let mut map = serializer.serialize_map(None)?;
         map.serialize_entry("model", &self.model)?;
         if let Some(value) = &self.instructions {
@@ -242,6 +248,7 @@ pub(crate) fn response_tools_to_wire(tools: &[ToolSchema]) -> Vec<serde_json::Va
 fn response_input_items_to_wire(
     items: &[ResponseInputItem],
     data_urls: &std::collections::BTreeMap<String, String>,
+    file_ids: &std::collections::BTreeMap<String, String>,
 ) -> Result<Vec<serde_json::Value>> {
     items
         .iter()
@@ -258,7 +265,9 @@ fn response_input_items_to_wire(
                     role,
                     content,
                     attachments,
-                } => response_input_message_to_wire(role, content, attachments, data_urls)?,
+                } => {
+                    response_input_message_to_wire(role, content, attachments, data_urls, file_ids)?
+                }
                 ResponseInputItem::Reasoning { id, content } => {
                     let mut value = serde_json::json!({
                         "type": "reasoning",
@@ -288,7 +297,7 @@ fn response_input_items_to_wire(
                     serde_json::json!({
                         "type": "function_call_output",
                         "call_id": call_id,
-                        "output": tool_output_to_wire(output, data_urls),
+                        "output": tool_output_to_wire(output, data_urls, file_ids),
                     })
                 }
                 ResponseInputItem::CustomToolCall {
@@ -307,7 +316,7 @@ fn response_input_items_to_wire(
                     serde_json::json!({
                         "type": "custom_tool_call_output",
                         "call_id": call_id,
-                        "output": tool_output_to_wire(output, data_urls),
+                        "output": tool_output_to_wire(output, data_urls, file_ids),
                     })
                 }
                 ResponseInputItem::WebSearchCall { id, status, action } => {
@@ -333,6 +342,7 @@ fn response_input_items_to_wire(
 fn tool_output_to_wire(
     output: &deepagent_core::tool_content::ToolResultBody,
     data_urls: &std::collections::BTreeMap<String, String>,
+    file_ids: &std::collections::BTreeMap<String, String>,
 ) -> serde_json::Value {
     use deepagent_core::tool_content::{ToolResultBody, ToolResultPart};
     match output {
@@ -343,9 +353,9 @@ fn tool_output_to_wire(
                 ToolResultPart::Text { text } => {
                     serde_json::json!({"type":"input_text", "text":text})
                 }
-                ToolResultPart::Image { attachment } => serde_json::json!({
-                    "type":"input_image", "image_url":data_urls.get(&attachment.id), "detail":"auto"
-                }),
+                ToolResultPart::Image { attachment } => {
+                    image_part(&attachment.id, data_urls, file_ids)
+                }
             })
             .collect(),
     }
@@ -357,18 +367,26 @@ fn response_input_message_to_wire(
     content: &str,
     attachments: &[deepagent_core::message::MessageAttachment],
     data_urls: &std::collections::BTreeMap<String, String>,
+    file_ids: &std::collections::BTreeMap<String, String>,
 ) -> Result<serde_json::Value> {
-    let mut image_urls = Vec::new();
+    let mut image_parts = Vec::new();
     for attachment in attachments
         .iter()
         .filter(|attachment| attachment.kind == "image")
     {
         crate::client::WireMode::Responses.validate_image_role(role)?;
-        let url = data_urls.get(&attachment.id).filter(|url| !url.trim().is_empty())
-            .ok_or_else(|| CoreError::invalid("image_input_message_unresolved: image message requires a resolved image reference; no image was sent"))?;
-        image_urls.push(url);
+        if !file_ids.contains_key(&attachment.id)
+            && !data_urls
+                .get(&attachment.id)
+                .is_some_and(|url| !url.trim().is_empty())
+        {
+            return Err(CoreError::invalid(
+                "image_input_message_unresolved: image message requires a resolved image reference; no image was sent",
+            ));
+        }
+        image_parts.push(image_part(&attachment.id, data_urls, file_ids));
     }
-    if image_urls.is_empty() {
+    if image_parts.is_empty() {
         return Ok(serde_json::json!({
             "type": "message",
             "role": role,
@@ -383,18 +401,24 @@ fn response_input_message_to_wire(
         // array is not recognized by the provider and breaks image messages.
         parts.push(serde_json::json!({ "type": "input_text", "text": content }));
     }
-    for url in image_urls {
-        parts.push(serde_json::json!({
-            "type": "input_image",
-            "image_url": url,
-            "detail": "auto",
-        }));
-    }
+    parts.extend(image_parts);
     Ok(serde_json::json!({
         "type": "message",
         "role": role,
         "content": parts,
     }))
+}
+
+fn image_part(
+    attachment_id: &str,
+    data_urls: &std::collections::BTreeMap<String, String>,
+    file_ids: &std::collections::BTreeMap<String, String>,
+) -> serde_json::Value {
+    if let Some(file_id) = file_ids.get(attachment_id) {
+        serde_json::json!({"type":"input_image","file_id":file_id})
+    } else {
+        serde_json::json!({"type":"input_image","image_url":data_urls.get(attachment_id),"detail":"auto"})
+    }
 }
 
 impl ResponseRequest {
@@ -446,6 +470,7 @@ impl ResponseRequest {
             text: None,
             user: None,
             attachment_data_urls: std::collections::BTreeMap::new(),
+            image_file_ids: std::collections::BTreeMap::new(),
             chat_projection_input,
         }
     }
@@ -458,6 +483,18 @@ impl ResponseRequest {
     ) -> Self {
         self.attachment_data_urls = data_urls;
         self
+    }
+
+    pub fn with_image_file_ids(
+        mut self,
+        file_ids: std::collections::BTreeMap<String, String>,
+    ) -> Self {
+        self.image_file_ids = file_ids;
+        self
+    }
+
+    pub fn image_file_ids(&self) -> &std::collections::BTreeMap<String, String> {
+        &self.image_file_ids
     }
 
     /// Enable streaming (builder style). Also requests usage in the stream.
@@ -492,6 +529,7 @@ impl ResponseRequest {
         self.input = other.input.clone();
         self.chat_projection_input = other.chat_projection_input.clone();
         self.attachment_data_urls = other.attachment_data_urls.clone();
+        self.image_file_ids = other.image_file_ids.clone();
     }
 
     /// Return the original order when it has complete, ordered tool pairs;
@@ -565,6 +603,10 @@ impl ResponseRequest {
         Ok(())
     }
 
+    pub fn clear_image_file_ids(&mut self) {
+        self.image_file_ids.clear();
+    }
+
     /// Role-only gate used before reading bytes and before Chat projection.
     /// Resolution remains the caller's job until final serialization.
     pub(crate) fn validate_image_roles(&self, wire_mode: crate::client::WireMode) -> Result<()> {
@@ -585,16 +627,32 @@ impl ResponseRequest {
     }
 
     fn validate_tool_image_resolution(&self) -> Result<()> {
+        let image_ids: std::collections::BTreeSet<_> = self
+            .input
+            .iter()
+            .flat_map(ResponseInputItem::image_attachments)
+            .map(|attachment| attachment.id.as_str())
+            .collect();
+        for (attachment_id, file_id) in &self.image_file_ids {
+            if !crate::file_references::valid_file_id(file_id)
+                || !image_ids.contains(attachment_id.as_str())
+            {
+                return Err(CoreError::invalid(
+                    "image_file_reference_invalid: file reference must identify a valid provider image and attachment",
+                ));
+            }
+        }
         for item in &self.input {
             if let ResponseInputItem::FunctionCallOutput { output, .. }
             | ResponseInputItem::CustomToolCallOutput { output, .. } = item
             {
                 for attachment in output.attachments() {
                     if attachment.kind != "image"
-                        || !self
+                        || (!self
                             .attachment_data_urls
                             .get(&attachment.id)
                             .is_some_and(|url| !url.is_empty())
+                            && !self.image_file_ids.contains_key(&attachment.id))
                     {
                         return Err(CoreError::invalid("image_input_tool_output_unresolved: image output requires a resolved image reference; no tool image was sent"));
                     }
@@ -862,7 +920,8 @@ mod tests {
             "att_1".to_string(),
             "data:image/png;base64,AAAA".to_string(),
         );
-        let wire = response_input_items_to_wire(&[item], &urls).unwrap();
+        let wire = response_input_items_to_wire(&[item], &urls, &std::collections::BTreeMap::new())
+            .unwrap();
         let content = &wire[0]["content"];
         assert!(content.is_array(), "user message with image → parts array");
         // Responses content parts use the `input_*` type names (per the
@@ -894,7 +953,7 @@ mod tests {
             "att_1".to_string(),
             "data:image/png;base64,AAAA".to_string(),
         );
-        let wire = response_input_items_to_wire(&[item], &urls);
+        let wire = response_input_items_to_wire(&[item], &urls, &std::collections::BTreeMap::new());
         assert!(
             wire.is_err(),
             "illegal images must not become text-only messages"
@@ -915,11 +974,48 @@ mod tests {
                 path: None,
             }],
         };
-        let wire = response_input_items_to_wire(&[item], &std::collections::BTreeMap::new());
+        let wire = response_input_items_to_wire(
+            &[item],
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
+        );
         assert!(
             wire.is_err(),
             "unresolved images must not become text-only messages"
         );
+    }
+
+    #[test]
+    fn responses_wire_uses_files_api_reference_instead_of_inline_data_url() {
+        use deepagent_core::message::MessageAttachment;
+        let item = ResponseInputItem::InputMessage {
+            role: "user".into(),
+            content: "same image".into(),
+            attachments: vec![MessageAttachment {
+                sha256: None,
+                id: "att_file".into(),
+                kind: "image".into(),
+                media_type: Some("image/png".into()),
+                path: None,
+            }],
+        };
+        let mut urls = std::collections::BTreeMap::new();
+        urls.insert(
+            "att_file".to_string(),
+            "data:image/png;base64,PRIVATE_SYNTHETIC_BYTES".to_string(),
+        );
+        let mut file_ids = std::collections::BTreeMap::new();
+        file_ids.insert("att_file".to_string(), "file-api-fixture".to_string());
+
+        let wire = response_input_items_to_wire(&[item], &urls, &file_ids).unwrap();
+        let image = &wire[0]["content"][1];
+        assert_eq!(image["type"], "input_image");
+        assert_eq!(image["file_id"], "file-api-fixture");
+        assert!(image.get("image_url").is_none());
+        assert!(image.get("detail").is_none());
+        assert!(!serde_json::to_string(&wire)
+            .unwrap()
+            .contains("PRIVATE_SYNTHETIC_BYTES"));
     }
 
     #[test]

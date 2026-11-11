@@ -23,6 +23,23 @@ pub struct TransportRequest {
     pub body: String,
 }
 
+/// One authenticated DeepSeek Files API upload of original image bytes.
+#[derive(Clone)]
+pub struct FileUploadRequest {
+    pub url: String,
+    pub api_key: String,
+    pub filename: String,
+    pub mime: String,
+    pub bytes: Vec<u8>,
+}
+
+/// Provider file metadata needed for the bounded request-local cache.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadedFile {
+    pub id: String,
+    pub expires_at: Option<i64>,
+}
+
 /// A transport that can stream an SSE response and perform simple GET requests.
 ///
 /// Implementations push each decoded SSE `data:` payload to `on_event`. The
@@ -30,6 +47,9 @@ pub struct TransportRequest {
 /// (e.g. a Responses terminal event was seen).
 #[async_trait]
 pub trait HttpTransport: Send + Sync {
+    fn supports_file_upload(&self) -> bool {
+        false
+    }
     /// Perform the request and drive `sink` with each SSE payload string.
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()>;
 
@@ -79,6 +99,55 @@ pub trait HttpTransport: Send + Sync {
             return Err(CoreError::other("request cancelled"));
         }
         self.get_json(url, api_key).await
+    }
+
+    /// POST one original image to the provider's Files API. Existing test and
+    /// embedding transports remain compatible and fail closed until they opt in.
+    async fn upload_file(&self, _request: FileUploadRequest) -> Result<UploadedFile> {
+        Err(CoreError::other(
+            "this transport does not support file upload",
+        ))
+    }
+
+    /// Cancel-aware upload shares the current model-attempt cancellation owner.
+    async fn upload_file_cancelled(
+        &self,
+        request: FileUploadRequest,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<UploadedFile> {
+        if cancel.load(Ordering::Acquire) {
+            return Err(CoreError::other("request cancelled"));
+        }
+        let execution = ToolExecutionContext::new(cancel);
+        tokio::select! {
+            result = self.upload_file(request) => result,
+            _ = execution.cancelled() => Err(CoreError::other("request cancelled")),
+        }
+    }
+
+    /// Delete only a provider file created by the current failed preparation.
+    /// This is best effort compensation, not general history/retention cleanup.
+    async fn delete_file(&self, _url: &str, _api_key: &str, _file_id: &str) -> Result<()> {
+        Err(CoreError::other(
+            "this transport does not support file deletion",
+        ))
+    }
+
+    async fn delete_file_cancelled(
+        &self,
+        url: &str,
+        api_key: &str,
+        file_id: &str,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<()> {
+        if cancel.load(Ordering::Acquire) {
+            return Err(CoreError::other("request cancelled"));
+        }
+        let execution = ToolExecutionContext::new(cancel);
+        tokio::select! {
+            result = self.delete_file(url, api_key, file_id) => result,
+            _ = execution.cancelled() => Err(CoreError::other("request cancelled")),
+        }
     }
 }
 

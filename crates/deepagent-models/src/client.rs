@@ -5,10 +5,10 @@
 //! a single [`ModelClient::stream_response`] call that returns a complete
 //! [`Response`] with `reasoning_content` preserved.
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use deepagent_core::error::Result;
+use deepagent_core::error::{CoreError, Result};
 
 use crate::chat::{ReasoningEffort, Response, ResponseRequest};
 use crate::chat_completions::{ChatCompletionAccumulator, ChatCompletionRequest};
@@ -16,7 +16,9 @@ use crate::responses::ResponseInputItem;
 use crate::stream::ResponseAccumulator;
 use crate::transport::{HttpTransport, TransportRequest};
 
+mod files;
 mod request_body;
+use files::ImageRequest;
 
 #[cfg(test)]
 #[path = "chat_content_filter_tests.rs"]
@@ -162,12 +164,25 @@ impl ModelConfig {
 pub struct ModelClient {
     transport: Arc<dyn HttpTransport>,
     config: ModelConfig,
+    image_file_cache: Option<crate::file_references::DeepSeekImageFileCache>,
 }
 
 impl ModelClient {
     /// Build a client from a transport and config.
     pub fn new(transport: Arc<dyn HttpTransport>, config: ModelConfig) -> Self {
-        Self { transport, config }
+        Self {
+            transport,
+            config,
+            image_file_cache: None,
+        }
+    }
+
+    pub fn with_image_file_cache(
+        mut self,
+        cache: crate::file_references::DeepSeekImageFileCache,
+    ) -> Self {
+        self.image_file_cache = Some(cache);
+        self
     }
 
     /// Provider metadata wins; uncatalogued ids use the same bundled resolver.
@@ -309,14 +324,26 @@ impl ModelClient {
         self.validate_output_tokens(request.max_output_tokens)?;
         self.validate_response_input_modalities(&request)?;
         log_response_input_pairs(&request);
+        crate::image_input::validate_response_payloads(request.clone(), None).await?;
+        self.prepare_response_files_for_attempt(&mut request, None)
+            .await?;
         // Ask the provider to include a final usage chunk in the stream.
         let body = request_body::encode(&request)?;
-        crate::image_input::validate_response_payloads(request, None).await?;
-        let transport_req = TransportRequest {
+        let mut transport_req = TransportRequest {
             url: self.config.endpoint(),
             api_key: self.config.api_key.clone(),
             body,
         };
+        if !request.image_file_ids.is_empty() {
+            return self
+                .stream_files_aware_attempt(
+                    ImageRequest::Responses(&mut request),
+                    &mut transport_req,
+                    observer,
+                    None,
+                )
+                .await;
+        }
 
         let mut accumulator = ResponseAccumulator::new();
 
@@ -327,10 +354,11 @@ impl ModelClient {
         {
             let acc = &mut accumulator;
             let mut sink =
-                move |data: &str| -> Result<bool> { acc.push_sse_data_observed(data, observer) };
-            self.transport.stream(transport_req, &mut sink).await?;
+                |data: &str| -> Result<bool> { acc.push_sse_data_observed(data, observer) };
+            self.transport
+                .stream(transport_req.clone(), &mut sink)
+                .await?;
         }
-
         accumulator.finish()
     }
 
@@ -360,24 +388,36 @@ impl ModelClient {
         self.validate_output_tokens(request.max_output_tokens)?;
         self.validate_response_input_modalities(&request)?;
         log_response_input_pairs(&request);
+        crate::image_input::validate_response_payloads(request.clone(), Some(cancel.clone()))
+            .await?;
+        self.prepare_response_files_for_attempt(&mut request, Some(cancel.clone()))
+            .await?;
         let body = request_body::encode(&request)?;
-        crate::image_input::validate_response_payloads(request, Some(cancel.clone())).await?;
-        let transport_req = TransportRequest {
+        let mut transport_req = TransportRequest {
             url: self.config.endpoint(),
             api_key: self.config.api_key.clone(),
             body,
         };
+        if !request.image_file_ids.is_empty() {
+            return self
+                .stream_files_aware_attempt(
+                    ImageRequest::Responses(&mut request),
+                    &mut transport_req,
+                    observer,
+                    Some(cancel),
+                )
+                .await;
+        }
 
         let mut accumulator = ResponseAccumulator::new();
         {
             let acc = &mut accumulator;
             let mut sink =
-                move |data: &str| -> Result<bool> { acc.push_sse_data_observed(data, observer) };
+                |data: &str| -> Result<bool> { acc.push_sse_data_observed(data, observer) };
             self.transport
-                .stream_cancelled(transport_req, &mut sink, cancel)
+                .stream_cancelled(transport_req.clone(), &mut sink, cancel.clone())
                 .await?;
         }
-
         accumulator.finish()
     }
 
@@ -399,13 +439,25 @@ impl ModelClient {
         request.validate()?;
         self.validate_output_tokens(request.max_tokens)?;
         self.validate_chat_input_modalities(&request)?;
+        crate::image_input::validate_chat_payloads(request.clone(), None).await?;
+        self.prepare_chat_files_for_attempt(&mut request, None)
+            .await?;
         let body = request_body::encode(&request)?;
-        crate::image_input::validate_chat_payloads(request, None).await?;
-        let transport_req = TransportRequest {
+        let mut transport_req = TransportRequest {
             url: self.config.chat_endpoint(),
             api_key: self.config.api_key.clone(),
             body,
         };
+        if !request.image_file_ids.is_empty() {
+            return self
+                .stream_files_aware_attempt(
+                    ImageRequest::Chat(&mut request),
+                    &mut transport_req,
+                    observer,
+                    None,
+                )
+                .await;
+        }
         let mut accumulator = ChatCompletionAccumulator::new();
         {
             let acc = &mut accumulator;
@@ -442,13 +494,25 @@ impl ModelClient {
         request.validate()?;
         self.validate_output_tokens(request.max_tokens)?;
         self.validate_chat_input_modalities(&request)?;
+        crate::image_input::validate_chat_payloads(request.clone(), Some(cancel.clone())).await?;
+        self.prepare_chat_files_for_attempt(&mut request, Some(cancel.clone()))
+            .await?;
         let body = request_body::encode(&request)?;
-        crate::image_input::validate_chat_payloads(request, Some(cancel.clone())).await?;
-        let transport_req = TransportRequest {
+        let mut transport_req = TransportRequest {
             url: self.config.chat_endpoint(),
             api_key: self.config.api_key.clone(),
             body,
         };
+        if !request.image_file_ids.is_empty() {
+            return self
+                .stream_files_aware_attempt(
+                    ImageRequest::Chat(&mut request),
+                    &mut transport_req,
+                    observer,
+                    Some(cancel),
+                )
+                .await;
+        }
         let mut accumulator = ChatCompletionAccumulator::new();
         {
             let acc = &mut accumulator;
@@ -513,7 +577,7 @@ impl ModelClient {
             request.top_logprobs = self.config.defaults.top_logprobs;
         }
         if request.reasoning_effort.is_none() {
-            request.reasoning_effort = self.config.defaults.reasoning_effort.clone();
+            request.reasoning_effort = self.config.defaults.reasoning_effort;
         }
         if request.text.is_none() {
             request.text = self.config.defaults.text.clone();
@@ -664,6 +728,10 @@ fn response_to_chat_completion(request: ResponseRequest) -> Result<ChatCompletio
 #[cfg(test)]
 #[path = "client_modalities_tests.rs"]
 mod modalities_tests;
+
+#[cfg(test)]
+#[path = "client_file_reference_tests.rs"]
+mod file_reference_tests;
 
 #[cfg(test)]
 #[path = "client_body_budget_tests.rs"]

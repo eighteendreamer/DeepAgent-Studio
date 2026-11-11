@@ -178,11 +178,11 @@ impl Drop for StopOnDrop {
     }
 }
 
-async fn in_worker<T: Send + 'static>(
+async fn in_worker<T: Send + 'static, R: Send + 'static>(
     request: T,
     cancel: Option<Arc<AtomicBool>>,
-    validate: fn(&T, &AtomicBool, Option<&AtomicBool>) -> Result<()>,
-) -> Result<()> {
+    validate: fn(&T, &AtomicBool, Option<&AtomicBool>) -> Result<R>,
+) -> Result<R> {
     let stopped = Arc::new(AtomicBool::new(false));
     let _lifetime = StopOnDrop(stopped.clone());
     let runtime = tokio::runtime::Handle::try_current().map_err(|_| {
@@ -192,6 +192,26 @@ async fn in_worker<T: Send + 'static>(
         .spawn_blocking(move || validate(&request, &stopped, cancel.as_deref()))
         .await
         .map_err(|_| invalid("image_input_decoder_failed: raster validation job failed"))?
+}
+
+/// Files preparation uses the same bounded decoder and Drop/cancellation owner
+/// as inline validation; a second decode must never block the async executor.
+pub(crate) async fn decode_for_file_upload(
+    url: String,
+    declared: Option<String>,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Result<(Vec<u8>, ImageIdentity)> {
+    in_worker(
+        (url, declared),
+        cancel,
+        |(url, declared), stopped, cancel| {
+            check_cancelled(stopped, cancel)?;
+            let image = decode_image_data_url(url, declared.as_deref())?;
+            check_cancelled(stopped, cancel)?;
+            Ok(image)
+        },
+    )
+    .await
 }
 
 pub(crate) async fn validate_response_payloads(

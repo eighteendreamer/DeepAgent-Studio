@@ -1337,6 +1337,16 @@ fn migrate_persisted_reasoning(value: &mut serde_json::Value) -> usize {
 }
 
 impl SettingsService {
+    /// The one durable image-reference cache attached to the existing SQLite
+    /// authority. It stores only Digests and provider file metadata.
+    pub(crate) fn image_file_cache(
+        &self,
+    ) -> deepagent_models::file_references::DeepSeekImageFileCache {
+        deepagent_models::file_references::DeepSeekImageFileCache::new(Arc::new(
+            crate::deepseek_file_store::SqliteImageFileReferenceStore::new(self.db.clone()),
+        ))
+    }
+
     /// Build the service from a shared database, an HTTP transport (reaches
     /// DeepSeek for discovery), and a secret store (holds the API key).
     pub fn new(

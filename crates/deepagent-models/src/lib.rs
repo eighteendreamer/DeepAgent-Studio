@@ -35,6 +35,7 @@ pub mod chat_completions;
 pub mod client;
 pub mod discovery;
 pub mod failure;
+pub mod file_references;
 pub mod image_input;
 mod provider_error;
 pub mod responses;
@@ -64,7 +65,9 @@ pub use responses::{
     ResponseOutputItem,
 };
 pub use stream::{DeltaObserver, ModelStreamEvent, NoopObserver, ResponseAccumulator};
-pub use transport::{HttpTransport, MockTransport, TransportRequest};
+pub use transport::{
+    FileUploadRequest, HttpTransport, MockTransport, TransportRequest, UploadedFile,
+};
 
 #[cfg(feature = "http")]
 pub use reqwest_transport::{ReqwestTransport, TransportTimeouts};

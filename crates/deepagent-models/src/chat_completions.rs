@@ -36,6 +36,9 @@ pub struct ChatCompletionRequest {
     /// Attachment id → base64 data URL, resolved by the caller that owns
     /// attachment storage (materialized into `image_url` content parts).
     pub attachment_data_urls: BTreeMap<String, String>,
+    /// Per-request DeepSeek Files API identities; durable history keeps only
+    /// local attachment references.
+    pub image_file_ids: BTreeMap<String, String>,
 }
 
 impl Serialize for ChatCompletionRequest {
@@ -45,11 +48,17 @@ impl Serialize for ChatCompletionRequest {
     {
         self.validate_image_roles()
             .map_err(serde::ser::Error::custom)?;
+        self.validate_image_references()
+            .map_err(serde::ser::Error::custom)?;
         let mut map = serializer.serialize_map(None)?;
         map.serialize_entry("model", &self.model)?;
         map.serialize_entry(
             "messages",
-            &ChatMessages(&self.messages, &self.attachment_data_urls),
+            &ChatMessages(
+                &self.messages,
+                &self.attachment_data_urls,
+                &self.image_file_ids,
+            ),
         )?;
         map.serialize_entry("stream", &self.stream)?;
         if self.stream_options_include_usage {
@@ -122,6 +131,7 @@ impl ChatCompletionRequest {
             tool_choice: None,
             user: None,
             attachment_data_urls: BTreeMap::new(),
+            image_file_ids: BTreeMap::new(),
         }
     }
 
@@ -179,6 +189,7 @@ impl ChatCompletionRequest {
 
     pub fn validate(&self) -> Result<()> {
         self.validate_image_roles()?;
+        self.validate_image_references()?;
         if self
             .thinking
             .as_ref()
@@ -210,6 +221,37 @@ impl ChatCompletionRequest {
         Ok(())
     }
 
+    fn validate_image_references(&self) -> Result<()> {
+        let image_ids: std::collections::BTreeSet<_> = self
+            .messages
+            .iter()
+            .flat_map(|message| &message.attachments)
+            .filter(|attachment| attachment.kind == "image")
+            .map(|attachment| attachment.id.as_str())
+            .collect();
+        if self.image_file_ids.iter().any(|(id, file_id)| {
+            !image_ids.contains(id.as_str()) || !crate::file_references::valid_file_id(file_id)
+        }) {
+            return Err(CoreError::invalid(
+                "image_file_reference_invalid: file reference must identify a valid provider image and attachment",
+            ));
+        }
+        for message in &self.messages {
+            if message.role == Role::User
+                && message.attachments.iter().any(|attachment| {
+                    attachment.kind == "image"
+                        && !self.image_file_ids.contains_key(&attachment.id)
+                        && !self.attachment_data_urls.contains_key(&attachment.id)
+                })
+            {
+                return Err(CoreError::invalid(
+                    "image_input_message_unresolved: user image requires a resolved image reference",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn validate_image_roles(&self) -> Result<()> {
         for message in &self.messages {
             if message
@@ -225,7 +267,11 @@ impl ChatCompletionRequest {
     }
 }
 
-struct ChatMessages<'a>(&'a [Message], &'a BTreeMap<String, String>);
+struct ChatMessages<'a>(
+    &'a [Message],
+    &'a BTreeMap<String, String>,
+    &'a BTreeMap<String, String>,
+);
 
 impl Serialize for ChatMessages<'_> {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
@@ -234,7 +280,7 @@ impl Serialize for ChatMessages<'_> {
     {
         let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
         for message in self.0 {
-            let value = serialize_message(message, self.1)
+            let value = serialize_message(message, self.1, self.2)
                 .map_err(|error| serde::ser::Error::custom(error.to_string()))?;
             sequence.serialize_element(&value)?;
         }
@@ -245,6 +291,7 @@ impl Serialize for ChatMessages<'_> {
 fn serialize_message(
     message: &Message,
     data_urls: &BTreeMap<String, String>,
+    file_ids: &BTreeMap<String, String>,
 ) -> serde_json::Result<serde_json::Value> {
     let mut value = serde_json::Map::new();
     value.insert(
@@ -304,17 +351,26 @@ fn serialize_message(
             // User messages may carry image attachments: emit a content-parts
             // array (text part + one `image_url` data-URL part per image).
             // Images are only valid on user messages per the provider.
-            let image_urls: Vec<String> = if message.role == Role::User {
+            let image_parts: Vec<serde_json::Value> = if message.role == Role::User {
                 message
                     .attachments
                     .iter()
                     .filter(|att| att.kind == "image")
-                    .filter_map(|att| data_urls.get(&att.id).cloned())
+                    .map(|att| {
+                        if let Some(file_id) = file_ids.get(&att.id) {
+                            serde_json::json!({"type":"file","file_id":file_id})
+                        } else {
+                            serde_json::json!({
+                                "type":"image_url",
+                                "image_url":{"url":data_urls.get(&att.id)}
+                            })
+                        }
+                    })
                     .collect()
             } else {
                 Vec::new()
             };
-            if image_urls.is_empty() {
+            if image_parts.is_empty() {
                 value.insert(
                     "content".to_string(),
                     serde_json::Value::String(message.content.clone()),
@@ -327,12 +383,7 @@ fn serialize_message(
                         "text": message.content,
                     }));
                 }
-                for url in image_urls {
-                    parts.push(serde_json::json!({
-                        "type": "image_url",
-                        "image_url": { "url": url },
-                    }));
-                }
+                parts.extend(image_parts);
                 value.insert("content".to_string(), serde_json::Value::Array(parts));
             }
         }

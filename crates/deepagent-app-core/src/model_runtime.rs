@@ -36,7 +36,10 @@ impl RunModelPlan {
             .api_key()?
             .ok_or_else(|| CoreError::invalid("API key not set: initialize the project first"))?;
         Ok(RunModelSelection {
-            client: Arc::new(ModelClient::new(transport, config)),
+            client: Arc::new(
+                ModelClient::new(transport, config)
+                    .with_image_file_cache(settings.image_file_cache()),
+            ),
             model: self.model,
             reasoning_effort: self.reasoning_effort,
             fallback_model: self.fallback_model,
@@ -68,7 +71,9 @@ pub(crate) fn build_model_client(
         user: loaded.responses.effective_user(),
     };
     let config = ModelConfig::from_catalog(api_key, &loaded.catalog, role).with_defaults(defaults);
-    let client = Arc::new(ModelClient::new(transport, config));
+    let client = Arc::new(
+        ModelClient::new(transport, config).with_image_file_cache(settings.image_file_cache()),
+    );
     Ok((client, model, reasoning_effort))
 }
 

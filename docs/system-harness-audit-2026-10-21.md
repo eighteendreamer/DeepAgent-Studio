@@ -6790,6 +6790,8 @@ Finding F-H167（E01～03）：provider-image输出在URL和inline分支共同�
 
 ### H-170：历史图片每轮重发完整 base64，未接入 DeepSeek Files API 的持久引用
 
+**交付状态（2026-11-11，阻塞待处理，仅产物清理）**：原红测经H67对照校正后真实复现，已完成Models/AppCore双协议Files持久引用、30天TTL、并发/过期/失败回退及取消收敛；原探针转默认Kernel/SQLite冷重开回归，三轮均file_id且仅上传一次。最终Models/http301/0/18、SQLite2/0、CLI/Tauri/fmt及Models严格lint通过；workspace5287/4既有失败/170忽略、全仓strict旧阻断完整保留E03。共享Models/AppCore包产物已清理8.8GiB，但两个独立目录删除在CreateProcess前被blocked by policy拒绝，约15.36GiB仍在，E04明确等待实际清理结果后才关闭本项。本轮不推送、不操作真实服务/Key或用户数据库；18份代码/依赖/测试与双文独立提交，ID另回填。未宣布整个修复目标完成。
+
 **级别：中（P2，请求体、延迟、带宽与官方能力利用）；触发条件：合法图片进入 retained history 后，同一会话继续发起一个或多个模型请求。** 小图只造成固定冗余；真实截图、多图和长会话会在每轮重新编码并上传相同字节，还会更快逼近 48 MiB 请求体边界。H-69 是“超限 inline 请求仍进入 transport”的边界校验缺陷；本项即使图片和请求均未超限也会发生，是 provider 文件身份与复用能力缺失，不能互相替代。
 
 #### 官方契约、生产路径与完整链复现
@@ -6808,6 +6810,68 @@ Finding F-H167（E01～03）：provider-image输出在URL和inline分支共同�
 - 影响随图片字节、历史轮数、重试次数和并行分支线性放大。可能后果包括重复 base64 编码与内存分配、更多上行字节、更大的请求解析延迟、48 MiB body 提前失败，以及本可由 64 MiB `file_id` 承载的单图无法使用。图片仍会进入模型并按尺寸计视觉 token；没有官方证据表明把同一图片改为 `file_id` 会降低视觉 token，亦没有证据证明它必然提高 KV cache 命中，因此不作这些宣传。
 - 根因修复应留在既有 `deepagent-models` provider adapter / 附件准备 seam，不把 Files 状态塞进 UI DTO、通用 RunStore 或另造附件库：为 provider request image 建立 typed `Inline | FileId` 投影；用实际字节摘要、规范化 variant、provider endpoint、账户/凭据作用域和有效模型形成稳定 key；上传索引只保存可审计的远端 ID、字节身份与过期信息，不保存 API key。上传、fallback、重试和失效刷新必须共用模型请求的取消 owner，并继续服从 H-69 的 inline/总量预算、H-70 的内容身份及 H-169 的格式验证。
 - 验收覆盖：同图同 variant 跨轮/重试/并发只上传一次，不同转换或账户不能串 ID；过期前刷新、provider 删除/无效 ID、Files 超时/限流/配额、上传成功但索引提交失败、取消和进程重开均有界；fallback 必须是一次请求内一致的 all-base64 表示并重新核算完整 body，不混合半新半旧状态。真实 DeepSeek 集成再核对上传、引用、删除与 usage；离线探针只负责 wire 与生命周期状态机，不冒充线上性能结论。
+
+**E-H170-01（原探针复核、范围与候选，2026-11-11）**：本轮Git核对HEAD为5d466e15（用户新增的三份天枢研究文档提交保留），当前只修H170；原七项untracked、默认CLI与用户.snap.new不属于源码提交。原审计探针先在独立target实际exit101/322.249秒，停在已由H67修复的“首轮零图”过时对照；该失败不当成H170复现。仅校正首轮正常对照后同一正式AttachmentService→ChatService→Kernel→ModelAgent→Models三轮探针再次exit101/77.494秒：inline=[1,1,1]、file_id=[0,0,0]、request_bytes=[42271,42459,42632]、后两轮重复inline字符228、same_inline_payload=true，0通过/1失败。原始和校正后的失败日志、断言及正常保留图片对照均保留，不以错误首轮对照宣称复现；原2026-10-24证据不覆盖。原命令主体为cargo test -p deepagent-app-core --test kernel_v2_e2e image_preparation::audit_retained_image_reuses_deepseek_file_id --offline -- --ignored --exact --nocapture，本轮显式target为target/h170-repair-20261111。
+
+用户确认保留期限30天。2026-11-11通过官方公开页面实际HTTP200复核[上传文件](https://api-docs.deepseek.com/zh-cn/api/create-file/)、[Files指南](https://api-docs.deepseek.com/zh-cn/guides/files_api/)、[图像理解](https://api-docs.deepseek.com/zh-cn/guides/vision/)：multipart的purpose=user_data、expires_after[anchor]=created_at、expires_after[seconds]=2592000；未设置两项时永久；返回expires_at为秒级时间戳。官方示例Files路径是https://api.deepseek.com/files，不是凭参考Messages adapter假定/v1/files；Chat图片块是type=file,file_id，Responses使用原审计已核对的input_image.file_id。不套用OpenAI通用文件协议、不上传文档或自动调用其他模型。工具web检索服务本轮两次503后，改为读取同一官方公开页面；这些是文档GET，不是请求真实模型、读取Key或调用真实Files服务。
+
+候选复用已有HttpTransport、Models双serializer及AppCore SettingsService/DocumentStore；本地设计的索引key为规范化Files endpoint、凭据作用域、模型、实际MIME及原件字节的带长度前缀SHA256，SQLite仅保存远端id及expiry，不保存Key、base64或复制原件。持久文件锁复用现有fs_commit操作门，跨SQLite连接协调同内容上传；锁/查询/发布在Tokio blocking池执行，发布任务自身持有锁至commit结束，网络期间无SQLite连接锁。模型/角色/实际字节准入仍先于upload；历史保持原local path+SHA引用。30天上传、提前1小时刷新；未确认expiry不缓存。上传/索引失败仅本次统一退回inline并重新执行原48MiB最终body限制，成功发布的共享引用不因另一请求失败被删除；索引提交失败只对本次上传id best-effort删除。供应商明确invalid/expired/deleted file_id时按本地分类规则至多一次inline回退，已观察输出/usage/工具事件则不重采样；取消后不继续fallback。该识别规则是本地兼容策略，不冒称官方错误码清单。
+
+原H170探针已转默认image_preparation::retained_image_reuses_deepseek_file_id，包括真实SQLite冷重开；候选定向观察三轮inline=[0,0,0]、file_id=[1,1,1]、uploads=1，上传原PNG68字节，body=[42503,42810,42983]。Models定向Files/失败/双协议14项、HTTP上传/删除/脱敏/取消/timeout三项、SQLite重开/双连接单线程并发两项通过；这些为中间证据，后续候选有相应收敛，最终以冻结矩阵为准，不将这些局部绿测代替workspace。全量Models/http lib中间223/0/9忽略；Models all-target http严格lint已过，AppCore严格lint在既有Runtime model_agent.rs:298 clone_on_copy与workflow/canvas.rs:32 derivable_impls阻断，未混修Runtime。候选唯一顺手等价调整为已修改Models客户端移除一处Option<Copy>冗余clone以消除其原lint，未改变默认值语义。
+
+最终17份源码/依赖冻结后，验收编排使用本轮既有G盘target与仓外G:/h170-fixtures-20261111，只读复用Cargo/Rustup依赖缓存，隔离HOME/APPDATA/TEMP/数据根并清除凭据和代理环境，不继承CARGO_TARGET_DIR。此前探索构建曾误用共享target/debug（约21.46GB逻辑量，含既有内容）；不将整根全删或声称全部属于本轮，最终仅清理确认归属产物。门禁结果、剩余限制与清理另记E02；目前修复中、未提交、整体goal active。
+
+**E-H170-02（候选收敛、首轮停止与重新冻结，2026-11-11）**：首轮final-gates.ps1已实际启动，fmt0/4.682秒、Models整包0/124.772秒、SQLite两项0/184.042秒、Kernel图片组101/103.089秒（19通过/1原DACL恢复失败/0忽略，H170通过）、CLI build0/78.975秒。源码复核发现Files准备在原H169异步解码后再次同步解码，候选会占住Tokio执行线程；小怪将其接回同一image_input blocking/StopOnDrop/取消门，未改图片准入标准。新增上传pending后取消与Drop回归，均确认上传future释放、模型请求0、未发布索引；本轮Files定向15/0。源码只在上述候选收敛期间改变，不能用旧freeze验收新代码。
+
+发现首轮已进入workspace后，核对本轮专属Cargo31596、子Cargo18060及父pwsh24092与精确target路径，然后停止该过时workspace子树；taskkill对短暂子PID6036返回operation not supported，其余本轮Cargo/test已终止，随后只读确认6036也已不存在。没有重试提权或停止其他进程。首轮workspace exit1/564.344秒为主动停止，不是完整测试结论；最多运行到AppCore约1479项，不能计全仓通过。编排在下一门禁前实际抛出client/files.rs源SHA漂移，finally已恢复默认CLI与用户.snap.new；CLI hash重新等于8C03E6A63D3E64EBF14DF4AC67C4DC56FB87C2D8B9C35949D3CBA9BC391F30A4。首轮所有final-*日志/结果/manifest保留；不伪称曾在源码改变时获得稳定最终矩阵。
+
+更新后18份源码/依赖重新冻结，使用独立verified-gates.ps1与verified-*日志，不覆盖首轮final-*。复用同一Cargo target和隔离fixture目录，不重新下载依赖。verified每gate前与所有gate完成后逐份核SHA；最终结果续记E03。目前已取得Models整包301通过/0失败/18忽略、SQLite2/0，其余门禁仍在运行，H170继续修复中。
+
+**E-H170-03（最终冻结验收，2026-11-11）**：verified-gates.ps1已完整终态exit0，这只表示编排完成，不代表其失败的子门禁通过；实际退出逐项如下。18份源码/依赖在各gate前与全部终态后SHA漂移0，manifest SHA256为04FE22AA1095811B1069805B10978FC717D689D2D3E2F57ED760062D890C5405。没有在本次冻结后再改实现或测试。所有Cargo使用同一本轮target和既有离线依赖缓存、隔离合成环境；本机Rust1.96，未冒称MSRV1.80或其他OS验证。除fmt外公共参数均为 --target-dir G:/Code_Warehouse/DeepAgent-Studio/target/h170-repair-20261111 --offline -j 2 --config profile.dev.debug=0 --config profile.test.debug=0；下面命令列仅省略这些公共参数，参数位置与原日志一致。debug assertions保持启用，不修改仓库profile。
+
+| 实际命令（加上述公共参数） | 实际结果 | 墙钟秒，含编译/等待 |
+|---|---|---:|
+| `cargo fmt --all -- --check` | exit0 | 4.522 |
+| `cargo test -p deepagent-models --features http --no-fail-fast -- --test-threads=2 --quiet` | exit0；22/22顶层target完成，301通过/0失败/18忽略 | 58.263 |
+| `cargo test -p deepagent-app-core --lib deepseek_file_store::tests -- --test-threads=2 --nocapture` | exit0；2通过/0失败/0忽略 | 93.913 |
+| `cargo test -p deepagent-app-core --test kernel_v2_e2e --features web image_preparation -- --test-threads=2 --nocapture` | exit101；19通过/1既有DACL失败/0忽略，H170通过 | 111.979 |
+| `cargo build -p deepagent-cli` | exit0 | 57.697 |
+| `cargo test --workspace --features deepagent-app-core/web --no-fail-fast -- --test-threads=2 --quiet` | exit101；156/156顶层target完成，5287通过/4既有失败/170忽略 | 1272.203 |
+| `cargo clippy -p deepagent-models --all-targets --features http -- -D warnings` | exit0；Models全target/http严格lint通过 | 57.921 |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | exit101；既有Runtime两条lint阻断 | 88.023 |
+| `cargo clippy --no-deps -p deepagent-app-core --lib` | exit0；保留6条既有warning，不冒称严格lint通过 | 63.315 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml` | exit0；Desktop Rust消费者通过 | 298.478 |
+
+
+workspace按每个Running/Doc-tests块的最后summary统计，排除H92嵌套helper的额外1通过；156块全部完成，无缺失target，不把170项ignored算执行。四个失败逐项核对源码未改，均在H169最终验收E03已有相同证据：
+
+1. Kernel image_preparation::read_failure::real_read_data_dacl_denial_fails_without_sampling_and_recovers，image_read_failure.rs:286，original DACL must be restored exactly。
+2. CLI tui::app::tests::viewport_snapshot_with_a_pending_approval，原snapshot差异；不accept、不重写基线，用户原.snap.new于finally恢复。
+3. Prompts canvas_prompt::tests::every_node_kind_owns_exactly_one_profile，canvas_prompt.rs:310，H306的creative.video-edit.v1空defaultUserPrompt；本轮不修H306。
+4. Runtime checkpoint::access::native::tests::restrictive_tree_is_protected_before_copying_any_bytes，checkpoint/access.rs:364，restored test DACL differs。
+
+Kernel整组为361通过/1失败/13忽略，H170默认回归实际执行；原H169/171格式、角色、缺文件和内容身份、MCP工具图片、压缩/持久恢复等相关默认回归仍被执行，不以不支持Files的旧mock代替H170本身。H170三轮真实Kernel/SQLite冷重开回归记录inline=[0,0,0]、file_id=[1,1,1]、uploads=1、原PNG68字节，最终隔离环境body=[44667,44974,45147]；不会把不同环境/动态instructions的body总长当作严格A/B性能结果。Models专项覆盖Chat file块与Responses input_image、上传失败全inline、后续重传、常规400不重试、反复失效最多1次fallback、部分输出后不重采样、取消和Drop、索引失败补偿、账号/endpoint/model/MIME/内容隔离、近过期刷新与缺expiry拒绝；真实reqwest回环验证multipart/30天参数、删除路由、供应商错误正文脱敏及取消/timeout。
+
+全仓strict lint实际停在未改Runtime model_agent.rs:298的Usage clone_on_copy、workflow/canvas.rs:32的derivable_impls；不隐藏，不修成另一项。AppCore no-deps lib lint实际exit0，6条warning分别在context_runtime.rs:468/490、http_runtime.rs:332、plugin_preparation.rs:14、run_assembler.rs:1897、session_title.rs:54，均为既有代码；本轮新文件未获新warning。Models包括http的全target严格lint真正exit0。Tauri检查通过后其Cargo.lock无diff。CLI原件及原.snap.new均已按finally恢复并核hash与E02相同；本轮没有推送、PR、真实服务/Key或用户数据库操作。
+
+兼容/限制：现有历史仍保存local path+SHA；没有SQL schema迁移、历史重写或第二套附件/运行库。真实Reqwest与AppCore注入缓存后默认使用Files；无上传能力的旧自定义transport或未配置缓存的独立Models client保留inline兼容，支持Files的自定义transport需要显式opt in。公开Rust请求类型增加默认空image_file_ids，Chat struct literal使用者需补字段或使用已有new构造器；新的索引属于可再生provider缓存，不持有明文Key。url直接复用已锁定的2.5.8（crate声明MSRV1.63/MIT或Apache-2.0），sha2复用现有锁定依赖，reqwest multipart增加mime0.3.17、mime_guess2.0.5、unicase2.9.0，均从已有离线缓存获得且检查许可证分别为MIT或Apache-2.0、MIT、MIT或Apache-2.0；不宣称已检查整个依赖图的MSRV或实时维护状态。
+
+本轮仍保留32MiB本地准入，不扩为官方Files64MiB；不保证删除本地原件后还能继续读取，H70原件摘要验证仍生效。仍会物化/复制本地inline后备和校验原件，不宣称消除全部base64 CPU/内存成本；证明的是后续wire不再重复传图片字节。文件锁5秒为有界协作门，长时间竞争可退回inline，不是假装绝对无等待。上传失败、取消或进程在远端接受后退出，若未拿到可删除id或补偿失败，无法保证立即回收远端文件；请求已设置30天有效期，已发布共享引用不因另一调用失败被删除。已发出的请求不因取消/退出登录自动撤回。不新增常驻远端清理器；不再使用的本地索引/锁文件没有后台清扫，本轮不把它们称作用户原件。失效分类是有限本地匹配，未知供应商错误仍显式失败，不冒称已覆盖所有官方错误码。未执行真实DeepSeek上传/账单/延迟/视觉质量、其他OS、MSRV、断电/磁盘满压力及打包Desktop原生交互；本轮无前端/IPC DTO变更，因此不重复前端构建或UI截图，Tauri消费者已经check。以上限制不被301绿测或编排exit0抹去。
+
+本轮代码验收已完成，当前尚待产物清理和独立提交；H170暂仍修复中，不提前增加验收计数。清理前确认本轮target、仓外fixture及全部后代无reparse、无本轮存活Cargo/rustc/测试进程；target24016文件/4597目录/15492766948逻辑字节，fixture2655文件/1935目录/1004443571字节，合计16497210519字节（约15.36GiB）。共享target仅对明确的Models/AppCore包产物做cargo clean -p dry-run，实际summary704文件/8.8GiB、未删除；不把整个共享target/debug认定为本轮所有。C盘Temp顶层未发现h170*目录；G盘只发现本轮fixture。清理实际结果续记E04，尚未宣称已经回收上述空间。
+
+**E-H170-04（包产物实际清理、独立目录阻塞与交付，2026-11-11）**：全部验证进程终态并完成E03核对后，先检查共享target和debug祖先/后代无reparse，对两个明确修改包执行原生cargo clean --target-dir G:/Code_Warehouse/DeepAgent-Studio/target -p deepagent-models -p deepagent-app-core --offline：exit0，Removed704 files/8.8GiB。共享debug实查逻辑量从21460189882降至12015677983字节，减少9444511899字节；默认CLI hash保持8C03E6A63D3E64EBF14DF4AC67C4DC56FB87C2D8B9C35949D3CBA9BC391F30A4。共享debug剩余其他包/依赖没有充分归属证据，予以保留，没有删除整根或用户CLI；物理空闲盘差值未测量，不把逻辑量等同实际物理释放。
+
+随后对E03列出的两个独立目录，计划执行带精确Resolve-Path、祖先/全部后代reparse、后代路径前缀和存活本轮进程核对的PowerShell Remove-Item -LiteralPath <两个精确根> -Recurse -Force。工具在CreateProcess前实际拒绝：rejected: blocked by policy。脚本没有启动，这两个目录零删除；不得把共享包清理成功说成独立目录清理成功。拒绝后只读Test-Path仍均true：
+- G:/Code_Warehouse/DeepAgent-Studio/target/h170-repair-20261111，约14.43GiB逻辑量；
+- G:/h170-fixtures-20261111，约0.94GiB逻辑量。
+两根合计约15.36GiB，含全部本轮一次性runner、日志、构建及合成夹具，不含源码/用户文档。C盘Temp顶层未发现h170*目录。没有再用另一工具/语言/提权、改ACL或改名绕过拒绝，也没有重试删除。默认CLI和用户.snap.new最后核Hash均与E02一致，原七项untracked不读改、不提交；所有关键原红、首轮停止、最终失败/命令/结果/限制已落双文E01～03。
+
+H170代码本机验收已完成，但交付要求中的独立目录清理仍未完成，台账状态为“阻塞待处理（仅产物清理）”；独立fix将只含18份代码/依赖/测试和双文，取得commit ID后另做文档回填，不amend、不推送。用户实际清理或提供策略已放行的执行方式后，小怪只读确认两根消失再关闭本项，不需要再次授权代码修改，不重复已通过矩阵。清理前人工执行方式为在获准PowerShell对上述两个精确绝对根运行Remove-Item -LiteralPath <root1>,<root2> -Recurse -Force -ErrorAction Stop；需要实际结果，仅回复“允许”不会启动。
+
+306唯一编号按当前台账重算：220已修复并验收、28历史已修复跳过、10归并、3撤销、43待修复（含H180授权不修）、1阻塞待处理H170、1已修复但验收保留H66；修复中0。本轮新增验收关闭0、历史跳过0、归并0、撤销0；有效待修42，另H170清理和H66保留，实际尚未闭环44，不给完成率。H180继续保留原提交且不开发/不追加测试。下一步先完成H170清理核验，然后优先复核持久CodeGraph依赖边失效的H289（原探针未运行、未修改），优先于纯展示/缓存参数问题。
+
+H170只剩清理结果核对和文档回填，预计0.2–0.5有效小时；策略/设备/人工等待另计，缺少可靠上界。全部剩余修复与验收沿170–430有效小时旧低置信区间，依据42个有效待修仍涉及模型协议、hook/执行状态、Harness、CodeGraph持久索引、画布与验证器的跨层修复及回归，另有H66验收保留；尚未逐项重新校准，不以本轮编译21分钟机械扣减出精确工期。测试/编译、设备/依赖/策略等待与有效开发时间分开，不承诺完工日期。整体goal仍active；这是本项第一次清理阻塞，不据此把整个目标标为complete或blocked。
 
 ### H-171：Responses 图片角色沿用 Chat 规则，合法 `developer` 图丢失且非法 `assistant` 图静默成功
 
