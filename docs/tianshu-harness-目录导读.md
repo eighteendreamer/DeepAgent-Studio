@@ -310,7 +310,7 @@ PromptEngine（`engine.ts:97`，实测 1809 行）装配结构：`System = stati
 | strategy-shift | `agent/strategy-shift.ts` → execution-guidance | 4 模式检测器，撞墙时建议换策略 |
 | watchdog | `agent/turn-heartbeat.ts` + watchdog-recovery-policy.ts | 静默心跳 + hardStall 中止 + 自动续跑配额 |
 | GoalMode | `agent/goal-tracker.ts` + goal-judge.ts + goal-continuation.ts | 目标检查、完成判定、自动继续（含上下文接力） |
-| 交付门 | `agent/delivery-gate.ts` + delivery-gate-v2.ts | 阻止未验证改动交付；v2 GREEN/YELLOW/RED 归因门 |
+| 交付证据评估 | `agent/delivery-gate.ts` + delivery-gate-v2.ts | v2 GREEN/YELLOW/RED 归因评估；当前 `agent/deliver-task.ts`（2026-10-25 契约拆分）只做安全提交，验证待办用于披露，不再作为该工具提交前置闸门；测试/审查独立 |
 | checkpoint | `agent/checkpoint.ts` | git 基线/回滚，跨会话 ownership guard（仅 agent-owned 文件） |
 | undo | `tools/undo.ts` + agent/file-history.ts | 文件级快照撤销 |
 | wave-gate | `agent/wave-gate.ts` | 计划分波间硬门禁 |
@@ -391,7 +391,7 @@ PromptEngine（`engine.ts:97`，实测 1809 行）装配结构：`System = stati
 | 星域 persona/阈值 | `src/agent/star-domain-data.ts:61`、`star-domain.ts`、顶层 `star.md` |
 | doom-loop/撞墙换策略 | `src/agent/trace-store.ts`、`behavior-mirror.ts`、`strategy-shift.ts` |
 | 目标自动继续 | `src/agent/goal-tracker.ts`、`goal-judge.ts`、`goal-continuation.ts` |
-| 交付门/未验证拦截 | `src/agent/delivery-gate.ts`、`delivery-gate-v2.ts`、`deliver-task.ts` |
+| 交付证据/安全提交的边界 | `src/agent/delivery-gate.ts`、`delivery-gate-v2.ts`、`agent/deliver-task.ts`（评估不等于提交硬门） |
 | 回滚/撤销 | `src/agent/checkpoint.ts`、`file-history.ts`、`tools/undo.ts` |
 | 插件能贡献什么/权限 | `src/plugins/manifest.ts`（permissions 仅声明）、`plugin-loader.ts` |
 | 技能三级装载 | `src/skills/skill-loader.ts:227/347`、`docs/skills-architecture.md` |
@@ -467,6 +467,7 @@ PromptEngine（`engine.ts:97`，实测 1809 行）装配结构：`System = stati
 7. **desktop/ 闭源不在本仓**；website/ 已拆分。涉及桌面端实现只能经 `src/server/` sidecar 契约推断。
 8. 官方宣称（95–99% 命中、75 hooks、kernel≤26、21514 用例）与代码事实要分开引用；缓存实测仅覆盖 DeepSeek 自举会话，A/B 报告为 5 任务单模型 LLM 审查，不足以证明对 Codex/Claude Code 的整体优势。
 9. 本文未带行号的机制描述来自只读检索代理，行号可能漂移；带行号锚点为本轮主代理核验（2026-11-11）。
+10. **2026-11-11 二次源码复核纠正**：`agent/deliver-task.ts` 当前将 Git 安全提交与测试/审查分开，验证失败/未验证台账用于交付披露，并非该工具的提交前置闸门；不能仅凭 `DeliveryGateV2` 类名和旧计划描述声称“所有未验证改动都不能提交”。详见 [与 DeepAgent Studio 的对比调研](tianshu-harness-与-deepagent-studio-对比调研.md)。
 
 ---
 
