@@ -6768,7 +6768,7 @@ Finding F-H167（E01～03）：provider-image输出在URL和inline分支共同�
 
 ### H-169：桌面接受任意 `image/*`，不支持的 SVG 被原样发送给 DeepSeek Responses
 
-**修复跟踪（2026-11-11，代码及本机验收完成，清理阻塞）**：E01～04保留原[[SVG],[SVG]]、上传/冷历史红测、旧PNG夹具纠错及两轮完整矩阵。上传、SHA后历史读取、MCP整批准入和双协议四个最终发送入口复用Models唯一字节/解码/MIME检查；合法JPEG/PNG/GIF/WebP不重编码，取消/Drop不继续下一张。最终Models/http282/0/18、上传4/0/0、Kernel360/1旧DACL/14忽略；workspace156完整target、5264/5既有失败/171忽略，失败明细不隐瞒；fmt、前端完整build、Tauri及非strict scoped lib lint通过，strict/Kernel lint旧阻断保留。真实Composer离线UI已取得SVG/AVIF拒绝及恢复证据，不冒称OS原生选择器/打包IPC。仅剩三根约15.39GiB产物及两临时UI文件：首次清理在CreateProcess前被策略拒绝，零删除，不重试或绕过，状态阻塞待处理、不计完整验收关闭。独立修复提交 `eb161ec03c0e22a18d47d1aded3ad84818b9d85c`，清理未解除不计完整关闭。详见[进度E-H169-01～04](system-harness-repair-progress.md#h-169-图片身份与格式准入2026-11-11)；best-effort内存/单张非硬抢占、远端未获取字节/其他OS/MSRV/真实供应商未验等限制见E03。以下原审计失败证据保留，整个goal仍active。
+**修复跟踪（2026-11-11，代码及本机验收完成，清理阻塞）**：E01～04保留原[[SVG],[SVG]]、上传/冷历史红测、旧PNG夹具纠错及两轮完整矩阵。上传、SHA后历史读取、MCP整批准入和双协议四个最终发送入口复用Models唯一字节/解码/MIME检查；合法JPEG/PNG/GIF/WebP不重编码，取消/Drop不继续下一张。最终Models/http282/0/18、上传4/0/0、Kernel360/1旧DACL/14忽略；workspace156完整target、5264/5既有失败/171忽略，失败明细不隐瞒；fmt、前端完整build、Tauri及非strict scoped lib lint通过，strict/Kernel lint旧阻断保留。真实Composer离线UI已取得SVG/AVIF拒绝及恢复证据，不冒称OS原生选择器/打包IPC。仅剩三根约15.39GiB产物及两临时UI文件：首次清理在CreateProcess前被策略拒绝，零删除，不重试或绕过，状态阻塞待处理、不计完整验收关闭。独立修复提交 `eb161ec03c0e22a18d47d1aded3ad84818b9d85c`，清理未解除不计完整关闭。详见[进度E-H169-01～04](system-harness-repair-progress.md#h-169-图片身份与格式准入2026-11-11)；best-effort内存/单张非硬抢占、远端未获取字节/其他OS/MSRV/真实供应商未验等限制见E03。以下原审计失败证据保留；E05连续三轮只读确认同一清理阻塞，整体goal已标记blocked，等待实际清理或获准环境变化，不标为完成。
 
 **级别：中（P2，请求可用性与历史持续失败）；触发条件：用户在桌面 Composer 选择浏览器标记为 `image/*`、但 DeepSeek 不支持的格式，例如 `image/svg+xml`。** 当前普通入口没有格式 allowlist 或真实字节解码；附件进入历史后，后续轮次会继续尝试发送同一无效图片。H-67 会令当前轮图片未进入首次请求，但不能当作保护：本项在第二轮 retained-history 路径已独立复现。
 
