@@ -190,6 +190,8 @@ fn toolchain_from_skip_reason(reason: &str) -> Option<&'static str> {
         Some("tsc")
     } else if reason.starts_with("python toolchain not found") {
         Some("python")
+    } else if reason.starts_with("ruff optional lint unavailable") {
+        Some("ruff")
     } else {
         None
     }

@@ -484,6 +484,30 @@ impl PythonVerifier {
     pub fn new(executor: Arc<dyn CommandExecutor>) -> Self {
         Self { executor }
     }
+
+    fn ruff_is_missing(outcome: &CommandOutcome) -> bool {
+        Self::ruff_is_missing_for_shell(outcome, cfg!(windows))
+    }
+
+    fn ruff_is_missing_for_shell(outcome: &CommandOutcome, windows: bool) -> bool {
+        let expected_exit_code = if windows { 1 } else { 127 };
+        if outcome.exit_code != Some(expected_exit_code) {
+            return false;
+        }
+        let stderr = outcome.stderr.trim_start();
+        if windows {
+            stderr.starts_with("#< CLIXML") && stderr.contains("<S S=\"Error\">ruff:")
+        } else {
+            stderr.lines().any(|line| {
+                let line = line.trim();
+                line == "ruff: command not found"
+                    || (line.starts_with("bash: line ")
+                        && line.contains(": ruff: command not found"))
+                    || (line.starts_with("sh: ") && line.contains(": ruff: not found"))
+                    || line == "zsh: command not found: ruff"
+            })
+        }
+    }
 }
 
 #[async_trait]
@@ -517,15 +541,24 @@ impl Verifier for PythonVerifier {
                 truncated: false,
             };
         }
-        // Optional ruff lint; missing ruff is fine, the py_compile check already passed.
+        // Keep the existing single command inside the normal execution gate;
+        // only its platform-native command-not-found signature is optional.
         let ruff_cmd = format!("ruff check {}", quote_argument(&path_str));
         match self.executor.run(&ruff_cmd, &cwd).await {
+            Ok(o) if Self::ruff_is_missing(&o) => {
+                VerificationOutcome::Skipped {
+                    reason: "ruff optional lint unavailable; Python syntax passed, optional lint was not run".into(),
+                }
+            }
             Ok(o) if o.exit_code == Some(0) => VerificationOutcome::Passed,
             Ok(o) => VerificationOutcome::Failed {
                 detail: pick_error_block(&o),
                 truncated: false,
             },
-            Err(_) => VerificationOutcome::Passed, // ruff not installed; py_compile already passed.
+            Err(error) => VerificationOutcome::Failed {
+                detail: format!("ruff execution failed after Python syntax passed: {error}"),
+                truncated: false,
+            },
         }
     }
 }
@@ -626,6 +659,15 @@ mod tests {
             stdout: stdout.into(),
             stderr: stderr.into(),
         }
+    }
+
+    fn missing_ruff_exit() -> CommandOutcome {
+        let stderr = if cfg!(windows) {
+            "#< CLIXML\r\n<Objs Version=\"1.1.0.1\"><S S=\"Error\">ruff: command is unavailable in this locale</S></Objs>"
+        } else {
+            "sh: 1: ruff: not found"
+        };
+        fail_exit(if cfg!(windows) { 1 } else { 127 }, "", stderr)
     }
 
     // ----- find_nearest_ancestor -----
@@ -835,10 +877,101 @@ mod tests {
         let mock = Arc::new(
             MockExecutor::default()
                 .with("python -m py_compile", Ok(ok_exit("", "")))
-                .with("ruff check", Err("ruff: not found".into())),
+                .with("ruff check", Ok(missing_ruff_exit())),
         );
         let outcome = PythonVerifier::new(mock).verify(&leaf).await;
-        assert_eq!(outcome, VerificationOutcome::Passed);
+        assert!(
+            matches!(outcome, VerificationOutcome::Skipped { reason } if reason.contains("lint was not run"))
+        );
+    }
+
+    #[tokio::test]
+    async fn python_verifier_classifies_only_its_missing_ruff_marker_as_optional() {
+        let dir = tempfile::tempdir().unwrap();
+        let leaf = dir.path().join("a.py");
+        std::fs::write(&leaf, "").unwrap();
+
+        let missing = Arc::new(
+            MockExecutor::default()
+                .with("python -m py_compile", Ok(ok_exit("", "")))
+                .with("ruff check", Ok(missing_ruff_exit())),
+        );
+        assert!(matches!(
+            PythonVerifier::new(missing).verify(&leaf).await,
+            VerificationOutcome::Skipped { reason } if reason.contains("lint was not run")
+        ));
+
+        let infrastructure_failure = Arc::new(
+            MockExecutor::default()
+                .with("python -m py_compile", Ok(ok_exit("", "")))
+                .with(
+                    "ruff check",
+                    Ok(fail_exit(1, "", "permission denied by shell policy")),
+                ),
+        );
+        assert!(matches!(
+            PythonVerifier::new(infrastructure_failure).verify(&leaf).await,
+            VerificationOutcome::Failed { detail, .. } if detail.contains("permission denied")
+        ));
+
+        let unavailable_executor = Arc::new(
+            MockExecutor::default()
+                .with("python -m py_compile", Ok(ok_exit("", "")))
+                .with("ruff check", Err("executor connection lost".into())),
+        );
+        assert!(matches!(
+            PythonVerifier::new(unavailable_executor).verify(&leaf).await,
+            VerificationOutcome::Failed { detail, .. } if detail.contains("executor connection lost")
+        ));
+    }
+
+    #[test]
+    fn python_verifier_missing_ruff_signature_is_shell_specific() {
+        let windows_missing = fail_exit(
+            1,
+            "",
+            "#< CLIXML\r\n<Objs Version=\"1.1.0.1\"><S S=\"Error\">ruff: command is unavailable in this locale</S></Objs>",
+        );
+        let posix_missing = fail_exit(127, "", "sh: 1: ruff: not found");
+        assert!(PythonVerifier::ruff_is_missing_for_shell(
+            &windows_missing,
+            true
+        ));
+        assert!(PythonVerifier::ruff_is_missing_for_shell(
+            &posix_missing,
+            false
+        ));
+        assert!(!PythonVerifier::ruff_is_missing_for_shell(
+            &windows_missing,
+            false
+        ));
+        assert!(!PythonVerifier::ruff_is_missing_for_shell(
+            &posix_missing,
+            true
+        ));
+        assert!(!PythonVerifier::ruff_is_missing_for_shell(
+            &fail_exit(1, "", "sh: 1: ruff: not found"),
+            false
+        ));
+        assert!(!PythonVerifier::ruff_is_missing_for_shell(
+            &fail_exit(127, "", "#< CLIXML\r\n<S S=\"Error\">ruff: not found</S>"),
+            true
+        ));
+        assert!(!PythonVerifier::ruff_is_missing(&fail_exit(
+            1,
+            "",
+            "ruff F401: imported but unused"
+        )));
+        assert!(!PythonVerifier::ruff_is_missing(&fail_exit(
+            1,
+            "",
+            "permission denied by shell policy"
+        )));
+        assert!(!PythonVerifier::ruff_is_missing(&fail_exit(
+            2,
+            "",
+            &windows_missing.stderr
+        )));
     }
 
     #[tokio::test]

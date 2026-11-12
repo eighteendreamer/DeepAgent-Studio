@@ -11952,7 +11952,7 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_dialect:: --o
 
 ### H-231：可选 ruff 未安装时真实 shell 返回非零结果，被 Python 验证器误报为源代码失败
 
-**级别：中（P2，环境故障分类与反馈可靠性）；状态：真实 Python/PowerShell 与正式聊天链已复现，未修复。** PythonVerifier 明示 py_compile 成功后 ruff 只是可选检查，缺失应允许已完成的语法验证通过；但真实 SystemExecutor 在 shell 已启动、其中的 ruff 命令不存在时返回 `Ok(CommandOutcome { exit_code: Some(1), ... })`，不是 spawn Err。生产代码因此报告文件验证失败，Strict 还将成功写盘的 action 记为 Failed。现有“无 ruff 则通过”单测模拟的是错误的执行边界，没覆盖真实返回形状。
+**级别：中（P2，环境故障分类与反馈可靠性）；状态：已修复并验收（2026-11-12，限本机范围）。** PythonVerifier 原先把 shell 中可选 Ruff 命令缺失返回的非零状态当作源码错误。现已只对平台命令缺失签名返回“可选 lint 未运行”的 Skipped；真实 Ruff 诊断、权限拒绝及执行器错误仍失败。修复前原始探针与失败证据保留如下。
 
 #### 即时 Evidence（2026-10-24，首轮完整本机复现后登记）
 
@@ -11981,7 +11981,7 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 本地设计方向：收敛到既有命令/验证 seam，令工具发现、spawn 错误、检查进程非零、超时/取消、语法诊断各有可信来源。可选 ruff 在确认为 unavailable 时保留已成功 py_compile，并明确“lint 未运行”；真正 Ruff 诊断非零仍报告失败。不要对所有非零放行、只用任意 stderr 子串掩盖错误、自动安装依赖或增加第二套执行器；使用直接 argv 执行时还必须接回既有审批/命令后端和取消能力，避免再次触发 H-64/H-65。
 - 回归应覆盖真实未安装、存在但无法执行、可用且通过/发现问题、配置错误、spawn/cwd 故障、超时/取消、语言环境与不同 shell、本地/托管 Python、所有写入/编辑入口及重开后的状态。当前只实测 Windows PowerShell 7、Python 3.12.14、缺少 ruff、合法/非法源文件和三种策略；其余不得当作通过。
 
-#### 本轮验证与交付边界
+#### 首轮审计验证与交付边界（修复前，原文保留）
 
 | 对照 | 实际结果 | 证明范围 |
 |---|---|---|
@@ -11995,6 +11995,17 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 补严子测试只能由受限环境父测试启动的前置断言后，显式缺陷命令复跑仍为 **0 passed / 1 failed（预期），约 5.06s**；内部 child 约 5.03s，所有观察与正常对照均在最终缺陷断言前完成。`cargo test -p deepagent-app-core --lib --offline --quiet`：**1091 passed / 50 ignored**；`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**43 passed / 52 ignored**，新增两个 ignored 条目分别是父探针和环境受控的子入口，不把它们当作已修复回归。`cargo fmt --all -- --check`、`git diff --check` 通过；实际 Clippy 命令 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 仍被未修改的 `models/src/client.rs:355`（clone_on_copy）和 `persistence/src/run_store.rs:127`（explicit_counter_loop）阻断，不能报告 lint 通过。
 
 按 docs-generator 的证据链约定，首轮真实复现即登记，再追加分类依据、成熟源码对照和验证矩阵。本轮只新增隔离探针、测试入口及审计文档，未改生产代码/权限/配置策略；没有修改或删除用户文件，未提交测试运行产物。未执行全 workspace、Desktop build/UI、真实 DeepSeek、实际 Ruff 可用/报错、缺少必需编译器、其他平台、edit_file/multi_edit 或服务重启测试。本项不会关闭 H-64/H-65/H-230，也不涉及被用户排除的 encrypted-content 错误；全系统目标仍未完成。
+
+#### 整改闭环（2026-11-12；E-H231-01～05）
+
+- 根因修复：`PythonVerifier` 继续先用原执行器运行 `python -m py_compile`，再执行原 `ruff check`；只将严格匹配的 PowerShell CLIXML（exit 1）或 POSIX shell command-not-found（exit 127）识别为可选 Ruff 缺失，并返回 `VerificationOutcome::Skipped`。VerificationDecorator 将该结果标识为 Ruff 工具链未运行。Ruff 自身非零诊断、其他 shell 错误和 executor `Err` 仍是失败；未增加执行器、权限旁路、自动安装或配置变更。
+- E-H231-01（TDD/跨平台分类）：先用真实缺失命令的 `Ok(CommandOutcome)` 形状建立回归，补测 PowerShell 与 POSIX 两类状态码/输出签名及错误状态码反例。七项 `PythonVerifier` 定向测试最终 **7 passed / 0 failed**；包含真实语法错误、可用 Ruff 成功/失败、缺失 Python、权限错误及 executor 错误对照。POSIX 分支为纯分类单元测试；本机不是 POSIX 宿主，未声称运行真实 POSIX shell。
+- E-H231-02（原隔离探针）：Windows PowerShell 7、Python 3.12.14、受限子进程 PATH、不含 Ruff；真实 SystemExecutor 的 py_compile exit 0 并生成 `__pycache__`，Ruff 缺失仍返回 `Ok` 且 exit 1。Disabled、Enabled、Strict 三组正式 ChatService/Kernel `write_file` 均保持源码原字节、action=Completed、下一 Responses wire 唯一配对且 status=ok；真实非法 Python 仍由 py_compile 以 SyntaxError 拒绝。命令为原复现命令，结果 **1 passed / 0 failed**，父子探针约6秒。
+- E-H231-03（AppCore 单测）：`cargo test -p deepagent-app-core --lib verification_dispatcher::tests::python_verifier --offline -- --nocapture`，最终 **7 passed / 0 failed**。
+- E-H231-04（crate 全量回归）：首次 `cargo test -p deepagent-app-core --offline --no-fail-fast` 在并行编译时因 Windows 页面文件不足（OS error 1455）无法 mmap 既有 AppCore rlib；随后以 `-j 1` 重跑，AppCore lib 为 **1657 passed / 1 failed / 43 ignored**，唯一失败是与本项无关的 `completion_plan::audit_tests::discovered_real_build_completes_after_release` 未及时产生临时标记。该测试单独按原命令重跑 **1 passed**；本次全量命令的其他已运行 integration targets 均通过。全量重跑未因该时序失败而宣称全绿。
+- E-H231-05（静态检查）：`cargo fmt --all -- --check` 与 `git diff --check` 通过。严格 clippy 未通过且不是本次修改引入：`cargo clippy -p deepagent-app-core --all-targets --all-features --offline -j 1 -- -D warnings` 被既有 Runtime 两项 lint 阻断（`model_agent.rs:298` clone_on_copy、`workflow/canvas.rs:32` derivable_impls）；继续执行默认特性 AppCore clippy 时，既有 AppCore 六项 lint 阻断（`context_runtime.rs:468,490`、`http_runtime.rs:332`、`plugin_preparation.rs:14`、`run_assembler.rs:1897`、`session_title.rs:54`）。未改无关文件或宣称 lint 通过。
+
+残余限制：真实正式运行链只在 Windows PowerShell 7 上验证；POSIX exit 127/`sh` 输出签名由跨平台纯单元覆盖，但未在 POSIX 宿主做真实 SystemExecutor 验收。未执行 workspace 全量测试、桌面/前端构建、真实供应商、实际 Ruff 已安装的完整 ChatService 路径、其他 shell/OS、`edit_file`/`multi_edit` 或重启场景；严格 clippy 基线仍待独立治理。本项根因和已验证范围已闭环，但这些未测场景不外推为通过。
 
 ### H-232：回退删除发现事件后，原宿主仍公开旧工具，重建宿主则隐藏
 

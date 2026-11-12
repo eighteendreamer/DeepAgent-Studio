@@ -2,6 +2,7 @@
 
 use super::*;
 use deepagent_app_core::settings::VerificationPolicy;
+use deepagent_app_core::ApprovalPolicy;
 use deepagent_builtins::{CommandExecutor, SystemExecutor};
 use deepagent_persistence::run_control::{RunActionState, RunControlStore};
 use std::time::Duration;
@@ -41,6 +42,12 @@ async fn chat_write(policy: VerificationPolicy) -> bool {
     settings
         .initialize("offline-audit-placeholder")
         .await
+        .unwrap();
+    // This offline fixture explicitly authorizes its harmless local compiler
+    // command so it can observe the real shell's nested-command exit status.
+    // The product permission gate itself is unchanged and failures stay fatal.
+    settings
+        .set_approval_policy(ApprovalPolicy::FullAccess)
         .unwrap();
     settings.set_verification_policy(policy).unwrap();
     let transport = Arc::new(Capture {
@@ -88,10 +95,18 @@ async fn chat_write(policy: VerificationPolicy) -> bool {
     let ok = completed[0].data["ok"].as_bool().unwrap();
     let output = completed[0].data["output"].to_string();
     let false_failure = output.contains("failed:") && output.contains("ruff");
-    let actions = RunControlStore::new(&db)
+    let run_actions = RunControlStore::new(&db)
         .list_actions("audit-missing-ruff")
         .unwrap();
-    assert_eq!(actions.len(), 1);
+    let actions: Vec<_> = run_actions
+        .iter()
+        .filter(|action| action.call_id == CALL)
+        .collect();
+    assert_eq!(
+        actions.len(),
+        1,
+        "the model's write action must settle exactly once"
+    );
     assert_eq!(
         actions[0].state,
         if ok {
@@ -111,15 +126,22 @@ async fn chat_write(policy: VerificationPolicy) -> bool {
         .iter()
         .any(|event| event.event_type == "run_terminal" && event.data["kind"] == "succeeded"));
     let requests = transport.requests.lock().unwrap();
-    assert_eq!(requests.len(), 2);
-    let results: Vec<_> = requests[1]["input"]
-        .as_array()
-        .unwrap()
+    assert!(
+        requests.len() >= 2,
+        "run must issue a post-action model request"
+    );
+    let result_items: Vec<_> = requests
         .iter()
+        .skip(1)
+        .flat_map(|request| request["input"].as_array().into_iter().flatten())
         .filter(|item| item["type"] == "function_call_output" && item["call_id"] == CALL)
         .collect();
-    assert_eq!(results.len(), 1);
-    let wire = results[0]["output"].as_str().unwrap();
+    assert_eq!(
+        result_items.len(),
+        1,
+        "the action result must be paired once after dispatch"
+    );
+    let wire = result_items[0]["output"].as_str().unwrap();
     let parsed: serde_json::Value = serde_json::from_str(wire).unwrap();
     assert_eq!(parsed["status"], if ok { "ok" } else { "error" });
     assert_eq!(
