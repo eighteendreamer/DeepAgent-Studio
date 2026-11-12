@@ -4,7 +4,7 @@
 
 用户已授权按本报告逐项进行本地代码修复与测试；已修复、撤销和归并条目跳过，不重新计数。分析阶段完成不再是当前总体任务的完成状态。每项完成后更新原项状态、保留失败证据、独立提交并汇报验收与剩余工时。本轮不操作真实用户文件或外部服务。
 
-**当前唯一台账（2026-11-12，H107功能验收完成、仅清理阻塞）**：306行当前231已修复并验收、28历史跳过、10归并、3撤销、32待修含H180授权不修、1阻塞H107（仅清理）、0修复中、1验收保留H66。有效待代码修复31，另H107清理/H66验收保留，共33项有效未完整闭环。本轮功能修复1、正式关闭0，详情见原H107的E11及[进度台账](system-harness-repair-progress.md)。H107专项/真实CLI与SDK/共享存储/Tauri通过；workspace5315过5败154忽略，strict lint及完整pnpm旧失败保留，非全系统全绿。修复提交64f9d16924d388bcb2c7ec5b6c0710fda508555e，hash回填见E12，不推送，整体goal仍未完成。
+**当前唯一台账（2026-11-12，H107已完成修复/验收/提交/清理）**：306行当前232已修复并验收、28历史跳过、10归并、3撤销、32待修含H180授权不修、0修复中/阻塞、1验收保留H66。31有效待代码修复加H66共32项有效未完整闭环。本次新增完整关闭1（H107清理闭环），详情见原项E11～13及[进度台账](system-harness-repair-progress.md)。修复64f9d16924d388bcb2c7ec5b6c0710fda508555e、回填a03e11b204c13e91c9642d38f2e6d3485233bf11不变；workspace5315过5败154忽略、strict lint及完整pnpm旧失败保留，非全系统全绿，不推送，整个goal尚未完成。
 
 **历史修复台账（2026-11-03，H-241已提交）**：306个唯一编号中146项已修复并验收、22项历史已修复跳过、7项归并、3项撤销、128项待修复、0项修复中。有效未关闭128项，其中H-180按用户授权跳过，实际待处理127项；不提供完成率。H-241本轮新增1项所列本机模型取消作用域验收：单元6、正式E2E6均默认通过，AppCore结果块1900过、Builtins384过、store135过、CLI145过、Rust SDK28过、TS30+1过；foreign模型拒绝且目标正常完成，host-user全局停止不变。完整workspace结果块4336过/1败/251忽略，仅未改H-306失败；严格lint既有阻断保留，非全仓全绿。全部命令/限制见E-H241-03，修复提交b573e9e5bb6cbadb455194812509f601de496d4b，真实hash回填见E04。两份文档当前口径一致，整体任务仍未完成。
 
@@ -4751,7 +4751,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 ### H-107：续聊的每个 turn 结束都会触发 SessionEnd hook
 
-**当前整改状态（2026-11-12）：功能已修复并完成E-H107-11所列本机验收，完整交付仅清理阻塞；全仓/严格lint/完整前端build的既有失败明确保留，修复已独立提交64f9d169，待清理核验，不宣称整个系统全绿。**
+**当前整改状态（2026-11-12）：已修复并验收，限E-H107-11所列本机范围；修复64f9d169、回填a03e11b2已提交，E13核实三根产物清理完成，本项关闭。全仓/严格lint/完整前端build的既有失败及未验限制保留，不宣称整个系统全绿。**
 
 E-H107-02（候选TDD与实现，2026-11-12，非最终验收）：新增`chat_service::session_end_tests`初测0过3败，其中普通turn提前触发End、/end未知命令两项是真实行为红测；“无登录结束”那项先因夹具未初始化Settings而在设置hook时失败，不计产品红测，已改为合成初始化后正式clear_key，不弱化无Key/零主模型请求断言。首次`cargo check -p deepagent-app-core --tests --offline -j 1`因新代码误用CancellationTree.flag及移动已借用root失败，未当作行为证据；按当前API legacy_flag及保留root修正后同命令exit0、82.27秒（另有旧kernel夹具cold未使用warning，非strict lint通过）。首批`cargo test -p deepagent-app-core --lib chat_service::session_end_tests --offline -j 1 -- --test-threads=1 --nocapture`实际3过0败0忽略、330.74秒含5分28秒构建，验证忙碌拒绝、command-only退出登录后可结束、显式/重复结束、普通续聊无新run/事件/模型请求及文件SQLite连接释放后重开。此后源码和测试继续扩展，该结果不是当前最终冻结验收。
 
@@ -4823,6 +4823,8 @@ runner已实际终态，finally恢复原共享target/debug/deepagent.exe和用�
 306唯一台账当前231已修复并验收、28历史跳过、10归并、3撤销、32待修含H180授权不修、1阻塞H107（仅清理）、0修复中、1验收保留H66。本轮新增功能修复1、正式完整关闭0，无新增历史跳过/归并/撤销；有效待代码修复31，另H107清理/H66验收保留，共33项有效未完整闭环。下一准备H108，仍先复核影响/依赖，不在本提交混修。本项代码验收余0，文档/提交和清理约0.2–0.5有效小时，人工/策略等待无可靠上界；全余170–430有效小时沿用历史分组低置信粗估，尚未逐项重校准，编译/环境/设备/人工等待另计，不承诺精确完工日。源码/测试与当时双文将独立提交，取得hash后普通文档回填、不amend/推送，整体goal仍active。
 
 E-H107-12（真实提交回填，2026-11-12）：独立修复commit `64f9d16924d388bcb2c7ec5b6c0710fda508555e`（【fix】按显式会话生命周期派发结束钩子），只含25份本项实现/测试/现有消费方及当时双文，共27文件；提交前白名单、冻结源码SHA256与staged diff检查通过。原七组用户untracked保留，源码清单/锁文件/依赖版本未变；不提交target/dist、日志、一次性脚本、合成数据或凭据。不amend、不推送、不建PR、不执行迁移。取得真实hash后本次仅普通文档提交回填；E11功能/测试/兼容/未验及三根约2.463GiB清理阻塞不变，已交用户PowerShell 7精确清理命令（先非递归移除pnpm符号链接本身），等待实际执行回传，不把授权等同删除。当前统计仍231已修复并验收/28历史跳过/10归并/3撤销/32待修含H180/1仅清理阻塞H107/1验收保留H66，整体goal未完成。
+
+E-H107-13（清理核验与本项关闭，2026-11-12）：用户回传已实际删除后，只读核验G:/Code_Warehouse/DeepAgent-Studio/target/h107-repair-20261112、G:/h107-fixtures-20261112及G:/Code_Warehouse/DeepAgent-Studio/apps/desktop/dist，三根Test-Path均False。apps/desktop/package.json、src-tauri/src/lib.rs、node_modules仍存在，tracked diff为0；共享CLI SHA256仍为8C03E6A63D3E64EBF14DF4AC67C4DC56FB87C2D8B9C35949D3CBA9BC391F30A4，用户原.snap.new仍为D514BFE28BA6F207C714DDAD2FEFE9E521B3AA1FD7DF1AF243FA2CC2ED911F17，与清理前已恢复原值一致。只读核验未遍历原用户七组untracked，不删源码、用户文档、共享target/debug或原依赖缓存；没有重复执行此前被策略拒绝的删除。未测量实际物理空闲盘增量，不将原2.463GiB逻辑大小等同实测回收量。E11的原失败、最终门禁、兼容变化、未验及hook发布崩溃窗口限制全部保留，不因清理完成改称全仓全绿。修复64f9d16924d388bcb2c7ec5b6c0710fda508555e、回填a03e11b204c13e91c9642d38f2e6d3485233bf11不变；本次仅普通文档提交清理闭环，不amend、不推送。本项已修复并验收且完成提交/清理，完整交付余0。306唯一行当前232已修复并验收、28历史跳过、10归并、3撤销、32待修含H180授权不修、0修复中/阻塞、1验收保留H66；31有效待代码修复加H66共32项有效未完整闭环。本次新增完整关闭1（H107），不新增第二份代码修复或历史跳过/归并/撤销。下一复核H108，仍先审查影响/依赖；全余170–430有效小时仍为历史分组低置信粗估，未逐项重校准，编译/设备/依赖/人工等待另计，整个goal尚未完成。
 
 E-H107-01（当前复现与范围确认，2026-11-12）：`cargo test -p deepagent-app-core --lib chat_service::tests::audit_session_end_hook_does_not_fire_after_each_continued_turn --offline -j 1 -- --ignored --exact --nocapture`实际exit101，**0过1败0忽略**；同一session真实PowerShell hooks再次记录`["SessionStart", "SessionEnd", "SessionEnd"]`，原断言期望仅Start，未弱化断言。总271.43秒，编译4分28秒、测试体2.71秒；G盘隔离HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/XDG/data，清掉继承凭据/代理/DEEPAGENT环境，offline且不向child设置CARGO_TARGET_DIR。固定离线transport、内存SQLite和合成hook文件，无真实provider/内网/凭据/用户数据操作。当前tracked此前干净，仅保留用户七组untracked；H294实际清理已另交7622de87，不混入本项修复数。
 
