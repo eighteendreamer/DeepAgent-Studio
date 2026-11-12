@@ -90,6 +90,7 @@ pub struct ResponseDefaults {
     pub top_logprobs: Option<u8>,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub text: Option<serde_json::Value>,
+    /// Canonical Responses shape on both wires; converted once for Chat.
     pub tool_choice: Option<serde_json::Value>,
     pub user: Option<String>,
 }
@@ -435,7 +436,7 @@ impl ModelClient {
         observer: &mut dyn crate::stream::DeltaObserver,
     ) -> Result<Response> {
         request.stream = true;
-        self.apply_chat_defaults(&mut request);
+        self.apply_chat_defaults(&mut request)?;
         request.validate()?;
         self.validate_output_tokens(request.max_tokens)?;
         self.validate_chat_input_modalities(&request)?;
@@ -490,7 +491,7 @@ impl ModelClient {
         cancel: Arc<AtomicBool>,
     ) -> Result<Response> {
         request.stream = true;
-        self.apply_chat_defaults(&mut request);
+        self.apply_chat_defaults(&mut request)?;
         request.validate()?;
         self.validate_output_tokens(request.max_tokens)?;
         self.validate_chat_input_modalities(&request)?;
@@ -599,7 +600,7 @@ impl ModelClient {
         }
     }
 
-    fn apply_chat_defaults(&self, request: &mut ChatCompletionRequest) {
+    fn apply_chat_defaults(&self, request: &mut ChatCompletionRequest) -> Result<()> {
         if request.temperature.is_none() {
             request.temperature = self.config.defaults.temperature;
         }
@@ -613,11 +614,18 @@ impl ModelClient {
             }
         }
         if request.tool_choice.is_none() {
-            request.tool_choice = self.config.defaults.tool_choice.clone();
+            request.tool_choice = self
+                .config
+                .defaults
+                .tool_choice
+                .as_ref()
+                .map(crate::tool_choice::responses_tool_choice_to_chat)
+                .transpose()?;
         }
         if request.user.is_none() {
             request.user = self.config.defaults.user.clone();
         }
+        Ok(())
     }
 }
 
@@ -715,7 +723,7 @@ fn response_to_chat_completion(request: ResponseRequest) -> Result<ChatCompletio
         chat = chat.with_top_p(value);
     }
     if let Some(value) = request.tool_choice {
-        chat = chat.with_tool_choice(value);
+        chat = chat.with_tool_choice(crate::tool_choice::responses_tool_choice_to_chat(&value)?);
     }
     if let Some(value) = request.reasoning_effort {
         chat = chat.with_reasoning_effort(value);
@@ -780,9 +788,14 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit reproducer: translate Responses tool_choice to Chat Completions shape"]
     fn audit_chat_tool_choice_translates_request_shape() {
-        let mut request = ResponseRequest::new("deepseek-flash", Vec::new());
+        let mut request = ResponseRequest::new("deepseek-flash", vec![Message::user("fixture")])
+            .with_tools(vec![crate::ToolSchema::function(
+                "read_file",
+                "fixture",
+                serde_json::json!({"type":"object","properties":{}}),
+            )])
+            .with_reasoning_effort(ReasoningEffort::None);
         request.tool_choice = Some(serde_json::json!({
             "type": "function",
             "name": "read_file"
@@ -1437,7 +1450,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit reproducer: translate Responses defaults to Chat Completions shape"]
     fn audit_chat_tool_choice_translates_default_shape() {
         let mut config = ModelConfig::deepseek_chat("test-key");
         config.defaults.tool_choice = Some(serde_json::json!({
@@ -1445,9 +1457,16 @@ mod tests {
             "name": "read_file"
         }));
         let client = ModelClient::new(Arc::new(crate::test_sequence::mock([])), config);
-        let mut request = ChatCompletionRequest::new("deepseek-flash", Vec::new());
+        let mut request =
+            ChatCompletionRequest::new("deepseek-flash", vec![Message::user("fixture")])
+                .with_tools(vec![crate::ToolSchema::function(
+                    "read_file",
+                    "fixture",
+                    serde_json::json!({"type":"object","properties":{}}),
+                )])
+                .with_reasoning_effort(ReasoningEffort::None);
 
-        client.apply_chat_defaults(&mut request);
+        client.apply_chat_defaults(&mut request).unwrap();
         let wire = serde_json::to_value(request).unwrap();
         assert_eq!(
             wire["tool_choice"],

@@ -6349,7 +6349,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-90：Harness SDK 关闭 writer 后的失败请求残留 pending reply](system-harness-audit-2026-10-21.md) | P3 | 归并 | H204；E-H90-01及E-H204-01～04同一call入口缺pending owner | 统一Registration覆盖关闭/写错/期限/drop/EOF，不另建清理链 | 原探针0/1→1/0；当前SDK/真实CLI/全仓门禁见H204，flush独立注入未验 | 同H204 `5afa1b2ce9a5107bb9971527c03cc6861a79150f`；E09 | 不独立修复/计数/提交；残余和预计工时沿H204 |
 | [H-91：Harness 并发事件生产可使实时 eventSequence 倒退](system-harness-audit-2026-10-21.md#h-91harness-并发事件生产可使实时-eventsequence-倒退) | P3 | 已修复并验收 | E01原probe/真实wire红、E03隔离纠正保留；E04限本机，不归并H01/H92/H205 | 原唯一writer统一编号及flush高水位，生产者只用原有界通道 | 原probe默认1/0、并发3/0、真实SDK8run/48wire逐ACK过；CLI201/0/9+startup1/0/1、SDK/TS/协议/build/fmt及CLI/SDK严格过；全仓147目标4940/1/194仅旧H306，旧全仓lint失败/未验见E04 | fdab6fa9b1ce41c149360673f810b447e0322f18（独立fix；另docs回填，不amend/推送） | 本项代码验收剩余0；E05清理拒绝剩3,602,011,301字节且停止；全余200–400有效小时低置信历史粗估，等待另计 |
 | [H-92：stdio EOF 直接退出运行时，活动 turn 没有有界收尾](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H92-01～05保留原失败、E03宿主反例及作废编排，不抹除直接runtime Drop限制 | 原取消/worker与唯一writer同10秒收尾；观察者Drop取消既有payload generation，正常就绪disarm | CLI135/0/19，SDK28/0/11及workspace同门禁通过，TS30+1；完整结果块4311/1/253仅旧H-306，Tauri/build/fmt过，严格lint旧阻断见E05 | 494bc2ff9b15439c3a9d14a6e04d1880475f7e5a；E-H92-06独立文档回填 | 仅Windows正常EOF及所列协作边界；强制runtime Drop、强杀、其他OS/UI未保证；本项剩0，下一H-130；总200–400有效小时历史粗估，等待另计 |
-| [H-93：Chat Completions 路由未转换 Responses 命名工具选择的字段形状](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-93：Chat Completions 路由未转换 Responses 命名工具选择的字段形状](system-harness-audit-2026-10-21.md#h-93chat-completions-路由未转换-responses-命名工具选择的字段形状) | P3 | 阻塞待处理（代码及功能验收完成，仅产物清理） | 原probe补合法输入后真实0/2，新TDD0/4保留；无归并或历史跳过 | 同一封闭choice解析显式协议格式；request/default共用Responses→Chat映射，原生validate/serde拒绝错形；H145独立 | Models320/0/15、双probe默认2/0、HTTP四组/原生/覆盖通过；H158 Kernel6/0；workspace159目标5285/5/159，AppCore夹具单跑仍0/1；Models严格lint/build/fmt过，全仓strict原Runtime两项阻断详E01～05 | 待独立提交，取得真实hash另填，不amend | 功能验收余0；仅清理/核验与提交约0.1–0.3有效小时，策略/人工等待另计。两根约1.16GiB自动清理未启动；真实provider/其他OS/UI未验；下一H145，H180不修；全余170–430有效小时低置信旧估 |
 | [H-94：Chat 兼容投影覆盖相邻 reasoning item，只保留最后一段](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-95：启动恢复把同一 session 的最新中断原因套用到所有未完成 run](system-harness-audit-2026-10-21.md#h-95启动恢复把同一-session-的最新中断原因套用到所有未完成-run) | P3 | 已修复并验收 | E-H95-01～07，原红及镜像候选反例保留；H44未消除，非历史跳过/归并 | 原恢复scope内复用canonical indexed projection，以唯一run/task及逻辑输入边界归属；无身份/歧义未知，严格task校验及终态不变 | 最后原probe1/0、H95组5/0、恢复20/0、input_runtime32/0、真实CLI冷启1/0；Tauri check0；第二全仓4947/1/193仅旧H306；原lint/首轮readiness失败与未验边界见E03～05 | bfd17f45bb8e4b0831eda4e57c8ccddef2215085（实现/测试/当时双文）；E-H95-07回填 | 本项有效修复余0；E06清理残余4,504,908,776字节且不重试；不追改旧marker，无DTO形状/迁移/UI/执行改变；全余约200–450低置信有效小时，编译/设备/依赖/环境等待另计 |
 | [H-96：定时任务已派发但落账失败，重启后会再次派发且调度循环退出](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H96-01～04；仅本项，不归并H97；原失败保留 | 稳定occurrence+原RunStore原子接纳receipt；原Kernel执行，落账失败退避；暂存发布保留Windows DACL | 默认原探针等18项H96验收通过；全仓4547/2/241（既有H306/夹具失败）；fmt/CLI/Tauri check/前端过，lint及限制见E04 | `240d29d89cf2416dbbce630f247b3f662657bff5`（修复）；E05回填 | 限共享DB/计划及本机Windows；非外部exactly-once；空会话/暂存孤儿不自动清理；下一H97，总200–400有效小时历史粗估，等待另计 |
@@ -10547,3 +10547,26 @@ H-146 实现、测试和当时双文档已独立提交 `0b1209cb2b4d0b62545c8d65
 当前306唯一台账核对：228已修复并验收、28历史跳过、10归并、3撤销、36待修（含H180授权不修）、0修复中/阻塞、1验收保留H66。本轮新增修复1，新增历史跳过/归并/撤销均0；有效待修35项，加H66共36项未完整闭环，不提供完成率。下一准备H93（先统一Chat形状，为随后H145的thinking规则提供协议前提，不合并提交）。本项仅余提交/hash回填，代码与限定验收/清理余0；全部剩余沿历史170–430有效小时低置信分组估算，尚未逐项校准，编译/设备/依赖/人工等待另计，无可靠总上界，不承诺日期。整体goal保持active。
 
 **E-H158-05 提交回填**：本项代码、测试和当时双文档已提交 `451eb3e9d2a2d87bcc979f4874ccfdd0a4054955`（【fix】统一 Responses 工具选择及最终引用校验）。九份白名单包含七份Rust实现/测试和两份文档，无生成物、凭据或用户untracked。提交后tracked干净、原七组untracked保留，未推送/创建PR。清理已只读核验完成，本项剩余0；本次取得代码hash后普通文档回填，不amend/不反复填写自身hash。前述待提交说明为当时记录，当前以本段及台账为准；全仓六败/严格lint阻断和未验范围均保留。下一准备H93，再H145；306行当前状态及35项有效待修+H66保留不变，整体goal仍active。
+
+### H-93 整改证据与交付（2026-11-12）
+
+本轮仅修Chat choice形状转换与原生形状校验，不合并H145 thinking限制。原探针首次0/2，其中request先被H150空输入门禁拒绝，不计为原形状复现；只补合法消息、匹配工具及thinking关闭后再次0/2，两项均在原flat→nested断言真实失败。新增Models TDD0/4后4/0，增加真实HTTP回环后随全特性验收。复用H158同一封闭ToolChoice解析和工具名称gate，显式区分Responses/Chat；ResponseRequest及ResponseDefaults以canonical Responses形状共用to-Chat转换，私有apply_chat_defaults返回Result由两个发送入口传播，原生Chat validate/serde只接受嵌套；不猜测、不静默auto、不覆盖显式值，不改变Responses原规则。公开JSON字段/Settings/SQLite/TS/Tauri接口不变，无依赖/配置/数据迁移，不改默认Responses主链。非法手写Chat形状的ResponseDefaults后续本地拒绝；Chat显式请求仍按原生契约。
+
+| 实际命令 | 结果与边界 |
+|---|---|
+| `cargo test -p deepagent-models --lib audit_chat_tool_choice_translates_ --offline -j 1 -- --ignored --nocapture`（修前） | 初次0/2含一个空input先阻断；补合法夹具后真实形状0/2，原断言未放宽 |
+| `cargo test -p deepagent-models --test chat_tool_choice --offline -j 1 -- --nocapture` | 先0/4后4/0；覆盖全部4入口/两个输入边界/默认与显式优先级，坏输入零transport、同一client再次读取原默认 |
+| `cargo test -p deepagent-models --all-features --offline --no-fail-fast -j 1 -- --test-threads=2 --quiet` | 320过0败15忽略，24结果块含doc-test；新文件5/0含四组自建IPv4 HTTP+实际Chat SSE回环，H158对照3/0 |
+| `cargo test -p deepagent-models --lib --all-features audit_chat_tool_choice_translates_ --offline -j 1 -- --nocapture` | 原双probe转默认后显式2/0/0 |
+| `cargo clippy -p deepagent-models --all-targets --all-features --offline -j 1 -- -D warnings`；`cargo build -p deepagent-models --all-features --offline -j 1` | 均exit0 |
+| `cargo test --workspace --offline --no-fail-fast -j 1 -- --test-threads=2 --quiet` | exit101，159个顶层目标均终态，5285过5败159忽略；2280.57秒含18分40秒构建。SSH标题/输出交错改按测试数匹配待终态队列，漏掉4+1的初版汇总不用，排除内部child，不重复计数 |
+| 同一AppCore binary `completion_plan::audit_tests::discovered_real_build_completes_after_release --exact --nocapture` | 相同隔离环境仍0/1，11.83秒；失败保留，不重试取绿、不声称完全归因 |
+| 同一Kernel binary `responses_tool_choice:: --test-threads=1 --nocapture` | H158正式链回归6/0，真实保存/错误零transport/临时SQLite连接重开对照 |
+| `cargo clippy --workspace --all-targets --all-features --offline -j 1 -- -D warnings` | exit101，仍Runtime model_agent.rs:298 clone_on_copy、workflow/canvas.rs:32 derivable_impls；无关源码不改 |
+| `cargo fmt --all -- --check`、`git diff --check` | 最终通过；四份Rust源码冻结hash前后一致 |
+
+全仓五败：旧build-started夹具、图片DACL恢复、CLI隔离HOME旧快照、H306空画布提示词、Runtime DACL恢复；失败文件非本轮改动，未新增ignore、接受快照或弱化断言。Builtins本次376/0/3不表示旧mklink夹具已修。全部完整验收G盘隔离HOME/PROFILE/APPDATA/TEMP/XDG/data、清除继承凭据/代理/DEEPAGENT环境、offline且不向child设CARGO_TARGET_DIR。共享CLI与用户原.snap.new预备份、全仓finally恢复并复核原hash；用户七组untracked不动。未验真实provider接受/服从选择、实际工具调用、OS冷启、多宿主/其他OS/MSRV/中途取消/Chat named最终关联；cancel=false、thinking关闭不替代H145。无UI/Tauri桥接变更，未跑前端build/桌面check/UI。
+
+仅清理阻塞：本轮target/h93-repair-20261112为19文件82,347,348字节，G:/h93-fixtures-20261112为2331文件/4147条目1,159,953,006字节，约1.16GiB。根及全部祖先/后代无reparse，相关进程已结束；原生PowerShell删除在CreateProcess前被策略拒绝，零删除，不升权/重试/换工具绕过；已交精确命令等待用户在获准终端实际执行并回传后只读核验。日志/备份/fixture不提交，共享缓存/用户文档不删。本轮实现、测试、当时双文先独立提交，真实hash取得后另填，不amend、不推送。
+
+306唯一台账当前核对：228已修复并验收、28历史跳过、10归并、3撤销、35待修（含H180授权不修）、0修复中、1阻塞H93仅清理、1验收保留H66。本轮新增代码修复/功能验收1，正式关闭新增0，历史跳过/归并/撤销新增0；有效待修34项，另H93清理与H66验收共36项未完整闭环，不报完成率。下一准备H145；H93清理核验/提交约0.1–0.3有效小时、外部等待另计。全部剩余仍170–430有效小时历史低置信分组估算（模型协议、Hook、画布、持久化），未逐项重校准，编译/设备/依赖/人工等待另计，无可靠完工承诺。整体goal保持active。

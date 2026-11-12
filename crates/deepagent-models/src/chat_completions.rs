@@ -34,6 +34,8 @@ pub struct ChatCompletionRequest {
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
     pub top_p: Option<f32>,
+    /// Native Chat choice: strings or {type:function,function:{name}}.
+    /// Canonical Responses choices are converted by the client boundary.
     pub tool_choice: Option<serde_json::Value>,
     /// Internal end-user identity, serialized as Chat's `user_id` (Responses
     /// uses `user`). Kept named `user` for source/defaults compatibility.
@@ -51,6 +53,8 @@ impl Serialize for ChatCompletionRequest {
     where
         S: Serializer,
     {
+        crate::tool_choice::validate_chat_tool_choice(self.tool_choice.as_ref())
+            .map_err(serde::ser::Error::custom)?;
         self.validate_user_identity()
             .map_err(serde::ser::Error::custom)?;
         self.validate_image_roles()
@@ -195,6 +199,7 @@ impl ChatCompletionRequest {
     }
 
     pub fn validate(&self) -> Result<()> {
+        crate::tool_choice::validate_chat_tool_choice(self.tool_choice.as_ref())?;
         self.validate_user_identity()?;
         self.validate_image_roles()?;
         self.validate_image_references()?;
