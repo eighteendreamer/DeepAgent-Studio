@@ -5906,7 +5906,7 @@ H-142提交回填（2026-10-28，E-H142-08）：代码、默认测试、SDK READ
 
 ### H-145：Thinking 模式下不支持的 Chat `tool_choice` 组合未在请求前拒绝
 
-**当前状态（2026-11-12）：已修复并验收（限下述本机范围），产物清理已核验，待独立提交hash回填。** 原失败证据保留；只修Chat有效thinking与choice组合，不将规则套到Responses；完整workspace/严格lint仍有已列明的无关失败，不宣称全绿。H93清理已在独立文档提交a48039db核验关闭。
+**当前状态（2026-11-12）：已修复并验收（限下述本机范围），产物清理已核验，独立提交 `5691d0762c55adb396ffe3080d13aa1fea97f293`，详E-H145-06。** 原失败证据保留；只修Chat有效thinking与choice组合，不将规则套到Responses；完整workspace/严格lint仍有已列明的无关失败，不宣称全绿。H93清理已在独立文档提交a48039db核验关闭。
 
 E-H145-01（修前复现与方案，2026-11-12）：`cargo test -p deepagent-models --lib audit_chat_thinking_rejects_ --offline -j 1 -- --ignored --nocapture` 首次1过1败：named探针把Chat嵌套choice放进ResponseRequest，H93形状门禁先拒绝而假绿，required仍真实发送。仅把named输入改为官方Responses扁平形状（沿用合法lookup工具及high），同命令再次0过2败，均正式transport返回成功后被原不变量断言识别；未修改生产。新增 `cargo test -p deepagent-models --test chat_thinking_tool_choice --offline -j 1 -- --nocapture` 修前3项均失败，覆盖请求/default、实际省略默认开启、low/high/max/none、显式覆盖、两路Chat×四入口、直接serde与Responses独立对照；失败原始日志保留。重新核对[官方Chat参数](https://api-docs.deepseek.com/zh-cn/api/create-chat-completion/)：无thinking/effort默认开启，显式开关优先，thinking不支持required/named；同时复核DeepSeek Harness不映射choice、能力不支持在I/O前拒绝的源码，原报告不把它说成已实现该组合。方案：在既有H93/H158封闭choice解析中增加Chat组合gate，Chat请求validate与直接serde共享最终wire模式，defaults仍由两个实际入口先应用；仅非思考允许forced，不自动关thinking/改auto/重试或切provider。Responses规则、Settings/SQLite/工具/权限/事件不变，旧reasoning冲突规则保留；不新增模型名推断或配置迁移。实现/验收待续。
 
@@ -5921,6 +5921,8 @@ E-H145-04（完整回归、兼容与限制，2026-11-12）：`cargo test --works
 完整验收在本轮G盘HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/XDG/data隔离，清除继承凭据/代理/DEEPAGENT变量，保留Cargo/Rustup依赖缓存入口、offline且不给child设CARGO_TARGET_DIR。共享CLI与用户原.snap.new预备份、全仓finally恢复后核原SHA256相同；用户其余七组untracked不动不提交。公开Rust/Settings/SQLite/TS/Tauri签名不变，无新依赖/迁移，不切主运行Responses。兼容变化仅Chat实际thinking开启时required/named现在在网络前返回Invalid（含省略默认开启）；auto/none/省略保留，显式关闭thinking后forced保留，不擅自改用户配置；现有reasoning矛盾校验未移除或扩大。未执行真实供应商/费用/服从选择、真实工具副作用、OS进程冷启或数据库重开、多宿主/其他OS/MSRV、真正中途取消或长时间压力；默认Desktop仍Responses，不把本项说成桌面主链修复。无前端/桥接类型修改，未跑前端build、Tauri check/UI。限定功能验收已完成，清理及提交状态后续记载。
 
 E-H145-05（清理核验，2026-11-12）：两个精确根与祖先/后代先核无reparse point、相关Cargo/rustc/测试进程已结束；target/h145-repair-20261112为19文件82,372,170逻辑字节（含日志/冻结记录及已恢复CLI/snapshot备份），G:/h145-fixtures-20261112为2384文件/4217条目1,163,280,354字节，合计约1.16GiB。自动原生PowerShell Remove-Item在CreateProcess前被本机策略拒绝，脚本未启动、零删除，未升权/重试/换工具绕过。用户在获准终端实际清理并回传“已删除”后，只读Test-Path两根均False，清理闭环，不把被拒调用说成实际执行或推算物理释放；未删源码、用户文档、共享target/debug或依赖缓存。清理后共享CLI及用户原snapshot hash仍等于原值。代码、测试与当时双文档一并独立提交，取得真实hash后另做普通回填，不amend/推送。H93旧清理在独立提交a48039db已关闭；本项不重复计其代码修复。
+
+E-H145-06（提交回填，2026-11-12）：五份Rust实现/测试和当时双文档独立提交 `5691d0762c55adb396ffe3080d13aa1fea97f293`（【fix】拒绝 Chat 思考模式下的强制工具选择），七份白名单，无生成物、凭据或用户untracked；未推送/创建PR。提交后tracked干净，用户七组untracked保留。取得真实代码hash后另做本次普通文档回填，不amend、不填写回填commit自身hash。代码、限定验收、双文、提交及产物清理均闭环；全仓/lint失败和未执行范围保留。下一准备H294，整体任务仍active。
 
 **级别：中（P2，协议组合校验缺失）；触发条件：调用方使用 `WireMode::ChatCompletions`，启用 DeepSeek Thinking，并设置 `tool_choice=required` 或指定函数。** DeepSeek 官方明确说明这两种选择在 Thinking 模式不支持，应在客户端边界拒绝，而不是把必失败请求交给 provider。
 
