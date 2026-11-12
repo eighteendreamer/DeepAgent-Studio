@@ -16515,7 +16515,7 @@ workspace fmt exit0（4.203秒，测试借用修正后4.590秒）。Tauri整体f
 
 ### H-294：完成门把每次成功文件操作强制转换为最终净变化，临时创建后删除被误判未完成并额外请求模型
 
-**当前状态（2026-11-12）：代码修复与本机功能验收完成，阻塞待处理（仅产物清理），待独立提交hash回填。** 以下原失败证据保留。本轮只取消Runtime把成功工具历史自动转为最终净变更要求；明确的CompletionPolicy、工具结果、checkpoint净证据、权限/取消/Stop与验证器边界保留，不混修其他问题。完整workspace/严格lint非全绿，详E-H294-01～05。
+**当前状态（2026-11-12）：代码修复与本机功能验收完成，独立提交 `d497d9c87c35db1ea960c8c6c77160d51cd5abe7`，阻塞待处理（仅产物清理）。** 以下原失败证据保留。本轮只取消Runtime把成功工具历史自动转为最终净变更要求；明确的CompletionPolicy、工具结果、checkpoint净证据、权限/取消/Stop与验证器边界保留，不混修其他问题。完整workspace/严格lint非全绿，详E-H294-01～06。
 
 E-H294-01（本轮修前复现与方案，2026-11-12）：`cargo test -p deepagent-app-core --test kernel_v2_e2e completion_net_effect --offline -j 1 -- --include-ignored --nocapture` 在隔离HOME/PROFILE/TEMP/data环境执行，真实1过2败，故障两组仍各requests=5、blocked_inputs=2、evidence_failures=4、failed_open=true，文件/Completed actions/唯一succeeded与原记录一致；测试体1.23秒，首次编译5分22秒不计有效开发时间。新增Runtime TDD先因测试夹具错误使用std::io `?` 无From而编译失败，不计行为红测；显式转换测试I/O错误后 `cargo test -p deepagent-runtime --lib completion_policy_tests --offline -j 1 -- --nocapture` 2过1败，显式policy仍拒绝、失败/权限拒绝/取消对照通过，仅自动策略错误。扩展正式ChatService测试加入修改恢复/移动链/多次写入及文件SQLite重开；首扩命令遗漏隔离进程环境而因ambient模型'fable'在请求前失败，不计产品复现且不采用其结果；恢复隔离后原两故障保持，新增修改夹具被真实read-before-write边界拒绝，已补每次覆盖前的真实read，不放宽工具权限/断言，最终扩展红测待续。上述失败均保留，不用环境或夹具错误冒充本项。
 
@@ -16536,6 +16536,8 @@ E-H294-04（完整workspace、诊断lint与验收限制，2026-11-12）：`cargo
 兼容与限制：公开CompletionPolicy/ToolEffectRecord/from_tool_effects签名与原行为保留，Runtime默认不再从成功动作强加最终diff；显式policy仍受原验证/重试及既有fail-open语义约束，不声称强不可绕过后置条件。工具事实、净变更、用户目标区分，不解析prompt或声称自动完整理解任务；没有新增最终条件DSL或数据库/权限/事件链，无新依赖/配置/迁移。纯同内容/临时操作完成不会触发不真实的反馈，但真实失败工具结果、权限拒绝、取消、明确策略和Stop/Verification行为保留；不宣称供应商实测费用/延迟减少。未验真实provider/业务数据、OS进程冷启/强杀、跨OS/MSRV/多宿主/并发持久化压力、完整Desktop UI/Tauri check/前端build；本轮无前端或桥接类型变更，跨层生产者Runtime与正式AppCore/Kernel及CLI/SDK workspace消费者实际覆盖。提交及产物清理结果另续。
 
 E-H294-05（清理受阻，2026-11-12）：相关Cargo/rustc/测试进程已结束，两个精确根及祖先/后代无reparse point；target/h294-repair-20261112为23文件82,365,511逻辑字节，G:/h294-fixtures-20261112为2406文件/4248条目1,163,306,807字节，合计约1.16GiB。原生PowerShell Remove-Item在CreateProcess前被策略拒绝，脚本未启动、零删除，未升权/重试/换工具绕过；已交精确两根命令请用户获准终端实际删除，完成后只读核验。共享CLI与原用户snapshot已恢复，源码/用户文档/共享target与依赖缓存不在删除范围，产物不提交。功能验收不代替清理，代码/测试/当时双文先独立提交、真实hash取得后另做普通回填，不amend/推送。
+
+E-H294-06（提交回填，2026-11-12）：四份Rust实现/测试和当时双文档独立提交 `d497d9c87c35db1ea960c8c6c77160d51cd5abe7`（【fix】分离工具操作历史与显式完成后置条件），六份白名单无生成物、真实凭据或用户untracked；未推送/创建PR。取得真实代码hash后本次另做普通文档回填，不amend/不反复填文档提交自身hash。提交后tracked干净、原用户七组untracked保留。清理尚未闭环，代码提交不增加正式关闭计数；下一准备H107会话结束hook重复生命周期，整体goal仍active，不因单项清理标记整个任务blocked。
 
 **首轮级别：低（P3，完成验收的操作历史与最终状态语义混淆）；首轮状态：正式 ChatService/ModelClient/Kernel、文件 SQLite 和真实临时文件已复现，当时未修复。** 不要求 hook 改写、异常供应商、并发或失败工具；首轮用户目标明确要求“创建临时文件后删除，最终文件不存在”。首轮默认完成策略被设为空不消除 runtime 自动推导的要求。当前状态以上方整改记录为准，本项不重复 H-259 的流式参数冲突，也不属于 H-230/H-231 的单文件验证器误报。
 
