@@ -1948,21 +1948,20 @@ async fn start_chat_v2(
     let admission_chat = state.chat.clone();
     let admission_run_id = run_id.clone();
     let admission_mode = env_mode.clone();
-    let session_id = Some(
-        run_blocking(move || {
-            let id = match session_id {
-                Some(id) => id,
-                None => admission_chat
-                    .create_session(admission_mode.as_deref())
-                    .map_err(|error| error.to_string())?,
-            };
-            admission_chat
-                .admit_run(&admission_run_id, &id)
-                .map_err(|error| error.to_string())?;
-            Ok(id)
-        })
-        .await?,
-    );
+    let admission_input = prompt.clone();
+    let (session_id, prepared) = run_blocking(move || {
+        let id = match session_id {
+            Some(id) => id,
+            None => admission_chat
+                .create_session(admission_mode.as_deref())
+                .map_err(|error| error.to_string())?,
+        };
+        let prepared = admission_chat
+            .admit_run_input(&admission_run_id, &id, &admission_input)
+            .map_err(|error| error.to_string())?;
+        Ok((Some(id), prepared))
+    })
+    .await?;
     let acknowledgement = StartChatV2Ack {
         run_id: run_id.clone(),
         session_id: session_id.clone(),
@@ -1978,8 +1977,29 @@ async fn start_chat_v2(
     state.rt.spawn(async move {
         let event_run_id = run_id.clone();
         let approval_run_id = run_id.clone();
-        let result = chat
-            .run_in_session_with_attachments(
+        let on_event = move |event| {
+            let _ = event_emitter.emit(
+                "chat://event",
+                RunEventEnvelope {
+                    run_id: event_run_id.clone(),
+                    payload: event,
+                },
+            );
+        };
+        let on_approval = move |approval| {
+            let _ = approval_emitter.emit(
+                "chat://approval",
+                RunEventEnvelope {
+                    run_id: approval_run_id.clone(),
+                    payload: approval,
+                },
+            );
+        };
+        let result = if let Some(prepared) = prepared {
+            chat.run_prepared(prepared, &prompt, on_event, on_approval)
+                .await
+        } else {
+            chat.run_in_session_with_attachments(
                 &prompt,
                 session_id.as_deref(),
                 env_mode.as_deref(),
@@ -1989,26 +2009,11 @@ async fn start_chat_v2(
                 initial_plan_mode.unwrap_or(false),
                 Some(&run_id),
                 attachments,
-                move |event| {
-                    let _ = event_emitter.emit(
-                        "chat://event",
-                        RunEventEnvelope {
-                            run_id: event_run_id.clone(),
-                            payload: event,
-                        },
-                    );
-                },
-                move |approval| {
-                    let _ = approval_emitter.emit(
-                        "chat://approval",
-                        RunEventEnvelope {
-                            run_id: approval_run_id.clone(),
-                            payload: approval,
-                        },
-                    );
-                },
+                on_event,
+                on_approval,
             )
-            .await;
+            .await
+        };
         let completed = match &result {
             Ok(session_id) if run_was_cancelled(&chat, &run_id) => SessionCompletedPayload {
                 run_id: run_id.clone(),

@@ -597,6 +597,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         task: TaskId,
         agent: &mut dyn Agent,
     ) -> Result<RunOutcome> {
+        session.require_open()?;
         // Run-local binding, not mutable engine-global state: reusing one
         // engine (even concurrently) must neither inherit nor revoke another
         // model's observations. All original stores/gates/sinks remain shared.
@@ -1127,9 +1128,6 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         // Full outputs referenced by the event log are durable assets, not
         // turn-local scratch files. Only owner/reference retention may reclaim them;
         // completion, cancellation and error paths must not invalidate history.
-        self.fire_hook(session_id, HookPoint::SessionEnd, HookData::None)
-            .await?;
-
         Ok(outcome)
     }
 

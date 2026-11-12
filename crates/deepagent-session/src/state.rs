@@ -75,6 +75,7 @@ impl SessionState {
             EventPayload::SessionStarted { title, mode } => {
                 self.title = title.clone();
                 self.mode = *mode;
+                self.ended = false;
             }
             EventPayload::SessionEnded { .. } => {
                 self.ended = true;

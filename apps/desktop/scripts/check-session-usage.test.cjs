@@ -157,11 +157,12 @@ test("the backend admits the run before spawning its execution task", () => {
     /\.create_session\(admission_mode\.as_deref\(\)\)/,
     "a new session must be created before admission"
   );
-  assert.match(command, /\.admit_run\(&admission_run_id, &id\)/, "the run must be durably admitted");
+  assert.match(command, /\.admit_run_input\(&admission_run_id, &id, &admission_input\)/, "lifecycle controls must be recognized before admission");
   assert.ok(
-    command.indexOf(".admit_run(") < command.indexOf("state.rt.spawn"),
+    command.indexOf(".admit_run_input(") < command.indexOf("state.rt.spawn"),
     "the run record must exist before the execution task starts"
   );
+  assert.match(command, /\.run_prepared\(prepared, &prompt, on_event, on_approval\)/, "the exact admitted control must be consumed without legacy re-admission");
 });
 
 // The per-turn metrics line belongs to the TURN, not to a text block. A text

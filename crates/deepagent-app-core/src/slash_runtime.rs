@@ -101,6 +101,9 @@ impl<'a> SlashRuntime<'a> {
         result: deepagent_intent::CommandResult,
     ) -> Result<String> {
         let message = match result.action {
+            SlashAction::End => {
+                return Err(CoreError::invalid("session end requires the admitted ChatService control entry"));
+            }
             SlashAction::EnterPlanMode => {
                 self.set_plan_mode(session_id, true)?;
                 result.message

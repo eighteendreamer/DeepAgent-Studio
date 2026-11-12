@@ -76,6 +76,9 @@ use crate::tool_manifest::DiscoveredToolSet;
 #[path = "chat_service/scheduled.rs"]
 mod scheduled;
 #[cfg(test)]
+#[path = "chat_service/session_end_tests.rs"]
+mod session_end_tests;
+#[cfg(test)]
 use crate::tool_manifest::{build_visible_tool_schemas, register_tool_search_into};
 #[cfg(test)]
 use crate::tool_runtime::register_skill_tool;
@@ -410,6 +413,26 @@ impl ChatService {
         self.coordinator.admit(run_id, session_id)
     }
 
+    /// Input-aware admission for legacy host bridges. Ordinary chat retains
+    /// its existing deferred environment/attachment preparation; explicit end
+    /// reserves its lifecycle before ACK and returns the one-shot control.
+    pub fn admit_run_input(
+        &self,
+        run_id: &str,
+        session_id: &str,
+        input: &str,
+    ) -> Result<Option<crate::run_assembler::PreparedChatRun>> {
+        if crate::slash_runtime::parse_builtin_slash_command(input, Some(session_id))?
+            .is_some_and(|result| matches!(result.action, deepagent_intent::SlashAction::End))
+        {
+            self.admit_prepared_input(run_id, session_id, input, HarnessRunOverrides::default())
+                .map(Some)
+        } else {
+            self.admit_run(run_id, session_id)?;
+            Ok(None)
+        }
+    }
+
     /// Freeze the normal main-run tools and commit their exact snapshot with
     /// admission. Preparation failure publishes no run or cancellation owner.
     /// Text may be supplied at consumption, but builtin controls require the
@@ -504,24 +527,37 @@ impl ChatService {
         let session_id = session_id
             .parse::<deepagent_core::id::SessionId>()?
             .to_string();
-        self.coordinator
-            .admit_prepared(run_id, &session_id, replaces, scheduled, || {
-                let prepared = self.run_assembler().prepare_chat_input(
-                    run_id,
-                    &session_id,
-                    input,
-                    overrides,
-                )?;
-                let snapshot = prepared.capability_snapshot().clone();
-                if let Some(expected) = expected_config_snapshot_id {
-                    if snapshot["context"]["executionConfig"]["configSnapshotId"].as_str()
-                        != Some(expected)
-                    {
-                        return Err(CoreError::ExecutionConfigStale);
-                    }
+        let ending = crate::slash_runtime::parse_builtin_slash_command(
+            input.unwrap_or(""),
+            Some(&session_id),
+        )?
+        .is_some_and(|result| matches!(result.action, deepagent_intent::SlashAction::End));
+        let prepare = || {
+            let prepared =
+                self.run_assembler()
+                    .prepare_chat_input(run_id, &session_id, input, overrides)?;
+            let snapshot = prepared.capability_snapshot().clone();
+            if let Some(expected) = expected_config_snapshot_id {
+                if snapshot["context"]["executionConfig"]["configSnapshotId"].as_str()
+                    != Some(expected)
+                {
+                    return Err(CoreError::ExecutionConfigStale);
                 }
-                Ok((prepared, Some(snapshot)))
-            })
+            }
+            Ok((prepared, Some(snapshot)))
+        };
+        if ending {
+            if replaces.is_some() || scheduled.is_some() {
+                return Err(CoreError::invalid(
+                    "session end cannot replace or schedule a turn",
+                ));
+            }
+            self.coordinator
+                .admit_prepared_end(run_id, &session_id, prepare)
+        } else {
+            self.coordinator
+                .admit_prepared(run_id, &session_id, replaces, scheduled, prepare)
+        }
     }
 
     /// Consume the exact one-shot tools admitted by this service. Model,
@@ -1632,11 +1668,32 @@ impl ChatService {
         .await
     }
 
+    /// End a persistent session explicitly and idempotently through /end's
+    /// existing admission/kernel boundary, never a host-exit callback.
+    pub async fn end_session(&self, session_id: &str) -> Result<()> {
+        self.run_in_session(
+            "/end",
+            Some(session_id),
+            None,
+            None,
+            vec![],
+            None,
+            false,
+            None,
+            |_| {},
+            |_| {},
+        )
+        .await
+        .map(|_| ())
+    }
+
     /// Like [`ChatService::run`], but when `continue_session` names an existing
     /// session the new turn is **appended** to it (the prior conversation is
     /// recovered from the event log and replayed to the model) instead of
     /// starting a fresh session. Returns the session id used (the continued one,
     /// or a newly created one when `continue_session` is `None`).
+    ///
+    /// Explicit, idempotent end is exposed by [`ChatService::end_session`].
     #[allow(clippy::too_many_arguments)]
     pub async fn run_in_session<F, A>(
         &self,
@@ -1859,7 +1916,7 @@ mod tests {
 
     /// A transport that answers model discovery (GET) AND a streamed chat (the
     /// agent's first turn) so a full run completes offline.
-    fn chat_transport() -> Arc<dyn HttpTransport> {
+    pub(super) fn chat_transport() -> Arc<dyn HttpTransport> {
         // The mock streams its `events` for `stream`, and returns `get_response`
         // for discovery. We only need streaming here (settings are seeded
         // separately), so build one that completes immediately.
@@ -2202,7 +2259,7 @@ mod tests {
         }
     }
 
-    fn discovery_transport() -> Arc<dyn HttpTransport> {
+    pub(super) fn discovery_transport() -> Arc<dyn HttpTransport> {
         let body = r#"{"object":"list","data":[
             {"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"},
             {"id":"deepseek-v4-pro","object":"model","owned_by":"deepseek"}
@@ -2210,7 +2267,7 @@ mod tests {
         Arc::new(MockTransport::with_get_json(body))
     }
 
-    async fn seeded() -> (Arc<Database>, Arc<SettingsService>, tempfile::TempDir) {
+    pub(super) async fn seeded() -> (Arc<Database>, Arc<SettingsService>, tempfile::TempDir) {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let secrets = Arc::new(MemorySecretStore::new());
         let settings = Arc::new(SettingsService::new(
@@ -3145,7 +3202,7 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    async fn project_hook_trust_revocation_gates_already_registered_session_end() {
+    async fn project_hook_trust_revocation_before_explicit_end_is_honored() {
         struct RevokeDuringModel {
             projects: Arc<crate::project_service::ProjectService>,
             root: String,
@@ -3194,7 +3251,8 @@ mod tests {
             });
             let chat =
                 ChatService::new(db, settings, transport, dir.path()).with_projects(projects);
-            chat.run("hello", |_| {}, |_| {}).await.unwrap();
+            let session_id = chat.run("hello", |_| {}, |_| {}).await.unwrap();
+            chat.end_session(&session_id).await.unwrap();
             let contents = std::fs::read_to_string(&marker).unwrap();
             let events = contents.lines().collect::<Vec<_>>();
             eprintln!("source={file_name}, registered_then_revoked, events={events:?}");
@@ -3551,7 +3609,6 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    #[ignore = "audit H-107: SessionEnd must wait for the conversation session to end"]
     async fn audit_session_end_hook_does_not_fire_after_each_continued_turn() {
         let (db, settings, dir) = seeded().await;
         let marker = dir.path().join("session-hook-events.txt");
@@ -3656,9 +3713,11 @@ mod tests {
             .unwrap();
 
         let chat = ChatService::new(db, settings, chat_transport(), dir.path());
-        chat.run("capture session lifecycle hook input", |_| {}, |_| {})
+        let session_id = chat
+            .run("capture session lifecycle hook input", |_| {}, |_| {})
             .await
             .unwrap();
+        chat.end_session(&session_id).await.unwrap();
 
         let start_payload: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(start_payload_path).expect("SessionStart hook ran"),

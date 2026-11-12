@@ -635,6 +635,7 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
         agent: &mut dyn Agent,
     ) -> Result<KernelTerminal> {
         let _session_activity = session.acquire_activity()?;
+        session.require_open()?;
         self.events
             .bind_cancellation(self.handle.cancellation.clone());
         let run_id = self.handle.run_id.clone();

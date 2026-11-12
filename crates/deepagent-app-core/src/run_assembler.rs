@@ -75,6 +75,7 @@ mod prepared_tools;
 use prepared_tools::MainRunPreparationRequest;
 mod execution_config;
 mod prepared_chat;
+mod session_end;
 pub use prepared_chat::PreparedChatRun;
 use prepared_chat::{PreparedChatContents, PreparedChatTools};
 
@@ -285,7 +286,7 @@ impl<'a> RunAssembler<'a> {
     /// Execute the full run assembly pipeline.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn run<F, A>(
-        self,
+        mut self,
         prompt: &str,
         continue_session: Option<&str>,
         env_mode: Option<&str>,
@@ -306,6 +307,8 @@ impl<'a> RunAssembler<'a> {
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| format!("run_{}", deepagent_core::id::EventId::new()));
         let db = self.db.clone();
+        let ending = crate::slash_runtime::parse_builtin_slash_command(prompt, continue_session)?
+            .is_some_and(|result| matches!(result.action, deepagent_intent::SlashAction::End));
         let session_id = if let Some(id) = continue_session {
             SessionId::from_str(id)?.to_string()
         } else {
@@ -326,6 +329,14 @@ impl<'a> RunAssembler<'a> {
             .to_string()
         };
         let store = deepagent_persistence::run_store::RunStore::new(&db);
+        if ending && self.prepared_run.is_none() && store.get(&run_id)?.is_none() {
+            self.prepared_run = Some(self.service.admit_prepared_input(
+                &run_id,
+                &session_id,
+                prompt,
+                overrides.clone(),
+            )?);
+        }
         if let Some(record) = store.get(&run_id)? {
             if record.session_id != session_id || record.finished_at.is_some() {
                 return Err(CoreError::invalid("run admission does not match session"));
@@ -427,6 +438,18 @@ impl<'a> RunAssembler<'a> {
                     capabilities,
                 } => {
                     capabilities.consume(self.db.clone())?;
+                    if matches!(result.action, deepagent_intent::SlashAction::End) {
+                        return self
+                            .execute_session_end(
+                                bound_session_id,
+                                diagnostic_run_id.ok_or_else(|| {
+                                    CoreError::invalid("session end requires a run owner")
+                                })?,
+                                cancellation,
+                                on_event,
+                            )
+                            .await;
+                    }
                     return crate::slash_runtime::execute_builtin_slash_command(
                         &self.slash_runtime(),
                         prompt,

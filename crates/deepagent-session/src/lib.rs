@@ -145,9 +145,9 @@ impl<'db, C: Clock> Session<'db, C> {
     /// tail is gone) and is only reachable through an explicit user action.
     /// A cursor within a source/native projection keeps the complete group.
     ///
-    /// After rewinding, the session is "reopened" (any prior end is cleared)
-    /// and new events append gaplessly from the kept tail. Returns the number
-    /// of events discarded.
+    /// Only open sessions can rewind. Ended/ending sessions remain read-only;
+    /// use a fork for a fresh lifecycle. New events append gaplessly from the
+    /// kept tail. Returns the number of events discarded.
     pub fn rewind(&mut self, to_seq: deepagent_core::event::Sequence) -> Result<u64> {
         let store = EventStore::new(self.db);
         let removed = store.truncate_after(self.id, to_seq)?;
@@ -315,9 +315,21 @@ impl<'db, C: Clock> Session<'db, C> {
 
     /// End the session gracefully.
     pub fn end(&mut self, reason: Option<&str>) -> Result<()> {
-        self.append(EventPayload::SessionEnded {
+        EventStore::new(self.db).end_session(self.id, reason, self.clock.now())?;
+        self.state.apply(&EventPayload::SessionEnded {
             reason: reason.map(|s| s.to_string()),
-        })?;
+        });
+        Ok(())
+    }
+
+    /// Check current durable lifecycle before a runtime starts, not just this
+    /// in-memory projection (another owner may have ended it since recovery).
+    pub fn require_open(&self) -> Result<()> {
+        if self.record()?.ended_at.is_some() {
+            return Err(CoreError::invalid(
+                "session has ended; create or fork a session to continue",
+            ));
+        }
         Ok(())
     }
 
@@ -505,15 +517,14 @@ mod tests {
             })
             .unwrap();
         }
-        s.end(Some("done")).unwrap();
-        assert!(s.state().ended);
+        assert!(!s.state().ended);
         assert_eq!(s.state().message_count, 4);
 
         // Responses item events follow each message. Keep through m1's item.
         // Stream is: 0=Started,1=m0,2=item,3=m1,4=item,5=m2,6=item,7=m3,
-        // 8=item,9=Ended; truncating at 4 removes the final five events.
+        // 8=item; truncating at 4 removes the final four events.
         let removed = s.rewind(4).unwrap();
-        assert_eq!(removed, 5);
+        assert_eq!(removed, 4);
         assert_eq!(s.state().message_count, 2);
         assert!(!s.state().ended);
 
@@ -521,6 +532,39 @@ mod tests {
         let recovered = Session::recover(&db, &clock, sid).unwrap();
         assert_eq!(recovered.state().message_count, 2);
         assert!(!recovered.state().ended);
+    }
+
+    #[test]
+    fn explicitly_ended_session_cannot_be_reopened_by_rewind() {
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1_000);
+        let mut session = Session::create(&db, &clock, None).unwrap();
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::user("keep this history"),
+            })
+            .unwrap();
+        session.end(Some("explicit end")).unwrap();
+        session.end(Some("repeat end")).unwrap();
+        let before = EventStore::new(&db).load_session(session.id()).unwrap();
+        assert_eq!(
+            before
+                .iter()
+                .filter(|event| matches!(event.payload, EventPayload::SessionEnded { .. }))
+                .count(),
+            1
+        );
+        assert!(session.rewind(0).unwrap_err().to_string().contains("ended"));
+        assert_eq!(
+            EventStore::new(&db).load_session(session.id()).unwrap(),
+            before
+        );
+        assert!(
+            Session::recover(&db, &clock, session.id())
+                .unwrap()
+                .state()
+                .ended
+        );
     }
 
     #[test]

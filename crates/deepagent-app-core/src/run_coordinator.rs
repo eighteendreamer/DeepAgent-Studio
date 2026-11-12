@@ -242,6 +242,28 @@ impl RunCoordinator {
         scheduled: Option<&deepagent_persistence::run_store::ScheduledRunOrigin>,
         prepare: impl FnOnce() -> Result<(T, Option<serde_json::Value>)>,
     ) -> Result<Option<T>> {
+        self.admit_prepared_inner(run_id, session_id, replaces, scheduled, prepare, false)
+    }
+
+    pub(crate) fn admit_prepared_end<T>(
+        &self,
+        run_id: &str,
+        session_id: &str,
+        prepare: impl FnOnce() -> Result<(T, Option<serde_json::Value>)>,
+    ) -> Result<Option<T>> {
+        self.admit_prepared_inner(run_id, session_id, None, None, prepare, true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn admit_prepared_inner<T>(
+        &self,
+        run_id: &str,
+        session_id: &str,
+        replaces: Option<&str>,
+        scheduled: Option<&deepagent_persistence::run_store::ScheduledRunOrigin>,
+        prepare: impl FnOnce() -> Result<(T, Option<serde_json::Value>)>,
+        ending: bool,
+    ) -> Result<Option<T>> {
         let predecessor = match replaces {
             Some(old) => {
                 let cancellation = self
@@ -263,6 +285,9 @@ impl RunCoordinator {
         // Acquire before durable admission/snapshot recovery, and retain it in
         // the existing registration through outer failure/terminal projection.
         let activity = crate::ArchiveService::new(self.db.clone()).active_guard(id)?;
+        if !ending {
+            RunStore::new(&self.db).require_session_open(session_id)?;
+        }
         // Reentrancy belongs to this coordinator's queue, not a PID or the
         // whole process. Independent ChatServices must still conflict. Weak
         // entries cannot extend ownership beyond the last admitted run.
@@ -283,17 +308,21 @@ impl RunCoordinator {
         };
         let (prepared, snapshot) = prepare()?;
         let mut admissions = self.admissions.lock().unwrap_or_else(|p| p.into_inner());
-        if !RunStore::new(&self.db).admit(
-            RunAdmission {
-                run_id,
-                session_id,
-                task_id: None,
-                replaces_run_id: replaces,
-                capability_snapshot: snapshot.as_ref(),
-                scheduled,
-            },
-            now_millis(),
-        )? {
+        let admission = RunAdmission {
+            run_id,
+            session_id,
+            task_id: None,
+            replaces_run_id: replaces,
+            capability_snapshot: snapshot.as_ref(),
+            scheduled,
+        };
+        let store = RunStore::new(&self.db);
+        let admitted = if ending {
+            store.admit_session_end(admission, now_millis())?
+        } else {
+            store.admit(admission, now_millis())?
+        };
+        if !admitted {
             return Ok(None);
         }
         let mut registration = ActiveRunRegistration::new(

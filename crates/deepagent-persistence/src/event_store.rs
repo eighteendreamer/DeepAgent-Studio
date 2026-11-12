@@ -126,6 +126,10 @@ pub struct SessionControl<'db> {
 }
 
 impl SessionControl<'_> {
+    /// Publish a real session end once under the existing exclusive control.
+    pub fn end(&self, reason: Option<&str>, now: Timestamp) -> Result<bool> {
+        EventStore::new(self.db).end_session_locked(self.session_id, None, reason, now)
+    }
     /// Commit a rewind without recursively acquiring the exclusive gate. An
     /// error still means the authoritative prefix has not been published, as
     /// required by workspace checkpoint compensation.
@@ -194,6 +198,57 @@ impl<'db> EventStore<'db> {
     /// Wrap a database handle.
     pub fn new(db: &'db Database) -> Self {
         Self { db }
+    }
+
+    /// Standalone explicit close. Busy history is refused, never cancelled here.
+    pub fn end_session(&self, id: SessionId, reason: Option<&str>, now: Timestamp) -> Result<bool> {
+        self.begin_control(id)?.end(reason, now)
+    }
+
+    /// The admitted /end already holds activity/dispatch ownership. Its ledger
+    /// reservation fences every subsequent turn, without releasing that owner
+    /// before hooks and the kernel's final terminal/session projection finish.
+    pub fn end_session_for_run(
+        &self,
+        id: SessionId,
+        run_id: &str,
+        reason: Option<&str>,
+        now: Timestamp,
+    ) -> Result<bool> {
+        let _activity = self.acquire_activity(id)?;
+        self.end_session_locked(id, Some(run_id), reason, now)
+    }
+
+    fn end_session_locked(
+        &self,
+        id: SessionId,
+        run_id: Option<&str>,
+        reason: Option<&str>,
+        now: Timestamp,
+    ) -> Result<bool> {
+        let _io = self.db.lock_session_io()?;
+        let _file_lock = session_files::lock_session(&self.db.session_files_root(), id)?;
+        let store = crate::run_store::RunStore::new(self.db);
+        store.validate_session_end_publication(&id.to_string(), run_id)?;
+        let loaded = session_files::load(&self.db.session_files_root(), id)?
+            .ok_or_else(|| CoreError::not_found(format!("session {id}")))?;
+        if loaded
+            .events
+            .iter()
+            .rev()
+            .find_map(|event| event.payload.session_lifecycle_ended())
+            .unwrap_or(false)
+        {
+            return Ok(false);
+        }
+        self.append_locked(
+            id,
+            EventPayload::SessionEnded {
+                reason: reason.map(str::to_owned),
+            },
+            now,
+        )?;
+        Ok(true)
     }
 
     /// Reserve history before recovering a run's model/session snapshot.
@@ -613,6 +668,13 @@ impl<'db> EventStore<'db> {
                 tx.execute(
                     "UPDATE sessions SET ended_at = ?2 WHERE id = ?1",
                     params![session_id.to_string(), now.as_millis()],
+                )
+                .map_err(map_sqlite)?;
+            }
+            if matches!(&event.payload, EventPayload::SessionStarted { .. }) {
+                tx.execute(
+                    "UPDATE sessions SET ended_at = NULL WHERE id = ?1",
+                    [session_id.to_string()],
                 )
                 .map_err(map_sqlite)?;
             }
@@ -1367,7 +1429,7 @@ impl<'db> EventStore<'db> {
             return Err(CoreError::not_found(format!("session {source_id}")));
         }
 
-        let events = events
+        let mut events = events
             .into_iter()
             .filter(|event| event.sequence <= until_seq)
             .enumerate()
@@ -1379,6 +1441,23 @@ impl<'db> EventStore<'db> {
                 payload: event.payload,
             })
             .collect::<Vec<_>>();
+        if events
+            .iter()
+            .rev()
+            .find_map(|event| event.payload.session_lifecycle_ended())
+            .unwrap_or(false)
+        {
+            events.push(Event {
+                id: EventId::new(),
+                session_id: new_id,
+                sequence: events.len() as u64,
+                timestamp: now,
+                payload: EventPayload::SessionStarted {
+                    title: record.title.clone(),
+                    mode: record.mode,
+                },
+            });
+        }
         let _io = self.db.lock_session_io()?;
         let root = self.db.session_files_root();
         let _file_lock = session_files::lock_session(&root, new_id)?;
@@ -1407,7 +1486,8 @@ impl<'db> EventStore<'db> {
         self.db.with_conn(|connection| {
             let tx = connection.unchecked_transaction().map_err(map_sqlite)?;
             let updated_at = prepared.events.last().map_or(now.as_millis(), |event| event.timestamp.as_millis());
-            let ended_at = prepared.events.iter().rev().find_map(|event| matches!(event.payload, EventPayload::SessionEnded { .. }).then_some(event.timestamp.as_millis()));
+            let ended_at = prepared.events.iter().rev().find_map(|event|
+                event.payload.session_lifecycle_ended().map(|ended| ended.then_some(event.timestamp.as_millis()))).flatten();
             tx.execute("INSERT INTO sessions (id, title, mode, project, created_at, updated_at, ended_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![new_id.to_string(), record.title, record.mode.label(), record.project, now.as_millis(), updated_at, ended_at]).map_err(map_sqlite)?;
             let last_sequence = prepared.events.last().map(|event| event.sequence as i64);
@@ -1436,9 +1516,9 @@ impl<'db> EventStore<'db> {
     /// requested anchor, so later appends continue gaplessly.
     ///
     /// This is the one deliberate exception to the append-only rule and is
-    /// reachable only through an explicit, user-initiated **rewind**. The
-    /// session's `ended_at` is cleared (the session is "reopened") and
-    /// `updated_at` is reset to the timestamp of the new tail event.
+    /// reachable only through an explicit, user-initiated **rewind** of an open
+    /// session. Ended/ending sessions are read-only; fork instead. `updated_at`
+    /// is reset to the timestamp of the new tail event.
     pub fn truncate_after(&self, session_id: SessionId, keep_through: Sequence) -> Result<u64> {
         self.begin_control(session_id)?.truncate_after(keep_through)
     }
@@ -1448,6 +1528,7 @@ impl<'db> EventStore<'db> {
         session_id: SessionId,
         keep_through: Sequence,
     ) -> Result<u64> {
+        crate::run_store::RunStore::new(self.db).require_session_open(&session_id.to_string())?;
         let _io = self.db.lock_session_io()?;
         let _file_lock = session_files::lock_session(&self.db.session_files_root(), session_id)?;
         if self.get_session(session_id)?.is_none() {
@@ -2929,7 +3010,7 @@ mod tests {
     }
 
     #[test]
-    fn truncate_after_removes_tail_and_reopens() {
+    fn truncate_after_removes_open_tail_and_continues_gaplessly() {
         let (db, sid, clock) = store_with_session();
         let store = EventStore::new(&db);
         for i in 0..5 {
@@ -2944,18 +3025,20 @@ mod tests {
                 .unwrap();
             clock.advance(1);
         }
-        // End it so we can verify ended_at gets cleared on rewind.
+        // Neutral tail marker: lifecycle-ended sessions are now read-only.
         store
             .append(
                 sid,
-                EventPayload::SessionEnded { reason: None },
+                EventPayload::Note {
+                    text: "tail marker".into(),
+                },
                 clock.now(),
             )
             .unwrap();
-        assert!(store.get_session(sid).unwrap().unwrap().ended_at.is_some());
+        assert!(store.get_session(sid).unwrap().unwrap().ended_at.is_none());
 
         let removed = store.truncate_after(sid, 2).unwrap();
-        // Removed events 3,4,5 (the SessionEnded plus n3,n4).
+        // Removed events 3,4,5 (the marker plus n3,n4).
         assert_eq!(removed, 3);
         let dir = session_files::session_dir(&db.session_files_root(), sid);
         assert!(!dir.join("session.g000001.v1.jsonl.zst").exists());

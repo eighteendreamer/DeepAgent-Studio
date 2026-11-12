@@ -2,6 +2,66 @@
 use super::*;
 use deepagent_persistence::runtime_log_store::RuntimeLogStore;
 
+#[tokio::test]
+async fn h107_end_control_uses_real_dispatch_and_remains_read_only_after_reopen() {
+    let transport = Arc::new(ScriptedTransport {
+        responses: vec![completed_text("must not call the main model")],
+        next_response: AtomicUsize::new(0),
+    });
+    let fixture = Fixture::with_transport(transport.clone()).await;
+    let ending = launch(&fixture, "/end");
+    let end_id = ending.turn_id.clone();
+    execute(&fixture, ending);
+    finished(&fixture, &end_id).await;
+    assert_durable_terminal(&fixture.read(), &end_id, "succeeded");
+    assert_eq!(fixture.terminals(&end_id), ["turn.completed"]);
+    assert_eq!(transport.next_response.load(Ordering::SeqCst), 0);
+    let repeat = launch(&fixture, "/end");
+    let repeat_id = repeat.turn_id.clone();
+    execute(&fixture, repeat);
+    finished(&fixture, &repeat_id).await;
+    assert_eq!(fixture.terminals(&repeat_id), ["turn.completed"]);
+    let mut reopened = fixture.reopened_state();
+    dispatch(
+        &mut reopened,
+        "thread/resume",
+        json!({"threadId":fixture.thread_id}),
+    );
+    let (response, worker) = reopened.dispatch(
+        rpc(
+            "turn/start",
+            json!({
+                "threadId":fixture.thread_id,"input":"must not reopen implicitly"
+            }),
+        ),
+        None,
+    );
+    assert!(!response.is_success());
+    assert!(worker.is_none());
+    let db = Database::open(&fixture.database_path).unwrap();
+    let events = EventStore::new(&db)
+        .load_session(fixture.thread_id.parse().unwrap())
+        .unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(
+                event.payload,
+                deepagent_core::event::EventPayload::SessionEnded { .. }
+            ))
+            .count(),
+        1
+    );
+    assert_eq!(
+        RunStore::new(&db)
+            .list_for_session(&fixture.thread_id)
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(transport.next_response.load(Ordering::SeqCst), 0);
+}
+
 pub(super) fn launch(fixture: &Fixture, input: &str) -> TurnLaunch {
     let (response, launch) = fixture.state.lock().unwrap().dispatch(
         rpc(

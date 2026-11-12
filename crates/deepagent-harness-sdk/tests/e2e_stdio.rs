@@ -65,6 +65,102 @@ async fn spawn_server(tag: &str) -> (HarnessProcess, deepagent_harness_sdk::Harn
 }
 
 #[tokio::test]
+async fn h107_real_end_without_credentials_is_once_and_survives_process_reopen() {
+    let Some(bin) = isolated_cli(
+        "h107_real_end_without_credentials_is_once_and_survives_process_reopen",
+        "h107-end",
+    )
+    .await
+    else {
+        return;
+    };
+    let workspace = temp_workspace("h107-end-workspace");
+    let process = HarnessProcess::spawn(&bin, &workspace).await.unwrap();
+    let client = process.client();
+    client.initialize("h107", "1").await.unwrap();
+    let thread = client
+        .thread_start(serde_json::from_value(serde_json::json!({})).unwrap())
+        .await
+        .unwrap()
+        .result()["threadId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let read = || {
+        serde_json::from_value::<ThreadReadRequest>(serde_json::json!({"threadId":thread})).unwrap()
+    };
+    for _ in 0..2 {
+        let mut stream = client
+            .turn_start_streamed(
+                serde_json::from_value(serde_json::json!({
+                    "threadId":thread,"input":"/end"
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut completed = 0;
+        while let Some(event) = tokio::time::timeout(Duration::from_secs(5), stream.recv())
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            match event {
+                HarnessEvent::TurnCompleted { .. } => completed += 1,
+                HarnessEvent::TurnFailed { reason, .. } => panic!("explicit end failed: {reason}"),
+                HarnessEvent::TurnInterrupted { .. } => {
+                    panic!("explicit end unexpectedly cancelled")
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(completed, 1);
+    }
+    let before = client.thread_read(read()).await.unwrap();
+    assert!(!before.result()["hasMore"].as_bool().unwrap());
+    assert_eq!(
+        before.result()["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["payload"]["type"] == "session_ended")
+            .count(),
+        1
+    );
+    assert_eq!(before.result()["runEvents"].as_array().unwrap().len(), 2);
+    drop(client);
+    assert!(process.wait().await.unwrap().success());
+    let reopened = HarnessProcess::spawn(&bin, &workspace).await.unwrap();
+    let client = reopened.client();
+    client.initialize("h107-reopen", "1").await.unwrap();
+    client
+        .thread_resume(ThreadResumeRequest {
+            thread_id: thread.clone(),
+        })
+        .await
+        .unwrap();
+    let after = client.thread_read(read()).await.unwrap();
+    assert_eq!(before.result(), after.result());
+    assert!(matches!(
+        client
+            .turn_start(
+                serde_json::from_value(serde_json::json!({
+                    "threadId":thread,"input":"must not silently reopen"
+                }))
+                .unwrap()
+            )
+            .await,
+        Err(SdkError::Rpc { .. })
+    ));
+    assert_eq!(
+        client.thread_read(read()).await.unwrap().result(),
+        after.result()
+    );
+    drop(client);
+    assert!(reopened.wait().await.unwrap().success());
+}
+
+#[tokio::test]
 async fn h220_real_catalog_page_is_bounded_and_reopens_without_duplicates() {
     let Some(bin) = isolated_cli(
         "h220_real_catalog_page_is_bounded_and_reopens_without_duplicates",

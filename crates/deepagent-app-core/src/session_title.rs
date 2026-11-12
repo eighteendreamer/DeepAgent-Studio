@@ -55,6 +55,11 @@ pub async fn generate_session_title(
     let Some(record) = store.get_session(id)? else {
         return Err(CoreError::not_found(format!("session {session_id}")));
     };
+    // Explicit close is a local lifecycle control, never an occasion to start
+    // a post-run model request or change the closed conversation's metadata.
+    if record.ended_at.is_some() {
+        return Ok(None);
+    }
     if record
         .title
         .as_deref()

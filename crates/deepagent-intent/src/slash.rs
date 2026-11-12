@@ -57,6 +57,8 @@ pub enum SlashAction {
     },
     /// Clear the current chat surface.
     Clear,
+    /// Explicitly end this persistent session, unlike clearing the UI surface.
+    End,
     /// Run post-edit verification across the current workspace (Phase 4C).
     Verify,
     /// Export the current conversation transcript to a file.
@@ -281,6 +283,11 @@ impl SlashRegistry {
                 StaticHandler::new(SlashActionTemplate::Clear),
             ))
             .register_command(SlashCommand::new(
+                "end",
+                "结束当前会话（只读）；继续请新建或 Fork",
+                StaticHandler::new(SlashActionTemplate::End),
+            ))
+            .register_command(SlashCommand::new(
                 "verify",
                 "对当前工作区跑一次 post-edit verifier（Rust / TS / Python / JSON）",
                 StaticHandler::new(SlashActionTemplate::Verify),
@@ -409,6 +416,7 @@ enum SlashActionTemplate {
     Resume,
     Model,
     Clear,
+    End,
     Verify,
     Export,
     Rewind,
@@ -510,6 +518,12 @@ impl SlashHandler for StaticHandler {
             SlashActionTemplate::Clear => {
                 CommandResult::new(SlashAction::Clear, "Cleared the chat surface.")
             }
+            SlashActionTemplate::End => {
+                if !args.is_empty() || _ctx.session_id.is_none() {
+                    return Err(CoreError::invalid("usage: /end in an existing session"));
+                }
+                CommandResult::new(SlashAction::End, "会话已结束；继续请新建或 Fork。")
+            }
             SlashActionTemplate::Verify => CommandResult::new(
                 SlashAction::Verify,
                 "Running post-edit verification on the workspace…",
@@ -594,6 +608,7 @@ mod tests {
             "resume",
             "model",
             "clear",
+            "end",
             "verify",
             "export",
             "rewind",

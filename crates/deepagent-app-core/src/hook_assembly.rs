@@ -52,6 +52,19 @@ pub(crate) struct HookAssemblyResult {
     pub(crate) hooks: Arc<HookRegistry>,
 }
 
+/// Sources shared by a model turn and an explicit lifecycle control. The host
+/// executor may be lazy: command/HTTP lifecycle hooks need no logged-in model.
+pub(crate) struct ExtensionHookRequest<'a> {
+    pub(crate) settings: &'a SettingsService,
+    pub(crate) run_config: &'a RunConfigOverlay,
+    pub(crate) project_hooks: Option<HookDefinitions>,
+    pub(crate) plugin_projection: Option<&'a PluginRuntimeProjection>,
+    pub(crate) root: &'a Path,
+    pub(crate) sink: Arc<dyn RuntimeEventSink>,
+    pub(crate) project_hook_trust: Arc<ProjectHookTrust>,
+    pub(crate) runtime_environment: BTreeMap<String, String>,
+}
+
 /// Project hooks use the explicit hook grant, not the opt-in shell approval
 /// TrustGuard. Keep the run's root fixed, but read grants at each dispatch so
 /// revocation affects already registered lifecycle/sub-agent hooks as well.
@@ -129,26 +142,8 @@ impl Hook for TrustedProjectHook {
 }
 
 pub(crate) fn assemble_run_hooks(request: HookAssemblyRequest<'_>) -> Result<HookAssemblyResult> {
-    // The effective rules are resolved once by the run assembler and shared
-    // with automatic context construction, so hooks and model-visible
-    // enrichment cannot observe different permission snapshots.
-    let rules = request.permission_rules.clone();
-
-    // One policy assembly, shared hook objects. Capture it BEFORE adding any
-    // lifecycle extensions: installing those in an agent-hook would recurse.
-    let policy_hooks = Arc::new(assemble_run_policy_hooks(&request, rules));
+    let (policy_hooks, hook_action_executor) = assemble_hook_executor(&request);
     let mut hooks = policy_hooks.as_ref().clone();
-    let hook_action_executor: Arc<dyn HookActionExecutor> = Arc::new(AppHookActionExecutor {
-        client: request.client.clone(),
-        model: request.model.clone(),
-        reasoning_effort: request.reasoning_effort,
-        mcp: request.mcp,
-        agent_registry: Arc::new(request.registry.clone()),
-        agent_policy: policy_hooks,
-        agent_permissions: request.permissions,
-        events: Arc::downgrade(&request.sink),
-        usage_owner: request.usage_owner,
-    });
 
     // Skill-use bookkeeping belongs to the parent session, not its isolated
     // hook conversation. It is not an authorization policy to clone.
@@ -156,11 +151,60 @@ pub(crate) fn assemble_run_hooks(request: HookAssemblyRequest<'_>) -> Result<Hoo
         hooks.register(HookPoint::BeforeToolUse, office_skill_guard.clone());
         hooks.register(HookPoint::AfterToolUse, office_skill_guard);
     }
-    register_user_hooks(
+    register_extension_hooks(
         &mut hooks,
+        ExtensionHookRequest {
+            settings: request.settings,
+            run_config: request.run_config,
+            project_hooks: request.project_hooks,
+            plugin_projection: request.plugin_projection,
+            root: request.root,
+            sink: request.sink,
+            project_hook_trust: request.project_hook_trust,
+            runtime_environment: request.runtime_environment,
+        },
+        &hook_action_executor,
+    )?;
+    Ok(HookAssemblyResult {
+        hooks: Arc::new(hooks),
+    })
+}
+
+pub(crate) fn assemble_hook_executor(
+    request: &HookAssemblyRequest<'_>,
+) -> (Arc<HookRegistry>, Arc<dyn HookActionExecutor>) {
+    // The effective rules are resolved once by the run assembler and shared
+    // with automatic context construction, so hooks and model-visible
+    // enrichment cannot observe different permission snapshots.
+    let rules = request.permission_rules.clone();
+
+    // One policy assembly, shared hook objects. Capture it BEFORE adding any
+    // lifecycle extensions: installing those in an agent-hook would recurse.
+    let policy_hooks = Arc::new(assemble_run_policy_hooks(request, rules));
+    let hook_action_executor: Arc<dyn HookActionExecutor> = Arc::new(AppHookActionExecutor {
+        client: request.client.clone(),
+        model: request.model.clone(),
+        reasoning_effort: request.reasoning_effort,
+        mcp: request.mcp.clone(),
+        agent_registry: Arc::new(request.registry.clone()),
+        agent_policy: policy_hooks.clone(),
+        agent_permissions: request.permissions.clone(),
+        events: Arc::downgrade(&request.sink),
+        usage_owner: request.usage_owner.clone(),
+    });
+    (policy_hooks, hook_action_executor)
+}
+
+pub(crate) fn register_extension_hooks(
+    hooks: &mut HookRegistry,
+    request: ExtensionHookRequest<'_>,
+    hook_action_executor: &Arc<dyn HookActionExecutor>,
+) -> Result<()> {
+    register_user_hooks(
+        hooks,
         request.settings,
         &request.sink,
-        &hook_action_executor,
+        hook_action_executor,
         &request.runtime_environment,
     );
     let overlay_hooks = match request
@@ -175,11 +219,11 @@ pub(crate) fn assemble_run_hooks(request: HookAssemblyRequest<'_>) -> Result<Hoo
         }
     };
     register_run_config_hooks(
-        &mut hooks,
+        hooks,
         overlay_hooks.host,
         request.root,
         &request.sink,
-        &hook_action_executor,
+        hook_action_executor,
         &request.runtime_environment,
     );
     let mut project_hooks = overlay_hooks.project;
@@ -187,28 +231,26 @@ pub(crate) fn assemble_run_hooks(request: HookAssemblyRequest<'_>) -> Result<Hoo
         crate::plugin_runtime::merge_hook_definitions(&mut project_hooks, defs);
     }
     register_plugin_hooks(
-        &mut hooks,
+        hooks,
         request.plugin_projection,
         &request.sink,
-        &hook_action_executor,
+        hook_action_executor,
         &request.runtime_environment,
     );
     // Register host-authorized sources first. An equivalent project handler
     // must not shadow an enabled user/managed/plugin hook after revocation;
     // forwarding the original key still executes duplicates only once.
     register_project_hooks(
-        &mut hooks,
+        hooks,
         project_hooks,
         &request.project_hook_trust,
         request.root,
         &request.sink,
-        &hook_action_executor,
+        hook_action_executor,
         &request.runtime_environment,
     );
 
-    Ok(HookAssemblyResult {
-        hooks: Arc::new(hooks),
-    })
+    Ok(())
 }
 
 /// The run's policy-only projection. Both runtimes execute these same guards;

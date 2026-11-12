@@ -131,11 +131,8 @@ impl RecordState {
             .ok_or_else(|| CoreError::EventLog("session sequence overflow".into()))?;
         for event in &group {
             self.updated_at = Some(event.timestamp);
-            if matches!(
-                event.payload,
-                deepagent_core::event::EventPayload::SessionEnded { .. }
-            ) {
-                self.ended_at = Some(event.timestamp);
+            if let Some(ended) = event.payload.session_lifecycle_ended() {
+                self.ended_at = ended.then_some(event.timestamp);
             }
         }
         visitor(group, projection).map_err(MaintenanceReadError::Projection)

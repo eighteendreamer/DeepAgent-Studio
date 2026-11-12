@@ -308,6 +308,16 @@ pub enum EventPayload {
 }
 
 impl EventPayload {
+    /// Fold only the explicit persistent-session lifecycle. Forks may preserve
+    /// an ended ancestor's history and append their own SessionStarted.
+    pub fn session_lifecycle_ended(&self) -> Option<bool> {
+        match self {
+            Self::SessionStarted { .. } => Some(false),
+            Self::SessionEnded { .. } => Some(true),
+            _ => None,
+        }
+    }
+
     /// Stable discriminant string. Keep these in sync with the variant names;
     /// they are used for DB indexing and analytics.
     pub fn kind(&self) -> &'static str {

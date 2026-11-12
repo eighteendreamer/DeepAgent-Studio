@@ -1033,6 +1033,7 @@ impl AppService {
         let id = SessionId::from_str(session_id)
             .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
         let control = EventStore::new(&self.db).begin_control(id)?;
+        RunStore::new(&self.db).require_session_open(session_id)?;
         let to_seq = EventStore::new(&self.db).resolve_branch_sequence(id, to_seq)?;
         // The resolver has validated the kept logical prefix before touching
         // files. A malformed discarded tail must not block an earlier rewind.

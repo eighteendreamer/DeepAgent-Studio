@@ -20,6 +20,7 @@ mod capability_tests;
 #[cfg(test)]
 #[path = "run_store/admission_tests.rs"]
 mod admission_tests;
+mod session_end;
 
 #[cfg(test)]
 #[path = "run_store/cursor_tests.rs"]
@@ -289,9 +290,30 @@ impl<'db> RunStore<'db> {
     /// Existing create/continuation callers use this same transaction without
     /// a snapshot; prepared chat admissions supply the immutable initial one.
     pub fn admit(&self, admission: RunAdmission<'_>, now: i64) -> Result<bool> {
+        self.admit_with_session_end(admission, now, false)
+    }
+
+    /// Explicit lifecycle control, reserved atomically in the existing ledger.
+    /// A capability snapshot is evidence, never authority to end a session.
+    pub fn admit_session_end(&self, admission: RunAdmission<'_>, now: i64) -> Result<bool> {
+        if admission.replaces_run_id.is_some() || admission.scheduled.is_some() {
+            return Err(CoreError::invalid(
+                "session end cannot replace or schedule a turn",
+            ));
+        }
+        self.admit_with_session_end(admission, now, true)
+    }
+
+    fn admit_with_session_end(
+        &self,
+        admission: RunAdmission<'_>,
+        now: i64,
+        ending: bool,
+    ) -> Result<bool> {
         self.db.with_conn(|conn| {
             let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
                 .map_err(map_sqlite)?;
+            session_end::validate_admission(&tx, admission.session_id, ending)?;
             if let Some(old) = admission.replaces_run_id {
                 let eligible: bool = tx.query_row(
                     "SELECT EXISTS(SELECT 1 FROM runs r WHERE r.id=?1 AND r.session_id=?2 AND r.finished_at IS NULL
@@ -305,6 +327,10 @@ impl<'db> RunStore<'db> {
             insert_run(&tx, admission.run_id, admission.session_id, admission.task_id, now)?;
             if let Some(snapshot) = admission.capability_snapshot {
                 bind_capability_snapshot(&tx, admission.run_id, snapshot, now)?;
+            }
+            if ending {
+                insert_run_event(&tx, admission.run_id, now, "accepted", session_end::REQUESTED,
+                    &serde_json::json!({"version":1,"sessionId":admission.session_id}))?;
             }
             if let Some(origin) = admission.scheduled {
                 origin.validate(admission.run_id)?;
@@ -322,6 +348,12 @@ impl<'db> RunStore<'db> {
             tx.commit().map_err(map_sqlite)?;
             Ok(true)
         })
+    }
+
+    /// Preflight before preparation; atomic admission repeats the predicate.
+    pub fn require_session_open(&self, session_id: &str) -> Result<()> {
+        self.db
+            .with_conn(|conn| session_end::validate_admission(conn, session_id, false))
     }
 
     /// Bind the one immutable capability snapshot to an admitted, nonterminal

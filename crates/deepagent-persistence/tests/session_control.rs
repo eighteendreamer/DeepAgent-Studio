@@ -19,7 +19,9 @@ fn seed(db: &Database) -> SessionId {
         store
             .append(
                 id,
-                EventPayload::SessionEnded { reason: None },
+                EventPayload::Note {
+                    text: "synthetic control marker".into(),
+                },
                 Timestamp::from_millis(2),
             )
             .unwrap();
@@ -50,7 +52,9 @@ fn dispatch_owner_refuses_competitors_without_blocking_append_or_other_sessions(
     store
         .append(
             id,
-            EventPayload::SessionEnded { reason: None },
+            EventPayload::Note {
+                text: "synthetic control marker".into(),
+            },
             Timestamp::from_millis(3),
         )
         .unwrap();
@@ -81,7 +85,9 @@ fn activity_allows_append_but_refuses_control_until_every_owner_exits() {
     store
         .append(
             id,
-            EventPayload::SessionEnded { reason: None },
+            EventPayload::Note {
+                text: "synthetic control marker".into(),
+            },
             Timestamp::from_millis(3),
         )
         .unwrap();
@@ -115,7 +121,9 @@ fn exclusive_scope_fences_admission_and_raw_writes_across_database_handles() {
     assert_busy(store.truncate_after(id, 0));
     assert_busy(store.append(
         id,
-        EventPayload::SessionEnded { reason: None },
+        EventPayload::Note {
+            text: "synthetic control marker".into(),
+        },
         Timestamp::from_millis(4),
     ));
     assert_eq!(
@@ -127,7 +135,9 @@ fn exclusive_scope_fences_admission_and_raw_writes_across_database_handles() {
     let event = store
         .append(
             id,
-            EventPayload::SessionEnded { reason: None },
+            EventPayload::Note {
+                text: "synthetic control marker".into(),
+            },
             Timestamp::from_millis(5),
         )
         .unwrap();
