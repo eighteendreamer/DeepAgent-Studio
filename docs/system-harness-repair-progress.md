@@ -6363,7 +6363,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-104：Claude 兼容 hook 公共输入缺少 transcript_path 和 cwd](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-105：Stop hook 缺少必需的 stop_hook_active 字段](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-106：StopFailure hook 缺少必需的 error 分类](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-107：续聊的每个 turn 结束都会触发 SessionEnd hook](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-107：续聊的每个 turn 结束都会触发 SessionEnd hook](system-harness-audit-2026-10-21.md#h-107续聊的每个-turn-结束都会触发-sessionend-hook) | P3 | 修复中 | 当前原探针0/1真实复现，无跳过/归并依据 | Runtime每turn无条件派发End；显式结束只有目录占位，尚无执行入口；用户已确认仅显式结束触发、结束后只读、统一API与/end | E-H107-01隔离环境原probe0过1败；仅调查，未改生产代码或完成修后验收 | 尚无修复提交；调查文档单独提交不计修复 | 下一步复用现有接纳/互斥、Hook与SessionEnded边界，避免结束和排队turn竞态；实现/验收工时待设计收敛，计入全余170–430有效小时旧低置信区间，等待另计 |
 | [H-108：SessionStart/SessionEnd payload 缺少必需的事件元数据](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-109：SubagentStop hook 缺少必需的停止状态与 transcript 路径](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-110：PreCompact/PostCompact payload 不符合事件输入 schema](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
@@ -10629,3 +10629,11 @@ H-146 实现、测试和当时双文档已独立提交 `0b1209cb2b4d0b62545c8d65
 **E-H294-06 提交回填**：本项四份Rust实现/测试和当时双文档已独立提交 `d497d9c87c35db1ea960c8c6c77160d51cd5abe7`（【fix】分离工具操作历史与显式完成后置条件），六份白名单无生成物/真实凭据/用户untracked；未推送或创建PR。提交后tracked干净、原七组用户untracked保留，取得代码hash后本次普通文档回填，不amend/不反复填自身hash。仅余两根清理核验约0.1–0.3有效小时、人工/策略等待另计；代码提交不增加正式关闭数，230已修复+32有效待修+H294清理+H66保留及原未验范围/失败记录不变。下一准备H107，整体goal active。
 
 **E-H294-07 清理闭环（2026-11-12）**：用户回传“已删除”后，只读核验G:/Code_Warehouse/DeepAgent-Studio/target/h294-repair-20261112及G:/h294-fixtures-20261112，两根Test-Path均False。代码、限定验收、双文、提交和清理闭环，原失败/未验范围不变；修复d497d9c87c35db1ea960c8c6c77160d51cd5abe7、首次回填ff31cd15b620830e2233e8305540f429438368a2不变，本次仅普通文档提交，不amend、不推送。当前306唯一行：231已修复并验收、28历史跳过、10归并、3撤销、33待修（含H180授权不修）、0修复中/阻塞、1验收保留H66。32有效待修加H66共33项未完整闭环，本次仅关闭原清理阻塞、不增加代码修复数。本项余0，下一H107；总余量仍历史低置信170–430有效小时，未逐项重校准，编译/环境/人工等待另计，整体goal active。
+
+### H-107 调查与已确认范围（2026-11-12，未修复）
+
+E-H107-01：隔离环境原命令 `cargo test -p deepagent-app-core --lib chat_service::tests::audit_session_end_hook_does_not_fire_after_each_continued_turn --offline -j 1 -- --ignored --exact --nocapture` exit101、0过1败0忽略，同一session两轮仍真实记录SessionStart/SessionEnd/SessionEnd；271.43秒含4分28秒编译，测试体2.71秒。原失败断言保留，无真实服务/凭据/用户数据。当前仅只读核查，没有生产实现、修后验收或修复提交；fmt/lint/build/workspace未重跑，不用历史门禁冒充本项通过。采用docs-generator的事实/证据/范围分层记录；工具索引已读，本文无需外部生成工具。
+
+用户确认：只在显式结束/清理触发一次End，退出应用/切换/归档/普通turn完成、取消或失败均不结束持久会话；结束后历史只读，继续需新建/fork；统一ChatService::end_session与现有斜杠控制链/end，不加UI按钮/主模型请求，忙碌先拒绝。现有session.end只是目录，Session::end未被生产调用；须复用RunCoordinator接纳及EventStore活动/控制/派发互斥、现有HookRegistry与SessionEnded权威日志/SQLite投影，不另建状态库。原probe与后续实现、排队竞态/重复结束/失败/重开/消费者验收须闭环后才计修复；H108 payload另项不混修。两份文档一致，原证据不删。
+
+306唯一行当前231已修复并验收、28历史跳过、10归并、3撤销、32待修（含H180授权不修）、1修复中H107、0阻塞、1验收保留H66。有效未修32项（31待修+H107），另H66共33项未完整闭环；本次新增代码修复0，只完成H294旧清理收尾和H107调查，不报完成率。下一继续H107实现/TDD；总余量仍历史低置信170–430有效小时分组粗估，尚未逐项重校准，编译/设备/依赖/人工等待另计，无精确完工承诺。本轮h107两根只存调查日志/合成fixture，尚在本项执行中，终验后清理；共享target/debug/用户七组untracked不动，整体goal active。

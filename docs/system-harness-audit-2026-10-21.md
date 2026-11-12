@@ -4749,6 +4749,14 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 ### H-107：续聊的每个 turn 结束都会触发 SessionEnd hook
 
+**当前整改状态（2026-11-12）：修复中，仅完成当前原探针复现、调用链核对及产品语义确认，尚未修改生产代码，不计已修复。**
+
+E-H107-01（当前复现与范围确认，2026-11-12）：`cargo test -p deepagent-app-core --lib chat_service::tests::audit_session_end_hook_does_not_fire_after_each_continued_turn --offline -j 1 -- --ignored --exact --nocapture`实际exit101，**0过1败0忽略**；同一session真实PowerShell hooks再次记录`["SessionStart", "SessionEnd", "SessionEnd"]`，原断言期望仅Start，未弱化断言。总271.43秒，编译4分28秒、测试体2.71秒；G盘隔离HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/XDG/data，清掉继承凭据/代理/DEEPAGENT环境，offline且不向child设置CARGO_TARGET_DIR。固定离线transport、内存SQLite和合成hook文件，无真实provider/内网/凭据/用户数据操作。当前tracked此前干净，仅保留用户七组untracked；H294实际清理已另交7622de87，不混入本项修复数。
+
+当前实现核对：RuntimeEngine::run仍在每turn收尾无条件派发SessionEnd；Session::end虽可追加SessionEnded，但仓内生产入口没有调用它。命令目录的session.end及前端fallback条目不等于可执行结束入口；归档是可恢复标记，不等于SessionEnded。EventStore现有activity/control/dispatch守卫与RunCoordinator接纳、SessionEnded权威事件和SQLite ended_at投影必须继续复用，不能另建生命周期状态库，不能只删除错误派发而遗失真实结束回调。静态对照Claude Code restored-src的clear/conversation.ts和utils/gracefulShutdown.ts，未运行参考工程；按当前用户决定，本系统不照搬其进程退出即结束语义。
+
+用户已明确确认三点：①只有显式结束/清理会话才触发一次SessionEnd，退出应用、切换、归档、普通turn完成/取消/失败均不结束持久会话；②显式结束后历史只读，普通续聊拒绝，继续需新建/fork；③新增统一ChatService::end_session和现有斜杠控制链的/end，不新增UI按钮/主模型调用/运行存储/审批链，忙碌会话先拒绝且需先停止。下一步必须验证接纳与结束的互斥、排队输入、重复结束、hook失败与落库失败、持久化重开及所有现有入口，避免把/end自身的活动守卫误判忙碌，或为避开该问题在最终持久化前释放所有权。H108 payload元数据是独立待修项，本轮不顺手补字段；其原失败证据保留，后续须改为真实结束入口取样。本段为核查和约束，不是已验证实现或修后验收。
+
 **级别：低（P3，条件性生命周期语义缺陷）；触发条件：配置了 `SessionEnd` hook，并在同一个持久会话中完成一轮或多轮续聊。** 未配置该 hook 时不影响模型运行和任务终态。
 
 - 根因与生产路径：`RunAssembler` 只在 `continue_session.is_none()` 时设置 `fire_session_start`；而 `RuntimeEngine::run()` 在每次 run 收尾都无条件派发 `HookPoint::SessionEnd`。同一持久 session 的第二轮仍走 `run_in_session(..., Some(session_id), ...)`，不会触发 `SessionStart`，却会再次收到 `SessionEnd`。`HookPoint` 自身文档定义为“会话结束时触发一次”，与按 turn 派发不符。
