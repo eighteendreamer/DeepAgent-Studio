@@ -1651,6 +1651,61 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn h104_real_child_lifecycle_uses_the_parent_owned_native_input() {
+        struct Capture(
+            std::sync::Mutex<Vec<(HookPoint, String)>>,
+            deepagent_core::id::SessionId,
+        );
+        #[async_trait::async_trait]
+        impl deepagent_hooks::Hook for Capture {
+            fn name(&self) -> &str {
+                "h104_child_input"
+            }
+            async fn run(&self, ctx: &HookContext) -> Result<HookOutcome> {
+                assert_eq!(ctx.session_id, self.1);
+                let base = ctx.base_input.as_ref().unwrap();
+                let events: Vec<deepagent_core::event::Event> =
+                    serde_json::from_str(&std::fs::read_to_string(&base.transcript_path).unwrap())
+                        .unwrap();
+                assert!(!events.is_empty());
+                assert!(events.iter().all(|event| event.session_id == self.1));
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((ctx.point, base.transcript_path.clone()));
+                Ok(HookOutcome::Continue)
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let runner =
+            audit_child_runner(directory.path(), Arc::new(AuditResumeTransport::default()));
+        let capture = Arc::new(Capture(
+            Default::default(),
+            runner.parent_session_id().unwrap(),
+        ));
+        let scope = crate::hook_input::HookInputScope::new(runner.db.clone(), runner.root.clone());
+        let mut hooks = HookRegistry::new();
+        for point in [HookPoint::SubagentStart, HookPoint::SubagentStop] {
+            hooks.register(point, scope.wrap(capture.clone()));
+        }
+        runner
+            .hooks
+            .set(Arc::new(hooks))
+            .unwrap_or_else(|_| panic!("one registry"));
+        runner.run_inner(serde_json::from_value(serde_json::json!({
+            "description":"H104 synthetic child", "prompt":"Return a short result", "isolation":"shared"
+        })).unwrap(), None).await.unwrap();
+        let records = capture.0.lock().unwrap();
+        assert_eq!(
+            records.iter().map(|(point, _)| *point).collect::<Vec<_>>(),
+            [HookPoint::SubagentStart, HookPoint::SubagentStop]
+        );
+        assert!(records
+            .iter()
+            .all(|(_, path)| !std::path::Path::new(path).exists()));
+    }
+
     #[cfg(windows)]
     #[tokio::test]
     #[ignore = "audit H-112: worktree lifecycle hook payloads must satisfy their event schemas"]

@@ -73,6 +73,9 @@ use crate::tool_manifest::deferred_tools_announcement;
 use crate::tool_manifest::should_activate_tool_search;
 use crate::tool_manifest::DiscoveredToolSet;
 
+#[cfg(all(test, windows))]
+#[path = "chat_service/hook_base_tests.rs"]
+mod hook_base_tests;
 #[path = "chat_service/scheduled.rs"]
 mod scheduled;
 #[cfg(test)]
@@ -2544,8 +2547,24 @@ mod tests {
             .filter(|request| request.method == "tools/call")
             .collect();
         assert_eq!(calls.len(), 1);
+        let mut params = calls[0].params.clone().unwrap();
+        let base = params["arguments"]["hook_input"].as_object_mut().unwrap();
+        assert_ne!(
+            base["session_id"],
+            deepagent_core::id::SessionId::nil().to_string()
+        );
+        assert!(base.remove("cwd").unwrap().is_string());
+        assert!(base.remove("transcript_path").unwrap().is_string());
         assert_eq!(
-            calls[0].params,
+            base.remove("transcript_format").unwrap(),
+            "deepagent.events.v1"
+        );
+        base.insert(
+            "session_id".into(),
+            deepagent_core::id::SessionId::nil().to_string().into(),
+        );
+        assert_eq!(
+            Some(params),
             Some(serde_json::json!({
                 "name":"check",
                 "arguments": {
@@ -3346,7 +3365,6 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    #[ignore = "audit H-104: external hooks must include required base input fields"]
     async fn audit_external_hook_base_payload_includes_cwd_and_transcript_path() {
         let (db, settings, dir) = seeded().await;
         let root = dir.path().join("workspace");

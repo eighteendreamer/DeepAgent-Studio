@@ -55,6 +55,12 @@
 //! "permissionDecision": "allow|deny|ask", "permissionDecisionReason": "…" } }`
 //! or `{ "continue": false, "stopReason": "…" }`.
 //!
+//! AppCore supplies `cwd`, `transcript_path` and `transcript_format` to every
+//! backend. `deepagent.events.v1` denotes a read-only, non-authoritative JSON
+//! array of native Events, NOT Claude message JSONL. The path is leased only
+//! during the callback: copy needed data before returning, not in a detached
+//! process. Custom registries without a real history may omit this host input.
+//!
 //! ## Matcher
 //!
 //! `matcher` filters by **tool name** for `PreToolUse`/`PostToolUse` (ignored
@@ -1581,6 +1587,17 @@ fn build_hook_payload(event: HookEvent, ctx: &HookContext) -> serde_json::Value 
         serde_json::json!(ctx.session_id.to_string()),
     );
     payload.insert("hook_event_name".into(), serde_json::json!(event.label()));
+    if let Some(base) = &ctx.base_input {
+        payload.insert("cwd".into(), serde_json::json!(base.cwd));
+        payload.insert(
+            "transcript_path".into(),
+            serde_json::json!(base.transcript_path),
+        );
+        payload.insert(
+            "transcript_format".into(),
+            serde_json::json!(base.transcript_format),
+        );
+    }
     match &ctx.data {
         HookData::SessionStart { source }
             if event == HookEvent::SessionStart && ctx.point == event.point() =>

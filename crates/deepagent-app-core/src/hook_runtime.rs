@@ -71,10 +71,26 @@ pub async fn test_hook_action(
     let defs = HookDefinitions::parse(&defs_json.to_string())?;
 
     let mut registry = HookRegistry::new();
-    let runner: Arc<dyn HookCommandRunner> = Arc::new(SystemHookRunner);
     // Keep the no-op sink alive for the duration of the dispatch — the
     // executor only holds a Weak reference.
     let sink: Arc<dyn RuntimeEventSink> = Arc::new(NoopEventSink);
+    // A settings test has a real but isolated synthetic history, never a nil
+    // id pointing at user history. Use the same leased native input boundary.
+    let root = std::env::current_dir().map_err(|error| CoreError::other(error.to_string()))?;
+    let db = Arc::new(Database::open_in_memory()?);
+    let session = Session::create_in_project(
+        &db,
+        &SystemClock,
+        Some("Synthetic hook settings test"),
+        deepagent_core::SessionMode::Normal,
+        root.to_str(),
+    )?;
+    let scope = crate::hook_input::HookInputScope::new(db.clone(), root.clone());
+    let runner: Arc<dyn HookCommandRunner> = Arc::new(ObservableHookRunner::new_in_dir(
+        sink.clone(),
+        root,
+        BTreeMap::new(),
+    ));
     let host: Arc<dyn HookActionExecutor> = match model {
         Some((client, model, reasoning_effort)) => Arc::new(AppHookActionExecutor {
             client,
@@ -89,7 +105,8 @@ pub async fn test_hook_action(
         }),
         None => Arc::new(UnavailableHookHost),
     };
-    let registered = defs.register_into_with_host(&mut registry, runner, host);
+    let registered =
+        defs.register_into_with_host_wrapped(&mut registry, runner, host, |hook| scope.wrap(hook));
     if registered == 0 {
         return Err(CoreError::invalid(
             "hook action could not be registered (invalid event or action)",
@@ -99,11 +116,7 @@ pub async fn test_hook_action(
     let data = sample_hook_data(hook_event, matcher);
     let started = Instant::now();
     let dispatched = registry
-        .dispatch(&HookContext::new(
-            deepagent_core::id::SessionId::nil(),
-            hook_event.point(),
-            data,
-        ))
+        .dispatch(&HookContext::new(session.id(), hook_event.point(), data))
         .await;
     let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     drop(sink);
@@ -609,18 +622,6 @@ pub(crate) fn build_hook_agent_registry(source: &ToolRegistry) -> Result<ToolReg
 }
 
 impl ObservableHookRunner {
-    pub(crate) fn new(
-        events: Arc<dyn RuntimeEventSink>,
-        runtime_environment: BTreeMap<String, String>,
-    ) -> Self {
-        Self {
-            inner: SystemHookRunner,
-            events: Arc::downgrade(&events),
-            cwd: None,
-            runtime_environment,
-        }
-    }
-
     pub(crate) fn new_in_dir(
         events: Arc<dyn RuntimeEventSink>,
         cwd: PathBuf,

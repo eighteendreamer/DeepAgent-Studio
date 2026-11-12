@@ -111,6 +111,7 @@ async fn assembled_read(
     let sink: Arc<dyn RuntimeEventSink> = Arc::new(deepagent_runtime::NullEventSink);
     let parent_calls = Arc::new(AtomicUsize::new(0));
     let assembled = assemble_run_hooks(HookAssemblyRequest {
+        input_scope: None, // This fixture only checks isolated policy inheritance.
         settings: &settings,
         run_config: &overlay,
         permission_rules: overlay

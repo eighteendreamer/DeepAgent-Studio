@@ -4723,6 +4723,46 @@ AppCore cargo clippy --target-dir <本轮root> -p deepagent-app-core --all-targe
 - 影响及限制：使用 schema 校验的 hook 会拒绝输入；依赖 cwd 或 transcript 的脚本无法按项目路径或会话记录定位工作。本轮只证明字段缺失，未运行第三方 hook validator 或证明发生了文件误读/错误写入；也没有指定本系统应公开的 transcript 文件格式或路径。
 - 收敛方向（尚未实施，本地设计）：在现有 hook 调用上下文边界提供实际 cwd、可用的 transcript 引用和 permission mode；外部命令、HTTP 及 host hook 共用一份基础字段构造，避免各自复制 serializer。若本系统没有等价 transcript，应明确定义稳定、只读的兼容视图或版本化本地字段，不能伪造空路径。验证不同 workspace、subagent、无会话 transcript 和 HTTP/command hook 的公共字段一致性。
 
+**E-H104-01（2026-11-12，修复中，未验收）**：起点3486edcc；仅H104，不混修H102/H103/H105/H109的事件专属字段。原探针在当前正式ChatService上再次真实失败，`cargo test -p deepagent-app-core --lib chat_service::tests::audit_external_hook_base_payload_includes_cwd_and_transcript_path --offline -j 1 -- --ignored --exact --nocapture` exit101、0过1败，3.981秒；stdin仅有hook_event_name/session_id/source。新增两项真实PowerShell回归检查回调期间读取原生JSON、readonly、实际命令cwd、Start/Stop/End历史更新及两个workspace/跨host显式End归属；`cargo test -p deepagent-app-core --lib h104_ --offline -j 1 -- --test-threads=1 --nocapture` exit101、0过2败，205.492秒，均实际缺cwd。红测证据位于本轮target/h104-repair-20261112，合成隔离根G:/h104-fixtures-20261112；复用共享Cargo target，不再建大体积独立编译缓存。
+
+用户已确认采用 **DeepAgent原生只读视图**（本地设计）：复用EventStore与现有JSON导出，`transcript_format=deepagent.events.v1`、内容为原生Event数组，不冒称Claude消息JSONL；仅callback有效的派生只读快照，不回写权威日志、不另建日志库。拟在唯一外部Hook注册包装边界提供公共字段，所有action共用serializer；项目trust仍在最外层，命令实际cwd与payload一致，设置页测试采用隔离合成session。实现尚未验收；只认Claude消息格式的脚本需适配，readonly不构成同用户恶意代码的安全隔离，强杀进程可能留下临时视图。
+
+**E-H104-02（候选复核，2026-11-12，未最终验收）**：接入同一外部Hook注册包装，所有user/managed overlay/plugin/project action共享本轮scope及现有serializer；项目trust在外，禁止未授权时读取/导出历史。主turn及显式End按实际session工作区提供输入，user/plugin命令改为同一owner目录；policy-only agent不安装外部扩展。设置页测试为隔离内存DB/真实合成session，不再把nil冒充历史。每个callback独占新建临时原生Event数组视图，仅运行期间可读；持有租约至action返回/错误/取消/调用方deadline或future Drop，正常收尾恢复原属性并清理。无长期缓存，避免被删除/改写快照被复用；不跨await持DB/session锁。
+
+第一次候选定向0过2败、254.340秒：真实PowerShell可见readonly属性，但ReadAllText因存活的可写NamedTempFile句柄触发Windows sharing violation。已用合成文件独立复核.NET ReadWrite租约确实拒读、Read租约可读；根因修为关闭writer，callback期间仅持read/attribute句柄，Drop在自有句柄恢复属性，不通过外部可替换路径改权限。第二次候选4过2败：两项正式ChatService/workspace回归已通过；新租约测试误把context.timeout数据当主动timer、误认为MessageAppended不带原生response-item投影。依据现有ToolExecutionContext/Session实现纠正测试：由调用方实际timeout丢弃future，精确对比权威事件及追加source，不修改生产超时/事件语义来迎合断言。所有原失败保留，第三次定向与最终门禁尚未完成。15份源码/测试冻结到本轮final-sources.json；未提交、未计新增修复，H104仍修复中。只读属性不是沙箱；同用户恶意代码、OS强杀后残留与任意后台进程在callback返回后的读取不作保证。每次导出完整历史有O(n) I/O和磁盘代价，未做长历史性能基准，不静默截断。
+
+**E-H104-03（冻结候选定向验收，2026-11-13，全仓尚未完成）**：15份Rust源码/测试SHA256冻结后保持一致。第三次定向9/0/0、200.585秒（含编译），最终同源码H104组再次9/0/0、9.214秒；真实PowerShell已读取完整原生Event JSON、readonly且实际cwd吻合，Start/Stop/End动态历史、两个workspace、跨host End、隔离设置测试、真实子运行父session归属、取消/deadline/future Drop租约清理、缺历史/错workspace失败、trust外置均真实通过。原探针去ignore后默认执行1/0/0、1.471秒；不以默认跳过算通过。Hooks全组97/0/0（lib76、cancel5、dedup8、once8）、28.280秒，新增公共字段五backend矩阵65份payload及原H108无base对照同时通过；HTTP仅自建回环，prompt/agent/MCP为注入式host，不声称真实供应商验收。Hooks strict clippy exit0、4.227秒；H108回归2/0/0、3.631秒，H107回归8/0/0、6.830秒，MCP真实消费参数映射回归1/0/0、0.803秒。
+
+AppCore `cargo clippy -p deepagent-app-core --all-targets --no-deps --offline -j 2 -- -D warnings` exit101、51.368秒；当前8项为既有context_runtime两处clone_on_copy、http_runtime needless_return、plugin_preparation type_complexity、run_assembler既有base_registry_request参数数、session_title needless_borrow及workflow_audit/media两处测试lint，已核对HEAD原代码/本轮diff，未压低lint或混修。完整workspace、SDK全特性、workspace strict、Tauri check及最终格式/原共享CLI与用户快照恢复仍在单一runner执行中；未宣称全仓或本项最终验收完成。无UI/前端类型/Tauri command签名变更，未重跑前端构建/手动Desktop UI，不用旧结果冒充本轮。用户原七组untracked不动；仅白名单源码/测试和双文可提交，尚无H104 commit。306唯一行已实际重核：233验收、28历史跳过、10归并、3撤销、30待修含H180、1修复中H104、1验收保留H66；本轮完整关闭0，不报完成率。
+
+**E-H104-04（2026-11-13，本机功能验收完成，提交/清理待闭环）**：同一15份冻结源码/测试，单一最终runner与补充当前CLI消费者runner均已终态；以下为实际执行，不将排队项或旧二进制算通过。原审计失败、E01原红、E02候选/测试误设失败全部保留。本轮仍只修公共输入，不混修H102/H103/H105/H109等专属字段。
+
+| 实际最终命令 | 结果 | 墙钟秒（含编译等待） |
+|---|---|---|
+| `cargo test -p deepagent-hooks --offline --no-fail-fast -j 1 -- --test-threads=2 --quiet` | exit0；97过0败0忽略，包含新增65份公共输入五backend对照及原正常对照 | 28.280 |
+| `cargo clippy -p deepagent-hooks --all-targets --all-features --offline -j 1 -- -D warnings` | exit0，strict通过 | 4.227 |
+| `cargo test -p deepagent-app-core --lib h104_ --offline -j 1 -- --test-threads=1 --nocapture` | exit0；9/0/0，真实文件/PowerShell/父子运行/租约与拒绝边界 | 9.214 |
+| `cargo test -p deepagent-app-core --lib chat_service::tests::audit_external_hook_base_payload_includes_cwd_and_transcript_path --offline -j 1 -- --exact --nocapture` | exit0；原probe已去ignore，默认真实1/0/0 | 1.471 |
+| `cargo test -p deepagent-app-core --lib h108_ --offline -j 1 -- --test-threads=1 --nocapture` | exit0；2/0/0，含文件SQLite冷重开 | 3.631 |
+| `cargo test -p deepagent-app-core --lib h107_ --offline -j 1 -- --test-threads=1 --nocapture` | exit0；8/0/0，End幂等/只读/取消/Fork/busy等不回归 | 6.830 |
+| `cargo test -p deepagent-app-core --lib mcp_hook_schema_valid_static_arguments_reach_connected_tool --offline -j 1 -- --nocapture` | exit0；1/0/0，合成设置会话及公共字段实际到达MCP调用参数 | 0.803 |
+| `cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=2 --quiet` | exit101；161顶层target，5332过4败152忽略；AppCore lib1681/0/49 | 1481.660 |
+| `cargo build -p deepagent-cli --offline -j 1` | exit0；明确重建当前生产CLI并冻结实际二进制hash | 100.717 |
+| `cargo test -p deepagent-harness-sdk --offline --no-fail-fast -j 1 -- --test-threads=1 --quiet` | exit0；89过0败5忽略，lib72/stdio15/doc2，使用上述当前CLI | 74.052 |
+| `cargo test -p deepagent-harness-sdk --all-features --offline --no-fail-fast -j 1 -- --test-threads=1 --quiet` | exit0；89过0败5忽略，当前CLI前后hash一致 | 67.340 |
+| `cargo clippy -p deepagent-app-core --all-targets --no-deps --offline -j 2 -- -D warnings` | exit101；E03已列8项既有lint，不改、不抑制 | 51.368 |
+| `cargo clippy --workspace --all-targets --all-features --offline -j 2 -- -D warnings` | exit101；Runtime原model_agent clone_on_copy及workflow/canvas derivable_impls | 10.448 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --target-dir G:/Code_Warehouse/DeepAgent-Studio/target --offline -j 2` | exit0；当前Desktop实际特性消费方检查通过 | 44.493 |
+| `cargo fmt --all -- --check` | exit0；冻结源码不变 | 4.955 |
+
+全仓按大写Running/Doc-tests顶层分组，取每个target最后一次test result；AppCore嵌套helper的1过不重复统计。4败为E-H108-04同名既有反例：Kernel图片`original DACL must be restored exactly`、CLI隔离HOME快照路径C:/Users与G:/h104不同（未接受快照）、H306 `creative.video-edit.v1`空defaultUserPrompt、Runtime checkpoint `restored test DACL differs`。未修改它们的代码/断言，不把全仓称全绿；H107补强后的SDK失败本轮已不再出现。首次SDK全特性也曾89/0/5、112.521秒，但静态复核发现SDK固定读取共享target/debug/deepagent.exe，单凭workspace test不能证明该文件新鲜，因此不拿那次作为当前CLI验收；上述另显式build并固定SHA256 `1BDDDE5AA9146BF48835BEA379EA078302A67DB0D50A751D6D87DE3837A21BDC`，默认/全特性各真实stdio15项通过，未以旧旁车冒充当前消费者。
+
+两个runner finally已完成，原共享CLI SHA256恢复为`8C03E6A63D3E64EBF14DF4AC67C4DC56FB87C2D8B9C35949D3CBA9BC391F30A4`，用户原.snap.new恢复为`D514BFE28BA6F207C714DDAD2FEFE9E521B3AA1FD7DF1AF243FA2CC2ED911F17`，实际再次核哈希一致。运行仅合成文件/临时SQLite/MemorySecretStore、固定离线transport和自建回环，不访问真实凭据、收费服务、用户数据或真实内网，不执行数据库迁移；未新增依赖。未重跑前端build/手动UI（无UI/TypeScript/Tauri command签名变化），未测其它OS、真实第三方脚本、真实provider、强杀残留或长历史性能。
+
+兼容与残余：AppCore五类action都经现有registry/pipeline/cancel/trust，无第二套运行/日志/凭据/审批；HookContext加性base_input字段，仓内均用new/with_base_input，外部Rust struct literal需补字段，未编译仓外消费者。`transcript_format=deepagent.events.v1`不是Claude消息JSONL；路径仅callback期间有效，返回后后台进程不得依赖它。readonly是只读约定，不是同用户恶意代码隔离；派生JSON不回写权威日志。已有自定义底层registry缺少真实历史时仍可None，不伪造路径；生产AppCore必经真实scope，读史/创建失败在action前返回错误。全量导出有O(n)成本，未承诺延迟不变；项目存储root继续按现有host信任边界，不新增抵御恶意同用户文件系统竞态的安全承诺。user/plugin命令从ambient cwd改为会话workspace，是本项有意修正，依赖旧宿主cwd的脚本应改用绝对路径。
+
+只读清理盘点：本轮target/h104-repair-20261112约0.077GiB、G:/h104-fixtures-20261112约3.499GiB，共约3.576GiB；祖先/后代无reparse，相关进程0。首次只读进程筛选脚本发生嵌套$_遮蔽错误，未执行删除；已改为显式变量再次核实0，不把失败查询算通过。源码、双文、共享target/debug、node_modules、原依赖缓存及用户七组untracked均不在删除范围。当前只剩白名单独立提交/精确清理/hash回填，H104暂保留修复中、不计新增正式关闭；其余台账计数沿E03。下一优先复核H101畸形stdout导致SDK pending的运行状态问题；本项余约0.2–0.5有效小时，工具/人工等待另计无可靠上界。全部剩余170–430有效小时仍为历史低置信分组估算，尚未逐项重校准；不编造完工日期，整体goal active。
+
 ### H-105：Stop hook 缺少必需的 stop_hook_active 字段
 
 **级别：低（P3，条件性 hooks 事件契约缺陷）；触发条件：已授权的项目配置 `Stop` 外部 hook，并在模型生成最终答复时触发 completion gate。** 未配置 `Stop` hook 的普通会话不受此项影响；这与 H-104 的所有事件公共字段缺失是不同层次的问题。

@@ -121,6 +121,20 @@ pub struct HookContext {
     pub point: HookPoint,
     /// Point-specific payload.
     pub data: HookData,
+    /// Host-owned common input. Absent for legacy/custom callers that have no
+    /// real transcript; serializers never manufacture a path from a session id.
+    pub base_input: Option<HookBaseInput>,
+}
+
+/// A real host workspace and its explicitly versioned, non-authoritative view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookBaseInput {
+    /// Absolute execution workspace, not the application's ambient directory.
+    pub cwd: String,
+    /// Absolute readable snapshot file, not a directory or compressed log.
+    pub transcript_path: String,
+    /// Local format identifier; this does not claim Claude message JSONL.
+    pub transcript_format: String,
 }
 
 impl HookContext {
@@ -130,7 +144,14 @@ impl HookContext {
             session_id,
             point,
             data,
+            base_input: None,
         }
+    }
+
+    /// Attach a host-prepared common input without changing event identity.
+    pub fn with_base_input(mut self, base: HookBaseInput) -> Self {
+        self.base_input = Some(base);
+        self
     }
 }
 

@@ -185,6 +185,10 @@ impl RunAssembler<'_> {
             crate::hook_assembly::register_extension_hooks(
                 &mut hooks,
                 crate::hook_assembly::ExtensionHookRequest {
+                    input_scope: Some(crate::hook_input::HookInputScope::new(
+                        self.db.clone(),
+                        root.clone(),
+                    )),
                     settings: self.settings,
                     run_config: &run_config,
                     project_hooks: self.project_hook_definitions(&root, &trust)?,
@@ -260,6 +264,7 @@ impl RunAssembler<'_> {
         });
         Ok(
             crate::hook_assembly::assemble_hook_executor(&HookAssemblyRequest {
+                input_scope: None, // Policy-only executor; parent owns external input.
                 settings: self.settings,
                 run_config: &environment.config,
                 permission_rules: prepared.configuration.permission_rules.clone(),

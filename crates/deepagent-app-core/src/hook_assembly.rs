@@ -15,6 +15,7 @@ use deepagent_runtime::RuntimeEventSink;
 use deepagent_tools::{PermissionSet, ToolExecutionContext, ToolRegistry};
 
 use crate::chat_service::InvokedSkillMap;
+use crate::hook_input::{wrap_input, HookInputScope};
 use crate::hook_runtime::{AppHookActionExecutor, ObservableHookRunner};
 use crate::plugin_runtime::PluginRuntimeProjection;
 use crate::project_service::ProjectService;
@@ -22,6 +23,7 @@ use crate::run_config::RunConfigOverlay;
 use crate::settings::SettingsService;
 
 pub(crate) struct HookAssemblyRequest<'a> {
+    pub(crate) input_scope: Option<Arc<HookInputScope>>,
     pub(crate) settings: &'a SettingsService,
     pub(crate) run_config: &'a RunConfigOverlay,
     pub(crate) permission_rules: PermissionRules,
@@ -55,6 +57,7 @@ pub(crate) struct HookAssemblyResult {
 /// Sources shared by a model turn and an explicit lifecycle control. The host
 /// executor may be lazy: command/HTTP lifecycle hooks need no logged-in model.
 pub(crate) struct ExtensionHookRequest<'a> {
+    pub(crate) input_scope: Option<Arc<HookInputScope>>,
     pub(crate) settings: &'a SettingsService,
     pub(crate) run_config: &'a RunConfigOverlay,
     pub(crate) project_hooks: Option<HookDefinitions>,
@@ -154,6 +157,7 @@ pub(crate) fn assemble_run_hooks(request: HookAssemblyRequest<'_>) -> Result<Hoo
     register_extension_hooks(
         &mut hooks,
         ExtensionHookRequest {
+            input_scope: request.input_scope,
             settings: request.settings,
             run_config: request.run_config,
             project_hooks: request.project_hooks,
@@ -206,6 +210,8 @@ pub(crate) fn register_extension_hooks(
         &request.sink,
         hook_action_executor,
         &request.runtime_environment,
+        request.root,
+        request.input_scope.as_ref(),
     );
     let overlay_hooks = match request
         .run_config
@@ -225,6 +231,7 @@ pub(crate) fn register_extension_hooks(
         &request.sink,
         hook_action_executor,
         &request.runtime_environment,
+        request.input_scope.as_ref(),
     );
     let mut project_hooks = overlay_hooks.project;
     if let Some(defs) = request.project_hooks {
@@ -236,6 +243,8 @@ pub(crate) fn register_extension_hooks(
         &request.sink,
         hook_action_executor,
         &request.runtime_environment,
+        request.root,
+        request.input_scope.as_ref(),
     );
     // Register host-authorized sources first. An equivalent project handler
     // must not shadow an enabled user/managed/plugin hook after revocation;
@@ -244,10 +253,10 @@ pub(crate) fn register_extension_hooks(
         hooks,
         project_hooks,
         &request.project_hook_trust,
-        request.root,
         &request.sink,
         hook_action_executor,
         &request.runtime_environment,
+        request.input_scope.as_ref(),
     );
 
     Ok(())
@@ -330,14 +339,19 @@ fn register_user_hooks(
     sink: &Arc<dyn RuntimeEventSink>,
     host: &Arc<dyn HookActionExecutor>,
     runtime_environment: &BTreeMap<String, String>,
+    root: &Path,
+    input_scope: Option<&Arc<HookInputScope>>,
 ) {
     match settings.hook_definitions() {
         Ok(defs) if !defs.is_empty() => {
-            let runner: Arc<dyn HookCommandRunner> = Arc::new(ObservableHookRunner::new(
+            let runner: Arc<dyn HookCommandRunner> = Arc::new(ObservableHookRunner::new_in_dir(
                 sink.clone(),
+                root.to_path_buf(),
                 runtime_environment.clone(),
             ));
-            let n = defs.register_into_with_host(hooks, runner, host.clone());
+            let n = defs.register_into_with_host_wrapped(hooks, runner, host.clone(), |hook| {
+                wrap_input(input_scope, hook)
+            });
             tracing::info!(count = n, "registered external hooks from hooks.json");
         }
         Ok(_) => {}
@@ -354,6 +368,7 @@ fn register_run_config_hooks(
     sink: &Arc<dyn RuntimeEventSink>,
     host: &Arc<dyn HookActionExecutor>,
     runtime_environment: &BTreeMap<String, String>,
+    input_scope: Option<&Arc<HookInputScope>>,
 ) {
     if !defs.is_empty() {
         let runner: Arc<dyn HookCommandRunner> = Arc::new(ObservableHookRunner::new_in_dir(
@@ -361,7 +376,9 @@ fn register_run_config_hooks(
             root.to_path_buf(),
             runtime_environment.clone(),
         ));
-        let n = defs.register_into_with_host(hooks, runner, host.clone());
+        let n = defs.register_into_with_host_wrapped(hooks, runner, host.clone(), |hook| {
+            wrap_input(input_scope, hook)
+        });
         tracing::info!(
             count = n,
             project = root.display().to_string(),
@@ -374,11 +391,12 @@ fn register_project_hooks(
     hooks: &mut HookRegistry,
     mut defs: HookDefinitions,
     trust: &Arc<ProjectHookTrust>,
-    root: &Path,
     sink: &Arc<dyn RuntimeEventSink>,
     host: &Arc<dyn HookActionExecutor>,
     runtime_environment: &BTreeMap<String, String>,
+    input_scope: Option<&Arc<HookInputScope>>,
 ) {
+    let root = &trust.root;
     if !defs.is_empty() {
         for groups in defs.hooks.values_mut() {
             for group in groups {
@@ -395,8 +413,9 @@ fn register_project_hooks(
             root.to_path_buf(),
             runtime_environment.clone(),
         ));
-        let n = defs
-            .register_into_with_host_wrapped(hooks, runner, host.clone(), |hook| trust.wrap(hook));
+        let n = defs.register_into_with_host_wrapped(hooks, runner, host.clone(), |hook| {
+            trust.wrap(wrap_input(input_scope, hook))
+        });
         tracing::info!(
             count = n,
             project = root.display().to_string(),
@@ -411,17 +430,22 @@ fn register_plugin_hooks(
     sink: &Arc<dyn RuntimeEventSink>,
     host: &Arc<dyn HookActionExecutor>,
     runtime_environment: &BTreeMap<String, String>,
+    root: &Path,
+    input_scope: Option<&Arc<HookInputScope>>,
 ) {
     if let Some(projection) = plugin_projection {
         if !projection.hook_definitions.is_empty() {
-            let runner: Arc<dyn HookCommandRunner> = Arc::new(ObservableHookRunner::new(
+            let runner: Arc<dyn HookCommandRunner> = Arc::new(ObservableHookRunner::new_in_dir(
                 sink.clone(),
+                root.to_path_buf(),
                 runtime_environment.clone(),
             ));
-            let n =
-                projection
-                    .hook_definitions
-                    .register_into_with_host(hooks, runner, host.clone());
+            let n = projection.hook_definitions.register_into_with_host_wrapped(
+                hooks,
+                runner,
+                host.clone(),
+                |hook| wrap_input(input_scope, hook),
+            );
             tracing::info!(count = n, "registered external hooks from enabled plugins");
         }
         for error in &projection.errors {
@@ -572,6 +596,32 @@ mod project_hook_tests {
     use deepagent_core::id::SessionId;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    #[tokio::test]
+    async fn h104_project_trust_precedes_transcript_lookup_and_action_execution() {
+        let db = Arc::new(deepagent_persistence::Database::open_in_memory().unwrap());
+        let root = tempfile::tempdir().unwrap();
+        let projects = Arc::new(ProjectService::new(db.clone()));
+        let path = root.path().to_str().unwrap();
+        projects.add_project(path).unwrap();
+        let trust = Arc::new(ProjectHookTrust::new(
+            Some(projects.clone()),
+            root.path().to_owned(),
+        ));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let scope = HookInputScope::new(db, root.path().to_owned());
+        let hook = trust.wrap(scope.wrap(Arc::new(Counter(calls.clone()))));
+        let ctx = HookContext::new(SessionId::nil(), HookPoint::SessionStart, HookData::None);
+        assert_eq!(hook.run(&ctx).await.unwrap(), HookOutcome::Continue);
+        projects.set_hooks_trusted(path, true).unwrap();
+        assert!(hook
+            .run(&ctx)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("missing"));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
     struct Counter(Arc<AtomicUsize>);
 
     #[async_trait]
@@ -691,10 +741,10 @@ mod project_hook_tests {
                 &mut registry,
                 defs.clone(),
                 &trust,
-                root.path(),
                 &sink,
                 &executor,
                 &BTreeMap::new(),
+                None,
             );
         }
         let ctx = HookContext::new(

@@ -109,6 +109,22 @@ fn lifecycle_cases() -> Vec<(HookEvent, HookData, Value)> {
 
 #[tokio::test]
 async fn h108_all_action_backends_receive_identical_typed_payloads_and_normal_controls() {
+    payload_matrix(None).await;
+}
+
+#[tokio::test]
+async fn h104_all_action_backends_preserve_common_input_and_event_fields() {
+    let directory = tempfile::tempdir().unwrap();
+    let file = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
+    payload_matrix(Some(crate::HookBaseInput {
+        cwd: directory.path().to_str().unwrap().into(),
+        transcript_path: file.path().to_str().unwrap().into(),
+        transcript_format: "deepagent.events.v1".into(),
+    }))
+    .await;
+}
+
+async fn payload_matrix(base: Option<crate::HookBaseInput>) {
     let mut cases = lifecycle_cases();
     cases.extend([
         (
@@ -176,11 +192,20 @@ async fn h108_all_action_backends_receive_identical_typed_payloads_and_normal_co
             5
         );
         let before = captured.0.lock().unwrap().len();
-        let context = HookContext::new(deepagent_core::id::SessionId::nil(), event.point(), data);
+        let mut context =
+            HookContext::new(deepagent_core::id::SessionId::nil(), event.point(), data);
+        if let Some(base) = &base {
+            context = context.with_base_input(base.clone());
+        }
         registry.dispatch(&context).await.unwrap();
         let mut expected = fields.as_object().unwrap().clone();
         expected.insert("hook_event_name".into(), json!(event.label()));
         expected.insert("session_id".into(), json!(context.session_id.to_string()));
+        if let Some(base) = &base {
+            expected.insert("cwd".into(), json!(base.cwd));
+            expected.insert("transcript_path".into(), json!(base.transcript_path));
+            expected.insert("transcript_format".into(), json!(base.transcript_format));
+        }
         let records = captured.0.lock().unwrap();
         assert_eq!(records.len() - before, 5, "{event:?}");
         for (backend, payload) in &records[before..] {

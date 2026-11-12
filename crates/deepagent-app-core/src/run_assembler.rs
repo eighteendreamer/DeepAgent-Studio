@@ -770,6 +770,10 @@ impl<'a> RunAssembler<'a> {
             .office_skill_guard_hook(&session_id_str, &prior_events, skill_snapshot.as_deref())?
             .map(|hook| Arc::new(hook) as Arc<dyn Hook>);
         let hooks = assemble_run_hooks(HookAssemblyRequest {
+            input_scope: Some(crate::hook_input::HookInputScope::new(
+                self.db.clone(),
+                root.clone(),
+            )),
             settings: self.settings,
             run_config: &run_config,
             permission_rules: effective_permission_rules.clone(),
