@@ -131,6 +131,27 @@ fn message_attachments(
         .collect()
 }
 
+fn todo_reminder_progress_from_events(
+    events: &[deepagent_core::event::Event],
+) -> Result<Option<(u64, u64)>> {
+    for event in events.iter().rev() {
+        if let EventPayload::TodoReminderProgress {
+            version,
+            turns_since_todo_write,
+            turns_since_todo_reminder,
+        } = &event.payload
+        {
+            if *version != 1 {
+                return Err(CoreError::invalid(format!(
+                    "unsupported todo reminder progress version {version}"
+                )));
+            }
+            return Ok(Some((*turns_since_todo_write, *turns_since_todo_reminder)));
+        }
+    }
+    Ok(None)
+}
+
 /// Holds references to every [`ChatService`](crate::ChatService) field the run
 /// pipeline touches. Constructed by [`ChatService::run_assembler`] and consumed
 /// by a single [`RunAssembler::run`] call.
@@ -1147,6 +1168,13 @@ impl<'a> RunAssembler<'a> {
         .with_prefire(prefire_start)
         .with_attachment_resolver(Arc::new(crate::attachment_service::FileAttachmentResolver))
         .with_snip_tool(deepagent_builtins::SNIP_HISTORY_TOOL_NAME);
+
+        if let Some((turns_since_todo_write, turns_since_todo_reminder)) =
+            todo_reminder_progress_from_events(&prior_events)?
+        {
+            agent = agent
+                .with_todo_reminder_progress(turns_since_todo_write, turns_since_todo_reminder);
+        }
 
         if let Some(knowledge) = &self.knowledge {
             agent = agent.with_relevant_memory_provider(Arc::new(

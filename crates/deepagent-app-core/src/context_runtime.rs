@@ -53,6 +53,21 @@ impl deepagent_runtime::ContextSurfacePersistence for SessionSurfaceStore {
         Ok(())
     }
 
+    fn record_todo_reminder_progress(
+        &self,
+        turns_since_todo_write: u64,
+        turns_since_todo_reminder: u64,
+    ) -> Result<()> {
+        let clock = deepagent_core::clock::SystemClock;
+        let mut session = deepagent_session::Session::recover(&self.db, &clock, self.session_id)?;
+        session.append(EventPayload::TodoReminderProgress {
+            version: 1,
+            turns_since_todo_write,
+            turns_since_todo_reminder,
+        })?;
+        Ok(())
+    }
+
     fn replace_tool_results(
         &self,
         strategy: &str,

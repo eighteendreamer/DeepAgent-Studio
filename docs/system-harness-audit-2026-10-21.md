@@ -166,7 +166,7 @@
 | 模型型 hook 的身份与调度去重 | 同 matcher/prompt 但条件不同的后项被首项吞掉，适用的校验器请求为0；仅模型不同时只运行首模型 | 已确认 H-239（P2）；prompt/agent 两类型均复现，六类正常对照通过；离线固定决策，不是模型能力 A/B |
 | 一次性 hook 的触发资格 | 单个 once 写校验器被先前不匹配的 read 消耗，之后首次写请求没有任何 hook 模型请求，临时新文件实际生成 | 已确认 H-240（P2）；matcher/if 两种不匹配、prompt/agent 两类型均复现，五类正常对照通过；无真实用户文件 |
 | 输入 hook 的模型上下文输出 | 正式 UserPromptSubmit PowerShell 命令成功返回普通文字或标准 additionalContext，实时 HookCompleted 保留原 stdout，但下一正式 wire 与会话消息均没有该内容；直接输入和拒绝决定对照正常 | 已确认 H-140；Windows 真实子进程、临时输入捕获文件与离线模型；未覆盖其他 hook 事件、续聊或重启 |
-| 跨独立用户回合的 todo reminder 生命周期 | 同一 session 连续 11 次正式 ChatService/Kernel 请求，每次重新组装 ModelAgent；模型每轮均成功返回，但任何实际 wire 请求都没有周期提醒 | 已确认 H-141；真实 session 事件恢复与离线 provider；未修改生产行为 |
+| 跨独立用户回合的 todo reminder 生命周期 | 同一 session 连续 11 次正式 ChatService/Kernel 请求，每次重新组装 ModelAgent；修前实际 wire 无周期提醒，修后第 10 个成功模型请求出现提醒 | H-141 已修复并验收；离线 provider、真实 SQLite session replay 与 Runtime/AppCore 默认测试，旧会话无 checkpoint 时从首次新运行起累计 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退、EOF 时运行时直接丢弃活动 turn、一个已被替代 turn 重复派生多个新 turn，以及 SDK 丢弃通知外层 eventSequence 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92、H-130、H-205；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
 | Harness thread 归档生命周期 | 正式 `thread/archive` 已成功并写入 durable archive marker 后，同一 dispatcher 的 `thread/list` 仍公开该 thread，随后 `turn/start` 仍返回成功并创建 `TurnLaunch` | 已确认 H-215；未实际 spawn turn、调用模型或工具；重启后 `thread/resume` 仅完成静态路径核查 |
 | Harness 同一 thread 并发 `turn/start` | 第一个运行已进入离线模型请求后，第二个正式 `turn/start` 仍返回独立 `status=started`；随后 AppCore 输入租约排队并自动取消第一个，两个模型请求均进入 transport，终态为 first interrupted / second completed | 新增 H-284（P1，控制面语义与重复请求）；正式 `ServerState`/`spawn_turn`/`ChatService`/`InputLeaseRegistry`，模型 transport 为本机取消感知 fixture；未访问公网、未执行工具或真实供应商请求 |
@@ -5710,6 +5710,8 @@ E-H136-07（独立提交回填）：生产、默认回归和当时两文档已�
 
 ### H-141：周期 todo reminder 在独立用户回合之间被重置，长期会话永不触发
 
+**当前状态：已修复并验收（2026-11-12，本机离线范围；实现、测试和本条审计先随H-141独立提交，commit回填见进度文档）。** 本项原始失败证据保留；以下“生产代码未改/测试ignored”均指修前审计阶段。
+
 **级别：中（P2，长期任务的计划提示缺失）；触发条件：同一 session 通过多个独立用户输入继续对话，期间模型没有调用 `todo_write`。** 单个 `ModelAgent` 内部连续步数的现有单元测试仍可通过；缺陷发生在正式 `ChatService::run_in_session` 为每个用户回合重新组装 agent 的边界。
 
 #### 生产链与动态证据
@@ -5729,7 +5731,18 @@ E-H136-07（独立提交回填）：生产、默认回归和当时两文档已�
 - 长任务如果每个用户输入都触发一次独立 run，会持续得到新的模型请求却永远不到提醒阈值；用户仍可能看到 todo 列表工具，但不会收到“长期未追踪计划”的周期性提示。本探针没有评估模型最终任务质量，也没有把提醒缺失扩大为 todo 数据丢失。
 - 应在既有 session event/history replay 边界计算两个计数：从最近一次 `todo_write` 对应的原生 tool call 和最近一次周期提醒的原生 reminder item 之后，统计 assistant turns；每次压缩、snip、重启和分支恢复都应使用同一历史过滤规则。运行中的计数可作为缓存，但不能成为唯一事实来源。
 - reminder 注入必须继续走现有原生 Surface 和消息投影，计数恢复不能新建第二个 TodoStore 或独立会话状态表；`todo_write` 仍只重置 write 轴，提醒注入后只重置 reminder 轴。
-- 当前探针使用离线模型和空 Todo 列表，仅验证提醒正文是否进入真实 wire；未覆盖 `todo_write` 后重置、压缩后事件边界、分支回退、并行工具、CLI/SDK 入口及真实 DeepSeek。生产代码未改，缺陷测试保持 ignored。
+- 原修前探针使用离线模型和空 Todo 列表，仅验证提醒正文是否进入真实 wire；未覆盖 `todo_write` 后重置、压缩后事件边界、分支回退、并行工具、CLI/SDK 入口及真实 DeepSeek。修前生产代码未改且探针保持 ignored，失败证据见上。
+
+#### 整改闭环（2026-11-12；E-H141-01～06）
+
+- 根因：`ModelAgent` 每次独立运行重新组装，两个 reminder 计数器是 agent 私有内存；历史 Surface 不含 reminder（避免把内部节奏状态误当用户/assistant 内容），因此恢复消息不能恢复周期。原探针修前真实失败：11次正式独立回合、11次请求、`reminder_requests=[]`。
+- 实现：新增版本化 `EventPayload::TodoReminderProgress`，只把两轴计数追加到既有 append-only session event stream，不写新表、不加迁移、不进入模型 Surface/Responses wire；`RunAssembler` 从最新有效checkpoint恢复。每次成功模型响应后记录一次最终进度，避免失败或取消请求提前消耗回合；模型请求 `todo_write` 时先清零 write轴，再在派发工具前记录，写入失败沿原ModelAgent错误路径阻止后续工具。旧event没有checkpoint时按原新会话初值开始累计，不回扫或猜测历史提醒/工具调用。
+- E-H141-01（原探针转默认、冷重开）：正式ChatService/RunAssembler/Kernel同一SQLite文件，按5回合关闭并重新打开DB及ChatService，共11回合/11请求；无todo_write时提醒仅在第10个请求首次出现，持久事件核对11个checkpoint、末值`(11,1)`。`cargo test -p deepagent-app-core --test kernel_v2_e2e todo_reminder_lifecycle:: --offline -j 1 -- --nocapture --test-threads=1`：**2 passed / 0 failed / 0 ignored**，包含本项与reset对照。
+- E-H141-02（`todo_write`重置）：离线模型在第10请求真实调用todo_write；重新打开数据库服务后，第20请求出现新一轮reminder，request11仅重复承载前一请求注入的那一份正文，不发生第二次注入；20条checkpoint的最终值为`(10,0)`。与E01同一个默认执行测试目标，以上统计均按完整运行记录，不将重试的中间断言失败当作通过。
+- E-H141-03（原有行为/事件契约）：`cargo test -p deepagent-runtime todo_reminder --offline -j 1`：**3 passed**；`cargo test -p deepagent-core todo_reminder_progress --offline -j 1`：**1 passed**，覆盖v1序列化与kind；`cargo test -p deepagent-session --offline -j 1`：**23 passed / 0 failed**；`cargo test -p deepagent-app-core --lib todo_snapshot_reminder::tests --offline -j 1`：**8 passed / 0 failed**。
+- E-H141-04（跨层消费者）：`cargo check --workspace --offline -j 1`：exit 0，所有workspace crate（含CLI）编译通过；无数据库schema变更。`cargo fmt --all -- --check`、`git diff --check`通过。
+- E-H141-05（严格lint）：`cargo clippy -p deepagent-runtime --lib --no-deps --offline -j 1 -- -D warnings`被未修改的`model_agent.rs:298 clone_on_copy`与`workflow/canvas.rs:32 derivable_impls`阻断；`cargo clippy -p deepagent-app-core --lib --no-deps --offline -j 1 -- -D warnings`被既有AppCore六项lint阻断（`context_runtime.rs:483,505`、`http_runtime.rs:332`、`plugin_preparation.rs:14`、`run_assembler.rs:1925`、`session_title.rs:54`）。报告失败为基线，不改无关代码；未声称strict lint通过。
+- E-H141-06（兼容/残余）：checkpoint为内部追加事件，不影响模型输入、UI DTO、SQL schema或权限；运行计数仅在成功响应后推进，durability失败会在工具执行前传播。没有迁移/回填旧会话计数，旧会话从首次新版本运行起重新累计最多10个成功模型回合；真实DeepSeek、其他OS、CLI/SDK运行链、压缩/rewind/fork与强杀边界、请求持久化失败故障注入未单独验收。用户取消/模型失败不增加已持久化计数；不宣称对提醒正文有模型遵从保证。
 
 ### H-142：运行事件持久化失败被吞掉，实时事件与回放事件发生分叉
 

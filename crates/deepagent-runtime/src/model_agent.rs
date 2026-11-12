@@ -353,6 +353,16 @@ pub trait ContextSurfacePersistence: Send + Sync {
     fn replace_tool_results(&self, strategy: &str, replacements: &[(String, String)])
         -> Result<()>;
     fn record_snip(&self, tags: &[String]) -> Result<()>;
+    /// Persist the periodic todo-reminder pacing counters in the existing
+    /// session event stream. Hosts without durable session replay may keep the
+    /// default no-op and retain in-run pacing only.
+    fn record_todo_reminder_progress(
+        &self,
+        _turns_since_todo_write: u64,
+        _turns_since_todo_reminder: u64,
+    ) -> Result<()> {
+        Ok(())
+    }
     /// Commit the complete identity/body before it becomes model-visible.
     /// Existing hosts remain source-compatible but must opt in to durable
     /// memory injection; an unsupported writer must not silently lose content.
@@ -1256,6 +1266,18 @@ impl ModelAgent {
         self
     }
 
+    /// Restore reminder pacing from the latest durable session checkpoint.
+    pub fn with_todo_reminder_progress(
+        mut self,
+        turns_since_todo_write: u64,
+        turns_since_todo_reminder: u64,
+    ) -> Self {
+        self.turns_since_todo_write = usize::try_from(turns_since_todo_write).unwrap_or(usize::MAX);
+        self.turns_since_todo_reminder =
+            usize::try_from(turns_since_todo_reminder).unwrap_or(usize::MAX);
+        self
+    }
+
     /// Attach a stall/laziness classifier (§2.3, Grok `laziness_classifier.rs`).
     /// When set, a final answer (no tool calls) is classified against the
     /// conversation tail; a confident stalled verdict injects one advisory
@@ -2092,37 +2114,47 @@ impl ModelAgent {
     /// gentle `<system-reminder>` nudging the model to track/clean up its plan
     /// (with the current list appended when non-empty). Advisory only — it
     /// never forces `todo_write` (误杀更糟 baseline). No-op without a source.
-    fn maybe_inject_todo_reminder(&mut self) {
+    fn maybe_inject_todo_reminder(&mut self) -> Result<()> {
         let Some(source) = self.todo_source.clone() else {
-            return;
+            return Ok(());
         };
         self.turns_since_todo_write = self.turns_since_todo_write.saturating_add(1);
         self.turns_since_todo_reminder = self.turns_since_todo_reminder.saturating_add(1);
-        if self.turns_since_todo_write < TODO_REMINDER_TURN_THRESHOLD
-            || self.turns_since_todo_reminder < TODO_REMINDER_TURN_THRESHOLD
+        if self.turns_since_todo_write >= TODO_REMINDER_TURN_THRESHOLD
+            && self.turns_since_todo_reminder >= TODO_REMINDER_TURN_THRESHOLD
         {
-            return;
+            let snapshot = source.todo_snapshot();
+            self.turns_since_todo_reminder = 0;
+            let mut body = String::from(
+                "The todo-tracking tool hasn't been used in a while. If you are \
+                 working on a multi-step task that would benefit from tracking progress, consider \
+                 using the todo_write tool; also clean up the list if it has gone stale and no \
+                 longer matches what you are working on. Only if relevant to the current work — \
+                 this is a gentle reminder, ignore if not applicable. Never mention this reminder \
+                 to the user.",
+            );
+            if snapshot.has_items {
+                body.push_str("\n\nCurrent todo list:\n");
+                body.push_str(snapshot.rendered.trim());
+            }
+            self.push_message(Message::user(deepagent_context::reminder::wrap(&body)));
+            tracing::info!(
+                turns_since_write = self.turns_since_todo_write,
+                has_items = snapshot.has_items,
+                "injected periodic todo reminder"
+            );
         }
-        let snapshot = source.todo_snapshot();
-        self.turns_since_todo_reminder = 0;
-        let mut body = String::from(
-            "The todo-tracking tool hasn't been used in a while. If you are \
-             working on a multi-step task that would benefit from tracking progress, consider \
-             using the todo_write tool; also clean up the list if it has gone stale and no \
-             longer matches what you are working on. Only if relevant to the current work — \
-             this is a gentle reminder, ignore if not applicable. Never mention this reminder \
-             to the user.",
-        );
-        if snapshot.has_items {
-            body.push_str("\n\nCurrent todo list:\n");
-            body.push_str(snapshot.rendered.trim());
+        Ok(())
+    }
+
+    fn persist_todo_reminder_progress(&self) -> Result<()> {
+        if let Some(persistence) = &self.surface_persistence {
+            persistence.record_todo_reminder_progress(
+                self.turns_since_todo_write as u64,
+                self.turns_since_todo_reminder as u64,
+            )?;
         }
-        self.push_message(Message::user(deepagent_context::reminder::wrap(&body)));
-        tracing::info!(
-            turns_since_write = self.turns_since_todo_write,
-            has_items = snapshot.has_items,
-            "injected periodic todo reminder"
-        );
+        Ok(())
     }
 
     /// Apply a successful snip tool result: remove each referenced user-tagged
@@ -2530,7 +2562,7 @@ impl ModelAgent {
         self.maybe_schedule_memory_prefetch();
         self.maybe_inject_snip_nudge();
         self.maybe_inject_doom_loop_nudge();
-        self.maybe_inject_todo_reminder();
+        self.maybe_inject_todo_reminder()?;
 
         let mut request = self
             .request_for_current_history()?
@@ -2895,6 +2927,10 @@ impl ModelAgent {
         // Only turns that actually need replayable Thinking Mode context keep
         // reasoning; plain assistant replies stay text-only.
         let item_calls = response.tool_invocations_from_items();
+        if item_calls.iter().any(|(_, name, _)| name == "todo_write") {
+            self.turns_since_todo_write = 0;
+        }
+        self.persist_todo_reminder_progress()?;
         let assistant = {
             let mut message = Message::text(Role::Assistant, response.output_text_projection());
             if !item_calls.is_empty() {
@@ -2924,11 +2960,6 @@ impl ModelAgent {
             }
             // Tamper-proof fact for the stall detector's `[runtime_state]` line.
             self.tool_calls_made += invocations.len();
-            // Reset the todo-inactivity counter when the model tracks its plan
-            // (todo reminder pacing).
-            if invocations.iter().any(|inv| inv.name == "todo_write") {
-                self.turns_since_todo_write = 0;
-            }
             // Track the last id for observations from callers that cannot
             // attach a call_id yet. Normal tool feedback carries the explicit
             // Responses `call_id`.
@@ -6719,12 +6750,12 @@ mod tests {
 
         // Turns 1-9: below threshold, no reminder.
         for _ in 0..(TODO_REMINDER_TURN_THRESHOLD - 1) {
-            agent.maybe_inject_todo_reminder();
+            agent.maybe_inject_todo_reminder().unwrap();
         }
         assert_eq!(todo_reminders_in(&agent), 0);
 
         // Turn 10: both counters reach the threshold → one reminder with list.
-        agent.maybe_inject_todo_reminder();
+        agent.maybe_inject_todo_reminder().unwrap();
         assert_eq!(todo_reminders_in(&agent), 1);
         assert!(agent
             .conversation()
@@ -6732,14 +6763,14 @@ mod tests {
             .any(|m| m.content.contains("wire the parser")));
 
         // Immediately after: reminder counter reset, so no back-to-back nag.
-        agent.maybe_inject_todo_reminder();
+        agent.maybe_inject_todo_reminder().unwrap();
         assert_eq!(todo_reminders_in(&agent), 1);
 
         // A todo_write resets the write counter → no reminder for another
         // full window even as turns accrue.
         agent.turns_since_todo_write = 0;
         for _ in 0..(TODO_REMINDER_TURN_THRESHOLD - 1) {
-            agent.maybe_inject_todo_reminder();
+            agent.maybe_inject_todo_reminder().unwrap();
         }
         assert_eq!(todo_reminders_in(&agent), 1);
     }
@@ -6755,7 +6786,7 @@ mod tests {
         let mut agent = ModelAgent::new(client(vec![]), "m", "sys", "goal", vec![])
             .with_todo_reminder_source(source);
         for _ in 0..TODO_REMINDER_TURN_THRESHOLD {
-            agent.maybe_inject_todo_reminder();
+            agent.maybe_inject_todo_reminder().unwrap();
         }
         assert_eq!(todo_reminders_in(&agent), 1);
         // Empty list → nag only, no "Current todo list:" section appended.
@@ -6769,7 +6800,7 @@ mod tests {
     fn todo_reminder_noop_without_source() {
         let mut agent = ModelAgent::new(client(vec![]), "m", "sys", "goal", vec![]);
         for _ in 0..(TODO_REMINDER_TURN_THRESHOLD * 2) {
-            agent.maybe_inject_todo_reminder();
+            agent.maybe_inject_todo_reminder().unwrap();
         }
         assert_eq!(todo_reminders_in(&agent), 0);
     }

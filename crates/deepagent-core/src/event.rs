@@ -285,6 +285,14 @@ pub enum EventPayload {
         trigger: String,
     },
 
+    /// Durable pacing state for the periodic todo reminder. This is internal
+    /// session replay data and is not projected into the model-visible Surface.
+    TodoReminderProgress {
+        version: u32,
+        turns_since_todo_write: u64,
+        turns_since_todo_reminder: u64,
+    },
+
     /// A cross-session memory entry was written to the knowledge vault.
     MemoryEntryWritten {
         /// Vault entry id (also the tool's returned handle).
@@ -323,6 +331,7 @@ impl EventPayload {
             EventPayload::ToolsDiscovered { .. } => "tools_discovered",
             EventPayload::McpInstructionsDelta { .. } => "mcp_instructions_delta",
             EventPayload::MemoriesInjected { .. } => "memories_injected",
+            EventPayload::TodoReminderProgress { .. } => "todo_reminder_progress",
             EventPayload::MemoryEntryWritten { .. } => "memory_entry_written",
         }
     }
@@ -398,6 +407,22 @@ mod tests {
         assert_eq!(json["count"], 2);
         let back: EventPayload = serde_json::from_value(json).unwrap();
         assert_eq!(back, payload);
+    }
+
+    #[test]
+    fn todo_reminder_progress_is_versioned_and_round_trips() {
+        let payload = EventPayload::TodoReminderProgress {
+            version: 1,
+            turns_since_todo_write: 8,
+            turns_since_todo_reminder: 3,
+        };
+        assert_eq!(payload.kind(), "todo_reminder_progress");
+        let json = serde_json::to_value(&payload).unwrap();
+        assert_eq!(json["version"], 1);
+        assert_eq!(
+            serde_json::from_value::<EventPayload>(json).unwrap(),
+            payload
+        );
     }
 
     #[test]
