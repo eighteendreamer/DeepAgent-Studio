@@ -11952,7 +11952,7 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_dialect:: --o
 
 ### H-231：可选 ruff 未安装时真实 shell 返回非零结果，被 Python 验证器误报为源代码失败
 
-**级别：中（P2，环境故障分类与反馈可靠性）；状态：已修复并验收（2026-11-12，限本机范围）。** PythonVerifier 原先把 shell 中可选 Ruff 命令缺失返回的非零状态当作源码错误。现已只对平台命令缺失签名返回“可选 lint 未运行”的 Skipped；真实 Ruff 诊断、权限拒绝及执行器错误仍失败。修复前原始探针与失败证据保留如下。
+**级别：中（P2，环境故障分类与反馈可靠性）；状态：修复及功能验收完成，完整交付因产物清理受阻（2026-11-12，功能验收限本机范围）。** PythonVerifier 原先把 shell 中可选 Ruff 命令缺失返回的非零状态当作源码错误。现已只对平台命令缺失签名返回“可选 lint 未运行”的 Skipped；真实 Ruff 诊断、权限拒绝及执行器错误仍失败。修复前原始探针与失败证据保留如下。
 
 #### 即时 Evidence（2026-10-24，首轮完整本机复现后登记）
 
@@ -12004,8 +12004,9 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - E-H231-03（AppCore 单测）：`cargo test -p deepagent-app-core --lib verification_dispatcher::tests::python_verifier --offline -- --nocapture`，最终 **7 passed / 0 failed**。
 - E-H231-04（crate 全量回归）：首次 `cargo test -p deepagent-app-core --offline --no-fail-fast` 在并行编译时因 Windows 页面文件不足（OS error 1455）无法 mmap 既有 AppCore rlib；随后以 `-j 1` 重跑，AppCore lib 为 **1657 passed / 1 failed / 43 ignored**，唯一失败是与本项无关的 `completion_plan::audit_tests::discovered_real_build_completes_after_release` 未及时产生临时标记。该测试单独按原命令重跑 **1 passed**；本次全量命令的其他已运行 integration targets 均通过。全量重跑未因该时序失败而宣称全绿。
 - E-H231-05（静态检查）：`cargo fmt --all -- --check` 与 `git diff --check` 通过。严格 clippy 未通过且不是本次修改引入：`cargo clippy -p deepagent-app-core --all-targets --all-features --offline -j 1 -- -D warnings` 被既有 Runtime 两项 lint 阻断（`model_agent.rs:298` clone_on_copy、`workflow/canvas.rs:32` derivable_impls）；继续执行默认特性 AppCore clippy 时，既有 AppCore 六项 lint 阻断（`context_runtime.rs:468,490`、`http_runtime.rs:332`、`plugin_preparation.rs:14`、`run_assembler.rs:1897`、`session_title.rs:54`）。未改无关文件或宣称 lint 通过。
+- E-H231-06（生成物清理受阻）：只读核对本轮两根路径无 reparse point、无正在运行的 cargo/rustc/kernel_v2_e2e 进程；`target/h231-repair-20261112` 有3667个文件/4335个条目/1,909,461,909逻辑字节，`G:/h231-fixtures-20261112` 有22个文件/48个条目/84,815字节。执行 `Remove-Item -LiteralPath <两根> -Recurse -Force -ErrorAction Stop` 时，工具在 PowerShell CreateProcess 前被本机策略拒绝，脚本未启动、没有删除；随后 Test-Path 两根均为True。未换工具或重试绕过。须在获准终端实际清理后再只读核验，不能按用户先前授权或本次失败调用推定已完成。
 
-残余限制：真实正式运行链只在 Windows PowerShell 7 上验证；POSIX exit 127/`sh` 输出签名由跨平台纯单元覆盖，但未在 POSIX 宿主做真实 SystemExecutor 验收。未执行 workspace 全量测试、桌面/前端构建、真实供应商、实际 Ruff 已安装的完整 ChatService 路径、其他 shell/OS、`edit_file`/`multi_edit` 或重启场景；严格 clippy 基线仍待独立治理。本项根因和已验证范围已闭环，但这些未测场景不外推为通过。
+残余限制：真实正式运行链只在 Windows PowerShell 7 上验证；POSIX exit 127/`sh` 输出签名由跨平台纯单元覆盖，但未在 POSIX 宿主做真实 SystemExecutor 验收。未执行 workspace 全量测试、桌面/前端构建、真实供应商、实际 Ruff 已安装的完整 ChatService 路径、其他 shell/OS、`edit_file`/`multi_edit` 或重启场景；严格 clippy 基线仍待独立治理。功能根因和已验证范围已完成，但生成物清理仍阻塞；未测场景不外推为通过。
 
 ### H-232：回退删除发现事件后，原宿主仍公开旧工具，重建宿主则隐藏
 
