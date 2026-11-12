@@ -78,6 +78,9 @@ mod scheduled;
 #[cfg(test)]
 #[path = "chat_service/session_end_tests.rs"]
 mod session_end_tests;
+#[cfg(all(test, windows))]
+#[path = "chat_service/session_metadata_tests.rs"]
+mod session_metadata_tests;
 #[cfg(test)]
 use crate::tool_manifest::{build_visible_tool_schemas, register_tool_search_into};
 #[cfg(test)]
@@ -3681,7 +3684,6 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    #[ignore = "audit H-108: session lifecycle hooks must include required event metadata"]
     async fn audit_session_lifecycle_hooks_include_required_event_metadata() {
         let (db, settings, dir) = seeded().await;
         let start_payload_path = dir.path().join("session-start-payload.json");

@@ -26,7 +26,13 @@ impl Agent for SessionEndAgent {
         )? {
             self.hooks
                 .dispatch_with_context(
-                    &HookContext::new(self.session_id, HookPoint::SessionEnd, HookData::None),
+                    &HookContext::new(
+                        self.session_id,
+                        HookPoint::SessionEnd,
+                        HookData::SessionEnd {
+                            reason: deepagent_hooks::SessionEndReason::Other,
+                        },
+                    ),
                     self.execution.clone(),
                 )
                 .await?;

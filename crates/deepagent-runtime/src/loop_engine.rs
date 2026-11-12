@@ -632,10 +632,17 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         let session_id = session.id();
         let run_started_at = std::time::Instant::now();
 
-        // SessionStart hook (observational).
+        // The existing flag declares a newly-created session. Continued turns
+        // do not become a fabricated "resume" event just to populate metadata.
         if self.config.fire_session_start {
-            self.fire_hook(session_id, HookPoint::SessionStart, HookData::None)
-                .await?;
+            self.fire_hook(
+                session_id,
+                HookPoint::SessionStart,
+                HookData::SessionStart {
+                    source: deepagent_hooks::SessionStartSource::Startup,
+                },
+            )
+            .await?;
         }
 
         self.emit(RuntimeEvent::RunStarted {

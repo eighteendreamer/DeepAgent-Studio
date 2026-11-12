@@ -134,12 +134,46 @@ impl HookContext {
     }
 }
 
+/// Semantic source supplied by the session lifecycle owner. These wire values
+/// describe a real start; selecting one does not itself dispatch a hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum SessionStartSource {
+    Startup,
+    Resume,
+    Clear,
+    Compact,
+    Fork,
+}
+
+/// External lifecycle reason, distinct from the authoritative event log's
+/// internal reason. Explicit persistent-session /end maps to Other, not to an
+/// application exit, logout, or clearing the chat surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum SessionEndReason {
+    Clear,
+    Resume,
+    Logout,
+    PromptInputExit,
+    Other,
+}
+
 /// Point-specific data carried by a [`HookContext`].
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum HookData {
-    /// No additional data (session lifecycle, plan gates).
+    /// No additional data (plan gates or legacy custom callers). Serializers
+    /// must not guess a session lifecycle source/reason from this variant.
     None,
+    SessionStart {
+        source: SessionStartSource,
+    },
+    SessionEnd {
+        reason: SessionEndReason,
+    },
     /// A user prompt was submitted (carried at
     /// [`HookPoint::UserPromptSubmit`]).
     Prompt {

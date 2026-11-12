@@ -203,7 +203,12 @@ fn sample_hook_data(event: HookEvent, matcher: Option<&str>) -> HookData {
         HookEvent::InstructionsLoaded => HookData::Instructions {
             paths: vec!["CLAUDE.md".to_string()],
         },
-        HookEvent::SessionStart | HookEvent::SessionEnd => HookData::None,
+        HookEvent::SessionStart => HookData::SessionStart {
+            source: deepagent_hooks::SessionStartSource::Startup,
+        },
+        HookEvent::SessionEnd => HookData::SessionEnd {
+            reason: deepagent_hooks::SessionEndReason::Other,
+        },
     }
 }
 

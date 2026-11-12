@@ -1270,90 +1270,6 @@ pub struct ExternalCommandHook {
     runner: Arc<dyn HookCommandRunner>,
 }
 
-impl ExternalCommandHook {
-    /// Build a stdin payload for the current context (Claude-Code-compatible).
-    fn build_payload(&self, ctx: &HookContext) -> serde_json::Value {
-        let mut payload = serde_json::Map::new();
-        payload.insert(
-            "session_id".into(),
-            serde_json::Value::String(ctx.session_id.to_string()),
-        );
-        payload.insert(
-            "hook_event_name".into(),
-            serde_json::Value::String(self.event.label().to_string()),
-        );
-        match &ctx.data {
-            HookData::Tool {
-                name,
-                arguments,
-                ok,
-            } => {
-                payload.insert("tool_name".into(), serde_json::Value::String(name.clone()));
-                payload.insert("tool_input".into(), arguments.clone());
-                if let Some(ok) = ok {
-                    payload.insert("tool_response".into(), serde_json::json!({ "ok": ok }));
-                }
-            }
-            HookData::ToolBatch { tools } => {
-                payload.insert("tool_calls".into(), serde_json::json!(tools));
-                payload.insert("tool_batch".into(), serde_json::json!(tools));
-                payload.insert("tool_count".into(), serde_json::json!(tools.len()));
-            }
-            HookData::Prompt { text } => {
-                payload.insert("prompt".into(), serde_json::Value::String(text.clone()));
-            }
-            HookData::Verification { command, detail } => {
-                payload.insert("command".into(), serde_json::Value::String(command.clone()));
-                payload.insert("detail".into(), serde_json::Value::String(detail.clone()));
-            }
-            HookData::Response { content } => {
-                payload.insert("content".into(), serde_json::Value::String(content.clone()));
-            }
-            HookData::Instructions { paths } => {
-                payload.insert("paths".into(), serde_json::json!(paths));
-            }
-            HookData::Permission {
-                tool,
-                arguments,
-                reason,
-            } => {
-                payload.insert("tool_name".into(), serde_json::json!(tool));
-                payload.insert("tool_input".into(), arguments.clone());
-                payload.insert("reason".into(), serde_json::json!(reason));
-            }
-            HookData::Compact { trigger, summary } => {
-                payload.insert("trigger".into(), serde_json::json!(trigger));
-                payload.insert("compact_summary".into(), serde_json::json!(summary));
-            }
-            HookData::Subagent {
-                agent_id,
-                agent_type,
-                summary,
-            } => {
-                payload.insert("agent_id".into(), serde_json::json!(agent_id));
-                payload.insert("agent_type".into(), serde_json::json!(agent_type));
-                payload.insert("last_assistant_message".into(), serde_json::json!(summary));
-            }
-            HookData::Task { task_id, subject } => {
-                payload.insert("task_id".into(), serde_json::json!(task_id));
-                payload.insert("task_subject".into(), serde_json::json!(subject));
-            }
-            HookData::FileChange { path, kind } => {
-                payload.insert("path".into(), serde_json::json!(path));
-                payload.insert("change_kind".into(), serde_json::json!(kind));
-            }
-            HookData::Path { path } => {
-                payload.insert("path".into(), serde_json::json!(path));
-            }
-            HookData::Notification { message } => {
-                payload.insert("message".into(), serde_json::json!(message));
-            }
-            HookData::None => {}
-        }
-        serde_json::Value::Object(payload)
-    }
-}
-
 // Keep the full declaration in one structured identity, rather than maintaining
 // a partial field list for each backend. Expand only defaults whose equivalence
 // is established by execution here. Other distinct declarations stay distinct.
@@ -1465,7 +1381,7 @@ impl Hook for ExternalCommandHook {
             return Ok(HookReport::decision(HookOutcome::Continue));
         }
 
-        let payload = self.build_payload(ctx);
+        let payload = build_hook_payload(self.event, ctx);
         let stdin_json = serde_json::to_string(&payload)?;
         let result = self
             .runner
@@ -1544,7 +1460,7 @@ impl Hook for ExternalHostHook {
             Some(self.action.timeout_duration()),
             self.host.execute_with_context(
                 &self.action,
-                build_http_payload(self.event, ctx),
+                build_hook_payload(self.event, ctx),
                 child.clone(),
             ),
         )
@@ -1616,7 +1532,7 @@ impl Hook for ExternalHttpHook {
             .request(method, self.action.url.trim())
             .timeout(self.action.timeout_duration())
             .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .body(serde_json::to_vec(&build_http_payload(self.event, ctx))?);
+            .body(serde_json::to_vec(&build_hook_payload(self.event, ctx))?);
         for (name, value) in &self.action.headers {
             let resolved = interpolate_env_vars(value, &self.action.allowed_env_vars);
             request = request.header(name, resolved);
@@ -1657,7 +1573,8 @@ impl Hook for ExternalHttpHook {
     }
 }
 
-fn build_http_payload(event: HookEvent, ctx: &HookContext) -> serde_json::Value {
+// One wire projection for command stdin, HTTP body and host-owned actions.
+fn build_hook_payload(event: HookEvent, ctx: &HookContext) -> serde_json::Value {
     let mut payload = serde_json::Map::new();
     payload.insert(
         "session_id".into(),
@@ -1665,6 +1582,19 @@ fn build_http_payload(event: HookEvent, ctx: &HookContext) -> serde_json::Value 
     );
     payload.insert("hook_event_name".into(), serde_json::json!(event.label()));
     match &ctx.data {
+        HookData::SessionStart { source }
+            if event == HookEvent::SessionStart && ctx.point == event.point() =>
+        {
+            payload.insert("source".into(), serde_json::json!(source));
+        }
+        HookData::SessionEnd { reason }
+            if event == HookEvent::SessionEnd && ctx.point == event.point() =>
+        {
+            payload.insert("reason".into(), serde_json::json!(reason));
+        }
+        // Mismatched/legacy custom contexts cannot manufacture lifecycle data
+        // for an unrelated event; only the real owner supplies these fields.
+        HookData::SessionStart { .. } | HookData::SessionEnd { .. } => {}
         HookData::Tool {
             name,
             arguments,
@@ -1811,6 +1741,10 @@ fn interpret_report_for_event(result: &HookCommandResult, event: HookEvent) -> H
 #[cfg(test)]
 #[path = "external_context_tests.rs"]
 mod external_context_tests;
+
+#[cfg(test)]
+#[path = "external_lifecycle_tests.rs"]
+mod external_lifecycle_tests;
 
 /// Parse a structured decision from a hook's stdout, if any.
 /// Parse the common structured decision protocol used by command, MCP,
