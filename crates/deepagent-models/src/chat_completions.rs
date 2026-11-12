@@ -53,7 +53,7 @@ impl Serialize for ChatCompletionRequest {
     where
         S: Serializer,
     {
-        crate::tool_choice::validate_chat_tool_choice(self.tool_choice.as_ref())
+        self.validate_tool_choice()
             .map_err(serde::ser::Error::custom)?;
         self.validate_user_identity()
             .map_err(serde::ser::Error::custom)?;
@@ -199,7 +199,7 @@ impl ChatCompletionRequest {
     }
 
     pub fn validate(&self) -> Result<()> {
-        crate::tool_choice::validate_chat_tool_choice(self.tool_choice.as_ref())?;
+        self.validate_tool_choice()?;
         self.validate_user_identity()?;
         self.validate_image_roles()?;
         self.validate_image_references()?;
@@ -232,6 +232,18 @@ impl ChatCompletionRequest {
         }
         validate_function_tool_schemas(&self.tools)?;
         Ok(())
+    }
+
+    fn validate_tool_choice(&self) -> Result<()> {
+        // Match the final Chat wire: non-none effort enables thinking, while
+        // none effort is omitted by the serializer. Valid non-thinking requests
+        // explicitly carry thinking=disabled (the builder does this for None).
+        // Omitted mode defaults to thinking, not to an invented model-name rule.
+        let thinking_enabled = !self
+            .thinking
+            .as_ref()
+            .is_some_and(|thinking| thinking.kind == "disabled");
+        crate::tool_choice::validate_chat_tool_choice(self.tool_choice.as_ref(), thinking_enabled)
     }
 
     fn validate_user_identity(&self) -> Result<()> {

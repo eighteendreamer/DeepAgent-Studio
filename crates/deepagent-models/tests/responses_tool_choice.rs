@@ -171,6 +171,7 @@ async fn explicit_choice_overrides_invalid_default_and_chat_keeps_its_own_wire_s
     let choice = json!({"type":"function","function":{"name":"read_file"}});
     let chat = ChatCompletionRequest::new("deepseek-flash", vec![Message::user("fixture")])
         .with_tools(vec![function("read_file")])
+        .with_reasoning_effort(deepagent_models::ReasoningEffort::None)
         .with_tool_choice(choice.clone());
     assert_eq!(serde_json::to_value(chat).unwrap()["tool_choice"], choice);
 }

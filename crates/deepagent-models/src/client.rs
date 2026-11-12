@@ -2034,7 +2034,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: reject Chat required tool choice in thinking mode before transport"]
     async fn audit_chat_thinking_rejects_required_tool_choice_before_transport() {
         let (result, calls) = run_chat_thinking_tool_choice(serde_json::json!("required")).await;
 
@@ -2046,11 +2045,10 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: reject Chat named tool choice in thinking mode before transport"]
     async fn audit_chat_thinking_rejects_named_tool_choice_before_transport() {
         let (result, calls) = run_chat_thinking_tool_choice(serde_json::json!({
             "type": "function",
-            "function": {"name": "lookup"}
+            "name": "lookup"
         }))
         .await;
 

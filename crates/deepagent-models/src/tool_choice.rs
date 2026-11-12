@@ -75,11 +75,24 @@ pub(crate) fn responses_tool_choice_to_chat(value: &Value) -> Result<Value> {
     })
 }
 
-pub(crate) fn validate_chat_tool_choice(value: Option<&Value>) -> Result<()> {
-    value
+pub(crate) fn validate_chat_tool_choice(
+    value: Option<&Value>,
+    thinking_enabled: bool,
+) -> Result<()> {
+    let choice = value
         .map(|value| ToolChoice::parse(value, ChoiceFormat::Chat))
-        .transpose()
-        .map(|_| ())
+        .transpose()?;
+    if thinking_enabled
+        && matches!(
+            choice,
+            Some(ToolChoice::Required | ToolChoice::Function { .. })
+        )
+    {
+        return Err(CoreError::invalid(
+            "DeepSeek Chat thinking mode does not support required or named tool_choice; explicitly disable thinking to use them",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_final_responses_tool_choice(
