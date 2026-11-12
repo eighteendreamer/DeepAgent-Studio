@@ -16515,7 +16515,9 @@ workspace fmt exit0（4.203秒，测试借用修正后4.590秒）。Tauri整体f
 
 ### H-294：完成门把每次成功文件操作强制转换为最终净变化，临时创建后删除被误判未完成并额外请求模型
 
-**当前状态（2026-11-12）：代码修复与本机功能验收完成，独立提交 `d497d9c87c35db1ea960c8c6c77160d51cd5abe7`，阻塞待处理（仅产物清理）。** 以下原失败证据保留。本轮只取消Runtime把成功工具历史自动转为最终净变更要求；明确的CompletionPolicy、工具结果、checkpoint净证据、权限/取消/Stop与验证器边界保留，不混修其他问题。完整workspace/严格lint非全绿，详E-H294-01～06。
+**当前状态（2026-11-12）：已修复并验收，独立提交 `d497d9c87c35db1ea960c8c6c77160d51cd5abe7`，用户实际清理后两根只读核验均不存在。** 以下原失败证据保留。本轮只取消Runtime把成功工具历史自动转为最终净变更要求；明确的CompletionPolicy、工具结果、checkpoint净证据、权限/取消/Stop与验证器边界保留，不混修其他问题。完整workspace/严格lint非全绿，详E-H294-01～07。
+
+E-H294-07（清理闭环，2026-11-12）：用户回传“已删除”后，只读执行Test-Path核对G:/Code_Warehouse/DeepAgent-Studio/target/h294-repair-20261112和G:/h294-fixtures-20261112，两者均False。本项代码、限定验收、双文、提交和清理闭环，未重新测试、未改变原六败或严格lint失败结论；代码提交d497d9c87c35db1ea960c8c6c77160d51cd5abe7、首次回填ff31cd15b620830e2233e8305540f429438368a2保持不变，本次仅普通清理文档提交，不amend、不推送。306唯一台账为231已修复并验收、28历史跳过、10归并、3撤销、33待修（含H180授权不修）、0阻塞/修复中、1验收保留H66；32有效待修加H66共33项未完整闭环。本次只关闭原清理阻塞，不增加代码修复数。本项余0；下一H107，全部剩余仍历史低置信170–430有效小时粗估，未逐项重校准，编译/环境/人工等待另计，整体goal保持active。
 
 E-H294-01（本轮修前复现与方案，2026-11-12）：`cargo test -p deepagent-app-core --test kernel_v2_e2e completion_net_effect --offline -j 1 -- --include-ignored --nocapture` 在隔离HOME/PROFILE/TEMP/data环境执行，真实1过2败，故障两组仍各requests=5、blocked_inputs=2、evidence_failures=4、failed_open=true，文件/Completed actions/唯一succeeded与原记录一致；测试体1.23秒，首次编译5分22秒不计有效开发时间。新增Runtime TDD先因测试夹具错误使用std::io `?` 无From而编译失败，不计行为红测；显式转换测试I/O错误后 `cargo test -p deepagent-runtime --lib completion_policy_tests --offline -j 1 -- --nocapture` 2过1败，显式policy仍拒绝、失败/权限拒绝/取消对照通过，仅自动策略错误。扩展正式ChatService测试加入修改恢复/移动链/多次写入及文件SQLite重开；首扩命令遗漏隔离进程环境而因ambient模型'fable'在请求前失败，不计产品复现且不采用其结果；恢复隔离后原两故障保持，新增修改夹具被真实read-before-write边界拒绝，已补每次覆盖前的真实read，不放宽工具权限/断言，最终扩展红测待续。上述失败均保留，不用环境或夹具错误冒充本项。
 
