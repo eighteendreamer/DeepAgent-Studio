@@ -4692,6 +4692,14 @@ AppCore cargo clippy --target-dir <本轮root> -p deepagent-app-core --all-targe
 - 影响及限制：畸形输出之后若子进程仍存活，当前 SDK 调用可能永久 pending，且没有结构化协议错误可供上层展示。未证明本系统发布的 CLI 会输出非 JSON 到 stdout，也未测量外部集成的触发频率；真实 CLI 健康路径未受此探针覆盖。
 - 收敛方向（尚未实施，本地设计）：沿用现有 reader 与 pending 表；遇到无法解码的 stdout 行时保存脱敏的 decode error，结束 reader 并以同一错误收束全部 pending 请求。增加畸形 JSON、未知 envelope、正常 notification/response 和 EOF 竞争回归；若产品确实允许非协议 stdout，再由 server 将诊断统一写入 stderr，而不是让 reader 猜测并跳过。
 
+**E-H101-01（2026-11-13，当前复现与兼容决策待确认，修复中）**：H104已由c2dcfeff完成提交/清理闭环后，起点tracked干净，仅保留原七组用户untracked；本项只处理Rust Harness SDK stdout解码失败与连接收尾，不混修H100响应result/error完整性或TS SDK。核对原审计、client_reader/ReaderOwner、Pending/Registration/FrameWriter、RequestEvents、decode_server_line/notification_event、SdkError、现有H204/H212/H256回归、Cargo/格式/CI及参考Codex remote.rs的解码失败收束路径。未修改生产或测试源码。
+
+原probe `cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_malformed_server_line_does_not_leave_request_pending --offline -j 1 -- --ignored --exact --nocapture` 实际exit101、0过1败0忽略、3.848秒（测试体0.38秒）；真实PowerShell读取请求、写not-json并保持stdout存活，观测completed=false、pending=1，终止合成子进程后才释放，不是编译失败。当前H204已为initialize/普通请求设置30/60秒有限本地等待，因此原审计“可能永久pending”是历史行为，不能照搬到当前；剩余根因是遇到明确坏帧仍继续等待、没有及时脱敏协议错误及连接收束，不以H204超时取代本项修复。
+
+关联正常/兼容对照 `cargo test -p deepagent-harness-sdk --lib h212_ --offline -j 1 -- --test-threads=1 --nocapture` exit0、5过0败0忽略、2.227秒。H212既有契约明确错/缺JSON-RPC版本帧不得抢占pending，允许后续合法响应恢复；现有decode_server_line把版本拒收与JSON/结构解析失败都表示serde_json::Error，若简单对所有Err执行break会回归已验收语义。已向用户一次确认边界：建议语法损坏或2.0但非合法response/notification时终止连接并统一交付脱敏协议首因；错/缺版本帧及合法未知通知方法仍按原规则拒收，不透明重派/重连。不得默默改H212测试来令H101通过，决定前不修改生产实现。
+
+本轮仅隔离HOME/PROFILE/APPDATA/TEMP/XDG/data、Memory/合成管道与PowerShell，offline复用共享Cargo target，child无CARGO_TARGET_DIR，不调用真实CLI服务/模型/网络/凭据/用户数据，不建额外大target。证据位于target/h101-repair-20261113与G:/h101-fixtures-20261113；本轮两项已终态无后台验收待等。H101仍修复中、无修复commit、未新增修复数；其余234验收、28历史跳过、10归并、3撤销不变，H180仍授权不修，H66验收保留。本项暂估4–8有效小时，依据统一reader/请求/事件生命周期和真实管道并发/正常/EOF/版本兼容消费方验证；决策、编译及环境等待另计且无可靠上界。全体剩余170–430有效小时仍为未逐项校准的历史低置信粗估，整体目标未完成。
+
 ### H-102：InstructionsLoaded 外部 hook 缺少兼容输入必需字段
 
 **级别：低（P3，条件性 hooks 兼容缺口）；触发条件：项目声明依赖 Claude Code `InstructionsLoaded` 输入字段的外部 hook，并在会话装配时成功加载指令文件。** hook 仍会被调用；本项是已触发事件的输入 DTO 不兼容，不是该生命周期事件完全未实现。

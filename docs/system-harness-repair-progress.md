@@ -13,11 +13,11 @@
 | 归并 | 10 | H173同根归并H127；H243归并H53；只在唯一有效项修复，不增加完成数 |
 | 撤销 | 3 | H-211/H-263/H-305，不作为缺陷或修复成果 |
 | 已修复（验收保留） | 1 | H66按用户2026-11-10收尾要求交付代码；现有定向验证有效，不记作完整验收通过，残余范围见E-H66-08 |
-| 修复中 | 0 | H104已按E06核实清理并闭环 |
-| 待修复 | 30 | 含H180授权不修；29项有效待处理 |
+| 修复中 | 1 | H101原probe仍红，H212兼容对照5过；待确认错误帧边界，未改生产代码 |
+| 待修复 | 29 | 含H180授权不修；28项有效待处理，另H101修复中 |
 | 阻塞待处理 | 0 | H104两根经E06只读确认不存在，清理阻塞解除 |
 
-未完整闭环槽位当前为 **31（含H180授权不修；有效未闭环30项：29待修、H66验收保留1）**；306唯一行已重核。本次H104清理阻塞解除、正式完整关闭1，不重复计生产修复；此前H107验收补强已闭环。历史跳过/归并/撤销无新增，不报完成率。
+未完整闭环槽位当前为 **31（含H180授权不修；有效未闭环30项：28待修、H101修复中1、H66验收保留1）**；306唯一行已重核。本次H104清理阻塞解除、正式完整关闭1，不重复计生产修复；H101仅复现/兼容对照，未计新增修复。历史跳过/归并/撤销无新增，不报完成率。
 
 本轮H138按E-H138-03新增验收1，累计208；其后H137按E-H137-04新增验收1，累计209。28历史跳过、10归并、3撤销不变，修复中0，56待修含H180授权跳过，实际55项有效待处理。
 
@@ -6357,7 +6357,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-98：DeepSeek Chat Completions 的 JSON 输出模式被拒绝或静默丢弃](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-99：Chat Completions 静默忽略配置中的 top_logprobs 默认值](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-100：Harness SDK initialize 接受缺少 result/error 的 JSON-RPC response](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-101：Harness SDK 忽略畸形 stdout 行并让请求持续 pending](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-101：Harness SDK 忽略畸形 stdout 行并让请求持续 pending](system-harness-audit-2026-10-21.md#h-101harness-sdk-忽略畸形-stdout-行并让请求持续-pending) | P3 | 修复中 | 原probe当前仍红；H204已有有限超时但未消除坏帧继续等待；不归并H212版本拒收 | 同一decode错误混合语法/结构失败与版本拒收；统一连接首因/收束边界待用户确认，未改生产 | E-H101-01：原probe0过1败、3.848秒；H212真实管道及gate正常对照5过0败、2.227秒 | 尚无修复commit | 保留H212已验收语义，不改测试掩盖回归；本项4–8有效小时，决策/编译等待另计 |
 | [H-102：InstructionsLoaded 外部 hook 缺少兼容输入必需字段](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-103：工具生命周期 hook 缺少调用 ID 与真实工具结果](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-104：Claude 兼容 hook 公共输入缺少 transcript_path 和 cwd](system-harness-audit-2026-10-21.md#h-104claude-兼容-hook-公共输入缺少-transcript_path-和-cwd) | P3 | 已修复并验收 | 用户接受DeepAgent原生只读视图；E06已核验两根不存在，提交/清理闭环 | 唯一外部Hook边界提供真实cwd与callback租约式原生Event快照；复用EventStore/JSON导出 | E-H104-01～06：原probe默认1/0、新9/0、Hooks97/0、当前CLI＋SDK各89/0/5、Tauri/fmt通过；全仓5332/4/152和strict旧失败保留 | 6445d497719ef915e23280a276cd9c62f49e15c8 | 非Claude JSONL；readonly非沙箱、强杀可能残留、O(n)成本未基准；本项余0，下一H101 |
@@ -10835,3 +10835,13 @@ AppCore `cargo clippy -p deepagent-app-core --all-targets --no-deps --offline -j
 **E-H104-06（用户清理后只读核验闭环，2026-11-13，已修复并验收）**：用户回传“已解决”后，实际只读核对 `G:/Code_Warehouse/DeepAgent-Studio/target/h104-repair-20261112` 与 `G:/h104-fixtures-20261112`，两根Test-Path均False；不以授权或口头答复代替文件状态，也未重试被拒绝的自动删除。原共享CLI SHA256仍8C03E6A63D3E64EBF14DF4AC67C4DC56FB87C2D8B9C35949D3CBA9BC391F30A4、用户原.snap.new仍D514BFE28BA6F207C714DDAD2FEFE9E521B3AA1FD7DF1AF243FA2CC2ED911F17，与恢复原值一致；tracked干净，七组用户untracked保留。未测量实际物理可用空间增量，不将约3.576GiB盘点当作实测回收。
 
 实现commit `6445d497719ef915e23280a276cd9c62f49e15c8`、先前回填 `dac573a7c1a7c8c006667d28ec4095d561cf5b6d` 均保留；本次仅同步双文关闭清理阻塞，不新增生产代码、不重跑构建、不amend/推送/建PR。E01～05原始失败、最终真实测试、全仓4败/strict旧失败、原生只读视图兼容性、未执行范围与性能/强杀限制不变，不宣称全仓全绿或完整Claude消息格式兼容。H104现于上述本机范围已修复并验收，本次正式关闭1，不重复计生产修复；306唯一行234验收、28历史跳过、10归并、3撤销、30待修含H180授权不修、0修复中/阻塞、1验收保留H66，29有效待修加H66共30项有效未完整闭环。H104交付余0；下一项优先复核H101畸形stdout导致SDK pending的运行状态问题。总余170–430有效小时仍低置信历史分组粗估，尚未逐项校准，编译/设备/依赖/人工等待另计，不承诺日历完工；整体目标未完成。
+
+### H-101 SDK坏帧与连接收束（修复中，2026-11-13）
+
+**E-H101-01（2026-11-13，当前复现与兼容决策待确认，修复中）**：H104已由c2dcfeff完成提交/清理闭环后，起点tracked干净，仅保留原七组用户untracked；本项只处理Rust Harness SDK stdout解码失败与连接收尾，不混修H100响应result/error完整性或TS SDK。核对原审计、client_reader/ReaderOwner、Pending/Registration/FrameWriter、RequestEvents、decode_server_line/notification_event、SdkError、现有H204/H212/H256回归、Cargo/格式/CI及参考Codex remote.rs的解码失败收束路径。未修改生产或测试源码。
+
+原probe `cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_malformed_server_line_does_not_leave_request_pending --offline -j 1 -- --ignored --exact --nocapture` 实际exit101、0过1败0忽略、3.848秒（测试体0.38秒）；真实PowerShell读取请求、写not-json并保持stdout存活，观测completed=false、pending=1，终止合成子进程后才释放，不是编译失败。当前H204已为initialize/普通请求设置30/60秒有限本地等待，因此原审计“可能永久pending”是历史行为，不能照搬到当前；剩余根因是遇到明确坏帧仍继续等待、没有及时脱敏协议错误及连接收束，不以H204超时取代本项修复。
+
+关联正常/兼容对照 `cargo test -p deepagent-harness-sdk --lib h212_ --offline -j 1 -- --test-threads=1 --nocapture` exit0、5过0败0忽略、2.227秒。H212既有契约明确错/缺JSON-RPC版本帧不得抢占pending，允许后续合法响应恢复；现有decode_server_line把版本拒收与JSON/结构解析失败都表示serde_json::Error，若简单对所有Err执行break会回归已验收语义。已向用户一次确认边界：建议语法损坏或2.0但非合法response/notification时终止连接并统一交付脱敏协议首因；错/缺版本帧及合法未知通知方法仍按原规则拒收，不透明重派/重连。不得默默改H212测试来令H101通过，决定前不修改生产实现。
+
+本轮仅隔离HOME/PROFILE/APPDATA/TEMP/XDG/data、Memory/合成管道与PowerShell，offline复用共享Cargo target，child无CARGO_TARGET_DIR，不调用真实CLI服务/模型/网络/凭据/用户数据，不建额外大target。证据位于target/h101-repair-20261113与G:/h101-fixtures-20261113；本轮两项已终态无后台验收待等。H101仍修复中、无修复commit、未新增修复数；其余234验收、28历史跳过、10归并、3撤销不变，H180仍授权不修，H66验收保留。本项暂估4–8有效小时，依据统一reader/请求/事件生命周期和真实管道并发/正常/EOF/版本兼容消费方验证；决策、编译及环境等待另计且无可靠上界。全体剩余170–430有效小时仍为未逐项校准的历史低置信粗估，整体目标未完成。
