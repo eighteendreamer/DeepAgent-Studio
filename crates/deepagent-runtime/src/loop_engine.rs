@@ -156,7 +156,8 @@ pub struct RuntimeConfig {
     /// definition, and context pressure is not a spend problem: the loop's own
     /// compaction keeps the window in bounds.
     pub max_total_tokens: Option<u64>,
-    /// Factual filesystem effects required before a final answer is accepted.
+    /// Explicit final filesystem effects required before accepting an answer.
+    /// Successful tool history never adds implicit net-change requirements.
     pub completion_policy: crate::completion::CompletionPolicy,
     /// Number of times completion evidence may be fed back for self-repair.
     pub max_completion_retries: usize,
@@ -660,7 +661,6 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         let mut finished = false;
         let mut completion_failures = 0usize;
         let mut adversarial_refutes = 0usize;
-        let mut tool_effects: Vec<crate::completion::ToolEffectRecord> = Vec::new();
 
         // Verification state persists across attempts (tracks loop detection).
         let mut reflection_engine = self
@@ -826,20 +826,8 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                         }
                     }
 
-                    let effective_policy = {
-                        let mut policy =
-                            crate::completion::CompletionPolicy::from_tool_effects(&tool_effects);
-                        policy.require_create_or_modify |=
-                            self.config.completion_policy.require_create_or_modify;
-                        policy.require_delete |= self.config.completion_policy.require_delete;
-                        policy.require_move |= self.config.completion_policy.require_move;
-                        policy
-                            .required_paths
-                            .extend(self.config.completion_policy.required_paths.iter().cloned());
-                        policy
-                    };
                     if let Some(observation) =
-                        self.completion_evidence_feedback(&effective_policy)?
+                        self.completion_evidence_feedback(&self.config.completion_policy)?
                     {
                         completion_failures += 1;
                         if completion_failures <= self.config.max_completion_retries {
@@ -848,11 +836,9 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                         }
                         // Upstream parity (grok stop_gate.rs: continuation cap
                         // => AllowStop; Claude Code stop hooks never fail the
-                        // run): once the retry budget is exhausted this gate
-                        // FAILS OPEN — record the unmet requirement and accept
-                        // the completion. The extractor is heuristic; killing
-                        // a run whose work may be correct is worse than
-                        // letting one slip through.
+                        // run): once the retry budget is exhausted, preserve
+                        // the existing fail-open semantics and record the unmet
+                        // explicit requirement before accepting completion.
                         let reason = completion_failure_reason(&observation);
                         session.append(EventPayload::Note {
                             text: format!(
@@ -991,20 +977,8 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                         }
                     }
 
-                    let effective_policy = {
-                        let mut policy =
-                            crate::completion::CompletionPolicy::from_tool_effects(&tool_effects);
-                        policy.require_create_or_modify |=
-                            self.config.completion_policy.require_create_or_modify;
-                        policy.require_delete |= self.config.completion_policy.require_delete;
-                        policy.require_move |= self.config.completion_policy.require_move;
-                        policy
-                            .required_paths
-                            .extend(self.config.completion_policy.required_paths.iter().cloned());
-                        policy
-                    };
                     if let Some(observation) =
-                        self.completion_evidence_feedback(&effective_policy)?
+                        self.completion_evidence_feedback(&self.config.completion_policy)?
                     {
                         completion_failures += 1;
                         if completion_failures <= self.config.max_completion_retries {
@@ -1077,17 +1051,9 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                             self.registry,
                         )?;
                     }
-                    let tool_name = invocation.name.clone();
-                    let tool_args = invocation.arguments.clone();
                     let observation = self
                         .execute_tool(session, session_id, invocation, provider_items_persisted)
                         .await?;
-                    if observation.ok {
-                        tool_effects.push(crate::completion::ToolEffectRecord {
-                            tool_name,
-                            arguments: tool_args,
-                        });
-                    }
                     last_observations = vec![observation];
                 }
 
@@ -1095,21 +1061,9 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     if let Some(persistence) = self.config.action_persistence.as_ref() {
                         persistence.register_invocations(&mut invocations, self.registry)?;
                     }
-                    let tool_inputs: Vec<(String, serde_json::Value)> = invocations
-                        .iter()
-                        .map(|inv| (inv.name.clone(), inv.arguments.clone()))
-                        .collect();
                     last_observations = self
                         .execute_tools(session, session_id, invocations, provider_items_persisted)
                         .await?;
-                    for (obs, (name, args)) in last_observations.iter().zip(tool_inputs) {
-                        if obs.ok {
-                            tool_effects.push(crate::completion::ToolEffectRecord {
-                                tool_name: name,
-                                arguments: args,
-                            });
-                        }
-                    }
                 }
                 AgentDecision::Continue => {
                     last_observations = Vec::new();
@@ -2589,6 +2543,10 @@ enum VerifyStep {
 #[cfg(test)]
 #[path = "post_tool_commit_tests.rs"]
 mod post_tool_commit_tests;
+
+#[cfg(test)]
+#[path = "completion_policy_tests.rs"]
+mod completion_policy_tests;
 
 #[cfg(test)]
 #[path = "tool_observation_tests.rs"]

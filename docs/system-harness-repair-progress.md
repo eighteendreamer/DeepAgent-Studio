@@ -6550,7 +6550,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-291：重复编号撤销，归并 H-126（2026-10-25 更正）](system-harness-audit-2026-10-21.md) | — | 归并 | 唯一有效项 H-126 | 只关联原证据，不新增修复任务 | 验收由 H-126 统一记录 | 无独立修复提交 | 不独立计数或估时 |
 | [H-292：画布场景声明撤销后旧绑定仍参与实际调用，非瞬时失败阻断健康候选](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E01原probe0/1及E02六场景TDD0/3保留；仅E03本机范围 | 同一资格集合+provider gate快照，绑定只排序；显式/视频scope共用当前声明，旧偏好不清删 | 默认场景8/0、正式workflow2/0、H290事务21/0、AppCore1592/0/46忽略；全仓4909/1旧H306/199忽略；CLI/SDK/Tauri/fmt过，strict旧失败 | `647b98554d16605c14cfd2b5ec9e53f3bcfe4575`；另docs回填 | 显式失格调用改拒绝；已准备快照不取消，非沙箱权限；本项0，后续实际78、下一H177；总200–400低置信有效小时，等待另计 |
 | [H-293：共享终端租约过期后真实 PTY 存活但没有续租、接管或清理路径](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E01～06；Windows本机离线真实PTY/文件SQLite，非历史跳过 | 既有execution_leases原子过期CAS+Backend renew，统一PTY owner gate，失败保留清理重试；旧token/legacy旁路拒绝 | 原生6/0、生命周期7/0、相关229/0/1、workspace4715/1旧H306/218；TS4/0、桌面build/Tauri check/workspace fmt通过；旧lint/旧Tauri格式和未验范围见E04～06 | `6911b00713339b404f4fead8df223d0a624bc65f`；E-H293-07 | 本项实施验收与代码提交余0；客户端显式renew/takeover，非后台心跳/宿主重启附着；SSH不连真实远端；下一H84；总200–400有效小时历史粗估，等待另计 |
-| [H-294：完成门把每次成功文件操作强制转换为最终净变化，临时创建后删除被误判未完成并额外请求模型](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-294：完成门把每次成功文件操作强制转换为最终净变化，临时创建后删除被误判未完成并额外请求模型](system-harness-audit-2026-10-21.md#h-294完成门把每次成功文件操作强制转换为最终净变化临时创建后删除被误判未完成并额外请求模型) | P3 | 阻塞待处理（代码及功能验收完成，仅产物清理） | 原probe1/2、扩展1/3和Runtime2/1红保留，环境/夹具失败不冒充产品；无归并/跳过 | 删除Runtime成功操作→最终diff自动策略，保留显式policy、原工具/净证据/事件/权限/取消链，公开helper兼容opt-in | Runtime4/0+原policy12/0，正式Kernel4/0含9场景与SQLite重开；workspace160目标5297/6/155（额外冷编译夹具隔离仍0/1）；构建/fmt过，strict基线及诊断lint详E01～05 | 待独立提交，取得真实hash后另做回填，不amend | 功能/验收余0；两根约1.16GiB仅清理受阻，核验/提交约0.1–0.3有效小时、人工/策略等待另计；下一H107会话生命周期，H180不修；全余170–430有效小时旧低置信估算 |
 | [H-295：TypeScript SDK 以客户端全局审批屏障结束单个 turn，另一会话的待答审批会阻塞已完成流](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E01当前2/1与TDD7/11留证；E03原探针默认执行及完整消费验收，非历史跳过 | 原局部view消费匹配terminal即收尾；审批留原显式snapshot owner，不join全局、不自动代答 | SDK177/0/0、原3/0、新18/0、owned21/0、代次16/0、真实stdio2/0+JSONL1/0；fmt/typecheck/3MJS过；E03命令与未验 | `3becdf8547d2715632c23486d4443fe12986c3f6`；文档回填另提交，不amend | 本机修复/验收/提交余0；E04清理策略阻塞251,443,695字节；流自然结束不再隐式保证审批settled；下一H215；全余200–400历史粗估、等待另计 |
 | [H-296：模型能力解析以 context_window 是否存在决定整份元数据来源，单独公布的输出上限被 fallback 覆盖](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-297：默认字符密度计数低估官方离线文本，冷计量可漏过既定压缩压力阈值](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
@@ -10599,3 +10599,29 @@ H-146 实现、测试和当时双文档已独立提交 `0b1209cb2b4d0b62545c8d65
 306唯一台账当前核对：230已修复并验收、28历史跳过、10归并、3撤销、34待修（含H180授权不修）、0修复中/阻塞、1验收保留H66。本轮新增代码修复/功能验收1，另关闭H93旧清理；新增历史跳过/归并/撤销均0。有效待修33项，加H66共34项未完整闭环，不报完成率。本项代码/限定验收/清理余0，仅余提交与hash回填。下一准备H294完成门误判并额外请求模型，按运行状态/重复副作用影响优先，尚未改其代码。全部剩余仍沿历史170–430有效小时低置信分组估算（模型、Hook、画布、状态持久化），尚未逐项重估；编译/设备/依赖/人工等待另计，不承诺精确日期。整体goal保持active。
 
 **E-H145-06 提交回填**：本项五份Rust实现/测试和当时两份文档已独立提交 `5691d0762c55adb396ffe3080d13aa1fea97f293`（【fix】拒绝 Chat 思考模式下的强制工具选择），七份白名单无生成物/凭据/用户untracked，未推送或创建PR。提交后tracked干净、原七组untracked保留，清理已核验，完整交付剩余0。取得代码hash后本次普通文档回填，不amend/不反复填自身hash；原待提交描述为当时记录，当前以本段及台账为准。230已修复、33有效待修+H66保留计数不变，原全仓五败/strict失败与未验范围不变；下一准备H294，整体goal active。
+
+### H-294 整改证据与交付（2026-11-12）
+
+根因是Runtime把每次成功write/edit/delete/move参数自动变成最终净变更要求，再与显式CompletionPolicy合并；checkpoint最初/当前对比Unchanged本来正确。现仅移除run-local成功参数收集、两完成分支的自动策略推导/合并，直接消费明确config.completion_policy；工具结果、action状态、真实净证据/事件、Stop/Verification、审批/权限/取消、重试上限及原fail-open语义保留。不猜prompt、不对临时文件特判、不伪造Modified、不新增状态库；公开ToolEffectRecord/from_tool_effects为源码兼容保留原行为，只明确其为opt-in且不能代表用户目标。无新依赖/配置/数据库或协议迁移，API签名不变。
+
+| 实际命令 | 结果与边界 |
+|---|---|
+| `cargo test -p deepagent-app-core --test kernel_v2_e2e completion_net_effect --offline -j 1 -- --include-ignored --nocapture`（修前原probe） | 1过2败，原故障均5请求/2blocked/4证据失败/fail-open，最终文件与两个Completed工具动作仍正确 |
+| 扩展同命令加`--test-threads=1`（修前） | 最终1过3败；修改恢复真实7请求/2blocked。此前遗漏子进程隔离环境导致fable配置错误、未按write要求读原文件的夹具失败均保留，不计行为复现；补真实read后再测，不改生产权限 |
+| `cargo test -p deepagent-runtime --lib completion_policy_tests --offline -j 1 -- --nocapture` | 初次测试I/O错误转换未编译，不计红测；补齐后2过1败，修后3/0，补Created正对照后最终4/0，含单/批×两完成分支、显式策略、拒绝/失败/取消 |
+| `cargo test -p deepagent-runtime --lib completion::tests --offline -j 1 -- --nocapture` | 原显式policy与公开兼容helper12/0 |
+| `cargo test -p deepagent-app-core --test kernel_v2_e2e completion_net_effect --offline -j 1 -- --test-threads=1 --nocapture` | 最终4/0/0，原probe进入默认；9个真实文件/标准工具/正式模型内核场景全部通过，真实净证据及SQLite重开对照，测试体5.92秒 |
+| `cargo build -p deepagent-runtime --offline -j 1` | exit0 |
+| `cargo test --workspace --offline --no-fail-fast -j 1 -- --test-threads=2 --quiet` | exit101，160顶层目标均终态，5297过6败155忽略；2287.70秒含18分29秒编译，排除1条内部child，非重复累加。Runtime477/1/6、Kernel363/1/8、AppCore1657/2/52、Builtins376/0/3 |
+| Runtime及全仓 `clippy --all-targets --all-features --offline -j 1 -- -D warnings` | 严格均exit101，原Runtime model_agent.rs:298 clone_on_copy及workflow/canvas.rs:32 derivable_impls，不改无关代码 |
+| `cargo clippy -p deepagent-runtime --all-targets --all-features --offline -j 1 -- -D warnings -A clippy::clone_on_copy -A clippy::derivable_impls` | exit0，只是临时允许两类基线lint的诊断性检查（44.90秒），不是严格全绿/永久放宽规则 |
+| 同一AppCore binary `verification_commands::lifecycle_tests::dropping_active_verification_future_stops_real_descendant --exact --nocapture` | 相同隔离环境0/1，15.99秒，热夹具drop停止无副作用，冷夹具4004ms无compiler-started；不循环重试、不完全归因 |
+| `cargo fmt --all -- --check`、`git diff --check` | 最终通过；四份本项Rust源码前后冻结一致 |
+
+正式9场景：Create/Delete各2请求；Modify3；CreateThenDelete/ReadThenSameWrite各3（原5）；ModifyThenRestore5（原7）；MoveTwice/MoveThenDelete各3；MultipleWrites6（含每次覆盖前read）。全部零blocked、零证据失败、无fail-open，Completed actions/成功tool结果/唯一succeeded正确，sentinel不变；checkpoint逐路径Unchanged/Created/Modified/Deleted真实保留。9组均释放宿主/DB后打开同文件SQLite，run_events/session events逐项相同、actions仍Completed、transport计数不变；不是OS进程冷启。Runtime另用真实临时文件确认两完成分支/单批调用幂等不再隐含目标，明确策略未满足仍拒绝/预算后原fail-open、真实Created满足仍通过；失败工具与权限拒绝保持失败结果，操作后取消仍Cancelled、不发完成证据。
+
+全仓六败详审计E04：既有build-started夹具、图片DACL恢复、CLI隔离HOME快照、H306空画布提示词、Runtime DACL恢复，以及本轮额外验证器cold构建夹具失败。额外失败源码未改、发生在CommandRunner等待编译marker且未进入本轮完成门；单跑仍失败，未完全归因、未修改其超时/跳过或断言。完整验收G盘隔离HOME/PROFILE/APPDATA/TEMP/XDG/data、清继承凭据/代理/DEEPAGENT环境、offline且不给child设CARGO_TARGET_DIR；共享CLI和用户原.snap.new预备份、finally恢复并核原hash，七组用户untracked保留。没有真实供应商/收费服务/内网/凭据或用户数据操作。未验真实模型决策或费用、OS冷启/强杀、其他OS/MSRV/多宿主/并发压力、完整Desktop UI/前端build/Tauri check；本轮无桥接/前端类型变化，Runtime生产者与正式AppCore/Kernel/CLI/SDK消费者通过相应全仓测试覆盖，不能因此宣称全仓绿。
+
+仅清理受阻：target/h294-repair-20261112为23文件82,365,511逻辑字节，G:/h294-fixtures-20261112为2406文件/4248条目1,163,306,807字节，合计约1.16GiB。相关进程已结束，祖先/后代无reparse；自动原生PowerShell删除在CreateProcess前被策略拒绝，脚本未启动、零删除，不升权/重试/换工具绕过。已交精确两根命令请用户获准终端实际清理，回传后只读确认；源码/用户文档/共享target/debug/依赖缓存不在范围，产物不提交。先独立提交本项代码、测试与当时双文，取得真实hash后普通文档回填，不amend/推送。
+
+当前306唯一台账：230已修复并验收、28历史跳过、10归并、3撤销、33待修（含H180授权不修）、0修复中、1阻塞H294仅清理、1验收保留H66。本轮新增代码修复/功能验收1，正式关闭新增0，历史跳过/归并/撤销新增0；有效待修32项，另H294清理与H66共34项未完整闭环，不报完成率。本项仅余清理核验/提交约0.1–0.3有效小时，人工/策略等待另计。下一准备H107会话结束hook错误触发的重复生命周期问题，尚未开始生产修改。全部剩余仍历史170–430有效小时低置信分组估算（模型、Hook、画布、持久化），未逐项重校准，编译/设备/依赖/人工等待另计，不承诺精确完工日期。整体goal active。

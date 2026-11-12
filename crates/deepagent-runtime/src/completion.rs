@@ -39,9 +39,8 @@ pub struct CompletionFailure {
     pub required_effects: Vec<String>,
 }
 
-/// A record of a successful tool invocation's expected filesystem effect,
-/// used to derive a `CompletionPolicy` from actual tool usage rather than
-/// prompt keyword guessing (the removed anti-pattern).
+/// Input to the legacy, explicit opt-in `CompletionPolicy::from_tool_effects`.
+/// Runtime does not collect these records or infer final goals from tool calls.
 #[derive(Debug, Clone)]
 pub struct ToolEffectRecord {
     pub tool_name: String,
@@ -53,8 +52,11 @@ impl CompletionPolicy {
         !self.require_create_or_modify && !self.require_delete && !self.require_move
     }
 
-    /// Derive a `CompletionPolicy` from the tool calls that actually executed
-    /// successfully during this run.
+    /// Legacy opt-in helper for callers explicitly requesting these final diffs.
+    /// Kept source-compatible; Runtime never invokes it automatically.
+    /// Tool success describes an action, not a requirement to retain its net
+    /// change: this helper is unsuitable for inferring user goals, temporary
+    /// operations, restore chains or idempotent writes.
     ///
     /// Maps well-known mutation tools to their expected filesystem effects:
     /// - `write_file`, `edit_file`, `multi_edit` → `CreateOrModify(path)`
