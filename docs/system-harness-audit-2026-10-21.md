@@ -6377,7 +6377,7 @@ Models自身all-target/all-feature/no-deps严格lint exit101/7.747秒，唯一�
 
 ### H-158：Responses named `tool_choice` 接受官方不支持的 `custom` / `web_search` 类型并进入 wire
 
-**已修复并验收（2026-11-12，限下述本机范围），本轮产物已清理核验；独立提交hash另记E-H158-05。** 以下原始失败证据保留；完整workspace与严格lint仍有已列明的无关失败，不报全仓绿。本轮仅修Responses choice形状与最终函数关联（同一请求边界根因）；不合并H-93 Chat形状转换或H-145 thinking限制。
+**已修复并验收（2026-11-12，限下述本机范围），本轮产物已清理核验；独立提交 `451eb3e9d2a2d87bcc979f4874ccfdd0a4054955`，详E-H158-05。** 以下原始失败证据保留；完整workspace与严格lint仍有已列明的无关失败，不报全仓绿。本轮仅修Responses choice形状与最终函数关联（同一请求边界根因）；不合并H-93 Chat形状转换或H-145 thinking限制。
 
 E-H158-01（当前复现/修前方案，2026-11-12）：实际执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e responses_tool_choice:: --offline -j 1 -- --include-ignored --test-threads=1`，exit101、2过3败、测试体1.34秒，原12组request/default×普通/cancel-aware最终缺失函数均越过transport，正式保存设置的ChatService亦1次请求；cancel=false不是取消中断验收。新增 `cargo test -p deepagent-models --test responses_tool_choice --offline -j 1 -- --nocapture`，exit101、1过2败，覆盖直接serde与客户端边界。仅合成身份/工具、受控transport及临时SQLite，离线运行；正式探针HOME/PROFILE/TEMP/data隔离至本轮G盘fixture，未读真实凭据。重新核对[DeepSeek Responses官方参数](https://api-docs.deepseek.com/zh-cn/api/create-response/)：named仅function，扁平name；并复核Codex String/auto与DeepSeek Harness不映射choice的源码，不将其当作完整named实现。拟新增Models内部typed choice解析，共用既有工具名校验；设置复用同一形状入口，最终request validate/serde在defaults与工具kind投影后要求唯一同名function。公开Value字段/设置存储兼容保留，不增数据库/迁移/工具或运行链，不静默改auto；H93/H145另项治理。实现与验收待后续追加。
 
@@ -6392,6 +6392,8 @@ E-H158-04（完整回归、兼容与清理，2026-11-12）：实际 `cargo test 
 本轮在G盘隔离HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/XDG/data，清除继承凭据/代理/DEEPAGENT环境，仅保留只读Cargo/Rustup缓存入口，offline，不向测试child设置CARGO_TARGET_DIR。共享target/debug/deepagent.exe与用户原.snap.new预先备份，全仓finally恢复，清理前后均核原SHA256相同；其余用户untracked不改不提交。七份Rust源码验收前后冻结一致，最终根fmt/diff通过；`cargo build -p deepagent-models --all-features --offline -j 1` exit0。公开Value字段/SQLite/TS/Tauri签名无变化，无新依赖/配置迁移；以往非法custom/web_search/nested/超长名称choice现在明确本地Invalid，存量设置不重写，动态缺失函数不擅自启用或改auto。未验证真实DeepSeek接受/服从choice、真实工具执行、持久OS子进程重启、动态权限撤销、多宿主/其他OS/MSRV；cancel=false不算取消验收。无前端或Tauri桥接/类型改动，未跑前端build、桌面check/UI；H93/H145仍待修。
 
 清理：两根及祖先/后代均确认无reparse point、无相关测试/Cargo进程，target/h158-repair-20261112为25文件82,365,838逻辑字节，G:/h158-fixtures-20261112为2339文件/4168条目1,160,056,046字节，合计约1.16GiB。自动Remove-Item在CreateProcess前被策略拒绝，脚本未启动、零删除；未升权、重试或换工具绕过。用户实际清理并回传“已删除”后，只读Test-Path两根均False，清理闭环，不将拒绝的调用归为实际执行，不推算物理释放量；未删共享缓存、源码或用户文件。独立提交及取得真实hash后的普通文档回填另记，不amend、不推送。
+
+E-H158-05（提交回填，2026-11-12）：七份本项Rust实现/测试及当时两份文档已独立提交 `451eb3e9d2a2d87bcc979f4874ccfdd0a4054955`（【fix】统一 Responses 工具选择及最终引用校验），九份白名单文件，无生成物、凭据或用户untracked；未推送/建PR。代码、限定验收、清理与文档闭环，取得hash后另做本次普通文档回填，不amend或填写文档提交自身hash；原全仓/lint失败与未执行验收继续保留。下一准备H93，再单独处理H145；整体修复任务仍active。
 
 **级别：中（P2，条件性请求阻断或工具强制失效）；触发条件：用户通过 Responses 高级设置或 developer JSON 将 `tool_choice` 配置成 `{"type":"custom","name":"apply_patch"}` 或 `{"type":"web_search"}`。** 普通默认值为省略/`auto`，不会触发；本项不等同于 H-93 的 Chat 形状转换，也不否定 `tools[]` 可以声明 custom `apply_patch` 或 Pro 的 `web_search`。
 
