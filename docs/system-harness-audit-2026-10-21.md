@@ -4508,7 +4508,7 @@ E-H91-03续接（2026-11-08，最终输入重新验证，未关闭）：final2�
 
 ### H-93：Chat Completions 路由未转换 Responses 命名工具选择的字段形状
 
-**当前状态（2026-11-12）：代码修复与本机功能验收完成，阻塞待处理（仅产物清理），待独立提交hash回填。** 以下原审计失败证据保留；本轮仅修协议形状转换与Chat选择形状校验，H145 thinking限制和H158既有Responses规则不混改。完整workspace与严格lint非全绿，详E-H93-01～05。
+**当前状态（2026-11-12）：代码修复与本机功能验收完成，已独立提交 `2bab82b6883d7463a96bcb941e1bbb91a975a9cc`，阻塞待处理（仅产物清理）。** 以下原审计失败证据保留；本轮仅修协议形状转换与Chat选择形状校验，H145 thinking限制和H158既有Responses规则不混改。完整workspace与严格lint非全绿，详E-H93-01～06。
 
 E-H93-01（本轮修前复现与方案，2026-11-12）：`cargo test -p deepagent-models --lib audit_chat_tool_choice_translates_ --offline -j 1 -- --ignored --nocapture` 初次0过2败，其中request探针先被H150后来新增的空input门禁拒绝，不能当作原形状缺陷复现；default探针仍直接显示flat实际值对nested预期值。只补原探针合法非空消息、对应function schema及显式thinking关闭后，原命令再次0过2败，两项均在原wire形状断言失败，未改生产。新增 `cargo test -p deepagent-models --test chat_tool_choice --offline -j 1 -- --nocapture` 为0过4败，覆盖request/default、Responses转Chat/原生Chat、四个发送入口、无值/字符串/命名、显式覆盖、错误零transport及直接serde。真实供应商未调用；模型仅为受控Chat SSE，输入/Key均合成。重新查证[官方Chat](https://api-docs.deepseek.com/zh-cn/api/create-chat-completion/)与[官方Responses](https://api-docs.deepseek.com/zh-cn/api/create-response/)的嵌套/扁平差异，复核DeepSeek Harness不映射choice的声明，不将其视为本系统实现。拟在H158现有模块共享封闭choice解析，ResponseRequest和ResponseDefaults均按Responses形状进入唯一to-Chat映射；原生Chat只接受Chat形状，禁止猜测两种对象或静默auto。公开JSON字段/配置存储不变，不切换主运行wire、不增依赖/运行/权限边界；Chat named最终工具关联及thinking组合不在本轮扩修，成功对照全部关闭thinking。验收结果后续追加。
 
@@ -4523,6 +4523,8 @@ E-H93-04（完整workspace/兼容/验收限制，2026-11-12）：实际 `cargo t
 所有完整验收在本轮独立G盘HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/XDG/data执行，清除继承凭据/代理/DEEPAGENT变量，仅保留Cargo/Rustup依赖缓存入口，offline且不向child设CARGO_TARGET_DIR。全仓前备份共享target/debug/deepagent.exe及用户原.snap.new，finally恢复并多次核原SHA256一致；用户七组untracked不改不提交，无新增ignore或接受快照。公开Rust字段/Settings/SQLite/TS/Tauri形状不变，无依赖/配置/数据迁移，未切默认Responses路线。ResponseDefaults继续使用Responses扁平choice，默认值若曾手写Chat嵌套对象现在明确拒绝；直接Chat只接受原生嵌套，避免含混猜测，非法错误不回显值。未验真实DeepSeek响应或服从选择、真实工具执行、OS冷启持久化、多宿主/其他OS/MSRV、真实中途取消、Chat named最终工具关联；thinking支持归H145。无前端/Tauri桥接类型改动，未执行前端build、Tauri check/UI。功能修复完成与全仓/lint全绿区分，提交和清理后续续记。
 
 E-H93-05（清理受阻，2026-11-12）：实际核对无相关Cargo/rustc/测试进程，两个精确根及祖先/后代无reparse point；target/h93-repair-20261112为19文件82,347,348逻辑字节（含日志及已恢复CLI/snapshot的备份），G:/h93-fixtures-20261112为2331文件/4147条目1,159,953,006字节，合计约1.16GiB。原生PowerShell Remove-Item在CreateProcess前被策略拒绝，脚本未启动、零删除；未升权、重试或换工具绕过，已提供两根精确命令请用户在获准终端实际清理，完成后只读核验。源码/共享缓存/用户文件不在删除范围，不把“允许”推定为已执行。代码、测试及当时双文先独立提交，取得hash另做普通回填，不amend、不推送；功能验收不等于清理交付闭环。
+
+E-H93-06（提交回填，2026-11-12）：本项四份Rust实现/测试及当时两份文档独立提交 `2bab82b6883d7463a96bcb941e1bbb91a975a9cc`（【fix】统一 Chat 工具选择的协议转换边界），六份白名单，无生成物、凭据或用户untracked；未推送/建PR。取得真实代码hash后另做本次普通文档回填，不amend、不反复填写文档提交自身hash。提交后tracked干净、用户七组untracked保留；两根只读Test-Path仍True，清理阻塞不因提交被消除。下一准备H145，整体任务仍active，不将仅本项清理阻塞外推为全系统无法推进。
 
 **级别：低（P3，条件性适配器缺陷）；触发条件：调用方显式使用 `WireMode::ChatCompletions`，并为 `ResponseRequest.tool_choice` 或客户端默认值设置指定函数的对象形式。** 字符串形式 `auto`、`none`、`required` 不受该形状问题影响。当前桌面正式模型组装固定使用 Responses，因此本项不能解释默认桌面对话故障。
 
