@@ -18,6 +18,9 @@ use crate::chat::{
 };
 use crate::stream::{DeltaObserver, ModelStreamEvent};
 
+/// DeepSeek Chat user_id is bounded by UTF-8 bytes, not JSON-escaped length.
+const MAX_USER_ID_BYTES: usize = 512;
+
 /// A DeepSeek Chat Completions request.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatCompletionRequest {
@@ -32,6 +35,8 @@ pub struct ChatCompletionRequest {
     pub max_tokens: Option<u32>,
     pub top_p: Option<f32>,
     pub tool_choice: Option<serde_json::Value>,
+    /// Internal end-user identity, serialized as Chat's `user_id` (Responses
+    /// uses `user`). Kept named `user` for source/defaults compatibility.
     pub user: Option<String>,
     /// Attachment id → base64 data URL, resolved by the caller that owns
     /// attachment storage (materialized into `image_url` content parts).
@@ -46,6 +51,8 @@ impl Serialize for ChatCompletionRequest {
     where
         S: Serializer,
     {
+        self.validate_user_identity()
+            .map_err(serde::ser::Error::custom)?;
         self.validate_image_roles()
             .map_err(serde::ser::Error::custom)?;
         self.validate_image_references()
@@ -91,7 +98,7 @@ impl Serialize for ChatCompletionRequest {
             map.serialize_entry("tool_choice", value)?;
         }
         if let Some(value) = &self.user {
-            map.serialize_entry("user", value)?;
+            map.serialize_entry("user_id", value)?;
         }
         map.end()
     }
@@ -188,6 +195,7 @@ impl ChatCompletionRequest {
     }
 
     pub fn validate(&self) -> Result<()> {
+        self.validate_user_identity()?;
         self.validate_image_roles()?;
         self.validate_image_references()?;
         if self
@@ -218,6 +226,19 @@ impl ChatCompletionRequest {
             ));
         }
         validate_function_tool_schemas(&self.tools)?;
+        Ok(())
+    }
+
+    fn validate_user_identity(&self) -> Result<()> {
+        if self
+            .user
+            .as_ref()
+            .is_some_and(|user| user.len() > MAX_USER_ID_BYTES)
+        {
+            return Err(CoreError::invalid(
+                "Chat Completions user_id must not exceed 512 UTF-8 bytes",
+            ));
+        }
         Ok(())
     }
 
@@ -765,6 +786,22 @@ mod tests {
         let request = ChatCompletionRequest::new("deepseek-flash", vec![Message::user("plain")]);
         let json = serde_json::to_value(&request).unwrap();
         assert_eq!(json["messages"][0]["content"], "plain");
+    }
+
+    #[test]
+    fn h146_user_identity_utf8_byte_limit_applies_to_validation_and_serialization() {
+        for (value, valid) in [
+            ("x".repeat(512), true),
+            ("界".repeat(170) + "ab", true),
+            ("x".repeat(513), false),
+            ("界".repeat(171), false),
+        ] {
+            let mut request =
+                ChatCompletionRequest::new("deepseek-flash", vec![Message::user("fixture")]);
+            request.user = Some(value);
+            assert_eq!(request.validate().is_ok(), valid);
+            assert_eq!(serde_json::to_value(request).is_ok(), valid);
+        }
     }
 
     #[test]

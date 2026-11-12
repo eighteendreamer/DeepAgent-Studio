@@ -5907,6 +5907,8 @@ H-142提交回填（2026-10-28，E-H142-08）：代码、默认测试、SDK READ
 
 ### H-146：DeepSeek Chat 用户隔离字段被序列化为 Responses 的 `user`
 
+**当前状态（2026-11-12）：代码修复与本机功能验收完成，阻塞待处理（仅产物清理）；本项独立提交及hash回填另记进度文档。** 完整workspace及严格lint仍有已列明的无关失败，不声称全绿。以下原失败证据保留；当前实现及验证记录见E-H146-01～07。
+
 **级别：中（P2/P3，条件性供应商身份与隔离语义缺失）；触发条件：调用方使用 `WireMode::ChatCompletions` 并为模型客户端配置 `ResponseDefaults.user`。** DeepSeek Chat Completions 要求请求字段为 `user_id`；Responses API 使用 `user`。当前两个协议共用一个默认字段，但 Chat serializer 没有做协议级映射。
 
 #### 生产链与动态证据
@@ -5924,7 +5926,21 @@ H-142提交回填（2026-10-28，E-H142-08）：代码、默认测试、SDK READ
 
 - 当前 Chat 请求未必会因此立刻返回错误，但 provider 可能忽略 `user`，导致配置的用户身份没有参与 Chat 路由的用户区分、内容安全审查身份、KV cache 隔离、调度隔离或多用户追踪。不能据此宣称多用户隔离已经生效。
 - 修复应在 Chat adapter 中显式把内部用户身份序列化为 `user_id`，并让 Responses adapter 保持 `user`；不要简单把公共字段改名后同时影响两种协议。需要补充两条协议的 wire 回归、空值省略、Unicode/长度边界和默认值与请求级值优先级测试；若 provider 对身份字段有字符集或长度限制，应在适配器边界给出结构化 invalid-input。
-- 本轮只添加缺陷探针和审计记录，生产行为未修改。证据是正式本地 adapter 的最终请求体捕获，未调用真实 DeepSeek、未验证 provider 对错误字段的具体响应，也未覆盖 Chat 非流式请求、不同账号或多宿主调度；严重级别保持条件性。
+- 首轮审计只添加缺陷探针和审计记录，当时生产行为未修改。证据是正式本地 adapter 的最终请求体捕获，未调用真实 DeepSeek、未验证 provider 对错误字段的具体响应，也未覆盖 Chat 非流式请求、不同账号或多宿主调度；严重级别保持条件性。
+
+#### E-H146 整改证据（2026-11-12）
+
+- **E-H146-01（复现/TDD）**：开始前HEAD `24c7f20207d67532671962942fbbbfc43f9e042d`、tracked干净，七项既有untracked不改动。首次叶测试名误加`--exact`实际0测试，不作为复现证据；纠正为 `cargo test -p deepagent-models audit_chat_user_identity_uses_provider_user_id_field --offline -j 1 -- --ignored --nocapture` 后，真实执行原探针 **0 passed / 1 failed**，正式ModelClient Chat wire仍含`user`且无`user_id`。新增默认回归修前2过2败（Chat字段两项失败，Responses/省略对照通过）。补充长度边界测试先红：1过2败，513字节值仍越过客户端边界；均仅合成身份和离线transport，无真实请求。
+- **E-H146-02（契约/实现）**：本日重新打开[官方Chat文档](https://api-docs.deepseek.com/zh-cn/api/create-chat-completion/)及[Responses文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)，确认Chat字段`user_id`、Responses字段`user`，Chat硬限制UTF-8不超过512字节，ASCII字符集是建议而非强制。内部`ResponseDefaults.user`/`ChatCompletionRequest.user`保留源码兼容，只改Chat serializer映射；Chat请求validate与直接serde序列化共用一个长度校验，超限返回不含身份内容的Invalid，不截断、不清洗。Responses已有字符校验和设置/SQLite字段不动，无新依赖/配置/SQL迁移，不切换主运行的Responses路由。
+- **E-H146-03（专项）**：`cargo test -p deepagent-models --lib user_identity --offline -j 1 -- --nocapture`最终7过0败；包含正式原探针默认执行、两次成功Chat SSE调用（默认身份/请求覆盖）、空值省略、Responses独立字段、UTF-8边界，以及直接Chat/Response转Chat×普通/cancel-aware×默认/覆盖的计数transport测试。另补Responses正常transport对照，随下述全特性执行。矩阵的cancel标志为false，仅验证cancel-aware入口同样映射/校验，不冒充中途取消测试；合成transport使用明确的`synthetic-dispatched`错误标记证明到达，不能当成供应商成功响应或实际隔离生效。
+- **E-H146-04（Models完整门禁）**：`cargo test -p deepagent-models --all-features --offline -j 1 -- --test-threads=2 --quiet` exit0，22个结果块（含doc-test），**310 passed / 0 failed / 17 ignored**；lib235/0/8，HTTP/SSE回环用例通过，H146原probe已转默认，不把其他ignored计为通过。`cargo clippy -p deepagent-models --all-targets --all-features --offline -j 1 -- -D warnings` exit0；`cargo build -p deepagent-models --all-features --offline -j 1` exit0；最终根`cargo fmt --all -- --check`、`git diff --check`通过。
+- **E-H146-05（完整workspace）**：隔离本轮HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/XDG及data root到`G:/h146-fixtures-20261112`，清除继承凭据/代理/DEEPAGENT变量；保留只读依赖缓存入口并用offline，不向子进程设置CARGO_TARGET_DIR（避免污染测试自建项目）。实际 `cargo test --workspace --offline --no-fail-fast -j 1 -- --test-threads=2 --quiet` exit101，2332.14秒（构建21分25秒，非有效开发工时），**157个顶层target均终态，5270 passed / 5 failed / 164 ignored**。统计按顶层binary/doc-test分组，不把内部隔离child重复计数；初次汇总脚本漏匹配integration标题已纠正，不采用错误的69target统计。Models lib235/0/8、AppCore lib1658/0/52；Kernel356/1/13。共享`target/debug/deepagent.exe`与原用户`.snap.new`先备份、完整命令后恢复，SHA256复核均相同，未接受新快照。
+
+  全仓五项失败原样保留：①`image_preparation::read_failure::real_read_data_dacl_denial_fails_without_sampling_and_recovers`（`image_read_failure.rs:286`，`original DACL must be restored exactly`）；②`fs_guard::windows_tests::mutation_tool_rechecks_parent_for_new_file_after_path_gate`（`fs_guard_windows_tests.rs:133`，mklink exit1，`Cannot create a file when that file already exists`）；③`viewport_snapshot_with_a_pending_approval`（HOME相关旧快照不符）；④`every_node_kind_owns_exactly_one_profile`（既有H306 `creative.video-edit.v1`空defaultUserPrompt）；⑤`checkpoint::access::native::tests::restrictive_tree_is_protected_before_copying_any_bytes`（`access.rs:364`，`restored test DACL differs`）。①③④⑤与此前完整门禁同类失败一致；②额外夹具失败未完全归因，但同一builtins二进制、相同隔离TEMP下精确单跑1过0败（0.08秒，`ok=false, outside_created=false`）；此复核不覆盖或抹去全仓失败。所有失败涉及文件已对照HEAD无本轮改动，无新增ignore或放宽断言。
+
+  `cargo clippy --workspace --all-targets --all-features --offline -j 1 -- -D warnings` exit101，仍为既有Runtime两项：`model_agent.rs:298 clone_on_copy`、`workflow/canvas.rs:32 derivable_impls`。H146 Models严格lint已独立通过，不将全仓lint受阻解释为通过，也不混修它们。
+- **E-H146-06（兼容/范围）**：只改变DeepSeek Chat用户身份的wire名称及其官方字节上限，内部`user`与默认/覆盖优先级保留；省略时不发送两种字段，不自动获取身份或改变凭据。旧Chat超过512字节现在在transport前明确拒绝；合法值不截断/不规范化。Responses与设置层现有字符白名单不扩大，用户数据和历史不迁移。未执行真实供应商/多账号缓存与调度隔离、其他OS/MSRV、非流式HTTP或真实UI；本轮无Tauri/TypeScript契约变更，未跑前端构建或桌面check。不能从离线wire正确推定真实隔离已生效。最终三份源码SHA256与门禁前冻结一致；生成物清理结果续记。
+- **E-H146-07（仅清理阻塞）**：验收后只读确认两根精确目录无reparse point、无相关Cargo/rustc/测试进程；`target/h146-repair-20261112`为9个文件、82,333,585逻辑字节（含日志及共享CLI/用户snapshot备份），`G:/h146-fixtures-20261112`为2335文件/4150条目、1,159,710,736字节，合计1,242,044,321字节、约1.16GiB。共享CLI与原用户snapshot已先恢复并核原hash。原生PowerShell `Remove-Item -LiteralPath <两根> -Recurse -Force -ErrorAction Stop`在CreateProcess前被本机策略拒绝，脚本未启动、零删除；之后两根Test-Path均True。未升权、重试或换工具绕过；等待获准终端实际删除后只读核实。H231原两目录也仍存在，已一并提供精确清理命令，但没有再次自动尝试删除。功能验收完成与完整交付未闭环分别记录，不以代码提交代替清理。
 
 ### H-147：DeepSeek 工具 schema 名称未按 provider 约束校验，非法、超长和重复名称直接越过请求边界
 

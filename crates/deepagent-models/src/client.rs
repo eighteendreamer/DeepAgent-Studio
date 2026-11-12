@@ -758,6 +758,10 @@ mod tool_projection_tests;
 mod output_limit_tests;
 
 #[cfg(test)]
+#[path = "client_user_identity_tests.rs"]
+mod user_identity_tests;
+
+#[cfg(test)]
 #[path = "client_native_tool_search_tests.rs"]
 mod native_tool_search_tests;
 
@@ -928,10 +932,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: DeepSeek Chat user identity must serialize as user_id"]
     async fn audit_chat_user_identity_uses_provider_user_id_field() {
         struct CaptureBodyTransport {
-            body: Arc<std::sync::Mutex<Option<String>>>,
+            bodies: Arc<std::sync::Mutex<Vec<String>>>,
             events: Vec<String>,
         }
 
@@ -944,7 +947,7 @@ mod tests {
             ) -> Result<()> {
                 let sink: &mut dyn deepagent_models::transport::EventSink =
                     &mut crate::test_sequence::sink(sink);
-                *self.body.lock().unwrap() = Some(request.body);
+                self.bodies.lock().unwrap().push(request.body);
                 for event in &self.events {
                     if sink.on_event(event)? {
                         break;
@@ -954,9 +957,9 @@ mod tests {
             }
         }
 
-        let captured = Arc::new(std::sync::Mutex::new(None));
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
         let transport = Arc::new(CaptureBodyTransport {
-            body: captured.clone(),
+            bodies: captured.clone(),
             events: vec![
                 r#"{"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}"#
                     .into(),
@@ -979,13 +982,84 @@ mod tests {
             .await
             .unwrap();
 
-        let body = captured.lock().unwrap().clone().unwrap();
-        let wire: serde_json::Value = serde_json::from_str(&body).unwrap();
-        eprintln!("audit chat user identity wire: {wire}");
-        assert_eq!(wire["user_id"], "audit-user-123");
+        let mut request = ResponseRequest::new(
+            "deepseek-flash",
+            vec![Message::user("audit request identity override")],
+        );
+        request.user = Some("audit-user-override".into());
+        client.stream_response(request).await.unwrap();
+
+        let bodies = captured.lock().unwrap().clone();
+        assert_eq!(bodies.len(), 2);
+        let default_wire: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+        let request_wire: serde_json::Value = serde_json::from_str(&bodies[1]).unwrap();
         assert!(
-            wire.get("user").is_none(),
-            "DeepSeek Chat must not receive the Responses API user field"
+            default_wire.get("user_id").is_some(),
+            "DeepSeek Chat must receive its provider-specific user_id field"
+        );
+        assert_eq!(default_wire["user_id"], "audit-user-123");
+        assert!(default_wire.get("user").is_none());
+        assert_eq!(request_wire["user_id"], "audit-user-override");
+        assert!(request_wire.get("user").is_none());
+    }
+
+    #[test]
+    fn responses_user_identity_keeps_responses_field_name() {
+        let mut request = ResponseRequest::new("deepseek-flash", vec![Message::user("hi")]);
+        request.user = Some("responses-user-id".into());
+        let wire = serde_json::to_value(request).unwrap();
+        assert_eq!(wire["user"], "responses-user-id");
+        assert!(wire.get("user_id").is_none());
+
+        let mut from_defaults = ResponseRequest::new("deepseek-flash", vec![Message::user("hi")]);
+        from_defaults.user = None;
+        ModelClient::new(
+            Arc::new(crate::test_sequence::mock(Vec::new())),
+            ModelConfig::deepseek("audit-placeholder").with_defaults(ResponseDefaults {
+                user: Some("responses-default-user".into()),
+                ..ResponseDefaults::default()
+            }),
+        )
+        .apply_defaults(&mut from_defaults);
+        let wire = serde_json::to_value(from_defaults).unwrap();
+        assert_eq!(wire["user"], "responses-default-user");
+        assert!(wire.get("user_id").is_none());
+    }
+
+    #[test]
+    fn chat_user_identity_is_omitted_when_absent() {
+        let wire = serde_json::to_value(ChatCompletionRequest::new(
+            "deepseek-flash",
+            vec![Message::user("hi")],
+        ))
+        .unwrap();
+        assert!(wire.get("user_id").is_none());
+        assert!(wire.get("user").is_none());
+    }
+
+    #[test]
+    fn chat_user_identity_field_is_serialized_once() {
+        let mut request = ChatCompletionRequest::new("deepseek-flash", vec![Message::user("hi")]);
+        request.user = Some("user-42".into());
+        let wire = serde_json::to_value(request).unwrap();
+        assert_eq!(wire["user_id"], "user-42");
+        assert!(wire.get("user").is_none());
+    }
+
+    #[test]
+    fn response_defaults_user_validation_remains_on_responses_route() {
+        let client = ModelClient::new(
+            Arc::new(crate::test_sequence::mock(Vec::new())),
+            ModelConfig::deepseek("audit-placeholder").with_defaults(ResponseDefaults {
+                user: Some("account/1".into()),
+                ..ResponseDefaults::default()
+            }),
+        );
+        let mut request = ResponseRequest::new("deepseek-flash", vec![Message::user("hi")]);
+        client.apply_defaults(&mut request);
+        assert!(
+            request.validate().is_err(),
+            "Responses user validation must stay independent from Chat's user_id serialization"
         );
     }
 
