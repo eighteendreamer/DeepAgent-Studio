@@ -4,7 +4,7 @@
 
 用户已授权按本报告逐项进行本地代码修复与测试；已修复、撤销和归并条目跳过，不重新计数。分析阶段完成不再是当前总体任务的完成状态。每项完成后更新原项状态、保留失败证据、独立提交并汇报验收与剩余工时。本轮不操作真实用户文件或外部服务。
 
-**当前唯一台账（2026-11-12，H107功能验收完成、仅清理阻塞）**：306行当前231已修复并验收、28历史跳过、10归并、3撤销、32待修含H180授权不修、1阻塞H107（仅清理）、0修复中、1验收保留H66。有效待代码修复31，另H107清理/H66验收保留，共33项有效未完整闭环。本轮功能修复1、正式关闭0，详情见原H107的E11及[进度台账](system-harness-repair-progress.md)。H107专项/真实CLI与SDK/共享存储/Tauri通过；workspace5315过5败154忽略，strict lint及完整pnpm旧失败保留，非全系统全绿。独立修复提交取得hash后回填，不推送，整体goal仍未完成。
+**当前唯一台账（2026-11-12，H107功能验收完成、仅清理阻塞）**：306行当前231已修复并验收、28历史跳过、10归并、3撤销、32待修含H180授权不修、1阻塞H107（仅清理）、0修复中、1验收保留H66。有效待代码修复31，另H107清理/H66验收保留，共33项有效未完整闭环。本轮功能修复1、正式关闭0，详情见原H107的E11及[进度台账](system-harness-repair-progress.md)。H107专项/真实CLI与SDK/共享存储/Tauri通过；workspace5315过5败154忽略，strict lint及完整pnpm旧失败保留，非全系统全绿。修复提交64f9d16924d388bcb2c7ec5b6c0710fda508555e，hash回填见E12，不推送，整体goal仍未完成。
 
 **历史修复台账（2026-11-03，H-241已提交）**：306个唯一编号中146项已修复并验收、22项历史已修复跳过、7项归并、3项撤销、128项待修复、0项修复中。有效未关闭128项，其中H-180按用户授权跳过，实际待处理127项；不提供完成率。H-241本轮新增1项所列本机模型取消作用域验收：单元6、正式E2E6均默认通过，AppCore结果块1900过、Builtins384过、store135过、CLI145过、Rust SDK28过、TS30+1过；foreign模型拒绝且目标正常完成，host-user全局停止不变。完整workspace结果块4336过/1败/251忽略，仅未改H-306失败；严格lint既有阻断保留，非全仓全绿。全部命令/限制见E-H241-03，修复提交b573e9e5bb6cbadb455194812509f601de496d4b，真实hash回填见E04。两份文档当前口径一致，整体任务仍未完成。
 
@@ -4751,7 +4751,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 ### H-107：续聊的每个 turn 结束都会触发 SessionEnd hook
 
-**当前整改状态（2026-11-12）：功能已修复并完成E-H107-11所列本机验收，完整交付仅清理阻塞；全仓/严格lint/完整前端build的既有失败明确保留，待清理核验及独立提交，不宣称整个系统全绿。**
+**当前整改状态（2026-11-12）：功能已修复并完成E-H107-11所列本机验收，完整交付仅清理阻塞；全仓/严格lint/完整前端build的既有失败明确保留，修复已独立提交64f9d169，待清理核验，不宣称整个系统全绿。**
 
 E-H107-02（候选TDD与实现，2026-11-12，非最终验收）：新增`chat_service::session_end_tests`初测0过3败，其中普通turn提前触发End、/end未知命令两项是真实行为红测；“无登录结束”那项先因夹具未初始化Settings而在设置hook时失败，不计产品红测，已改为合成初始化后正式clear_key，不弱化无Key/零主模型请求断言。首次`cargo check -p deepagent-app-core --tests --offline -j 1`因新代码误用CancellationTree.flag及移动已借用root失败，未当作行为证据；按当前API legacy_flag及保留root修正后同命令exit0、82.27秒（另有旧kernel夹具cold未使用warning，非strict lint通过）。首批`cargo test -p deepagent-app-core --lib chat_service::session_end_tests --offline -j 1 -- --test-threads=1 --nocapture`实际3过0败0忽略、330.74秒含5分28秒构建，验证忙碌拒绝、command-only退出登录后可结束、显式/重复结束、普通续聊无新run/事件/模型请求及文件SQLite连接释放后重开。此后源码和测试继续扩展，该结果不是当前最终冻结验收。
 
@@ -4821,6 +4821,8 @@ runner已实际终态，finally恢复原共享target/debug/deepagent.exe和用�
 本项功能已修复并完成上述本机验收，但完整交付仅剩清理阻塞：本轮target/h107-repair-20261112为60文件82,630,793逻辑字节，G:/h107-fixtures-20261112为58,351文件2,368,964,633逻辑字节（排除符号链接目标），apps/desktop/dist为3,375文件192,927,086逻辑字节，合计2,644,522,512字节约2.463GiB，非物理空间回收实测。只读遍历发现fixture的pnpm/store/v11/projects下有1个本轮SymbolicLink指向apps/desktop源码；已停止递归并明确排除其目标，须先仅非递归移除该链接再清理三根，绝不递归进入源码。其他已枚举项无reparse，无相关Cargo/测试进程。原生PowerShell清理命令在CreateProcess前被策略拒绝、脚本未启动、零删除；不升权/重试/换工具绕过。三根随后Test-Path均True，等待用户在获准终端实际清理后只读核验。共享target/debug、node_modules、原依赖缓存、源码和用户七组untracked不在删除/提交范围。
 
 306唯一台账当前231已修复并验收、28历史跳过、10归并、3撤销、32待修含H180授权不修、1阻塞H107（仅清理）、0修复中、1验收保留H66。本轮新增功能修复1、正式完整关闭0，无新增历史跳过/归并/撤销；有效待代码修复31，另H107清理/H66验收保留，共33项有效未完整闭环。下一准备H108，仍先复核影响/依赖，不在本提交混修。本项代码验收余0，文档/提交和清理约0.2–0.5有效小时，人工/策略等待无可靠上界；全余170–430有效小时沿用历史分组低置信粗估，尚未逐项重校准，编译/环境/设备/人工等待另计，不承诺精确完工日。源码/测试与当时双文将独立提交，取得hash后普通文档回填、不amend/推送，整体goal仍active。
+
+E-H107-12（真实提交回填，2026-11-12）：独立修复commit `64f9d16924d388bcb2c7ec5b6c0710fda508555e`（【fix】按显式会话生命周期派发结束钩子），只含25份本项实现/测试/现有消费方及当时双文，共27文件；提交前白名单、冻结源码SHA256与staged diff检查通过。原七组用户untracked保留，源码清单/锁文件/依赖版本未变；不提交target/dist、日志、一次性脚本、合成数据或凭据。不amend、不推送、不建PR、不执行迁移。取得真实hash后本次仅普通文档提交回填；E11功能/测试/兼容/未验及三根约2.463GiB清理阻塞不变，已交用户PowerShell 7精确清理命令（先非递归移除pnpm符号链接本身），等待实际执行回传，不把授权等同删除。当前统计仍231已修复并验收/28历史跳过/10归并/3撤销/32待修含H180/1仅清理阻塞H107/1验收保留H66，整体goal未完成。
 
 E-H107-01（当前复现与范围确认，2026-11-12）：`cargo test -p deepagent-app-core --lib chat_service::tests::audit_session_end_hook_does_not_fire_after_each_continued_turn --offline -j 1 -- --ignored --exact --nocapture`实际exit101，**0过1败0忽略**；同一session真实PowerShell hooks再次记录`["SessionStart", "SessionEnd", "SessionEnd"]`，原断言期望仅Start，未弱化断言。总271.43秒，编译4分28秒、测试体2.71秒；G盘隔离HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/XDG/data，清掉继承凭据/代理/DEEPAGENT环境，offline且不向child设置CARGO_TARGET_DIR。固定离线transport、内存SQLite和合成hook文件，无真实provider/内网/凭据/用户数据操作。当前tracked此前干净，仅保留用户七组untracked；H294实际清理已另交7622de87，不混入本项修复数。
 
