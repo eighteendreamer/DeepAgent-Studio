@@ -5907,7 +5907,7 @@ H-142提交回填（2026-10-28，E-H142-08）：代码、默认测试、SDK READ
 
 ### H-146：DeepSeek Chat 用户隔离字段被序列化为 Responses 的 `user`
 
-**当前状态（2026-11-12）：代码修复与本机功能验收完成，阻塞待处理（仅产物清理）；本项独立提交及hash回填另记进度文档。** 完整workspace及严格lint仍有已列明的无关失败，不声称全绿。以下原失败证据保留；当前实现及验证记录见E-H146-01～07。
+**当前状态（2026-11-12）：已修复并验收（限下述本机范围），独立提交 `0b1209cb2b4d0b62545c8d653318c9bf382a95af`，产物清理已核验。** 完整workspace及严格lint仍有已列明的无关失败，不声称全绿。以下原失败证据保留；当前实现及验证记录见E-H146-01～08。
 
 **级别：中（P2/P3，条件性供应商身份与隔离语义缺失）；触发条件：调用方使用 `WireMode::ChatCompletions` 并为模型客户端配置 `ResponseDefaults.user`。** DeepSeek Chat Completions 要求请求字段为 `user_id`；Responses API 使用 `user`。当前两个协议共用一个默认字段，但 Chat serializer 没有做协议级映射。
 
@@ -5941,6 +5941,8 @@ H-142提交回填（2026-10-28，E-H142-08）：代码、默认测试、SDK READ
   `cargo clippy --workspace --all-targets --all-features --offline -j 1 -- -D warnings` exit101，仍为既有Runtime两项：`model_agent.rs:298 clone_on_copy`、`workflow/canvas.rs:32 derivable_impls`。H146 Models严格lint已独立通过，不将全仓lint受阻解释为通过，也不混修它们。
 - **E-H146-06（兼容/范围）**：只改变DeepSeek Chat用户身份的wire名称及其官方字节上限，内部`user`与默认/覆盖优先级保留；省略时不发送两种字段，不自动获取身份或改变凭据。旧Chat超过512字节现在在transport前明确拒绝；合法值不截断/不规范化。Responses与设置层现有字符白名单不扩大，用户数据和历史不迁移。未执行真实供应商/多账号缓存与调度隔离、其他OS/MSRV、非流式HTTP或真实UI；本轮无Tauri/TypeScript契约变更，未跑前端构建或桌面check。不能从离线wire正确推定真实隔离已生效。最终三份源码SHA256与门禁前冻结一致；生成物清理结果续记。
 - **E-H146-07（仅清理阻塞）**：验收后只读确认两根精确目录无reparse point、无相关Cargo/rustc/测试进程；`target/h146-repair-20261112`为9个文件、82,333,585逻辑字节（含日志及共享CLI/用户snapshot备份），`G:/h146-fixtures-20261112`为2335文件/4150条目、1,159,710,736字节，合计1,242,044,321字节、约1.16GiB。共享CLI与原用户snapshot已先恢复并核原hash。原生PowerShell `Remove-Item -LiteralPath <两根> -Recurse -Force -ErrorAction Stop`在CreateProcess前被本机策略拒绝，脚本未启动、零删除；之后两根Test-Path均True。未升权、重试或换工具绕过；等待获准终端实际删除后只读核实。H231原两目录也仍存在，已一并提供精确清理命令，但没有再次自动尝试删除。功能验收完成与完整交付未闭环分别记录，不以代码提交代替清理。
+
+- **E-H146-08（提交与清理闭环，2026-11-12）**：实现、默认回归测试和当时双文档已独立提交 `0b1209cb2b4d0b62545c8d653318c9bf382a95af`（【fix】校正 Chat 用户身份字段及字节边界），未推送。用户回传“已删除”后只读核验 `G:/Code_Warehouse/DeepAgent-Studio/target/h146-repair-20261112` 与 `G:/h146-fixtures-20261112`，Test-Path 均 False；不把先前被拒绝的自动删除归为实际执行，不推算物理磁盘释放量。两份文档另做普通提交回填，不 amend；未新增测试、改写原失败证据或扩大 E06 的验证范围。本项代码、限定验收、文档、提交及清理闭环，整体任务仍未完成。
 
 ### H-147：DeepSeek 工具 schema 名称未按 provider 约束校验，非法、超长和重复名称直接越过请求边界
 
@@ -11981,7 +11983,7 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_dialect:: --o
 
 ### H-231：可选 ruff 未安装时真实 shell 返回非零结果，被 Python 验证器误报为源代码失败
 
-**级别：中（P2，环境故障分类与反馈可靠性）；状态：修复及功能验收完成，完整交付因产物清理受阻（2026-11-12，功能验收限本机范围）。** PythonVerifier 原先把 shell 中可选 Ruff 命令缺失返回的非零状态当作源码错误。现已只对平台命令缺失签名返回“可选 lint 未运行”的 Skipped；真实 Ruff 诊断、权限拒绝及执行器错误仍失败。修复前原始探针与失败证据保留如下。
+**级别：中（P2，环境故障分类与反馈可靠性）；状态：已修复并验收（2026-11-12，限下述本机范围），产物清理已核验，提交 `817c0426e8d4923a9410758f27850942b2871295`。** PythonVerifier 原先把 shell 中可选 Ruff 命令缺失返回的非零状态当作源码错误。现已只对平台命令缺失签名返回“可选 lint 未运行”的 Skipped；真实 Ruff 诊断、权限拒绝及执行器错误仍失败。修复前原始探针与失败证据保留如下。
 
 #### 即时 Evidence（2026-10-24，首轮完整本机复现后登记）
 
@@ -12035,7 +12037,9 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - E-H231-05（静态检查）：`cargo fmt --all -- --check` 与 `git diff --check` 通过。严格 clippy 未通过且不是本次修改引入：`cargo clippy -p deepagent-app-core --all-targets --all-features --offline -j 1 -- -D warnings` 被既有 Runtime 两项 lint 阻断（`model_agent.rs:298` clone_on_copy、`workflow/canvas.rs:32` derivable_impls）；继续执行默认特性 AppCore clippy 时，既有 AppCore 六项 lint 阻断（`context_runtime.rs:468,490`、`http_runtime.rs:332`、`plugin_preparation.rs:14`、`run_assembler.rs:1897`、`session_title.rs:54`）。未改无关文件或宣称 lint 通过。
 - E-H231-06（生成物清理受阻）：只读核对本轮两根路径无 reparse point、无正在运行的 cargo/rustc/kernel_v2_e2e 进程；`target/h231-repair-20261112` 有3667个文件/4335个条目/1,909,461,909逻辑字节，`G:/h231-fixtures-20261112` 有22个文件/48个条目/84,815字节。执行 `Remove-Item -LiteralPath <两根> -Recurse -Force -ErrorAction Stop` 时，工具在 PowerShell CreateProcess 前被本机策略拒绝，脚本未启动、没有删除；随后 Test-Path 两根均为True。未换工具或重试绕过。须在获准终端实际清理后再只读核验，不能按用户先前授权或本次失败调用推定已完成。
 
-残余限制：真实正式运行链只在 Windows PowerShell 7 上验证；POSIX exit 127/`sh` 输出签名由跨平台纯单元覆盖，但未在 POSIX 宿主做真实 SystemExecutor 验收。未执行 workspace 全量测试、桌面/前端构建、真实供应商、实际 Ruff 已安装的完整 ChatService 路径、其他 shell/OS、`edit_file`/`multi_edit` 或重启场景；严格 clippy 基线仍待独立治理。功能根因和已验证范围已完成，但生成物清理仍阻塞；未测场景不外推为通过。
+- E-H231-07（清理闭环，2026-11-12）：用户回传实际清理完成后，只读核验 `G:/Code_Warehouse/DeepAgent-Studio/target/h231-repair-20261112` 与 `G:/h231-fixtures-20261112`，Test-Path 均 False。清理阻塞解除，E06 保留为当时失败记录；未重试自动删除、未改共享缓存或用户文件、未重跑验收或扩大已验证范围。修复提交为 `817c0426e8d4923a9410758f27850942b2871295`，本次双文同步另做文档提交，不 amend、不推送。
+
+残余限制：真实正式运行链只在 Windows PowerShell 7 上验证；POSIX exit 127/`sh` 输出签名由跨平台纯单元覆盖，但未在 POSIX 宿主做真实 SystemExecutor 验收。未执行本项独立 workspace 全量测试、桌面/前端构建、真实供应商、实际 Ruff 已安装的完整 ChatService 路径、其他 shell/OS、`edit_file`/`multi_edit` 或重启场景；严格 clippy 基线仍待独立治理。功能根因、已验证范围及产物清理已闭环；未测场景不外推为通过。
 
 ### H-232：回退删除发现事件后，原宿主仍公开旧工具，重建宿主则隐藏
 
