@@ -41,6 +41,7 @@ mod provider_error;
 pub mod responses;
 pub mod sse;
 pub mod stream;
+mod tool_choice;
 pub mod transport;
 pub mod usage;
 
@@ -65,6 +66,7 @@ pub use responses::{
     ResponseOutputItem,
 };
 pub use stream::{DeltaObserver, ModelStreamEvent, NoopObserver, ResponseAccumulator};
+pub use tool_choice::validate_responses_tool_choice;
 pub use transport::{
     FileUploadRequest, HttpTransport, MockTransport, TransportRequest, UploadedFile,
 };

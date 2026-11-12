@@ -676,29 +676,7 @@ fn validate_developer_responses_fields(
         }
     }
     if let Some(choice) = object.get("tool_choice") {
-        let valid = choice
-            .as_str()
-            .is_some_and(|value| matches!(value, "auto" | "none" | "required"))
-            || choice.as_object().is_some_and(|choice| {
-                choice
-                    .keys()
-                    .all(|key| matches!(key.as_str(), "type" | "name"))
-                    && matches!(
-                        choice.get("type").and_then(serde_json::Value::as_str),
-                        Some("function" | "custom" | "web_search")
-                    )
-                    && (choice.get("type").and_then(serde_json::Value::as_str)
-                        == Some("web_search")
-                        || choice
-                            .get("name")
-                            .and_then(serde_json::Value::as_str)
-                            .is_some_and(|name| !name.is_empty()))
-            });
-        if !valid {
-            return Err(CoreError::invalid(
-                "Responses tool_choice must use the supported string or typed object shape",
-            ));
-        }
+        deepagent_models::validate_responses_tool_choice(choice)?;
     }
     if let Some(value) = object.get("user") {
         let user = value
@@ -3588,6 +3566,49 @@ async fn load_migrates_legacy_reasoning_and_removes_noncanonical_values() {
     assert_eq!(cleaned["responses"]["reasoning_effort"], "high");
     assert!(cleaned["responses"]["developer"].get("reasoning").is_none());
     assert_eq!(cleaned["responses"]["developer"]["temperature"], 0.4);
+}
+
+#[test]
+fn responses_tool_choice_settings_use_only_supported_shapes_and_shared_names() {
+    for choice in [
+        serde_json::json!({"type":"custom","name":"apply_patch"}),
+        serde_json::json!({"type":"web_search"}),
+        serde_json::json!({"type":"function","name":""}),
+        serde_json::json!({"type":"function","name":"private/value"}),
+        serde_json::json!({"type":"function","name":"x".repeat(129)}),
+        serde_json::json!({"type":"function","name":"read_file","extra":true}),
+        serde_json::json!({"type":"function","function":{"name":"read_file"}}),
+        serde_json::json!(true),
+    ] {
+        let settings = ResponsesApiSettings {
+            tool_choice: Some(choice.clone()),
+            ..ResponsesApiSettings::default()
+        };
+        assert!(settings.validate().is_err());
+        assert!(ResponsesApiSettings::from_developer_json(
+            &serde_json::json!({"tool_choice":choice}).to_string()
+        )
+        .is_err());
+    }
+    for choice in [
+        serde_json::json!("auto"),
+        serde_json::json!("none"),
+        serde_json::json!("required"),
+        serde_json::json!({"type":"function","name":"read_file"}),
+        serde_json::json!({"type":"function","name":"x".repeat(128)}),
+    ] {
+        ResponsesApiSettings {
+            tool_choice: Some(choice.clone()),
+            ..ResponsesApiSettings::default()
+        }
+        .validate()
+        .unwrap();
+        let settings = ResponsesApiSettings::from_developer_json(
+            &serde_json::json!({"tool_choice":choice}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(settings.effective_tool_choice(), Some(choice));
+    }
 }
 
 #[test]

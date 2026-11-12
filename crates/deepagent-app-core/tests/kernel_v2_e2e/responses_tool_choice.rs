@@ -23,7 +23,6 @@ impl HttpTransport for CountingTransport {
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: DeepSeek Responses named tool_choice only supports function"]
 async fn unsupported_responses_named_tool_choices_are_rejected_before_transport() {
     let cases = [
         (
@@ -146,7 +145,6 @@ async fn responses_choice_linkage_normal_controls_reach_transport() {
 }
 
 #[tokio::test]
-#[ignore = "audit H-158 extension: named function must exist in the final function tool snapshot"]
 async fn audit_responses_named_choice_requires_final_function_tool() {
     let mut violations = Vec::new();
     for from_defaults in [false, true] {
@@ -249,7 +247,6 @@ async fn saved_chat_choice_normal_controls_reach_transport() {
 }
 
 #[tokio::test]
-#[ignore = "audit H-158 extension: persisted named choice is not checked against ChatService tools"]
 async fn audit_saved_named_choice_without_matching_chat_tool_is_rejected() {
     let (accepted, wire) = observe_saved_chat_choice(
         serde_json::json!({"type":"function","name":"audit_missing_function_158"}),
@@ -273,4 +270,77 @@ async fn audit_saved_named_choice_without_matching_chat_tool_is_rejected() {
         !accepted && wire.is_empty(),
         "persisted unresolved choice reached formal ChatService transport"
     );
+}
+
+#[tokio::test]
+async fn responses_choice_settings_reopen_and_rejected_updates_keep_last_successful_value() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("settings.sqlite");
+    let secrets = Arc::new(MemorySecretStore::new());
+    let discovery = Arc::new(MockTransport::with_get_json(
+        r#"{"object":"list","data":[{"id":"deepseek-flash","object":"model","owned_by":"deepseek"}]}"#,
+    ));
+    let valid = serde_json::json!({"type":"function","name":"read_file"});
+    for developer in [false, true] {
+        {
+            let settings = SettingsService::new(
+                Arc::new(Database::open(&path).unwrap()),
+                discovery.clone(),
+                secrets.clone(),
+            );
+            settings.initialize("synthetic-key").await.unwrap();
+            settings
+                .set_responses_settings(ResponsesApiSettings::default())
+                .unwrap();
+            if developer {
+                settings
+                    .set_responses_developer_json(
+                        &serde_json::json!({"tool_choice":valid}).to_string(),
+                    )
+                    .unwrap();
+            } else {
+                settings
+                    .set_responses_settings(ResponsesApiSettings {
+                        tool_choice: Some(valid.clone()),
+                        ..ResponsesApiSettings::default()
+                    })
+                    .unwrap();
+            }
+        }
+        let settings = SettingsService::new(
+            Arc::new(Database::open(&path).unwrap()),
+            discovery.clone(),
+            secrets.clone(),
+        );
+        assert_eq!(
+            settings
+                .responses_settings()
+                .unwrap()
+                .effective_tool_choice(),
+            Some(valid.clone())
+        );
+        for invalid in [
+            serde_json::json!({"type":"custom","name":"apply_patch"}),
+            serde_json::json!({"type":"web_search"}),
+        ] {
+            assert!(settings
+                .set_responses_developer_json(
+                    &serde_json::json!({"tool_choice":invalid}).to_string(),
+                )
+                .is_err());
+            assert!(settings
+                .set_responses_settings(ResponsesApiSettings {
+                    tool_choice: Some(invalid),
+                    ..ResponsesApiSettings::default()
+                })
+                .is_err());
+            assert_eq!(
+                settings
+                    .responses_settings()
+                    .unwrap()
+                    .effective_tool_choice(),
+                Some(valid.clone())
+            );
+        }
+    }
 }

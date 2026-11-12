@@ -190,13 +190,26 @@ async fn h69_tools_defaults_and_history_refresh_share_the_full_body_budget() {
         invalid(send(&client, refreshed, route, 0, false).await.unwrap_err());
         assert!(transport.0.lock().unwrap().is_empty());
 
+        // Measure this route's real overhead, then prove a valid default is
+        // included in the final budget. A multi-MiB function name is not a
+        // valid Responses choice and would now fail before body encoding.
+        send(&client, request("x"), route, 2, false).await.unwrap();
+        let overhead = transport.0.lock().unwrap()[0] - 1;
+        transport.0.lock().unwrap().clear();
+        let at_limit = "x".repeat(LIMIT - overhead);
+        send(&client, request(&at_limit), route, 2, false)
+            .await
+            .unwrap();
+        assert_eq!(*transport.0.lock().unwrap(), vec![LIMIT]);
+        transport.0.lock().unwrap().clear();
+
         let defaults = ResponseDefaults {
-            tool_choice: Some(json!({"type":"function","function":{"name":half}})),
+            tool_choice: Some(json!("auto")),
             ..Default::default()
         };
         let client = ModelClient::new(transport.clone(), config(route).with_defaults(defaults));
         invalid(
-            send(&client, request(&half), route, 2, false)
+            send(&client, request(&at_limit), route, 2, false)
                 .await
                 .unwrap_err(),
         );

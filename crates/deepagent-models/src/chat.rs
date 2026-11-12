@@ -189,6 +189,8 @@ impl Serialize for ResponseRequest {
         S: Serializer,
     {
         use serde::ser::SerializeMap;
+        self.validate_tool_choice()
+            .map_err(serde::ser::Error::custom)?;
         self.validate_tool_image_resolution()
             .map_err(serde::ser::Error::custom)?;
         let input = response_input_items_to_wire(
@@ -598,9 +600,17 @@ impl ResponseRequest {
             validate_responses_user_identifier(user)?;
         }
         validate_function_tool_schemas(&self.tools)?;
+        self.validate_tool_choice()?;
         crate::responses::validate_tool_call_history(&self.input)?;
         self.validate_tool_image_resolution()?;
         Ok(())
+    }
+
+    fn validate_tool_choice(&self) -> Result<()> {
+        crate::tool_choice::validate_final_responses_tool_choice(
+            self.tool_choice.as_ref(),
+            &self.tools,
+        )
     }
 
     pub fn clear_image_file_ids(&mut self) {
