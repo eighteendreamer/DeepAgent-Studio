@@ -75,8 +75,8 @@ async fn h107_real_end_without_credentials_is_once_and_survives_process_reopen()
         return;
     };
     let workspace = temp_workspace("h107-end-workspace");
-    let process = HarnessProcess::spawn(&bin, &workspace).await.unwrap();
-    let client = process.client();
+    let mut process = HarnessProcess::spawn(&bin, &workspace).await.unwrap();
+    let mut client = process.client();
     client.initialize("h107", "1").await.unwrap();
     let thread = client
         .thread_start(serde_json::from_value(serde_json::json!({})).unwrap())
@@ -89,6 +89,7 @@ async fn h107_real_end_without_credentials_is_once_and_survives_process_reopen()
     let read = || {
         serde_json::from_value::<ThreadReadRequest>(serde_json::json!({"threadId":thread})).unwrap()
     };
+    let mut turns = Vec::new();
     for _ in 0..2 {
         let mut stream = client
             .turn_start_streamed(
@@ -99,6 +100,7 @@ async fn h107_real_end_without_credentials_is_once_and_survives_process_reopen()
             )
             .await
             .unwrap();
+        let turn = stream.turn_id().unwrap().to_owned();
         let mut completed = 0;
         while let Some(event) = tokio::time::timeout(Duration::from_secs(5), stream.recv())
             .await
@@ -106,7 +108,13 @@ async fn h107_real_end_without_credentials_is_once_and_survives_process_reopen()
             .unwrap()
         {
             match event {
-                HarnessEvent::TurnCompleted { .. } => completed += 1,
+                HarnessEvent::TurnCompleted {
+                    thread_id, turn_id, ..
+                } => {
+                    assert_eq!(thread_id.as_deref(), Some(thread.as_str()));
+                    assert_eq!(turn_id.as_deref(), Some(turn.as_str()));
+                    completed += 1;
+                }
                 HarnessEvent::TurnFailed { reason, .. } => panic!("explicit end failed: {reason}"),
                 HarnessEvent::TurnInterrupted { .. } => {
                     panic!("explicit end unexpectedly cancelled")
@@ -115,32 +123,61 @@ async fn h107_real_end_without_credentials_is_once_and_survives_process_reopen()
             }
         }
         assert_eq!(completed, 1);
+        turns.push(turn);
+        let before = client.thread_read(read()).await.unwrap();
+        assert!(!before.result()["hasMore"].as_bool().unwrap());
+        assert_eq!(
+            before.result()["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|event| event["payload"]["type"] == "session_ended")
+                .count(),
+            1
+        );
+        let runs = before.result()["runEvents"].as_array().unwrap();
+        assert_eq!(runs.len(), turns.len(), "no automatic redispatch");
+        for turn in &turns {
+            let run = runs.iter().find(|run| run["runId"] == *turn).unwrap();
+            assert_eq!(run["terminalKind"], "succeeded");
+            for event_type in ["run_terminal", "run_completed"] {
+                assert_eq!(
+                    run["events"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .filter(|event| event["event_type"] == event_type)
+                        .count(),
+                    1,
+                    "{turn}/{event_type}"
+                );
+            }
+        }
+
+        // Terminal delivery is not an idle/lease-release ACK. The existing
+        // server deliberately stays busy through worker cleanup. A real,
+        // graceful process exit is this cold-reopen test's synchronization
+        // barrier: do not race another /end, retry busy, sleep, or unlock early.
+        // Same-host repetition after cleanup is covered by the CLI dispatcher
+        // and AppCore lifecycle tests, which can join that worker directly.
+        drop(stream);
+        drop(client);
+        assert!(process.wait().await.unwrap().success());
+        process = HarnessProcess::spawn(&bin, &workspace).await.unwrap();
+        client = process.client();
+        client.initialize("h107-reopen", "1").await.unwrap();
+        client
+            .thread_resume(ThreadResumeRequest {
+                thread_id: thread.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            before.result(),
+            client.thread_read(read()).await.unwrap().result()
+        );
     }
-    let before = client.thread_read(read()).await.unwrap();
-    assert!(!before.result()["hasMore"].as_bool().unwrap());
-    assert_eq!(
-        before.result()["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|event| event["payload"]["type"] == "session_ended")
-            .count(),
-        1
-    );
-    assert_eq!(before.result()["runEvents"].as_array().unwrap().len(), 2);
-    drop(client);
-    assert!(process.wait().await.unwrap().success());
-    let reopened = HarnessProcess::spawn(&bin, &workspace).await.unwrap();
-    let client = reopened.client();
-    client.initialize("h107-reopen", "1").await.unwrap();
-    client
-        .thread_resume(ThreadResumeRequest {
-            thread_id: thread.clone(),
-        })
-        .await
-        .unwrap();
     let after = client.thread_read(read()).await.unwrap();
-    assert_eq!(before.result(), after.result());
     assert!(matches!(
         client
             .turn_start(
@@ -157,7 +194,7 @@ async fn h107_real_end_without_credentials_is_once_and_survives_process_reopen()
         after.result()
     );
     drop(client);
-    assert!(reopened.wait().await.unwrap().success());
+    assert!(process.wait().await.unwrap().success());
 }
 
 #[tokio::test]

@@ -4,7 +4,7 @@
 
 用户已授权按本报告逐项进行本地代码修复与测试；已修复、撤销和归并条目跳过，不重新计数。分析阶段完成不再是当前总体任务的完成状态。每项完成后更新原项状态、保留失败证据、独立提交并汇报验收与剩余工时。本轮不操作真实用户文件或外部服务。
 
-**当前唯一台账（2026-11-12，H108已验收/提交/清理）**：306行232已修复并验收、28历史跳过、10归并、3撤销、32待修含H180授权不修/H107验收时序补强、0修复中/阻塞、1验收保留H66。31有效待处理+H66共32项有效未完整闭环。本轮H108新增正式关闭1，修复cff915be970fe86764841c4f34bcf9bb1aa1026f，hash与清理回填见E05；H107生产修复/清理不撤回但验收时序需下一轮单独补强。workspace5320/5/153、旧strict及未验限制保留，详原项及[台账](system-harness-repair-progress.md)，非全系统全绿，不推送。
+**当前唯一台账（2026-11-12，H107验收补强完成、仅本轮清理阻塞）**：306行232已修复并验收、28历史跳过、10归并、3撤销、31待修含H180授权不修、1仅清理阻塞H107、0修复中、1验收保留H66。30有效待处理+H107清理/H66共32项有效未完整闭环。本轮只改一个SDK验收用例、不新增生产修复；SDK完整默认/全特性各89/0/5、CLI同宿主/busy及AppCore/原probe通过，strict依赖旧失败及未重跑范围见E-H107-16，不宣称全系统全绿。H108已闭环，整个任务未完成、不推送。
 
 **历史修复台账（2026-11-03，H-241已提交）**：306个唯一编号中146项已修复并验收、22项历史已修复跳过、7项归并、3项撤销、128项待修复、0项修复中。有效未关闭128项，其中H-180按用户授权跳过，实际待处理127项；不提供完成率。H-241本轮新增1项所列本机模型取消作用域验收：单元6、正式E2E6均默认通过，AppCore结果块1900过、Builtins384过、store135过、CLI145过、Rust SDK28过、TS30+1过；foreign模型拒绝且目标正常完成，host-user全局停止不变。完整workspace结果块4336过/1败/251忽略，仅未改H-306失败；严格lint既有阻断保留，非全仓全绿。全部命令/限制见E-H241-03，修复提交b573e9e5bb6cbadb455194812509f601de496d4b，真实hash回填见E04。两份文档当前口径一致，整体任务仍未完成。
 
@@ -4751,7 +4751,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 ### H-107：续聊的每个 turn 结束都会触发 SessionEnd hook
 
-**当前整改状态（2026-11-12）：原生产修复64f9d169、回填a03e11b2及E13清理证据保留；E14出现新SDK验收时序缺陷，保守重新打开为待修复（验收补强），下一轮单独处理、不重复计生产修复。原功能未证明回归，不能以隔离绿覆盖全仓busy红；限制保留。**
+**当前整改状态（2026-11-12）：原生产修复64f9d169及旧清理保留；E16已完成SDK验收时序补强及相关完整门禁，未改生产锁/执行链，原busy红证据不删除。当前完整交付仅本轮acceptance两根清理阻塞，补强独立test提交待hash，不重复计生产修复。**
 
 E-H107-02（候选TDD与实现，2026-11-12，非最终验收）：新增`chat_service::session_end_tests`初测0过3败，其中普通turn提前触发End、/end未知命令两项是真实行为红测；“无登录结束”那项先因夹具未初始化Settings而在设置hook时失败，不计产品红测，已改为合成初始化后正式clear_key，不弱化无Key/零主模型请求断言。首次`cargo check -p deepagent-app-core --tests --offline -j 1`因新代码误用CancellationTree.flag及移动已借用root失败，未当作行为证据；按当前API legacy_flag及保留root修正后同命令exit0、82.27秒（另有旧kernel夹具cold未使用warning，非strict lint通过）。首批`cargo test -p deepagent-app-core --lib chat_service::session_end_tests --offline -j 1 -- --test-threads=1 --nocapture`实际3过0败0忽略、330.74秒含5分28秒构建，验证忙碌拒绝、command-only退出登录后可结束、显式/重复结束、普通续聊无新run/事件/模型请求及文件SQLite连接释放后重开。此后源码和测试继续扩展，该结果不是当前最终冻结验收。
 
@@ -4823,6 +4823,32 @@ runner已实际终态，finally恢复原共享target/debug/deepagent.exe和用�
 306唯一台账当前231已修复并验收、28历史跳过、10归并、3撤销、32待修含H180授权不修、1阻塞H107（仅清理）、0修复中、1验收保留H66。本轮新增功能修复1、正式完整关闭0，无新增历史跳过/归并/撤销；有效待代码修复31，另H107清理/H66验收保留，共33项有效未完整闭环。下一准备H108，仍先复核影响/依赖，不在本提交混修。本项代码验收余0，文档/提交和清理约0.2–0.5有效小时，人工/策略等待无可靠上界；全余170–430有效小时沿用历史分组低置信粗估，尚未逐项重校准，编译/环境/设备/人工等待另计，不承诺精确完工日。源码/测试与当时双文将独立提交，取得hash后普通文档回填、不amend/推送，整体goal仍active。
 
 E-H107-12（真实提交回填，2026-11-12）：独立修复commit `64f9d16924d388bcb2c7ec5b6c0710fda508555e`（【fix】按显式会话生命周期派发结束钩子），只含25份本项实现/测试/现有消费方及当时双文，共27文件；提交前白名单、冻结源码SHA256与staged diff检查通过。原七组用户untracked保留，源码清单/锁文件/依赖版本未变；不提交target/dist、日志、一次性脚本、合成数据或凭据。不amend、不推送、不建PR、不执行迁移。取得真实hash后本次仅普通文档提交回填；E11功能/测试/兼容/未验及三根约2.463GiB清理阻塞不变，已交用户PowerShell 7精确清理命令（先非递归移除pnpm符号链接本身），等待实际执行回传，不把授权等同删除。当前统计仍231已修复并验收/28历史跳过/10归并/3撤销/32待修含H180/1仅清理阻塞H107/1验收保留H66，整体goal未完成。
+
+E-H107-16（SDK验收时序补强最终结果，2026-11-12，代码验收完成、仅本轮清理阻塞）：本轮唯一改动源码/测试文件为Rust SDK tests/e2e_stdio.rs中的H107用例，最终SHA256与冻结一致，生产代码/生命周期/协议/锁/审批/权限及SQL均无变化。修正的只是E14对完成通知含义的错误测试假设；没有把正确busy安全门改为提前接纳。两次/end现在各自拥有准确turn/thread身份的唯一live成功，逐run核对durable run_terminal/run_completed各1、run数准确且唯一SessionEnded；每次通过真实HarnessProcess::wait成功退出后启动新进程/resume，完整thread/read前后精确一致，结束后普通输入拒绝且历史读回不变。CLI同宿主重复/end仍等待真实finished后分别唯一终态，AppCore同宿主八项和hook一次/失败/取消/只读/Fork语义对照全部保留，不以仅跨进程测试替代该场景。
+
+下列命令在根PowerShell、G:/h107-acceptance-fixtures-20261112隔离HOME/PROFILE/APPDATA/LOCALAPPDATA/TEMP/XDG/data下执行，清凭据/代理/DEEPAGENT环境、offline、child无CARGO_TARGET_DIR，共享target/debug。仅合成SQLite/固定离线transport/当前本地CLI，不使用真实服务/模型费用/凭据/内网/用户数据。
+
+| 实际最终命令 | 结果 | 墙钟秒（含编译） |
+|---|---|---|
+| `cargo build -p deepagent-cli --offline -j 1` | exit0，当前未改生产CLI | 34.29 |
+| `cargo test -p deepagent-harness-sdk --test e2e_stdio h107_real_end_without_credentials_is_once_and_survives_process_reopen --offline -j 1 -- --nocapture` | exit0，1/0/0，测试体8.08秒，实际3个进程均正常wait退出 | 16.39 |
+| `cargo test -p deepagent-harness-sdk --offline --no-fail-fast -j 1 -- --test-threads=2 --quiet` | exit0，lib72/0/5、stdio15/0/0、doc2/0/0，共89过0败5忽略 | 60.18 |
+| `cargo test -p deepagent-harness-sdk --all-features --offline --no-fail-fast -j 1 -- --test-threads=2 --quiet` | exit0，同上完整89过0败5忽略，H107默认真实执行，无sleep/吞busy重试 | 45.66 |
+| `cargo clippy -p deepagent-harness-sdk --all-targets --all-features --offline -j 1 -- -D warnings` | exit101，传递依赖Runtime原model_agent.rs:298 clone_on_copy / workflow/canvas.rs:32 derivable_impls阻断，非严格全绿 | 17.06 |
+| `cargo clippy -p deepagent-harness-sdk --all-targets --all-features --no-deps --offline -j 1 -- -D warnings` | exit0，仅当前SDK自身/测试strict通过，不覆盖上行失败 | 17.05 |
+| `cargo test -p deepagent-cli --bin deepagent h107_end_control --offline -j 1 -- --nocapture` | exit0，1/0/0；当前真实dispatcher同宿主重复及重开对照 | 177.16 |
+| `cargo test -p deepagent-cli --bin deepagent start_busy_during_real_file_tool_and_terminal_delivery_does_not_cancel_it --offline -j 1 -- --nocapture` | exit0，1/0/0；terminal callback期间仍busy且不取消真实文件写入 | 19.73 |
+| `cargo test -p deepagent-app-core --lib h107_ --offline -j 1 -- --test-threads=1 --nocapture` | exit0，8/0/0 | 8.96 |
+| `cargo test -p deepagent-app-core --lib audit_session_end_hook_does_not_fire_after_each_continued_turn --offline -j 1 -- --nocapture` | exit0，原probe默认1/0/0，两轮仍仅SessionStart | 2.25 |
+| `cargo fmt --all -- --check`、`git diff --check` | 最终均exit0 | 6.72 / 已执行 |
+
+首个最终runner在依赖strict旧失败时停止，后续CLI/AppCore/格式尚未启动，finally已实际恢复原CLI/用户.snap.new且SHA256一致；没有隐藏该失败。随后只补跑未执行门禁及当前SDK自身no-deps strict，不重跑已经完整终态的SDK组来掩盖失败。第二runner也完整终态、finally恢复，随后独立SHA256核验原共享CLI与用户.snap.new仍一致、冻结测试未变。E14并发原红及本轮baseline单跑绿均保留；不把本次完整SDK并发组绿宣传成无限压力下绝无竞态。未重跑完整workspace/前端build/Tauri：本轮只改一个SDK测试，无生产/共享行为、桥接/前端类型或组件改动；上一生产冻结H108全仓5320/5/153仍作为E-H108-04历史结果（包含修前SDK测试假设反例），不能改写为当前全仓全绿。未验真实provider/用户hooks/OS强杀/断电、其它平台/MSRV；H107发布End与hook间的崩溃窗口等E11限制不变。
+
+本轮不新增生产修复，只恢复H107的有效验收依据；原修复64f9d169/元数据cff915be不变，SDK验收补强测试与当时双文将单独test commit，不amend、不推送。完整交付仅本轮两根清理阻塞：target/h107-acceptance-20261112为23文件82,230,678逻辑字节，G:/h107-acceptance-fixtures-20261112为635文件/1359条目1,830,423,114逻辑字节，合计1,912,653,792字节约1.781GiB；未测物理释放量。两根绝对路径/祖先/后代无reparse，无相关Cargo/测试进程，原共享CLI/用户快照已恢复；源码、用户文档、共享target/debug、node_modules和原依赖缓存不在范围。原生PowerShell删除在CreateProcess前被本机策略拒绝、脚本未启动/零删除，不升权/重试/换工具绕过；待用户获准终端实际删除后只读核验。旧H107及H108清理已闭环的目录不重建、不重删。
+
+当前306唯一行232已修复并验收、28历史跳过、10归并、3撤销、31待修含H180授权不修、1仅清理阻塞H107、0修复中、1验收保留H66；30有效待处理+H107清理/H66共32项有效未完整闭环。本轮新增生产修复0、完整关闭0（待清理），无新增历史跳过/归并/撤销，不报完成率。本项验收代码余0，文档/提交/清理约0.2–0.5有效小时，策略/人工等待无可靠上界；下一按优先级/依赖复核H104公共hook上下文及其它剩余项，不在本项顺手改字段。总余170–430有效小时仍历史分组低置信粗估、尚未逐项重校准，编译/依赖/设备/人工等待另计，整体goal未完成。
+
+E-H107-15（验收时序根因补强，2026-11-12，修复中）：本轮基线26c3fa52eb0f7a5649392e00ce4098d35ddb2d0d，tracked干净，原七组用户untracked保留。按原审计/E14、SDK真实stdio用例、HarnessProcess::wait实现、CLI spawn_turn/finish_turn及H02受控busy测试、Cargo/格式/CI核对。当前源码CLI离线build exit0/40.43秒，原SDK用例单跑exit0、1/0/0、11.53秒（体8.61秒），不将未稳定复现的并发缺陷误称本轮新红；E14完整workspace真实busy失败仍保留，不反复循环单跑争取红。当前受控原CLI test binary精确运行start_busy_during_real_file_tool_and_terminal_delivery_does_not_cancel_it实际1/0/0、0.82秒，仍证明terminal callback未返回/worker未退出时必须busy，不能提前释放生产锁来迁就测试。baseline runner实际finally恢复原共享CLI/用户.snap.new并核SHA256，随后开始本轮test-only修改。仅改原SDK e2e_stdio.rs里的H107用例：将即时再次/end改为真正HarnessProcess::wait关闭stdin并实际wait成功后，再开进程/resume同一会话；每次End都验证live完成唯一且身份准确、对应持久run_terminal/run_completed各一次、唯一SessionEnded、每次冷重开前后完整thread/read精确相同，普通续聊仍拒绝且读回不变。同宿主重复End由原CLI dispatcher等待真实finished与AppCore八项继续覆盖，未丢弃同宿主场景或减少幂等证据。没有sleep、busy吞错/自动重试、延长超时、ignore或删原断言；未改生产SDK/服务端/锁/事件/协议/数据库。新结果待单一串行runner执行SDK完整默认/全特性、SDK strict、CLI H107/busy、AppCore H107/原probe和fmt；测试源码已冻结，未完成前仍修复中，尚无本轮提交。根fmt首次只报本轮assert排版差异，按rustfmt格式化，不算行为失败；最终待check。隔离环境为G:/h107-acceptance-fixtures-20261112，日志/备份根target/h107-acceptance-20261112，共享target/debug、无第二份大target，清凭据/代理/DEEPAGENT环境、offline、child无CARGO_TARGET_DIR；仅合成SQLite/固定离线模型transport及当前本地CLI，无真实provider/内网/凭据/用户数据。因只有一个SDK测试文件改变、未改共享行为/前端/Tauri DTO，本轮不重跑完整workspace/前端/Tauri，E-H108-04的最近全仓5320/5/153及strict旧失败作为已注明的前轮背景而非当前全仓通过；当前SDK全套并发必须实际重验。原生产修复64f9d169及H108字段修复cff915be不重复计成果，本轮新增生产修复0；预计1–3有效小时，编译/环境/人工等待另计，整体未完成。
 
 E-H107-14（验收用例时序新反例，2026-11-12）：H108最终workspace保留h107_real_end_without_credentials_is_once_and_survives_process_reopen失败：首次/end完成通知后立即重复/end，旧ServerState.active仍持有到run_prepared收尾/finish_turn，第二请求被ERR_THREAD_BUSY拒绝。合成库只有1个succeeded run、terminal=1/completed=1；不是第二次已接纳却漏通知，E07原生产缺口修复不撤回。H107 SDK新用例对“终态通知等于收尾租约已释放”的假设不符合旧H02受控门禁；当前CLI完整测试名start_busy_during_real_file_tool_and_terminal_delivery_does_not_cancel_it实际1/0，明确要求terminal delivery期间继续busy。失败SDK同测试/同CLI字节一次隔离1/0不能覆盖并发红；不能提高时限、提前释放原租约、加sleep/吞busy或ignore来伪绿。本项生产功能未证明回归，但端到端验收需独立纠正对时序的假设并保留唯一终态/幂等hook/冷重开断言，现保守转回待修复（验收补强），不再次计生产修复。H108本轮不修改SDK/server，下一轮优先单独完成；预计1–3有效小时，编译/环境等待另计。E13三根清理已实证完成仍有效，无需重建旧h107目录。
 
