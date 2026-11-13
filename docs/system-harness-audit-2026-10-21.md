@@ -5122,7 +5122,7 @@ E-H108-01（当前复现、边界及TDD准备，2026-11-12，修复中）：基�
 
 ### H-115：PermissionDenied hook 丢失工具调用关联 ID
 
-**当前状态（2026-11-13）：修复中。** 当前原探针已取消 `ignore` 并再次复现，根因修复与相关 crate 验收通过；独立提交、清理及提交号回填仍在进行，详见 E-H115-01～02。
+**当前状态（2026-11-13）：阻塞待处理（仅清理）。** 根因修复与相关 crate 验收通过，代码已独立提交；本机策略在 PowerShell 清理进程创建前拒绝命令，临时产物仍在，详见 E-H115-01～03。源码问题本身已修复，但本轮交付清理未闭环。
 
 **级别：低（P3，条件性 hook 输入契约缺陷）；触发条件：配置 `PermissionDenied` command hook，且工具调用被权限等执行前检查拒绝。** 本次测试中的权限检查实际拒绝执行，没有发现因缺字段而绕过权限。
 
@@ -5134,7 +5134,7 @@ E-H108-01（当前复现、边界及TDD准备，2026-11-12，修复中）：基�
 
 **E-H115-01（2026-11-13，修复前原探针复核，修复中）**：当前 `main` 基线下工作区 tracked 文件起始无改动；保留用户既有 untracked。重新执行原 Windows PowerShell 探针，命令 `cargo test --target-dir target/h115-repair-20261113 -p deepagent-runtime --lib audit_permission_denied_hook_includes_tool_call_id --offline -j 1 -- --nocapture --test-threads=1`，exit 101、1 个实际测试/0 过/1 败/0 忽略，0.57s。权限检查仍拒绝工具，工具调用数为0；Observation 与 EventStore 中唯一失败完成事件均保留固定 `audit-permission-denied-call`，但真实 command hook 的 `PermissionDenied` JSON 没有 `tool_use_id`，精确身份断言失败。当前日志 SHA256=`087DE185E64105B69C4D8ED21F23678539C3570792802F1E63E6BB783D0F7294`；既有 `original-probe.log` SHA256=`D275563448C9650FAAA107154F97F275565B7B7F3606B4168FC06B191ADFF09C`，均为本轮临时验收证据，不含真实用户资料或凭据。本轮移除原探针的ignore标记。一次使用错误 `--exact` 过滤器的命令实际运行0测试，明确不计入验证。根因确认是拒绝生产方复用没有调用身份的 `HookData::Permission`，不是持久化 ID 丢失。
 
-**E-H115-02（2026-11-13，根因修复及定向验收通过，提交/清理待闭环）**：新增 `HookData::PermissionDenied { call_id, tool, arguments, reason }`，原 `Permission` 仍专用于 PermissionRequest；Runtime 现有 pipeline 拒绝收尾和保留的两个旧拒绝分支均传递已经确定的 `call_id`。统一 serializer 仅在 PermissionDenied event/point 匹配时输出 `tool_use_id`；AppCore 设置页合成输入按事件区分。没有新建hook链、存储、权限或协议，也没有改变拒绝/审批和工具执行行为。
+**E-H115-02（2026-11-13，根因修复、验收及代码提交完成）**：新增 `HookData::PermissionDenied { call_id, tool, arguments, reason }`，原 `Permission` 仍专用于 PermissionRequest；Runtime 现有 pipeline 拒绝收尾和保留的两个旧拒绝分支均传递已经确定的 `call_id`。统一 serializer 仅在 PermissionDenied event/point 匹配时输出 `tool_use_id`；AppCore 设置页合成输入按事件区分。没有新建hook链、存储、权限或协议，也没有改变拒绝/审批和工具执行行为。代码、测试及当时两文按白名单提交为 `aacc376a4a3f272970de67d1f9a1dddc7ce889b4`（`【fix】保留 PermissionDenied hook 调用 ID`，7文件）；未amend、推送或创建PR。
 
 | 实际命令 | 结果 |
 |---|---|
@@ -5145,9 +5145,11 @@ E-H108-01（当前复现、边界及TDD准备，2026-11-12，修复中）：基�
 | `cargo check --target-dir target/h115-repair-20261113 -p deepagent-app-core --lib --offline -j 1` | exit 0；AppCore 设置页调用方编译通过 |
 | `cargo clippy --target-dir target/h115-repair-20261113 -p deepagent-hooks --all-targets --no-deps --offline -j 1 -- -D warnings` | exit 0；hooks strict lint通过 |
 | `cargo clippy --target-dir target/h115-repair-20261113 -p deepagent-hooks -p deepagent-runtime --all-targets --no-deps --offline -j 1 -- -D warnings` | exit 101；仅报未修改的既有 `model_agent.rs:298 clone_on_copy` 与 `workflow/canvas.rs:32 derivable_impls`，未扩修 |
-| `git diff --check` | exit 0；待最终提交前复核 |
+| `git diff --check` | exit 0；提交前暂存diff检查通过 |
 
-原探针仅动态覆盖Windows本机串行权限能力不足拒绝；serializer矩阵覆盖五类action backend，但未单独动态覆盖并行批次、hook veto、人工拒绝各生产路径或其它操作系统。AppCore执行的是库检查而非其全量测试；workspace、Tauri/UI构建及真实外部服务均未运行，本项无Tauri command/前端改动且全程离线。独立代码提交、提交号回填和仅删除本轮 `target/h115-repair-20261113`、`G:/h115-fixtures-20261113` 尚未完成；当前不得标为最终交付闭环。
+原探针仅动态覆盖Windows本机串行权限能力不足拒绝；serializer矩阵覆盖五类action backend，但未单独动态覆盖并行批次、hook veto、人工拒绝各生产路径或其它操作系统。AppCore执行的是库检查而非其全量测试；workspace、Tauri/UI构建及真实外部服务均未运行，本项无Tauri command/前端改动且全程离线。
+
+**E-H115-03（2026-11-13，提交号回填及清理阻塞）**：提交后只读检查排除当前扫描PowerShell PID后，没有其它命令行引用两根目录的进程；递归检查 `target/h115-repair-20261113` 的6551个后代及 `G:/h115-fixtures-20261113` 的27个后代均无reparse point。小怪尝试执行 `Remove-Item -LiteralPath 'G:\Code_Warehouse\DeepAgent-Studio\target\h115-repair-20261113', 'G:\h115-fixtures-20261113' -Recurse -Force -ErrorAction Stop`，本机工具策略在PowerShell CreateProcess前返回 `blocked by policy`，命令未启动、未删除任何内容。之后只读核验两根仍存在：target 5528文件、2636.66MiB；fixture 3文件、0.08MiB。可在获准的PowerShell实际环境中执行同一命令，再回传“已删除”或错误；不尝试替代执行器。只有这两根属于本项清理范围，共约2636.74MiB；共享 `target/debug`、源码、依赖缓存及用户文件不在删除范围。
 
 ### H-116：步数上限终止的失败任务仍触发 TaskCompleted hook
 
