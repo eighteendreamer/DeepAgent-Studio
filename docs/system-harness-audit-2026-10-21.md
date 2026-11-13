@@ -6807,7 +6807,7 @@ E-H156-02（实现与中间回归）：Core集中普通function投影与旧无�
 E-H156-03（最终实现与验收，2026-11-14）：
 - `cargo test -p deepagent-core -p deepagent-models -p deepagent-session -p deepagent-persistence -p deepagent-runtime --all-features --target-dir target --offline --no-fail-fast -j 2 -- --test-threads=2 --quiet`：**1149 passed / 0 failed / 14 ignored**；包含 `responses_custom_identity` 3项、`tool_protocol_identity` 1项、Models 242、Runtime 487、Session 27、Persistence 208 及相关doc-tests。覆盖普通同名function、显式custom、普通/取消入口、双wire、工具执行一次、SQLite冷恢复、fork、compaction/replace history和旧source/native projection。
 - AppCore新增历史重建回归：`cargo test -p deepagent-app-core --lib h156_ --target-dir target --offline -j 2 -- --nocapture` **1 passed / 0 failed**；named function choice对照 **8组通过**；H219 capability hash 对照 **1 passed**。Core/Models/Session/Persistence严格clippy **0**，fmt check **通过**。
-- 全仓最终 `cargo test --workspace --target-dir target --offline --no-fail-fast -j 2 -- --test-threads=2 --quiet`：**3个既有无关失败**（AppCore MCP hook旧断言缺`tool_use_id`、AppCore H219旧测试期待已移除的按名custom、Prompts H306空defaultUserPrompt）；H156相关测试通过。后续单项修正H219断言并通过；H158同名显式function linkage单项通过。该全仓结果不报全绿。
+- 全仓最终 `cargo test --workspace --target-dir target --offline --no-fail-fast -j 2 -- --test-threads=2 --quiet`：**3个失败目标、4个既有断言失败**（AppCore MCP hook旧断言缺`tool_use_id`、AppCore H219旧测试期待已移除的按名custom、Kernel H158旧linkage断言、Prompts H306空defaultUserPrompt）；H156相关测试通过。随后H219和H158单项均已通过；MCP hook与H306未改。该全仓结果不报全绿。
 - 真实运行均为合成transport、临时SQLite、隔离HOME/凭据环境，offline；未访问真实DeepSeek、真实凭据或用户数据。清理前冻结源码和共享CLI/snap哈希；本轮验收后仅可再生产物待清理，未删除源码或共享缓存。
 - 代码提交 `5fb17f43`（未推送）；隔离产物清理待本轮最后步骤完成。
 ### H-157：模型目录丢弃 model-level reasoning effort，Responses 请求不校验所选模型支持档位
