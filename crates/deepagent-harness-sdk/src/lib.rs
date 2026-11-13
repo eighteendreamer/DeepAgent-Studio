@@ -24,6 +24,15 @@
 //! `RecvError::Closed` is a transport fact, not proof of run completion/failure;
 //! reconnect explicitly and reconcile durable state before retrying mutations.
 //!
+//! Corrupt JSON or an invalid JSON-RPC 2.0 response/notification envelope retires
+//! this same connection immediately. Pending/late calls and owned event streams
+//! receive `SdkError::Decode` with the same sanitized first cause; already queued
+//! events remain drainable. No peer line or serde payload text is retained in
+//! that diagnostic. This is not proof that a sent mutation failed remotely.
+//! Wrong/missing envelope versions keep the existing rejection-only behavior;
+//! valid unknown notification methods remain ignored. No automatic replay,
+//! respawn or remote cancellation is added. Public raw `decode_line` is unchanged.
+//!
 //! Archive uses the existing shared AppCore activity/control gate: busy owners
 //! are refused, not cancelled. `thread_list()` selects active identities;
 //! `thread_list_with_options(ThreadListRequest { archived: Some(true), ..Default::default() })` selects
@@ -93,6 +102,7 @@
 #![warn(missing_docs)]
 
 pub mod client;
+mod connection;
 mod error;
 mod initialize;
 mod notification;

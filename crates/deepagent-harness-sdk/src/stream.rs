@@ -2,6 +2,7 @@
 use deepagent_harness_protocol::{HarnessEvent, RpcResponse};
 use tokio::sync::{broadcast, watch};
 
+use crate::connection::ConnectionState;
 use crate::{HarnessNotification, SdkError, SequenceStatus};
 
 enum Scope {
@@ -21,7 +22,7 @@ enum Scope {
 pub struct RequestEvents {
     response: RpcResponse,
     receiver: Option<broadcast::Receiver<HarnessNotification>>,
-    closed: watch::Receiver<bool>,
+    closed: watch::Receiver<ConnectionState>,
     scope: Scope,
 }
 
@@ -29,7 +30,7 @@ impl RequestEvents {
     pub(crate) fn thread(
         response: RpcResponse,
         receiver: broadcast::Receiver<HarnessNotification>,
-        closed: watch::Receiver<bool>,
+        closed: watch::Receiver<ConnectionState>,
     ) -> Result<Self, SdkError> {
         let thread = identity(&response, "thread/start", "threadId")?;
         Ok(Self {
@@ -43,7 +44,7 @@ impl RequestEvents {
     pub(crate) fn turn(
         response: RpcResponse,
         receiver: broadcast::Receiver<HarnessNotification>,
-        closed: watch::Receiver<bool>,
+        closed: watch::Receiver<ConnectionState>,
         requested_thread: &str,
     ) -> Result<Self, SdkError> {
         let thread = identity(&response, "turn/start", "threadId")?;
@@ -122,7 +123,7 @@ impl RequestEvents {
                 }
                 Err(broadcast::error::TryRecvError::Closed) => Err(SdkError::EventStreamClosed),
                 Err(broadcast::error::TryRecvError::Empty) => {
-                    if *self.closed.borrow() {
+                    if self.closed.borrow().is_closed() {
                         return self.closed_error();
                     }
                     tokio::select! {
@@ -141,7 +142,11 @@ impl RequestEvents {
                 Ok(event) => event,
                 Err(error) => {
                     self.close();
-                    return Err(error);
+                    return Err(if matches!(error, SdkError::EventStreamClosed) {
+                        self.closed.borrow().decode_error().unwrap_or(error)
+                    } else {
+                        error
+                    });
                 }
             };
             let discontinuity = match event.sequence_status {
@@ -182,7 +187,11 @@ impl RequestEvents {
 
     fn closed_error(&mut self) -> Result<Option<HarnessNotification>, SdkError> {
         self.close();
-        Err(SdkError::EventStreamClosed)
+        Err(self
+            .closed
+            .borrow()
+            .decode_error()
+            .unwrap_or(SdkError::EventStreamClosed))
     }
 
     fn matches(&self, event: &HarnessEvent) -> bool {

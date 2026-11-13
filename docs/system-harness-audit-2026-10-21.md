@@ -4700,6 +4700,68 @@ AppCore cargo clippy --target-dir <本轮root> -p deepagent-app-core --all-targe
 
 本轮仅隔离HOME/PROFILE/APPDATA/TEMP/XDG/data、Memory/合成管道与PowerShell，offline复用共享Cargo target，child无CARGO_TARGET_DIR，不调用真实CLI服务/模型/网络/凭据/用户数据，不建额外大target。证据位于target/h101-repair-20261113与G:/h101-fixtures-20261113；本轮两项已终态无后台验收待等。H101仍修复中、无修复commit、未新增修复数；其余234验收、28历史跳过、10归并、3撤销不变，H180仍授权不修，H66验收保留。本项暂估4–8有效小时，依据统一reader/请求/事件生命周期和真实管道并发/正常/EOF/版本兼容消费方验证；决策、编译及环境等待另计且无可靠上界。全体剩余170–430有效小时仍为未逐项校准的历史低置信粗估，整体目标未完成。
 
+**E-H101-02（用户确认分层边界后的TDD与候选，2026-11-13，未验收）**：用户已明确“保持H212，按上述分层处理”：JSON损坏或2.0却不符合响应/通知结构时收束；错/缺版本及合法未知通知方法维持拒收，零自动重试/重派。修改生产前新增两项真实PowerShell管道回归，3个在途请求/克隆及坏握手均在固定3秒上界未完成，`cargo test -p deepagent-harness-sdk --lib h101_ --offline -j 1 -- --test-threads=1 --nocapture` exit101、0过2败0忽略、28.712秒，失败为真实Elapsed而非编译失败；原probe红继续保留。
+
+候选在同一connection watch把bool提升为Open/Closed/DecodeFailed首因状态，EOF/close/partial writer cleanup不能覆盖已发布首因；Pending/Registration、reader和原bounded event bus仍唯一，无新增队列/存储/重连。语法/结构坏帧保存固定category及数字位置，不保留peer行/任意serde Display，再构造既有公开SdkError::Decode交给在途/后续请求和owned stream；正常已排队事件仍可读，已交付的成功/终态不重写。底层raw decode_line不改、H212数据版拒收独立于DTO解析。ReaderOwner仍负责pending回收/event sender/原stderr drainer收尾，不杀子进程或声称取消远端已接纳工作。
+
+首次两项候选2/0/0、14.673秒。扩展首因、owned stream、正常未知通知和正常终态后曾因新测试watch Ref块尾生命周期E0597导致SDK lib及strict候选编译失败，保留日志；修正测试借用后全SDK lib为78过1败4忽略，唯一失败H213的notification-boundary夹具中仍混入3种2.0畸形结构（缺method、method数字/null），与本轮用户确认的断开要求冲突。未改H213输入或断言来硬凑通过，已另问是否将这3种移入H101断开回归，其余版本/方法/业务事件正常拒收断言不变；待用户确认，不擅自变更既有验收边界。
+
+当前扩大定向 `cargo test -p deepagent-harness-sdk --lib h101_ --offline -j 1 -- --test-threads=2 --nocapture` 实际7/0/0、15.635秒；`... --lib h212_ ... --test-threads=1 --nocapture`5/0/0、2.264秒（原H212测试语义未改）；原probe去ignore后默认真实1/0/0、0.786秒。`cargo clippy -p deepagent-harness-sdk --all-targets --no-deps --offline -j 1 -- -D warnings`当前strict通过、2.760秒，`cargo fmt --all -- --check`exit0、4.958秒。这些是候选定向，不冒称全SDK/跨层验收完成；尚未冻结最终源码、未跑当前CLI消费者/完整workspace/全依赖lint，未做前端或Tauri（本轮尚无对应接口改动），无生产修复commit、不计新增验收。
+
+本项当前余兼容决策、完整回归/消费者与文档提交清理约2–5有效小时（新反例出现重估）；编译/决策/环境等待另计无可靠上界。本轮两根继续为进行中必需证据/合成夹具，未重复创建大target，不清理正在使用的证据。当前234验收、28历史跳过、10归并、3撤销、29待修含H180、1修复中H101、1验收保留H66；本轮新增完整修复0，整体未完成。
+
+**E-H101-03（H213兼容决策落实与冻结门禁开始，2026-11-13，未最终验收）**：用户明确确认“拆分3种畸形帧，其他H213断言不变”。只将notification-boundary夹具中2.0缺method、method=17、method=null三帧迁入H101的真实管道断开矩阵，保留其原turn.completed业务payload；H213其它噪声输入、正常数据、raw/owned消费断言与容量/审批断言均未删改。不是忽略失败或删掉畸形输入：迁入的每种帧仍通过生产reader，在3个真实在途请求、后续克隆、首因不被close覆盖、pending回收/事件关闭及零重派条件下实际验证。另复核Value roundtrip会折叠重复字段，因此gate只用Value区分版本，最终仍调用原decode_line；重复id的原DTO拒绝对照保持，不偷偷放松raw协议。
+
+当前 `cargo test -p deepagent-harness-sdk --lib --offline -j 1 -- --test-threads=2 --nocapture` exit0、80过0败4忽略、41.614秒（测试体24.95秒），原H213失败已按确认边界消除；strict `cargo clippy -p deepagent-harness-sdk --all-targets --no-deps --offline -j 1 -- -D warnings` exit0、3.987秒。13份Rust实现/回归冻结到target/h101-repair-20261113/final-sources.json。随后单一串行runner已启动，将明确重建当前CLI并核hash、默认/全特性SDK真实stdio、原probe默认、H101/H212/H213、protocol、带依赖及no-deps strict、完整workspace及fmt逐项执行；未完成的排队项不当通过。原共享CLI及用户已有.snap.new已备份，只有finally恢复并核hash完成后才宣称归还，不删除或接受原快照。
+
+本项仍修复中，无独立修复commit/新增验收；当前只跨Rust SDK私有连接状态、reader/请求/事件消费边界，公开API/DTO/wire/raw decode/远端run不变，无前端/Tauri/数据库/权限配置变化，不另建运行/事件/取消链。错误只表明本地连接不可再用，不证明已发送变更未发生，也不自动杀进程/重连/重试。未知合法通知、错/缺版本和业务事件拒收仍按原语义；语法坏帧/合法版本但DTO畸形才属于本项连接失败。全仓既有失败及未验证其它平台/真实服务继续如实保留，不以SDK局部成功宣布整体完成。
+
+**E-H101-04（冻结候选最终本机验收，2026-11-13，残余门禁已报告）**：用户确认将H213的三个2.0畸形结构帧迁入H101后，13份Rust实现/回归SHA256冻结并保持一致。正常未知通知方法、错/缺JSON-RPC版本、无效业务事件、重复字段/raw decoder及H213剩余原断言未放宽。按现有ReaderOwner/同一watch首因收束，坏帧停读、释放所有pending，后续clone请求立即得到同一固定诊断SdkError::Decode；error只含category及位置，不包含serde peer正文或原始wire。绝不声称远端已接纳mutation已回滚。
+
+| 实际最终命令 | 结果 | 墙钟秒（含编译等待） |
+|---|---|---|
+| `cargo build -p deepagent-cli --offline -j 1` | exit0；重新构建当前消费端CLI，运行前binary SHA256=38E73893AB1E91D936C53A4C7CDDB094B97B54C0CBD59CFF4014320536D5D67D；默认/all-feature SDK测试前后复核未变化 | 23.497 |
+| `cargo test -p deepagent-harness-sdk --offline --no-fail-fast -j 1 -- --test-threads=2 --quiet` | exit0；lib80过4忽略、真实stdio e2e15过、doc2过，合计95过0败4忽略 | 56.082 |
+| `cargo test -p deepagent-harness-sdk --all-features --offline --no-fail-fast -j 1 -- --test-threads=2 --quiet` | exit0；同当前CLI消费者95过0败4忽略 | 41.643 |
+| `cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_malformed_server_line_does_not_leave_request_pending --offline -j 1 -- --exact --nocapture` | exit0；原探针已取消ignore、默认真实1过0败 | 0.761 |
+| `cargo test -p deepagent-harness-sdk --lib h101_ --offline -j 1 -- --test-threads=1 --nocapture` | exit0；7/0/0，包括五类坏帧、3请求/克隆首因一致、握手、stream drain、已交付终态不改写与0重派 | 2.939 |
+| `cargo test -p deepagent-harness-sdk --lib h212_ --offline -j 1 -- --test-threads=1 --nocapture` | exit0；5/0/0，版本拒收时仍允许等待后续合法应答 | 1.998 |
+| `cargo test -p deepagent-harness-sdk --lib h213_ --offline -j 1 -- --test-threads=1 --nocapture` | exit0；4/0/0，3个畸形帧迁出后其余H213测试全部保留并通过 | 1.704 |
+| `cargo test -p deepagent-harness-protocol --offline -j 1 -- --test-threads=2 --quiet` | exit0；control2、protocol20、doc0通过 | 16.863 |
+| `cargo clippy -p deepagent-harness-sdk --all-targets --all-features --no-deps --offline -j 1 -- -D warnings` | exit0，SDK严格lint通过 | 0.708 |
+| `cargo fmt --all -- --check` | exit0；13份冻结文件一致 | 6.406 |
+| `cargo clippy -p deepagent-harness-sdk --all-targets --all-features --offline -j 1 -- -D warnings` | exit101；依赖Runtime既有model_agent.rs clone_on_copy、workflow/canvas.rs derivable_impls | 12.741 |
+| `cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=2 --quiet` | exit101；161 targets、5340过4败151忽略；AppCore lib 1681过0败49忽略 | 983.934 |
+| `cargo clippy --workspace --all-targets --all-features --offline -j 2 -- -D warnings` | exit101；与上列同两项Runtime依赖lint，无本项SDK告警 | 11.576 |
+
+全仓四项失败按目标归属与最近H108-04反例一致：AppCore Kernel image DACL `original DACL must be restored exactly`；CLI TUI快照把C:/Users临时路径固定，本轮真实G:/h101隔离路径不同，原用户snap.new复原不接受；Prompts H306画布视频profile `creative.video-edit.v1`空defaultUserPrompt；Runtime checkpoint `restored test DACL differs`。不修改这些问题/快照，不把全仓描述为通过。本轮Tauri/frontend无桥接签名、UI或web更改，未重跑Tauri/前端；未运行其它OS、真实供应商或服务。全依赖SDK strict由Workspace两个既有lint失败，`--no-deps`已独立证明SDK targets strict干净。
+
+默认与all-feature SDK E2E测试都在刚构建的CLI上实跑，前后CLI哈希同为上述候选hash；final runner finally已完成：原共享 `target/debug/deepagent.exe` SHA256恢复为8C03E6A63D3E64EBF14DF4AC67C4DC56FB87C2D8B9C35949D3CBA9BC391F30A4，用户原`snap.new`恢复为D514BFE28BA6F207C714DDAD2FEFE9E521B3AA1FD7DF1AF243FA2CC2ED911F17，之后再次按哈希复核一致。原E01红测、E02超时与编译错误及H213旧失败均保留，不以删除失败证据取得绿灯。用户untracked七组未改动。
+
+13份源码/测试、双文及本机target/h101-repair-20261113与G:/h101-fixtures-20261113约产物待盘点后精确清理；没有测盘剩余空间或测强杀残留。本项代码/功能验收完成但提交/hash回填/清理仍在本轮进行中；这之后只允许白名单提交和删除两个本项专属根，不碰共享target/debug/用户快照/原缓存。兼容：connection私有watch类型改为含首因状态，SdkError仍沿用Decode公开variant；所有RequestEvents watch receiver均在同crate同步更新。版本拒收与合法未知通知保持原契约，坏结构本地关闭并不证明server端未提交远端工作。全部未验/残余边界按本段记录，整体goal仍active。
+
+**E-H101-04（冻结候选最终本机验收，2026-11-13，残余门禁已记录）**：用户确认把H213的三个2.0畸形结构帧迁入H101后，13份Rust实现/回归SHA256冻结并保持一致。未知通知方法、错/缺JSON-RPC版本、无效业务事件、重复字段/raw decoder及H213其余原断言未放宽；有效未知method/合法无效业务event仍按旧规则忽略。按现有ReaderOwner/同一watch首因收束，坏帧停读、释放所有pending，后续clone请求立即得同一固定诊断SdkError::Decode；error只含category和行列位置，不含serde peer正文或原wire。绝不声称已发送mutation远端回滚。
+
+| 实际最终命令 | 结果 | 墙钟秒（含编译等待） |
+|---|---|---|
+| `cargo build -p deepagent-cli --offline -j 1` | exit0；当前生产CLI哈希38E73893AB1E91D936C53A4C7CDDB094B97B54C0CBD59CFF4014320536D5D67D；SDK默认/全特性实跑前后hash未变 | 23.497 |
+| `cargo test -p deepagent-harness-sdk --offline --no-fail-fast -j 1 -- --test-threads=2 --quiet` | exit0；lib80、stdio e2e15、doc2，共95过0败4忽略 | 56.082 |
+| `cargo test -p deepagent-harness-sdk --all-features --offline --no-fail-fast -j 1 -- --test-threads=2 --quiet` | exit0；当前CLI消费者95过0败4忽略 | 41.643 |
+| `cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_malformed_server_line_does_not_leave_request_pending --offline -j 1 -- --exact --nocapture` | exit0；原probe已取消ignore，默认1/0/0 | 0.761 |
+| `cargo test -p deepagent-harness-sdk --lib h101_ --offline -j 1 -- --test-threads=1 --nocapture` | exit0；7/0/0，含坏握手、多个在途克隆、坏帧矩阵、owned stream、已交付终态及零重派 | 2.939 |
+| `cargo test -p deepagent-harness-sdk --lib h212_ --offline -j 1 -- --test-threads=1 --nocapture` | exit0；5/0/0，错/缺版本拒收后仍可等待合法回复 | 1.998 |
+| `cargo test -p deepagent-harness-sdk --lib h213_ --offline -j 1 -- --test-threads=1 --nocapture` | exit0；4/0/0，三种畸形帧迁入后其余H213验收仍通过 | 1.704 |
+| `cargo test -p deepagent-harness-protocol --offline -j 1 -- --test-threads=2 --quiet` | exit0；protocol/control 25过 | 16.863 |
+| `cargo clippy -p deepagent-harness-sdk --all-targets --all-features --no-deps --offline -j 1 -- -D warnings` | exit0，SDK strict通过 | 0.708 |
+| `cargo fmt --all -- --check` | exit0；冻结源码一致 | 6.406 |
+| `cargo clippy -p deepagent-harness-sdk --all-targets --all-features --offline -j 1 -- -D warnings` | exit101；依赖Runtime原model_agent clone_on_copy和workflow/canvas derivable_impls | 12.741 |
+| `cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=2 --quiet` | exit101；161 targets、5340过4败151忽略；AppCore lib1681/0/49 | 983.934 |
+| `cargo clippy --workspace --all-targets --all-features --offline -j 2 -- -D warnings` | exit101；与上列相同两项Runtime依赖lint，本项SDK无告警 | 11.576 |
+
+全仓四个既有失败：AppCore image测试DACL `original DACL must be restored exactly`；CLI快照将C:/Users临时目录硬编码，本轮合成隔离路径不同而未accept/改快照；Prompts H306 `creative.video-edit.v1`空defaultUserPrompt；Runtime checkpoint `restored test DACL differs`。没有修改这些问题/断言，不称全仓通过。本项没有UI、Tauri桥接或前端变化，未重跑其构建；没有跑其它OS、真实服务或凭据。SDK依赖strict与workspace strict由Runtime既有两项失败，`--no-deps`严格检查已通过。
+
+SDK stdio e2e在同轮重新构建的CLI上执行，candidate hash如上；finally结束后，共享`target/debug/deepagent.exe`恢复为8C03E6A63D3E64EBF14DF4AC67C4DC56FB87C2D8B9C35949D3CBA9BC391F30A4，用户原snap.new恢复为D514BFE28BA6F207C714DDAD2FEFE9E521B3AA1FD7DF1AF243FA2CC2ED911F17，另行按哈希复核一致。原E01失败、E02测试/编译失败、H213旧失败均保留。本轮实现、测试和日志仅限Rust SDK及本项文档；剩余提交/清理0.2–0.5有效小时，编译/环境等待另计且无可靠上界。本机OS/真实provider/服务/用户数据、强杀残留未测；最终错误仅描述本地连接状态，不证明server没有执行已接纳命令。整体goal仍active。
+
 ### H-102：InstructionsLoaded 外部 hook 缺少兼容输入必需字段
 
 **级别：低（P3，条件性 hooks 兼容缺口）；触发条件：项目声明依赖 Claude Code `InstructionsLoaded` 输入字段的外部 hook，并在会话装配时成功加载指令文件。** hook 仍会被调用；本项是已触发事件的输入 DTO 不兼容，不是该生命周期事件完全未实现。

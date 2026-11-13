@@ -1,5 +1,6 @@
 //! Local ownership of one pending RPC and its frame. Never retries or cancels server work.
 use super::Pending;
+use crate::connection::ConnectionState;
 use crate::SdkError;
 use deepagent_harness_protocol::RpcResponse;
 use std::time::Duration;
@@ -79,7 +80,7 @@ impl Drop for Registration<'_> {
 pub(super) struct FrameWriter<'a> {
     stdin: MutexGuard<'a, Option<ChildStdin>>,
     table: &'a Pending,
-    lifecycle: &'a watch::Sender<bool>,
+    lifecycle: &'a watch::Sender<ConnectionState>,
     completed: bool,
 }
 
@@ -87,7 +88,7 @@ impl<'a> FrameWriter<'a> {
     pub fn new(
         stdin: MutexGuard<'a, Option<ChildStdin>>,
         table: &'a Pending,
-        lifecycle: &'a watch::Sender<bool>,
+        lifecycle: &'a watch::Sender<ConnectionState>,
     ) -> Self {
         Self {
             stdin,
@@ -113,7 +114,7 @@ impl Drop for FrameWriter<'_> {
     fn drop(&mut self) {
         if !self.completed {
             drop(self.stdin.take());
-            self.lifecycle.send_replace(true);
+            ConnectionState::retire(self.lifecycle, ConnectionState::Closed);
             self.table
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())

@@ -27,6 +27,7 @@ use tokio::{
     sync::{broadcast, oneshot, watch},
 };
 
+use crate::connection::ConnectionState;
 use crate::error::SdkError;
 use crate::transport::request_line;
 use crate::{HarnessNotification, RequestEvents};
@@ -69,7 +70,7 @@ pub struct HarnessClient {
     pending: Pending,
     events: broadcast::WeakSender<HarnessNotification>,
     initialized: Arc<Mutex<bool>>,
-    lifecycle: watch::Sender<bool>,
+    lifecycle: watch::Sender<ConnectionState>,
     timeouts: RequestTimeouts,
 }
 
@@ -381,7 +382,7 @@ impl HarnessClient {
     /// Subscribing after closure returns an immediately closed, empty receiver.
     /// Closure is a transport fact, not a synthetic failed/cancelled turn.
     pub fn subscribe(&self) -> broadcast::Receiver<HarnessNotification> {
-        if !*self.lifecycle.borrow() {
+        if !self.lifecycle.borrow().is_closed() {
             if let Some(events) = self.events.upgrade() {
                 return events.subscribe();
             }
@@ -411,12 +412,15 @@ impl HarnessClient {
     /// enqueued notifications remain drainable; unread pipe bytes are not a
     /// promised replay buffer. This does not kill the child or cancel a turn.
     pub async fn close(&self) {
-        self.lifecycle.send_replace(true);
+        ConnectionState::retire(&self.lifecycle, ConnectionState::Closed);
         let mut guard = self.stdin.lock().await;
         drop(guard.take());
     }
 
     async fn require_initialized(&self) -> Result<(), SdkError> {
+        if let Some(error) = self.lifecycle.borrow().decode_error() {
+            return Err(error);
+        }
         let initialized = *self
             .initialized
             .lock()
@@ -443,6 +447,9 @@ impl HarnessClient {
 
     /// Full send path without the initialized guard (used by the handshake).
     async fn call_unchecked(&self, request: &HarnessRequest) -> Result<RpcResponse, SdkError> {
+        if let Some(error) = self.lifecycle.borrow().decode_error() {
+            return Err(error);
+        }
         let duration = if matches!(request, HarnessRequest::Initialize(_)) {
             self.timeouts.initialize
         } else {
@@ -469,7 +476,7 @@ impl HarnessClient {
         let mut outcome_unknown = false;
         let operation = async {
             let guard = self.stdin.lock().await;
-            if guard.is_none() || *self.lifecycle.borrow() {
+            if guard.is_none() || self.lifecycle.borrow().is_closed() {
                 return Err(SdkError::Write(std::io::Error::from(
                     std::io::ErrorKind::BrokenPipe,
                 )));
@@ -492,12 +499,15 @@ impl HarnessClient {
                 // wait_for returns a watch Ref/read lock. Release it inside
                 // this future before select drops a possibly active writer:
                 // that owner's cleanup also updates the lifecycle watch.
-                _ = async { drop(closed.wait_for(|closed| *closed).await); } =>
+                _ = async { drop(closed.wait_for(|closed| closed.is_closed()).await); } =>
                     Err(SdkError::ResponseChannelClosed { id }),
             }
         })
         .await;
-        let response = result.map_err(|_| timeout_error(outcome_unknown))??;
+        let response = result
+            .map_err(|_| timeout_error(outcome_unknown))
+            .and_then(|result| result)
+            .map_err(|error| self.lifecycle.borrow().decode_error().unwrap_or(error))?;
 
         if let Some(error) = response.error {
             Err(SdkError::Rpc {
@@ -550,7 +560,7 @@ mod audit_tests {
             .expect("spawn a live pipe owner");
         let stdin = child.stdin.take().expect("piped stdin");
         let (events, _) = broadcast::channel(1);
-        let lifecycle = watch::channel(true).0;
+        let lifecycle = watch::channel(crate::connection::ConnectionState::Closed).0;
         let client = HarnessClient {
             stdin: Arc::new(tokio::sync::Mutex::new(Some(stdin))),
             next_id: Arc::new(AtomicI64::new(1)),
@@ -657,7 +667,6 @@ mod audit_tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: malformed server output must fail pending SDK calls"]
     async fn audit_malformed_server_line_does_not_leave_request_pending() {
         let marker = std::env::temp_dir().join(format!(
             "deepagent-harness-sdk-audit-malformed-{}.marker",
@@ -1216,6 +1225,10 @@ mod version_contract_tests;
 #[cfg(all(test, windows))]
 #[path = "client_request_lifecycle_tests.rs"]
 mod request_lifecycle_tests;
+
+#[cfg(all(test, windows))]
+#[path = "client_protocol_failure_tests.rs"]
+mod protocol_failure_tests;
 
 #[cfg(all(test, windows))]
 #[path = "client_notification_tests.rs"]

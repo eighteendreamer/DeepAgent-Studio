@@ -1,6 +1,7 @@
 //! The sole notification producer. Client handles cannot prolong its lifetime.
 use super::Pending;
-use crate::transport::{decode_server_line, notification_event, WireMessage};
+use crate::connection::{ConnectionState, DecodeFailure};
+use crate::transport::{decode_server_line, notification_event, ServerLineError, WireMessage};
 use crate::HarnessNotification;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -16,7 +17,7 @@ use tracing::debug;
 struct ReaderOwner {
     events: Option<broadcast::Sender<HarnessNotification>>,
     pending: Pending,
-    lifecycle: watch::Sender<bool>,
+    lifecycle: watch::Sender<ConnectionState>,
     stderr: JoinHandle<()>,
 }
 
@@ -27,7 +28,7 @@ impl Drop for ReaderOwner {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clear();
-        self.lifecycle.send_replace(true);
+        ConnectionState::retire(&self.lifecycle, ConnectionState::Closed);
         self.stderr.abort();
     }
 }
@@ -37,8 +38,8 @@ pub(super) fn spawn_reader(
     stderr: ChildStderr,
     pending: Pending,
     events: broadcast::Sender<HarnessNotification>,
-) -> watch::Sender<bool> {
-    let (lifecycle, _) = watch::channel(false);
+) -> watch::Sender<ConnectionState> {
+    let (lifecycle, _) = watch::channel(ConnectionState::Open);
     let stderr = tokio::spawn(async move {
         let mut reader = BufReader::new(stderr);
         let mut line = String::new();
@@ -67,7 +68,7 @@ pub(super) fn spawn_reader(
                 biased;
                 // Do not retain a watch read lock when dropping the owner:
                 // its teardown also publishes the final closed state.
-                _ = async { drop(closed.wait_for(|closed| *closed).await); } => break,
+                _ = async { drop(closed.wait_for(|closed| closed.is_closed()).await); } => break,
                 line = lines.next_line() => line,
             };
             let line = match line {
@@ -105,8 +106,17 @@ pub(super) fn spawn_reader(
                         }
                     }
                 }
-                Err(error) => {
-                    debug!(target: "harness_sdk::decode", error = %error, "unparseable server line")
+                Err(ServerLineError::Version(reason)) => {
+                    debug!(target: "harness_sdk::decode", reason, "ignored unsupported protocol version");
+                }
+                Err(ServerLineError::Decode(error)) => {
+                    let failure = DecodeFailure::from_error(&error);
+                    ConnectionState::retire(
+                        &owner.lifecycle,
+                        ConnectionState::DecodeFailed(failure),
+                    );
+                    debug!(target: "harness_sdk::decode", ?failure, "invalid stdout retired connection");
+                    break;
                 }
             }
         }
@@ -126,7 +136,7 @@ mod tests {
     async fn h256_reader_owner_drop_closes_events_pending_and_stderr_without_a_client_drop() {
         let (sender, mut events) = broadcast::channel(2);
         let weak = sender.downgrade();
-        let (lifecycle, _) = watch::channel(false);
+        let (lifecycle, _) = watch::channel(crate::connection::ConnectionState::Open);
         let pending = Arc::new(Mutex::new(HashMap::new()));
         let (reply, received) = tokio::sync::oneshot::channel();
         pending.lock().unwrap().insert(1, reply);
@@ -147,7 +157,7 @@ mod tests {
         assert!(task.await.unwrap_err().is_cancelled());
         assert!(received.await.is_err());
         assert!(pending.lock().unwrap().is_empty());
-        assert!(*lifecycle.borrow());
+        assert!(lifecycle.borrow().is_closed());
         assert!(matches!(
             events.try_recv(),
             Err(broadcast::error::TryRecvError::Closed)

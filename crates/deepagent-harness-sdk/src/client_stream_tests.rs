@@ -42,9 +42,9 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
         $noise += @{jsonrpc=$version;method='harness/event';params=$terminal.params}
       }
       $noise += @{method='harness/event';params=$terminal.params}
-      $noise += @{jsonrpc='2.0';params=$terminal.params}
-      $noise += @{jsonrpc='2.0';method=17;params=$terminal.params}
-      $noise += @{jsonrpc='2.0';method=$null;params=$terminal.params}
+      # H-101: the three malformed 2.0 envelopes are tested as fatal there.
+      # Unknown methods, wrong versions and invalid business events below
+      # remain rejection-only inputs for this notification routing control.
       foreach ($payload in @($null,'invalid',@(),@{type='future.event'},@{type='turn.started';turnId=17})) {
         $noise += @{jsonrpc='2.0';method='harness/event';params=$payload}
       }

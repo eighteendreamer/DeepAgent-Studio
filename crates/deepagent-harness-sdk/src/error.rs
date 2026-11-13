@@ -12,7 +12,9 @@ pub enum SdkError {
     /// Failed to write a request to the server's stdin stream.
     #[error("write server stdin: {0}")]
     Write(std::io::Error),
-    /// A line on stdout could not be decoded as a request/notification envelope.
+    /// Corrupt stdout retired the connection. Client-generated diagnostics are
+    /// sanitized and shared by pending/late calls; reconcile before retrying
+    /// any mutation that may already have been accepted by the server.
     #[error("decode server line: {0}")]
     Decode(serde_json::Error),
     /// A request envelope could not be serialized.

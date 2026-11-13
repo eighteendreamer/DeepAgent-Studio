@@ -149,7 +149,7 @@ async fn h256_closing_one_connection_cannot_close_another_or_erase_its_queued_fa
     assert!(timeout(Duration::from_millis(30), b_events.recv())
         .await
         .is_err());
-    assert!(!*b.lifecycle.borrow());
+    assert!(!b.lifecycle.borrow().is_closed());
     reap(child_a, &a, "close").await;
     reap(child_b, &b, "close").await;
 }

@@ -149,7 +149,7 @@ async fn h204_dropped_partial_frame_closes_writer_instead_of_corrupting_next_rpc
         client.stdin.lock().await.is_none(),
         "interrupted frame left reusable pipe"
     );
-    assert!(*client.lifecycle.borrow());
+    assert!(client.lifecycle.borrow().is_closed());
     child.kill().await.unwrap();
     child.wait().await.unwrap();
 }
@@ -191,7 +191,7 @@ async fn h204_write_deadline_and_explicit_close_retire_partial_frames_and_releas
         }
         assert!(client.pending.lock().unwrap().is_empty());
         assert!(client.stdin.lock().await.is_none());
-        assert!(*client.lifecycle.borrow());
+        assert!(client.lifecycle.borrow().is_closed());
         assert!(
             matches!(
                 timeout(Duration::from_secs(1), events.recv()).await,
@@ -273,7 +273,7 @@ async fn h204_request_deadline_releases_sent_waiters_and_late_replies_do_not_rep
         received(&mut events).await;
         assert!(client.pending.lock().unwrap().is_empty());
         assert!(
-            !*client.lifecycle.borrow(),
+            !client.lifecycle.borrow().is_closed(),
             "reply timeout must not close a valid writer"
         );
         assert_eq!(client.tool_list().await.unwrap().result()["starts"], 0);
@@ -292,7 +292,7 @@ async fn h204_deadline_while_queued_sends_nothing_and_preserves_the_active_write
         .unwrap_err();
     deadline(error, "thread/list", false);
     assert!(client.pending.lock().unwrap().is_empty());
-    assert!(!*client.lifecycle.borrow());
+    assert!(!client.lifecycle.borrow().is_closed());
     drop(locked);
     assert!(client.tool_list().await.is_ok());
     finish(child, &client).await;

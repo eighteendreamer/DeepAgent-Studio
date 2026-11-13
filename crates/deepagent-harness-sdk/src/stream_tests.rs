@@ -19,7 +19,7 @@ fn complete(kind: &str, thread: Option<&str>, turn: &str) -> HarnessEvent {
 #[tokio::test]
 async fn h214_thread_scope_ignores_other_threads_and_ends_after_its_started() {
     let (events, _) = broadcast::channel(8);
-    let (_, closed) = watch::channel(false);
+    let (_, closed) = watch::channel(crate::connection::ConnectionState::Open);
     let mut stream = RequestEvents::thread(
         response(json!({"threadId":"A"})),
         events.subscribe(),
@@ -43,7 +43,7 @@ async fn h214_thread_scope_ignores_other_threads_and_ends_after_its_started() {
 #[tokio::test]
 async fn h214_turn_scope_filters_conflicting_ids_and_retains_v1_optional_thread_context() {
     let (events, _) = broadcast::channel(16);
-    let (_closed, closed) = watch::channel(false);
+    let (_closed, closed) = watch::channel(crate::connection::ConnectionState::Open);
     let mut stream = RequestEvents::turn(
         response(json!({"threadId":"A","turnId":"run"})),
         events.subscribe(),
@@ -98,7 +98,7 @@ async fn h214_turn_scope_filters_conflicting_ids_and_retains_v1_optional_thread_
 #[tokio::test]
 async fn h84_diagnostic_is_streamed_without_becoming_an_actionable_approval() {
     let (events, _) = broadcast::channel(4);
-    let (_closed, closed) = watch::channel(false);
+    let (_closed, closed) = watch::channel(crate::connection::ConnectionState::Open);
     let mut stream = RequestEvents::turn(
         response(json!({"threadId":"A","turnId":"run"})),
         events.subscribe(),
@@ -125,7 +125,7 @@ async fn h84_diagnostic_is_streamed_without_becoming_an_actionable_approval() {
 async fn h214_each_terminal_wins_over_later_duplicates_and_eof() {
     for kind in ["turn.completed", "turn.failed", "turn.interrupted"] {
         let (events, _) = broadcast::channel(4);
-        let (closed, receiver) = watch::channel(false);
+        let (closed, receiver) = watch::channel(crate::connection::ConnectionState::Open);
         let mut stream = RequestEvents::turn(
             response(json!({"threadId":"A","turnId":"run"})),
             events.subscribe(),
@@ -136,7 +136,10 @@ async fn h214_each_terminal_wins_over_later_duplicates_and_eof() {
         let terminal = complete(kind, Some("A"), "run");
         events.send(terminal.clone().into()).unwrap();
         events.send(terminal.clone().into()).unwrap();
-        closed.send_replace(true);
+        crate::connection::ConnectionState::retire(
+            &closed,
+            crate::connection::ConnectionState::Closed,
+        );
         assert_eq!(stream.recv().await.unwrap(), Some(terminal));
         assert!(stream.recv().await.unwrap().is_none());
         assert_eq!(events.receiver_count(), 0);
@@ -147,7 +150,7 @@ async fn h214_each_terminal_wins_over_later_duplicates_and_eof() {
 async fn h214_eof_and_lag_are_explicit_failures_and_release_the_receiver() {
     for lagged in [false, true] {
         let (events, _) = broadcast::channel(2);
-        let (closed, receiver) = watch::channel(false);
+        let (closed, receiver) = watch::channel(crate::connection::ConnectionState::Open);
         let mut stream = RequestEvents::turn(
             response(json!({"threadId":"A","turnId":"run"})),
             events.subscribe(),
@@ -162,7 +165,10 @@ async fn h214_eof_and_lag_are_explicit_failures_and_release_the_receiver() {
                     .unwrap();
             }
         }
-        closed.send_replace(true);
+        crate::connection::ConnectionState::retire(
+            &closed,
+            crate::connection::ConnectionState::Closed,
+        );
         let error = stream.recv().await.unwrap_err();
         assert!(if lagged {
             matches!(error, SdkError::EventLagged { skipped } if skipped>0)
@@ -174,7 +180,7 @@ async fn h214_eof_and_lag_are_explicit_failures_and_release_the_receiver() {
     }
     // A dropped watch producer must not create a busy loop either.
     let (events, _) = broadcast::channel(2);
-    let (_, receiver) = watch::channel(false);
+    let (_, receiver) = watch::channel(crate::connection::ConnectionState::Open);
     let mut stream = RequestEvents::thread(
         response(json!({"threadId":"A"})),
         events.subscribe(),
@@ -192,7 +198,7 @@ async fn h214_eof_and_lag_are_explicit_failures_and_release_the_receiver() {
 #[tokio::test]
 async fn h214_receive_cancellation_is_safe_and_explicit_close_and_drop_only_unsubscribe() {
     let (events, _) = broadcast::channel(4);
-    let (_closed, receiver) = watch::channel(false);
+    let (_closed, receiver) = watch::channel(crate::connection::ConnectionState::Open);
     let mut stream = RequestEvents::turn(
         response(json!({"threadId":"A","turnId":"run"})),
         events.subscribe(),
@@ -235,7 +241,7 @@ async fn h214_receive_cancellation_is_safe_and_explicit_close_and_drop_only_unsu
 #[test]
 fn h214_invalid_response_identity_never_panics_leaks_values_or_retains_a_subscription() {
     let (events, _) = broadcast::channel(4);
-    let (_closed, receiver) = watch::channel(false);
+    let (_closed, receiver) = watch::channel(crate::connection::ConnectionState::Open);
     for value in [
         json!({}),
         json!({"threadId":null}),
@@ -268,7 +274,7 @@ fn h214_invalid_response_identity_never_panics_leaks_values_or_retains_a_subscri
 #[tokio::test]
 async fn h205_owned_metadata_and_business_receives_share_one_receiver() {
     let (events, _) = broadcast::channel(8);
-    let (_closed, closed) = watch::channel(false);
+    let (_closed, closed) = watch::channel(crate::connection::ConnectionState::Open);
     let mut stream = RequestEvents::turn(
         response(json!({"threadId":"A","turnId":"run"})),
         events.subscribe(),
@@ -313,7 +319,7 @@ async fn h205_owned_metadata_and_business_receives_share_one_receiver() {
 async fn h205_scoped_views_cannot_hide_connection_gap_or_reorder_in_unrelated_scope() {
     for non_monotonic in [false, true] {
         let (events, _) = broadcast::channel(4);
-        let (_closed, closed) = watch::channel(false);
+        let (_closed, closed) = watch::channel(crate::connection::ConnectionState::Open);
         let mut stream = RequestEvents::turn(
             response(json!({"threadId":"A","turnId":"run"})),
             events.subscribe(),

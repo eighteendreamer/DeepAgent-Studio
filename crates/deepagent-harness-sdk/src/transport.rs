@@ -11,6 +11,24 @@ use deepagent_harness_protocol::{
 };
 use serde::Deserialize;
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ServerLineError {
+    #[error("{0}")]
+    Version(&'static str),
+    #[error("invalid JSON-RPC stdout frame")]
+    Decode(serde_json::Error),
+}
+
+#[cfg(test)]
+impl ServerLineError {
+    fn is_data(&self) -> bool {
+        match self {
+            Self::Version(_) => true,
+            Self::Decode(error) => error.is_data(),
+        }
+    }
+}
+
 /// One envelope read from the server's stdout.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(untagged)]
@@ -45,24 +63,25 @@ pub fn decode_line(line: &str) -> Result<WireMessage, serde_json::Error> {
 }
 
 /// The client's single inbound envelope gate, before any pending/event mutation.
-pub(crate) fn decode_server_line(line: &str) -> Result<WireMessage, serde_json::Error> {
-    let message = decode_line(line)?;
-    let (version, diagnostic) = match &message {
-        WireMessage::Response(response) => (
-            response.jsonrpc.as_str(),
-            "unsupported JSON-RPC response version",
-        ),
-        WireMessage::Notification(notification) => (
-            notification.jsonrpc.as_str(),
-            "unsupported JSON-RPC notification version",
-        ),
-    };
-    if version != JSONRPC_VERSION {
-        // The version is peer-controlled and may contain private data. Preserve
-        // the envelope kind and reason, not its received string or payload.
-        return Err(<serde_json::Error as serde::de::Error>::custom(diagnostic));
+pub(crate) fn decode_server_line(line: &str) -> Result<WireMessage, ServerLineError> {
+    let value: serde_json::Value = serde_json::from_str(line).map_err(ServerLineError::Decode)?;
+    // H-212 rejects wrong/missing versions without consuming pending replies.
+    // Validate this independently of the DTO's string field deserialization so
+    // wrong-type versions retain that contract rather than becoming fatal JSON.
+    if let Some(object) = value.as_object() {
+        if (object.contains_key("id") || object.contains_key("method"))
+            && object.get("jsonrpc").and_then(|value| value.as_str()) != Some(JSONRPC_VERSION)
+        {
+            return Err(ServerLineError::Version(if object.contains_key("id") {
+                "unsupported JSON-RPC response version"
+            } else {
+                "unsupported JSON-RPC notification version"
+            }));
+        }
     }
-    Ok(message)
+    // Keep the original DTO decoder (including duplicate-field rejection).
+    // A Value round trip here would silently collapse repeated wire fields.
+    decode_line(line).map_err(ServerLineError::Decode)
 }
 
 /// The single notification-to-event projection used by the client reader.
@@ -87,6 +106,39 @@ pub(crate) fn notification_event(
 mod tests {
     use super::*;
     use deepagent_harness_protocol::RpcError;
+
+    #[test]
+    fn h101_gate_distinguishes_corrupt_frames_from_version_rejection_without_raw_decode_changes() {
+        for line in [
+            "not-json-PRIVATE_CANARY",
+            "",
+            "[]",
+            "null",
+            r#"{"jsonrpc":"2.0","params":{}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"error":"PRIVATE_CANARY"}"#,
+        ] {
+            assert!(
+                matches!(decode_server_line(line), Err(ServerLineError::Decode(_))),
+                "{line}"
+            );
+        }
+        for line in [
+            r#"{"id":1,"result":{}}"#,
+            r#"{"jsonrpc":null,"id":1,"result":{}}"#,
+            r#"{"jsonrpc":"1.0","method":"future/event","params":{}}"#,
+        ] {
+            assert!(matches!(
+                decode_server_line(line),
+                Err(ServerLineError::Version(_))
+            ));
+        }
+        let duplicate = r#"{"jsonrpc":"2.0","id":1,"id":2,"result":{}}"#;
+        assert!(decode_line(duplicate).is_err());
+        assert!(matches!(
+            decode_server_line(duplicate),
+            Err(ServerLineError::Decode(_))
+        ));
+    }
 
     #[test]
     fn decodes_response_envelope() {
