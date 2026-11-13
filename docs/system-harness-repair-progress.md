@@ -13,11 +13,11 @@
 | 归并 | 10 | H173同根归并H127；H243归并H53；只在唯一有效项修复，不增加完成数 |
 | 撤销 | 3 | H-211/H-263/H-305，不作为缺陷或修复成果 |
 | 已修复（验收保留） | 1 | H66按用户2026-11-10收尾要求交付代码；现有定向验证有效，不记作完整验收通过，残余范围见E-H66-08 |
-| 修复中 | 0 | 当前无进行中的条目 |
-| 待修复 | 29 | 含H180授权不修；28项有效待处理 |
+| 修复中 | 1 | H-115 PermissionDenied hook 工具调用关联 ID，代码/相关 crate 验收通过，提交与清理待闭环 |
+| 待修复 | 28 | 含H180授权不修；27项有效待处理 |
 | 阻塞待处理 | 0 | H104于E06、H101于E05核验清理闭环 |
 
-未完整闭环槽位当前为 **30（含H180授权不修；有效未闭环29项：28待修、H66验收保留1）**；306唯一行已重核。本轮新增H101完整修复1，H104清理阻塞在前轮闭环、此处不重复计新增；历史跳过/归并/撤销无新增，不报完成率。
+未完整闭环槽位当前为 **30（含H180授权不修；有效未闭环29项：27待修、H-115修复中1、H66验收保留1）**；306唯一行已重核。H-115代码与相关 crate 验收已通过，待独立提交、清理和提交号回填；不把该项提前计为完整修复。H101/H104为前轮成果，不在本轮重复计数；历史跳过/归并/撤销无新增，不报完成率。
 
 本轮H138按E-H138-03新增验收1，累计208；其后H137按E-H137-04新增验收1，累计209。28历史跳过、10归并、3撤销不变，修复中0，56待修含H180授权跳过，实际55项有效待处理。
 
@@ -6371,7 +6371,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-112：工作树生命周期 hook 缺少事件专属字段](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-113：FileChanged hook 字段名与变化类型不符合 schema](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-114：后台子 Agent Notification hook 缺少必需的通知类别](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-115：PermissionDenied hook 丢失工具调用关联 ID](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-115：PermissionDenied hook 丢失工具调用关联 ID](system-harness-audit-2026-10-21.md#h-115permissiondenied-hook-丢失工具调用关联-id) | P3 | 修复中 | 无跳过依据；E-H115-01红证据保留，E-H115-02修复与定向测试通过，提交/清理待闭环 | 新增拒绝事件专属typed载荷并从现有Runtime拒绝边界传call_id；统一serializer只在匹配PermissionDenied event/point输出ID；PermissionRequest语义不变 | hooks 97/0；原Runtime PowerShell probe1/0；Runtime lib479/0/5忽略；AppCore check、fmt、hooks strict clippy及diff通过；Runtime strict clippy被两项既有告警阻断。workspace/Tauri/UI未执行，详审计E-H115-02 | 代码/测试尚待独立提交 | 已实现/验收工时约1–3小时；commit和专属清理待完成，构建等待另计；五 backend已测，其他生产路径/OS限制见E-H115-02 |
 | [H-116：步数上限终止的失败任务仍触发 TaskCompleted hook](system-harness-audit-2026-10-21.md#h-116步数上限终止的失败任务仍触发-taskcompleted-hook) | P2 | 已修复并验收 | E01原probe真实0/1/0；E02回归先红后绿；非历史/归并 | 统一收尾仅按RunOutcome::Completed派发；原probe取消ignore；保留既有Kernel规范终态 | Runtime 481/0/7，AppCore 2199/0/111，SDK stdio 13/0/0；workspace保留H306失败，严格Clippy被旧告警阻断 | `84848ff6c90440a868ab51d0d5484f353b06c177` | 区分内层TaskState与外层RunTerminal；H117独立；当前60未关闭含H180跳过，实际59有效待处理；全余162–418小时，等待另计 |
 | [H-117：API 错误终止未派发 StopFailure，反而只在完成被拒绝时触发](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E01原probe真实0/1保留；E02默认跨层红绿；非历史/归并 | 最终CoreError::Provider只派发一次StopFailure；取消优先、普通Agent错误不触发；hook失败保留原Provider cause | Runtime 484/0/7；AppCore 2200/0/110；workspace 5039/1/183，唯一H306；严格Clippy有旧诊断 | `a03884bacf8ff938c6c95c9abbe9994d7b27c5a7` | 结构化Provider错误范围；H-106 payload字段独立；60未关闭含H180跳过，实际59有效待处理；全余162–418小时，等待另计 |
 | [H-118：Responses 流式失败丢弃供应商错误码，上下文溢出恢复依赖消息措辞（已修复）](system-harness-audit-2026-10-21.md) | P2 | 历史已修复跳过 | 原报告明确记录修复实现与修复后验收 | 保留现有实现，不重复修复 | 历史命令与结果见原项；本轮未重跑，不声称重新验收 | 历史提交未在本轮重新定位，不猜填 hash | 保留原项未验限制；本阶段不另估修复工时 |

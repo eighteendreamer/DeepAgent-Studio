@@ -235,6 +235,13 @@ pub enum HookData {
         arguments: serde_json::Value,
         reason: String,
     },
+    /// A tool invocation rejected before execution, with its stable call identity.
+    PermissionDenied {
+        call_id: String,
+        tool: String,
+        arguments: serde_json::Value,
+        reason: String,
+    },
     Compact {
         trigger: String,
         summary: Option<String>,

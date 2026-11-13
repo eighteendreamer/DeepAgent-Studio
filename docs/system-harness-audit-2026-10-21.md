@@ -5122,13 +5122,32 @@ E-H108-01（当前复现、边界及TDD准备，2026-11-12，修复中）：基�
 
 ### H-115：PermissionDenied hook 丢失工具调用关联 ID
 
+**当前状态（2026-11-13）：修复中。** 当前原探针已取消 `ignore` 并再次复现，根因修复与相关 crate 验收通过；独立提交、清理及提交号回填仍在进行，详见 E-H115-01～02。
+
 **级别：低（P3，条件性 hook 输入契约缺陷）；触发条件：配置 `PermissionDenied` command hook，且工具调用被权限等执行前检查拒绝。** 本次测试中的权限检查实际拒绝执行，没有发现因缺字段而绕过权限。
 
-- 根因与生产路径：`RuntimeEngine::execute_tool_with_before()` 将 `ToolPipelineResult.call_id` 写入 `ToolCallCompleted` 和模型 Observation，但派发 `HookData::Permission` 时只保留工具名、参数、原因。当前 HookData 类型及 command/HTTP serializer 均没有 `tool_use_id`，所以原始调用 ID 无法进入 hook 输入。
+- 根因与生产路径：`RuntimeEngine::execute_tool()` 在 `ToolExecutionPipeline` 返回拒绝结果后，将 `ToolPipelineResult.call_id` 写入 `ToolCallCompleted` 和模型 Observation，再由 `finish_pipeline_result()` 派发仅保留工具名、参数、原因的 `HookData::Permission`。当前 DTO 及统一 command/HTTP/host serializer 因而没有 `tool_use_id`；保留的旧式 hook 拒绝分支也面临同一 DTO 上下文缺失。
 - 动态复现：Windows ignored 探针 `loop_engine::tests::audit_permission_denied_hook_includes_tool_call_id` 经正式 RuntimeEngine → ToolExecutionPipeline，使用带固定 ID 的 ScriptedAgent、空权限集和带调用计数的只读工具。工具执行次数为 **0**，失败 Observation 与 SQLite 中唯一匹配的工具完成事件都保留 `audit-permission-denied-call`；真实 PowerShell hook 却只收到 `{"hook_event_name":"PermissionDenied","reason":"missing permissions: [ReadOnly]","session_id":"…","tool_input":{"path":"audit.txt"},"tool_name":"counting_read"}`。精确 ID 断言以 **0 passed / 1 failed** 退出，约 0.65s；临时目录、内存数据库，无网络或实际文件读取。
 - 成熟实现对照：Claude Code `entrypoints/sdk/coreSchemas.ts::PermissionDeniedHookInputSchema` 要求 `tool_name`、`tool_input`、`tool_use_id` 和 `reason`。同文件的 `PermissionRequestHookInputSchema` 没有将调用 ID 定义为必需字段；本项不将 Request 的同类字段缺失额外登记为缺陷。
-- 影响及限制：严格校验的兼容 hook 会拒绝输入；相同工具和参数被多次调用时，hook 不能可靠关联具体被拒绝的调用及其审计记录。动态验证覆盖权限能力不足的串行正式路径，没有覆盖并行批次、人工拒绝和 HTTP hook；这些生产调用方使用相同不带 ID 的 DTO，但不冒充已经逐项实测。
-- 收敛方向（尚未实施，本地设计）：让现有 PermissionDenied 事件 DTO 接收流水线已确定的调用身份，保留 permission/request 与 denied 的语义差异；验证能力不足、hook 拒绝、人工拒绝、批量调用及重试中 ID 和工具结果保持一一对应，不能从工具名或参数反查身份。
+- 影响及限制：严格校验的兼容 hook 会拒绝输入；相同工具和参数被多次调用时，hook 不能可靠关联具体被拒绝的调用及其审计记录。修复前动态验证覆盖权限能力不足的串行正式路径，没有动态覆盖并行批次、人工拒绝和 HTTP hook；修复前这些生产方共用不带 ID 的 DTO，不冒充已经逐项实测。
+- 收敛方向（本地设计）：让 PermissionDenied 事件使用专属 typed DTO 承载流水线已确定的调用身份，保留 PermissionRequest 与 PermissionDenied 的语义差异；从既有拒绝边界传递调用 ID，不从工具名或参数反查身份。
+
+**E-H115-01（2026-11-13，修复前原探针复核，修复中）**：当前 `main` 基线下工作区 tracked 文件起始无改动；保留用户既有 untracked。重新执行原 Windows PowerShell 探针，命令 `cargo test --target-dir target/h115-repair-20261113 -p deepagent-runtime --lib audit_permission_denied_hook_includes_tool_call_id --offline -j 1 -- --nocapture --test-threads=1`，exit 101、1 个实际测试/0 过/1 败/0 忽略，0.57s。权限检查仍拒绝工具，工具调用数为0；Observation 与 EventStore 中唯一失败完成事件均保留固定 `audit-permission-denied-call`，但真实 command hook 的 `PermissionDenied` JSON 没有 `tool_use_id`，精确身份断言失败。当前日志 SHA256=`087DE185E64105B69C4D8ED21F23678539C3570792802F1E63E6BB783D0F7294`；既有 `original-probe.log` SHA256=`D275563448C9650FAAA107154F97F275565B7B7F3606B4168FC06B191ADFF09C`，均为本轮临时验收证据，不含真实用户资料或凭据。本轮移除原探针的ignore标记。一次使用错误 `--exact` 过滤器的命令实际运行0测试，明确不计入验证。根因确认是拒绝生产方复用没有调用身份的 `HookData::Permission`，不是持久化 ID 丢失。
+
+**E-H115-02（2026-11-13，根因修复及定向验收通过，提交/清理待闭环）**：新增 `HookData::PermissionDenied { call_id, tool, arguments, reason }`，原 `Permission` 仍专用于 PermissionRequest；Runtime 现有 pipeline 拒绝收尾和保留的两个旧拒绝分支均传递已经确定的 `call_id`。统一 serializer 仅在 PermissionDenied event/point 匹配时输出 `tool_use_id`；AppCore 设置页合成输入按事件区分。没有新建hook链、存储、权限或协议，也没有改变拒绝/审批和工具执行行为。
+
+| 实际命令 | 结果 |
+|---|---|
+| `cargo fmt --all -- --check` | exit 0 |
+| `cargo test --target-dir target/h115-repair-20261113 -p deepagent-hooks --offline --no-fail-fast -j 1 -- --test-threads=2 --quiet` | exit 0；97 passed/0 failed/0 ignored。跨 command、HTTP、prompt、agent、MCP 五类 backend 验证 PermissionDenied 精确 `tool_use_id`，PermissionRequest 无该字段，并覆盖不匹配 event/point 不投影调用 ID |
+| `cargo test --target-dir target/h115-repair-20261113 -p deepagent-runtime --lib audit_permission_denied_hook_includes_tool_call_id --offline -j 1 -- --nocapture --test-threads=1` | exit 0；原 PowerShell 探针1/0/0，工具执行0，payload含固定ID；Observation/EventStore关联对照仍通过 |
+| `cargo test --target-dir target/h115-repair-20261113 -p deepagent-runtime --lib --offline --no-fail-fast -j 1 -- --test-threads=2 --quiet` | exit 0；479 passed/0 failed/5 ignored |
+| `cargo check --target-dir target/h115-repair-20261113 -p deepagent-app-core --lib --offline -j 1` | exit 0；AppCore 设置页调用方编译通过 |
+| `cargo clippy --target-dir target/h115-repair-20261113 -p deepagent-hooks --all-targets --no-deps --offline -j 1 -- -D warnings` | exit 0；hooks strict lint通过 |
+| `cargo clippy --target-dir target/h115-repair-20261113 -p deepagent-hooks -p deepagent-runtime --all-targets --no-deps --offline -j 1 -- -D warnings` | exit 101；仅报未修改的既有 `model_agent.rs:298 clone_on_copy` 与 `workflow/canvas.rs:32 derivable_impls`，未扩修 |
+| `git diff --check` | exit 0；待最终提交前复核 |
+
+原探针仅动态覆盖Windows本机串行权限能力不足拒绝；serializer矩阵覆盖五类action backend，但未单独动态覆盖并行批次、hook veto、人工拒绝各生产路径或其它操作系统。AppCore执行的是库检查而非其全量测试；workspace、Tauri/UI构建及真实外部服务均未运行，本项无Tauri command/前端改动且全程离线。独立代码提交、提交号回填和仅删除本轮 `target/h115-repair-20261113`、`G:/h115-fixtures-20261113` 尚未完成；当前不得标为最终交付闭环。
 
 ### H-116：步数上限终止的失败任务仍触发 TaskCompleted hook
 

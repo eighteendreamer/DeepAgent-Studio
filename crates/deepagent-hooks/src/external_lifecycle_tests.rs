@@ -138,13 +138,23 @@ async fn payload_matrix(base: Option<crate::HookBaseInput>) {
             json!({"tool_name":"read_file","tool_input":{"path":"synthetic.txt"}}),
         ),
         (
-            HookEvent::PermissionDenied,
+            HookEvent::PermissionRequest,
             HookData::Permission {
                 tool: "read_file".into(),
                 arguments: json!({}),
+                reason: "approval required".into(),
+            },
+            json!({"tool_name":"read_file","tool_input":{},"reason":"approval required"}),
+        ),
+        (
+            HookEvent::PermissionDenied,
+            HookData::PermissionDenied {
+                call_id: "call_denied_1".into(),
+                tool: "read_file".into(),
+                arguments: json!({"path":"synthetic.txt"}),
                 reason: "ordinary rejection".into(),
             },
-            json!({"tool_name":"read_file","tool_input":{},"reason":"ordinary rejection"}),
+            json!({"tool_use_id":"call_denied_1","tool_name":"read_file","tool_input":{"path":"synthetic.txt"},"reason":"ordinary rejection"}),
         ),
     ]);
     let count = cases.len();
@@ -256,6 +266,26 @@ fn h108_unknown_or_mismatched_metadata_is_not_invented() {
             HookPoint::Stop,
             HookData::SessionEnd {
                 reason: SessionEndReason::Other,
+            },
+        ),
+        (
+            HookEvent::PermissionDenied,
+            HookPoint::PermissionRequest,
+            HookData::PermissionDenied {
+                call_id: "call_mismatched".into(),
+                tool: "read_file".into(),
+                arguments: json!({}),
+                reason: "ordinary rejection".into(),
+            },
+        ),
+        (
+            HookEvent::PermissionRequest,
+            HookPoint::PermissionDenied,
+            HookData::PermissionDenied {
+                call_id: "call_wrong_event".into(),
+                tool: "read_file".into(),
+                arguments: json!({}),
+                reason: "ordinary rejection".into(),
             },
         ),
     ] {

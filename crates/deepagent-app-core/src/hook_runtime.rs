@@ -170,7 +170,13 @@ fn sample_hook_data(event: HookEvent, matcher: Option<&str>) -> HookData {
             ok: true,
             output_preview: serde_json::json!({ "ok": true }),
         }]),
-        HookEvent::PermissionRequest | HookEvent::PermissionDenied => HookData::Permission {
+        HookEvent::PermissionRequest => HookData::Permission {
+            tool: tool_name,
+            arguments: tool_arguments,
+            reason: "settings-page hook test".to_string(),
+        },
+        HookEvent::PermissionDenied => HookData::PermissionDenied {
+            call_id: "call_test".to_string(),
             tool: tool_name,
             arguments: tool_arguments,
             reason: "settings-page hook test".to_string(),

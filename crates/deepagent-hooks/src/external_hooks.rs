@@ -40,7 +40,7 @@
 //! ## Command protocol (Claude-Code-compatible)
 //!
 //! The external command receives a JSON payload on **stdin**:
-//! `{ "session_id", "hook_event_name", "tool_name?", "tool_input?",
+//! `{ "session_id", "hook_event_name", "tool_name?", "tool_input?", "tool_use_id?",
 //! "tool_response?", "prompt?" }`, and signals its decision via **exit code**:
 //! - `0` — allow. stdout *may* carry a structured decision (see below).
 //! - `2` — **block**: at a vetoable point this becomes [`HookOutcome::Deny`]
@@ -1650,6 +1650,18 @@ fn build_hook_payload(event: HookEvent, ctx: &HookContext) -> serde_json::Value 
             payload.insert("tool_input".into(), arguments.clone());
             payload.insert("reason".into(), serde_json::json!(reason));
         }
+        HookData::PermissionDenied {
+            call_id,
+            tool,
+            arguments,
+            reason,
+        } if event == HookEvent::PermissionDenied && ctx.point == event.point() => {
+            payload.insert("tool_use_id".into(), serde_json::json!(call_id));
+            payload.insert("tool_name".into(), serde_json::json!(tool));
+            payload.insert("tool_input".into(), arguments.clone());
+            payload.insert("reason".into(), serde_json::json!(reason));
+        }
+        HookData::PermissionDenied { .. } => {}
         HookData::Compact { trigger, summary } => {
             payload.insert("trigger".into(), serde_json::json!(trigger));
             payload.insert("compact_summary".into(), serde_json::json!(summary));

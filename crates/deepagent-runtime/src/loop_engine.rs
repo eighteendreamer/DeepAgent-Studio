@@ -1803,7 +1803,8 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             self.fire_hook(
                 session_id,
                 HookPoint::PermissionDenied,
-                HookData::Permission {
+                HookData::PermissionDenied {
+                    call_id: result.call_id.clone(),
                     tool: result.name.clone(),
                     arguments: result.arguments.clone(),
                     reason: result.output.value["error"]
@@ -2090,7 +2091,8 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             self.fire_hook(
                 session_id,
                 HookPoint::PermissionDenied,
-                HookData::Permission {
+                HookData::PermissionDenied {
+                    call_id: call_id.clone(),
                     tool: tool_name.clone(),
                     arguments: invocation.arguments.clone(),
                     reason: reason.clone(),
@@ -2296,9 +2298,10 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         self.fire_hook(
             session_id,
             HookPoint::PermissionDenied,
-            HookData::Permission {
+            HookData::PermissionDenied {
+                call_id: call_id.clone(),
                 tool: tool_name.clone(),
-                arguments,
+                arguments: arguments.clone(),
                 reason: value["error"].as_str().unwrap_or_default().to_string(),
             },
         )
@@ -4230,7 +4233,6 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    #[ignore = "audit H-115: PermissionDenied hook payload must include the model tool call ID"]
     async fn audit_permission_denied_hook_includes_tool_call_id() {
         use deepagent_hooks::{HookDefinitions, SystemHookRunner};
 
