@@ -185,7 +185,7 @@ mod tests {
     use deepagent_models::ReasoningEffort;
 
     #[test]
-    fn reasoning_effort_resolution_uses_only_canonical_values() {
+    fn reasoning_effort_resolution_normalizes_responses_aliases() {
         let mut settings: AppSettings = serde_json::from_value(serde_json::json!({
             "catalog": { "base_url": deepagent_models::DEEPSEEK_BASE_URL,
                 "available": [], "chat_model": "deepseek-v4-flash", "reasoner_model": "deepseek-v4-pro" },
@@ -215,6 +215,9 @@ mod tests {
             );
         }
         settings.responses.reasoning_effort = Some("medium".into());
-        assert!(resolve_reasoning_effort(&settings, None).is_err());
+        assert_eq!(
+            resolve_reasoning_effort(&settings, None).unwrap(),
+            ReasoningEffort::High
+        );
     }
 }

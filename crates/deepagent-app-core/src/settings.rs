@@ -381,11 +381,11 @@ impl ResponsesApiSettings {
             .get("reasoning")
             .and_then(|value| value.get("effort"))
             .and_then(serde_json::Value::as_str)
-            .and_then(ReasoningEffort::parse)
+            .and_then(ReasoningEffort::parse_responses)
             .or_else(|| {
                 self.reasoning_effort
                     .as_deref()
-                    .and_then(ReasoningEffort::parse)
+                    .and_then(ReasoningEffort::parse_responses)
             })
     }
 
@@ -446,9 +446,9 @@ impl ResponsesApiSettings {
             }
         }
         if let Some(value) = &self.reasoning_effort {
-            if !matches!(value.as_str(), "none" | "low" | "high" | "max") {
+            if ReasoningEffort::parse_responses(value).is_none() {
                 return Err(CoreError::invalid(
-                    "Responses reasoning_effort must be none, low, high, or max",
+                    "Responses reasoning_effort must be none, low, high, max, minimal, medium, or xhigh",
                 ));
             }
         }
@@ -477,7 +477,7 @@ impl ResponsesApiSettings {
     pub fn from_developer_json(raw: &str) -> Result<Self> {
         let value: serde_json::Value = serde_json::from_str(raw)
             .map_err(|e| CoreError::invalid(format!("invalid Responses JSON: {e}")))?;
-        let object = value
+        let mut object = value
             .as_object()
             .ok_or_else(|| CoreError::invalid("Responses JSON must be an object"))?
             .clone();
@@ -528,6 +528,7 @@ impl ResponsesApiSettings {
                 )));
             }
         }
+        normalize_responses_reasoning_effort(&mut object)?;
         validate_developer_responses_fields(&object)?;
         let mut settings = Self {
             developer: object.clone(),
@@ -711,6 +712,32 @@ fn validate_developer_responses_fields(
     if object.get("store").is_some_and(|value| !value.is_boolean()) {
         return Err(CoreError::invalid("Responses store must be boolean"));
     }
+    Ok(())
+}
+
+/// Normalize the provider's documented Responses aliases before storing the
+/// developer JSON, so persisted settings and all subsequent wires are stable.
+fn normalize_responses_reasoning_effort(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<()> {
+    let Some(reasoning) = object.get_mut("reasoning") else {
+        return Ok(());
+    };
+    let Some(reasoning) = reasoning.as_object_mut() else {
+        return Ok(());
+    };
+    let Some(effort) = reasoning.get("effort").and_then(serde_json::Value::as_str) else {
+        return Ok(());
+    };
+    let canonical = ReasoningEffort::parse_responses(effort).ok_or_else(|| {
+        CoreError::invalid(
+            "Responses reasoning.effort must be none, low, high, max, minimal, medium, or xhigh",
+        )
+    })?;
+    reasoning.insert(
+        "effort".to_string(),
+        serde_json::Value::String(canonical.label().to_string()),
+    );
     Ok(())
 }
 
@@ -1271,19 +1298,19 @@ fn migrate_persisted_reasoning(value: &mut serde_json::Value) -> usize {
         return changes;
     };
     if let Some(effort) = responses.get("reasoning_effort") {
-        match effort.as_str() {
-            Some("medium") => {
-                responses.insert(
-                    "reasoning_effort".to_string(),
-                    serde_json::Value::String(ReasoningEffort::High.label().to_string()),
-                );
-                changes += 1;
-            }
-            Some(value) if ReasoningEffort::parse(value).is_none() => {
+        if let Some(value) = effort.as_str() {
+            if let Some(canonical) = ReasoningEffort::parse_responses(value) {
+                if value != canonical.label() {
+                    responses.insert(
+                        "reasoning_effort".to_string(),
+                        serde_json::Value::String(canonical.label().to_string()),
+                    );
+                    changes += 1;
+                }
+            } else {
                 responses.remove("reasoning_effort");
                 changes += 1;
             }
-            _ => {}
         }
     }
 
@@ -1295,24 +1322,24 @@ fn migrate_persisted_reasoning(value: &mut serde_json::Value) -> usize {
             .get("reasoning")
             .and_then(|reasoning| reasoning.get("effort"))
             .and_then(serde_json::Value::as_str);
-        match effort {
-            Some("medium") => {
-                if let Some(reasoning) = developer
-                    .get_mut("reasoning")
-                    .and_then(serde_json::Value::as_object_mut)
-                {
-                    reasoning.insert(
-                        "effort".to_string(),
-                        serde_json::Value::String(ReasoningEffort::High.label().to_string()),
-                    );
-                    changes += 1;
+        if let Some(value) = effort {
+            if let Some(canonical) = ReasoningEffort::parse_responses(value) {
+                if value != canonical.label() {
+                    if let Some(reasoning) = developer
+                        .get_mut("reasoning")
+                        .and_then(serde_json::Value::as_object_mut)
+                    {
+                        reasoning.insert(
+                            "effort".to_string(),
+                            serde_json::Value::String(canonical.label().to_string()),
+                        );
+                        changes += 1;
+                    }
                 }
-            }
-            Some(value) if ReasoningEffort::parse(value).is_none() => {
+            } else {
                 developer.remove("reasoning");
                 changes += 1;
             }
-            _ => {}
         }
     }
     changes
@@ -2074,6 +2101,11 @@ impl SettingsService {
         mut settings_next: ResponsesApiSettings,
     ) -> Result<SettingsView> {
         settings_next.validate()?;
+        if let Some(value) = settings_next.reasoning_effort.as_deref() {
+            let canonical = ReasoningEffort::parse_responses(value)
+                .expect("ResponsesApiSettings::validate checked reasoning effort");
+            settings_next.reasoning_effort = Some(canonical.label().to_string());
+        }
         let canonical_developer = ResponsesApiSettings::from_developer_json(
             &serde_json::Value::Object(settings_next.developer.clone()).to_string(),
         )?;
@@ -3444,8 +3476,23 @@ fn responses_developer_json_uses_official_nested_reasoning_shape() {
 }
 
 #[test]
-fn reasoning_effort_rejects_noncanonical_aliases() {
-    for value in ["minimal", "medium", "xhigh", "simple", "deep"] {
+fn reasoning_effort_accepts_official_aliases_but_rejects_legacy_labels() {
+    for (value, canonical) in [("minimal", "low"), ("medium", "high"), ("xhigh", "high")] {
+        let settings = ResponsesApiSettings {
+            reasoning_effort: Some(value.to_string()),
+            ..ResponsesApiSettings::default()
+        };
+        assert!(settings.validate().is_ok());
+        let developer = ResponsesApiSettings::from_developer_json(&format!(
+            r#"{{"reasoning":{{"effort":"{value}"}}}}"#
+        ))
+        .unwrap();
+        assert_eq!(
+            developer.effective_reasoning_effort(),
+            ReasoningEffort::parse(canonical)
+        );
+    }
+    for value in ["simple", "deep"] {
         assert!(ResponsesApiSettings {
             reasoning_effort: Some(value.to_string()),
             ..ResponsesApiSettings::default()
@@ -3525,7 +3572,7 @@ fn responses_user_identifier_validates_both_settings_surfaces() {
 }
 
 #[tokio::test]
-async fn load_migrates_legacy_reasoning_and_removes_noncanonical_values() {
+async fn load_migrates_legacy_reasoning_and_normalizes_responses_aliases() {
     let db = Arc::new(Database::open_in_memory().unwrap());
     let svc = SettingsService::new(
         db.clone(),
@@ -3562,7 +3609,7 @@ async fn load_migrates_legacy_reasoning_and_removes_noncanonical_values() {
     let loaded = svc.load().unwrap().unwrap();
     assert_eq!(loaded.reasoning_effort, ReasoningEffort::High);
     assert_eq!(loaded.responses.reasoning_effort.as_deref(), Some("high"));
-    assert!(!loaded.responses.developer.contains_key("reasoning"));
+    assert_eq!(loaded.responses.developer["reasoning"]["effort"], "high");
     assert_eq!(loaded.responses.effective_temperature(), Some(0.4));
 
     let cleaned = store
@@ -3573,7 +3620,10 @@ async fn load_migrates_legacy_reasoning_and_removes_noncanonical_values() {
     assert!(cleaned.get("thinking_depth").is_none());
     assert_eq!(cleaned["reasoning_effort"], "high");
     assert_eq!(cleaned["responses"]["reasoning_effort"], "high");
-    assert!(cleaned["responses"]["developer"].get("reasoning").is_none());
+    assert_eq!(
+        cleaned["responses"]["developer"]["reasoning"]["effort"],
+        "high"
+    );
     assert_eq!(cleaned["responses"]["developer"]["temperature"], 0.4);
 }
 

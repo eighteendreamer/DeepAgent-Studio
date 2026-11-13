@@ -2989,7 +2989,7 @@ async fn audit_skill_catalog_survives_continuation_on_wire() {
 }
 
 #[tokio::test]
-async fn responses_reasoning_effort_settings_accept_only_canonical_values() {
+async fn responses_reasoning_effort_settings_accepts_official_aliases_and_normalizes() {
     use deepagent_app_core::settings::ResponsesApiSettings;
 
     let db = Arc::new(Database::open_in_memory().unwrap());
@@ -3016,7 +3016,38 @@ async fn responses_reasoning_effort_settings_accept_only_canonical_values() {
         assert_eq!(effective, deepagent_models::ReasoningEffort::parse(effort));
     }
 
-    for alias in ["minimal", "medium", "xhigh", "simple", "deep"] {
+    for (alias, canonical) in [("minimal", "low"), ("medium", "high"), ("xhigh", "high")] {
+        settings
+            .set_responses_settings(ResponsesApiSettings {
+                reasoning_effort: Some(alias.to_string()),
+                ..ResponsesApiSettings::default()
+            })
+            .expect("official Responses aliases must be accepted");
+        assert_eq!(
+            settings
+                .responses_settings()
+                .unwrap()
+                .reasoning_effort
+                .as_deref(),
+            Some(canonical)
+        );
+        let raw = serde_json::json!({"reasoning": {"effort": alias}}).to_string();
+        settings
+            .set_responses_developer_json(&raw)
+            .expect("developer JSON must normalize official Responses aliases");
+        assert_eq!(
+            settings.responses_settings().unwrap().developer["reasoning"]["effort"],
+            canonical
+        );
+        assert_eq!(
+            settings
+                .responses_settings()
+                .unwrap()
+                .effective_reasoning_effort(),
+            deepagent_models::ReasoningEffort::parse(canonical)
+        );
+    }
+    for alias in ["simple", "deep"] {
         assert!(
             settings
                 .set_responses_settings(ResponsesApiSettings {
@@ -3024,12 +3055,7 @@ async fn responses_reasoning_effort_settings_accept_only_canonical_values() {
                     ..ResponsesApiSettings::default()
                 })
                 .is_err(),
-            "ordinary Responses settings must reject {alias}"
-        );
-        let raw = serde_json::json!({"reasoning": {"effort": alias}}).to_string();
-        assert!(
-            settings.set_responses_developer_json(&raw).is_err(),
-            "developer JSON must reject {alias}"
+            "non-provider legacy labels must remain rejected: {alias}"
         );
     }
 }
@@ -3067,7 +3093,15 @@ async fn responses_reasoning_effort_settings_reach_provider_wire() {
     settings.set_reasoning_effort(ReasoningEffort::Low).unwrap();
 
     let mut actual_requests = Vec::new();
-    for effort in ["none", "low", "high", "max"] {
+    for (effort, canonical) in [
+        ("none", "none"),
+        ("low", "low"),
+        ("high", "high"),
+        ("max", "max"),
+        ("minimal", "low"),
+        ("medium", "high"),
+        ("xhigh", "high"),
+    ] {
         settings
             .set_responses_settings(ResponsesApiSettings {
                 reasoning_effort: Some(effort.to_string()),
@@ -3094,11 +3128,17 @@ async fn responses_reasoning_effort_settings_reach_provider_wire() {
         let requests = transport.0.lock().unwrap();
         assert_eq!(requests.len(), 1);
         let actual = requests[0]["reasoning"]["effort"].as_str().unwrap();
-        assert_eq!(actual, effort, "saved setting must reach provider wire");
+        assert_eq!(
+            actual, canonical,
+            "saved setting must reach canonical provider wire"
+        );
         actual_requests.push(actual.to_string());
     }
 
-    assert_eq!(actual_requests, ["none", "low", "high", "max"]);
+    assert_eq!(
+        actual_requests,
+        ["none", "low", "high", "max", "low", "high", "high"]
+    );
 }
 
 #[tokio::test]

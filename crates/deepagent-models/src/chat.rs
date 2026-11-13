@@ -65,6 +65,18 @@ impl ReasoningEffort {
             _ => None,
         }
     }
+
+    /// Parse the Responses API input vocabulary and return the canonical wire
+    /// value. DeepSeek documents these aliases only for `reasoning.effort`;
+    /// keep the stricter `parse` contract for internal slash commands and
+    /// persisted non-Responses settings.
+    pub fn parse_responses(value: &str) -> Option<Self> {
+        match value {
+            "minimal" => Some(Self::Low),
+            "medium" | "xhigh" => Some(Self::High),
+            _ => Self::parse(value),
+        }
+    }
 }
 
 /// DeepSeek OpenAI-format thinking toggle: `{"thinking":{"type":"enabled"}}`.
@@ -1083,6 +1095,20 @@ mod tests {
                 serde_json::from_str::<ReasoningEffort>(&format!("\"{alias}\"")).is_err(),
                 "serde must reject {alias}"
             );
+        }
+    }
+
+    #[test]
+    fn responses_reasoning_effort_aliases_map_to_canonical_values() {
+        for (alias, expected) in [
+            ("minimal", ReasoningEffort::Low),
+            ("medium", ReasoningEffort::High),
+            ("xhigh", ReasoningEffort::High),
+        ] {
+            assert_eq!(ReasoningEffort::parse_responses(alias), Some(expected));
+        }
+        for value in ["simple", "deep", " HIGH "] {
+            assert!(ReasoningEffort::parse_responses(value).is_none());
         }
     }
 
