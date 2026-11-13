@@ -6758,18 +6758,27 @@ Models自身all-target/all-feature/no-deps严格lint exit101/7.747秒，唯一�
 
 - 2026-10-24 复核 DeepSeek [Create Response 参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)：`reasoning.effort` 的规范值为 `none / low / high / max`，并明确接受兼容别名 `minimal → low`、`medium / xhigh → high`。endpoint schema 是本系统 Responses wire 的直接依据；这些别名不是 UI 自定义档位。
 - 当前 `ReasoningEffort::parse()` 只接受四个规范值；普通 `ResponsesApiSettings::validate()` 和开发者 JSON 的 `validate_developer_responses_fields()` 共用该收窄规则。开发者 JSON 会被本地解析、抽取为类型化设置，再由 `ResponseRequest` 重新序列化，不是原样透传。
-- 运行 `cargo test -p deepagent-app-core --test kernel_v2_e2e responses_reasoning_effort_settings_accept_only_canonical_values --offline -- --nocapture`，结果 **1 passed**。这项通过意味着现有实现确实拒绝 `minimal / medium / xhigh`，测试当前把这种拒绝当作预期；它不证明 DeepSeek 会拒绝这些别名。
+- 修前旧测试 `responses_reasoning_effort_settings_accept_only_canonical_values` 通过，但其断言把本地拒绝当作预期，不能证明官方别名应被拒绝；真正要求接受别名的回归见 E-H155-01。
 - 运行 `cargo test -p deepagent-app-core --test kernel_v2_e2e responses_reasoning_effort_settings_reach_provider_wire --offline -- --nocapture`，结果 **1 passed**。正式 SettingsService → ChatService → Kernel → ModelAgent → ModelClient 将四个规范值放在 `reasoning.effort` 中发送到离线 transport。未访问真实 provider。
 
 #### 成熟实现对照与后果
 
 - DeepSeek Harness 用自己的受限 `ReasoningEffortId` 契约表示 `off / low / high / max`，并在 provider adapter 边界序列化；它接的是 Messages 协议，README 中的 `output_config.effort` / `thinking.type` 不能直接充当本系统 Responses wire 的依据。这里可借鉴的是“内部规范档位与 provider serializer 分层”，不能用内部 enum 的白名单覆盖官方 Responses 输入兼容性。
-- 影响限于用户粘贴官方文档/SDK 中合法 alias 到本系统设置时保存失败；不影响当前 UI 发出的四个规范值，也没有证据表明已存在请求会因该问题被 DeepSeek 拒绝。建议在输入边界将官方 alias 归一化成规范 enum，wire 继续只发送规范值，并把测试改成验证 alias 接受且规范化。
+- 影响限于用户粘贴官方文档/SDK 中合法 alias 到本系统设置时保存失败；不影响当前 UI 发出的四个规范值，也没有证据表明已存在请求会因该问题被 DeepSeek 拒绝。E-H155-02 已在输入边界将官方 alias 归一化成规范 enum，wire 继续只发送规范值。
 
 #### 官方文档差异与验证限制
 
 - DeepSeek [Thinking Mode 指南](https://api-docs.deepseek.com/zh-cn/guides/thinking_mode/) 的 Responses 栏还出现 `output_config.effort`，但 2026-10-24 复核的 [Create Response 参数页](https://api-docs.deepseek.com/zh-cn/api/create-response/) 将该 endpoint 的请求 schema 定义为 `reasoning.effort`，并明确列出上述兼容别名；Responses 兼容性表也只确认 `reasoning.effort`。本系统 Harness 生产路由明确为 Responses，当前请求遵循 endpoint 参数页，只发 `reasoning.effort`。官方两页仍有字段表述差异；没有 provider 实测可消解差异，也没有依据把指南中的 `output_config` 当作 endpoint 请求字段。
 - 本次仅核对文档和本地序列化，不证明 `low/high/max` 在当前具体模型上的实际推理档位或 UI 展示；模型能力应以实时 `/models` 元数据另行核验。
+
+
+#### H-155 修复记录（2026-11-14）
+
+**E-H155-01（修前红测）**：新增回归把官方 Responses 别名 `minimal/medium/xhigh` 作为普通设置和 developer JSON 输入，要求分别归一化为 `low/high/high`。修前执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e responses_reasoning_effort_settings_accepts_official_aliases_and_normalizes --target-dir target --offline -j 2 -- --exact --nocapture`，结果 **0 passed / 1 failed**，在保存 `minimal` 时返回 `Responses reasoning_effort must be none, low, high, or max`。未访问真实 provider；原有旧测试仅验证了“拒绝别名”，不构成官方兼容性证据。
+
+**E-H155-02（实现与验收）**：Models 增加 Responses 专用解析入口，保留内部 `ReasoningEffort::parse` 的规范值边界；SettingsService 普通 Responses 设置、developer JSON、SQLite 迁移统一接受官方别名并在保存/读取时归一化，wire 始终只发 `none/low/high/max`。`simple/deep` 等项目历史标签仍拒绝；run override/slash 命令仍保持规范值边界，不扩大本项范围。未新增存储、依赖、权限或模型调用链。
+
+实际验收：`cargo test -p deepagent-models --lib reasoning_effort --target-dir target --offline -j 2 -- --test-threads=2 --quiet` **5/0/0**；AppCore settings reasoning suite **93/0/2**；官方别名保存/迁移回归 **1/0/0**；provider wire 归一化 **1/0/0**；Models strict clippy **通过**；fmt 与 diff check **通过**。AppCore strict clippy 仍被未修改的 Runtime `clone_on_copy` 与 `derivable_impls` 阻断。真实 DeepSeek、其他 OS、前端 UI 未测；所有验收使用隔离 HOME、临时 SQLite、offline transport。代码提交 `84a9982a`，文档随后回填。
 
 ### H-156：同名扩展工具可能误入 `apply_patch` custom 序列化分支
 
