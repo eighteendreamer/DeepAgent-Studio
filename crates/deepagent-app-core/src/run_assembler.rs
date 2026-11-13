@@ -1119,7 +1119,33 @@ impl<'a> RunAssembler<'a> {
         if cancellation.cancellation().is_cancelled() {
             return Err(CoreError::other("cancelled before model request"));
         }
-        let system_prompt = run_context.system_prompt;
+        let snapshot = crate::runtime_snapshot::SnapshotPlan::new(
+            &run_context.system_prompt,
+            &response_history,
+        )?;
+        // The admitted user and hook context were committed above. Append the
+        // full update AFTER them, exactly as the live Surface adopts it below.
+        // A failed write aborts assembly before any model dispatch.
+        snapshot.persist(&mut session)?;
+        if let Some(receipt) = snapshot
+            .update
+            .as_ref()
+            .and_then(deepagent_core::runtime_snapshot::RuntimeSnapshot::from_item)
+        {
+            append_runtime_log(
+                self.runtime_logs,
+                NewRuntimeLogEntry::info("context", "runtime_snapshot_committed")
+                    .with_run_id(&run_id)
+                    .with_session_id(&session_id)
+                    .with_data(serde_json::json!({
+                        "version": receipt.version,
+                        "series": receipt.series,
+                        "revision": receipt.revision,
+                        "cache_series_restarted": snapshot.restarted,
+                    })),
+            );
+        }
+        let system_prompt = snapshot.instructions;
         let final_user_prompt = run_context.final_user_prompt;
         // The agent publishes the snapshot once its native Surface is ready,
         // then after every mutation and provider calibration.
@@ -1201,6 +1227,7 @@ impl<'a> RunAssembler<'a> {
         .with_history(history)
         .with_response_history(response_history)
         .with_admitted_input_context(prompt_context)
+        .with_admitted_input_context(snapshot.update)
         .with_surface_persistence(Arc::new(crate::context_runtime::SessionSurfaceStore {
             db: self.db.clone(),
             session_id: session.id(),

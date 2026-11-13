@@ -96,6 +96,11 @@ pub fn measure_response_surface_with<C: TokenCounter + ?Sized>(
 
     for item in items {
         match item {
+            ResponseInputItem::Message { content, .. }
+                if deepagent_core::runtime_snapshot::RuntimeSnapshot::from_item(item).is_some() =>
+            {
+                out.dynamic_runtime += counter.count(content) + 8;
+            }
             ResponseInputItem::Message { content, .. } => {
                 out.messages += counter.count(content) + 8;
             }
@@ -299,6 +304,26 @@ mod tests {
             arguments: "x".repeat(20_000),
         }];
         assert!(measure_response_surface(None, &items, &[]).total() > 4_000);
+    }
+
+    #[test]
+    fn h168_snapshot_envelope_and_body_are_metered_as_dynamic_not_history() {
+        let item = deepagent_core::runtime_snapshot::RuntimeSnapshot {
+            version: 1,
+            series: 1,
+            revision: 1,
+            stable_rules_sha256: "a".repeat(64),
+            context: "environment".repeat(20),
+        }
+        .to_item();
+        let ResponseInputItem::Message { content, .. } = &item else {
+            unreachable!()
+        };
+        let expected = HeuristicTokenizer::new().count(content) + 8;
+        let measured = measure_response_surface(Some("stable"), &[item], &[]);
+        assert_eq!(measured.dynamic_runtime, expected);
+        assert_eq!(measured.messages, 0);
+        assert!(measured.instructions > 0);
     }
 
     #[test]

@@ -1,5 +1,31 @@
 use super::*;
 
+fn latest_wire_snapshot(
+    request: &serde_json::Value,
+) -> deepagent_core::runtime_snapshot::RuntimeSnapshot {
+    request["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find_map(|item| {
+            let item = deepagent_core::response_item::ResponseItem::Message {
+                role: item["role"].as_str()?.into(),
+                content: item["content"].as_str()?.into(),
+            };
+            deepagent_core::runtime_snapshot::RuntimeSnapshot::from_item(&item)
+        })
+        .expect("host runtime snapshot reaches the real wire")
+}
+
+pub(super) fn wire_system_text(request: &serde_json::Value) -> String {
+    format!(
+        "{}\n{}",
+        request["instructions"].as_str().unwrap(),
+        latest_wire_snapshot(request).context
+    )
+}
+
 struct ObservedModel {
     replay: ReplayTransport,
     requests: Mutex<Vec<serde_json::Value>>,
@@ -42,6 +68,163 @@ async fn cold_cache_run(chat: &ChatService, session: Option<&str>, prompt: &str)
     )
     .await
     .unwrap()
+}
+
+#[tokio::test]
+async fn h168_changed_workspace_after_cold_reopen_appends_new_version_without_touching_prefix() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let path = temp.path().join("state.sqlite");
+    let secrets = Arc::new(MemorySecretStore::new());
+    let (session, before) = {
+        let db = Arc::new(Database::open(&path).unwrap());
+        let settings = cold_cache_settings(db.clone(), secrets.clone(), true).await;
+        let model = Arc::new(ObservedModel {
+            replay: ReplayTransport::new([response_text("first answer")]),
+            requests: Mutex::new(vec![]),
+        });
+        let chat = ChatService::new(db, settings, model.clone(), &workspace);
+        let session = cold_cache_run(&chat, None, "first question").await;
+        let before = model.requests.lock().unwrap()[0].clone();
+        (session, before)
+    };
+    std::fs::write(workspace.join("h168-new-after-reopen.txt"), "synthetic").unwrap();
+    let db = Arc::new(Database::open(&path).unwrap());
+    let settings = cold_cache_settings(db.clone(), secrets, false).await;
+    let model = Arc::new(ObservedModel {
+        replay: ReplayTransport::new([response_text("second answer")]),
+        requests: Mutex::new(vec![]),
+    });
+    let chat = ChatService::new(db.clone(), settings, model.clone(), &workspace);
+    cold_cache_run(&chat, Some(&session), "second question").await;
+    let requests = model.requests.lock().unwrap();
+    let next = &requests[0];
+    assert_eq!(before["instructions"], next["instructions"]);
+    assert!(next["input"]
+        .as_array()
+        .unwrap()
+        .starts_with(before["input"].as_array().unwrap()));
+    assert_eq!(
+        latest_wire_snapshot(next).revision,
+        latest_wire_snapshot(&before).revision + 1
+    );
+    assert!(latest_wire_snapshot(next)
+        .context
+        .contains("h168-new-after-reopen.txt"));
+    let sid = session.parse().unwrap();
+    let events = deepagent_persistence::event_store::EventStore::new(&db)
+        .load_session(sid)
+        .unwrap();
+    let snapshots: Vec<_> = events
+        .iter()
+        .filter_map(|event| {
+            let deepagent_core::event::EventPayload::ResponseItemAppended { item } = &event.payload
+            else {
+                return None;
+            };
+            deepagent_core::runtime_snapshot::RuntimeSnapshot::from_item(item)
+        })
+        .collect();
+    assert_eq!(
+        snapshots,
+        vec![latest_wire_snapshot(&before), latest_wire_snapshot(next)]
+    );
+}
+
+#[tokio::test]
+async fn h168_live_permission_update_and_stable_style_change_use_distinct_versions() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::write(workspace.join("README.md"), "H168_CURRENT_README_CANARY").unwrap();
+    let db = Arc::new(Database::open(temp.path().join("state.sqlite")).unwrap());
+    let settings = cold_cache_settings(db.clone(), Arc::new(MemorySecretStore::new()), true).await;
+    let model = Arc::new(ObservedModel {
+        replay: ReplayTransport::new([
+            response_text("one"),
+            response_text("two"),
+            response_text("three"),
+        ]),
+        requests: Mutex::new(vec![]),
+    });
+    let chat = ChatService::new(db, settings.clone(), model.clone(), &workspace);
+    let session = cold_cache_run(&chat, None, "first question").await;
+    settings
+        .set_permission_rules(deepagent_hooks::PermissionRules::new(
+            [],
+            [],
+            ["Read".into()],
+        ))
+        .unwrap();
+    cold_cache_run(&chat, Some(&session), "second question").await;
+    settings
+        .set_output_style(deepagent_app_core::OutputStyle::Explanatory)
+        .unwrap();
+    cold_cache_run(&chat, Some(&session), "third question").await;
+    let requests = model.requests.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    let snapshots: Vec<_> = requests.iter().map(latest_wire_snapshot).collect();
+    assert!(snapshots[0].context.contains("H168_CURRENT_README_CANARY"));
+    assert!(!snapshots[1].context.contains("H168_CURRENT_README_CANARY"));
+    assert_eq!(requests[0]["instructions"], requests[1]["instructions"]);
+    assert_eq!((snapshots[0].series, snapshots[0].revision), (1, 1));
+    assert_eq!((snapshots[1].series, snapshots[1].revision), (1, 2));
+    assert_eq!((snapshots[2].series, snapshots[2].revision), (2, 1));
+    assert_ne!(requests[1]["instructions"], requests[2]["instructions"]);
+    for pair in requests.windows(2) {
+        assert!(pair[1]["input"]
+            .as_array()
+            .unwrap()
+            .starts_with(pair[0]["input"].as_array().unwrap()));
+    }
+}
+
+#[tokio::test]
+async fn h168_unknown_persisted_host_snapshot_blocks_actual_model_dispatch() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let db = Arc::new(Database::open(temp.path().join("state.sqlite")).unwrap());
+    let settings = cold_cache_settings(db.clone(), Arc::new(MemorySecretStore::new()), true).await;
+    let model = Arc::new(ObservedModel {
+        replay: ReplayTransport::new([response_text("one")]),
+        requests: Mutex::new(vec![]),
+    });
+    let chat = ChatService::new(db.clone(), settings, model.clone(), &workspace);
+    let id = cold_cache_run(&chat, None, "first question").await;
+    let clock = deepagent_core::clock::SystemClock;
+    let mut session =
+        deepagent_session::Session::recover(&db, &clock, id.parse().unwrap()).unwrap();
+    session
+        .append_response_item(deepagent_core::response_item::ResponseItem::Message {
+            role: "system".into(),
+            content: "[DeepAgent runtime context snapshot]\n{\"version\":99}".into(),
+        })
+        .unwrap();
+    let error = chat
+        .run_in_session(
+            "next",
+            Some(&id),
+            None,
+            None,
+            Vec::new(),
+            None,
+            false,
+            None,
+            |_| {},
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("unsupported or malformed runtime context snapshot"));
+    assert_eq!(
+        model.requests.lock().unwrap().len(),
+        1,
+        "the failed recovery must make zero further provider attempts"
+    );
 }
 
 #[tokio::test]
@@ -223,13 +406,17 @@ async fn consecutive_session_requests_preserve_responses_prefix_on_wire() {
         .iter()
         .map(|request| request["instructions"].as_str().unwrap())
         .collect::<Vec<_>>();
-    let dynamic_boundary = instructions[0]
-        .find("<<<DYNAMIC>>>")
-        .expect("production system prompt has its cache boundary");
     assert_eq!(
-        &instructions[0][..dynamic_boundary],
-        &instructions[1][..dynamic_boundary],
+        instructions[0], instructions[1],
         "same-session requests must preserve the production stable prompt prefix"
+    );
+    assert!(!instructions[0].contains("<<<DYNAMIC>>>"));
+    assert!(latest_wire_snapshot(&requests[0])
+        .context
+        .contains("# Environment"));
+    assert_eq!(
+        latest_wire_snapshot(&requests[0]),
+        latest_wire_snapshot(&requests[1])
     );
 
     assert_eq!(
@@ -255,7 +442,6 @@ async fn consecutive_session_requests_preserve_responses_prefix_on_wire() {
 }
 
 #[tokio::test]
-#[ignore = "audit: volatile system context must not precede reusable conversation history"]
 async fn audit_dynamic_instructions_do_not_cut_off_conversation_cache_prefix() {
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(root.path().join("src")).unwrap();
@@ -327,7 +513,7 @@ async fn audit_dynamic_instructions_do_not_cut_off_conversation_cache_prefix() {
     assert_eq!(requests.len(), 2);
     let first_instructions = requests[0]["instructions"].as_str().unwrap();
     let second_instructions = requests[1]["instructions"].as_str().unwrap();
-    let boundary = first_instructions.find("<<<DYNAMIC>>>").unwrap();
+    let boundary = first_instructions.len();
     let first_difference = first_instructions
         .bytes()
         .zip(second_instructions.bytes())
@@ -336,8 +522,13 @@ async fn audit_dynamic_instructions_do_not_cut_off_conversation_cache_prefix() {
     let first_input = requests[0]["input"].as_array().unwrap();
     let second_input = requests[1]["input"].as_array().unwrap();
     assert!(second_input.starts_with(first_input));
-    assert!(second_instructions.contains("new_after_first_turn.rs"));
-    assert!(first_difference > boundary);
+    let before_snapshot = latest_wire_snapshot(&requests[0]);
+    let after_snapshot = latest_wire_snapshot(&requests[1]);
+    assert!(!before_snapshot.context.contains("new_after_first_turn.rs"));
+    assert!(after_snapshot.context.contains("new_after_first_turn.rs"));
+    assert_eq!(after_snapshot.series, before_snapshot.series);
+    assert_eq!(after_snapshot.revision, before_snapshot.revision + 1);
+    assert_eq!(first_difference, boundary);
     eprintln!(
         "dynamic cache audit: stable_instruction_bytes={boundary}, first_difference={first_difference}, first_instructions_bytes={}, second_instructions_bytes={}, retained_first_input_items={}, second_input_items={}",
         first_instructions.len(),

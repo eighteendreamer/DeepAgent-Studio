@@ -149,14 +149,15 @@ async fn observe(case: FileCase, deny_read: bool) -> Observation {
         "the continuation carries one actual tool result"
     );
     let outcome = Observation {
-        first_instructions_have_canary: requests[0]["instructions"]
-            .as_str()
-            .unwrap()
+        first_instructions_have_canary: super::cache_prefix::wire_system_text(&requests[0])
             .contains(CANARY),
-        first_input_has_canary: requests[0]["input"].to_string().contains(CANARY),
-        next_instructions_have_canary: requests[1]["instructions"]
-            .as_str()
+        first_input_has_canary: requests[0]["input"]
+            .as_array()
             .unwrap()
+            .iter()
+            .filter(|item| item["role"] != "system")
+            .any(|item| item.to_string().contains(CANARY)),
+        next_instructions_have_canary: super::cache_prefix::wire_system_text(&requests[1])
             .contains(CANARY),
         tool_result_has_canary: outputs[0]["output"].as_str().unwrap().contains(CANARY),
         blocked_reads: events

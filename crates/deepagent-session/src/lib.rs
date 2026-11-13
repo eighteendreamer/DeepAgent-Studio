@@ -206,6 +206,27 @@ impl<'db, C: Clock> Session<'db, C> {
         self.append_with_response_projection(EventPayload::ResponseItemAppended { item }, false)
     }
 
+    /// A host-generated system context item is a complete commit group. It has
+    /// no later model-message mirror; mark that explicitly using the existing
+    /// projection frame so bounded readers never attach subsequent run events.
+    pub fn append_host_context(&mut self, item: ResponseItem) -> Result<Event> {
+        if !matches!(&item, ResponseItem::Message { role, .. } if role == "system") {
+            return Err(CoreError::invalid(
+                "host context requires a system message item",
+            ));
+        }
+        let events = EventStore::new(self.db).append_with_response_projection(
+            self.id,
+            EventPayload::ResponseItemAppended { item },
+            false,
+            self.clock.now(),
+        )?;
+        for event in &events {
+            self.state.apply(&event.payload);
+        }
+        Ok(events.into_iter().next().expect("committed host context"))
+    }
+
     /// Record a completion with the executing host's authorized tool catalog.
     /// Source and native result remain one ordinary atomic projection frame.
     pub fn append_tool_completion(

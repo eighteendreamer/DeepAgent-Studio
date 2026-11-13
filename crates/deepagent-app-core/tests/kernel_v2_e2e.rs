@@ -389,6 +389,27 @@ impl HttpTransport for ResumeRoutingTransport {
                 let body: serde_json::Value = serde_json::from_str(&request.body)
                     .map_err(|error| CoreError::other(error.to_string()))?;
                 let items = body["input"].as_array().expect("native resume input");
+                let snapshots: Vec<_> = items
+                    .iter()
+                    .filter_map(|item| {
+                        let item = serde_json::from_value(item.clone()).ok()?;
+                        deepagent_core::runtime_snapshot::RuntimeSnapshot::from_item(&item)
+                    })
+                    .collect();
+                assert_eq!(
+                    snapshots.len(),
+                    1,
+                    "unchanged child context is restored once"
+                );
+                assert_eq!(
+                    items.len(),
+                    4,
+                    "one host snapshot plus the original three turns"
+                );
+                let items: Vec<_> = items
+                    .iter()
+                    .filter(|item| item["role"] != "system")
+                    .collect();
                 assert_eq!(
                     items.len(),
                     3,

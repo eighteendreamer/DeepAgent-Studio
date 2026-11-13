@@ -3,6 +3,56 @@ use deepagent_core::clock::FixedClock;
 use deepagent_core::message::{Message, ToolCall};
 
 #[test]
+fn h168_host_context_is_an_explicit_standalone_group_for_bounded_history() {
+    use deepagent_persistence::event_store::SessionPageBudget;
+    let db = Database::open_in_memory().unwrap();
+    let clock = FixedClock::new(1);
+    let mut session = Session::create(&db, &clock, None).unwrap();
+    let context = ResponseItem::Message {
+        role: "system".into(),
+        content: "synthetic host context".into(),
+    };
+    session.append_host_context(context).unwrap();
+    session.create_task("later task metadata").unwrap();
+    session
+        .append(EventPayload::Note {
+            text: "later independent event".into(),
+        })
+        .unwrap();
+    let store = EventStore::new(&db);
+    let expected = store.load_session(session.id()).unwrap();
+    let mut cursor = None;
+    let mut actual = Vec::new();
+    loop {
+        let page = store
+            .read_session_page(
+                session.id(),
+                None,
+                cursor,
+                SessionPageBudget {
+                    max_events: 1,
+                    max_bytes: 4096,
+                },
+            )
+            .unwrap();
+        assert!(page.events.len() <= 1);
+        actual.extend(page.events);
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(actual, expected);
+    assert!(session
+        .append_host_context(ResponseItem::Message {
+            role: "assistant".into(),
+            content: "provider output".into()
+        })
+        .is_err());
+    assert_eq!(store.load_session(session.id()).unwrap(), expected);
+}
+
+#[test]
 fn h152_native_discovery_completion_is_one_durable_projection_group() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("native.sqlite");

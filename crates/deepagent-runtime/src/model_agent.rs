@@ -510,7 +510,12 @@ impl ResponseHistory {
 
     fn push_message_projection(&mut self, message: &Message) {
         match message.role {
-            Role::System => {
+            Role::System
+                if self.items.is_empty()
+                    && !deepagent_core::runtime_snapshot::RuntimeSnapshot::has_envelope_marker(
+                        &ResponseInputItem::from_message_content(message),
+                    ) =>
+            {
                 self.instructions = Some(match self.instructions.take() {
                     Some(existing) if !existing.is_empty() => {
                         format!("{existing}\n\n{}", message.content)
@@ -911,8 +916,16 @@ impl ModelAgent {
     /// Legacy compatibility bridge for compactors that have not yet returned
     /// native response items. Live context operations must use `replace_items`.
     fn replace_messages_legacy(&mut self, messages: Vec<Message>) {
+        let latest =
+            deepagent_core::runtime_snapshot::latest_snapshot(&self.response_history.items)
+                .map(|(item, _)| vec![item.clone()])
+                .unwrap_or_default();
         self.messages = messages;
         self.response_history.replace_from_messages(&self.messages);
+        deepagent_core::runtime_snapshot::retain_latest_snapshot(
+            &latest,
+            &mut self.response_history.items,
+        );
         self.sync_message_projection();
     }
 
@@ -951,13 +964,18 @@ impl ModelAgent {
     }
 
     fn adopt_compacted_history(&mut self, compacted: &ReactiveCompaction) {
+        let previous =
+            deepagent_core::runtime_snapshot::latest_snapshot(&self.response_history.items)
+                .map(|(item, _)| vec![item.clone()])
+                .unwrap_or_default();
         self.reset_tool_context("compaction");
         self.invalidate_memory_prefetch();
         // Every adoption path (proactive threshold, prefire pass-2, reactive
         // overflow recovery) funnels here, so this is the one place the
         // summarizing call's spend can be recorded without missing a route.
         self.side_usage.record_call(&compacted.usage);
-        if let Some(items) = compacted.response_items.clone() {
+        if let Some(mut items) = compacted.response_items.clone() {
+            deepagent_core::runtime_snapshot::retain_latest_snapshot(&previous, &mut items);
             self.response_history.replace_items(items);
             self.sync_message_projection();
         } else {
@@ -3180,6 +3198,34 @@ mod tests {
     include!("model_chat_interrupt_tests.rs");
 
     #[test]
+    fn h168_runtime_projection_keeps_middle_system_in_place() {
+        let mut history = ResponseHistory::from_messages(&[
+            Message::system("stable"),
+            Message::system("more rules"),
+            Message::user("first"),
+        ]);
+        history.push_message_projection(&Message::system("new environment"));
+        history.push_message_projection(&Message::user("second"));
+        assert_eq!(
+            history.instructions.as_deref(),
+            Some("stable\n\nmore rules")
+        );
+        assert_eq!(
+            history.items[1],
+            ResponseInputItem::from_message_content(&Message::system("new environment"))
+        );
+        let projected = deepagent_models::messages_from_response_items(
+            history.instructions.as_deref(),
+            &history.items,
+        );
+        assert_eq!(
+            ResponseHistory::from_messages(&projected).items,
+            history.items
+        );
+        assert_eq!(history.request("deepseek-flash").input.len(), 3);
+    }
+
+    #[test]
     fn repeated_responses_requests_keep_the_same_prefix_and_old_tool_outputs() {
         let mut history = ResponseHistory::from_messages(&[
             Message::system("stable system"),
@@ -5062,6 +5108,41 @@ mod tests {
             .map(|request| request["model"].as_str().unwrap().to_string())
             .collect::<Vec<_>>();
         assert_eq!(models, vec!["primary", "fallback"]);
+    }
+
+    #[tokio::test]
+    async fn h168_fallback_preserves_ordered_snapshot_and_stable_rules() {
+        let transport = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([
+                vec!["__ERROR_OVERLOADED__".to_string()],
+                response_text_completed("done"),
+            ])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let client = Arc::new(ModelClient::new(
+            transport.clone(),
+            ModelConfig::deepseek("test"),
+        ));
+        let item = deepagent_core::runtime_snapshot::RuntimeSnapshot {
+            version: 1,
+            series: 1,
+            revision: 2,
+            stable_rules_sha256: "a".repeat(64),
+            context: "current permissions".into(),
+        }
+        .to_item();
+        let mut agent = ModelAgent::new(client, "primary", "stable rules", "question", vec![])
+            .with_admitted_input_context(Some(item.clone()))
+            .with_fallback_model(Some("fallback".into()));
+        agent.think(0, &[]).await.unwrap();
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0]["instructions"], "stable rules");
+        assert_eq!(requests[0]["instructions"], requests[1]["instructions"]);
+        assert_eq!(requests[0]["input"], requests[1]["input"]);
+        let items: Vec<ResponseInputItem> =
+            serde_json::from_value(requests[1]["input"].clone()).unwrap();
+        assert_eq!(items.last(), Some(&item));
     }
 
     #[tokio::test]

@@ -461,6 +461,7 @@ impl HookedReactiveContextCompactor {
             content: format!("[Earlier conversation compacted to summary]\n{summary_block}"),
         });
         compacted_items.extend_from_slice(&items[split..]);
+        deepagent_core::runtime_snapshot::retain_latest_snapshot(items, &mut compacted_items);
         let tokens_after = count(&compacted_items);
         if tokens_after >= tokens_before {
             self.breaker
@@ -628,6 +629,7 @@ impl HookedReactiveContextCompactor {
             content: format!("[Earlier conversation compacted to summary]\n{summary}"),
         });
         compacted_items.extend_from_slice(tail);
+        deepagent_core::runtime_snapshot::retain_latest_snapshot(items, &mut compacted_items);
         let tokens_after = self.measure_native_items(instructions, &compacted_items);
         if tokens_after >= tokens_before {
             return Ok(CompactionOutcome::observed(usage));

@@ -94,6 +94,7 @@ pub mod run_graph;
 pub mod runtime_event_log;
 mod runtime_payload;
 pub mod runtime_service;
+mod runtime_snapshot;
 pub mod sandbox_backend;
 pub mod sandboxie_service;
 pub mod secret_store;

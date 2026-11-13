@@ -7304,6 +7304,48 @@ Finding F-H167（E01～03）：provider-image输出在URL和inline分支共同�
 
 ### H-168：易变 instructions 位于历史之前，动态变化截断多轮 KV cache 前缀
 
+**当前状态：代码验收完成，仅881根本轮产物清理阻塞；尚未新增完整关闭计数。** E01～05保留真实红、候选、两轮全仓、隔离及策略拒绝证据。
+
+**E-H168-01（2026-11-13，修复中，未验收）**：基线0366760a，tracked干净，七组既有untracked保留。原Models中途system显式ignored探针真实exit101、0/1，21.671秒；实际instructions为`stable leading rules\n\nupdated runtime context`，input原位置丢失，日志SHA256=`7094D29921C59FFEAC2CEEB9806B1118FE50BDA20FF974632BDF8BF0EE82BDAD`。原Kernel动态探针exit101、0/1，5.114秒：稳定边界14142字节，首差14195，instructions15442→15468字节，input1→3仍保留前缀；日志SHA256=`B61584DA21C1E4F54264AF609D21278F02BAD25C3C200C2A68E7894FCF9DA135`。静态对照exit0、1/0，1.312秒，SHA256=`E9C30183DAFAB4CC0080414895E00F190DD290092A4519EBFBFCD06032BF3A92`。命令为`cargo test --target-dir <repo>/target -p deepagent-models --lib responses::tests::audit_preserves_mid_history_system_messages_as_input_items --offline -j 2 -- --ignored --exact --nocapture --test-threads=1`及AppCore `--test kernel_v2_e2e cache_prefix::audit_dynamic_instructions_do_not_cut_off_conversation_cache_prefix`，静态同目标`cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire`不带ignored。全部使用合成工作区/离线transport，无真实provider或凭据。
+
+用户已确认版本化完整快照：稳定规则置顶，动态完整快照在既有历史后追加，仅替代旧动态快照；稳定规则变化重启序列。复用Session的原生ResponseItem事件，不新增日志库。替代语义是明确本地设计，官方仅确认可传中途system；本轮离线契约验收不宣称真实供应商缓存命中率。候选覆盖Models serializer、Runtime投影、AppCore主/子运行、持久化/压缩/snip及meter，验收与独立提交尚未完成。H281仍归并，不新增计数。
+
+**E-H168-02（候选与验收边界，2026-11-13）**：首轮候选原serializer探针1/0、Kernel缓存组4/0（含真实文件SQLite服务全丢弃后、工作区变化的冷恢复）；最新两轮instructions均14140字节，原input2项仍为第二请求5项的前缀。AppCore快照版本/清空/恢复/稳定规则换series、真实Session冷重开/fork/rewind、持久化失败传播、生产三种原生压缩路径及meter候选通过。新增错版信封拒绝用例曾真实5过1败（短marker没被识别），已收敛成同一marker校验；未隐藏该红，最终仍需重跑。后续复核发现snip只保护当时最新版，会在追加后续新版本后改变冷重放的删除范围；已改为snip保护宿主快照原位置，压缩再只携带最新版，补后续更新对照。代价是snip不会释放旧快照token，压缩仍可释放；不静默删除历史版本。
+
+旧候选runner在补充上述snip与脱敏运行诊断期间完成局部12/0，但下一组实际被源码SHA门禁停止（`source changed: .../run_assembler.rs`），不称整轮最终验收。现冻结16份Rust实现/测试，独立runner将跑定向、workspace、Models/http、strict、Tauri及fmt；原共享CLI与用户.snap.new先备份，finally恢复SHA及mtime。测试、持久化和普通运行诊断均沿现有边界；原生快照正文只在原会话事件，运行诊断仅version/series/revision/restarted，不记录动态正文。工具schema改变仍可能合理失效供应商缓存，不能为了前缀不变冻结权限或工具目录。尚无本轮提交，不增加已验收数。
+
+**E-H168-03（首轮完整矩阵与实际新反例，2026-11-13，未验收）**：16源冻结无漂移，定向12/0，231.799秒。完整workspace exit101、161个目标、5387过/5败/142忽略，2162.653秒（构建840秒），SHA256 `7827743D6DD936C5457DB29329491FD2651DA7734817933BA69AD8054231F65F`。AppCore1692/2/48：原MCP hook预期漏tool_use_id及构建夹具未生成build-started仍失败；Prompts默认video-edit空提示词仍失败。另两项是本轮新增，不能归为无关旧败：Kernel恢复断言把新host快照算进旧3项对话（实际4项，368/1/7），CLI原H298的pageSize=3真实报`history_item_too_large: session commit group exceeds page budget`（225/1/7）。后者根因是宿主system snapshot用原生模型输出旧式Event记录，分页会推断其后续模型镜像，错误绑住后续run元数据。
+
+**E-H168-04（最终功能验收，2026-11-13，代码通过）**：19份Rust源冻结，SHA256 `34DDD4F95B738AAAD8A8DD603066E80D7F316E55EC471F829E1EE8E354E277F1`，门禁前后无源漂移。H168定向12/0；Core/AppCore/Runtime/Context/Session的20项快照、位置、版本、写失败、压缩、冷恢复、fork、rewind、snip、meter、fallback与错版拒绝回归均通过。原Models中途system探针转为1/0；Kernel cache_prefix静态、真实工具冷重开、工作区变化、冷重开后新文件、权限变化/稳定风格series及未知快照零dispatch均通过。Session新增host context显式Projection组后，真实pageSize=1/4096字节分页1/0；原H298完整76组游标/override/冷重开验收通过。该实现只复用既有Session/EventStore/ResponseItem，不新增日志库或运行链；供应商缓存命中仍未实测、不作强保证。
+
+最终workspace矩阵真实161目标5389过/4败/142忽略，日志SHA256 `7894129EC3DF42BE5E3BF08356274F1C6897F56E2871A4D277B4C20A98C3410B`；四败为MCP hook旧字段预期、宿主锁子进程间歇失败、构建夹具到达build-started间歇失败、Prompts默认video-edit空提示词。原二进制隔离复核宿主锁1/0（1.656秒，binary `746D7B895D1612A3337594A947A99F8E3641A5C7E6A5BBE4439D00DEC23EE212`）和构建正常/取消1/0（23.255秒，binary `76C58E67F4B8A9C0C4587489B0C6169510FDF76EBA24CEAC117828C761331BC0`）均通过；隔离结果不抹掉整仓间歇失败，也不修改其断言。Models/http334/0/10、Models/Core/Context strict、Session strict、Tauri check、fmt通过；AppCore/workspace strict仍仅旧lint阻断。无前端/UI/TS改动，未重跑前端build或手动UI。
+
+**E-H168-05（仅产物清理阻塞，2026-11-13）**：清单881根、约2644593702逻辑字节（约2.463GiB），C盘临时目录按基线、源码fixture命名和DeepAgent SQLite/Session schema归属，G盘为本轮fixture；祖先/后代均无reparse，相关进程已结束，其他新增88根未归属条目保留。清单SHA256 `24F22C5FFF29E5AB75A2AFB9B1DFCAA36416D23A1A6E43B52B143F87A1915A6E`。自动PowerShell删除在CreateProcess前被策略拒绝（`blocked by policy`），零删除；已生成带清单hash、数量、基线、链接复核的`cleanup-h168.ps1`，脚本SHA256 `C16361EE31EBE1F6A155FFC439899128B512DFCE12637AB72F202CA240451674`，待用户在获准终端实际执行。该清理阻塞不否定代码验收，但本项提交后暂不宣称产物闭环。
+
+根因补强复用现有EventStore Projection帧：Session新增明确的host system context写入入口，用已有`append_with_response_projection(..., false, ...)`记录单项显式提交组，不改页预算、游标、模型batch或第二套存储。SnapshotPlan唯一调用改走该入口；真实pageSize=1、4096字节分页回归1/0，11.59秒含编译，SHA256 `0BF712F8524C729A6CB87E9F189CB3356865680CF36DB048DDADB5E8CEE626B7`。Kernel恢复断言明确总4项=1宿主快照+原3条逐项原文，不吞重复/未知项。CLI H298断言和预算保持原样。扩大19源重新冻结后先跑原H298，再完整workspace与最终Session strict/Tauri/fmt。
+
+首轮Models/http及全部integration exit0，173.465秒，SHA256 `DDBC7952EFDC5A8B792D78F8AED890E8117C29B3597044A3D40F33912B2FEB2C`；Models/Core/Context all-targets/all-features/no-deps strict通过15.627秒（其源此后未变）。AppCore strict仍6个lib+2测试旧lint，74.838秒；workspace strict仍Runtime旧clone_on_copy及canvas derivable_impls，29.514秒，不改或抑制。Tauri check通过70.952秒、fmt通过7.221秒。原CLI/snap.new已由首轮finally恢复SHA和mtime；所有源和产物尚未提交/清理，不计验收关闭。无UI/TypeScript/Tauri command契约变更，未重跑前端build或手动UI；现有Conversation投影仅展示assistant原生消息，宿主system快照不新增聊天气泡。
+
+**E-H168-04/05最终记录（2026-11-13）**：19源冻结SHA256 `34DDD4F95B738AAAD8A8DD603066E80D7F316E55EC471F829E1EE8E354E277F1`，实际门禁前后无源漂移。20项关键默认回归及原H298完整76组分页通过；H168关键验收包括13个同名unit、6个cache_prefix及原Models中途system探针。下表所有Cargo使用`--target-dir G:/Code_Warehouse/DeepAgent-Studio/target --offline -j 2`，test尾部为`-- --test-threads=2 --quiet`（隔离原二进制用exact/单线程/nocapture）。原失败保留，不把filtered或隔离通过当全仓通过。
+
+| 实际命令/范围 | 结果 | 秒 |
+|---|---|---:|
+| `cargo test --workspace h298_every_cursor_field_and_override_preserves_two_durable_runs --no-fail-fast` | 真实1/0；其他目标均filtered；原pageSize=3及76组完整游标/冷重开断言不变 | 707.656含重新编译 |
+| `cargo test --workspace --no-fail-fast` | 161目标完整5389过/4败/142忽略；按目标实际running总数匹配摘要，避免并发stdout漏计terminal_lease的5项 | 1349.960 |
+| Models/http suite及integration（后续这些源未变） | 25目标334/0/10，日志DDBC7952EFDC5A8B792D78F8AED890E8117C29B3597044A3D40F33912B2FEB2C | 173.465 |
+| `cargo clippy -p deepagent-models -p deepagent-core -p deepagent-context --all-targets --all-features --no-deps -- -D warnings` | exit0，源此后未变 | 15.627 |
+| `cargo clippy -p deepagent-session --all-targets --all-features --no-deps -- -D warnings` | exit0，最终新增host context入口strict通过 | 18.755 |
+| `cargo clippy -p deepagent-app-core --all-targets --no-deps -- -D warnings` | exit101，既有6lib+2test lint；未改/抑制 | 82.496 |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | exit101，Runtime既有clone_on_copy和canvas derivable_impls | 22.914 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml` | exit0，实际Desktop特性消费者；log BED1874E487F65384F816E4216BACA721EB68C13AD57B3A99FE178FB3E479712 | 23.359 |
+| `cargo fmt --all -- --check` | exit0；diff --check通过 | 7.883 |
+
+最终workspace日志SHA256 `7894129EC3DF42BE5E3BF08356274F1C6897F56E2871A4D277B4C20A98C3410B`。MCP hook旧字段预期及Prompts默认video-edit空提示词仍失败；宿主锁writers子进程101与构建取消夹具4002ms未到build-started为本轮新观测间歇失败，根因未定，不写成历史已知。原二进制、原断言与限时，整仓结束后各仅一次隔离：宿主锁1/0、1.656秒（log275DA11BB861E6137DA401FE6808B0B164E9A3A65E23A5DDD30A45EF2678C980）；构建正常/取消1/0、23.255秒（log900F15324056C759C7CFA740E5661EFC07BFAF730A41190BD610358F18475DC7），真实取消在release前退出子树且无canary写入。隔离通过不覆盖整仓红，也不外推稳定性；两处后续应独立调查。本轮新增的子运行布局和CLI分页反例已修，CLI整组226/0/7、Session25/0/0、Runtime486/0/3。未修改其他失败代码或断言。
+
+当前CLI新构建SHA256 `008F5AA593BE18703F0C1102C8DB235E3FC30D4A0933E15468954AD5B441A7FA`在矩阵前核对；finally后原CLI `74BB23185BBBA699AC698B10D98BFA8712B6B398CFDEDA113EC0AF642D2BA205`/UTC ticks639301458128145831、用户snap.new `D514BFE28BA6F207C714DDAD2FEFE9E521B3AA1FD7DF1AF243FA2CC2ED911F17`/639301483035458358独立复核匹配。无UI/TS/Tauri command更改，未重跑前端build/手动UI；真实供应商缓存命中/费用/延迟、跨日线上、其他OS/MSRV未实测。日期变化由同一完整快照差异规则处理，未修改系统时钟；旧会话bootstrap新布局，不承诺升级前前缀复用。不新增数据库、事件库、权限或模型调用链。
+
+清理前按C盘基线、源码fixture命名、SQLite表结构（只查schema）、Session布局与空树确认880个C根，加`G:/h168-fixtures-20261113`共881根、约2644593702逻辑字节（2.463GiB）；祖先/后代无reparse，无相关测试/compiler进程。其他应用88个未归属新增条目保留；共享target/debug、依赖缓存、源码和原用户文件不在清单。清单hash `24F22C5FFF29E5AB75A2AFB9B1DFCAA36416D23A1A6E43B52B143F87A1915A6E`。自动PowerShell删除在CreateProcess前被策略拒绝（blocked by policy），零删除，不升权/重试/换执行器。已准备带完整路径、基线、数量/hash和链接复核的`G:/h168-fixtures-20261113/cleanup-h168.ps1`，脚本hash `C16361EE31EBE1F6A155FFC439899128B512DFCE12637AB72F202CA240451674`，须获准终端实际执行。功能修复1、完整关闭0；不把产物回收说成已经完成，H168暂仅清理阻塞，取得独立提交hash后普通回填，不amend/推送。
+
 **级别：中（P2，持续性性能/费用问题）；触发条件：同一 Responses 会话连续请求之间，工作区结构、日期、权限、插件/MCP/skills 或其他 leading dynamic instructions 发生变化。** 该缺口不改变本地保存的会话历史，也没有证据表明它会直接令回答错误；影响是上一轮完整历史不能继续作为本轮的相同请求前缀，因而降低 DeepSeek 自动缓存可复用范围，并可能增加首 token 延迟与未命中输入费用。
 
 #### 官方规则、生产路径与动态复现

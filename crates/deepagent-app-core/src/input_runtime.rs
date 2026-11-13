@@ -272,6 +272,7 @@ pub(crate) fn with_transcript_pointer(summary: String, transcript_dir: &std::pat
 /// Where the model-facing view starts, and what replaces everything before it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CompactionBoundary {
+    event_sequence: deepagent_core::event::Sequence,
     /// Text injected in place of the compacted prefix (header included).
     rendered: String,
     /// First event sequence still visible verbatim.
@@ -292,6 +293,7 @@ fn compaction_boundary(events: &[Event]) -> Option<CompactionBoundary> {
     events.iter().rev().find_map(|event| {
         let keep_after = |rendered: String| {
             Some(CompactionBoundary {
+                event_sequence: event.sequence,
                 rendered,
                 first_kept_sequence: event.sequence.saturating_add(1),
             })
@@ -302,6 +304,7 @@ fn compaction_boundary(events: &[Event]) -> Option<CompactionBoundary> {
                 first_kept_sequence,
                 ..
             } => Some(CompactionBoundary {
+                event_sequence: event.sequence,
                 rendered: format!("{COMPACTED_SUMMARY_HEADER}\n{summary}"),
                 first_kept_sequence: first_kept_sequence.unwrap_or(event.sequence),
             }),
@@ -507,14 +510,27 @@ pub(crate) fn sequence_of_response_item_tail(
     if tail.is_empty() {
         return None;
     }
-    let indexed = indexed_response_items(events);
+    // A carried full runtime snapshot is pinned independently of the cut. Its
+    // original event can precede a prior compaction, so it is not a contiguous
+    // conversation-tail anchor. All other items retain strict whole-tail identity.
+    let is_snapshot = |item: &ResponseInputItem| {
+        deepagent_core::runtime_snapshot::RuntimeSnapshot::from_item(item).is_some()
+    };
+    let tail: Vec<_> = tail.iter().filter(|item| !is_snapshot(item)).collect();
+    if tail.is_empty() {
+        return None;
+    }
+    let indexed: Vec<_> = indexed_response_items(events)
+        .into_iter()
+        .filter(|(_, item)| !is_snapshot(item))
+        .collect();
     let matches: Vec<_> = indexed
         .windows(tail.len())
         .filter(|window| {
             window
                 .iter()
                 .map(|(_, item)| item)
-                .zip(tail)
+                .zip(&tail)
                 .all(|(item, wanted)| response_items_match(item, wanted))
         })
         .map(|window| window[0].0)
@@ -774,6 +790,17 @@ pub(crate) fn response_items_from_events(events: &[Event]) -> Vec<ResponseInputI
     }
     let boundary = compaction_boundary(events);
     let mut indexed = indexed_response_items(events);
+    let snapshots: Vec<_> = indexed
+        .iter()
+        .filter(|(sequence, _)| {
+            boundary
+                .as_ref()
+                .is_some_and(|b| *sequence <= b.event_sequence)
+        })
+        .filter_map(|(_, item)| {
+            deepagent_core::runtime_snapshot::RuntimeSnapshot::from_item(item).map(|_| item.clone())
+        })
+        .collect();
     if let Some(boundary) = &boundary {
         indexed.retain(|(seq, _)| *seq >= boundary.first_kept_sequence);
     }
@@ -805,7 +832,17 @@ pub(crate) fn response_items_from_events(events: &[Event]) -> Vec<ResponseInputI
             }
         }
     }
+    let insertion = boundary
+        .as_ref()
+        .map(|b| indexed.partition_point(|(seq, _)| *seq <= b.event_sequence));
     let mut items: Vec<_> = indexed.into_iter().map(|(_, item)| item).collect();
+    if let Some(insertion) = insertion {
+        // The carried snapshot became visible at this boundary, not after
+        // later assistant/tool/user events. Preserve that exact live order.
+        let mut later = items.split_off(insertion);
+        deepagent_core::runtime_snapshot::retain_latest_snapshot(&snapshots, &mut items);
+        items.append(&mut later);
+    }
     if let Some(boundary) = boundary {
         items.insert(
             0,

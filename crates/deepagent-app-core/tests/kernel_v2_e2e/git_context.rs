@@ -153,9 +153,7 @@ async fn observe(change: Change, relative: &str) -> Observation {
     assert_eq!(terminals[0].data["kind"], "succeeded");
     let requests = model.0.lock().unwrap();
     assert_eq!(requests.len(), 1, "one real serialized model request");
-    let instructions = requests[0]["instructions"]
-        .as_str()
-        .expect("wire instructions");
+    let instructions = super::cache_prefix::wire_system_text(&requests[0]);
     let git_tail = instructions
         .split_once("# Git\n")
         .expect("Git block reaches wire")

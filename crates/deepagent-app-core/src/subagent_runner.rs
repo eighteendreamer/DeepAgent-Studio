@@ -817,6 +817,7 @@ impl ChatSubagentRunner {
         let preloaded_skills = self.preload_skills(&skills)?;
         let system =
             subagent_system_prompt(execution_root, agent_profile, &preloaded_skills, &request);
+        let snapshot = crate::runtime_snapshot::SnapshotPlan::new(&system, &fork_response_history)?;
         let db = Arc::new(Database::open_in_memory()?);
         let clock = SystemClock;
         let mut session = Session::create(&db, &clock, Some(&request.description))?;
@@ -826,6 +827,7 @@ impl ChatSubagentRunner {
         session.append(deepagent_core::event::EventPayload::MessageAppended {
             message: deepagent_core::message::Message::user(&request.prompt),
         })?;
+        snapshot.persist(&mut session)?;
         // Publish the fully initialized event source before awaited execution.
         // A failed history import retains the complete seed instead of a partial
         // copy; the owner also retains this source if the engine is dropped.
@@ -865,12 +867,13 @@ impl ChatSubagentRunner {
         let mut agent = ModelAgent::new(
             self.client.clone(),
             sub_model,
-            system,
+            snapshot.instructions,
             &request.prompt,
             tools,
         )
         .with_tool_schema_source(schema_source)
         .with_response_history(fork_response_history)
+        .with_admitted_input_context(snapshot.update)
         .with_surface_persistence(Arc::new(crate::context_runtime::SessionSurfaceStore {
             db: db.clone(),
             session_id: session.id(),
@@ -1447,7 +1450,7 @@ mod tests {
     #[derive(Default)]
     struct AuditChildWriteTransport {
         tools_seen: std::sync::Mutex<Vec<Vec<String>>>,
-        instructions_seen: std::sync::Mutex<Vec<String>>,
+        runtime_contexts_seen: std::sync::Mutex<Vec<String>>,
     }
 
     #[async_trait::async_trait]
@@ -1460,12 +1463,17 @@ mod tests {
             let sink: &mut dyn deepagent_models::transport::EventSink =
                 &mut crate::test_sequence::sink(sink);
             let body: serde_json::Value = serde_json::from_str(&request.body)?;
-            self.instructions_seen.lock().unwrap().push(
-                body["instructions"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
-            );
+            let context = body["input"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find_map(|item| {
+                    let item = serde_json::from_value(item.clone()).ok()?;
+                    deepagent_core::runtime_snapshot::RuntimeSnapshot::from_item(&item)
+                        .map(|snapshot| snapshot.context)
+                })
+                .unwrap_or_default();
+            self.runtime_contexts_seen.lock().unwrap().push(context);
             let tools = body["tools"]
                 .as_array()
                 .unwrap()
@@ -2408,9 +2416,22 @@ mod tests {
         assert_eq!(after.resume_count, 2);
         let requests = transport.requests.lock().unwrap();
         assert_eq!(requests.len(), 3);
-        let initial = requests[0]["instructions"].as_str().unwrap();
-        let resumed = requests[1]["instructions"].as_str().unwrap();
-        let resumed_again = requests[2]["instructions"].as_str().unwrap();
+        let runtime_context = |request: &serde_json::Value| {
+            request["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .rev()
+                .find_map(|item| {
+                    let item = serde_json::from_value(item.clone()).ok()?;
+                    deepagent_core::runtime_snapshot::RuntimeSnapshot::from_item(&item)
+                        .map(|snapshot| snapshot.context)
+                })
+                .expect("sub-agent runtime snapshot is in Responses input")
+        };
+        let initial = runtime_context(&requests[0]);
+        let resumed = runtime_context(&requests[1]);
+        let resumed_again = runtime_context(&requests[2]);
         assert!(
             initial.contains("audit-contract-phase")
                 && initial.contains("audit-contract-label")
@@ -2534,10 +2555,10 @@ mod tests {
             result.ok,
             "child failed before path verification: {result:?}"
         );
-        let instructions = transport.instructions_seen.lock().unwrap();
+        let runtime_contexts = transport.runtime_contexts_seen.lock().unwrap();
         let assigned = format!("Working directory: {}", child.display());
         assert!(
-            !instructions.is_empty() && instructions.iter().all(|s| s.contains(&assigned)),
+            !runtime_contexts.is_empty() && runtime_contexts.iter().all(|s| s.contains(&assigned)),
             "fixture requires the actual request to name the assigned child directory"
         );
         let parent_output = std::fs::read_to_string(parent.join("audit-child.txt")).ok();

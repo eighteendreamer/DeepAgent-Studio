@@ -312,10 +312,18 @@ async fn dag_concurrent_assignments_isolate_persisted_and_ephemeral_children() {
                 "isolated child"
             );
             assert!(transport.requests.lock().unwrap().iter().any(|body| {
-                body["instructions"]
-                    .as_str()
-                    .unwrap()
-                    .contains(&format!("Working directory: {}", child.display()))
+                body["input"].as_array().unwrap().iter().any(|item| {
+                    serde_json::from_value(item.clone())
+                        .ok()
+                        .and_then(|item| {
+                            deepagent_core::runtime_snapshot::RuntimeSnapshot::from_item(&item)
+                        })
+                        .is_some_and(|snapshot| {
+                            snapshot
+                                .context
+                                .contains(&format!("Working directory: {}", child.display()))
+                        })
+                })
             }));
         }
         assert_eq!(transport.requests.lock().unwrap().len(), 4);

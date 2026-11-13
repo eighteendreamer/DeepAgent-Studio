@@ -157,6 +157,15 @@ pub fn plan_response_item_snip(
         }
     }
 
+    // Host system snapshots are not user-turn payload. Keep their original
+    // positions, including historical revisions: otherwise replaying a snip
+    // after a later update could delete the snapshot the live snip retained.
+    // Compaction can discard superseded snapshots and carry only the latest.
+    for (index, item) in items.iter().enumerate() {
+        if deepagent_core::runtime_snapshot::RuntimeSnapshot::has_envelope_marker(item) {
+            remove[index] = false;
+        }
+    }
     ResponseItemSnipPlan {
         remove,
         applied_tags,
@@ -253,6 +262,35 @@ pub fn snip_segments(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn h168_snip_keeps_host_snapshots_so_later_updates_do_not_change_replay() {
+        use deepagent_core::response_item::ResponseItem;
+        let snapshot = |revision| {
+            deepagent_core::runtime_snapshot::RuntimeSnapshot {
+                version: 1,
+                series: 1,
+                revision,
+                stable_rules_sha256: "a".repeat(64),
+                context: format!("state {revision}"),
+            }
+            .to_item()
+        };
+        let user = |id| ResponseItem::Message {
+            role: "user".into(),
+            content: format!("turn [id:u{id}]"),
+        };
+        let items = vec![user(1), snapshot(1), snapshot(2), user(2), user(3)];
+        let kept = super::snip_response_items(&items, &["u1".into()], 1);
+        assert_eq!(kept, vec![snapshot(1), snapshot(2), user(2), user(3)]);
+        let mut later = items;
+        later.push(snapshot(3));
+        let mut expected = kept;
+        expected.push(snapshot(3));
+        assert_eq!(
+            super::snip_response_items(&later, &["u1".into()], 1),
+            expected
+        );
+    }
     use super::*;
 
     fn user(text: &str) -> Message {

@@ -160,7 +160,14 @@ pub fn response_items_from_messages(messages: &[Message]) -> (Option<String>, Ve
         .collect();
     for message in messages {
         match message.role {
-            Role::System => instructions.push(message.content.clone()),
+            Role::System
+                if items.is_empty()
+                    && !deepagent_core::runtime_snapshot::RuntimeSnapshot::has_envelope_marker(
+                        &ResponseItem::from_message_content(message),
+                    ) =>
+            {
+                instructions.push(message.content.clone())
+            }
             Role::Tool => {
                 let call_id = message.tool_call_id.clone().unwrap_or_default();
                 if custom_call_ids.contains(call_id.as_str()) {
@@ -590,7 +597,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit: Responses supports system messages in the middle of input history"]
     fn audit_preserves_mid_history_system_messages_as_input_items() {
         let messages = vec![
             Message::system("stable leading rules"),
@@ -608,11 +614,15 @@ mod tests {
         );
 
         assert_eq!(instructions.as_deref(), Some("stable leading rules"));
-        assert!(items.iter().any(|item| matches!(
-            item,
-            ResponseItem::Message { role, content }
-                if role == "system" && content == "updated runtime context"
-        )));
+        assert_eq!(
+            items,
+            messages[1..]
+                .iter()
+                .map(ResponseItem::from_message_content)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(wire["instructions"], "stable leading rules");
+        assert_eq!(wire["input"], serde_json::to_value(&items).unwrap());
     }
 
     #[test]
