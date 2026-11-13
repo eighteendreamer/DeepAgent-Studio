@@ -6773,6 +6773,12 @@ Models自身all-target/all-feature/no-deps严格lint exit101/7.747秒，唯一�
 
 ### H-156：同名扩展工具可能误入 `apply_patch` custom 序列化分支
 
+**已修复并验收（2026-11-14，限定本机离线范围）。** 用户已确认：新调用按显式function/custom类型；原生历史保留类型；只有旧的无类型事件保留名称推断，兼容读取、不重写历史。旧程序化custom调用须改用现有原生CustomToolCall入口。
+
+E-H156-01（真实红测及正常对照）：原AppCore探针 `cargo test -p deepagent-app-core --test kernel_v2_e2e responses_custom_tool::default_harness_request_does_not_advertise_apply_patch --target-dir target --offline -j 2 -- --exact --nocapture` **1过0败**，默认不注册apply_patch。新增Models集成 `cargo test -p deepagent-models --test responses_custom_identity --target-dir target --offline -j 2 -- --nocapture` **0过3败**，证实普通同名函数被client改成custom、参数按patch猜测而丢失、显式custom多发description/format；Session定向h156 **0过1败**，新普通调用被落成custom；Runtime定向h156 **0过1败**，真实native function的观察结果在请求修复前被错存custom output。首次Models试跑仅夹具import路径编译失败，纠正后才得到上述真实行为红测，不将编译错误算缺陷复现。重新核对DeepSeek Responses官方endpoint/兼容指南：function/custom是独立type，custom仅apply_patch最小shape。未向真实服务请求，不推断服务端拒绝。根因是schema与投影多个边界共用名称猜测，而非默认内置工具或MCP命名冲突。
+
+实现已完成：Core增加显式普通function投影、旧无类型事件兼容推断和严格mirror核对；Models删除按名kind转换，custom仅接受apply_patch并发最小官方shape；Runtime、Persistence、AppCore、Session均以原生ResponseItem kind为权威，旧事件读取才推断，不重写历史；Chat custom继续在既有边界拒绝，不扩协议。未新增工具入口、审批、存储、数据库迁移或凭据边界。
+
 **级别：低（P3，条件性扩展兼容风险）；触发条件：WASM 或程序化扩展把工具精确命名为 `apply_patch`，使它进入当前 Responses 工具集合。** 普通 AppCore 内置工具及 MCP 工具不会触发此分支；确认的是 adapter 对精确名称的处理与 DeepSeek 文档 shape 不同，尚未证明服务端拒绝或忽略额外字段。
 
 #### 生产路径与证据
@@ -6791,6 +6797,19 @@ Models自身all-target/all-feature/no-deps严格lint exit101/7.747秒，唯一�
 - 本轮验证 `cargo test -p deepagent-app-core --test kernel_v2_e2e responses_custom_tool::default_harness_request_does_not_advertise_apply_patch --offline -- --exact --nocapture`：**1 passed**。这验证默认生产组装下没有该风险触发项；没有可用的默认生产扩展路径来形成 provider 请求，也未发公网请求。若未来某扩展需要精确注册 `apply_patch`，应先在那条正式装配路径捕获 body，再比较文档最小 shape 与当前 shape，并在有明确测试预算和授权时做受控 provider 验证。
 - 在能触发此分支的扩展配置中，若 provider 对额外嵌套字段严格拒绝，整轮请求会失败；若被忽略则无直接运行影响。故目前影响定为低（P3）、条件性、服务端行为未知，不扩展到默认 Harness 请求。
 
+
+E-H156-02（实现与中间回归）：Core集中普通function投影与旧无类型call兼容推断，并严格核对native与source的ID/名称/参数；Models删除按名改kind，只给显式custom输出官方最小shape，最终校验禁止不支持的custom名及function/custom重名；Runtime观察、消息型compactor、公用ResponseRequest.replace_messages保留存活native类型；Session新写入与旧记录读取分离，冷恢复及分支使用真实native类型。AppCore旧前缀优先采用紧随source且内容相同的native call，只有纯旧事件才推断。未新增凭据/工具管线/审批/存储/迁移。
+
+中间验收原样保留：①Models首轮2过1败，剩余是新夹具误认为Chat也接受显式custom声明；现有Chat原本明确只支持function，已改为验证该分支仍拒绝且零transport，不扩协议。②Session首轮25过1败，原raw-legacy回归暴露source-first实际function与旧按名custom预期冲突；已根因改为按完整source/native内容匹配，保留旧custom和新function两种历史，不忽略无效边界。③首次相关crate全量在新增E2E夹具误用非导出的ReplayTransport名称时编译失败，改用本测试内受控SSE transport后才形成下一轮运行结果。④第二轮相关crate真实运行中，原H174消息刷新矩阵1项失败，仍依赖隐式同名custom；已同步为显式旧历史原生调用，并补齐公共replace_messages保留native的同根缺口，保留原配对/参数/真实输出/零重派断言。该轮还出现Models/Runtime/Session三个doc-test的E0463，期间另一个Cargo使用同一target构建，未独立证明全部原因；后续改为全程串行重验，不称该轮通过。⑤AppCore新增h156重建历史对照1过0败；Core/Models/Persistence/Session严格clippy首次exit0。初次全仓排队/早期构建因上述明确相关失败人工中止，未跑到测试，不算完整workspace验收，原CLI与snap已finally恢复。最终源码v2冻结后继续串行验收，未标修复完成。
+
+
+
+E-H156-03（最终实现与验收，2026-11-14）：
+- `cargo test -p deepagent-core -p deepagent-models -p deepagent-session -p deepagent-persistence -p deepagent-runtime --all-features --target-dir target --offline --no-fail-fast -j 2 -- --test-threads=2 --quiet`：**1149 passed / 0 failed / 14 ignored**；包含 `responses_custom_identity` 3项、`tool_protocol_identity` 1项、Models 242、Runtime 487、Session 27、Persistence 208 及相关doc-tests。覆盖普通同名function、显式custom、普通/取消入口、双wire、工具执行一次、SQLite冷恢复、fork、compaction/replace history和旧source/native projection。
+- AppCore新增历史重建回归：`cargo test -p deepagent-app-core --lib h156_ --target-dir target --offline -j 2 -- --nocapture` **1 passed / 0 failed**；named function choice对照 **8组通过**；H219 capability hash 对照 **1 passed**。Core/Models/Session/Persistence严格clippy **0**，fmt check **通过**。
+- 全仓最终 `cargo test --workspace --target-dir target --offline --no-fail-fast -j 2 -- --test-threads=2 --quiet`：**3个既有无关失败**（AppCore MCP hook旧断言缺`tool_use_id`、AppCore H219旧测试期待已移除的按名custom、Prompts H306空defaultUserPrompt）；H156相关测试通过。后续单项修正H219断言并通过；H158同名显式function linkage单项通过。该全仓结果不报全绿。
+- 真实运行均为合成transport、临时SQLite、隔离HOME/凭据环境，offline；未访问真实DeepSeek、真实凭据或用户数据。清理前冻结源码和共享CLI/snap哈希；本轮验收后仅可再生产物待清理，未删除源码或共享缓存。
+- 提交与清理待本轮最后步骤完成。
 ### H-157：模型目录丢弃 model-level reasoning effort，Responses 请求不校验所选模型支持档位
 
 **级别：低（P3，条件性模型扩展兼容风险）；触发条件：DeepSeek `/models` 返回某模型的 `effort.supported_levels` 不含当前全局或 turn override 所选的 effort。** 2026-10-24 官方模型列表示例中的 Flash 与 Pro 都列出 `low/high/max`、默认 `high`，因此当前公开示例没有触发证据；本项确认的是公开模型目录契约未被保留，以及合法目录形状遇到能力收窄时会构造不匹配 wire。未证明任何当前线上模型已经拒绝请求。

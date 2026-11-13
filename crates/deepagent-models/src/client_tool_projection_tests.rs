@@ -72,8 +72,8 @@ async fn h219_tool_projection_matches_actual_adapter_for_both_protocols_and_defa
                 );
                 if !empty {
                     if mode == WireMode::Responses {
-                        assert_eq!(wire[1]["type"], "custom");
-                        assert!(wire[1].get("parameters").is_none());
+                        assert_eq!(wire[1]["type"], "function");
+                        assert_eq!(wire[1]["parameters"], tools[1].function.parameters);
                         assert_eq!(wire[2]["type"], "function");
                     } else {
                         assert!(wire

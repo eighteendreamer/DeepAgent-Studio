@@ -338,10 +338,9 @@ async fn h166_final_tool_face_overrides_defaults_without_leaking_local_metadata(
         ("custom", "apply_patch", "auto", 0.95),
         ("web_search", "ignored", "auto", 0.95),
         ("file_search", "ignored", "auto", 1.0),
-        // Existing apply_patch defaulting rewrites this face to custom. H156
-        // owns whether that conversion is desirable; H166 must report the
-        // face actually sent instead of contradicting its own wire metadata.
-        ("file_search", "apply_patch", "auto", 0.95),
+        // H156: a reserved name cannot convert an unsupported tool type to
+        // custom; H166 must still report the final explicit face accurately.
+        ("file_search", "apply_patch", "auto", 1.0),
         ("function", "fixture", "none", 1.0),
     ] {
         let mut tool =

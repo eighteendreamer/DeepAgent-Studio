@@ -52,8 +52,7 @@ pub(crate) fn projection_spans(
             .iter()
             .zip(&events[index + 1..])
             .take_while(|(expected, event)| {
-                matches!(&event.payload, EventPayload::ResponseItemAppended { item }
-                    if item == *expected || item.is_legacy_text_projection_of(expected))
+                legacy_projection_matches(&events[index].payload, expected, event)
             })
             .count();
         if matched == expected.len() {
@@ -96,6 +95,19 @@ pub(crate) fn legacy_projection_matches(
     };
     if item == expected || item.is_legacy_text_projection_of(expected) {
         return true;
+    }
+
+    if let Some(id) = expected.client_tool_call_id() {
+        let call = match source {
+            EventPayload::ToolCallRequested { call } if call.id == id => Some(call),
+            EventPayload::MessageAppended { message } => {
+                message.tool_calls.iter().find(|call| call.id == id)
+            }
+            _ => None,
+        };
+        if let Some(call) = call {
+            return item.is_tool_call_projection_of(call);
+        }
     }
 
     let EventPayload::ToolCallCompleted {
@@ -196,13 +208,24 @@ pub(crate) fn response_items_for_payload(
     history: &[Event],
     payload: &EventPayload,
 ) -> Result<Vec<ResponseItem>> {
-    response_items_with_tool_schemas(history, payload, &|_| None)
+    project_payload(history, payload, &|_| None, true)
 }
 
 pub(crate) fn response_items_with_tool_schemas(
     history: &[Event],
     payload: &EventPayload,
     schema: &dyn Fn(&str) -> Option<serde_json::Value>,
+) -> Result<Vec<ResponseItem>> {
+    project_payload(history, payload, schema, false)
+}
+
+// Only legacy readers infer an untyped historical call by its old reserved
+// name. New writes always create function items unless a native call exists.
+fn project_payload(
+    history: &[Event],
+    payload: &EventPayload,
+    schema: &dyn Fn(&str) -> Option<serde_json::Value>,
+    legacy: bool,
 ) -> Result<Vec<ResponseItem>> {
     let mut items = Vec::new();
     match payload {
@@ -217,51 +240,18 @@ pub(crate) fn response_items_with_tool_schemas(
                     content: reasoning.to_string(),
                 });
             }
-            for call in &message.tool_calls {
-                if call.name == "apply_patch" {
-                    items.push(ResponseItem::CustomToolCall {
-                        call_id: call.id.clone(),
-                        name: call.name.clone(),
-                        input: call
-                            .arguments
-                            .get("patch")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or_default()
-                            .to_string(),
-                    });
-                } else {
-                    items.push(ResponseItem::FunctionCall {
-                        call_id: call.id.clone(),
-                        name: call.name.clone(),
-                        arguments: serde_json::to_string(&call.arguments)
-                            .unwrap_or_else(|_| "{}".to_string()),
-                    });
-                }
-            }
+            items.extend(
+                message
+                    .tool_calls
+                    .iter()
+                    .map(|call| projected_call(history, call, legacy)),
+            );
             if !message.content.is_empty() || message.tool_calls.is_empty() {
                 items.push(ResponseItem::from_message_content(message));
             }
         }
         EventPayload::ToolCallRequested { call } => {
-            if call.name == "apply_patch" {
-                items.push(ResponseItem::CustomToolCall {
-                    call_id: call.id.clone(),
-                    name: call.name.clone(),
-                    input: call
-                        .arguments
-                        .get("patch")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                });
-            } else {
-                items.push(ResponseItem::FunctionCall {
-                    call_id: call.id.clone(),
-                    name: call.name.clone(),
-                    arguments: serde_json::to_string(&call.arguments)
-                        .unwrap_or_else(|_| "{}".to_string()),
-                });
-            }
+            items.push(projected_call(history, call, legacy));
         }
         EventPayload::ToolCallCompleted {
             call_id,
@@ -277,18 +267,12 @@ pub(crate) fn response_items_with_tool_schemas(
                 items.push(ResponseItem::native_tool_search_output(call_id.clone(), *ok, output, schema));
                 return Ok(items);
             }
-            // Model-backed runs persist the provider-native call before the
-            // legacy ToolCallRequested projection. Resolve the call kind from
-            // whichever representation is newest so a completed custom call
-            // (apply_patch) receives CustomToolCallOutput rather than a
-            // mismatched FunctionCallOutput.
+            // Native call identity is authoritative even when a later UI
+            // ToolCallRequested mirror has the same reserved name.
             let custom = history
                 .iter()
                 .rev()
                 .find_map(|event| match &event.payload {
-                    EventPayload::ToolCallRequested { call } if call.id == *call_id => {
-                        Some(call.name == "apply_patch")
-                    }
                     EventPayload::ResponseItemAppended {
                         item: ResponseItem::CustomToolCall { call_id: id, .. },
                     } if id == call_id => Some(true),
@@ -296,6 +280,20 @@ pub(crate) fn response_items_with_tool_schemas(
                         item: ResponseItem::FunctionCall { call_id: id, .. },
                     } if id == call_id => Some(false),
                     _ => None,
+                })
+                .or_else(|| {
+                    if !legacy {
+                        return None;
+                    }
+                    history.iter().rev().find_map(|event| match &event.payload {
+                        EventPayload::ToolCallRequested { call } if call.id == *call_id => {
+                            Some(matches!(
+                                ResponseItem::from_legacy_tool_call(call),
+                                ResponseItem::CustomToolCall { .. }
+                            ))
+                        }
+                        _ => None,
+                    })
                 })
                 .unwrap_or(false);
             let output = if *ok {
@@ -319,4 +317,33 @@ pub(crate) fn response_items_with_tool_schemas(
         _ => {}
     }
     Ok(items)
+}
+
+// A compatibility mirror may not override a provider-native function/custom
+// call. Reuse a native item only if the source payload really is its projection;
+// divergent legacy sources still fail the existing ownership validation.
+fn projected_call(
+    history: &[Event],
+    call: &deepagent_core::message::ToolCall,
+    legacy: bool,
+) -> ResponseItem {
+    let function = ResponseItem::from_function_call(call);
+    let native = history.iter().rev().find_map(|event| match &event.payload {
+        EventPayload::ResponseItemAppended { item }
+            if item.client_tool_call_id() == Some(call.id.as_str()) =>
+        {
+            Some(item)
+        }
+        _ => None,
+    });
+    if let Some(item) = native {
+        if item.is_tool_call_projection_of(call) {
+            return item.clone();
+        }
+    }
+    if legacy {
+        ResponseItem::from_legacy_tool_call(call)
+    } else {
+        function
+    }
 }

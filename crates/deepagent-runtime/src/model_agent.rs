@@ -501,7 +501,12 @@ impl ResponseHistory {
     }
 
     fn replace_from_messages(&mut self, messages: &[Message]) {
-        *self = Self::from_messages(messages);
+        let (instructions, items) =
+            deepagent_models::response_items_from_messages_with_native_calls(messages, &self.items);
+        *self = Self {
+            instructions,
+            items,
+        };
     }
 
     fn replace_items(&mut self, items: Vec<ResponseInputItem>) {
@@ -538,27 +543,12 @@ impl ResponseHistory {
                         content: reasoning.to_string(),
                     });
                 }
-                for call in &message.tool_calls {
-                    if call.name == "apply_patch" {
-                        self.items.push(ResponseInputItem::CustomToolCall {
-                            call_id: call.id.clone(),
-                            name: call.name.clone(),
-                            input: call
-                                .arguments
-                                .get("patch")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or_default()
-                                .to_string(),
-                        });
-                    } else {
-                        self.items.push(ResponseInputItem::FunctionCall {
-                            call_id: call.id.clone(),
-                            name: call.name.clone(),
-                            arguments: serde_json::to_string(&call.arguments)
-                                .unwrap_or_else(|_| "{}".to_string()),
-                        });
-                    }
-                }
+                self.items.extend(
+                    message
+                        .tool_calls
+                        .iter()
+                        .map(ResponseInputItem::from_function_call),
+                );
                 if !message.content.is_empty() || message.tool_calls.is_empty() {
                     self.items
                         .push(ResponseInputItem::from_message_content(message));
@@ -888,24 +878,9 @@ impl ModelAgent {
     fn push_tool_observation(
         &mut self,
         call_id: String,
-        tool_name: &str,
         content: deepagent_core::tool_content::ToolResultBody,
     ) {
-        if tool_name == "apply_patch" && !self.response_history.is_custom_call(&call_id) {
-            tracing::warn!(
-                call_id = call_id.as_str(),
-                "apply_patch observation did not find a matching custom_tool_call; preserving call_id on custom output"
-            );
-            self.response_history
-                .items
-                .push(ResponseInputItem::CustomToolCallOutput {
-                    call_id: call_id.clone(),
-                    output: content.clone(),
-                });
-        } else {
-            self.response_history
-                .push_tool_output(call_id.clone(), content.clone());
-        }
+        self.response_history.push_tool_output(call_id, content);
         // Keep the provider input item-native while maintaining the
         // compatibility projection used by UI rendering, compaction, and stall
         // transcripts. Do not route this through `push_message`, or it would
@@ -1479,7 +1454,6 @@ impl ModelAgent {
             } else {
                 self.push_tool_observation(
                     call_id,
-                    &obs.tool,
                     deepagent_core::tool_content::ToolResultBody::with_parts(content, &obs.content),
                 );
             }
@@ -6366,7 +6340,12 @@ mod tests {
             transport.clone(),
             ModelConfig::deepseek("test"),
         ));
-        let mut agent = ModelAgent::new(client, "deepseek-v4-flash", "sys", "patch", vec![]);
+        let mut agent = ModelAgent::new(client, "deepseek-v4-flash", "sys", "patch", vec![])
+            .with_response_history(vec![ResponseInputItem::CustomToolCall {
+                call_id: "call-patch".into(),
+                name: "apply_patch".into(),
+                input: "synthetic patch".into(),
+            }]);
         let obs = Observation {
             content: Vec::new(),
             tool: "apply_patch".to_string(),
@@ -6393,6 +6372,46 @@ mod tests {
             }),
             "apply_patch must stay on Responses custom tool output path"
         );
+    }
+
+    #[test]
+    fn h156_native_call_kind_controls_observation_before_request_repair() {
+        for custom in [false, true] {
+            let call = if custom {
+                ResponseInputItem::CustomToolCall {
+                    call_id: "same-name".into(),
+                    name: "apply_patch".into(),
+                    input: "synthetic patch".into(),
+                }
+            } else {
+                ResponseInputItem::FunctionCall {
+                    call_id: "same-name".into(),
+                    name: "apply_patch".into(),
+                    arguments: r#"{"value":7}"#.into(),
+                }
+            };
+            let mut agent =
+                ModelAgent::new(client(vec![]), "deepseek-flash", "sys", "fixture", vec![])
+                    .with_response_history(vec![call.clone()]);
+            agent.push_tool_observation("same-name".into(), "result".into());
+            assert_eq!(agent.response_history.items[0], call);
+            let output = agent.response_history.items.last().unwrap();
+            assert_eq!(
+                matches!(output, ResponseInputItem::CustomToolCallOutput { .. }),
+                custom
+            );
+            assert_eq!(
+                matches!(output, ResponseInputItem::FunctionCallOutput { .. }),
+                !custom
+            );
+            let projected = agent.conversation().to_vec();
+            let original = agent.response_history.items.clone();
+            agent.replace_messages_legacy(projected);
+            assert_eq!(
+                agent.response_history.items, original,
+                "a message-only compactor must preserve surviving native identities"
+            );
+        }
     }
 
     #[tokio::test]

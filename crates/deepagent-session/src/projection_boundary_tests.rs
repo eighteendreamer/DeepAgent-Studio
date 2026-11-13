@@ -3,6 +3,224 @@ use deepagent_core::clock::FixedClock;
 use deepagent_core::message::{Message, ToolCall};
 
 #[test]
+fn h156_new_function_and_native_custom_keep_identity_across_disk_reopen_and_fork() {
+    for native in [false, true] {
+        for custom in [false, true] {
+            if custom && !native {
+                continue; // Custom requires an explicit native call, never just a reserved name.
+            }
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("identity.sqlite");
+            let clock = FixedClock::new(1);
+            let (id, end, expected) = {
+                let db = Database::open(&path).unwrap();
+                let mut session = Session::create(&db, &clock, None).unwrap();
+                let call = ToolCall {
+                    id: "same-name".into(),
+                    name: "apply_patch".into(),
+                    arguments: if custom {
+                        serde_json::json!({"patch":"synthetic patch"})
+                    } else {
+                        serde_json::json!({"value":7})
+                    },
+                };
+                if native {
+                    session
+                        .append_response_item(if custom {
+                            ResponseItem::CustomToolCall {
+                                call_id: call.id.clone(),
+                                name: call.name.clone(),
+                                input: "synthetic patch".into(),
+                            }
+                        } else {
+                            ResponseItem::FunctionCall {
+                                call_id: call.id.clone(),
+                                name: call.name.clone(),
+                                arguments: call.arguments.to_string(),
+                            }
+                        })
+                        .unwrap();
+                    session
+                        .append_without_response_projection(EventPayload::ToolCallRequested {
+                            call,
+                        })
+                        .unwrap();
+                } else {
+                    session
+                        .append(EventPayload::ToolCallRequested { call })
+                        .unwrap();
+                }
+                let completion = session
+                    .append(EventPayload::ToolCallCompleted {
+                        call_id: "same-name".into(),
+                        ok: true,
+                        output: serde_json::json!({"value":8}),
+                        content: Vec::new(),
+                        duration_ms: 1,
+                    })
+                    .unwrap();
+                let events = EventStore::new(&db).load_session(session.id()).unwrap();
+                let items: Vec<_> = events
+                    .iter()
+                    .filter_map(|event| match &event.payload {
+                        EventPayload::ResponseItemAppended { item } => Some(item),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(items.len(), 2);
+                assert_eq!(
+                    matches!(items[0], ResponseItem::CustomToolCall { .. }),
+                    custom
+                );
+                assert_eq!(
+                    matches!(items[1], ResponseItem::CustomToolCallOutput { .. }),
+                    custom
+                );
+                assert_eq!(
+                    matches!(items[1], ResponseItem::FunctionCallOutput { .. }),
+                    !custom
+                );
+                (session.id(), completion.sequence, events)
+            };
+            let db = Database::open(&path).unwrap();
+            Session::recover(&db, &clock, id).unwrap();
+            let store = EventStore::new(&db);
+            assert_eq!(store.load_session(id).unwrap(), expected);
+            let child = Session::fork(&db, &clock, id, end).unwrap();
+            assert_eq!(
+                store
+                    .load_session(child.id())
+                    .unwrap()
+                    .iter()
+                    .map(|event| &event.payload)
+                    .collect::<Vec<_>>(),
+                expected
+                    .iter()
+                    .map(|event| &event.payload)
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+}
+
+#[test]
+fn h156_legacy_source_first_and_native_first_records_keep_the_recorded_type() {
+    use deepagent_persistence::event_store::SessionPageBudget;
+    for custom in [false, true] {
+        for source_first in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("legacy.sqlite");
+            let clock = FixedClock::new(1);
+            let (id, expected) = {
+                let db = Database::open(&path).unwrap();
+                let id = Session::create(&db, &clock, None).unwrap().id();
+                let store = EventStore::new(&db);
+                let call = ToolCall {
+                    id: "same-name".into(),
+                    name: "apply_patch".into(),
+                    arguments: serde_json::json!({"patch":"synthetic patch"}),
+                };
+                let native = if custom {
+                    ResponseItem::from_legacy_tool_call(&call)
+                } else {
+                    ResponseItem::from_function_call(&call)
+                };
+                let source = EventPayload::MessageAppended {
+                    message: Message::assistant("").with_tool_calls(vec![call]),
+                };
+                let native = EventPayload::ResponseItemAppended { item: native };
+                let payloads = if source_first {
+                    vec![source, native]
+                } else {
+                    vec![native, source]
+                };
+                for payload in payloads {
+                    store.append(id, payload, clock.now()).unwrap();
+                }
+                store
+                    .append(
+                        id,
+                        EventPayload::ToolCallCompleted {
+                            call_id: "same-name".into(),
+                            ok: true,
+                            output: serde_json::json!({"value":8}),
+                            content: Vec::new(),
+                            duration_ms: 1,
+                        },
+                        clock.now(),
+                    )
+                    .unwrap();
+                let output = serde_json::json!({"status":"ok","result":{"value":8}})
+                    .to_string()
+                    .into();
+                store
+                    .append(
+                        id,
+                        EventPayload::ResponseItemAppended {
+                            item: if custom {
+                                ResponseItem::CustomToolCallOutput {
+                                    call_id: "same-name".into(),
+                                    output,
+                                }
+                            } else {
+                                ResponseItem::FunctionCallOutput {
+                                    call_id: "same-name".into(),
+                                    output,
+                                }
+                            },
+                        },
+                        clock.now(),
+                    )
+                    .unwrap();
+                (id, store.load_session(id).unwrap())
+            };
+            let db = Database::open(&path).unwrap();
+            Session::recover(&db, &clock, id).unwrap();
+            let store = EventStore::new(&db);
+            let mut cursor = None;
+            let mut actual = Vec::new();
+            loop {
+                let page = store
+                    .read_session_page(
+                        id,
+                        None,
+                        cursor,
+                        SessionPageBudget {
+                            max_events: 8,
+                            max_bytes: 4096,
+                        },
+                    )
+                    .unwrap();
+                actual.extend(page.events);
+                cursor = page.next_cursor;
+                if cursor.is_none() {
+                    break;
+                }
+            }
+            assert_eq!(actual, expected);
+            let child = Session::fork(&db, &clock, id, expected.last().unwrap().sequence).unwrap();
+            assert_eq!(
+                store
+                    .load_session(child.id())
+                    .unwrap()
+                    .iter()
+                    .map(|event| &event.payload)
+                    .collect::<Vec<_>>(),
+                expected
+                    .iter()
+                    .map(|event| &event.payload)
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                store.load_session(id).unwrap(),
+                expected,
+                "legacy reads and branches must not rewrite the source"
+            );
+        }
+    }
+}
+
+#[test]
 fn h168_host_context_is_an_explicit_standalone_group_for_bounded_history() {
     use deepagent_persistence::event_store::SessionPageBudget;
     let db = Database::open_in_memory().unwrap();
@@ -282,7 +500,7 @@ fn every_projection_cursor_survives_disk_reopen_fork_and_raw_rewind() {
         assert_eq!(
             end,
             anchor + 4,
-            "reasoning, function, custom, and text are one group"
+            "reasoning, two functions, and text are one group"
         );
         session
             .append(EventPayload::MessageAppended {

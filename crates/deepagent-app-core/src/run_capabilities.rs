@@ -497,7 +497,7 @@ mod tests {
         recorder.record_wire_tools(&tools, &wire).unwrap();
         let events = RunStore::new(&db).events_after("h219-unit", None).unwrap();
         let saved = &events.last().unwrap().data["wireSchema"]["tools"][0];
-        assert_eq!(saved["kind"], "custom");
+        assert_eq!(saved["kind"], "function");
         assert_eq!(
             saved["schemaHash"],
             capability_hash(&wire.tools[0]).unwrap()

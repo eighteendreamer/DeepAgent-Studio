@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::message::{Message, MessageAttachment};
+use crate::message::{Message, MessageAttachment, ToolCall};
 use crate::tool_content::ToolResultBody;
 
 /// Local auxiliary user-data envelope, not a system-reminder or provider type.
@@ -111,6 +111,64 @@ pub type ResponseInputItem = ResponseItem;
 pub type ResponseOutputItem = ResponseItem;
 
 impl ResponseItem {
+    /// An ordinary tool invocation is a function, regardless of its name.
+    /// Custom calls must enter through the explicit native variant.
+    pub fn from_function_call(call: &ToolCall) -> Self {
+        Self::FunctionCall {
+            call_id: call.id.clone(),
+            name: call.name.clone(),
+            arguments: call.arguments.to_string(),
+        }
+    }
+
+    /// Check a UI/function-shaped mirror without guessing its native kind.
+    /// A custom call projects only to its exact patch argument, not arbitrary
+    /// same-name JSON. This also preserves legacy source-first native records.
+    pub fn is_tool_call_projection_of(&self, call: &ToolCall) -> bool {
+        match self {
+            Self::FunctionCall {
+                call_id,
+                name,
+                arguments,
+            } => {
+                call_id == &call.id
+                    && name == &call.name
+                    && serde_json::from_str::<serde_json::Value>(arguments)
+                        .is_ok_and(|arguments| arguments == call.arguments)
+            }
+            Self::CustomToolCall {
+                call_id,
+                name,
+                input,
+            } => {
+                call_id == &call.id
+                    && name == &call.name
+                    && call.arguments == serde_json::json!({"patch": input})
+            }
+            _ => false,
+        }
+    }
+
+    /// Read-only migration of old, untyped events. Historical versions encoded
+    /// custom apply_patch as a function-shaped ToolCall. Never use this for new
+    /// requests or overwrite a persisted native call with this inference.
+    pub fn from_legacy_tool_call(call: &ToolCall) -> Self {
+        if call.name == "apply_patch" {
+            Self::CustomToolCall {
+                call_id: call.id.clone(),
+                name: call.name.clone(),
+                input: call
+                    .arguments
+                    .get("patch")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            }
+        } else {
+            Self::from_function_call(call)
+        }
+    }
+
     /// Build a host discovery result from the real tool result and the host's
     /// authorized catalog. Provider-returned schemas are never a lookup source.
     pub fn native_tool_search_output(
@@ -215,6 +273,32 @@ impl ResponseItem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn h156_ordinary_calls_and_legacy_custom_mirrors_have_explicit_boundaries() {
+        let mut call = ToolCall {
+            id: "fixture".into(),
+            name: "apply_patch".into(),
+            arguments: serde_json::json!({"patch":"synthetic"}),
+        };
+        let function = ResponseItem::from_function_call(&call);
+        let custom = ResponseItem::from_legacy_tool_call(&call);
+        assert!(matches!(function, ResponseItem::FunctionCall { .. }));
+        assert!(matches!(custom, ResponseItem::CustomToolCall { .. }));
+        assert!(function.is_tool_call_projection_of(&call));
+        assert!(custom.is_tool_call_projection_of(&call));
+        call.arguments["extra"] = serde_json::json!(true);
+        assert!(
+            !custom.is_tool_call_projection_of(&call),
+            "same name cannot hide additional arguments"
+        );
+        assert!(!function.is_tool_call_projection_of(&call));
+        call.name = "other".into();
+        assert!(matches!(
+            ResponseItem::from_legacy_tool_call(&call),
+            ResponseItem::FunctionCall { .. }
+        ));
+    }
 
     #[test]
     fn content_projection_preserves_refs_and_only_recognizes_exact_legacy_mirrors() {

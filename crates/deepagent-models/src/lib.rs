@@ -63,8 +63,9 @@ pub use client::{
 pub use discovery::{ModelCatalog, ModelDiscovery, ModelInfo, ModelRole, DEEPSEEK_BASE_URL};
 pub use failure::{classify_model_error, ModelFailureKind};
 pub use responses::{
-    messages_from_response_items, response_items_from_messages, ResponseInputItem, ResponseItem,
-    ResponseOutputItem,
+    messages_from_response_items, response_items_from_legacy_messages,
+    response_items_from_messages, response_items_from_messages_with_native_calls,
+    ResponseInputItem, ResponseItem, ResponseOutputItem,
 };
 pub use sampling::{resolve_responses_sampling, EffectiveSamplingConfig, SamplingReason};
 pub use stream::{DeltaObserver, ModelStreamEvent, NoopObserver, ResponseAccumulator};

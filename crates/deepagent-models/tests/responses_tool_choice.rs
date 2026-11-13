@@ -115,7 +115,7 @@ async fn responses_choices_are_validated_after_defaults_and_tool_projection_on_b
                 (
                     json!({"type":"function","name":"apply_patch"}),
                     vec![function("apply_patch")],
-                    false,
+                    true,
                 ),
                 (
                     json!({"type":"function","name":"read_file"}),

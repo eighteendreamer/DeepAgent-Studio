@@ -150,12 +150,43 @@ pub(crate) fn validate_tool_call_history(
 
 /// Convert the context projection into ordered Responses input items.
 pub fn response_items_from_messages(messages: &[Message]) -> (Option<String>, Vec<ResponseItem>) {
+    project_messages(messages, ResponseItem::from_function_call)
+}
+
+/// Rebuild a legacy compactor's message view without losing surviving native
+/// call identities. Changed/new calls remain functions; only an exact mirror
+/// can inherit its existing native type, raw input and argument spelling.
+pub fn response_items_from_messages_with_native_calls(
+    messages: &[Message],
+    native: &[ResponseItem],
+) -> (Option<String>, Vec<ResponseItem>) {
+    project_messages(messages, |call| {
+        native
+            .iter()
+            .find(|item| item.is_tool_call_projection_of(call))
+            .cloned()
+            .unwrap_or_else(|| ResponseItem::from_function_call(call))
+    })
+}
+
+/// Read-only compatibility for old event logs with no native call types.
+/// New programmatic custom callers must use explicit ResponseItems instead.
+pub fn response_items_from_legacy_messages(
+    messages: &[Message],
+) -> (Option<String>, Vec<ResponseItem>) {
+    project_messages(messages, ResponseItem::from_legacy_tool_call)
+}
+
+fn project_messages(
+    messages: &[Message],
+    call_item: impl Fn(&deepagent_core::message::ToolCall) -> ResponseItem,
+) -> (Option<String>, Vec<ResponseItem>) {
     let mut instructions = Vec::new();
     let mut items = Vec::new();
     let custom_call_ids: std::collections::HashSet<&str> = messages
         .iter()
         .flat_map(|message| message.tool_calls.iter())
-        .filter(|call| call.name == "apply_patch")
+        .filter(|call| matches!(call_item(call), ResponseItem::CustomToolCall { .. }))
         .map(|call| call.id.as_str())
         .collect();
     for message in messages {
@@ -190,28 +221,7 @@ pub fn response_items_from_messages(messages: &[Message]) -> (Option<String>, Ve
                         content: reasoning.to_string(),
                     });
                 }
-                for call in &message.tool_calls {
-                    if call.name == "apply_patch" {
-                        items.push(ResponseItem::CustomToolCall {
-                            call_id: call.id.clone(),
-                            name: call.name.clone(),
-                            input: call
-                                .arguments
-                                .get("patch")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or_default()
-                                .to_string(),
-                        });
-                    } else {
-                        let arguments = serde_json::to_string(&call.arguments)
-                            .unwrap_or_else(|_| "{}".to_string());
-                        items.push(ResponseItem::FunctionCall {
-                            call_id: call.id.clone(),
-                            name: call.name.clone(),
-                            arguments,
-                        });
-                    }
-                }
+                items.extend(message.tool_calls.iter().map(&call_item));
                 if !message.content.is_empty() || message.tool_calls.is_empty() {
                     items.push(ResponseItem::from_message_content(message));
                 }
@@ -763,7 +773,7 @@ mod tests {
     }
 
     #[test]
-    fn maps_apply_patch_roundtrip_to_custom_tool_items() {
+    fn legacy_apply_patch_roundtrip_keeps_custom_tool_items() {
         let patch = "*** Begin Patch\n*** End Patch";
         let messages = vec![
             Message::assistant("").with_tool_calls(vec![ToolCall {
@@ -774,7 +784,7 @@ mod tests {
             Message::tool_result("call-patch", "patch applied"),
         ];
 
-        let (_, items) = response_items_from_messages(&messages);
+        let (_, items) = response_items_from_legacy_messages(&messages);
 
         assert!(matches!(
             &items[0],

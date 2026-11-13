@@ -1,6 +1,6 @@
 //! Independent H174 historical-fix verification. No production edits.
 use super::*;
-use deepagent_models::{classify_model_error, response_items_from_messages, WireMode};
+use deepagent_models::{classify_model_error, response_items_from_legacy_messages, WireMode};
 use serde_json::{json, Value};
 use std::sync::atomic::AtomicBool;
 
@@ -102,7 +102,14 @@ async fn h174_all_public_refresh_paths_keep_pairs_and_retry_parameters_on_both_w
         for cancel_aware in [false, true] {
             for (name, messages) in histories() {
                 let original = messages.clone();
-                let (instructions, input) = response_items_from_messages(&messages);
+                // These are legacy histories. Resolve their old custom identity
+                // explicitly; a new same-name Message call is now a function.
+                let (instructions, input) = response_items_from_legacy_messages(&messages);
+                let custom_calls: Vec<_> = input
+                    .iter()
+                    .filter(|item| matches!(item, ResponseInputItem::CustomToolCall { .. }))
+                    .cloned()
+                    .collect();
                 let mut from_items =
                     ResponseRequest::from_response_items("deepseek-flash", instructions, input);
                 from_items.max_output_tokens = Some(777);
@@ -111,6 +118,9 @@ async fn h174_all_public_refresh_paths_keep_pairs_and_retry_parameters_on_both_w
                     "deepseek-flash",
                     vec![Message::system("STALE_SYSTEM"), call("STALE_CALL", false)],
                 );
+                // Refreshing a known native custom call must preserve its type,
+                // while still discarding the stale instructions/call below.
+                replaced.input.extend(custom_calls);
                 replaced.max_output_tokens = Some(777);
                 replaced.temperature = Some(0.4);
                 replaced.replace_messages(&messages);

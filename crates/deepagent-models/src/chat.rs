@@ -127,6 +127,27 @@ pub(crate) fn validate_function_tool_schemas(tools: &[ToolSchema]) -> Result<()>
     Ok(())
 }
 
+/// DeepSeek's custom subset is explicit and shares the function namespace.
+/// Keep direct serialization and client dispatch on the same final gate.
+fn validate_response_tool_schemas(tools: &[ToolSchema]) -> Result<()> {
+    validate_function_tool_schemas(tools)?;
+    let mut names = std::collections::BTreeSet::new();
+    for (index, tool) in tools.iter().enumerate() {
+        if tool.kind == "custom" && tool.function.name != "apply_patch" {
+            return Err(CoreError::invalid(format!(
+                "tools[{index}]: unsupported custom tool name"
+            )));
+        }
+        if matches!(tool.kind.as_str(), "function" | "custom") && !names.insert(&tool.function.name)
+        {
+            return Err(CoreError::invalid(format!(
+                "tools[{index}]: duplicate tool name"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// A function definition advertised to the model.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionSchema {
@@ -189,6 +210,7 @@ impl Serialize for ResponseRequest {
         S: Serializer,
     {
         use serde::ser::SerializeMap;
+        validate_response_tool_schemas(&self.tools).map_err(serde::ser::Error::custom)?;
         self.validate_tool_choice()
             .map_err(serde::ser::Error::custom)?;
         self.validate_tool_image_resolution()
@@ -241,7 +263,7 @@ impl Serialize for ResponseRequest {
 pub(crate) fn response_tools_to_wire(tools: &[ToolSchema]) -> Vec<serde_json::Value> {
     tools.iter().map(|tool| match tool.kind.as_str() {
         "function" => serde_json::json!({"type":"function","name":tool.function.name,"description":tool.function.description,"parameters":tool.function.parameters}),
-        "custom" => serde_json::json!({"type":"custom","name":tool.function.name,"description":tool.function.description,"format":{"type":"text"}}),
+        "custom" => serde_json::json!({"type":"custom","name":tool.function.name}),
         "web_search" => serde_json::json!({"type":"web_search"}),
         _ => serde_json::json!({"type": tool.kind}),
     }).collect()
@@ -515,7 +537,8 @@ impl ResponseRequest {
     /// runtime mutates its provider-neutral conversation state. This keeps
     /// retry-time changes such as `max_output_tokens` escalation intact.
     pub fn replace_messages(&mut self, messages: &[Message]) {
-        let (instructions, input) = crate::responses::response_items_from_messages(messages);
+        let (instructions, input) =
+            crate::responses::response_items_from_messages_with_native_calls(messages, &self.input);
         self.instructions = instructions;
         self.chat_projection_input = input.clone();
         self.input = crate::responses::repair_tool_call_pairs(&input);
@@ -599,7 +622,7 @@ impl ResponseRequest {
         if let Some(user) = &self.user {
             validate_responses_user_identifier(user)?;
         }
-        validate_function_tool_schemas(&self.tools)?;
+        validate_response_tool_schemas(&self.tools)?;
         self.validate_tool_choice()?;
         crate::responses::validate_tool_call_history(&self.input)?;
         self.validate_tool_image_resolution()?;

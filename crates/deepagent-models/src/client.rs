@@ -542,11 +542,8 @@ impl ModelClient {
         if self.config.wire_mode != WireMode::Responses {
             return None;
         }
-        // Resolve the same final face as dispatch, including existing custom
-        // defaults, without mutating the caller's tools or inventing new rules.
-        let mut tools = request.tools.clone();
-        Self::apply_tool_defaults(&mut tools);
-        let supported_tools = tools.iter().any(|tool| {
+        // Tool kind is explicit; evidence and dispatch must not infer it by name.
+        let supported_tools = request.tools.iter().any(|tool| {
             tool.kind == "function"
                 || (tool.kind == "custom" && tool.function.name == "apply_patch")
                 || (tool.kind == "web_search" && request.model == "deepseek-v4-pro")
@@ -580,11 +577,7 @@ impl ModelClient {
         tools: &[crate::ToolSchema],
     ) -> ProviderToolSchemas {
         let tools = match self.config.wire_mode {
-            WireMode::Responses => {
-                let mut tools = tools.to_vec();
-                Self::apply_tool_defaults(&mut tools);
-                crate::chat::response_tools_to_wire(&tools)
-            }
+            WireMode::Responses => crate::chat::response_tools_to_wire(tools),
             WireMode::ChatCompletions => crate::chat_completions::chat_tools_to_wire(tools),
         };
         ProviderToolSchemas {
@@ -627,15 +620,6 @@ impl ModelClient {
         }
         if request.user.is_none() {
             request.user = self.config.defaults.user.clone();
-        }
-        Self::apply_tool_defaults(&mut request.tools);
-    }
-
-    fn apply_tool_defaults(tools: &mut [crate::ToolSchema]) {
-        for tool in tools {
-            if tool.function.name == "apply_patch" {
-                tool.kind = "custom".to_string();
-            }
         }
     }
 

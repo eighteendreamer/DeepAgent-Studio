@@ -409,13 +409,21 @@ pub(crate) fn indexed_response_items(
                 deepagent_models::response_items_from_messages(&[message]).1
             }
             EventPayload::ToolCallRequested { call } => {
-                if call.name == "apply_patch" {
+                let item = events
+                    .get(index + 1)
+                    .and_then(|event| match &event.payload {
+                        EventPayload::ResponseItemAppended { item }
+                            if item.is_tool_call_projection_of(call) =>
+                        {
+                            Some(item.clone())
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| ResponseInputItem::from_legacy_tool_call(call));
+                if matches!(item, ResponseInputItem::CustomToolCall { .. }) {
                     custom_calls.insert(call.id.clone());
                 }
-                deepagent_models::response_items_from_messages(&[
-                    Message::assistant("").with_tool_calls(vec![call.clone()])
-                ])
-                .1
+                vec![item]
             }
             EventPayload::ToolCallCompleted {
                 call_id,
@@ -786,7 +794,7 @@ pub(crate) fn response_items_from_events(events: &[Event]) -> Vec<ResponseInputI
         )
     }) {
         let history = model_history_from_events(events);
-        return deepagent_models::response_items_from_messages(&history).1;
+        return deepagent_models::response_items_from_legacy_messages(&history).1;
     }
     let boundary = compaction_boundary(events);
     let mut indexed = indexed_response_items(events);
@@ -1022,6 +1030,75 @@ pub(crate) fn mcp_instructions_delta(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn h156_legacy_untyped_calls_and_native_types_survive_history_rebuild() {
+        let sid = SessionId::nil();
+        for kind in ["legacy", "function", "custom"] {
+            for source_first in [false, true] {
+                let call = deepagent_core::message::ToolCall {
+                    id: "same-name".into(),
+                    name: "apply_patch".into(),
+                    arguments: serde_json::json!({"patch":"synthetic patch"}),
+                };
+                let source = EventPayload::ToolCallRequested { call: call.clone() };
+                let native = EventPayload::ResponseItemAppended {
+                    item: if kind == "function" {
+                        ResponseInputItem::from_function_call(&call)
+                    } else {
+                        ResponseInputItem::from_legacy_tool_call(&call)
+                    },
+                };
+                let mut payloads = if kind == "legacy" {
+                    vec![source]
+                } else if source_first {
+                    vec![source, native]
+                } else {
+                    vec![native, source]
+                };
+                payloads.push(EventPayload::ToolCallCompleted {
+                    call_id: call.id.clone(),
+                    ok: true,
+                    output: serde_json::json!({"value":8}),
+                    content: Vec::new(),
+                    duration_ms: 1,
+                });
+                if kind != "legacy" {
+                    let output = bounded_tool_result(true, &serde_json::json!({"value":8}));
+                    payloads.push(EventPayload::ResponseItemAppended {
+                        item: if kind == "function" {
+                            ResponseInputItem::FunctionCallOutput {
+                                call_id: call.id,
+                                output: output.into(),
+                            }
+                        } else {
+                            ResponseInputItem::CustomToolCallOutput {
+                                call_id: call.id,
+                                output: output.into(),
+                            }
+                        },
+                    });
+                }
+                let events: Vec<_> = payloads
+                    .into_iter()
+                    .enumerate()
+                    .map(|(seq, payload)| event(sid, seq as u64, payload))
+                    .collect();
+                let before = events.clone();
+                let items = response_items_from_events(&events);
+                assert_eq!(items.len(), 2, "{kind}/{source_first}");
+                assert_eq!(
+                    matches!(items[0], ResponseInputItem::CustomToolCall { .. }),
+                    kind != "function"
+                );
+                assert_eq!(
+                    matches!(items[1], ResponseInputItem::CustomToolCallOutput { .. }),
+                    kind != "function"
+                );
+                assert_eq!(events, before, "reading must not rewrite history");
+            }
+        }
+    }
 
     #[test]
     fn legacy_text_mirror_recovers_image_references_without_duplicate_turns() {

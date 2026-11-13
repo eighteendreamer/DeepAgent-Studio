@@ -149,17 +149,19 @@ async fn audit_responses_named_choice_requires_final_function_tool() {
     let mut violations = Vec::new();
     for from_defaults in [false, true] {
         for cancelled_entrypoint in [false, true] {
-            for (label, name, tools) in [
-                ("no-tools", "missing_tool", Vec::new()),
+            for (label, name, tools, expected_valid) in [
+                ("no-tools", "missing_tool", Vec::new(), false),
                 (
                     "different-function",
                     "missing_tool",
                     vec![function_tool("read_file")],
+                    false,
                 ),
                 (
-                    "converted-custom",
+                    "explicit-function-same-name",
                     "apply_patch",
                     vec![function_tool("apply_patch")],
+                    true,
                 ),
             ] {
                 let (accepted, wire) = observe_choice(
@@ -169,18 +171,33 @@ async fn audit_responses_named_choice_requires_final_function_tool() {
                     cancelled_entrypoint,
                 )
                 .await;
-                for request in &wire {
-                    assert!(
-                        !request["tools"].as_array().is_some_and(|tools| tools
-                            .iter()
-                            .any(|tool| tool["type"] == "function" && tool["name"] == name)),
-                        "fixture must prove that no matching function is present"
-                    );
+                if expected_valid {
+                    assert!(accepted, "an explicit function tool must remain callable");
+                    assert!(wire
+                        .iter()
+                        .all(
+                            |request| request["tools"].as_array().is_some_and(|tools| tools
+                                .iter()
+                                .any(|tool| tool["type"] == "function" && tool["name"] == name))
+                        ));
+                } else {
+                    for request in &wire {
+                        assert!(
+                            !request["tools"].as_array().is_some_and(|tools| tools
+                                .iter()
+                                .any(|tool| tool["type"] == "function" && tool["name"] == name)),
+                            "fixture must prove that no matching function is present"
+                        );
+                    }
                 }
                 eprintln!(
                     "H-158 linkage: case={label} defaults={from_defaults} cancel_entry={cancelled_entrypoint} accepted={accepted} wire={wire:?}"
                 );
-                if accepted || !wire.is_empty() {
+                if expected_valid {
+                    if !accepted || wire.is_empty() {
+                        violations.push((label, from_defaults, cancelled_entrypoint));
+                    }
+                } else if accepted || !wire.is_empty() {
                     violations.push((label, from_defaults, cancelled_entrypoint));
                 }
             }
