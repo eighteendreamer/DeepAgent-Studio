@@ -10972,4 +10972,4 @@ E-H156-02（实现与中间回归）：Core集中普通function投影与旧无�
 
 ### H-156 显式工具类型与旧事件兼容（已修复并验收，2026-11-14）
 
-E-H156-03：用户确认的新调用边界为显式function/custom；原生历史保留真实类型；只有缺少类型的旧事件保留名称推断，兼容读取且不重写历史。Core、Models、Runtime、Persistence、AppCore、Session已统一修复并补充同名function、显式custom、普通/取消、双wire、工具只执行一次、SQLite冷恢复、fork、compaction/replacement和旧投影测试。相关crate串行回归 **1149过/0败/14忽略**；AppCore h156历史重建1过、H158 linkage 8组过、H219 capability对照1过；受影响crate strict clippy和fmt通过。全仓仍有3个已知无关失败（MCP hook旧断言、旧H219按名custom断言、H306空video-edit提示词），不称全仓全绿。最终实现尚已提交 `5fb17f43`（未推送）；隔离产物清理待最后步骤完成。
+E-H156-03：用户确认的新调用边界为显式function/custom；原生历史保留真实类型；只有缺少类型的旧事件保留名称推断，兼容读取且不重写历史。Core、Models、Runtime、Persistence、AppCore、Session已统一修复并补充同名function、显式custom、普通/取消、双wire、工具只执行一次、SQLite冷恢复、fork、compaction/replacement和旧投影测试。相关crate串行回归 **1149过/0败/14忽略**；AppCore h156历史重建1过、H158 linkage 8组过、H219 capability对照1过；受影响crate strict clippy和fmt通过。全仓仍有3个已知无关失败（MCP hook旧断言、旧H219按名custom断言、H306空video-edit提示词），不称全仓全绿。最终实现已提交 `5fb17f43`（未推送）；隔离产物清理待最后步骤完成。
