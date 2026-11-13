@@ -7304,7 +7304,7 @@ Finding F-H167（E01～03）：provider-image输出在URL和inline分支共同�
 
 ### H-168：易变 instructions 位于历史之前，动态变化截断多轮 KV cache 前缀
 
-**当前状态：代码验收完成，仅881根本轮产物清理阻塞；尚未新增完整关闭计数。** E01～05保留真实红、候选、两轮全仓、隔离及策略拒绝证据。 修复独立提交`e820d743f5c74674de0473639da5180c2a7d3286`；E-H168-06取得hash后普通回填，不amend/推送。清理脚本仅供用户在获准终端实际执行，工具未再次删除。
+**当前状态：已修复并验收（2026-11-13，限E04本机离线范围）。** 修复提交`e820d743f5c74674de0473639da5180c2a7d3286`、回填98ebb541；E07用户实际清理后独立复核881根全部不存在，解除清理阻塞。E01～06的原红、候选、两轮全仓、隔离及策略拒绝时间线全部保留；不宣称整仓全绿或实测真实供应商缓存命中率。
 
 **E-H168-01（2026-11-13，修复中，未验收）**：基线0366760a，tracked干净，七组既有untracked保留。原Models中途system显式ignored探针真实exit101、0/1，21.671秒；实际instructions为`stable leading rules\n\nupdated runtime context`，input原位置丢失，日志SHA256=`7094D29921C59FFEAC2CEEB9806B1118FE50BDA20FF974632BDF8BF0EE82BDAD`。原Kernel动态探针exit101、0/1，5.114秒：稳定边界14142字节，首差14195，instructions15442→15468字节，input1→3仍保留前缀；日志SHA256=`B61584DA21C1E4F54264AF609D21278F02BAD25C3C200C2A68E7894FCF9DA135`。静态对照exit0、1/0，1.312秒，SHA256=`E9C30183DAFAB4CC0080414895E00F190DD290092A4519EBFBFCD06032BF3A92`。命令为`cargo test --target-dir <repo>/target -p deepagent-models --lib responses::tests::audit_preserves_mid_history_system_messages_as_input_items --offline -j 2 -- --ignored --exact --nocapture --test-threads=1`及AppCore `--test kernel_v2_e2e cache_prefix::audit_dynamic_instructions_do_not_cut_off_conversation_cache_prefix`，静态同目标`cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire`不带ignored。全部使用合成工作区/离线transport，无真实provider或凭据。
 
@@ -7321,6 +7321,9 @@ Finding F-H167（E01～03）：provider-image输出在URL和inline分支共同�
 最终workspace矩阵真实161目标5389过/4败/142忽略，日志SHA256 `7894129EC3DF42BE5E3BF08356274F1C6897F56E2871A4D277B4C20A98C3410B`；四败为MCP hook旧字段预期、宿主锁子进程间歇失败、构建夹具到达build-started间歇失败、Prompts默认video-edit空提示词。原二进制隔离复核宿主锁1/0（1.656秒，binary `746D7B895D1612A3337594A947A99F8E3641A5C7E6A5BBE4439D00DEC23EE212`）和构建正常/取消1/0（23.255秒，binary `76C58E67F4B8A9C0C4587489B0C6169510FDF76EBA24CEAC117828C761331BC0`）均通过；隔离结果不抹掉整仓间歇失败，也不修改其断言。Models/http334/0/10、Models/Core/Context strict、Session strict、Tauri check、fmt通过；AppCore/workspace strict仍仅旧lint阻断。无前端/UI/TS改动，未重跑前端build或手动UI。
 
 **E-H168-05（仅产物清理阻塞，2026-11-13）**：清单881根、约2644593702逻辑字节（约2.463GiB），C盘临时目录按基线、源码fixture命名和DeepAgent SQLite/Session schema归属，G盘为本轮fixture；祖先/后代均无reparse，相关进程已结束，其他新增88根未归属条目保留。清单SHA256 `24F22C5FFF29E5AB75A2AFB9B1DFCAA36416D23A1A6E43B52B143F87A1915A6E`。自动PowerShell删除在CreateProcess前被策略拒绝（`blocked by policy`），零删除；已生成带清单hash、数量、基线、链接复核的`cleanup-h168.ps1`，脚本SHA256 `C16361EE31EBE1F6A155FFC439899128B512DFCE12637AB72F202CA240451674`，待用户在获准终端实际执行。该清理阻塞不否定代码验收，但本项提交后暂不宣称产物闭环。
+
+**E-H168-07（清理实证与关闭，2026-11-13）**：用户实际执行`& 'G:\h168-fixtures-20261113\cleanup-h168.ps1'`，回传`Reviewed roots: 881; remaining: 0`。小怪使用删除前保存的可信完整清单独立逐项Test-Path：881根全部不存在，G盘fixture也不存在；没有自动重试或换执行器。删除后原CLI SHA256 `74BB23185BBBA699AC698B10D98BFA8712B6B398CFDEDA113EC0AF642D2BA205`/UTC ticks639301458128145831、用户snap.new `D514BFE28BA6F207C714DDAD2FEFE9E521B3AA1FD7DF1AF243FA2CC2ED911F17`/639301483035458358仍匹配。约2.463GiB为清理前逻辑文件盘点，未实测磁盘空闲增量；原共享target/debug、依赖缓存、源码及七组既有untracked均保留，其他应用条目不在清单。H168在E04所列Windows本机离线契约范围已修复并验收；原红、两轮workspace红、隔离结果和未测真实供应商缓存等边界全部保留。功能新增1、完整关闭新增1，不重复计H281。代码提交e820d743f5c74674de0473639da5180c2a7d3286，回填98ebb541；本次仅双文关闭提交，不amend、不推送。E01～06按当时状态保留。
+
 
 根因补强复用现有EventStore Projection帧：Session新增明确的host system context写入入口，用已有`append_with_response_projection(..., false, ...)`记录单项显式提交组，不改页预算、游标、模型batch或第二套存储。SnapshotPlan唯一调用改走该入口；真实pageSize=1、4096字节分页回归1/0，11.59秒含编译，SHA256 `0BF712F8524C729A6CB87E9F189CB3356865680CF36DB048DDADB5E8CEE626B7`。Kernel恢复断言明确总4项=1宿主快照+原3条逐项原文，不吞重复/未知项。CLI H298断言和预算保持原样。扩大19源重新冻结后先跑原H298，再完整workspace与最终Session strict/Tauri/fmt。
 
