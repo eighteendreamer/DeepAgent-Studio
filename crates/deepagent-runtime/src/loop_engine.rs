@@ -1970,7 +1970,11 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 self.fire_hook(
                     session_id,
                     HookPoint::BeforeToolUse,
-                    HookData::before_tool(tool_name.clone(), invocation.arguments.clone()),
+                    HookData::before_tool_with_id(
+                        tool_name.clone(),
+                        invocation.arguments.clone(),
+                        Some(call_id.clone()),
+                    ),
                 )
                 .await?
             }
@@ -2261,7 +2265,13 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             } else {
                 HookPoint::PostToolUseFailure
             },
-            HookData::after_tool(tool_name, invocation.arguments, observation.ok),
+            HookData::after_tool_with_result(
+                tool_name,
+                invocation.arguments,
+                observation.call_id.clone(),
+                observation.ok,
+                observation.output.clone(),
+            ),
         )
         .await?;
 

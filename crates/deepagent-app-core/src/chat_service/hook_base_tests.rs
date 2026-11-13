@@ -187,3 +187,34 @@ async fn h104_settings_command_reads_an_isolated_native_view_without_a_model() {
         matches!(&events[0].payload, EventPayload::SessionStarted{title:Some(title), ..} if title == "Synthetic hook settings test")
     );
 }
+
+#[tokio::test]
+async fn h103_settings_tool_hook_samples_include_identity_and_event_results() {
+    let directory = tempfile::tempdir().unwrap();
+    for (event, expected_result, expected_error) in [
+        ("PreToolUse", false, false),
+        ("PostToolUse", true, false),
+        ("PostToolUseFailure", false, true),
+    ] {
+        let path = directory.path().join(format!("{event}.jsonl"));
+        let action = serde_json::from_value(capture(&path)["hooks"][0].clone()).unwrap();
+        let result = crate::hook_runtime::test_hook_action(event, None, action, None, None)
+            .await
+            .unwrap();
+        assert_eq!(result.outcome, "continued", "{event}: {}", result.detail);
+        let payload = &read(&path)[0]["payload"];
+        assert_eq!(payload["hook_event_name"], event);
+        assert_eq!(payload["tool_use_id"], "call_test");
+        assert_eq!(payload.get("tool_response").is_some(), expected_result);
+        assert_eq!(payload.get("error").is_some(), expected_error);
+        if expected_result {
+            assert_eq!(
+                payload["tool_response"],
+                serde_json::json!({"output":"synthetic hook test result"})
+            );
+        }
+        if expected_error {
+            assert_eq!(payload["error"], "synthetic hook failure");
+        }
+    }
+}

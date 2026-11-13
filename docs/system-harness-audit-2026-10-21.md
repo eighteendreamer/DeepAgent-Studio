@@ -4782,14 +4782,45 @@ SDK stdio e2e在同轮重新构建的CLI上执行，candidate hash如上；final
 
 ### H-103：工具生命周期 hook 缺少调用 ID 与真实工具结果
 
+**当前状态（2026-11-13）：修复中。** 两个原Windows探针已先红后绿，相关 crate、并发与 AppCore 设置入口回归通过；独立提交、文档 hash 回填和本轮产物清理尚待闭环，详见E-H103-01～02。
+
 **级别：低（P3，条件性 hooks 输入契约缺陷）；触发条件：配置的 `PreToolUse` 或 `PostToolUse` hook 依赖标准 `tool_use_id`，或 Post hook 需要读取工具返回内容。** hook 本身仍执行；本项与 H-26 的标准权限决策输出解析缺陷独立。
 
-- 根因与生产路径：`ToolExecutionPipeline::prepare()` 已持有 provider `call_id`，却通过 `HookData::before_tool(name, arguments)` 派发而丢弃 ID。工具执行后虽有完整 `ToolOutput`，流水线只调用 `HookData::after_tool(name, arguments, ok)`，既丢弃 call ID，也丢弃 `output.value`；`ExternalCommandHook::build_payload()` 最终只发 `tool_name`、`tool_input`，Post hook 的 `tool_response` 被压成 `{"ok":true|false}`。
+- 根因与生产路径：修复前 `ToolExecutionPipeline::prepare()` 已持有 provider `call_id`，却通过 `HookData::before_tool(name, arguments)` 派发而丢弃 ID。工具执行后虽有完整 `ToolOutput`，流水线只调用 `HookData::after_tool(name, arguments, ok)`，既丢弃 call ID，也丢弃 `output.value`；`ExternalCommandHook::build_payload()` 最终只发 `tool_name`、`tool_input`，Post hook 的 `tool_response` 被压成 `{"ok":true|false}`。
 - 动态复现：Windows ignored 探针 `tool_pipeline::tests::audit_external_tool_hooks_include_call_id_and_result` 使用正式 `ToolExecutionPipeline`、`HookDefinitions::register_into()`、`SystemHookRunner` 和计数工具。调用明确携带 `id="audit-tool-use-42"`，Pre/Post 命令 hook 分别把真实 stdin 存入临时目录。实际 Pre payload 缺 `tool_use_id`；Post payload 同样缺 ID，且 `tool_response` 为 `{"ok":true}`，实际工具返回 `{"value":"audit"}`。要求保留身份及结果的探针以 **0 passed / 1 failed** 退出；没有真实模型、文件写入或公网调用。
 - 失败分支动态复现：Windows ignored 探针 `tool_pipeline::tests::audit_external_tool_failure_hook_includes_call_id_and_error` 注册返回固定错误的正式 `Tool`，调用携带 `id="audit-failed-tool-use-9"`。真实 `PostToolUseFailure` command hook 收到的 payload 为 `{"hook_event_name":"PostToolUseFailure","session_id":"...","tool_input":{},"tool_name":"failure_probe","tool_response":{"ok":false}}`；`tool_use_id` 与标准 `error` 字段均缺失，断言以 **0 passed / 1 failed** 退出。无模型、公网或外部副作用。
 - 成熟实现对照：Claude Code `entrypoints/sdk/coreSchemas.ts` 的 `PreToolUseHookInputSchema` 与 `PostToolUseHookInputSchema` 都要求 `tool_use_id`；成功 Post 还要求 `tool_response`。`PostToolUseFailureHookInputSchema` 同样要求 `tool_use_id`，并要求 `error` 字符串。本系统的 HookData 需要跨 runtime 事件和 Claude 兼容 serializer 传递这些值，不能只在 JSON parser 层补默认值。
 - 影响及限制：需要把 hook 输入与模型原始调用对应、或基于实际工具输出做后处理的兼容脚本，拿到的身份和结果不足。探针确认字段缺失，但没有运行某个用户脚本来测量其实际误判或副作用；失败细节实测只覆盖 `ToolOutput::failure` 的固定 message。
-- 收敛方向（尚未实施，本地设计）：在现有 `HookData::Tool` 增加可选 call ID 和按事件携带成功结果/失败详情，由 ToolExecutionPipeline 在执行前后传入；外部 serializer 按事件构造 `tool_use_id`、真实 `tool_response` 或 `error`，不把调用信息散落到独立全局映射。覆盖有/无 provider ID、工具成功/失败、并行工具、工具参数被 hook 修改及调用结果截断后的 payload，并保持 H-26 权限决策语义独立测试。
+- 收敛方向（本地设计）：在现有 `HookData::Tool` 增加可选 call ID 和按事件携带成功结果/失败详情，由 ToolExecutionPipeline 在执行前后传入；外部 serializer 按事件构造 `tool_use_id`、真实 `tool_response` 或 `error`，不把调用信息散落到独立全局映射。结果限定为Runtime正常预算/装饰后对调用方可见的 `ToolOutput.value`，不泄露原始缓存或 `client_metadata`。覆盖有/无 provider ID、工具成功/失败、并行工具、工具参数被 hook 修改及调用结果截断后的 payload，并保持 H-26 权限决策语义独立测试。
+
+**E-H103-01（2026-11-13，原探针复核及TDD红，修复中）**：工作区tracked文件未改动；保留用户既有untracked。以隔离 `target/h103-repair-20261113` 和 `G:/h103-fixtures-20261113` 运行两个原Windows PowerShell探针，清除测试子进程可继承的凭据/代理/DEEPAGENT环境变量，使用离线Cargo与合成工具，不访问真实服务、凭据或用户数据。
+
+| 实际命令 | 结果 |
+|---|---|
+| `cargo test --target-dir target/h103-repair-20261113 -p deepagent-runtime --lib audit_external_tool_hooks_include_call_id_and_result --offline -j 1 -- --ignored --nocapture --test-threads=1` | exit 101；1个实际测试/0过1败。真实PowerShell Pre/Post payload均无 `tool_use_id`；Post为 `tool_response:{"ok":true}`，工具规范结果实际是 `{"value":"audit"}`。日志SHA256 `D9EFB61C3E66E63FA7077D031DC24BBE1EFC5CD61A14B0DAEEB8F1FD2CAC9DAF` |
+| `cargo test --target-dir target/h103-repair-20261113 -p deepagent-runtime --lib audit_external_tool_failure_hook_includes_call_id_and_error --offline -j 1 -- --ignored --nocapture --test-threads=1` | exit 101；1个实际测试/0过1败。真实PostToolUseFailure payload无 `tool_use_id`，只有 `tool_response:{"ok":false}`，缺标准 `error`。日志SHA256 `C414F033EB848EDC8C9C7F31E4AAB22F8E4E42E66DA76EC7BD15B4597A2EA646` |
+
+首个隔离target首次依赖编译约5分02秒，后续测试复用；红测过程中没有生产代码改动。原探针只验证当前Runtime Windows串行成功与固定失败工具路径；并行、参数改写及其他OS留待修复后的适用范围测试，不把当前红测说成已覆盖。
+
+**E-H103-02（2026-11-13，根因修复与范围验收通过，提交/清理待闭环）**：扩展既有 `HookData::Tool` 以携带可选 `call_id`、成功 `result` 与失败 `error`；保留 `before_tool`、`after_tool` 旧构造器的调用兼容，并增加承载真实字段的构造器。ToolExecutionPipeline 在 Pre 派发时透传已稳定化的 call ID；Post 派发时透传完成现有预算/装饰处理后的规范 `ToolOutput.value`，失败仅取其中明确的字符串 `error` 字段。统一 serializer 仅对匹配的 Pre/Post event 与 point 输出 `tool_use_id`、成功 `tool_response` 或失败 `error`，不暴露 `raw_output` 或 `client_metadata`；旧 Runtime 拒绝路径和 AppCore 设置页 synthetic payload 同步使用typed字段。没有第二套hook链、全局调用映射、持久化或权限变化。
+
+| 实际命令 | 结果 |
+|---|---|
+| `cargo fmt --all -- --check`、`git diff --check` | 均exit 0 |
+| `cargo test --target-dir target/h103-repair-20261113 -p deepagent-hooks --offline --no-fail-fast -j 1 -- --test-threads=2 --quiet` | exit 0；77+5+8+8=98 passed/0 failed/0 ignored |
+| `cargo test --target-dir target/h103-repair-20261113 -p deepagent-runtime --lib audit_external_tool_hooks_include_call_id_and_result --offline -j 1 -- --nocapture --test-threads=1` | exit 0；原PowerShell探针1/0/0，Pre/Post同为 `audit-tool-use-42`，Post结果为 `{"value":"audit"}` |
+| `cargo test --target-dir target/h103-repair-20261113 -p deepagent-runtime --lib audit_external_tool_failure_hook_includes_call_id_and_error --offline -j 1 -- --nocapture --test-threads=1` | exit 0；原PowerShell探针1/0/0，failure payload含 `audit-failed-tool-use-9` 与 `audit failure detail` |
+| `cargo test --target-dir target/h103-repair-20261113 -p deepagent-runtime --lib h103_parallel_external_hooks_keep_call_results_paired --offline -j 1 -- --nocapture --test-threads=1` | exit 0；1/0/0，并行两个调用的Pre/Post身份、输入、结果均按ID配对 |
+| `cargo test --target-dir target/h103-repair-20261113 -p deepagent-runtime --lib tool_pipeline::tests --offline --no-fail-fast -j 1 -- --test-threads=2 --quiet` | exit 0；22 passed/0 failed/1 ignored |
+| `cargo test --target-dir target/h103-repair-20261113 -p deepagent-builtins --offline --no-fail-fast -j 1 -- --test-threads=2 --quiet` | exit 0；376 passed/0 failed/3 ignored；内置allowlist/argument/plan-mode hook消费者无行为回归 |
+| `cargo test --target-dir target/h103-repair-20261113 -p deepagent-app-core --lib h103_settings_tool_hook_samples_include_identity_and_event_results --offline -j 1 -- --nocapture --test-threads=1` | exit 0；1/0/0；通过现有 `test_hook_action` 生产测试入口验证Pre、Post成功及Post失败synthetic数据 |
+| `cargo check --target-dir target/h103-repair-20261113 -p deepagent-app-core --lib --offline -j 1` | exit 0 |
+| `cargo clippy --target-dir target/h103-repair-20261113 -p deepagent-hooks --all-targets --no-deps --offline -j 1 -- -D warnings` | exit 0，hooks strict通过 |
+| `cargo test --target-dir target/h103-repair-20261113 -p deepagent-runtime --lib --offline --no-fail-fast -j 1 -- --test-threads=2 --quiet` | exit 101；481 passed/1 failed/3 ignored；唯一失败为 `checkpoint::access::native::tests::restrictive_tree_is_protected_before_copying_any_bytes` 的既有Windows测试DACL `restored test DACL differs`，未触碰checkpoint/ACL代码。先前H101 workspace回归也记录同类Runtime DACL failure |
+| `cargo clippy --target-dir target/h103-repair-20261113 -p deepagent-runtime --all-targets --no-deps --offline -j 1 -- -D warnings` | exit 101；仅有既有 `model_agent.rs:298 clone_on_copy` 与 `workflow/canvas.rs:32 derivable_impls` |
+| `cargo clippy --target-dir target/h103-repair-20261113 -p deepagent-app-core --lib --no-deps --offline -j 1 -- -D warnings` | exit 101；6项既有告警，均位于 `context_runtime.rs`、`http_runtime.rs`、`plugin_preparation.rs`、`run_assembler.rs`、`session_title.rs`，无本轮修改文件 |
+
+验收限Windows本机离线环境与合成数据；并行覆盖同一pipeline两个正式ToolExecutionPipeline调用及真实command hook。未动态覆盖用户hook参数改写、工具输出预算实际截断和其他OS；serializer五action矩阵验证字段投影。没有Tauri command/前端类型变化，未运行workspace全量、Tauri/前端构建、真实provider/外部服务。代码、回归和当时双文档的独立提交及仅清理 `target/h103-repair-20261113`、`G:/h103-fixtures-20261113` 尚待完成。
 
 ### H-104：Claude 兼容 hook 公共输入缺少 transcript_path 和 cwd
 

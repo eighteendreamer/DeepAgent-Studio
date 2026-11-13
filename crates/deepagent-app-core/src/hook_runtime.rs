@@ -160,9 +160,23 @@ fn sample_hook_data(event: HookEvent, matcher: Option<&str>) -> HookData {
         .to_string();
     let tool_arguments = serde_json::json!({ "command": "echo hook-test" });
     match event {
-        HookEvent::PreToolUse => HookData::before_tool(tool_name, tool_arguments),
-        HookEvent::PostToolUse => HookData::after_tool(tool_name, tool_arguments, true),
-        HookEvent::PostToolUseFailure => HookData::after_tool(tool_name, tool_arguments, false),
+        HookEvent::PreToolUse => {
+            HookData::before_tool_with_id(tool_name, tool_arguments, Some("call_test".to_string()))
+        }
+        HookEvent::PostToolUse => HookData::after_tool_with_result(
+            tool_name,
+            tool_arguments,
+            Some("call_test".to_string()),
+            true,
+            serde_json::json!({"output":"synthetic hook test result"}),
+        ),
+        HookEvent::PostToolUseFailure => HookData::after_tool_with_result(
+            tool_name,
+            tool_arguments,
+            Some("call_test".to_string()),
+            false,
+            serde_json::json!({"error":"synthetic hook failure"}),
+        ),
         HookEvent::PostToolBatch => HookData::tool_batch(vec![ToolBatchItem {
             name: tool_name,
             call_id: Some("call_test".to_string()),

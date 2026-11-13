@@ -209,6 +209,12 @@ pub enum HookData {
         arguments: serde_json::Value,
         /// For [`HookPoint::AfterToolUse`], whether it succeeded.
         ok: Option<bool>,
+        /// Provider or runtime call identity, when available.
+        call_id: Option<String>,
+        /// Canonical result exposed to the caller after normal runtime policies.
+        result: Option<serde_json::Value>,
+        /// Failure detail for PostToolUseFailure.
+        error: Option<String>,
     },
     /// A batch of tool calls finished in one model turn.
     ToolBatch {
@@ -295,6 +301,25 @@ impl HookData {
             name: name.into(),
             arguments,
             ok: None,
+            call_id: None,
+            result: None,
+            error: None,
+        }
+    }
+
+    /// Pre-tool payload retaining the call identity known by the pipeline.
+    pub fn before_tool_with_id(
+        name: impl Into<String>,
+        arguments: serde_json::Value,
+        call_id: Option<String>,
+    ) -> Self {
+        HookData::Tool {
+            name: name.into(),
+            arguments,
+            ok: None,
+            call_id,
+            result: None,
+            error: None,
         }
     }
 
@@ -304,6 +329,31 @@ impl HookData {
             name: name.into(),
             arguments,
             ok: Some(ok),
+            call_id: None,
+            result: None,
+            error: None,
+        }
+    }
+
+    /// Post-tool payload carrying the canonical value or standard failure text.
+    pub fn after_tool_with_result(
+        name: impl Into<String>,
+        arguments: serde_json::Value,
+        call_id: Option<String>,
+        ok: bool,
+        result: serde_json::Value,
+    ) -> Self {
+        let error = (!ok)
+            .then(|| result.get("error").and_then(serde_json::Value::as_str))
+            .flatten()
+            .map(str::to_string);
+        HookData::Tool {
+            name: name.into(),
+            arguments,
+            ok: Some(ok),
+            call_id,
+            result: ok.then_some(result),
+            error,
         }
     }
 

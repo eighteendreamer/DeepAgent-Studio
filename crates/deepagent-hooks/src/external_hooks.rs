@@ -41,7 +41,7 @@
 //!
 //! The external command receives a JSON payload on **stdin**:
 //! `{ "session_id", "hook_event_name", "tool_name?", "tool_input?", "tool_use_id?",
-//! "tool_response?", "prompt?" }`, and signals its decision via **exit code**:
+//! "tool_response?", "error?", "prompt?" }`, and signals its decision via **exit code**:
 //! - `0` — allow. stdout *may* carry a structured decision (see below).
 //! - `2` — **block**: at a vetoable point this becomes [`HookOutcome::Deny`]
 //!   with the command's stderr as the reason (fed back to the model).
@@ -1616,11 +1616,37 @@ fn build_hook_payload(event: HookEvent, ctx: &HookContext) -> serde_json::Value 
             name,
             arguments,
             ok,
+            call_id,
+            result,
+            error,
         } => {
             payload.insert("tool_name".into(), serde_json::json!(name));
             payload.insert("tool_input".into(), arguments.clone());
-            if let Some(ok) = ok {
-                payload.insert("tool_response".into(), serde_json::json!({ "ok": ok }));
+            match (event, ctx.point) {
+                (HookEvent::PreToolUse, HookPoint::BeforeToolUse) => {
+                    if let Some(call_id) = call_id {
+                        payload.insert("tool_use_id".into(), serde_json::json!(call_id));
+                    }
+                }
+                (HookEvent::PostToolUse, HookPoint::AfterToolUse) if *ok == Some(true) => {
+                    if let Some(call_id) = call_id {
+                        payload.insert("tool_use_id".into(), serde_json::json!(call_id));
+                    }
+                    if let Some(result) = result {
+                        payload.insert("tool_response".into(), result.clone());
+                    }
+                }
+                (HookEvent::PostToolUseFailure, HookPoint::PostToolUseFailure)
+                    if *ok == Some(false) =>
+                {
+                    if let Some(call_id) = call_id {
+                        payload.insert("tool_use_id".into(), serde_json::json!(call_id));
+                    }
+                    if let Some(error) = error {
+                        payload.insert("error".into(), serde_json::json!(error));
+                    }
+                }
+                _ => {}
             }
         }
         HookData::ToolBatch { tools } => {
@@ -2808,6 +2834,9 @@ mod tests {
                 name: "shell".into(),
                 arguments: serde_json::json!({"command": "git status"}),
                 ok: None,
+                call_id: None,
+                result: None,
+                error: None,
             },
         );
         assert!(evaluate_condition("Bash", &ctx));
@@ -2826,6 +2855,9 @@ mod tests {
                 name: "shell".into(),
                 arguments: serde_json::json!({"command": "git status"}),
                 ok: None,
+                call_id: None,
+                result: None,
+                error: None,
             },
         );
         assert!(evaluate_condition("Bash(git *)", &ctx));

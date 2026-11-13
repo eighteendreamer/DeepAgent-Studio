@@ -24,6 +24,9 @@ fn context(name: &str, path: &str) -> HookContext {
             name: name.into(),
             arguments: json!({"path":path}),
             ok: None,
+            call_id: None,
+            result: None,
+            error: None,
         },
     )
 }

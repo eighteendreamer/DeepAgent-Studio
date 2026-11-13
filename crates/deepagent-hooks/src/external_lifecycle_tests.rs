@@ -134,8 +134,34 @@ async fn payload_matrix(base: Option<crate::HookBaseInput>) {
         ),
         (
             HookEvent::PreToolUse,
-            HookData::before_tool("read_file", json!({"path":"synthetic.txt"})),
-            json!({"tool_name":"read_file","tool_input":{"path":"synthetic.txt"}}),
+            HookData::before_tool_with_id(
+                "read_file",
+                json!({"path":"synthetic.txt"}),
+                Some("call_pre_1".into()),
+            ),
+            json!({"tool_use_id":"call_pre_1","tool_name":"read_file","tool_input":{"path":"synthetic.txt"}}),
+        ),
+        (
+            HookEvent::PostToolUse,
+            HookData::after_tool_with_result(
+                "read_file",
+                json!({"path":"synthetic.txt"}),
+                Some("call_post_1".into()),
+                true,
+                json!({"value":"synthetic result"}),
+            ),
+            json!({"tool_use_id":"call_post_1","tool_name":"read_file","tool_input":{"path":"synthetic.txt"},"tool_response":{"value":"synthetic result"}}),
+        ),
+        (
+            HookEvent::PostToolUseFailure,
+            HookData::after_tool_with_result(
+                "read_file",
+                json!({"path":"synthetic.txt"}),
+                Some("call_post_failure_1".into()),
+                false,
+                json!({"error":"synthetic failure"}),
+            ),
+            json!({"tool_use_id":"call_post_failure_1","tool_name":"read_file","tool_input":{"path":"synthetic.txt"},"error":"synthetic failure"}),
         ),
         (
             HookEvent::PermissionRequest,
@@ -297,4 +323,42 @@ fn h108_unknown_or_mismatched_metadata_is_not_invented() {
             })
         );
     }
+}
+
+#[test]
+fn h103_tool_lifecycle_metadata_requires_the_matching_event_and_point() {
+    for (event, point) in [
+        (HookEvent::PreToolUse, HookPoint::AfterToolUse),
+        (HookEvent::PostToolUse, HookPoint::BeforeToolUse),
+        (HookEvent::PostToolUseFailure, HookPoint::AfterToolUse),
+        (HookEvent::PostToolUseFailure, HookPoint::PostToolUseFailure),
+    ] {
+        let context = HookContext::new(
+            deepagent_core::id::SessionId::nil(),
+            point,
+            HookData::after_tool_with_result(
+                "read_file",
+                json!({}),
+                Some("call_mismatched".into()),
+                true,
+                json!({"private":"must not project"}),
+            ),
+        );
+        let payload = build_hook_payload(event, &context);
+        assert!(payload.get("tool_use_id").is_none(), "{event:?}/{point:?}");
+        assert!(
+            payload.get("tool_response").is_none(),
+            "{event:?}/{point:?}"
+        );
+        assert!(payload.get("error").is_none(), "{event:?}/{point:?}");
+    }
+
+    let context = HookContext::new(
+        deepagent_core::id::SessionId::nil(),
+        HookPoint::BeforeToolUse,
+        HookData::before_tool("read_file", json!({})),
+    );
+    assert!(build_hook_payload(HookEvent::PreToolUse, &context)
+        .get("tool_use_id")
+        .is_none());
 }

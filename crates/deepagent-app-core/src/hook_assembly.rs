@@ -525,6 +525,7 @@ impl Hook for OfficeSkillGuardHook {
             name,
             arguments,
             ok,
+            ..
         } = &ctx.data
         else {
             return Ok(HookOutcome::Continue);

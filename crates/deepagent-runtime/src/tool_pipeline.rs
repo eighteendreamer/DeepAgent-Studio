@@ -633,7 +633,11 @@ impl<'a> ToolExecutionPipeline<'a> {
             None => {
                 self.fire(
                     HookPoint::BeforeToolUse,
-                    HookData::before_tool(name.clone(), invocation.arguments.clone()),
+                    HookData::before_tool_with_id(
+                        name.clone(),
+                        invocation.arguments.clone(),
+                        Some(call_id.clone()),
+                    ),
                 )
                 .await?
             }
@@ -1060,10 +1064,12 @@ impl<'a> ToolExecutionPipeline<'a> {
             } else {
                 HookPoint::PostToolUseFailure
             },
-            HookData::after_tool(
+            HookData::after_tool_with_result(
                 result.name.clone(),
                 result.arguments.clone(),
+                Some(result.call_id.clone()),
                 result.output.ok,
+                result.output.value.clone(),
             ),
         )
         .await?;
@@ -2237,7 +2243,6 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    #[ignore = "audit H-103: external tool hooks must receive call identity and results"]
     async fn audit_external_tool_hooks_include_call_id_and_result() {
         use deepagent_hooks::{HookDefinitions, SystemHookRunner};
 
@@ -2307,7 +2312,6 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    #[ignore = "audit H-103: failure hooks must receive call identity and error details"]
     async fn audit_external_tool_failure_hook_includes_call_id_and_error() {
         struct FailureProbeTool;
 
@@ -2374,6 +2378,78 @@ mod tests {
         eprintln!("PostToolUseFailure payload: {payload}");
         assert_eq!(payload["tool_use_id"], "audit-failed-tool-use-9");
         assert_eq!(payload["error"], "audit failure detail");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn h103_parallel_external_hooks_keep_call_results_paired() {
+        use deepagent_hooks::{HookDefinitions, SystemHookRunner};
+
+        let dir = tempfile::tempdir().unwrap();
+        let output_dir = dir.path().to_string_lossy().replace('\'', "''");
+        let command = format!(
+            "$raw = [Console]::In.ReadToEnd(); $payload = $raw | ConvertFrom-Json; \
+             $name = $payload.hook_event_name + '-' + $payload.tool_use_id + '.json'; \
+             [System.IO.File]::WriteAllText((Join-Path '{output_dir}' $name), $raw)"
+        );
+        let definitions = HookDefinitions::parse(
+            &serde_json::json!({"hooks":{
+                "PreToolUse":[{"matcher":"counting","hooks":[{
+                    "type":"command","shell":"powershell","timeout":5,"command":command
+                }]}],
+                "PostToolUse":[{"matcher":"counting","hooks":[{
+                    "type":"command","shell":"powershell","timeout":5,"command":command
+                }]}]
+            }})
+            .to_string(),
+        )
+        .unwrap();
+        let mut hooks = HookRegistry::new();
+        assert_eq!(
+            definitions.register_into(&mut hooks, Arc::new(SystemHookRunner)),
+            2
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let registry = registry(RiskLevel::Safe, calls.clone());
+        let pipeline =
+            ToolExecutionPipeline::new(&registry, SessionId::new(), PermissionSet::read_only())
+                .with_hooks(Some(&hooks));
+
+        let (slow, fast) = tokio::join!(
+            pipeline.execute(
+                ToolInvocation::new("counting", serde_json::json!({"value":"slow"}))
+                    .with_id("call-h103-slow")
+            ),
+            pipeline.execute(
+                ToolInvocation::new("counting", serde_json::json!({"value":"fast"}))
+                    .with_id("call-h103-fast")
+            )
+        );
+        assert_eq!(
+            slow.unwrap().output.value,
+            serde_json::json!({"value":"slow"})
+        );
+        assert_eq!(
+            fast.unwrap().output.value,
+            serde_json::json!({"value":"fast"})
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        for (event, call_id, value) in [
+            ("PreToolUse", "call-h103-slow", "slow"),
+            ("PostToolUse", "call-h103-slow", "slow"),
+            ("PreToolUse", "call-h103-fast", "fast"),
+            ("PostToolUse", "call-h103-fast", "fast"),
+        ] {
+            let path = dir.path().join(format!("{event}-{call_id}.json"));
+            let payload: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            assert_eq!(payload["tool_use_id"], call_id);
+            assert_eq!(payload["tool_input"]["value"], value);
+            if event == "PostToolUse" {
+                assert_eq!(payload["tool_response"]["value"], value);
+            }
+        }
     }
 
     #[tokio::test]
