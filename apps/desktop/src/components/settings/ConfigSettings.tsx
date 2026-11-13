@@ -46,7 +46,9 @@ import type {
   WebSearchSettings,
   WebSearchEngineId,
   ResponsesApiSettings,
+  ResponsesSamplingPreview as SamplingPreview,
 } from "../../types";
+import { ResponsesSamplingPreview } from "./ResponsesSamplingPreview";
 import packageJson from "../../../package.json";
 import { message } from "../message";
 import { InputSurface } from "../ui/InputSurface";
@@ -746,18 +748,27 @@ function ResponsesSettingsPanel() {
   const [developerOpen, setDeveloperOpen] = useState(false);
   const [developerJson, setDeveloperJson] = useState("{}");
   const [loading, setLoading] = useState(true);
+  const [samplingSnapshot, setSamplingSnapshot] = useState<{
+    settings: ResponsesApiSettings; rows: SamplingPreview[];
+  } | null>(null);
 
   useEffect(() => {
-    getResponsesSettings().then((v) => {
-      setSettings(v);
-      setDeveloperJson(JSON.stringify(v.developer ?? {}, null, 2));
+    getSettings().then(async (view) => {
+      const value = view?.responses ?? await getResponsesSettings();
+      setSettings(value);
+      setSamplingSnapshot({ settings: value, rows: view?.responses_sampling ?? [] });
+      setDeveloperJson(JSON.stringify(value.developer ?? {}, null, 2));
     }).catch((e) => console.error("get_responses_settings failed:", e)).finally(() => setLoading(false));
   }, []);
 
   const persist = async (next: ResponsesApiSettings) => {
     const previous = settings;
     setSettings(next);
-    try { setSettings((await setResponsesSettings(next)).responses); }
+    try {
+      const view = await setResponsesSettings(next);
+      setSettings(view.responses);
+      setSamplingSnapshot({ settings: view.responses, rows: view.responses_sampling ?? [] });
+    }
     catch (e) { setSettings(previous); message.error(t("settings.config.responses.saveFailed", { error: String(e) })); }
   };
   const setNumber = (key: "temperature" | "top_p" | "max_output_tokens" | "top_logprobs", raw: string) => {
@@ -942,6 +953,7 @@ function ResponsesSettingsPanel() {
                       try {
                         const view = await setResponsesDeveloperJson(developerJson);
                         setSettings(view.responses);
+                        setSamplingSnapshot({ settings: view.responses, rows: view.responses_sampling ?? [] });
                         message.success(t("settings.config.responses.saved"));
                       } catch (e) {
                         message.error(t("settings.config.responses.saveFailed", { error: String(e) }));
@@ -961,6 +973,9 @@ function ResponsesSettingsPanel() {
                 </div>
               )}
             </div>
+            <ResponsesSamplingPreview
+              rows={samplingSnapshot?.settings === settings ? samplingSnapshot.rows : null}
+            />
           </div>
 
           <div className="min-w-0 bg-white p-4">

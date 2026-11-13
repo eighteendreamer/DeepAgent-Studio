@@ -1106,6 +1106,10 @@ pub struct SettingsView {
     pub reasoning_effort: String,
     #[serde(default)]
     pub responses: ResponsesApiSettings,
+    /// Read-only scenarios for the selected role models, not persisted settings
+    /// or a claim about a future run's dynamic tool set/model overrides.
+    #[serde(default)]
+    pub responses_sampling: Vec<ResponsesSamplingPreview>,
     /// Current web-search settings.
     pub web_search: WebSearchSettings,
     /// Current image-analysis settings.
@@ -2242,6 +2246,7 @@ impl SettingsService {
             terminal_shell: settings.terminal_shell.label().to_string(),
             reasoning_effort: settings.reasoning_effort.label().to_string(),
             responses: settings.responses.clone(),
+            responses_sampling: responses_sampling_preview(settings),
             web_search: normalized_web_search_settings(settings.web_search.clone()),
             vision: self.vision_settings_view(settings.vision.clone())?,
             execution_features: settings.execution_features,
@@ -2287,6 +2292,10 @@ mod persistence;
 
 #[path = "settings/credential_lifecycle.rs"]
 mod credential_lifecycle;
+
+mod sampling;
+use sampling::responses_sampling_preview;
+pub use sampling::ResponsesSamplingPreview;
 
 #[cfg(test)]
 #[path = "settings/repair_tests.rs"]

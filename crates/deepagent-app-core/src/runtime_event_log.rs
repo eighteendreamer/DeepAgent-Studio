@@ -193,6 +193,7 @@ fn runtime_event_log_entry(
 fn responses_diagnostic_event(event: &RuntimeEvent) -> &str {
     match event {
         RuntimeEvent::ModelRequestStarted { .. } => "responses_request_started",
+        RuntimeEvent::ModelSamplingResolved { .. } => "responses_sampling_resolved",
         RuntimeEvent::ModelRequestCompleted { .. } => "responses_completed",
         RuntimeEvent::Usage { .. } => "responses_usage_received",
         RuntimeEvent::ResponsesStreamEvent {
@@ -276,6 +277,7 @@ impl RuntimeLogDeltaBuffer {
 fn runtime_event_category(event: &RuntimeEvent) -> &'static str {
     match event {
         RuntimeEvent::ModelRequestStarted { .. }
+        | RuntimeEvent::ModelSamplingResolved { .. }
         | RuntimeEvent::ModelFirstToken { .. }
         | RuntimeEvent::ModelRequestCompleted { .. }
         | RuntimeEvent::ModelAttemptReset { .. }
@@ -390,6 +392,10 @@ fn runtime_event_message(event: &RuntimeEvent) -> String {
             ..
         } => format!(
             "model request started step={step} model={model} messages={message_count} tools={tool_count}"
+        ),
+        RuntimeEvent::ModelSamplingResolved { step, attempt, model, sampling } => format!(
+            "sampling resolved step={step} attempt={attempt} model={model} top_p configured={:?} effective={:?} reason={:?}",
+            sampling.configured_top_p, sampling.effective_top_p, sampling.reason,
         ),
         RuntimeEvent::ModelFirstToken {
             step,

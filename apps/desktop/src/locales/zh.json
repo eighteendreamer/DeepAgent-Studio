@@ -640,10 +640,29 @@
         "saved": "Responses JSON 已保存",
         "saveFailed": "Responses 设置保存失败：{{error}}",
         "ineffective": "已保存但 DeepSeek 不产生实际效果：{{fields}}",
-        "previewTitle": "生效请求预览",
-        "previewDesc": "按系统字段、开发者 JSON、高级参数、场景和创意程度的真实合并顺序展示。",
+        "previewTitle": "配置优先级预览",
+        "previewDesc": "展示配置合并顺序；top_p 的模型有效值见采样情景，实际运行以逐次请求诊断为准。",
         "previewReady": "Responses",
-        "requestTitle": "下一次请求骨架"
+        "requestTitle": "请求骨架（top_p 为规范化前的配置值）",
+        "sampling": {
+          "title": "top_p 配置值与有效值",
+          "description": "当前所选模型的情景预览，不代表未来运行的实际工具集合。运行覆盖、动态工具与备用模型切换会重新计算；未配置时不向请求添加 top_p。",
+          "unavailable": "预览尚未就绪或配置未保存；不沿用旧有效值。",
+          "withTools": "提供工具定义",
+          "withoutTools": "未提供工具定义",
+          "values": "配置：{{configured}} → 有效：{{effective}}",
+          "notConfigured": "未配置",
+          "unknown": "未公布",
+          "reasons": {
+            "flash_thinking_floor": "Flash 思考模式：低于 0.95 按 0.95 处理。",
+            "flash_non_thinking_fixed": "Flash 非思考模式：有效值固定为 1.0。",
+            "pro_thinking_tools_fixed": "Pro 思考模式且允许工具调用：有效值固定为 0.95。",
+            "pro_thinking_no_tools_fixed": "Pro 思考模式且未允许工具调用：有效值固定为 1.0；tool_choice=none 也关闭工具调用。",
+            "pro_non_thinking_requested": "Pro 非思考模式：使用配置值，未配置时默认为 1.0。",
+            "unpublished_model": "该模型没有已核实的采样规则；保留配置，不推测有效值。",
+            "unvalidated_input": "配置超出有效取值范围；不将其伪装成合法采样值。"
+          }
+        }
       }
     },
     "git": {

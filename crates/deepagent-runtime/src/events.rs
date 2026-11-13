@@ -114,6 +114,14 @@ pub enum RuntimeEvent {
         /// Number of tool schemas advertised in this request.
         tool_count: usize,
     },
+    /// Local, content-free sampling evidence for this specific attempt. This
+    /// does not claim that dispatch or provider execution succeeded.
+    ModelSamplingResolved {
+        step: usize,
+        attempt: usize,
+        model: String,
+        sampling: deepagent_models::EffectiveSamplingConfig,
+    },
     /// The first streamed model fragment arrived. `kind` is either
     /// `reasoning` or `content`, matching the first visible stream channel.
     ModelFirstToken {
@@ -663,6 +671,7 @@ impl RuntimeEvent {
             RuntimeEvent::SessionRegistered { .. } => "session_registered",
             RuntimeEvent::TurnStarted { .. } => "turn_started",
             RuntimeEvent::ModelRequestStarted { .. } => "model_request_started",
+            RuntimeEvent::ModelSamplingResolved { .. } => "model_sampling_resolved",
             RuntimeEvent::ModelFirstToken { .. } => "model_first_token",
             RuntimeEvent::ModelRequestCompleted { .. } => "model_request_completed",
             RuntimeEvent::ModelAttemptReset { .. } => "model_attempt_reset",

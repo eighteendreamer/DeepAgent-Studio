@@ -7088,6 +7088,8 @@ E-H163-12（最终证据、验收边界与独立提交，2026-10-28）：主树�
 
 ### H-166：DeepSeek Responses 思考模式下 top_p 会被忽略或规范化，设置值不等于有效采样值
 
+**当前状态（2026-11-13）：修复中；用户已确认可见规范化，先前待决策已解除。单一provider解析与跨层候选已落地，原probe/480组及fallback初验通过，最终验收/提交/清理未完成；不计完整修复。**
+
 **级别：中（P2，条件性采样配置不生效）；触发条件：选择 `deepseek-flash` 并在思考模式配置 `top_p < 0.95`，或在非思考模式配置 `top_p != 1.0`；也包括选择 `deepseek-v4-pro` 并在思考模式显式配置任意 `top_p`。** Flash 思考模式对 `0.95–1.0` 使用传入值、低于 0.95 按 0.95 处理；Flash 非思考模式有效值恒为 1.0；Pro 思考模式无工具/有工具分别固定为 1.0/0.95；Pro 非思考模式使用传入值。该项不表示 API 请求失败，也不声称答案必然不同。
 
 #### 官方规则与生产 wire 复现
@@ -7103,6 +7105,72 @@ E-H163-12（最终证据、验收边界与独立提交，2026-10-28）：主树�
 - Codex 的模型目录带每模型 supported/default reasoning effort，turn 请求使用所选模型能力构造有效参数；这是模型能力随选择流动的架构对照，不是 DeepSeek top_p 规则的同协议处理证据。
 - 触发时 Flash 会按 0.95 处理；Pro 思考模式则按工具集合分叉为 1.0/0.95，而 UI、保存配置和请求日志仍呈现 0.2。用户无法凭本地回显判断真实有效设置，实验复现性和参数预期失真；工具目录变化还会让同一设置在 Pro 思考模式下产生不同有效采样值。未证明该规范化造成 API 错误、额外费用或特定回答质量变化。
 - 收敛方向：在现有模型能力/Responses adapter 边界计算一次 `EffectiveSamplingConfig`，依据所选模型、最终 reasoning effort 和最终工具集合明确拒绝、提示并规范化，或在 UI 展示 Flash 的 0.95 下限及 Pro 思考模式的 1.0/0.95 规则；不得悄悄将 wire 变成另一数值而不反馈。fallback 切换、关闭思考、developer JSON 覆盖、工具目录变化、重试与运行设置展示都必须使用同一解析结果。回归覆盖 Flash thinking 的 0.94/0.95/1.0、Flash none、Pro thinking 无工具/有工具、Pro none 及备用模型；只用受控 wire 测试证明本地契约，服务端有效行为仍以官方文档为依据。
+
+**E-H166-01（2026-11-13，当前原探针复现与边界核对）**：起始HEAD `08c8a9ee`，tracked干净，七组既有untracked保留。先读取本项原始证据、ModelClient默认合并/Responses与Chat分支、request serializer/tool_choice校验、AppCore模型选择与developer覆盖、Runtime prepare/fallback/计量、SettingsService、Tauri及前端预览、Cargo/CI命令。本轮仅H166，不合并H155/H157推理别名/目录、H172越界值或其他问题；未读取真实凭据、用户业务数据，也未调用真实供应商/内网。
+
+重新读取DeepSeek官方[Create Response参数页](https://api-docs.deepseek.com/zh-cn/api/create-response/)与[Responses兼容表](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)：Flash/Pro规则与原审计一致；当前官方还明确，即使提供tools，`tool_choice=none`也会关闭工具调用，因此Pro思考模式应按无工具的1.0解释，不能仅检查tools数组非空。默认未传effort时开启思考。此为官方契约依据，不是服务端实际采样实验。
+
+固定C盘原Cargo/Rustup缓存，使用共享target避免另建大型编译树；新建唯一专属 `G:/h166-fixtures-20261113` 隔离HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/TMP/data，清除凭据/代理/DEEPAGENT环境。正式命令分别为 `cargo test --target-dir G:/Code_Warehouse/DeepAgent-Studio/target -p deepagent-models --test reasoning_effort_audit <测试名> --offline -j 2 -- --ignored --exact --nocapture --test-threads=1`：
+
+| 原测试名 | 实际结果（未改生产代码） |
+|---|---|
+| `audit_flash_thinking_mode_top_p_below_floor_reaches_wire_unchanged` | exit101，0过1败，7.376秒含编译；high+0.2仍发0.2，不是官方有效0.95；日志SHA256 `1B21683CFF66CD03121E6820787D68A929B39E4307FAA7A81068190DD29B193D` |
+| `audit_model_specific_top_p_rules_reach_wire` | exit101，0过1败，0.868秒；Pro high无工具/有工具、Pro none、Flash none仍全部发0.2；官方对应1.0/0.95/0.2/1.0；日志SHA256 `3C819A5A8E6F56A3B906BD789D28430FD99934F4BA7096FECC2EA0741CFFC778` |
+
+因此不是历史已修复跳过。已向用户询问：保留用户保存值，在单一provider边界可见规范化，并由设置预览/运行诊断展示配置与有效值及原因；或不适用时在请求前明确拒绝。决定到达前不改生产语义，不复制前端采样算法；需覆盖真实模型/effort/最终工具与tool_choice、developer覆盖、fallback重算、取消入口和重试一致性。尚无本项修复commit，最终回归/strict/build/UI与清理未执行，不新增修复计数。此时306唯一行239验收/28历史跳过/10归并/3撤销/24待修含H180/1修复中H166/1验收保留H66，23有效待修加H166/H66共25未闭环。H166初估6–14有效小时，依据跨层单一解析、预览诊断和真实运行回归；取决于确认路线及实际反例。全部剩余170–430有效小时仍为未逐项重校准的历史低置信分组粗估，编译/设备/依赖/环境及用户决策等待另计，无可靠总等待区间，整体goal保持active。
+
+**E-H166-02（2026-11-13，未选策略前的共同安全底线TDD）**：用户尚未回复规范化/拒绝选择，未把自动goal续接视为策略授权。仅在原 `reasoning_effort_audit.rs` 增加默认真实ModelClient矩阵，生产文件未改。覆盖Flash/Pro × effort未传/none/low/high/max × 无工具/工具auto/工具none × top_p 0.2/0.94/0.95/1.0 × 请求字段/客户端defaults × 普通/取消感知入口，共480组；204组不需要改变采样值的正常对照必须正常发送，其他组要求至少“请求前Invalid且零transport”或“只发一次正确有效值”。此为两种待选策略的共同底线，不是最终验收：用户确认后必须收紧到具体路线，并另验可见诊断、设置预览、fallback、重试与运行持久化，不能凭此测试未来转绿关闭H166。
+
+最终测试先将请求构造与单组验证从枚举循环拆开，避免在深层循环内堆业务断言；原两项探针与原红证据保留未改。静态复核另发现，旧模型组合probe既断言全部wire=0.2，又要求对应官方1.0/0.95/0.2/1.0，阶段性旧行为断言与最终期待不能同时成立；选定策略后需同步这些旧阶段断言，保留原红证据，不能只改生产后无限重跑该自矛盾探针。沿E01同一隔离环境与共享target，`cargo test --target-dir G:/Code_Warehouse/DeepAgent-Studio/target -p deepagent-models --test reasoning_effort_audit h166_sampling_matrix_never_dispatches_a_misleading_top_p --offline -j 2 -- --exact --nocapture --test-threads=1` 实际exit101，0过1败，4.314秒含编译；480组中276组违反共同底线，其余204组均为正常对照，没有把480组写成480个独立Rust测试。最终日志SHA256 `FA80EDE1AA7682FDADF2BB3BC9BC3EDA877717FCC9E05B6F38D0469B62EB7C0D`；拆分前首次矩阵同为276个违反、5.870秒，日志 `CE04F956931DF09209CFA785EF23FB8C5EAC2C230AB6B7CF6F46D5DC7B013D8E`，不是额外缺陷或修复。
+
+`cargo clippy --target-dir G:/Code_Warehouse/DeepAgent-Studio/target -p deepagent-models --test reasoning_effort_audit --no-deps --offline -j 2 -- -D warnings` 实际exit0、2.994秒；`cargo fmt --all -- --check` exit0、5.670秒；`git diff --check`通过。前两次格式检查各报新增测试布局差异，已仅对本文件运行rustfmt后通过，不隐瞒首次失败。单一runner session71938已实际exit0，没有仍在等待的构建；测试失败是预期红，不将runner的exit0或strict/fmt通过当功能通过。尚无本项修复提交，不发模型/真实HTTP，不新建Cargo target根，不改变权限、协议、设置或原用户文件。当前仍等待用户选择，原统计、工时与未验边界沿E01，整体goal active。
+
+**E-H166-03（2026-11-13，连续待决策阻塞审计）**：第一轮已复现两项原probe并询问可见规范化/请求前拒绝；第二轮在未选策略前完成共同安全底线480组真实TDD，strict/fmt通过，仍未收到选择；第三轮再次核对当前Git、E01/E02记录及同一runner实际终态，仍无选择。前两轮均有实质进展，但同一个关键策略依赖连续存在；本轮没有再运行相同失败测试或补无关测试制造进度，不将自动goal续接当作人工选择。session71938已实际exit0，无可继续等待的live任务；matrix-v2仍exit101，strict/fmt的exit0不能替代修复。当前仅3份相关tracked文件有未提交改动（测试、审计、台账），七组用户untracked保留，HEAD仍08c8a9ee，生产未改、无本项修复commit、无推送。
+
+用户要求遇疑问先确认且每轮一个问题、交付后才进入下一项；当前共同底线、调用链和官方依据已备齐，继续生产实现必须决定是否改变请求值或拒绝请求，不能自定路线、静默跳过H166或用另一H制造本项完成。H166转阻塞待处理，本轮按连续三轮阻塞审计调用goal状态工具；不是因测试慢或工作难，也不标为complete/paused。等待用户在已发问题选择“可见规范化”或“请求前拒绝”后继续本项。当前306唯一行239验收/28历史跳过/10归并/3撤销/24待修含H180/0修复中/1阻塞H166/1验收保留H66，23有效待修加H166/H66共25项有效未闭环，新增修复/历史跳过/归并/撤销均0，不报完成率。H166余6–14有效小时待选路线后校准，总余170–430有效小时仍为历史低置信估算，编译/设备/依赖/决策等待另计，无可靠等待上界。
+
+唯一G盘隔离根现有11文件、102196逻辑字节（约100KiB），用于原红与矩阵证据，未另建大型Cargo target树；保留至本项续作/最终验收，不误称已清理、不删除共享target或用户文件。原始失败、探针自矛盾说明、未验范围均保持。
+
+**E-H166-04（2026-11-13，用户选择已确认与跨层候选）**：用户明确选择“采用可见规范化”，待决策原因解除，不再要求重复授权。保留保存值；按实际model、最终effort、支持的工具类型及最终tool_choice统一计算配置/有效/wire值与原因。仅精确匹配官方已核实Flash/Pro；未知模型保留请求值、有效值未知；未配置保持wire省略，诊断可展示官方默认；越界/非有限值不借此修复或掩盖H172。Chat适配不变，不增加模型/HTTP请求或新运行链。ModelClient普通/取消入口与prepare使用同一解析；Runtime在每个attempt经原sink/run_events记录ModelSamplingResolved，fallback保留原配置重新计算；SettingsView增加只读情景，不持久化第二份设置，不宣称情景是实际运行工具集。
+
+选定路线后去除共同底线“可提前拒绝”分支，480组全部要求成功且一次正确wire；同步旧模型组合probe中彼此矛盾的旧wire断言，两项H166原probe转为默认执行，H157的独立ignored不改。生产修改前新契约真实红：0过3败1忽略、276/480违反，日志SHA256 F8D3D0DE92880B438A34A15F5FED620B47A7AE42EA02BB82BDDFC093BC8FFAAA。候选Models完整crate初验exit0、93.937秒，lib218过4忽略，各集成/文档均无失败，含原probe与480组；Runtime定向双向fallback1过0败、49.426秒；Settings只读情景/冷重开与失败保存初验2过0败、185.648秒。后续另补实际SQLite拒写、原件省略/未知/取消/最终toolface边界及前端测试，不能用前面的旧源码初验外推这些新增用例已验。
+
+前端仅消费后端情景，不复制采样算法；未保存编辑隐藏旧情景，保存失败回退匹配预览，developer保存刷新；界面用既有shadcn Item，无原生title tooltip，并将旧“生效请求预览”明确为配置合并/规范化前骨架。四项真实生产panel handler/组件测试通过，尚需完整构建与浏览器截图；Tauri命令名/参数不变，只加性SettingsView字段，Rust RuntimeEvent新增诊断variant，外部穷举匹配需同步。Kernel真实fallback/工具续轮/SQLite冷重开仍在验收，最终workspace、strict、Tauri/前端构建、源码冻结、清理与独立提交未完成。沿用唯一隔离fixture及共享编译缓存，无真实服务/凭据/内网/用户数据，不把runner完成或局部绿当整项关闭。本轮暂不新增完整验收，306台账239验收/28历史跳过/10归并/3撤销/24待修含H180/1修复中H166/0阻塞/1验收保留H66；下一仍H166。整体目标未完成，全部剩余170–430有效小时为未逐项校准历史低置信估算，编译/设备/依赖及环境等待另计。
+
+**E-H166-05（2026-11-13，候选反例、真实浏览器及V2最终门禁进行中）**：Kernel首轮0过1败不是规范化错误：新夹具误用503+overloaded，现有分类器将503归Server，重试仍用Flash，故0.96符合实际模型；不能凭文字overloaded就期待fallback。依据当前failure.rs及既有AttemptTransport，改用529/overloaded_error明确触发既有过载回退，未改生产重试策略。Kernel随后1过0败、0.55秒（含编译176.852秒），覆盖实际读文件、fallback、下一工具轮、live事件、唯一终态及SQLite冷重开；初败日志SHA256 7F3C2290F3BDEEE2BD91C9BF19EF0684E46A9088BC2CC8E35DA3B48770E9E860，转绿D6932A32076A0CDA71CFAED0BDF3635CB7FBBF0B815BEF33B1E9744BC95C19A6。新增省略/未知模型/取消零派发/最终工具面/请求覆盖及Chat不变测试后Models整组再次exit0，lib218过4忽略、reasoning_effort_audit 5过1个独立H157忽略，各其他目标无败。
+
+前端构建首次两次在pnpm自动依赖重装分支因非TTY拒绝，未强制清空node_modules或设置CI放行删除；本轮没有依赖/锁文件修改。查本机pnpm实际实现后，仅对验收子进程关闭verify-deps-before-run的自动安装并设置offline，继续真实脚本，不省略类型/构建验证。前两次同名日志被旧runner覆盖，原SHA63CE5F3C…仅有当时工具输出、第二次8815191E…日志仍在，不能声称第一份原始日志仍保留；已改为后续每次日志唯一。第三次暴露旧web-search测试loader只支持.ts、不支持新生产.tsx导入（7项未进入断言），仅扩展loader后，原7项加H166新4项共11过、断言未改。第四次完整pnpm build在旧timeline-memory门禁9过1败，缺TodoReminderProgress映射决策；用HEAD的13份原始输入复制到独立夹具运行同测试，仍9过1败、SHA D9FB0B4DF2C8AE5D4A3576396C511BF8329E65970DF2E18F3B1D5DB24D4398D9，确认不是H166新增RuntimeEvent造成，不混修。其余声明构建步骤另逐一执行：全部exit0，包括tsc --noEmit（13.935秒）、vite build（96.163秒，SHA4E88703A460454303E0A928BEED9FD38C1376DA6ACE51C7BA0971A928905F1BC）；不将分段结果称为原pnpm build全绿。
+
+浏览器CUA初始化在写kernel assets时报os error3，未启动验收页；按可用宿主依赖改用已安装Playwright/Chromium，未下载、不复用用户登录profile。真实SettingsService测试stdout导出的四行情景用于离线页，导入生产ResponsesSamplingPreview及shadcn Item/实际CSS/i18n；只允许自建127.0.0.1:1433请求。实际已保存4行、未保存0行且显示不沿用旧值、原生title=0、375px无横向溢出、pageerror=0，外部请求转发0；浏览器finally已关闭，自建Vite PID42960核对命令行后已停止。截图已查看：[已保存](evidence/h166-sampling-saved.jpg)、[未保存](evidence/h166-sampling-unsaved.jpg)、[375px](evidence/h166-sampling-mobile.jpg)。这是新组件的浏览器/夹具验收，生产panel保存/失败/developer逻辑另由真实handler测试证明；不是完整Desktop原生WebView验收。
+
+首轮相关strict在未改的Runtime model_agent.rs:298 clone_on_copy与workflow/canvas.rs:32 derivable_impls停止，exit101，SHA85390EA5ED2E7BA0390E52C975BFB5221103EF02785CAB927ADF43366019D4DC；不加allow、不修改这两个无关根因。后续另取Models严格和AppCore严格及诊断结果，不用放宽警告的命令冒充strict通过。Settings继续补SQLite真实拒写与旧坏effort仍可编辑：后者仅明确无采样预览并留日志，runtime原拒绝不变，不借此修H155。
+
+V1冻结22源后，静态复核发现现有apply_patch默认调整还会改变原kind；新edge测试实测诊断1.0却应与最终custom面一致为0.95（exit101、0过1败、SHA2E004E24E43861CE44FC4030A6EDC3C790EA5D4DAF7BC574512065825223B2EA）。为不复刻工具默认规则，采样只读投影复用原apply_tool_defaults；不改变H156现有转换政策。edge随后1过0败、SHA56E40B58CD5FD436484984C20B1072A61A7B98FDAE33F53D735D89D25F5C47A2。增加该反例时V1源码冻结守卫按预期停止runner，finally已核验还原CLI/原snap.new SHA与UTC ticks；V1只完成当时AppCore 3过0败，不是整批最终验收。已重新冻结V2 22源，清单SHA89FA21A85983D2F5316C631E67BEAD21D3FFA077DA30F1B9C0D096F0A26CED47，单一最终runner session51241正在运行AppCore/Kernel/当前CLI/workspace/Tauri/fmt/分域lint；直到取得终态与恢复核对，不宣称修复完成、原件最终已恢复或产物已清理。当前尚无本项commit，统计和工时沿E04；下一仍H166最终验收收尾。
+
+**E-H166-06（2026-11-13，最终限定验收与已知失败，待提交/清理）**：V2单一runner session51241已实际exit0并完成finally；22份冻结源码逐份SHA256无漂移。workspace全部161个顶层Running/Doc-tests目标均有终态，每目标取最后summary，排除AppCore内嵌helper结果重复计数，实计5371过/4败/144忽略，exit101、1895.054秒。四败为：AppCore H103旧MCP hook断言漏tool_use_id、completion_plan旧build-started就绪门禁未达、Prompts H306空video-edit默认提示词，以及本轮新增采样事件使golden_trace预期缺一行。前三者代码未改，原H217已有同名失败；不混修、不凭未改就外推所有环境。golden是H166消费方遗漏，正式同步预期增加且只增加running_turn:model_sampling_resolved，不过滤新事件、不改顺序/终态/配对断言。此唯一测试变更后V3冻结23源（SHA D2EF0F2BF5EA9265A9D7AEDA6DDF02EA67ACEE74F6BBFE2B11D23945BF2B4E0F），完整golden_trace 3过0败、27.196秒含编译、日志SHA2A8CB8402BD43BA801CE558DAC62526DDEF75344778F68D6E9D075BA3406E4E5，根fmt再过；没有为这一个测试预期改动重跑整仓，原全仓4败记录保留，不拼接成另一次全仓全绿。
+
+本轮实际命令均在根目录、offline、合成profile/data与清凭据/代理，使用现有共享target；系统TEMP供旧DACL继承夹具，测试结果与新增残留已逐项盘点。下表为最终V2生产实现（V3只改golden一行）：
+
+| 命令/门禁 | 实际结果 |
+|---|---|
+| `cargo test --target-dir target -p deepagent-app-core --lib settings::sampling:: --offline -j 2 -- --nocapture --test-threads=1` | exit0，3过0败，190.733秒含编译；真实SQLite冷重开/保持原保存值、developer优先级、真实拒写不发布候选、旧坏effort可编辑且不编造预览 |
+| `cargo test --target-dir target -p deepagent-app-core --test kernel_v2_e2e sampling::h166_ --offline -j 2 -- --nocapture --test-threads=1` | exit0，1过0败，188.143秒含编译；实时与持久采样值对应每次wire，Flash→Pro回退、工具续轮、唯一终态、SQLite冷重开 |
+| `cargo build --target-dir target -p deepagent-cli --offline -j 2` | exit0，100.312秒；当前CLI SHA B972311148B3F0F217300C9AAFAA291D6EB2B2D7ADA23C984123BB00A7B66B1F，供同轮真实SDK测试 |
+| `cargo test --target-dir target --workspace --offline --no-fail-fast -j 2 -- --test-threads=2 --quiet` | exit101，161目标5371/4/144；AppCore1686/2/48、Kernel365/0/8、Runtime483/0/3、Models含http241/0/4、reasoning_effort_audit5/0/1、CLI226/0/7、Rust SDK81/0/4和真实stdio15/0/0；原probe默认真执行，独立H157仍忽略不计执行 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --offline -j 2` | exit0，257.006秒；SettingsView/RuntimeEvent现有Tauri消费方可编译，无新增command |
+| `cargo clippy --target-dir target -p deepagent-models --all-targets --all-features --no-deps --offline -j 2 -- -D warnings` | exit0，8.794秒；本项Models实现/全部测试严格通过 |
+| 相关3crate严格clippy；AppCore独立严格clippy | 均exit101；Runtime原clone_on_copy/derivable_impls，AppCore原6项lib+2项测试lint；不加allow、不绕过门禁。诊断命令不带-D也exit101，另被旧mcp_discovery_restore.rs:969必panic unwrap lint阻断，日志无新增采样代码lint；不把诊断称为strict通过 |
+| `cargo fmt --all -- --check`、`git diff --check` | exit0；V3最终fmt7.188秒 |
+| Desktop `pnpm build` 及剩余逐项构建 | 完整命令exit1，旧timeline-memory TodoReminderProgress缺决策；HEAD13输入独立复现。按package.json全部声明步骤执行完的汇总358过/1败/0跳过，H1664项与原web-search7项全过；tsc/Vite过。不是pnpm build全绿 |
+| Playwright/Chromium真实离线生产组件 | 4行配置/有效/原因、未保存隐藏旧值、375px无横溢、无原生title、无pageerror、零外网，三张截图见E05；非完整Tauri原生UI |
+
+全仓日志SHA2610E8A4ACF138EA721A84B313F0E035AB2763530C16D9CA1F5F59B0E2BB9ECD；Tauri42082E00DAC5257CA34F9E5083924633EF594F3B73AEBB53947FA9489670BCEB；Models strict5EA00002007A6650921990C18E4FDE048635BB914F101D4EE679AE2DAB5B478E；AppCore strict00DF6896A1AFDA8AAAA567B2F512096284E93C05588A95B0F26E697698EB0C0B。V2机器门禁总计2803.461秒约46.72分钟（含编译与测试），并非人工有效工时；候选/前端另计，不承诺剩余墙钟。原共享CLI SHA74BB23185BBBA699AC698B10D98BFA8712B6B398CFDEDA113EC0AF642D2BA205及原snap.new SHAD514BFE28BA6F207C714DDAD2FEFE9E521B3AA1FD7DF1AF243FA2CC2ED911F17已由finally后独立复核，UTC ticks分别639301458128145831/639301483035458358，内容及mtime均恢复；真实当前CLI只在验收期间接管，不将恢复的旧CLI冒充新生产二进制。
+
+兼容/未验边界：SettingsView.responses_sampling为加性、serde默认空，旧payload可读；AppSettings原文档/SQL schema/Key生命周期不变，未迁移真实数据库。RuntimeEvent增加公开诊断variant，外部穷举匹配需更新，仓内消费编译/全仓及桌面TS已覆盖；事件不是授权或发送成功回执，记录的是本地已解析参数。仅Responses已核实精确模型ID使用规则，未知ID/Chat不推测有效值；H155/H156/H157/H172不合并。未调用真实供应商、收费服务、真实内网/凭据或用户业务文件，未验证服务端随机采样/回答质量、其他OS、原生WebView交互、强杀/断电、长期并发。UI情景只针对保存设置的角色模型，有/无工具两种情况；运行覆盖/动态工具/fallback以逐attempt持久诊断为准，不声称预览是未来请求的最终工具快照。当前证据足以验收H166本机契约，不代表全仓全绿或整个goal完成。
+
+可再生产物清单现432根、7674文件、1,683,316,929逻辑字节（约1.568GiB；清理脚本/后续日志会有少量增加，不是物理回收量）。389个新C盘.tmp根在全仓前baseline不存在，创建时间在本轮真实测试窗口，371根用只读SQLite schema确认documents/sessions/run_events；其余14个空根、2个空sandbox task/staging/output/workspace、1个有原失败日志精确路径的合成BuildFixture、1个合成EventStore files根，均核对结构/源码归属，未读取业务内容。另25个C盘SDK固定tag/父PID50508及子夹具，9份isolated-test.log全成功；1个H256原生producer父PID26696、1个host_lock PID49404、10个mem测试固定前缀/UUID及创建窗口确认；排除同期Typora与无本任务归属的两个Playwright目录。G盘为原golden-simple-36516-1794566943157夹具、desktop/dist、三份.h166预览文件和唯一G:/h166-fixtures-20261113。清单SHA26D73170628F6AD21FDC206DF226502907D569BAE30C96FCDAB9F82676996F05；全根/祖先/后代已核对reparse，唯一pnpm源码符号链接须先非递归移除链接本身，不能递归进入源码。共享target/debug、Tauri共享target、node_modules及原依赖缓存、源码/用户文档/快照不在删除范围。此刻清理未执行，先独立提交代码/测试/当时双文，再核对清理结果与提交hash，不提前计完整关闭。
+
+当前239验收/28历史跳过/10归并/3撤销/24待修含H180/1修复中H166/0阻塞/1验收保留H66。本轮功能验收1但完整关闭0，待独立提交/清理；H166有效剩余0.2–0.5小时用于交付收尾，设备/清理环境等待另计。下一准备P2 H168动态instructions缓存前缀问题，尚未复现或修改；总余170–430有效小时仍为按模型协议/缓存、hooks、画布/状态等跨层修复和逐项验收分组的历史低置信估算，尚未逐项重校准；编译/设备/依赖/环境等待另计，无可靠总等待区间，不作精确完工承诺。
 
 ### H-167：画布图片下载无响应字节上限，超预算数据被完整缓冲并持久化
 

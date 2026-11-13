@@ -68,8 +68,10 @@ async function mount({ failRead = false, failKeySave = false, anysearchReady = f
       if (specifier === "../../api") return api;
       if (specifier === "../message") return { message: { error(value) { failures.push(value); }, success() {} } };
       if (specifier === "@tauri-apps/api/app") return { getVersion: async () => "0.0.8" };
-      if (specifier.startsWith("./") && fs.existsSync(path.resolve(path.dirname(file), `${specifier}.ts`))) {
-        return load(path.resolve(path.dirname(file), `${specifier}.ts`));
+      if (specifier.startsWith("./")) {
+        const child = [".ts", ".tsx"].map(extension => path.resolve(path.dirname(file), `${specifier}${extension}`))
+          .find(candidate => fs.existsSync(candidate));
+        if (child) return load(child);
       }
       if (specifier.startsWith("../shadcn/") || specifier.startsWith("../ui/")) return components;
       return nativeRequire(specifier);

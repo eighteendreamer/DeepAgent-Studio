@@ -1238,6 +1238,7 @@ export interface RuntimeEvent {
     | "session_registered"
     | "turn_started"
     | "model_request_started"
+    | "model_sampling_resolved"
     | "model_first_token"
     | "model_request_completed"
     | "model_attempt_reset"

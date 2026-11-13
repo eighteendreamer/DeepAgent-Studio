@@ -467,6 +467,7 @@ fn phase_for_event(event: &RuntimeEvent) -> (RunPhase, &'static str) {
         RuntimeEvent::McpLifecycle { .. } => (RunPhase::Preparing, "progress"),
         RuntimeEvent::TurnStarted { .. }
         | RuntimeEvent::ModelRequestStarted { .. }
+        | RuntimeEvent::ModelSamplingResolved { .. }
         | RuntimeEvent::ModelFirstToken { .. }
         | RuntimeEvent::ModelRequestCompleted { .. }
         | RuntimeEvent::ModelAttemptReset { .. }

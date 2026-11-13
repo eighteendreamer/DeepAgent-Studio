@@ -2,6 +2,7 @@
 
 #[path = "support/sequence.rs"]
 pub mod sequence_fixture;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -86,7 +87,6 @@ async fn audit_model_effort_metadata_constrains_responses_request() {
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: DeepSeek Flash thinking-mode top_p below 0.95 is normalized by the provider"]
 async fn audit_flash_thinking_mode_top_p_below_floor_reaches_wire_unchanged() {
     let transport = Arc::new(AuditTransport::default());
     let config =
@@ -111,15 +111,14 @@ async fn audit_flash_thinking_mode_top_p_below_floor_reaches_wire_unchanged() {
         "flash top_p audit: wire_effort={wire_effort:?}, configured_top_p=0.2, wire_top_p={wire_top_p:?}, documented_effective_top_p=0.95"
     );
     assert_eq!(wire_effort, Some("high"));
-    assert_ne!(
+    assert_eq!(
         wire_top_p,
-        Some(0.2),
+        Some(0.95),
         "in DeepSeek Flash thinking mode, a configured top_p below 0.95 is normalized by the provider; local config and wire should not imply that 0.2 is effective"
     );
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: DeepSeek model/reasoning/tool combinations do not all honor explicit top_p"]
 async fn audit_model_specific_top_p_rules_reach_wire() {
     let transport = Arc::new(AuditTransport::default());
     let config =
@@ -179,22 +178,10 @@ async fn audit_model_specific_top_p_rules_reach_wire() {
     );
 
     assert_eq!(observed.len(), 4);
-    assert_eq!(
-        observed[0],
-        (Some("deepseek-v4-pro"), false, Some("high"), Some(0.2))
-    );
-    assert_eq!(
-        observed[1],
-        (Some("deepseek-v4-pro"), true, Some("high"), Some(0.2))
-    );
-    assert_eq!(
-        observed[2],
-        (Some("deepseek-v4-pro"), false, Some("none"), Some(0.2))
-    );
-    assert_eq!(
-        observed[3],
-        (Some("deepseek-flash"), false, Some("none"), Some(0.2))
-    );
+    assert_eq!(observed[0].0, Some("deepseek-v4-pro"));
+    assert_eq!(observed[1].0, Some("deepseek-v4-pro"));
+    assert_eq!(observed[2].2, Some("none"));
+    assert_eq!(observed[3].0, Some("deepseek-flash"));
     assert!(
         observed
             .iter()
@@ -203,5 +190,224 @@ async fn audit_model_specific_top_p_rules_reach_wire() {
                 *configured_wire_value == Some(effective_value)
             }),
         "DeepSeek Pro thinking ignores configured top_p (effective 1.0 without tools and 0.95 with tools), and Flash non-thinking also ignores it (effective 1.0); the Pro non-thinking control uses configured 0.2"
+    );
+}
+
+async fn sampling_case_violation(
+    model: &str,
+    effort: Option<ReasoningEffort>,
+    tool_mode: &str,
+    configured: f32,
+    from_defaults: bool,
+    cancel_aware: bool,
+) -> (bool, Option<String>) {
+    let thinking = effort != Some(ReasoningEffort::None);
+    // Independent values from the DeepSeek Responses docs, not production code.
+    // tool_choice=none disables tools even when schemas are supplied.
+    let expected = match (model, thinking, tool_mode) {
+        ("deepseek-flash", true, _) => configured.max(0.95),
+        ("deepseek-flash", false, _) => 1.0,
+        ("deepseek-v4-pro", true, "auto") => 0.95,
+        ("deepseek-v4-pro", true, _) => 1.0,
+        _ => configured,
+    };
+    let transport = Arc::new(AuditTransport::default());
+    let mut defaults = ResponseDefaults::default();
+    let mut request = ResponseRequest::new(model, vec![Message::user("offline sampling fixture")]);
+    if from_defaults {
+        defaults.top_p = Some(configured);
+        defaults.reasoning_effort = effort;
+    } else {
+        request.top_p = Some(configured);
+        request.reasoning_effort = effort;
+    }
+    if tool_mode != "absent" {
+        request.tools.push(ToolSchema::function(
+            "fixture_tool",
+            "Offline fixture; never executed",
+            serde_json::json!({"type":"object","properties":{}}),
+        ));
+        let choice = serde_json::json!(tool_mode);
+        if from_defaults {
+            defaults.tool_choice = Some(choice);
+        } else {
+            request.tool_choice = Some(choice);
+        }
+    }
+    let client = ModelClient::new(
+        transport.clone(),
+        ModelConfig::deepseek("offline-audit-placeholder").with_defaults(defaults),
+    );
+    let outcome = if cancel_aware {
+        client
+            .stream_response_cancelled(request, Arc::new(AtomicBool::new(false)))
+            .await
+    } else {
+        client.stream_response(request).await
+    };
+    let requests = transport.requests.lock().unwrap();
+    let wire = requests
+        .first()
+        .and_then(|request| request["top_p"].as_f64())
+        .map(|value| value as f32);
+    let correct_wire = outcome.is_ok() && requests.len() == 1 && wire == Some(expected);
+    let unchanged = configured == expected;
+    let violation = !correct_wire;
+    (unchanged, violation.then(|| format!(
+        "{model} effort={effort:?} tools={tool_mode} configured={configured} expected={expected} defaults={from_defaults} cancel={cancel_aware} wire={wire:?} calls={}",
+        requests.len(),
+    )))
+}
+
+async fn sampling_mode_violations(
+    model: &str,
+    effort: Option<ReasoningEffort>,
+    tool_mode: &str,
+) -> (usize, Vec<String>) {
+    let mut controls = 0;
+    let mut failures = Vec::new();
+    for configured in [0.2_f32, 0.94, 0.95, 1.0] {
+        for (from_defaults, cancel_aware) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let (unchanged, violation) = sampling_case_violation(
+                model,
+                effort,
+                tool_mode,
+                configured,
+                from_defaults,
+                cancel_aware,
+            )
+            .await;
+            controls += usize::from(unchanged);
+            failures.extend(violation);
+        }
+    }
+    (controls, failures)
+}
+
+/// User-selected policy: valid settings normalize visibly rather than reject.
+/// Every combination must dispatch exactly once with the effective value.
+/// Preview, diagnostics and recovery are verified separately.
+#[tokio::test]
+async fn h166_sampling_matrix_never_dispatches_a_misleading_top_p() {
+    let mut failures = Vec::new();
+    let mut controls = 0;
+    let mut modes = 0;
+    for model in ["deepseek-flash", "deepseek-v4-pro"] {
+        for effort in [
+            None,
+            Some(ReasoningEffort::None),
+            Some(ReasoningEffort::Low),
+            Some(ReasoningEffort::High),
+            Some(ReasoningEffort::Max),
+        ] {
+            for tool_mode in ["absent", "auto", "none"] {
+                let (mode_controls, mode_failures) =
+                    sampling_mode_violations(model, effort, tool_mode).await;
+                modes += 1;
+                controls += mode_controls;
+                failures.extend(mode_failures);
+            }
+        }
+    }
+    assert_eq!(modes, 30);
+    assert_eq!(controls, 204);
+    eprintln!(
+        "H166 common-floor matrix: {} cases, {controls} unchanged controls, {} violations",
+        modes * 16,
+        failures.len(),
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[tokio::test]
+async fn h166_final_tool_face_overrides_defaults_without_leaking_local_metadata() {
+    let transport = Arc::new(AuditTransport::default());
+    let client = ModelClient::new(
+        transport.clone(),
+        ModelConfig::deepseek("offline-placeholder").with_defaults(ResponseDefaults {
+            top_p: Some(0.2),
+            reasoning_effort: Some(ReasoningEffort::High),
+            tool_choice: Some(serde_json::json!("none")),
+            ..Default::default()
+        }),
+    );
+    for (kind, name, choice, expected) in [
+        ("function", "fixture", "auto", 0.95_f32),
+        ("custom", "apply_patch", "auto", 0.95),
+        ("web_search", "ignored", "auto", 0.95),
+        ("file_search", "ignored", "auto", 1.0),
+        // Existing apply_patch defaulting rewrites this face to custom. H156
+        // owns whether that conversion is desirable; H166 must report the
+        // face actually sent instead of contradicting its own wire metadata.
+        ("file_search", "apply_patch", "auto", 0.95),
+        ("function", "fixture", "none", 1.0),
+    ] {
+        let mut tool =
+            ToolSchema::function(name, "not executed", serde_json::json!({"type":"object"}));
+        tool.kind = kind.into();
+        let request = ResponseRequest::new("deepseek-v4-pro", vec![Message::user("offline")])
+            .with_top_p(0.96)
+            .with_tools(vec![tool])
+            .with_tool_choice(serde_json::json!(choice));
+        let evidence = client.response_sampling(&request).unwrap();
+        assert_eq!(evidence.configured_top_p, Some(0.96));
+        assert_eq!(evidence.effective_top_p, Some(expected));
+        let prepared = client.prepare_response_request(request.clone());
+        assert_eq!(prepared.top_p, Some(expected));
+        assert_eq!(client.prepare_response_request(prepared.clone()), prepared);
+        client.stream_response(request).await.unwrap();
+        let requests = transport.requests.lock().unwrap();
+        let wire = requests.last().unwrap();
+        assert_eq!(wire["top_p"].as_f64().unwrap() as f32, expected);
+        for local in ["sampling", "configured_top_p", "effective_top_p", "reason"] {
+            assert!(wire.get(local).is_none());
+        }
+    }
+    let control = ResponseRequest::new("deepseek-v4-pro", vec![Message::user("offline")])
+        .with_reasoning_effort(ReasoningEffort::None);
+    let metadata = client.response_sampling(&control).unwrap();
+    assert_eq!(metadata.configured_top_p, Some(0.2));
+    assert_eq!(metadata.wire_top_p, Some(0.2));
+    client.stream_response(control).await.unwrap();
+    assert_eq!(transport.requests.lock().unwrap().len(), 7);
+}
+
+#[tokio::test]
+async fn h166_omission_and_unknown_model_remain_intact_and_cancel_has_zero_dispatch() {
+    let transport = Arc::new(AuditTransport::default());
+    let client = ModelClient::new(
+        transport.clone(),
+        ModelConfig::deepseek("offline-placeholder"),
+    );
+    let omitted = ResponseRequest::new("deepseek-v4-pro", vec![Message::user("offline")]);
+    assert_eq!(
+        client.response_sampling(&omitted).unwrap().effective_top_p,
+        Some(1.0)
+    );
+    client.stream_response(omitted.clone()).await.unwrap();
+    assert!(transport.requests.lock().unwrap()[0].get("top_p").is_none());
+    let unknown =
+        ResponseRequest::new("custom-flash", vec![Message::user("offline")]).with_top_p(0.2);
+    assert_eq!(
+        client.response_sampling(&unknown).unwrap().effective_top_p,
+        None
+    );
+    client.stream_response(unknown).await.unwrap();
+    assert_eq!(transport.requests.lock().unwrap()[1]["top_p"], 0.2);
+    assert!(client
+        .stream_response_cancelled(omitted, Arc::new(AtomicBool::new(true)))
+        .await
+        .is_err());
+    assert_eq!(transport.requests.lock().unwrap().len(), 2);
+    let chat_client =
+        ModelClient::new(transport, ModelConfig::deepseek_chat("offline-placeholder"));
+    let request =
+        ResponseRequest::new("deepseek-flash", vec![Message::user("offline")]).with_top_p(0.2);
+    assert!(chat_client.response_sampling(&request).is_none());
+    assert_eq!(
+        chat_client.prepare_response_request(request).top_p,
+        Some(0.2)
     );
 }

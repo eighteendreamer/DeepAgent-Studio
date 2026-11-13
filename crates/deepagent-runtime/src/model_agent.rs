@@ -2613,6 +2613,16 @@ impl ModelAgent {
                     });
                 }
             }
+            if let (Some(sink), Some(sampling)) =
+                (&self.events, self.client.response_sampling(&request))
+            {
+                sink.emit(RuntimeEvent::ModelSamplingResolved {
+                    step,
+                    attempt,
+                    model: request.model.clone(),
+                    sampling,
+                });
+            }
             self.publish_context_usage();
             if let Some(sink) = &self.events {
                 sink.checkpoint()?;
@@ -5052,6 +5062,80 @@ mod tests {
             .map(|request| request["model"].as_str().unwrap().to_string())
             .collect::<Vec<_>>();
         assert_eq!(models, vec!["primary", "fallback"]);
+    }
+
+    #[tokio::test]
+    async fn h166_fallback_recomputes_sampling_and_emits_each_attempt_without_mutating_defaults() {
+        for (primary, fallback, expected) in [
+            ("deepseek-flash", "deepseek-v4-pro", [0.96_f32, 0.95]),
+            ("deepseek-v4-pro", "deepseek-flash", [0.95_f32, 0.96]),
+        ] {
+            let transport = Arc::new(AttemptTransport {
+                attempts: Mutex::new(VecDeque::from([
+                    vec!["__ERROR_OVERLOADED__".into()],
+                    response_text_completed("done"),
+                ])),
+                requests: Mutex::new(Vec::new()),
+            });
+            let client = Arc::new(ModelClient::new(
+                transport.clone(),
+                ModelConfig::deepseek("h166-placeholder").with_defaults(
+                    deepagent_models::ResponseDefaults {
+                        top_p: Some(0.96),
+                        ..Default::default()
+                    },
+                ),
+            ));
+            let (sink, mut receiver) = crate::events::ChannelSink::new();
+            let mut agent = ModelAgent::new(
+                client,
+                primary,
+                "system",
+                "offline",
+                vec![ToolSchema::function(
+                    "fixture",
+                    "Not executed",
+                    serde_json::json!({"type":"object"}),
+                )],
+            )
+            .with_fallback_model(Some(fallback.into()))
+            .with_events(Arc::new(sink));
+            agent.think(0, &[]).await.unwrap();
+            let requests = transport.requests.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            let events: Vec<_> = std::iter::from_fn(|| receiver.try_recv().ok()).collect();
+            let resolved: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    RuntimeEvent::ModelSamplingResolved {
+                        attempt,
+                        model,
+                        sampling,
+                        ..
+                    } => Some((*attempt, model.as_str(), sampling)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(resolved.len(), 2);
+            for (index, model) in [primary, fallback].into_iter().enumerate() {
+                assert_eq!(resolved[index].0, index + 1);
+                assert_eq!(resolved[index].1, model);
+                assert_eq!(resolved[index].2.configured_top_p, Some(0.96));
+                assert_eq!(resolved[index].2.effective_top_p, Some(expected[index]));
+                assert_eq!(
+                    requests[index]["top_p"].as_f64().unwrap() as f32,
+                    expected[index]
+                );
+                assert!(requests[index].get("sampling").is_none());
+            }
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(event, RuntimeEvent::ModelRequestStarted { .. }))
+                    .count(),
+                1
+            );
+        }
     }
 
     #[tokio::test]

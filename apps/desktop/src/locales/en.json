@@ -640,10 +640,29 @@
         "saved": "Responses JSON saved",
         "saveFailed": "Unable to save Responses settings: {{error}}",
         "ineffective": "Saved but ineffective for DeepSeek: {{fields}}",
-        "previewTitle": "Effective request preview",
-        "previewDesc": "Shows the real merge order across system fields, developer JSON, advanced settings, scenes, and creativity.",
+        "previewTitle": "Configuration precedence preview",
+        "previewDesc": "Configuration merge order; see sampling scenarios for effective top_p. Actual runs report each resolved attempt separately.",
         "previewReady": "Responses",
-        "requestTitle": "Next request skeleton"
+        "requestTitle": "Request skeleton (top_p is the pre-normalization setting)",
+        "sampling": {
+          "title": "Configured and effective top_p",
+          "description": "Scenarios for selected models, not a future run's actual tool set. Run overrides, dynamic tools and fallback recalculate the value. Unconfigured top_p remains omitted.",
+          "unavailable": "Preview is unavailable or settings are unsaved; old effective values are not reused.",
+          "withTools": "Tool schemas provided",
+          "withoutTools": "No tool schemas",
+          "values": "Configured: {{configured}} → Effective: {{effective}}",
+          "notConfigured": "not configured",
+          "unknown": "not published",
+          "reasons": {
+            "flash_thinking_floor": "Flash thinking mode floors top_p at 0.95.",
+            "flash_non_thinking_fixed": "Flash non-thinking mode fixes the effective value at 1.0.",
+            "pro_thinking_tools_fixed": "Pro thinking with tool calling enabled fixes the value at 0.95.",
+            "pro_thinking_no_tools_fixed": "Pro thinking without tool calling fixes the value at 1.0; tool_choice=none also disables tool calling.",
+            "pro_non_thinking_requested": "Pro non-thinking uses the configured value, or 1.0 when omitted.",
+            "unpublished_model": "No verified rule for this model; preserve the setting without guessing an effective value.",
+            "unvalidated_input": "The configured value is out of range; do not disguise it as valid sampling."
+          }
+        }
       }
     },
     "git": {

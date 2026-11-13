@@ -320,7 +320,7 @@ impl ModelClient {
                 .await;
         }
         request.stream = true;
-        self.apply_defaults(&mut request);
+        self.prepare_response_sampling(&mut request);
         request.validate()?;
         self.validate_output_tokens(request.max_output_tokens)?;
         self.validate_response_input_modalities(&request)?;
@@ -384,7 +384,7 @@ impl ModelClient {
                 .await;
         }
         request.stream = true;
-        self.apply_defaults(&mut request);
+        self.prepare_response_sampling(&mut request);
         request.validate()?;
         self.validate_output_tokens(request.max_output_tokens)?;
         self.validate_response_input_modalities(&request)?;
@@ -529,8 +529,47 @@ impl ModelClient {
     /// Apply the same defaults used by dispatch, for request budgeting and UI.
     /// This does not serialize or send anything.
     pub fn prepare_response_request(&self, mut request: ResponseRequest) -> ResponseRequest {
-        self.apply_defaults(&mut request);
+        self.prepare_response_sampling(&mut request);
         request
+    }
+
+    /// Read-only evidence using the final model, defaults and tool face. Hosts
+    /// call this for each attempt, not only the initial model before fallback.
+    pub fn response_sampling(
+        &self,
+        request: &ResponseRequest,
+    ) -> Option<crate::EffectiveSamplingConfig> {
+        if self.config.wire_mode != WireMode::Responses {
+            return None;
+        }
+        // Resolve the same final face as dispatch, including existing custom
+        // defaults, without mutating the caller's tools or inventing new rules.
+        let mut tools = request.tools.clone();
+        Self::apply_tool_defaults(&mut tools);
+        let supported_tools = tools.iter().any(|tool| {
+            tool.kind == "function"
+                || (tool.kind == "custom" && tool.function.name == "apply_patch")
+                || (tool.kind == "web_search" && request.model == "deepseek-v4-pro")
+        });
+        Some(crate::resolve_responses_sampling(
+            &request.model,
+            request.top_p.or(self.config.defaults.top_p),
+            request
+                .reasoning_effort
+                .or(self.config.defaults.reasoning_effort),
+            supported_tools,
+            request
+                .tool_choice
+                .as_ref()
+                .or(self.config.defaults.tool_choice.as_ref()),
+        ))
+    }
+
+    fn prepare_response_sampling(&self, request: &mut ResponseRequest) {
+        self.apply_defaults(request);
+        if let Some(sampling) = self.response_sampling(request) {
+            request.top_p = sampling.wire_top_p;
+        }
     }
 
     /// Project through the exact defaulting and serializers used by dispatch.

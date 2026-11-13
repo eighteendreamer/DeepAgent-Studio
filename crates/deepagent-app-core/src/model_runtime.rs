@@ -156,7 +156,7 @@ pub(crate) fn resolve_run_model(
     })
 }
 
-fn resolve_reasoning_effort(
+pub(crate) fn resolve_reasoning_effort(
     settings: &crate::settings::AppSettings,
     run_override: Option<&str>,
 ) -> Result<ReasoningEffort> {

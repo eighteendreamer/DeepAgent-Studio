@@ -964,6 +964,8 @@ export interface SettingsView {
   terminal_shell: "powershell" | "command_prompt" | "git_bash" | "wsl";
   reasoning_effort: "none" | "low" | "high" | "max";
   responses: ResponsesApiSettings;
+  /** Backend-computed scenarios, not the actual tool set of a future run. */
+  responses_sampling?: ResponsesSamplingPreview[];
   web_search: WebSearchSettings;
   vision: VisionSettings;
   execution_features: ExecutionFeatures;
@@ -1014,6 +1016,21 @@ export interface ResponsesApiSettings {
   user: string | null;
   developer: Record<string, unknown>;
   ineffective: Record<string, unknown>;
+}
+
+export interface ResponsesSamplingPreview {
+  model: string;
+  advertised_tools: boolean;
+  sampling: {
+    configured_top_p: number | null;
+    effective_top_p: number | null;
+    wire_top_p: number | null;
+    thinking_enabled: boolean;
+    tools_enabled: boolean;
+    reason: "flash_thinking_floor" | "flash_non_thinking_fixed"
+      | "pro_thinking_tools_fixed" | "pro_thinking_no_tools_fixed"
+      | "pro_non_thinking_requested" | "unpublished_model" | "unvalidated_input";
+  };
 }
 
 export interface AnySearchApiKeyInfo {

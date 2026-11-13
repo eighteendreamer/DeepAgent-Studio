@@ -165,6 +165,9 @@ mod output_limit;
 #[path = "kernel_v2_e2e/effective_model_parameters.rs"]
 mod effective_model_parameters;
 
+#[path = "kernel_v2_e2e/sampling.rs"]
+mod sampling;
+
 #[path = "kernel_v2_e2e/memory_surface.rs"]
 mod memory_surface;
 

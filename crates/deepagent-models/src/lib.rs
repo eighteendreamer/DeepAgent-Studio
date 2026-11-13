@@ -39,6 +39,7 @@ pub mod file_references;
 pub mod image_input;
 mod provider_error;
 pub mod responses;
+pub mod sampling;
 pub mod sse;
 pub mod stream;
 mod tool_choice;
@@ -65,6 +66,7 @@ pub use responses::{
     messages_from_response_items, response_items_from_messages, ResponseInputItem, ResponseItem,
     ResponseOutputItem,
 };
+pub use sampling::{resolve_responses_sampling, EffectiveSamplingConfig, SamplingReason};
 pub use stream::{DeltaObserver, ModelStreamEvent, NoopObserver, ResponseAccumulator};
 pub use tool_choice::validate_responses_tool_choice;
 pub use transport::{
