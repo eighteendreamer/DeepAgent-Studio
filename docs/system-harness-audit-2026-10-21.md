@@ -4782,7 +4782,7 @@ SDK stdio e2e在同轮重新构建的CLI上执行，candidate hash如上；final
 
 ### H-103：工具生命周期 hook 缺少调用 ID 与真实工具结果
 
-**当前状态（2026-11-13）：修复中。** 两个原Windows探针已先红后绿，相关 crate、并发与 AppCore 设置入口回归通过；独立提交、文档 hash 回填和本轮产物清理尚待闭环，详见E-H103-01～02。
+**当前状态（2026-11-13）：阻塞待处理（仅清理）。** 两个原Windows探针已先红后绿，相关 crate、并发与 AppCore 设置入口回归通过，代码已独立提交；清理目标仍存在，本机策略在PowerShell进程创建前拒绝单次删除命令，详见E-H103-01～03。
 
 **级别：低（P3，条件性 hooks 输入契约缺陷）；触发条件：配置的 `PreToolUse` 或 `PostToolUse` hook 依赖标准 `tool_use_id`，或 Post hook 需要读取工具返回内容。** hook 本身仍执行；本项与 H-26 的标准权限决策输出解析缺陷独立。
 
@@ -4821,6 +4821,10 @@ SDK stdio e2e在同轮重新构建的CLI上执行，candidate hash如上；final
 | `cargo clippy --target-dir target/h103-repair-20261113 -p deepagent-app-core --lib --no-deps --offline -j 1 -- -D warnings` | exit 101；6项既有告警，均位于 `context_runtime.rs`、`http_runtime.rs`、`plugin_preparation.rs`、`run_assembler.rs`、`session_title.rs`，无本轮修改文件 |
 
 验收限Windows本机离线环境与合成数据；并行覆盖同一pipeline两个正式ToolExecutionPipeline调用及真实command hook。未动态覆盖用户hook参数改写、工具输出预算实际截断和其他OS；serializer五action矩阵验证字段投影。没有Tauri command/前端类型变化，未运行workspace全量、Tauri/前端构建、真实provider/外部服务。代码、回归和当时双文档的独立提交及仅清理 `target/h103-repair-20261113`、`G:/h103-fixtures-20261113` 尚待完成。
+
+**E-H103-03（2026-11-13，独立提交及清理阻塞）**：代码、测试和当时双文按11文件白名单独立提交为 `da5f3291ca522444f6c5166e238dce6b1cfd7856`（`【fix】补齐工具生命周期 hook 结果上下文`），未amend、推送或创建PR。提交后只读扫描未发现其他命令行引用H103目录的存活进程；两根及所有后代均无reparse point。`target/h103-repair-20261113` 有9105个后代/7723文件/5463.34MiB，`G:/h103-fixtures-20261113` 有135个后代/107文件/0.08MiB。
+
+尝试的单次清理命令为 `Remove-Item -LiteralPath 'G:\Code_Warehouse\DeepAgent-Studio\target\h103-repair-20261113', 'G:\h103-fixtures-20261113' -Recurse -Force -ErrorAction Stop`；工具策略在PowerShell CreateProcess前返回 `blocked by policy`，命令未启动、零删除。随后只读 `Test-Path` 两根均为 `True`。不使用替代执行器、其他语言、提权/改ACL绕过或循环重试。H-103源码修复与测试验收余0；仅需在获准的PowerShell环境删除这两根本轮专属产物并复核。共享 `target/debug`、源码、用户文件和依赖缓存不在范围。
 
 ### H-104：Claude 兼容 hook 公共输入缺少 transcript_path 和 cwd
 
