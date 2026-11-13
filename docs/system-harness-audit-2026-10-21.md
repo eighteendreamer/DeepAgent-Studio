@@ -7304,7 +7304,7 @@ Finding F-H167（E01～03）：provider-image输出在URL和inline分支共同�
 
 ### H-168：易变 instructions 位于历史之前，动态变化截断多轮 KV cache 前缀
 
-**当前状态：代码验收完成，仅881根本轮产物清理阻塞；尚未新增完整关闭计数。** E01～05保留真实红、候选、两轮全仓、隔离及策略拒绝证据。
+**当前状态：代码验收完成，仅881根本轮产物清理阻塞；尚未新增完整关闭计数。** E01～05保留真实红、候选、两轮全仓、隔离及策略拒绝证据。 修复独立提交`e820d743f5c74674de0473639da5180c2a7d3286`；E-H168-06取得hash后普通回填，不amend/推送。清理脚本仅供用户在获准终端实际执行，工具未再次删除。
 
 **E-H168-01（2026-11-13，修复中，未验收）**：基线0366760a，tracked干净，七组既有untracked保留。原Models中途system显式ignored探针真实exit101、0/1，21.671秒；实际instructions为`stable leading rules\n\nupdated runtime context`，input原位置丢失，日志SHA256=`7094D29921C59FFEAC2CEEB9806B1118FE50BDA20FF974632BDF8BF0EE82BDAD`。原Kernel动态探针exit101、0/1，5.114秒：稳定边界14142字节，首差14195，instructions15442→15468字节，input1→3仍保留前缀；日志SHA256=`B61584DA21C1E4F54264AF609D21278F02BAD25C3C200C2A68E7894FCF9DA135`。静态对照exit0、1/0，1.312秒，SHA256=`E9C30183DAFAB4CC0080414895E00F190DD290092A4519EBFBFCD06032BF3A92`。命令为`cargo test --target-dir <repo>/target -p deepagent-models --lib responses::tests::audit_preserves_mid_history_system_messages_as_input_items --offline -j 2 -- --ignored --exact --nocapture --test-threads=1`及AppCore `--test kernel_v2_e2e cache_prefix::audit_dynamic_instructions_do_not_cut_off_conversation_cache_prefix`，静态同目标`cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire`不带ignored。全部使用合成工作区/离线transport，无真实provider或凭据。
 
