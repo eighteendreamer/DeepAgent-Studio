@@ -6809,7 +6809,7 @@ E-H156-03（最终实现与验收，2026-11-14）：
 - AppCore新增历史重建回归：`cargo test -p deepagent-app-core --lib h156_ --target-dir target --offline -j 2 -- --nocapture` **1 passed / 0 failed**；named function choice对照 **8组通过**；H219 capability hash 对照 **1 passed**。Core/Models/Session/Persistence严格clippy **0**，fmt check **通过**。
 - 全仓最终 `cargo test --workspace --target-dir target --offline --no-fail-fast -j 2 -- --test-threads=2 --quiet`：**3个既有无关失败**（AppCore MCP hook旧断言缺`tool_use_id`、AppCore H219旧测试期待已移除的按名custom、Prompts H306空defaultUserPrompt）；H156相关测试通过。后续单项修正H219断言并通过；H158同名显式function linkage单项通过。该全仓结果不报全绿。
 - 真实运行均为合成transport、临时SQLite、隔离HOME/凭据环境，offline；未访问真实DeepSeek、真实凭据或用户数据。清理前冻结源码和共享CLI/snap哈希；本轮验收后仅可再生产物待清理，未删除源码或共享缓存。
-- 提交与清理待本轮最后步骤完成。
+- 代码提交 `5fb17f43`（未推送）；隔离产物清理待本轮最后步骤完成。
 ### H-157：模型目录丢弃 model-level reasoning effort，Responses 请求不校验所选模型支持档位
 
 **级别：低（P3，条件性模型扩展兼容风险）；触发条件：DeepSeek `/models` 返回某模型的 `effort.supported_levels` 不含当前全局或 turn override 所选的 effort。** 2026-10-24 官方模型列表示例中的 Flash 与 Pro 都列出 `low/high/max`、默认 `high`，因此当前公开示例没有触发证据；本项确认的是公开模型目录契约未被保留，以及合法目录形状遇到能力收窄时会构造不匹配 wire。未证明任何当前线上模型已经拒绝请求。
