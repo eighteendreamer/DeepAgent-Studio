@@ -4762,6 +4762,14 @@ AppCore cargo clippy --target-dir <本轮root> -p deepagent-app-core --all-targe
 
 SDK stdio e2e在同轮重新构建的CLI上执行，candidate hash如上；finally结束后，共享`target/debug/deepagent.exe`恢复为8C03E6A63D3E64EBF14DF4AC67C4DC56FB87C2D8B9C35949D3CBA9BC391F30A4，用户原snap.new恢复为D514BFE28BA6F207C714DDAD2FEFE9E521B3AA1FD7DF1AF243FA2CC2ED911F17，另行按哈希复核一致。原E01失败、E02测试/编译失败、H213旧失败均保留。本轮实现、测试和日志仅限Rust SDK及本项文档；剩余提交/清理0.2–0.5有效小时，编译/环境等待另计且无可靠上界。本机OS/真实provider/服务/用户数据、强杀残留未测；最终错误仅描述本地连接状态，不证明server没有执行已接纳命令。整体goal仍active。
 
+**E-H101-05（真实代码提交及可再生产物清理闭环，2026-11-13，已修复并验收）**：冻结候选的SDK实现、回归及当时双文按白名单独立提交为 `18b0e098668d39e39137cae36403d2ec30a09e03`（【fix】损坏的Harness协议输出收束SDK请求），共15文件；未amend/推送/建PR。提交后只读检查本任务唯一两个目录无reparse后代、没有运行中相关进程，并核对原共享CLI SHA256 `8C03E6A63D3E64EBF14DF4AC67C4DC56FB87C2D8B9C35949D3CBA9BC391F30A4`及用户原snap.new SHA256 `D514BFE28BA6F207C714DDAD2FEFE9E521B3AA1FD7DF1AF243FA2CC2ED911F17`。
+
+盘点 `target/h101-repair-20261113`共38文件/约0.077GiB、`G:/h101-fixtures-20261113`共2951文件/约2.71GiB。仅对这两根执行PowerShell Remove-Item，命令exit0；执行后两根Test-Path均False。没有删除共享target/debug、node_modules、原依赖缓存、源码/用户文件或七组既有untracked；原CLI/用户快照SHA256复核仍匹配。未测实际磁盘空闲空间增量，不把逻辑文件盘点说成物理回收实测；未测OS强杀后的临时句柄/进程行为。
+
+因此H101在上述Windows本机/合成PowerShell与真实SDK/当前CLI pipe范围已修复并验收；E01原失败、E02红测及H213旧失败保留，E04全仓4失败及Runtime strict lint限制不变。H-212版本拒收与用户明确确认的3帧H213边界均按协议保留；没有扩修全仓四个无关根因。本轮完整关闭H101 1，新增生产修复1；H104已在E06闭环，本轮不重复计其新增成果。当前306唯一行235已修复并验收、28历史跳过、10归并、3撤销、29待修含H180授权不修、0修复中/阻塞、1验收保留H66；29个未闭环槽位中H180为已授权跳过，28有效待处理加H66验收保留，共29有效未完整闭环。不报完成率。下一项按既定优先级复核H115 PermissionDenied工具调用关联ID及其依赖。
+
+本项本机交付余0；整体剩余170–430有效小时为未逐项校准的历史低置信估算，依据约28有效问题的跨层实施与逐项验收范围，编译/设备/依赖/策略/人工等待另计，无可靠完工日期。整体goal继续active。
+
 ### H-102：InstructionsLoaded 外部 hook 缺少兼容输入必需字段
 
 **级别：低（P3，条件性 hooks 兼容缺口）；触发条件：项目声明依赖 Claude Code `InstructionsLoaded` 输入字段的外部 hook，并在会话装配时成功加载指令文件。** hook 仍会被调用；本项是已触发事件的输入 DTO 不兼容，不是该生命周期事件完全未实现。
