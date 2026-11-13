@@ -545,6 +545,10 @@ fn split_request(request: &HarnessRequest) -> Result<(String, serde_json::Value)
 mod disconnect_audit;
 
 #[cfg(all(test, windows))]
+#[path = "client_rpc_error_tests.rs"]
+mod rpc_error_tests;
+
+#[cfg(all(test, windows))]
 mod audit_tests {
     use super::*;
 

@@ -8,42 +8,43 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// JSON-RPC envelope version, independent of the Harness machine protocol version.
 pub const JSONRPC_VERSION: &str = "2.0";
 
-/// Requests accepted by CLI/app-server transports.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "method", content = "params")]
-pub enum HarnessRequest {
-    #[serde(rename = "initialize")]
-    Initialize(InitializeRequest),
-    #[serde(rename = "thread/start")]
-    ThreadStart(ThreadStartRequest),
-    #[serde(rename = "thread/resume")]
-    ThreadResume(ThreadResumeRequest),
-    #[serde(rename = "thread/list")]
-    ThreadList(ThreadListRequest),
-    #[serde(rename = "thread/read")]
-    ThreadRead(ThreadReadRequest),
-    #[serde(rename = "thread/fork")]
-    ThreadFork(ThreadForkRequest),
-    #[serde(rename = "thread/archive")]
-    ThreadArchive(ThreadArchiveRequest),
-    #[serde(rename = "thread/unarchive")]
-    ThreadUnarchive(ThreadUnarchiveRequest),
-    #[serde(rename = "turn/start")]
-    TurnStart(TurnStartRequest),
-    #[serde(rename = "turn/interrupt")]
-    TurnInterrupt(TurnInterruptRequest),
-    #[serde(rename = "turn/steer")]
-    TurnSteer(TurnSteerRequest),
-    #[serde(rename = "approval/respond")]
-    ApprovalRespond(ApprovalRespondRequest),
-    #[serde(rename = "event/ack")]
-    EventAck(EventAckRequest),
-    #[serde(rename = "tool/list")]
-    ToolList(ToolListRequest),
-    #[serde(rename = "config/read")]
-    ConfigRead(ConfigReadRequest),
-    #[serde(rename = "sandbox/status")]
-    SandboxStatus(SandboxStatusRequest),
+// Method identity and serde's tagged decoder must derive from one declaration.
+// This is only protocol routing metadata, not a second execution registry.
+macro_rules! harness_requests {
+    ($($variant:ident($params:ty) => $method:literal),+ $(,)?) => {
+        /// Requests accepted by CLI/app-server transports.
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+        #[serde(tag = "method", content = "params")]
+        pub enum HarnessRequest {
+            $(#[serde(rename = $method)] $variant($params),)+
+        }
+
+        impl HarnessRequest {
+            /// Exact, case-sensitive method lookup without inspecting params.
+            pub fn is_known_method(method: &str) -> bool {
+                matches!(method, $($method)|+)
+            }
+        }
+    };
+}
+
+harness_requests! {
+    Initialize(InitializeRequest) => "initialize",
+    ThreadStart(ThreadStartRequest) => "thread/start",
+    ThreadResume(ThreadResumeRequest) => "thread/resume",
+    ThreadList(ThreadListRequest) => "thread/list",
+    ThreadRead(ThreadReadRequest) => "thread/read",
+    ThreadFork(ThreadForkRequest) => "thread/fork",
+    ThreadArchive(ThreadArchiveRequest) => "thread/archive",
+    ThreadUnarchive(ThreadUnarchiveRequest) => "thread/unarchive",
+    TurnStart(TurnStartRequest) => "turn/start",
+    TurnInterrupt(TurnInterruptRequest) => "turn/interrupt",
+    TurnSteer(TurnSteerRequest) => "turn/steer",
+    ApprovalRespond(ApprovalRespondRequest) => "approval/respond",
+    EventAck(EventAckRequest) => "event/ack",
+    ToolList(ToolListRequest) => "tool/list",
+    ConfigRead(ConfigReadRequest) => "config/read",
+    SandboxStatus(SandboxStatusRequest) => "sandbox/status",
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

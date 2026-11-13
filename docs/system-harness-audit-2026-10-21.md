@@ -11170,6 +11170,8 @@ E04整根清理因合成夹具os error5停止，C本轮仍残留1,867,534,987逻
 
 ### H-217：未知 namespaced JSON-RPC method 被误报为 Invalid params
 
+**当前状态（2026-11-13）：修复中（实现/限定验收完成，提交及清理待闭环）。** 原正式dispatcher探针先红后绿，相关CLI/协议/SDK strict与真实SDK验收通过；workspace四败及未验边界完整保留，详E-H217-01～04。尚不计完整关闭。
+
 **级别：中（P2，Harness 协议错误分类）；触发条件：** 客户端发送不存在的、包含命名空间斜杠的 method，例如 `thread/does-not-exist`。当前 dispatcher 在 `HarnessRequest` 反序列化失败后，仅凭原始 method 是否包含 `/` 选择 `ERR_INVALID_PARAMS` 或 `ERR_METHOD_NOT_FOUND`。
 
 #### 生产路径与正式复现
@@ -11193,7 +11195,124 @@ E04整根清理因合成夹具os error5停止，C本轮仍残留1,867,534,987逻
 - 根因修复应收敛到现有 `HarnessRequest` 注册/dispatch seam：先按 method 注册表判断是否存在；存在时再解码 params，解码失败返回 -32602；不存在统一返回 -32601，并保留稳定 method 名称和可审计数据。不能继续以 `/`、`.` 或其他命名约定作为方法存在性的代理。
 - 回归应覆盖：已知 method 合法/坏参数、未知 plain/namespaced method、未来扩展命名、空/大小写变体、`rpc.` 保留前缀、notification 无 id、错误 JSON-RPC 版本、批处理（若支持）以及 SDK 对两类错误的映射。新增协议 method 只能更新一个注册/dispatch seam。
 
-本轮只新增正式失败探针和审计文档，未修改生产协议分派。H-213 关注合法 `HarnessEvent` 被错误 notification method 接纳；H-217 关注 request method 的错误码分类，触发层和修复边界不同。
+原审计轮只新增正式失败探针和审计文档，未修改生产协议分派。H-213 关注合法 `HarnessEvent` 被错误 notification method 接纳；H-217 关注 request method 的错误码分类，触发层和修复边界不同。
+
+**E-H217-01（2026-11-13，当前复现与TDD）**：起始tracked干净，保留用户七组untracked，HEAD为H102清理回填d7074993。先读取原审计、HarnessRequest及全部生产/SDK消费方、JSON-RPC官方§5错误定义、本地Codex独立method_not_found/invalid_params边界。固定本机Cargo/Rustup home，offline编译真实CLI测试程序后，在独立`G:/h217-fixtures-20261113/workspace`、隔离HOME/APPDATA和清除凭据/代理环境下运行原ignored探针：`deepagent-bb7e15d0cec12b90.exe app_server::tests::audit_unknown_namespaced_method_is_not_reported_as_invalid_params --ignored --exact --nocapture --test-threads=1`实际0过1败；namespaced=-32602、plain=-32601、known_bad_params=-32602，0.02秒，原二进制SHA256=`883C380F1495368D8C0F694D997054CD0D244CC3F0E688F1FBA91F298B47905C`。不将no-run编译计为复现。
+
+生产未改时取消原probe ignore，并新增正式dispatcher边界矩阵及真实duplex stdio连接测试。`cargo test -p deepagent-cli --bin deepagent app_server::method_routing_tests:: --offline -j 2 -- --nocapture --test-threads=1`实际0过2败（隔离复核0.12秒）：已知initialize坏参数被错误映射为-32601，未知future/unknown则误为-32602。第一条编译后测试命令漏加隔离前缀，来不及中断前两项已运行，随后相同测试在隔离profile下确认同形失败；未发模型或执行工具，不把该首次运行称全程隔离。后续所有验收使用同一个隔离runner，保留这个操作偏差。
+
+**E-H217-02（2026-11-13，根因实现与阶段验收，未关闭）**：用局部声明宏将HarnessRequest枚举的serde方法名与`is_known_method`查询从同一份16项声明生成，保持所有variant、wire名、DTO和serde行为，不复制第二张注册表。ServerState保留jsonrpc校验和initialize门禁优先级；其后先精确/大小写敏感查方法，未知统一-32601并以error.data.method记录原方法，不包含params；已知才反序列化，失败-32602（包括无斜杠initialize）。现有正常dispatch/权限/审批/工具执行及run持久化均未改变。
+
+阶段性原probe默认1过0败；路由矩阵2过0败，覆盖未知plain/namespaced/深层扩展/空串/大小写/空格/rpc.保留名/中文及多种params、16已知方法坏类型、初始化/错版优先级和错误后的正常调用，threads/turns/ACK不变。协议29项通过，Rust SDK81过4既有忽略（新增真实PowerShell→reader→SdkError保留两类code且连接可续用），Rust SDK真实stdio15过；TypeScript新真实CLI原生路由1过（5个未知、2个坏参数、正常空列表），SDK183过、build通过。8份源码/测试/配置冻结，最终workspace/strict尚未终态，不因这些局部结果提前关闭。已实际备份原共享CLI及用户snap.new的内容hash与mtime，runner finally负责恢复，尚未宣称恢复完成。临时产物只归本轮fixture、SDK dist及确认的C盘合成测试目录，待全部终态再核验/清理；不删除共享target/debug、原依赖缓存或用户文件。
+
+**E-H217-03（2026-11-13，最终限定验收完成，提交/清理待闭环）**：单一隔离runner已实际结束，固定本机Cargo/Rustup home、离线、清除凭据/代理环境、合成HOME/APPDATA/LOCALAPPDATA，保留系统TEMP供原生DACL继承。新生产路径不访问模型、真实凭据或内网。8份本项源码/测试/配置终检无漂移；V2仅在TS原生测试补上与既有test:stdio一致的默认CLI路径，未改生产/Rust，显式重跑V2原生gate仍1过0败（1.43秒）。全仓是同一最终Rust源码。CLI/协议/SDK公共DTO和wire版本不变，is_known_method是新增查询API。
+
+| 实际命令 | 结果 |
+|---|---|
+| `cargo test -p deepagent-harness-protocol --offline -j 2 -- --test-threads=2 --quiet` | exit0；3 archive+2 catalog+2 control+22 protocol共29过0败；16variant roundtrip与lookup一致。原RpcRequest不接收batch/无id inbound notification的边界另有断言，不新增这些执行能力 |
+| `cargo test -p deepagent-cli --bin deepagent app_server::tests::audit_unknown_namespaced_method_is_not_reported_as_invalid_params --offline -j 2 -- --exact --nocapture --test-threads=1` | exit0；原probe默认1过0败、0.06秒；namespaced/plain=-32601、known_bad_params=-32602 |
+| `cargo test -p deepagent-cli --bin deepagent app_server::method_routing_tests:: --offline -j 2 -- --nocapture --test-threads=1` | exit0；2过0败，真实duplex连接在两类错误后仍处理合法请求，无新增session/turn |
+| `cargo test -p deepagent-harness-sdk --lib --offline -j 2 -- --test-threads=2 --quiet` | exit0；81过0败4既有忽略；新增真实PowerShell响应经SDK reader/call保留两类code，不退休连接、不重派 |
+| `cargo build -p deepagent-cli --offline -j 2`；`cargo test -p deepagent-harness-sdk --test e2e_stdio --offline -j 2 -- --test-threads=2 --quiet` | 均exit0；真实CLI构建、15项真实stdio生命周期/存储/权限对照通过，无模型 |
+| `pnpm build`；`node --test tests/real-cli-method-routing.test.mjs`；`pnpm test`（packages/sdk） | 均exit0；类型构建、原生CLI→TS SDK路由1过0跳过（5未知/2坏参数/正常对照）、SDK183过0败0跳过；V2原生复核另1过0败 |
+| `cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=2 --quiet` | exit101，1309.22秒含编译；4失败/3目标：AppCore1683过2败48忽略（旧H103 MCP断言漏tool_use_id、completion_plan build-started门禁未达），host_lock集成1过1败（child exit101，原夹具隐藏stderr，不能推断根因），Prompts27过1败（H306空video-edit defaultUserPrompt）。CLI226过0败7忽略；Runtime482过0败3忽略，Rust SDK81过4忽略及其15真实stdio通过。不将内嵌子进程结果块直接累加成全仓唯一总数 |
+| 同一workspace程序 `host_lock-*.exe --nocapture --test-threads=1`；`deepagent_app_core-cdacd7eef8227cba.exe completion_plan::audit_tests::discovered_real_build_completes_after_release --exact --nocapture --test-threads=1` | host_lock串行2过0败（1.55秒）；build-ready仍0过1败（9.69秒），未放宽4秒ready或修改其源码。保留原全仓失败，不把单次串行通过外推稳定，这两项未归因观察不算H217成果 |
+| `cargo clippy -p deepagent-harness-protocol -p deepagent-harness-sdk -p deepagent-cli --all-targets --no-deps --offline -j 2 -- -D warnings` | exit0，68.30秒；相关生产/测试strict通过，无lint抑制 |
+| `cargo fmt --all -- --check`；`git diff --check` | 均exit0 |
+
+原probe红日志SHA256=`4C6F98E42C89B988C99C81E8A7082C305C79936B33B7050836488083B65BD7AF`；矩阵红=`B35A29BF423727907C1BEDD1AE210A92D75B11DD82084AFB0E91FD4C977CD6A0`；全仓=`23A56F5515B0F74A82E9A108EEB5B0D2451FADA523C6C3C14D826031BD4317F9`；strict=`1708EF6E267D5530CC6DF611782FCF8DE40A9859C1F139013A4416450C1C079E`；V2冻结清单=`F5AED18DE692703819FE7B7F1AC36155034705D42D1715E9690BAA8618F88F47`。真实TS gate所用CLI=`0B6C4BD0E7AFF41C561CC6EBADAA2E8398CFAF74EAEC66E9B1B2743E13522E04`；共享CLI已恢复原`74BB23185BBBA699AC698B10D98BFA8712B6B398CFDEDA113EC0AF642D2BA205`、snap.new恢复原`D514BFE28BA6F207C714DDAD2FEFE9E521B3AA1FD7DF1AF243FA2CC2ED911F17`。runner第一次mtime回填因ConvertFrom-Json自动转DateTime后再Parse丢亚秒，最终从原JSON ISO字符串Roundtrip ParseExact回填，内容SHA及mtime ticks均逐项实查匹配；不把finally输出本身当恢复证据。
+
+兼容性：只纠正错误分类，增加未知方法的安全method元数据；初始化前仍先返回-32001，错JSON-RPC版本仍-32600，已知方法正常/审批/执行入口不变。原serde params形状保留；无id通知和batch原本在envelope前不被RpcRequest接纳，仍为request-only transport，不宣称完整batch/notification合规或在本项扩建。无SQL迁移、权限、模型供应商或Tauri command变化；未跑独立Tauri/桌面前端构建（无UI/桥接DTO改动）、其它OS或真实外部服务。测试只证明所列路径，不承诺远端副作用或未知扩展可执行。
+
+**E-H217-04（2026-11-13，完整清理清单及交付状态，待执行）**：所有runner/复核已结束，下列79个精确根及祖先/后代逐项检查无reparse，没有进程命令行引用。75个C盘SDK夹具=上轮H102 workspace父PID54468及命名子夹具25根＋本轮独立SDK父41052及workspace父2312两组50根；以当前测试源码固定tag/父PID、父目录isolated-test.log（27个真实子测试均成功）及创建窗口核对归属。另2根C盘h217-native由本轮TS stdout直接记录，SDK dist原先不存在，G fixture含runner/日志/已恢复原件备份和真实CLI。**H102的5精确目标不存在结论仍成立，但遗漏了这25个C SDK夹具；本轮补记并负责清理，不能声称上一轮已清空全部C盘产物。**
+
+清单快照911文件、2,708,673,503逻辑字节（约2.523GiB；清单/安全脚本随后新增少量文件，不是物理回收量）。JSON清单SHA256=`10674DA488E9D724E5F5304EB314563B06E26D135EF0423F0D1E954110986764`。PowerShell脚本先验清单hash/79根边界/原件SHA及mtime/进程/reparse，再按LiteralPath删除，G fixture最后删除，不跨shell；此时清理尚未执行。排除共享target/debug、原Cargo/Rustup缓存、源码、用户文档、原snap.new及未知.tmp。完整路径如下，后续复核不依赖被删除的manifest：
+
+<!-- h217-cleanup-targets:start -->
+```text
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h107-end-2312
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h107-end-41052
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h107-end-54468
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h107-end-workspace-16104
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h107-end-workspace-41252
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h107-end-workspace-46840
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h205-sequence-2312
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h205-sequence-41052
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h205-sequence-54468
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h205-sequence-workspace-15580
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h205-sequence-workspace-42396
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h205-sequence-workspace-51288
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h214-failure-2312
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h214-failure-41052
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h214-failure-54468
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h214-owned-failure-21536
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h214-owned-failure-31588
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h214-owned-failure-55220
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h214-owned-reopen-27392
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h214-owned-reopen-28112
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h214-owned-reopen-49940
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h214-thread-2312
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h214-thread-41052
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h214-thread-54468
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h215-archive-2312
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h215-archive-41052
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h215-archive-54468
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h215-archive-workspace-19492
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h215-archive-workspace-28276
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h215-archive-workspace-42392
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h216-fork-2312
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h216-fork-41052
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h216-fork-54468
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h216-host-37124
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h216-host-42612
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h216-host-50312
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h216-other-host-37124
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h216-other-host-42612
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h216-other-host-50312
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h216-project-37124
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h216-project-42612
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h216-project-50312
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h220-catalog-2312
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h220-catalog-41052
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h220-catalog-54468
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h220-workspace-28924
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h220-workspace-33684
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h220-workspace-44548
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h222-reasoning-2312
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h222-reasoning-41052
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h222-reasoning-54468
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h222-reasoning-reopen-35144
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h222-reasoning-reopen-37172
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h222-reasoning-reopen-39436
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h91-sequence-2312
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h91-sequence-41052
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h91-sequence-54468
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h91-sequence-workspace-20604
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h91-sequence-workspace-30288
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-h91-sequence-workspace-41260
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-interrupt-2312
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-interrupt-41052
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-interrupt-54468
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-introspect-2312
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-introspect-41052
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-introspect-54468
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-no-init-2312
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-no-init-41052
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-no-init-54468
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-shutdown-2312
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-shutdown-41052
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-shutdown-54468
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-thread-event-2312
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-thread-event-41052
+C:\Users\32734\AppData\Local\Temp\deepagent-sdk-thread-event-54468
+C:\Users\32734\AppData\Local\Temp\h217-native-jwVDDA
+C:\Users\32734\AppData\Local\Temp\h217-native-mj1Upj
+G:\Code_Warehouse\DeepAgent-Studio\packages\sdk\dist
+G:\h217-fixtures-20261113
+```
+<!-- h217-cleanup-targets:end -->
+
+H217根因实现与限定验收余0，代码/测试/当时双文待独立提交及本节清理，暂不新增完整验收数。306唯一行238验收/28历史跳过/10归并/3撤销/25待修含H180/1修复中H217/1验收保留H66，有效待修24加H217/H66共26未闭环。下一P2 H166先复核现有模型/思考参数能力，不混修。全部剩余170–430有效小时仍为未逐项重校准的低置信历史粗估，编译/设备/依赖/环境/清理等待另计，无可靠等待上界或精确完工承诺；整体goal active。
 
 ### H-218：`thread/read` 无界全量物化历史，缺少分页与响应预算
 

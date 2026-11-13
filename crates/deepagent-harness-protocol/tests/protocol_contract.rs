@@ -464,8 +464,45 @@ fn every_harness_request_variant_has_a_stable_method_and_round_trips() {
     for (request, expected_method) in requests.into_iter().zip(expected_methods) {
         let value = serde_json::to_value(&request).expect("serialize request");
         assert_eq!(value["method"], expected_method);
+        assert!(HarnessRequest::is_known_method(expected_method));
         let decoded: HarnessRequest = serde_json::from_value(value).expect("decode request");
         assert_eq!(decoded, request);
+    }
+}
+
+#[test]
+fn h217_unknown_method_spelling_never_becomes_a_known_route() {
+    for method in [
+        "",
+        "Thread/start",
+        "thread/start ",
+        " thread/start",
+        "thread//start",
+        "future/v2/extension",
+        "rpc.extension",
+        "harness/event",
+        "does-not-exist",
+    ] {
+        assert!(!HarnessRequest::is_known_method(method), "{method:?}");
+        assert!(serde_json::from_value::<HarnessRequest>(serde_json::json!({
+            "method":method,"params":{}
+        }))
+        .is_err());
+    }
+}
+
+#[test]
+fn h217_current_request_dto_does_not_admit_batches_or_inbound_notifications() {
+    use deepagent_harness_protocol::RpcRequest;
+    // This change does not introduce batch or inbound-notification execution.
+    // They remain outside the existing request DTO, not unknown-method routes.
+    for value in [
+        serde_json::json!([]),
+        serde_json::json!([{"jsonrpc":"2.0","id":1,"method":"future/unknown"}]),
+        serde_json::json!({"jsonrpc":"2.0","method":"future/unknown","params":{}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"thread/start","params":{}}),
+    ] {
+        assert!(serde_json::from_value::<RpcRequest>(value).is_err());
     }
 }
 

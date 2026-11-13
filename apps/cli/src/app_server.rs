@@ -57,6 +57,9 @@ mod history_test_support;
 #[path = "app_server/list_page_tests.rs"]
 mod list_page_tests;
 #[cfg(test)]
+#[path = "app_server/method_routing_tests.rs"]
+mod method_routing_tests;
+#[cfg(test)]
 #[path = "app_server/sequence_tests.rs"]
 mod sequence_tests;
 
@@ -241,6 +244,13 @@ impl ServerState {
             );
         }
 
+        if !HarnessRequest::is_known_method(&request.method) {
+            let mut response =
+                RpcResponse::error(request.id, ERR_METHOD_NOT_FOUND, "method not found");
+            response.error.as_mut().expect("constructed RPC error").data =
+                Some(serde_json::json!({"method":request.method}));
+            return (response, None);
+        }
         let method = request.method.clone();
         let parsed = serde_json::from_value::<HarnessRequest>(serde_json::json!({
             "method": method,
@@ -249,13 +259,12 @@ impl ServerState {
         let parsed = match parsed {
             Ok(parsed) => parsed,
             Err(error) => {
-                let code = if request.method.contains('/') {
-                    ERR_INVALID_PARAMS
-                } else {
-                    ERR_METHOD_NOT_FOUND
-                };
                 return (
-                    RpcResponse::error(request.id, code, format!("invalid request: {error}")),
+                    RpcResponse::error(
+                        request.id,
+                        ERR_INVALID_PARAMS,
+                        format!("invalid request: {error}"),
+                    ),
                     None,
                 );
             }
@@ -1781,9 +1790,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit H-217: unknown namespaced RPC methods must use method-not-found"]
     fn audit_unknown_namespaced_method_is_not_reported_as_invalid_params() {
-        let mut state = ServerState::new_for_test();
+        let workspace = tempfile::tempdir().unwrap();
+        let mut state = ServerState::new_for_test_with_database(
+            Arc::new(Database::open_in_memory().unwrap()),
+            workspace.path().to_owned(),
+        );
         initialize(&mut state);
 
         let namespaced = state.handle_request_for_test(rpc_request(
