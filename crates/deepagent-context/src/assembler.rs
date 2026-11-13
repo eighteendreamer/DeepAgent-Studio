@@ -44,6 +44,13 @@ pub struct ContextManifest {
     pub loaded_paths: Vec<PathBuf>,
 }
 
+/// Source metadata for a file loaded as user or project instructions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadedInstruction {
+    pub path: PathBuf,
+    pub source: ContextSourceKind,
+}
+
 impl ContextManifest {
     pub fn render(&self) -> String {
         self.entries
@@ -96,9 +103,21 @@ impl ContextAssembler {
         self
     }
 
-    pub fn assemble(mut self, counter: &dyn TokenCounter, token_budget: usize) -> ContextManifest {
+    pub fn assemble(self, counter: &dyn TokenCounter, token_budget: usize) -> ContextManifest {
+        self.assemble_with_instruction_sources(counter, token_budget)
+            .0
+    }
+
+    /// Assemble the normal manifest and retain source metadata for loaded
+    /// instruction files, including entries later dropped by token budgeting.
+    pub fn assemble_with_instruction_sources(
+        mut self,
+        counter: &dyn TokenCounter,
+        token_budget: usize,
+    ) -> (ContextManifest, Vec<LoadedInstruction>) {
         let mut loaded_paths = Vec::new();
-        self.load_instruction_files(&mut loaded_paths);
+        let mut loaded_instructions = Vec::new();
+        self.load_instruction_files(&mut loaded_paths, &mut loaded_instructions);
 
         let mut entries = self
             .entries
@@ -162,15 +181,22 @@ impl ContextAssembler {
                 .collect();
         }
 
-        ContextManifest {
-            entries,
-            total_tokens: total,
-            dropped_origins: dropped,
-            loaded_paths,
-        }
+        (
+            ContextManifest {
+                entries,
+                total_tokens: total,
+                dropped_origins: dropped,
+                loaded_paths,
+            },
+            loaded_instructions,
+        )
     }
 
-    fn load_instruction_files(&mut self, loaded_paths: &mut Vec<PathBuf>) {
+    fn load_instruction_files(
+        &mut self,
+        loaded_paths: &mut Vec<PathBuf>,
+        loaded_instructions: &mut Vec<LoadedInstruction>,
+    ) {
         if let Some(home) = self.user_home.clone() {
             for path in [
                 home.join(".claude").join("CLAUDE.md"),
@@ -185,6 +211,7 @@ impl ContextAssembler {
                         400
                     },
                     loaded_paths,
+                    loaded_instructions,
                 );
             }
         }
@@ -202,6 +229,7 @@ impl ContextAssembler {
                     600
                 },
                 loaded_paths,
+                loaded_instructions,
             );
         }
 
@@ -217,6 +245,7 @@ impl ContextAssembler {
                     ContextSourceKind::ProjectInstructions,
                     priority,
                     loaded_paths,
+                    loaded_instructions,
                 );
             }
         }
@@ -228,6 +257,7 @@ impl ContextAssembler {
         source: ContextSourceKind,
         priority: u16,
         loaded_paths: &mut Vec<PathBuf>,
+        loaded_instructions: &mut Vec<LoadedInstruction>,
     ) {
         let Ok(content) = std::fs::read_to_string(path) else {
             return;
@@ -236,6 +266,15 @@ impl ContextAssembler {
             return;
         }
         loaded_paths.push(path.to_path_buf());
+        if matches!(
+            source,
+            ContextSourceKind::UserInstructions | ContextSourceKind::ProjectInstructions
+        ) {
+            loaded_instructions.push(LoadedInstruction {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
         self.entries.push((
             source,
             path.display().to_string(),
@@ -317,8 +356,63 @@ mod tests {
             .map(|entry| entry.priority)
             .collect::<Vec<_>>();
         assert_eq!(priorities, vec![600, 610]);
+        assert!(manifest.entries.iter().all(|entry| {
+            entry.source == ContextSourceKind::ProjectInstructions
+                && manifest
+                    .loaded_paths
+                    .iter()
+                    .any(|path| entry.origin == path.to_string_lossy())
+        }));
         assert!(manifest.render().contains("claude rule"));
         assert!(manifest.render().contains("deepagent rule"));
+    }
+
+    #[test]
+    fn records_user_instruction_source_separately_from_project_files() {
+        let workspace = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(workspace.path().join("CLAUDE.md"), "project rules").unwrap();
+        std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+        std::fs::write(home.path().join(".claude/CLAUDE.md"), "user rules").unwrap();
+
+        let manifest = ContextAssembler::new(workspace.path())
+            .with_user_home(Some(home.path().to_path_buf()))
+            .assemble(&HeuristicTokenizer::new(), 10_000);
+        let sources = manifest
+            .entries
+            .iter()
+            .map(|entry| (entry.origin.as_str(), entry.source))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            sources,
+            vec![
+                (
+                    home.path()
+                        .join(".claude")
+                        .join("CLAUDE.md")
+                        .to_str()
+                        .unwrap(),
+                    ContextSourceKind::UserInstructions,
+                ),
+                (
+                    workspace.path().join("CLAUDE.md").to_str().unwrap(),
+                    ContextSourceKind::ProjectInstructions,
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn instruction_source_metadata_survives_prompt_budget_drops() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(workspace.path().join("CLAUDE.md"), "project rules").unwrap();
+        let (manifest, loaded) = ContextAssembler::new(workspace.path())
+            .with_user_home(None)
+            .assemble_with_instruction_sources(&HeuristicTokenizer::new(), 0);
+        assert!(manifest.entries.is_empty());
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].path, workspace.path().join("CLAUDE.md"));
+        assert_eq!(loaded[0].source, ContextSourceKind::ProjectInstructions);
     }
 
     #[test]

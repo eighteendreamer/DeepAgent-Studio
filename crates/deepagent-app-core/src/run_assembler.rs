@@ -1070,30 +1070,50 @@ impl<'a> RunAssembler<'a> {
             }
         };
         let system_manifest = run_context.system_manifest;
-        if !system_manifest.loaded_paths.is_empty() {
+        // A prepared/SDK run may start in a pre-created empty session. Inspect
+        // its own lifecycle rather than the caller's continuation argument.
+        let has_prior_turn = prior_events
+            .iter()
+            .rev()
+            .take_while(|event| !matches!(event.payload, EventPayload::SessionStarted { .. }))
+            .any(|event| {
+                matches!(event.payload, EventPayload::TaskCreated { .. })
+                    || matches!(&event.payload, EventPayload::MessageAppended { message }
+                        if message.role == deepagent_core::message::Role::User)
+            });
+        if !has_prior_turn && !run_context.loaded_instructions.is_empty() {
             let cancel = cancellation.cancellation();
-            let context = deepagent_hooks::HookContext::new(
-                session.id(),
-                HookPoint::InstructionsLoaded,
-                deepagent_hooks::HookData::Instructions {
-                    paths: system_manifest
-                        .loaded_paths
-                        .iter()
-                        .map(|path| path.to_string_lossy().to_string())
-                        .collect(),
-                },
-            );
-            if let Err(error) = hooks
-                .dispatch_with_context(
-                    &context,
-                    deepagent_tools::ToolExecutionContext::from_token_and_flag(
-                        cancel.token(),
-                        cancellation.flag(),
-                    ),
-                )
-                .await
-            {
-                tracing::warn!(error = %error, "InstructionsLoaded hook failed");
+            for instruction in &run_context.loaded_instructions {
+                let memory_type = match instruction.source {
+                    deepagent_context::ContextSourceKind::UserInstructions => {
+                        deepagent_hooks::InstructionMemoryType::User
+                    }
+                    deepagent_context::ContextSourceKind::ProjectInstructions => {
+                        deepagent_hooks::InstructionMemoryType::Project
+                    }
+                    _ => continue,
+                };
+                let context = deepagent_hooks::HookContext::new(
+                    session.id(),
+                    HookPoint::InstructionsLoaded,
+                    deepagent_hooks::HookData::InstructionsLoaded {
+                        file_path: instruction.path.to_string_lossy().to_string(),
+                        memory_type,
+                        load_reason: deepagent_hooks::InstructionLoadReason::SessionStart,
+                    },
+                );
+                if let Err(error) = hooks
+                    .dispatch_with_context(
+                        &context,
+                        deepagent_tools::ToolExecutionContext::from_token_and_flag(
+                            cancel.token(),
+                            cancellation.flag(),
+                        ),
+                    )
+                    .await
+                {
+                    tracing::warn!(error = %error, "InstructionsLoaded hook failed");
+                }
             }
         }
         if cancellation.cancellation().is_cancelled() {

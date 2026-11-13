@@ -45,8 +45,8 @@ pub use hook::{
     MAX_HOOK_CONTEXT_BYTES, MAX_HOOK_CONTEXT_TOTAL_BYTES,
 };
 pub use lifecycle::{
-    HookBaseInput, HookContext, HookData, HookPoint, SessionEndReason, SessionStartSource,
-    ToolBatchItem,
+    HookBaseInput, HookContext, HookData, HookPoint, InstructionLoadReason, InstructionMemoryType,
+    SessionEndReason, SessionStartSource, ToolBatchItem,
 };
 pub use permission_rules::{
     bash_prefix_rule, rule_command_prefix, PermissionRules, PermissionRulesHook, RuleDecision,

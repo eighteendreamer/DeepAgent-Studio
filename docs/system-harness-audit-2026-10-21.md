@@ -4772,6 +4772,8 @@ SDK stdio e2e在同轮重新构建的CLI上执行，candidate hash如上；final
 
 ### H-102：InstructionsLoaded 外部 hook 缺少兼容输入必需字段
 
+**当前状态（2026-11-13）：修复中。** 原Windows PowerShell探针已真实复现，根因实现及初步回归通过；最终跨入口、lint/workspace验收、提交与清理尚未闭环。原失败证据保留。
+
 **级别：低（P3，条件性 hooks 兼容缺口）；触发条件：项目声明依赖 Claude Code `InstructionsLoaded` 输入字段的外部 hook，并在会话装配时成功加载指令文件。** hook 仍会被调用；本项是已触发事件的输入 DTO 不兼容，不是该生命周期事件完全未实现。
 
 - 根因与生产路径：`RunAssembler` 以 `HookData::Instructions { paths }` 派发 `HookPoint::InstructionsLoaded`；该类型仅保存路径。`ExternalCommandHook::build_payload()` 因此只序列化 `paths`，加上公共的 `session_id`、`hook_event_name`。正式 ChatService 路径也已触发该 dispatch，但没有传递单文件路径对应的 memory type 或加载原因。
@@ -4779,6 +4781,41 @@ SDK stdio e2e在同轮重新构建的CLI上执行，candidate hash如上；final
 - 成熟实现对照：Claude Code `entrypoints/sdk/coreSchemas.ts::InstructionsLoadedHookInputSchema` 将 `file_path`、`memory_type`、`load_reason` 定义为必需字段，并允许 `globs`、`trigger_file_path`、`parent_file_path`；`utils/claudemd.ts` 在单个 instruction 文件加载时传递路径、memory type 和 load reason。当前系统聚合成一个 paths 数组，语义也不同；借鉴重点是保留事件所需来源元数据，不要求无条件复制 Claude 的所有记忆加载类别。
 - 影响及限制：按 Claude schema 读取 `file_path` 或按 `load_reason`/`memory_type` 筛选的兼容 hook 会拿不到所需字段，可能跳过处理或由其自身报错。仅证明缺字段，没有测试某个第三方脚本的最终行为，也未测试 compaction reload、nested instructions 和条件规则分别对应何种原因。
 - 收敛方向（尚未实施，本地设计）：扩展现有 `HookData::Instructions` 表达每个来源文件及本系统可确认的类型/原因；在 hook 输入 serializer 内对 Claude 兼容字段做明确映射。若本系统无法确定某个来源语义，不伪造 Claude enum，应定义版本化的本地事件字段或在兼容模式下明确拒绝不完整映射。覆盖 root instructions、nested instructions、重载、多个文件和未知来源，并验证真实 hook stdin。
+
+**E-H102-01（2026-11-13，当前原探针及TDD红）**：开始时仅H-103清理状态两文待回填；核对/去重E-H103-04后独立提交`ec4059eb`，未触及用户既有untracked。H-115不重复修复：本轮`cargo test -p deepagent-runtime --lib audit_permission_denied_hook_includes_tool_call_id --offline -j 1 -- --nocapture --test-threads=1`实际1过0败（0.60秒），真实PowerShell PermissionDenied仍保留固定调用ID，拒绝工具执行0次。
+
+H-102原命令`cargo test -p deepagent-app-core --lib audit_instructions_loaded_hook_receives_required_file_metadata --offline -j 1 -- --ignored --nocapture --test-threads=1`先因用户级配置的模型`fable`不在合成catalog中而在hook前失败，不能算原问题复现。随后只隔离当前子进程USERPROFILE并固定本机CARGO_HOME/RUSTUP_HOME，原探针实际0过1败（0.86秒）：真实PowerShell stdin有单项paths及H104公共字段，缺file_path；memory_type/load_reason同样缺失。没有修改用户配置或访问真实模型服务。
+
+再将同一原探针改为默认执行，合成CLAUDE.md/AGENTS.md并继续同一持久会话一次，命令去掉`--ignored`后实际0过1败（2.30秒）：两轮各派发一次包含两个paths的批量payload，均缺file_path。用户确认严格语义：初次root逐文件session_start，nested新加载逐文件nested_traversal，续聊不重复root通知。参考契约来自仓内Claude coreSchemas.ts的必需字段/枚举，以及claudemd.ts/attachments.ts的逐文件生产方，不臆造Local/Managed/include/path_glob_match/compact的现有支持。
+
+操作偏差原样记录：一次strengthen后误用`--ignored`实际0测试，不计验收；一次隔离USERPROFILE却漏设RUSTUP_HOME，Rustup尝试同步stable工具链，小怪立即中断，之后确认无Cargo/rustc/rustup进程，留下精确临时目录`G:/deepagent-h102-empty-home-20261113`约85,978,243字节。删除命令被策略在PowerShell CreateProcess前拒绝，零删除；不绕过/不循环重试。之后均固定本机Cargo/Rustup home且offline。另一条含环境隔离和finally清理的组合命令也在进程启动前被拒绝，未生成其随机临时目录。该意外下载不计离线验收或项目依赖更新，源码/锁文件未变。
+
+**E-H102-02（2026-11-13，根因实现及阶段性验证，尚未关闭）**：复用ContextAssembler真实文件加载点，通过新增`assemble_with_instruction_sources`返回已加载文件的source/path；旧assemble返回值和公开ContextManifest字段布局保持不变，token预算丢弃内容不丢加载来源。HookData增加typed单文件InstructionsLoaded，旧Instructions批量变体保留；统一command/HTTP/host serializer输出file_path、已确认的User/Project、session_start/nested_traversal和单元素paths兼容字段，错配事件不造元数据。AppCore root/nested两生产方按文件派发，设置页合成输入同步；已有取消、信任、审批和hook registry不变。续聊判定需同时覆盖预创建会话/PreparedChat首轮，正补最终回归。
+
+阶段性命令与事实：Context全套68过、集成1过2忽略；Hooks最新全套100过0败（79库+5取消+8去重+8once），但新增跨backend InstructionsLoaded矩阵尚待重跑；AppCore原probe最新实现1过0败（1.97秒），nested5过。AppCore全lib第一次未隔离用户配置1643过41败39忽略（256.88秒），绝大多数`fable`/连带未到达边界，另一个MCP hook旧断言漏H103已新增的tool_use_id；隔离后1683过1败39忽略（297.39秒），唯一仍为该未改旧断言，不能称全库全绿。最初Context夹具误放user文件根目录、随后预期路径正反斜杠不一致曾红，均纠正测试夹具而未改生产加载范围。strict Clippy初次还发现本轮wrapper变成仅测试使用的dead_code，已限定cfg(test)；其余既有AppCore lint保留，最终门禁结果待续记。
+
+**E-H102-03（2026-11-13，最终本机验收及保护性复核，待提交/清理）**：root首轮判定最终复用现有SessionStarted之后的TaskCreated/用户MessageAppended事件，不能只看continue_session是否为None；正式PreparedChat/SDK预创建空会话首轮也必须通知，续聊及恢复已有turn不重复root通知，不新增持久化标记。新测试复用原PowerShell夹具分别走直接ChatService与admit_prepared_input→run_prepared，两条路径均执行首轮与同会话续轮，核对恰好两份逐文件payload。nested每run去重/根路径seed保持原行为。统一matcher现在从typed load_reason筛选，未为其它hook引入新匹配规则。
+
+| 实际命令（仓库根） | 最终结果 |
+|---|---|
+| `cargo test -p deepagent-context --offline -j 1 -- --test-threads=2` | exit0；68库测试+1集成通过，2个既有tokenizer探针忽略。验证User/Project原始来源及budget丢弃后的加载来源保留 |
+| `cargo test -p deepagent-hooks --offline -j 2 -- --test-threads=2 --quiet` | exit0；79库+5取消+8去重+8once，共100过0败0忽略；现有五backend矩阵增加User/session_start与Project/nested_traversal，HTTP为自建回环，command/模型/MCP为合成capture，不调用真实供应商 |
+| `cargo test -p deepagent-app-core --lib h102_ --offline -j 2 -- --nocapture --test-threads=1`（隔离profile/固定Cargo与Rustup home、清除凭据代理环境） | exit0；PreparedChat首轮及续轮真实PowerShell测试1过0败（1.63秒）；原probe最终也在workspace默认实际执行，无ignore |
+| `cargo test -p deepagent-app-core --lib nested_instructions::tests:: --offline -j 1 -- --nocapture --test-threads=1` | 5过0败；逐文件Project/nested_traversal、已加载不重复、根路径不重注入、失败工具对照通过 |
+| `cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=2 --quiet`（隔离HOME/USERPROFILE/APPDATA/LOCALAPPDATA并清除凭据/代理/DEEPAGENT环境，保留系统TEMP与固定Cargo/Rustup home） | exit101；仅2个失败目标：AppCore lib1684过1败48忽略（311.19秒），唯一MCP hook旧断言漏H103的tool_use_id；Prompts lib27过1败，H306既有creative.video-edit.v1空defaultUserPrompt。Runtime482过0败3忽略；Context68/0、Hooks79/0、Builtins376/0/3及真实Kernel/workflow相关target通过。全仓编译阶段10分28秒，非人工有效工时；不把子进程结果块简单累加为唯一用例总数 |
+| `cargo clippy -p deepagent-context -p deepagent-hooks --all-targets --no-deps --offline -j 2 -- -D warnings` | exit0 |
+| `cargo clippy -p deepagent-context -p deepagent-hooks -p deepagent-app-core --all-targets --no-deps --offline -j 2 -- -D warnings` | exit101；本轮dead_code已消除，仍有8处未修改旧lint：context_runtime:483/505 clone_on_copy、http_runtime:332 needless_return、plugin_preparation:14 type_complexity、run_assembler旧base_registry_request参数数、session_title:54 needless_borrow、workflow_audit/media:158 redundant_locals及3129 nonminimal_bool；新修改行与这些primary位置不相交，未抑制或扩修 |
+| `cargo fmt --all -- --check`；`git diff --check` | 均exit0 |
+
+workspace日志SHA256=`DB99B516255C6AFE8B582AC41DC718470FA28727BE48D25A9160B53E6B4D6E34`；最终strict日志=`4AF72BC71C3357DD2F2964822F87D9952286A9851C83BBCD6602F131074D6638`；12份Rust冻结清单=`99AB166D49AC818E7B843DC0A18CD37E0ADCCEFBF805EAD7EEE04EAD632E06CE`，终态逐份核验变化0。工作区用户原untracked均不暂存；无Cargo.lock/数据库schema/Tauri command/TypeScript/frontend改动。未运行独立Tauri或前端构建（无桥接/界面修改），未验其它OS、真实第三方hook、真实模型/收费服务/内网/用户数据或强杀/断电。
+
+兼容性与边界：旧ContextManifest字段及assemble签名保留；HookData非穷举枚举增加typed变体，旧Instructions批量变体保持原生paths形状，不从无来源的legacy调用虚构Claude元数据，也不保证这类外部自定义调用满足兼容schema。新正式生产路径提供User/Project和session_start/nested_traversal；当前没有Local/Managed指令加载、include/path-glob/compact重载生产方，不能伪称已经实现这些加载能力。nested仍每run去重，不扩改跨turn指令缓存；不承诺OS崩溃窗口的hook副作用exactly-once。多文件由一批一次变为逐文件一次属本项明确兼容修正，paths保留单元素数组，依赖批量动作的本地脚本需适配。
+
+保护性核对发现本轮漏做workspace前的实际快照备份：通过的Insta测试按其cleanup_passing实现自动删除了用户原`.snap.new`，小怪没有主动执行删除；原正式`.snap`无修改。已依据本地Insta格式/正式快照/历史G盘合成夹具前缀，在内存重建候选，**只有完整SHA256等于验收前实测值**才保存和写回；恢复946字节，SHA256=`D514BFE28BA6F207C714DDAD2FEFE9E521B3AA1FD7DF1AF243FA2CC2ED911F17`，逐字节身份与原件一致，非接受新快照。原mtime未记录，无法宣称恢复原mtime。恢复副本仅在本轮target文件，不纳入提交；以后workspace前必须实际备份原untracked快照，不能只记hash。保留此失误，不把测试通过等同无副作用。
+
+只读核对测试/Cargo/rustc进程已结束，没有其它命令行引用本轮根；精确profile根及祖先/后代均无reparse，约86,365,081逻辑字节（包含误下载的85,978,243字节工具链缓存及合成测试数据，不是用户配置）。另4个文件：target/h102-workspace-20261113.log（82,423字节）、h102-clippy-20261113.log（5,377）、h102-final-sources-20261113.json（2,322）和h102-recovered-user-snapshot-20261113.bin（946）。此前profile删除已被本机策略拒绝，不重复尝试/提权/换执行器绕过；应在获准PowerShell实际清理这5个精确目标后再只读核验。共享target/debug、C盘原Cargo/Rustup缓存、源码、原.snap.new、node_modules及用户文件不在清理范围。
+
+本项根因实现与限定本机验收完成，独立提交和清理尚未闭环，暂不新增已验收数。306唯一行237验收/28历史跳过/10归并/3撤销/26待修含H180/1修复中H102/1验收保留H66；有效待修25，加H102/H66共27未完整闭环。H180既有授权提交`53a03f9bdfa2ebf797de7e8e465d6c6e055bbc97`对象已核验，不改其代码或执行其ignored审计probe。下一按风险准备P2 H217错误分类；全部剩余170–430有效小时仍为未逐项重校准的历史低置信估算，编译/设备/依赖/策略和人工等待另计，无可靠等待上界或精确完工承诺。
 
 ### H-103：工具生命周期 hook 缺少调用 ID 与真实工具结果
 

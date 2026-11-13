@@ -182,6 +182,38 @@ pub enum SessionEndReason {
     Other,
 }
 
+/// Instruction category exposed by the Claude-compatible load hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstructionMemoryType {
+    User,
+    Project,
+}
+
+impl InstructionMemoryType {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::User => "User",
+            Self::Project => "Project",
+        }
+    }
+}
+
+/// Reason an instruction file entered the current model context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstructionLoadReason {
+    SessionStart,
+    NestedTraversal,
+}
+
+impl InstructionLoadReason {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::SessionStart => "session_start",
+            Self::NestedTraversal => "nested_traversal",
+        }
+    }
+}
+
 /// Point-specific data carried by a [`HookContext`].
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -235,6 +267,12 @@ pub enum HookData {
     },
     Instructions {
         paths: Vec<String>,
+    },
+    /// One newly loaded instruction file and its known source semantics.
+    InstructionsLoaded {
+        file_path: String,
+        memory_type: InstructionMemoryType,
+        load_reason: InstructionLoadReason,
     },
     Permission {
         tool: String,

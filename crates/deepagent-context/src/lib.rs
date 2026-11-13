@@ -34,7 +34,9 @@ pub mod prompt;
 pub mod reminder;
 pub mod tokenizer;
 
-pub use assembler::{ContextAssembler, ContextEntry, ContextManifest, ContextSourceKind};
+pub use assembler::{
+    ContextAssembler, ContextEntry, ContextManifest, ContextSourceKind, LoadedInstruction,
+};
 pub use attachment::{
     AttachmentContext, AttachmentLayer, AttachmentProvider, AttachmentRegistry, ContextAttachment,
 };

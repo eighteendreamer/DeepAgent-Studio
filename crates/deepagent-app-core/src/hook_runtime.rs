@@ -233,8 +233,10 @@ fn sample_hook_data(event: HookEvent, matcher: Option<&str>) -> HookData {
         HookEvent::Notification => HookData::Notification {
             message: "Test notification from hooks settings".to_string(),
         },
-        HookEvent::InstructionsLoaded => HookData::Instructions {
-            paths: vec!["CLAUDE.md".to_string()],
+        HookEvent::InstructionsLoaded => HookData::InstructionsLoaded {
+            file_path: "CLAUDE.md".to_string(),
+            memory_type: deepagent_hooks::InstructionMemoryType::Project,
+            load_reason: deepagent_hooks::InstructionLoadReason::SessionStart,
         },
         HookEvent::SessionStart => HookData::SessionStart {
             source: deepagent_hooks::SessionStartSource::Startup,

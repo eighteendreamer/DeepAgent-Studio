@@ -26,7 +26,7 @@ use crate::knowledge_service::KnowledgeService;
 use crate::plugin_runtime::{PluginOutputStyleEntry, PluginRuntimeProjection};
 use crate::settings::{SandboxMode, SettingsService};
 use crate::skill_catalog_reminder::SkillCatalogSendState;
-use crate::system_context::{build_context_pack_snapshot, build_system_manifest_with_permissions};
+use crate::system_context::build_context_pack_snapshot;
 use crate::tool_manifest::{deferred_tools_announcement, ToolManifest};
 
 #[cfg(test)]
@@ -1592,6 +1592,7 @@ pub(crate) struct RunContextRequest<'a> {
 
 pub(crate) struct BuiltRunContext {
     pub(crate) system_manifest: ContextManifest,
+    pub(crate) loaded_instructions: Vec<deepagent_context::LoadedInstruction>,
     pub(crate) system_prompt: String,
     pub(crate) final_user_prompt: String,
     pub(crate) context_usage: deepagent_context::ContextUsageSnapshot,
@@ -1631,18 +1632,19 @@ pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<
         }
     });
 
-    let system_manifest = build_system_manifest_with_permissions(
-        request.root,
-        request.sandbox_mode,
-        output_style_block,
-        plugin_output_style_block,
-        tool_catalog_block,
-        mcp_instructions_block,
-        skill_catalog_blocks,
-        request.context_policy.prompt_budget,
-        user_language.as_deref(),
-        Some(request.permission_rules),
-    );
+    let (system_manifest, loaded_instructions) =
+        crate::system_context::build_system_manifest_with_instruction_sources(
+            request.root,
+            request.sandbox_mode,
+            output_style_block,
+            plugin_output_style_block,
+            tool_catalog_block,
+            mcp_instructions_block,
+            skill_catalog_blocks,
+            request.context_policy.prompt_budget,
+            user_language.as_deref(),
+            Some(request.permission_rules),
+        );
     let system_prompt = system_manifest.render();
 
     // User-input layer attachments (knowledge passive block, remote context)
@@ -1714,6 +1716,7 @@ pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<
 
     Ok(BuiltRunContext {
         system_manifest,
+        loaded_instructions,
         system_prompt,
         final_user_prompt,
         context_usage,

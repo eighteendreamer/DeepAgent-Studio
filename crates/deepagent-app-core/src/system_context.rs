@@ -53,6 +53,7 @@ pub(crate) fn build_system_manifest(
 /// policy to automatic workspace enrichment. Tool-level permission hooks run
 /// later, but a scanner must not read a file into model-visible context when
 /// the same effective policy denies or asks for `Read`/`read_file`.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_system_manifest_with_permissions(
     root: &Path,
@@ -66,6 +67,34 @@ pub(crate) fn build_system_manifest_with_permissions(
     user_language: Option<&str>,
     permission_rules: Option<&PermissionRules>,
 ) -> ContextManifest {
+    build_system_manifest_with_instruction_sources(
+        root,
+        sandbox_mode,
+        output_style_block,
+        plugin_output_style_block,
+        tool_catalog_block,
+        mcp_instructions_block,
+        skill_catalog_blocks,
+        prompt_budget,
+        user_language,
+        permission_rules,
+    )
+    .0
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_system_manifest_with_instruction_sources(
+    root: &Path,
+    sandbox_mode: SandboxMode,
+    output_style_block: Option<String>,
+    plugin_output_style_block: Option<String>,
+    tool_catalog_block: Option<String>,
+    mcp_instructions_block: Option<String>,
+    skill_catalog_blocks: Vec<String>,
+    prompt_budget: usize,
+    user_language: Option<&str>,
+    permission_rules: Option<&PermissionRules>,
+) -> (ContextManifest, Vec<deepagent_context::LoadedInstruction>) {
     let today = current_date_string();
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
@@ -207,7 +236,7 @@ pub(crate) fn build_system_manifest_with_permissions(
         );
     }
 
-    assembler.assemble(&HeuristicTokenizer::new(), prompt_budget)
+    assembler.assemble_with_instruction_sources(&HeuristicTokenizer::new(), prompt_budget)
 }
 
 fn workspace_scan_allowed(permission_rules: Option<&PermissionRules>) -> bool {

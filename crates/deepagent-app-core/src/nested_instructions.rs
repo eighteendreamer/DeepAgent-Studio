@@ -211,18 +211,22 @@ impl ToolResultDecorator for NestedInstructionsDecorator {
             .iter()
             .map(|(path, _)| path.display().to_string())
             .collect();
-        if let Err(error) = self
-            .hooks
-            .dispatch(&HookContext::new(
-                self.session_id,
-                HookPoint::InstructionsLoaded,
-                HookData::Instructions {
-                    paths: paths.clone(),
-                },
-            ))
-            .await
-        {
-            tracing::warn!(error = %error, "InstructionsLoaded hook failed for nested instructions");
+        for path in &paths {
+            if let Err(error) = self
+                .hooks
+                .dispatch(&HookContext::new(
+                    self.session_id,
+                    HookPoint::InstructionsLoaded,
+                    HookData::InstructionsLoaded {
+                        file_path: path.clone(),
+                        memory_type: deepagent_hooks::InstructionMemoryType::Project,
+                        load_reason: deepagent_hooks::InstructionLoadReason::NestedTraversal,
+                    },
+                ))
+                .await
+            {
+                tracing::warn!(error = %error, "InstructionsLoaded hook failed for nested instruction");
+            }
         }
         tracing::info!(
             count = paths.len(),
@@ -252,6 +256,23 @@ fn normalize(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct RecordingHook(Arc<Mutex<Vec<HookData>>>);
+
+    #[async_trait]
+    impl deepagent_hooks::Hook for RecordingHook {
+        fn name(&self) -> &str {
+            "record-instructions-loaded"
+        }
+
+        async fn run(
+            &self,
+            context: &HookContext,
+        ) -> deepagent_core::error::Result<deepagent_hooks::HookOutcome> {
+            self.0.lock().unwrap().push(context.data.clone());
+            Ok(deepagent_hooks::HookOutcome::Continue)
+        }
+    }
 
     fn decorator(root: &Path, seeded: Vec<PathBuf>) -> NestedInstructionsDecorator {
         NestedInstructionsDecorator::new(
@@ -350,5 +371,69 @@ mod tests {
         decorator.decorate("write_file", &mut output).await;
         let reminder = output.value["_system_reminder"].as_str().unwrap();
         assert!(reminder.contains("pkg rules"));
+    }
+
+    #[tokio::test]
+    async fn nested_instructions_dispatch_one_project_event_per_new_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nested = tmp.path().join("src");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("CLAUDE.md"), "claude rules").unwrap();
+        std::fs::write(nested.join("AGENTS.md"), "native rules").unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut hooks = HookRegistry::new();
+        hooks.register(
+            HookPoint::InstructionsLoaded,
+            Arc::new(RecordingHook(calls.clone())),
+        );
+        let decorator = NestedInstructionsDecorator::new(
+            tmp.path().to_path_buf(),
+            Vec::new(),
+            Arc::new(hooks),
+            SessionId::new(),
+        );
+
+        let target = nested.join("main.rs");
+        let mut output = output_with_path(target.to_string_lossy().as_ref());
+        decorator.decorate("read_file", &mut output).await;
+        let events = calls.lock().unwrap().clone();
+        assert_eq!(events.len(), 2);
+        let mut paths = events
+            .iter()
+            .map(|event| match event {
+                HookData::InstructionsLoaded {
+                    file_path,
+                    memory_type,
+                    load_reason,
+                } => {
+                    assert_eq!(
+                        *memory_type,
+                        deepagent_hooks::InstructionMemoryType::Project
+                    );
+                    assert_eq!(
+                        *load_reason,
+                        deepagent_hooks::InstructionLoadReason::NestedTraversal
+                    );
+                    file_path.clone()
+                }
+                other => panic!("unexpected instructions hook data: {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        paths.sort();
+        assert_eq!(
+            paths,
+            vec![
+                nested.join("AGENTS.md").display().to_string(),
+                nested.join("CLAUDE.md").display().to_string(),
+            ]
+        );
+
+        let mut second = output_with_path(target.to_string_lossy().as_ref());
+        decorator.decorate("read_file", &mut second).await;
+        assert_eq!(
+            calls.lock().unwrap().len(),
+            2,
+            "already announced paths stay deduplicated"
+        );
     }
 }

@@ -214,7 +214,7 @@ impl HookEvent {
         }
     }
 
-    /// Whether `matcher` applies (only the tool events filter by tool name).
+    /// Whether `matcher` filters this event's tool name or load reason.
     pub fn uses_matcher(&self) -> bool {
         matches!(
             self,
@@ -223,6 +223,7 @@ impl HookEvent {
                 | Self::PostToolUseFailure
                 | Self::PermissionRequest
                 | Self::PermissionDenied
+                | Self::InstructionsLoaded
         )
     }
 }
@@ -1334,6 +1335,9 @@ fn external_hook_applies(
     }
     match (event.uses_matcher(), matcher, &ctx.data) {
         (true, Some(matcher), HookData::Tool { name, .. }) => matcher_matches(matcher, name),
+        (true, Some(matcher), HookData::InstructionsLoaded { load_reason, .. }) => {
+            matcher_matches(matcher, load_reason.label())
+        }
         _ => true,
     }
 }
@@ -1667,6 +1671,17 @@ fn build_hook_payload(event: HookEvent, ctx: &HookContext) -> serde_json::Value 
         HookData::Instructions { paths } => {
             payload.insert("paths".into(), serde_json::json!(paths));
         }
+        HookData::InstructionsLoaded {
+            file_path,
+            memory_type,
+            load_reason,
+        } if event == HookEvent::InstructionsLoaded && ctx.point == event.point() => {
+            payload.insert("file_path".into(), serde_json::json!(file_path));
+            payload.insert("memory_type".into(), serde_json::json!(memory_type.label()));
+            payload.insert("load_reason".into(), serde_json::json!(load_reason.label()));
+            payload.insert("paths".into(), serde_json::json!([file_path]));
+        }
+        HookData::InstructionsLoaded { .. } => {}
         HookData::Permission {
             tool,
             arguments,
@@ -2142,6 +2157,57 @@ mod tests {
     use super::*;
     use deepagent_core::id::SessionId;
     use std::sync::Mutex;
+
+    #[test]
+    fn instructions_loaded_projects_one_known_file_and_rejects_mismatched_context() {
+        let context = HookContext::new(
+            SessionId::nil(),
+            HookPoint::InstructionsLoaded,
+            HookData::InstructionsLoaded {
+                file_path: "C:/workspace/CLAUDE.md".to_string(),
+                memory_type: crate::InstructionMemoryType::Project,
+                load_reason: crate::InstructionLoadReason::NestedTraversal,
+            },
+        );
+        let payload = build_hook_payload(HookEvent::InstructionsLoaded, &context);
+        assert_eq!(payload["file_path"], "C:/workspace/CLAUDE.md");
+        assert_eq!(payload["memory_type"], "Project");
+        assert_eq!(payload["load_reason"], "nested_traversal");
+        assert_eq!(
+            payload["paths"],
+            serde_json::json!(["C:/workspace/CLAUDE.md"])
+        );
+
+        let mismatched = build_hook_payload(HookEvent::SessionStart, &context);
+        assert!(mismatched.get("file_path").is_none());
+        assert!(mismatched.get("memory_type").is_none());
+        assert!(mismatched.get("load_reason").is_none());
+    }
+
+    #[test]
+    fn instructions_loaded_matcher_filters_by_load_reason() {
+        let context = HookContext::new(
+            SessionId::nil(),
+            HookPoint::InstructionsLoaded,
+            HookData::InstructionsLoaded {
+                file_path: "C:/workspace/src/CLAUDE.md".to_string(),
+                memory_type: crate::InstructionMemoryType::Project,
+                load_reason: crate::InstructionLoadReason::NestedTraversal,
+            },
+        );
+        assert!(external_hook_applies(
+            HookEvent::InstructionsLoaded,
+            Some("nested_traversal"),
+            None,
+            &context
+        ));
+        assert!(!external_hook_applies(
+            HookEvent::InstructionsLoaded,
+            Some("session_start"),
+            None,
+            &context
+        ));
+    }
 
     /// A runner that returns a canned result and records the stdin it saw.
     struct MockRunner {

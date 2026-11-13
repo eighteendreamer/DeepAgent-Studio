@@ -128,6 +128,24 @@ async fn payload_matrix(base: Option<crate::HookBaseInput>) {
     let mut cases = lifecycle_cases();
     cases.extend([
         (
+            HookEvent::InstructionsLoaded,
+            HookData::InstructionsLoaded {
+                file_path: "C:/synthetic/CLAUDE.md".into(),
+                memory_type: crate::InstructionMemoryType::User,
+                load_reason: crate::InstructionLoadReason::SessionStart,
+            },
+            json!({"file_path":"C:/synthetic/CLAUDE.md","paths":["C:/synthetic/CLAUDE.md"],"memory_type":"User","load_reason":"session_start"}),
+        ),
+        (
+            HookEvent::InstructionsLoaded,
+            HookData::InstructionsLoaded {
+                file_path: "C:/synthetic/src/AGENTS.md".into(),
+                memory_type: crate::InstructionMemoryType::Project,
+                load_reason: crate::InstructionLoadReason::NestedTraversal,
+            },
+            json!({"file_path":"C:/synthetic/src/AGENTS.md","paths":["C:/synthetic/src/AGENTS.md"],"memory_type":"Project","load_reason":"nested_traversal"}),
+        ),
+        (
             HookEvent::UserPromptSubmit,
             HookData::prompt("synthetic"),
             json!({"prompt":"synthetic"}),

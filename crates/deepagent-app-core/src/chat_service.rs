@@ -3316,14 +3316,29 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    #[ignore = "audit H-102: InstructionsLoaded payload must match its advertised schema"]
     async fn audit_instructions_loaded_hook_receives_required_file_metadata() {
+        check_instruction_hook_file_metadata(false).await;
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn h102_prepared_first_turn_notifies_each_instruction_once() {
+        check_instruction_hook_file_metadata(true).await;
+    }
+
+    #[cfg(windows)]
+    async fn check_instruction_hook_file_metadata(prepared_first_turn: bool) {
         let (db, settings, dir) = seeded().await;
         let root = dir.path().join("workspace");
         std::fs::create_dir_all(root.join(".deepagent")).unwrap();
         std::fs::write(
             root.join("CLAUDE.md"),
             "Use the audit fixture instructions.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("AGENTS.md"),
+            "Use the native audit instructions.\n",
         )
         .unwrap();
         let projects = Arc::new(crate::project_service::ProjectService::new(db.clone()));
@@ -3338,7 +3353,7 @@ mod tests {
             "hooks": [{
                 "type": "command", "shell": "powershell", "timeout": 5,
                 "command": format!(
-                    "$payload = [Console]::In.ReadToEnd(); [System.IO.File]::WriteAllText('{quoted_marker}', $payload)"
+                    "$payload = [Console]::In.ReadToEnd(); [System.IO.File]::AppendAllText('{quoted_marker}', $payload + [Environment]::NewLine)"
                 )
             }]
         }]}});
@@ -3348,19 +3363,79 @@ mod tests {
         )
         .unwrap();
 
-        let chat = ChatService::new(db, settings, chat_transport(), &root).with_projects(projects);
-        chat.run("audit instruction hook payload", |_| {}, |_| {})
-            .await
+        let chat =
+            ChatService::new(db.clone(), settings, chat_transport(), &root).with_projects(projects);
+        let session_id = if prepared_first_turn {
+            let session = deepagent_session::Session::create_in_project(
+                &db,
+                &deepagent_core::clock::SystemClock,
+                None,
+                deepagent_core::SessionMode::Normal,
+                None,
+            )
             .unwrap();
+            let run_id = format!("run_{}", deepagent_core::id::EventId::new());
+            let prepared = chat
+                .admit_prepared_input(
+                    &run_id,
+                    &session.id().to_string(),
+                    "audit instruction hook payload",
+                    HarnessRunOverrides::default(),
+                )
+                .unwrap();
+            chat.run_prepared(prepared, "audit instruction hook payload", |_| {}, |_| {})
+                .await
+                .unwrap()
+        } else {
+            chat.run("audit instruction hook payload", |_| {}, |_| {})
+                .await
+                .unwrap()
+        };
+        chat.run_in_session(
+            "continue audit instruction hook payload",
+            Some(&session_id),
+            None,
+            None,
+            Vec::new(),
+            None,
+            false,
+            None,
+            |_| {},
+            |_| {},
+        )
+        .await
+        .unwrap();
 
-        let payload = std::fs::read_to_string(&marker)
-            .expect("InstructionsLoaded hook should receive and persist its stdin payload");
-        let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
-        eprintln!("InstructionsLoaded payload: {payload}");
-        assert_eq!(payload["hook_event_name"], "InstructionsLoaded");
-        assert!(payload["file_path"].is_string(), "missing file_path");
-        assert!(payload["memory_type"].is_string(), "missing memory_type");
-        assert!(payload["load_reason"].is_string(), "missing load_reason");
+        let payloads = std::fs::read_to_string(&marker)
+            .expect("InstructionsLoaded hook should receive and persist its stdin payload")
+            .lines()
+            .map(serde_json::from_str::<serde_json::Value>)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        eprintln!("InstructionsLoaded payloads: {payloads:?}");
+        assert_eq!(
+            payloads.len(),
+            2,
+            "one hook call is expected per loaded file"
+        );
+        let expected_paths = [
+            root.join("CLAUDE.md").to_string_lossy().into_owned(),
+            root.join("AGENTS.md").to_string_lossy().into_owned(),
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+        let actual_paths = payloads
+            .iter()
+            .map(|payload| {
+                assert_eq!(payload["hook_event_name"], "InstructionsLoaded");
+                let file_path = payload["file_path"].as_str().expect("missing file_path");
+                assert_eq!(payload["paths"], serde_json::json!([file_path]));
+                assert_eq!(payload["memory_type"], "Project");
+                assert_eq!(payload["load_reason"], "session_start");
+                file_path.to_owned()
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual_paths, expected_paths);
     }
 
     #[cfg(windows)]
