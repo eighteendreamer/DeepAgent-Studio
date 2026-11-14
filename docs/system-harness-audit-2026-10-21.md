@@ -1,10 +1,10 @@
 # DeepAgent Studio 全系统 Harness 审查
 
-## 修复阶段当前进度（2026-11-14）
+## 修复阶段当前进度（2026-11-15）
 
 用户已授权按本报告逐项进行本地代码修复与测试；已修复、撤销和归并条目跳过，不重新计数。分析阶段完成不再是当前总体任务的完成状态。每项完成后更新原项状态、保留失败证据、独立提交并汇报验收与剩余工时。本轮不操作真实用户文件或外部服务。
 
-**当前续接（2026-11-15）**：307唯一台账：251验收、29历史跳过、10归并、3撤销、13待修含H180、H66验收保留1、修复中/阻塞0，有效未完整闭环14。H105已按E-H105-01～02完成Stop hook字段修复、Hooks/Runtime回归和三根清理闭环，代码提交8b89b9d7；strict旧告警与工具链fmt缺失保留。H99已闭环，下一准备H106。历史汇总按原日期保留。
+**当前续接（2026-11-15）**：307唯一台账：251验收、29历史跳过、10归并、3撤销、12待修含H180、H106修复中1、H66验收保留1、阻塞0，有效未完整闭环13。H105已按E-H105-01～02闭环，代码8b89b9d7、双文687a2678；strict旧告警与工具链fmt缺失保留。H106原probe隔离复现0过1败，尚无生产修改，分类契约待用户选择，详E-H106-01。历史汇总按原日期保留。
 
 **历史唯一台账（2026-11-12，H107验收补强/提交/清理已闭环）**：306行233已修复并验收、28历史跳过、10归并、3撤销、31待修含H180授权不修、0修复中/阻塞、1验收保留H66。30有效待处理加H66共31项有效未完整闭环。本轮恢复H107验收关闭1、新增生产修复0；原生产64f9d169不变，补强test提交629a42784ca4bf080f53ab19139761adeb7aff17，hash/清理回填见E17。SDK完整默认/全特性各89/0/5、CLI同宿主/busy及AppCore/原probe过，strict依赖旧失败及未重跑范围保留，详原项及[台账](system-harness-repair-progress.md)。非全系统全绿、不推送，整个任务未完成。
 
@@ -5021,6 +5021,8 @@ AppCore `cargo clippy -p deepagent-app-core --all-targets --no-deps --offline -j
 
 ### H-106：StopFailure hook 缺少必需的 error 分类
 
+**当前状态：修复中（2026-11-15，E-H106-01）。** 原缺字段已在隔离环境复现；尚无生产修复或验收提交。
+
 **级别：低（P3，条件性 hooks 事件契约缺陷）；触发条件：已授权项目配置 `Stop` hook 拒绝候选答复，且同时配置 `StopFailure` hook。** 未配置这两个 hook 或 Stop 未拒绝时不触发。
 
 - 根因与生产路径：`RuntimeEngine::completion_gate()` 收到 Stop hook 的 `Deny`/`Ask` 后调用 `fire_stop_failure()`；该函数将候选答复和拒绝原因拼成一段 `content` 并通过 `HookData::Response` 派发。`ExternalCommandHook::build_payload()` 只序列化 `content`，没有生成错误分类字段。
@@ -5028,6 +5030,12 @@ AppCore `cargo clippy -p deepagent-app-core --all-targets --no-deps --offline -j
 - 成熟实现对照：Claude Code `entrypoints/sdk/coreSchemas.ts::StopFailureHookInputSchema` 要求 `error`，类型为 `SDKAssistantMessageErrorSchema` 的枚举（`authentication_failed`、`billing_error`、`rate_limit`、`invalid_request`、`server_error`、`unknown`、`max_output_tokens`）；候选答复和 Stop hook 拒绝原因不是这些模型错误类别，不能把文本直接冒充 enum。Claude 的 hook 构造器从 API 失败上下文构造该事件。
 - 影响及限制：依赖该结构化字段的兼容脚本会因 payload 校验失败，或无法区分 API 失败与 Stop hook 拒绝。本探针证明的是 Stop veto 产生的失败事件没有 typed error；没有测试 API 请求失败时是否会派发 StopFailure，也没有证明第三方脚本的实际运行结果。
 - 收敛方向（尚未实施，本地设计）：先划清本系统 `StopFailure` 的触发语义。若仅表示候选答复被 hook 拒绝，应扩展事件输入保留拒绝原因，并在版本化的本地字段表达，而不是伪造 Claude API error enum；若宣称完整 Claude 兼容，则需按其实际 API failure 触发条件及错误类型构造 payload。补测 Stop veto、模型失败、重试成功/耗尽和外部 schema 校验，避免混淆 hook 决策拒绝与供应商请求失败。
+
+**E-H106-01（2026-11-15，原probe隔离复核与契约准备）**：H105双文收尾已独立提交687a2678，源码未改。首次执行 `cargo +1.88.0 test -p deepagent-app-core --lib chat_service::tests::audit_stop_failure_hook_payload_includes_error --target-dir G:/h106-fixtures-20261115/target --locked --offline -j 2 -- --ignored --exact --nocapture --test-threads=1`，冷构建7分34秒通过，但测试被环境配置的未知模型fable挡在hook前，0过1败；此结果不是H106行为复现，不为取绿修改真实配置。按ConfigOverlay现有USERPROFILE/managed路径依据，将HOME、USERPROFILE、APPDATA、LOCALAPPDATA、TEMP/TMP及managed目录全部设到本项fixture后，用同一已编译原测试二进制exact复跑：exit101、0过1败、4.49秒；真实Stop首次拒绝、重试完成，真实StopFailure stdin包含原content和公共字段，仍缺error，原断言missing required error失败。日志original-probe-isolated.log的SHA256=1425BB8E904A1FA31D065616DF613A6226FE57906E008B4D3A80CD24C52C659B。测试仅使用MemorySecretStore、MockTransport和临时文件/SQLite，未请求真实模型或修改用户配置。
+
+已沿唯一链核对completion_gate两处BeforeResponse/Stop拒绝，以及H117最终CoreError::Provider派发；三者现共用fire_stop_failure并把类型压入Response.content。设置页sample_hook_data也把StopFailure当普通Response，command/HTTP/host动作共用build_hook_payload。已核对本地Claude schema/构造器，其error仅为API错误enum，不能拿hook拒绝原因伪造该枚举。已向用户询问是否采用版本化DeepAgent原生分类并保留现有两类触发语义；答复前只完成不依赖此决策的准备，不修改生产、测试或外部契约。本项预计尚余2–6有效修复验收小时，依据Hooks/Runtime/AppCore的typed生产消费、回归及全仓门禁，冷构建与人工等待另计，未验范围不作通过声明。
+
+本次重新逐行核对307唯一编号/8列：251验收、29历史跳过、10归并、3撤销、12待修含H180、H106修复中1、H66保留1。未闭环槽位14含H180，排除授权不修H180后为13（11有效待修+H106+H66）；纠正前轮顶部多算1的剩余数，不新增验收/跳过/归并/撤销。整体目标active，下一步仍H106；全余170–430有效小时仍为未逐项重估的低置信历史区间，设备/依赖/编译/环境/人工等待另计，无可靠日历上界。fixture暂留供同一项后续复用，验收后按授权边界清理。
 
 ### 复核但未登记：Responses `tool_search_call`
 

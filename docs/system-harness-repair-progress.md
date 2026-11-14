@@ -1,8 +1,8 @@
 # Harness 问题修复进度
 
-## 当前状态与计数口径（2026-11-14）
+## 当前状态与计数口径（2026-11-15）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；当前247项均限各自所列本机验收；H107在E14重新打开后经E16/E17验收补强、提交与清理恢复关闭，H108已按E05闭环，H-169经E06核实清理完成后新增验收1项，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；该次只纠正汇总，不计为新增修复。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；当前251项均限各自所列本机验收；H107在E14重新打开后经E16/E17验收补强、提交与清理恢复关闭，H108已按E05闭环，H-169经E06核实清理完成后新增验收1项，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；该次只纠正汇总，不计为新增修复。
 
 本台账按 **H-01～H-307 的 307 个编号槽位一一对应（306个历史编号与独立新证H307）**，编号槽位不等于有效缺陷数。历史306槽位原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
@@ -13,11 +13,11 @@
 | 归并 | 10 | H173同根归并H127；H243归并H53；只在唯一有效项修复，不增加完成数 |
 | 撤销 | 3 | H-211/H-263/H-305，不作为缺陷或修复成果 |
 | 已修复（验收保留） | 1 | H66按用户2026-11-10收尾要求交付代码；现有定向验证有效，不记作完整验收通过，残余范围见E-H66-08 |
-| 修复中 | 0 | H105已按E-H105-01～02修复、回归和清理闭环，下一准备H106 |
-| 待修复 | 13 | 含H180授权不修；12项有效待处理 |
+| 修复中 | 1 | H106原probe隔离复现，尚无生产修改；版本化原生分类契约待用户选择 |
+| 待修复 | 12 | 含H180授权不修；11项有效待处理 |
 | 阻塞待处理 | 0 | H94本轮fixture及启动脚本已不存在，10份输入及3份原件独立核验一致 |
 
-未完整闭环槽位当前为 **15（含H180授权不修；有效未闭环14：13待修、H66验收保留1）**。307唯一主行：251验收、29历史跳过、10归并、3撤销、13待修、修复中/阻塞0、验收保留1；H105新增完整验收1、H99/H98/H100/H94/H297不重复计数。不报完成率。
+未完整闭环槽位当前为 **14（含H180授权不修；有效未闭环13：11有效待修、H106修复中1、H66验收保留1）**。307唯一主行：251验收、29历史跳过、10归并、3撤销、12待修、修复中1/阻塞0、验收保留1；H105已闭环且不重复计数。逐行重算纠正前轮顶部剩余数多算1的问题，不新增验收/跳过/归并/撤销。不报完成率。
 
 H296已按E01～05完成原红→单一resolver修复→正式消费链/全仓门禁→清理闭环；19份冻结输入、原CLI/快照/sidecar保持，完整workspace5425/5/140、前端358/1及strict旧8+2原样保留，不称全仓全绿。独立提交`e9c55cab`，E06仅普通文档回填真实hash。H157的344d907c/0142b745及H168等为前轮成果，不重计；H155/H156尚待的历史清理不冒领。本项实现/验收/清理余0，下一准备H297本地token计量压力，先原probe及依赖核对。整体余170–430有效小时仍为未逐项重估的低置信历史分组估算，依据剩余模型/Hook/工具/画布跨层修改与验收；编译、设备、依赖、策略和人工等待另计，无可靠日历上界。
 
@@ -87,6 +87,12 @@ H100按本机离线Rust/TS SDK与真实CLI消费范围已修复并验收；未�
 **E-H105-01（2026-11-15，原探针复核）**：隔离Windows离线运行原ignored探针 `cargo +1.88.0 test -p deepagent-app-core --lib chat_service::tests::audit_stop_hook_payload_includes_stop_hook_active --target-dir G:/h105-fixtures-20261115/target --locked --offline -j 2 -- --ignored --exact --nocapture --test-threads=1`，真实Stop命令hook捕获payload但缺少 `stop_hook_active`，0过/1败；payload同时含已有base字段和候选答复，未访问真实模型/凭据/公网。该红证据保留。
 
 **E-H105-02（2026-11-15，修复、回归与清理）**：代码/测试提交 `8b89b9d7f5c681bb76bc04f6e5820a755dbac6cd`（【fix】补齐Stop hook活动状态），仅 `external_hooks.rs` 与H105正式探针；`build_hook_payload`在 `HookEvent::Stop`统一写入稳定布尔 `stop_hook_active=false`。当前完成门没有递归Stop状态，不伪造重入；StopFailure/H106、H104公共字段和SubagentStop独立边界不混修。隔离绿探针真实1/0，payload显示 `stop_hook_active:false`；Hooks全套79/0及cancellation5、dedup8、once8通过，Runtime `stop_failure_lifecycle`通过。默认 `cargo fmt --all -- --check`通过；Hooks strict exit101仅3项既有 `uninlined_format_args`，`+1.88` rustfmt组件缺失不被绕过。清理脚本SHA256=`3DA71AFCD9895BA651EFF44C942CB7375B75E9E36F076853B2B4E9037C2C0A74`，清理前fixture6478文件/5766917263逻辑字节，三根remaining=0；G盘free62462885888→67950977024字节。9份输入及CLI、用户snap.new、sidecar三份原件独立核验一致，共享target/debug、node_modules、公共Cargo缓存、用户文件未删。本项余0，下一准备H106。
+
+**E-H106-01（2026-11-15，原probe隔离复核与契约准备）**：H105双文收尾已独立提交687a2678，源码未改。首次执行 `cargo +1.88.0 test -p deepagent-app-core --lib chat_service::tests::audit_stop_failure_hook_payload_includes_error --target-dir G:/h106-fixtures-20261115/target --locked --offline -j 2 -- --ignored --exact --nocapture --test-threads=1`，冷构建7分34秒通过，但测试被环境配置的未知模型fable挡在hook前，0过1败；此结果不是H106行为复现，不为取绿修改真实配置。按ConfigOverlay现有USERPROFILE/managed路径依据，将HOME、USERPROFILE、APPDATA、LOCALAPPDATA、TEMP/TMP及managed目录全部设到本项fixture后，用同一已编译原测试二进制exact复跑：exit101、0过1败、4.49秒；真实Stop首次拒绝、重试完成，真实StopFailure stdin包含原content和公共字段，仍缺error，原断言missing required error失败。日志original-probe-isolated.log的SHA256=1425BB8E904A1FA31D065616DF613A6226FE57906E008B4D3A80CD24C52C659B。测试仅使用MemorySecretStore、MockTransport和临时文件/SQLite，未请求真实模型或修改用户配置。
+
+已沿唯一链核对completion_gate两处BeforeResponse/Stop拒绝，以及H117最终CoreError::Provider派发；三者现共用fire_stop_failure并把类型压入Response.content。设置页sample_hook_data也把StopFailure当普通Response，command/HTTP/host动作共用build_hook_payload。已核对本地Claude schema/构造器，其error仅为API错误enum，不能拿hook拒绝原因伪造该枚举。已向用户询问是否采用版本化DeepAgent原生分类并保留现有两类触发语义；答复前只完成不依赖此决策的准备，不修改生产、测试或外部契约。本项预计尚余2–6有效修复验收小时，依据Hooks/Runtime/AppCore的typed生产消费、回归及全仓门禁，冷构建与人工等待另计，未验范围不作通过声明。
+
+本次重新逐行核对307唯一编号/8列：251验收、29历史跳过、10归并、3撤销、12待修含H180、H106修复中1、H66保留1。未闭环槽位14含H180，排除授权不修H180后为13（11有效待修+H106+H66）；纠正前轮顶部多算1的剩余数，不新增验收/跳过/归并/撤销。整体目标active，下一步仍H106；全余170–430有效小时仍为未逐项重估的低置信历史区间，设备/依赖/编译/环境/人工等待另计，无可靠日历上界。fixture暂留供同一项后续复用，验收后按授权边界清理。
 
 ## H-94 相邻 reasoning 投影（历史已修复跳过，2026-11-14）
 
@@ -6476,7 +6482,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-103：工具生命周期 hook 缺少调用 ID 与真实工具结果](system-harness-audit-2026-10-21.md#h-103工具生命周期-hook-缺少调用-id-与真实工具结果) | P3 | 已修复并验收 | E-H103-01红证据保留；E-H103-02代码/定向验收；E-H103-03代码commit；E-H103-04核验两根目录不存在；非H-115归并 | 现有HookData::Tool携带可选call_id/result/error；ToolPipeline透传稳定身份和规范预算后ToolOutput.value；统一serializer按事件构造标准字段 | Hooks98/0；Runtime原probe成功/失败各1/0；并发Runtime回归1/0；ToolPipeline22/0/1忽略；builtins376/0/3忽略；AppCore synthetic入口1/0、cargo check通过、fmt与hooks strict通过。Runtime全lib481/1/3，唯一既有checkpoint DACL失败；Runtime/AppCore strict lint各被既有告警阻断；详情见审计E-H103-02 | `da5f3291ca522444f6c5166e238dce6b1cfd7856`（代码/测试）；`364d1de5448e9933a385897f9073d229a9b78895`（清理阻塞回填）；`ec4059eb`（清理状态回填） | E-H103-04核验两根当前均不存在，H103完整交付余0；下一项H-102。公开辅助构造器原签名保留，direct struct variant需同步新字段；参数改写、真实截断和其他OS未动态验 |
 | [H-104：Claude 兼容 hook 公共输入缺少 transcript_path 和 cwd](system-harness-audit-2026-10-21.md#h-104claude-兼容-hook-公共输入缺少-transcript_path-和-cwd) | P3 | 已修复并验收 | 用户接受DeepAgent原生只读视图；E06已核验两根不存在，提交/清理闭环 | 唯一外部Hook边界提供真实cwd与callback租约式原生Event快照；复用EventStore/JSON导出 | E-H104-01～06：原probe默认1/0、新9/0、Hooks97/0、当前CLI＋SDK各89/0/5、Tauri/fmt通过；全仓5332/4/152和strict旧失败保留 | 6445d497719ef915e23280a276cd9c62f49e15c8 | 非Claude JSONL；readonly非沙箱、强杀可能残留、O(n)成本未基准；本项余0，下一H101 |
 | [H-105：Stop hook 缺少必需的 stop_hook_active 字段](system-harness-audit-2026-10-21.md) | P3 | 已修复并验收 | E-H105-01～02；Stop payload补稳定`stop_hook_active=false`，不混入H106/H104/SubagentStop | 既有`build_hook_payload`按Stop事件补字段，完成门无递归状态，不新增hook链 | 原probe0/1；绿Stop1/0；Hooks79/0+cancellation5+dedup8+once8，Runtime StopFailure通过，fmt过；strict旧3项，+1.88 rustfmt缺组件；清理3根remaining=0 | 8b89b9d7f5c681bb76bc04f6e5820a755dbac6cd（代码/测试）；双文回填提交另列 | 未验真实供应商/其他OS/真实窗口；本项余0，下一H106 |
-| [H-106：StopFailure hook 缺少必需的 error 分类](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-106：StopFailure hook 缺少必需的 error 分类](system-harness-audit-2026-10-21.md) | P3 | 修复中 | E-H106-01原probe隔离真实0过1败；无跳过依据 | Stop/BeforeResponse拒绝与最终Provider错误均压成Response.content；typed契约待用户选择，无生产修改 | +1.88冷编译通过；首次fable环境阻断不算行为红；隔离原binary 0/1、missing required error，详E-H106-01；最终回归未执行 | 尚无修复提交 | 原生版本化分类或完整Claude语义待确认；本项预计余2–6有效小时，等待另计；整体仍active |
 | [H-107：续聊的每个 turn 结束都会触发 SessionEnd hook](system-harness-audit-2026-10-21.md#h-107续聊的每个-turn-结束都会触发-sessionend-hook) | P3 | 已修复并验收 | E01原probe0/1、只读/Fork6/2、缺通知及E14验收时序红均保留，无跳过/归并 | 原显式End/只读/Fork/唯一终态实现不变；E16仅SDK测试改用实际进程退出屏障，增强live/durable身份与每次冷读对账 | SDK默认/全特性各89/0/5含stdio15；CLI同宿主/busy各1/0、AppCore8/0、原probe1/0、SDK自身strict/fmt过；依赖strict旧失败及未重跑范围详E16 | 原生产`64f9d16924d388bcb2c7ec5b6c0710fda508555e`；本轮test补强`629a42784ca4bf080f53ab19139761adeb7aff17`，不重复计生产修复 | E17两根均已不存在，原共享CLI/用户快照哈希一致，本项完整交付余0；原H107/H108旧清理仍有效；下一复核H104，发布/hook窗口限制不变，总余170–430有效小时低置信旧估，等待另计 |
 | [H-108：SessionStart/SessionEnd payload 缺少必需的事件元数据](system-harness-audit-2026-10-21.md#h-108sessionstartsessionend-payload-缺少必需的事件元数据) | P3 | 已修复并验收 | E01原probe0/1、E02设置真红/新历史断言误设均保留，无跳过/归并 | typed source/reason供现有生产者/设置测试，5类action同一serializer；H107频率/内部explicit_end不变 | E04：Hooks96/0/0及strict、65份payload、AppCore2/0、原probe默认1/0、H107八项过；workspace161目标5320/5/153含SDK时序新反例，Tauri/fmt过，旧strict保留 | `cff915be970fe86764841c4f34bcf9bb1aa1026f`（独立修复提交；未推送） | E05两根均已不存在，原共享CLI/用户快照哈希一致，本项完整交付余0；H104公共字段及来源matcher独立；未验UI/真实服务/OS强杀；下一H107验收补强，总余170–430有效小时低置信旧估，等待另计 |
 | [H-109：SubagentStop hook 缺少必需的停止状态与 transcript 路径](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
