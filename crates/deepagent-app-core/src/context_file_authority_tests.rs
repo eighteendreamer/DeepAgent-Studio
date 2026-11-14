@@ -331,7 +331,14 @@ async fn production_replacement_and_cold_resume(reject_prune: bool) {
             // meter. Model a provider reporting the growing synthetic input.
             let terminal = turn.last_mut().unwrap();
             let mut event: Value = serde_json::from_str(terminal).unwrap();
-            let input_tokens = (index + 1) * 4_000;
+            // This fixture verifies adoption/revocation, not tokenizer density.
+            // Explicitly cross the unchanged 35k threshold before mutation;
+            // 32k plus the old heuristic delta had only crossed by accident.
+            let input_tokens = if reject_prune && index == 7 {
+                40_000
+            } else {
+                (index + 1) * 4_000
+            };
             event["response"]["usage"]["input_tokens"] = json!(input_tokens);
             event["response"]["usage"]["total_tokens"] = json!(input_tokens + 18);
             *terminal = event.to_string();
@@ -345,8 +352,8 @@ async fn production_replacement_and_cold_resume(reject_prune: bool) {
             ScriptedTransport::text("Controlled production test complete."),
         ]);
         let (client, transport) = scripted_client_with_transport(turns);
-        let summary_client =
-            crate::session_memory::testing::scripted_client(vec![ScriptedTransport::text(
+        let (summary_client, summary_transport) =
+            scripted_client_with_transport(vec![ScriptedTransport::text(
                 r#"{"goal":"controlled sequence","completed":["earlier padding"]}"#,
             )]);
         let persistence: Arc<dyn deepagent_runtime::ContextSurfacePersistence> = if reject_prune {
@@ -384,6 +391,12 @@ async fn production_replacement_and_cold_resume(reject_prune: bool) {
             deepagent_runtime::RunOutcome::Completed(_)
         ));
         let request: Value = serde_json::from_str(&transport.last_prompt()).unwrap();
+        if reject_prune {
+            assert!(
+                !summary_transport.last_prompt().is_empty(),
+                "the full-summary fixture must reach its unchanged pressure threshold before checking read authority"
+            );
+        }
         assert!(output(&request, "terminal-read").contains("value=final"));
         let rejected: Value = serde_json::from_str(output(&request, "without-reread")).unwrap();
         assert_eq!(rejected["status"], "error", "{tool}: {rejected}");

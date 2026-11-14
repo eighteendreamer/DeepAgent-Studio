@@ -34,6 +34,10 @@ use crate::tool_manifest::{
 #[path = "subagent_modalities_tests.rs"]
 mod modalities_tests;
 
+#[cfg(test)]
+#[path = "subagent_tokenizer_tests.rs"]
+mod tokenizer_tests;
+
 #[cfg(all(test, feature = "web"))]
 #[path = "subagent_search_capability_tests.rs"]
 mod search_capability_tests;

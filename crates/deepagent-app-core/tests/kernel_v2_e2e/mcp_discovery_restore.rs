@@ -457,7 +457,6 @@ async fn check_prepared_mcp_config_generation(environment_only: bool) {
 }
 
 fn assert_capability_generations(chat: &ChatService, run: &str, requests: &[serde_json::Value]) {
-    use sha2::{Digest, Sha256};
     let events = chat.run_events(run, None).unwrap();
     let initial = events
         .iter()
@@ -481,10 +480,7 @@ fn assert_capability_generations(chat: &ChatService, run: &str, requests: &[serd
                 .map(|t| t["name"].clone())
                 .collect::<Vec<_>>()
         };
-        let actual_hash = format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(&request["tools"]).unwrap())
-        );
+        let actual_hash = canonical_schema_hash(&request["tools"]);
         if wire_schema["schemaHash"] != actual_hash || wire_schema["model"] != request["model"] {
             let event = wire_changes
                 .next()
@@ -518,10 +514,7 @@ fn assert_capability_generations(chat: &ChatService, run: &str, requests: &[serd
             if let Some(name) = tool.get("name") {
                 assert_eq!(*name, reference["name"]);
             }
-            assert_eq!(
-                reference["schemaHash"],
-                format!("{:x}", Sha256::digest(serde_json::to_vec(tool).unwrap()))
-            );
+            assert_eq!(reference["schemaHash"], canonical_schema_hash(tool));
         }
         assert_eq!(wire_schema["schemaHash"], actual_hash);
         assert_eq!(wire_schema["model"], request["model"]);

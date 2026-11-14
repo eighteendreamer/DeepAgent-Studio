@@ -681,21 +681,21 @@ impl HookedReactiveContextCompactor {
     }
 
     fn measure_native_items(&self, instructions: Option<&str>, items: &[ResponseInputItem]) -> u64 {
-        deepagent_context::measure_response_surface_for_route(
-            instructions,
-            items,
-            &[],
-            |attachment| {
-                if deepagent_runtime::AttachmentDataResolver::is_resolvable(
-                    &crate::attachment_service::FileAttachmentResolver,
-                    attachment,
-                ) {
-                    self.client.image_token_reserve(&self.model)
-                } else {
-                    0
-                }
-            },
-        )
+        let request = deepagent_models::ResponseRequest::from_response_items(
+            self.model.clone(),
+            instructions.map(str::to_owned),
+            items.to_vec(),
+        );
+        deepagent_context::measure_response_request(&self.client, &request, |attachment| {
+            if deepagent_runtime::AttachmentDataResolver::is_resolvable(
+                &crate::attachment_service::FileAttachmentResolver,
+                attachment,
+            ) {
+                self.client.image_token_reserve(&self.model)
+            } else {
+                0
+            }
+        })
         .total() as u64
     }
 

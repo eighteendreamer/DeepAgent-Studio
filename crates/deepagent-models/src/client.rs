@@ -609,6 +609,63 @@ impl ModelClient {
         request
     }
 
+    /// Read-only offline prompt pricing through the same protocol serializers
+    /// as dispatch. None explicitly means the bundled template cannot model
+    /// this route (unknown version or hosted search), not a zero-token prompt.
+    /// Returns template/text tokens; callers add routed image reserves separately.
+    /// Errors retain their cause for callers; hosts may choose a visibly
+    /// uncertain byte estimate instead. No credentials or image bytes are read.
+    pub fn count_response_prompt(&self, request: &ResponseRequest) -> Result<Option<usize>> {
+        let Some(tokenizer) = crate::tokenizer::DeepSeekTokenizer::for_model(&request.model) else {
+            return Ok(None);
+        };
+        if request.tools.iter().any(|tool| tool.kind == "web_search")
+            || request
+                .input
+                .iter()
+                .any(|item| matches!(item, ResponseInputItem::WebSearchCall { .. }))
+        {
+            return Ok(None);
+        }
+        let body = self.prompt_pricing_body(request)?;
+        tokenizer
+            .count_wire(serde_json::from_str(&body)?, self.config.wire_mode)
+            .map(Some)
+    }
+
+    /// Explicitly approximate fallback, including response schemas and other
+    /// serialized request fields missing from a raw message-only estimate.
+    pub fn response_prompt_byte_estimate(&self, request: &ResponseRequest) -> Result<usize> {
+        self.prompt_pricing_body(request).map(|body| body.len())
+    }
+
+    fn prompt_pricing_body(&self, request: &ResponseRequest) -> Result<String> {
+        let mut request = request.clone();
+        request.stream = true;
+        // A placeholder only affects the prompt template. It is confined to
+        // this clone and never reaches transport, Files, image decoding or disk.
+        request.image_file_ids.clear();
+        request.attachment_data_urls.clear();
+        for image in request
+            .input
+            .iter()
+            .flat_map(ResponseInputItem::image_attachments)
+        {
+            request
+                .attachment_data_urls
+                .insert(image.id.clone(), "data:image/png;base64,AA==".into());
+        }
+        match self.config.wire_mode {
+            WireMode::Responses => request_body::encode(&self.prepare_response_request(request)),
+            WireMode::ChatCompletions => {
+                let mut chat = response_to_chat_completion(request)?;
+                chat.stream = true;
+                self.apply_chat_defaults(&mut chat)?;
+                request_body::encode(&chat)
+            }
+        }
+    }
+
     /// Read-only evidence using the final model, defaults and tool face. Hosts
     /// call this for each attempt, not only the initial model before fallback.
     pub fn response_sampling(

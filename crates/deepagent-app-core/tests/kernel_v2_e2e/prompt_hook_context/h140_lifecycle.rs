@@ -150,16 +150,93 @@ async fn h140_ordered_contexts_survive_service_reopen_without_rewriting_or_reexe
             .all(|entry| entry["hook"] == "external_command_hook"));
         let wire_items: Vec<ResponseItem> =
             serde_json::from_value(requests[0]["input"].clone()).unwrap();
-        let expected_surface = deepagent_context::measure_response_surface(
-            requests[0]["instructions"].as_str(),
-            &wire_items,
-            &[],
-        )
-        .total();
-        let metered=live.iter().any(|event| matches!(event,RuntimeEvent::ContextUsage {snapshot} if snapshot.surface_tokens == expected_surface));
+        let wire = &requests[0];
+        let mut priced = deepagent_models::ResponseRequest::from_response_items(
+            wire["model"].as_str().unwrap(),
+            wire["instructions"].as_str().map(str::to_owned),
+            wire_items,
+        );
+        priced.stream = true;
+        priced.reasoning_effort = wire["reasoning"]["effort"]
+            .as_str()
+            .map(|effort| deepagent_models::ReasoningEffort::parse(effort).unwrap());
+        priced.tools = wire.get("tools").map_or_else(Vec::new, |tools| {
+            tools
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|tool| {
+                    let mut schema = deepagent_models::ToolSchema::function(
+                        tool["name"].as_str().unwrap(),
+                        tool["description"].as_str().unwrap_or_default(),
+                        tool.get("parameters").cloned().unwrap_or_else(|| json!({})),
+                    );
+                    schema.kind = tool["type"].as_str().unwrap().into();
+                    schema
+                })
+                .collect()
+        });
+        priced.max_output_tokens = wire
+            .get("max_output_tokens")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .unwrap();
+        priced.temperature = wire
+            .get("temperature")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .unwrap();
+        priced.top_p = wire
+            .get("top_p")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .unwrap();
+        priced.top_logprobs = wire
+            .get("top_logprobs")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .unwrap();
+        priced.tool_choice = wire.get("tool_choice").cloned();
+        priced.text = wire.get("text").cloned();
+        priced.user = wire
+            .get("user")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&priced).unwrap(),
+            *wire,
+            "pricing oracle must reconstruct the complete dispatched request"
+        );
+        let client = deepagent_models::ModelClient::new(
+            Arc::new(MockTransport::new([])),
+            deepagent_models::ModelConfig::deepseek("offline-h140-pricing"),
+        );
+        let expected_surface = client.count_response_prompt(&priced).unwrap().unwrap();
+        priced.input.retain(|item| {
+            !matches!(item, ResponseItem::Message { content, .. }
+            if content.starts_with(deepagent_core::response_item::HOOK_CONTEXT_PREFIX))
+        });
+        assert!(
+            expected_surface > client.count_response_prompt(&priced).unwrap().unwrap(),
+            "admitted hook context must increase the full prompt measurement"
+        );
+        // The DTO keeps schemas separate from surface_tokens. Per-block costs
+        // are apportioned estimates, but their sum is the full prompt count.
+        let metered = live.iter().any(|event| {
+            matches!(event,
+            RuntimeEvent::ContextUsage { snapshot }
+                if snapshot.estimated_prompt_tokens == expected_surface
+                    && snapshot.surface_tokens + snapshot.tool_schema_tokens == expected_surface)
+        });
         assert!(
             metered,
-            "Surface meter must count the exact serialized native context: expected {expected_surface}"
+            "the full dispatched prompt, including admitted hook context and schemas, must be metered: expected {expected_surface}"
         );
         drop(requests);
         let events = EventStore::new(&db)

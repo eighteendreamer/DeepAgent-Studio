@@ -204,10 +204,11 @@ mod tests {
             let source = crate::input_runtime::response_items_from_events(
                 &EventStore::new(&db).load_session(session.id()).unwrap(),
             );
+            let client = scripted_client(vec![ScriptedTransport::text(
+                r#"{"goal":"synthetic summary","completed":["old work"]}"#,
+            )]);
             let compactor = HookedReactiveContextCompactor::new(
-                scripted_client(vec![ScriptedTransport::text(
-                    r#"{"goal":"synthetic summary","completed":["old work"]}"#,
-                )]),
+                client.clone(),
                 "deepseek-flash".into(),
                 Arc::new(deepagent_hooks::HookRegistry::new()),
                 session.id(),
@@ -258,9 +259,28 @@ mod tests {
                 items,
                 "native path {mode} must replay exactly"
             );
-            let expected =
-                deepagent_context::measure_response_surface(Some("rules"), &items, &[]).total();
+            let count = |items: Vec<ResponseItem>| {
+                client
+                    .count_response_prompt(&deepagent_models::ResponseRequest::from_response_items(
+                        "deepseek-flash",
+                        Some("rules".into()),
+                        items,
+                    ))
+                    .unwrap()
+                    .expect("the version-matched prompt template must be used")
+            };
+            let expected = count(items.clone());
             assert_eq!(compacted.tokens_after as usize, expected);
+            assert!(
+                expected
+                    > count(
+                        items
+                            .into_iter()
+                            .filter(|item| RuntimeSnapshot::from_item(item).is_none())
+                            .collect(),
+                    ),
+                "the pinned snapshot must contribute to the complete prompt count"
+            );
         }
     }
 

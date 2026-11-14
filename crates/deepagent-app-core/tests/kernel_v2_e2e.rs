@@ -15,6 +15,39 @@ use deepagent_subagents::WorktreeProvider;
 #[path = "../../deepagent-models/tests/support/sequence.rs"]
 pub mod sequence_fixture;
 
+/// Capability snapshots content-address canonical JSON, not insertion order.
+/// Keep this oracle independent of the private production recorder while
+/// retaining array order (including the real tool order).
+fn canonical_schema_hash(value: &serde_json::Value) -> String {
+    use sha2::{Digest, Sha256};
+    let mut value = value.clone();
+    value.sort_all_objects();
+    format!("{:x}", Sha256::digest(serde_json::to_vec(&value).unwrap()))
+}
+
+#[test]
+fn canonical_schema_hash_sorts_objects_without_reordering_arrays() {
+    use sha2::{Digest, Sha256};
+    let first: serde_json::Value =
+        serde_json::from_str(r#"{"z":{"b":3,"a":2},"a":[1,2]}"#).unwrap();
+    let reordered: serde_json::Value =
+        serde_json::from_str(r#"{"a":[1,2],"z":{"a":2,"b":3}}"#).unwrap();
+    let canonical = r#"{"a":[1,2],"z":{"a":2,"b":3}}"#;
+    assert_eq!(
+        canonical_schema_hash(&first),
+        canonical_schema_hash(&reordered)
+    );
+    assert_eq!(
+        canonical_schema_hash(&first),
+        format!("{:x}", Sha256::digest(canonical))
+    );
+    let swapped = serde_json::json!({"a":[2,1],"z":{"a":2,"b":3}});
+    assert_ne!(
+        canonical_schema_hash(&first),
+        canonical_schema_hash(&swapped)
+    );
+}
+
 #[path = "kernel_v2_e2e/build_boundary.rs"]
 mod build_boundary;
 
@@ -26,6 +59,9 @@ mod reasoning_capability;
 
 #[path = "kernel_v2_e2e/partial_capacity.rs"]
 mod partial_capacity;
+
+#[path = "kernel_v2_e2e/tokenizer.rs"]
+mod tokenizer;
 
 #[path = "kernel_v2_e2e/credential_lifecycle.rs"]
 mod credential_lifecycle;

@@ -13,11 +13,11 @@
 | 归并 | 10 | H173同根归并H127；H243归并H53；只在唯一有效项修复，不增加完成数 |
 | 撤销 | 3 | H-211/H-263/H-305，不作为缺陷或修复成果 |
 | 已修复（验收保留） | 1 | H66按用户2026-11-10收尾要求交付代码；现有定向验证有效，不记作完整验收通过，残余范围见E-H66-08 |
-| 修复中 | 1 | H297候选尚未提交；先完成独立前置H307 |
+| 修复中 | 0 | H297代码与本机功能验收完成，仅清理待用户执行 |
 | 待修复 | 18 | 含H180授权不修；17项有效待处理 |
-| 阻塞待处理 | 0 | H307已按E04完成本轮fixture及两包临时构建缓存清理 |
+| 阻塞待处理 | 1 | H297仅本轮fixture与临时target清理待回执；H307已闭环 |
 
-未完整闭环槽位当前为 **20（含H180授权不修；有效未闭环19：17待修、H297修复中1、H66验收保留1）**。307唯一主行：246验收、28历史跳过、10归并、3撤销、18待修、修复中1、验收保留1、阻塞0；本轮H307新增修复/完整关闭各1。不报完成率。
+未完整闭环槽位当前为 **20（含H180授权不修；有效未闭环19：17待修、H297仅清理阻塞1、H66验收保留1）**。307唯一主行：246验收、28历史跳过、10归并、3撤销、18待修、阻塞1、验收保留1、修复中0；H307新增完整关闭1，H297功能修复1但未记完整关闭。不报完成率。
 
 H296已按E01～05完成原红→单一resolver修复→正式消费链/全仓门禁→清理闭环；19份冻结输入、原CLI/快照/sidecar保持，完整workspace5425/5/140、前端358/1及strict旧8+2原样保留，不称全仓全绿。独立提交`e9c55cab`，E06仅普通文档回填真实hash。H157的344d907c/0142b745及H168等为前轮成果，不重计；H155/H156尚待的历史清理不冒领。本项实现/验收/清理余0，下一准备H297本地token计量压力，先原probe及依赖核对。整体余170–430有效小时仍为未逐项重估的低置信历史分组估算，依据剩余模型/Hook/工具/画布跨层修改与验收；编译、设备、依赖、策略和人工等待另计，无可靠日历上界。
 
@@ -6591,7 +6591,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-294：完成门把每次成功文件操作强制转换为最终净变化，临时创建后删除被误判未完成并额外请求模型](system-harness-audit-2026-10-21.md#h-294完成门把每次成功文件操作强制转换为最终净变化临时创建后删除被误判未完成并额外请求模型) | P3 | 已修复并验收 | 原probe1/2、扩展1/3和Runtime2/1红保留，环境/夹具失败不冒充产品；无归并/跳过 | 删除Runtime成功操作→最终diff自动策略，保留显式policy、原工具/净证据/事件/权限/取消链，公开helper兼容opt-in | Runtime4/0+原policy12/0，正式Kernel4/0含9场景与SQLite重开；workspace160目标5297/6/155（额外冷编译夹具隔离仍0/1）；构建/fmt过，strict基线及诊断lint详E01～07 | `d497d9c87c35db1ea960c8c6c77160d51cd5abe7`（独立修复提交；未推送） | E07用户实际清理后两根均False，本项完整交付余0；下一H107会话生命周期，H180不修；全余170–430有效小时旧低置信估算，编译/环境/人工等待另计 |
 | [H-295：TypeScript SDK 以客户端全局审批屏障结束单个 turn，另一会话的待答审批会阻塞已完成流](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E01当前2/1与TDD7/11留证；E03原探针默认执行及完整消费验收，非历史跳过 | 原局部view消费匹配terminal即收尾；审批留原显式snapshot owner，不join全局、不自动代答 | SDK177/0/0、原3/0、新18/0、owned21/0、代次16/0、真实stdio2/0+JSONL1/0；fmt/typecheck/3MJS过；E03命令与未验 | `3becdf8547d2715632c23486d4443fe12986c3f6`；文档回填另提交，不amend | 本机修复/验收/提交余0；E04清理策略阻塞251,443,695字节；流自然结束不再隐式保证审批settled；下一H215；全余200–400历史粗估、等待另计 |
 | [H-296：模型能力解析以 context_window 是否存在决定整份元数据来源，单独公布的输出上限被 fallback 覆盖](system-harness-audit-2026-10-21.md) | P3 | 已修复并验收 | E-H296-01～05原probe2/1、新红0/2保留，非跳过 | 单一resolver逐字段补缺，mixed及原reason明确字段来源；复用H49界限 | 定向10/0；Models+Context419/0/11及strict过；全仓5425/5/140，五项旧失败；前端358/1，tsc/Vite/Tauri/check/fmt过 | `e9c55caba72e8a8f21d5636e6c3cabaeed207ec1`，见E06 | 两根清理核实不存在，19输入/原件保留；无迁移/权限放宽，新增枚举需穷尽match适配；真实供应商/GUI/其它OS未验；下一H297 |
-| [H-297：默认字符密度计数低估官方离线文本，冷计量可漏过既定压缩压力阈值](system-harness-audit-2026-10-21.md) | P3 | 修复中 | 官方离线分词方案已授权；独立前置H307见E-H307-01 | H297候选保留工作树，未纳入H307提交 | H297验收未完成，待H307独立交付后继续 | 尚未提交 | H297实现与证据将另行提交 |
+| [H-297：默认字符密度计数低估官方离线文本，冷计量可漏过既定压缩压力阈值](system-harness-audit-2026-10-21.md) | P3 | 阻塞待处理 | E-H297-01保留原红；E10本机功能验收，仅fixture清理待回执；前置H307已独立闭环 | 官方离线完整prompt编码器及固定摘要资产，provider校准/版本失效，未知模型显式近似 | Models/Context429/0/9；workspace5440/9/137保留，测试oracle同步后完整Kernel373/1/7，Tauri1.88/fmt过，strict残余见E08～10 | 待本项独立提交后回填 | 最低Rust1.88、source字段兼容性；无SQL/权限/TS形状变化，清理前不关闭 |
 | [H-298：Harness 超出存储表示域的读取游标回绕，错误重放全部旧 run events](system-harness-audit-2026-10-21.md) | P3 | 已修复并验收 | 原CLI随H218/ea319511消除，共享API同根残余按E-H298-01～05修复，不计额外历史跳过 | 两读取共用唯一排他下界转换，超域未来游标空成功；正常覆盖/分页契约保留 | 存储214/0、公开6/0、cursor10/0含76观察；V1全仓5077/4/178保留旧失败；V2仅测试lint整理，CLI全套214/1/10、CLI strict0，详E04 | 96096683dcb0c02b7364a72a67faa3ce856e2851 | 本机范围；JS精度/真实UI/其他OS未验；本项余0，E05已清理 |
 | [H-299：桌面端工具循环的实时用量与会话重载显示不一致](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-300：Embedding 工作流执行器存在，但画布契约/图注册表没有注册 embedding 节点](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H300-01～12保留原graph/批量/成本失败；仅所列Windows本机范围，H-163/H-164不重复计数 | 复用专业registry/schema、graph、executor/gateway、取消树、canonical计量与run_events；批量全解析/次序/数量校验 | workflow41/0/39、gateway47/0/5、runtime68/0；真实桌面DTO1/0、text取消1/0；UI真实交互恢复/前端build/Tauri/fmt通过；workspace3659/7/309与严格lint失败保留，同binary整组AppCore1230/0/62、Kernel159/1/79（MCP通知）；当前及HEAD快照MCP对照各2/0/1不抹去整组失败；见E-12 | `39c61767` | 无SQL迁移/新依赖；Rust enum新增vectors仓外穷尽调用方需适配，原vector与节点DTO保留；完整Tauri/真实供应商/其他OS/断电未验；剩余212，下一H-287，总200–400未校准有效小时，等待另计 |
@@ -11084,6 +11084,92 @@ finally真实返回原CLI/snap.new/sidecar三项保护均true，独立再次逐�
 
 实现只在既有ModelCapabilityResolver先取原snapshot/fallback，再分别覆盖每个存在字段，删除以context存在为门槛的整对象provider分支；modalities、effort和原feature启发式不扩改。显式0保持已公布0，不改成缺省；u64→usize使用checked转换，窄平台超界仅向下收敛usize::MAX、不wrap，raw目录仍保留u64；输出与context的有效交集复用H49唯一bound_output_tokens，不发明wire默认。混合来源是明确本地设计：现有CapabilitySource新增`mixed`，现有fallback_reason逐字段标明provider/snapshot/fallback，无新DTO形状、能力库、store、配置、依赖或SQL迁移；TS union已同步，仓外Rust穷尽match或严格枚举消费者须接纳新variant。已新增正式Runtime fallback/下一步、子运行实际模型、Kernel文件SQLite冷重开/目录刷新与wire/meter测试，尚在编译执行。用户已明确批准仅本轮pnpm warn复用原依赖、不自动删除/重装node_modules；尚未执行本轮前端构建，不借上轮H157绿替代。
 
+### H-297 修复准备：原探针与官方离线依赖（修复中，2026-11-14）
+
+**E-H297-11（提交前完整性核对）**：交付白名单36份实现/测试/Cargo/许可资产与双文，共38文件；原用户未跟踪项、Tauri忽略锁文件、所有target/dist/日志/脚本不暂存。39份受测输入中，最后只对MPL-2.0原许可文本第38行的上游尾随空格作非语义空白规范化；首次staged diff --check真实因此非零，规范化后通过，许可证正文/条款/通知未删改。无需重跑未变Rust编译行为；交付最终manifest SHA256=AD1C866B9E3C5FDFAAE18E2CC52AF59EE7756B1A592C42A605D05D3E211C7439，运行时受测39源manifest BE7554D3仍按当时事实保留。所有生产Rust/Cargo/gzip与最终门禁相同，原CLI/快照/sidecar独立核hash、长度、写入及创建UTC ticks、属性一致。双文E10一致、307唯一行/8列/状态计数和白名单实际核验，阶段成功不改写原全仓红或strict红。当前准备正常独立fix提交，不amend、不推送/建PR，清理回执尚待用户执行。
+
+**E-H297-10（最终受影响组与本机功能验收，2026-11-14）**：最后仅三份旧Kernel测试及测试入口同步新的编码/serde特性契约，生产代码/Cargo/资产与E08/E09完整workspace受测版本保持一致；39份最终输入manifest仍BE7554D37E1C14DDC50197C4DBE3A0ABD459B7E1D3AA32B8042650D6045E4581，阶段前后核验无变化。完整kernel_v2_e2e以Rust1.88、--locked --offline -j2、--quiet --test-threads=2实际exit101/1235.738秒，381项为373过/1败/7忽略；仅未改图片DACL恢复断言失败。E09三项canonical hash及H140计量的新失败均在原完整消费组内通过，另新增规范哈希控制默认通过；没有改生产hash、放宽权限、接受错误摘要或增加ignore。日志SHA256=B94B41563BC0D689634C2BBDD5EEB6B2D18ACAD8AB71ED0313493A906BBC18CD。
+
+最终独立定向24项零失败结果为canonical1/0（143.620秒含编译）、H1401/0（6.739秒）、MCP discovery9/0（50.169秒）、capability13/0（20.344秒）；H140完整请求逐字段复原真实wire，比较estimated_prompt_tokens及surface+schemas，不把surface_tokens当含schema总量。H140日志62C0C2695B3A0DEC38E8B859A10080D5CB8A6EC7448CE3074F4904FDDE740EC0、discovery日志4926D95EE2C71A7286A2EB1D21E39E20B766BAF5B37B9B54EFDBCCD61A9BC9D9、capability日志F7089165FADD26CB5DDBF767A97EFCD3AEEC14A6DC51CDA8BE82045B2F0BECCF。前次H140重建完整请求后仍比较错DTO字段的失败与临时诊断B5791C72BB7E5E7ECE6084535C57425ED54A06745E8B22CEF802C56C9C90440B保留，随后依源码边界重新评估，不是连续调期望数字。
+
+最终AppCore all-targets/all-features/no-deps strict exit101/122.717秒，仍33项lib/37项lib test诊断、没有新增诊断位置；日志9964DE09C756027A723FE96321483C50BF8E35CCC19A69F4C019A7380DF38B78。fmt exit0/8.437秒，diff检查通过。最后只改测试，不再重跑未变生产代码的整个workspace，故没有“最终完整workspace通过”的结论；E09的5440/9/137完整红、旧MCP/两项DACL/CLI路径快照/H306和strict各阶段失败仍保留。所有新增H297 probe现在默认执行，不借filtered/ignore计绿；Models/Context全特性429/0/9、原四样本、两种模型压力、主备/校准/header失效/原生子运行与Kernel文件SQLite冷恢复的实际证据已分别列E01～09。
+
+标准Cargo cache完成后以原标准registry运行cargo +1.88.0 metadata --format-version 1 --locked --offline实际exit0/11.551秒，744包完整解析；metadata SHA256=4267EBED3FE56BE7BB3F205E83EC2C8395AE7F848A8A6DEC69543C51945D174C。没有网络请求、模型调用或读取/打印凭据；这证明离线解析与公共包续接，不冒称清缓存后全平台构建或下游安装包许可分发已验。实际最低版本1.88根workspace all-targets与Tauri lib已编译检查，未继续抬高，默认toolchain未改。
+
+据原Unicode低估真红、官方完整模板/固定摘要数据、两协议/主备/子运行/冷恢复及所列完整测试组，H297的Windows本机离线功能验收成立；并非真实服务端token oracle或全系统全绿。未知模型、hosted search和转换失败显式近似回退；图片保留原route reserve，分类块按权重分摊；完整prompt的provider usage校准优先，encoder来源/输出/工具/头部变化使旧锚点失效。官方别名按2026-11-14模型表显式匹配，未来供应商变更须更新资产与映射；未验真实账单/缓存命中、其它OS/GUI/断电或模型质量。新增Rust依赖/固定gzip资产3.727MB、根和Tauri最低Rust提升至1.88为已授权兼容性变化；SurfaceTokenBreakdown新增source影响仓外完整字面量，TokenCounter新方法有默认实现，事件/TS DTO/SQL/权限边界未变。
+
+当前代码和本机功能验证完成，仅本轮G:/h297-fixtures-20261114清理待执行（包括复用临时target、匿名临时缓存、合成数据、日志、脚本与3份H307收尾临时件）；没有本轮桌面dist，原共享target/debug、node_modules、标准公共registry及用户文件不删。本机自动删除此前在CreateProcess前被拒绝，零删除，不自动改执行器或再尝试；准备的cleanup-h297.ps1只删除这一个经审查根，发现任何链接或活跃编译器/夹具即停止，前后核对最终输入及原CLI/快照/sidecar。未取得清理回执前状态为“阻塞待处理（仅清理）”，不算完整关闭。
+
+本轮H297功能修复1、完整关闭暂0；H307已独立新增关闭1。307唯一主行当前246已验收、28历史跳过、10归并、3撤销、18待修含H180、H297清理阻塞1、H66验收保留1、修复中0，有效未完整闭环19。只白名单本项代码/资产与当时双文独立提交，真实hash后普通回填，不amend/推送/PR；清理及文档核对尚余约0.2–0.5有效小时，人工/策略等待另计。全余170–430有效小时仍为未逐项重估的低置信分组旧估，依据模型/Hook/工具/画布跨层工作而非条数线性扣时，等待无可靠总上界。先闭环H297清理后再按风险复核下一有效项，不为数量另挑问题；整个goal保持active。
+
+**E-H297-09（完整workspace九败与测试契约纠正，尚未最终验收）**：36输入未变下完整workspace实际exit101/3506.577秒（含16m20编译），164目标5440过/9败/137忽略，日志SHA256=D714F03E5869BC1D62350BDA552AE6F0FBF44D705E15CF9F50B6E494AF77C202。AppCore1706/1/48、Kernel368/5/7、Runtime493/1/3；真实SDK stdio与CLI消费已实际执行。原五败保留，另外三条schema哈希断言和H140旧meter断言是本轮新增失败，不能凭局部绿关闭。本轮stdout/stderr在SSH两目标标题处交错，初次归约拒绝缺结果；改为未结目标队列+running数量匹配，H92 nested结果单独排除，164目标最终数量均对应，未伪造通过或重跑测试。九个测试失败对应Cargo五个失败target。
+
+生产run_capabilities::capability_hash本来递归按对象key排序、保持数组顺序；官方recipe传递启用serde_json preserve_order后，旧测试直接hash解析后的wire对象不再等同canonical JSON。仅在Kernel测试入口增加独立canonical_schema_hash oracle，调用当前serde_json的sort_all_objects并加固定规范字节、对象乱序等价和数组换序不等价控制；MCP/Capability各逐项hash与实际tool顺序断言保留，未改生产hash、记录字段、generation或相同hash期待常量。
+
+H140先重建完整wire请求且逐字段等于真实派发，直接比较surface_tokens仍红；诊断确认该DTO按既有pack::record_projection明确排除tool_schema_tokens。重新读边界后改为estimated_prompt_tokens等于完整编码、surface_tokens+tool_schema_tokens等于同总量，并要求删除hook上下文降低计量；原hook来源/顺序/角色/原文、冷重开不重执行断言不放松。中间11294/11295不固定为golden，临时诊断已移除；两次候选失败原样保留，不冒充生产修复或仅靠改期望数字。
+
+39输入最新manifest为BE7554D37E1C14DDC50197C4DBE3A0ABD459B7E1D3AA32B8042650D6045E4581，只在36输入基础增加三份旧测试并更新测试入口。Rust1.88默认定向canonical oracle1/0、H1401/0、完整MCP discovery9/0、完整run_capabilities13/0已实际通过，共24条默认/零忽略；目前381项完整Kernel及最终AppCore strict/fmt正在执行，不先填全过。最终生产源码/Cargo/资产未再变化；这些只是测试契约纠正，尚未再次跑完整workspace，前述九败不得被后续局部通过改写。
+
+前轮6阶段finally实际确认originalCliRestored/originalSnapshotUnchanged/originalSidecarUnchanged/frozenInputsUnchanged全true，scriptFailure=null，独立再次比对原件hash/长度/UTC ticks/属性和36源成功。Tauri Rust1.88 locked/offline lib check实际exit0/64.995秒，日志CB56589096E569A653E504A430EA1AE964C5311C36B11E8DB588925D425B4068；fmt exit0/6.481秒；workspace strict exit101/47.192秒，被未改deepagent-tools/lib.rs旧map_or诊断首先阻断，日志B3967F6170E1502F2E8F82C285AF76EBD7EE92807F09F16C34B87AA462E113BD。最低版本提升后完整strict不是全绿，不把此前旧MSRV的绿套入本轮。
+
+清理前把必要已验证公共依赖补入标准Cargo registry缓存：核804份归档SHA256等于锁文件，补缺48份归档；63份sparse记录更新前确认旧版本checksum均仍在新记录，无认证/config/用户home/src复制。缓存记录结果SHA256=FBF34E90DDFA612EFD87FCD5012EDB11EB182DE8E7A7D94578E17C364FBBE9DA；仍待标准缓存offline解析/构建可用性检查，不把文件复制称构建成功。H297最终清理、独立commit和关闭尚未执行；原用户未跟踪项保持，当前仅临时target约6GiB空闲，整个goal active。
+
+**E-H297-08（最终冻结与门禁进行中，2026-11-14）**：36份最终实现/测试/Cargo/资产输入冻结为02FFE0B43A9E3C75D1EFD97BE3D14B98D86412383B61F24BBF83C8251FEB043A。1.88 strict预检实际Models/Context exit101/36.415秒，Models未改chat/chat_completions/responses/stream_terminal中8项lib（lib test复现同组）诊断；Runtime exit101/47.617秒，9项lib/10项lib test；AppCore exit101/124.093秒，33项lib/37项lib test。最低版本提升使is_none_or等建议可用；本轮亦出现large_enum_variant，serde_json preserve_order特性统一与具体类型大小诊断的独立因果贡献未量化，不能直接当旧诊断；不能把本次诊断数写成“仍旧2+8”或声称strict全绿。诊断均不在新增tokenizer/model_tokenizer_tests/subagent_tokenizer_tests等实现或测试文件，本轮计量修改行亦无诊断；未抑制、改这些原代码或放宽-D warnings。fmt真实exit0/7.100秒，未把空输出当没执行。
+
+针对strict非零继续执行完整测试，不修改其退出码或称为通过。最终Models/Context以Rust1.88、all-features/no-fail-fast/locked/offline、-j2和test-threads=2重新实际完整suite：exit0/227.341秒，30目标429过/0败/9忽略，比E04增加最新第8条Context测试；日志SHA256=C87B2E6642CDB85201313E03F534323C0A55BC6D5E591642389574D6578C05B3。每目标running数量与最终摘要核对一致，原审计ignore未被冒领。当前CLI build实际exit0/159.563秒，本轮CLI SHA256=F2A26CE7826C5EF9578F83CE518D87C05D9236B9804D4674E9C8902190F7A378、107750400字节；已备份原共享CLI后安装供SDK，finally会恢复原件并核hash/UTC元数据，结束前不预填恢复成功。
+
+完整workspace已完成16m20测试编译，开始1755项AppCore单测，尚未终态；随后workspace严格检查、Tauri Rust1.88消费方和fmt仍待真实结果。G盘临时构建体积增大，只记录实际free约8.6GiB；测试期间不并行Cargo或删除活跃缓存。H307三份收尾临时文件的单独删除被本机策略在CreateProcess前拒绝，零删除，未换执行器或重试；H307自己的fixture及两包清理实证不变，这3份位于尚未结束的H297 fixture，将在最终清理清单中如实保留。H297未验收/提交，有效未闭环19，不因测试开始或编译通过提前关闭。
+
+**E-H297-07（前置修复后的候选验收与夹具根因，2026-11-14）**：H307已独立提交3a8e2d20656966fb1652b7556c7da7d2456d278d并按1beb5f56完成清理回填；没有并入H297生产提交。针对混合lib的H260失败，先仅增加真实摘要transport观测，不改32000合成usage，exact测试再次原生exit101、0过1败，明确没有发出摘要请求，255.196秒含编译/测试5.12秒；日志SHA256=A227072B539EBF825CAEB8319F8A66B10189CDDE99BE82F8767B949738748D59。其最后usage=32000低于既有35000门限，原场景依赖旧启发式增量碰巧跨线；这不是已采纳摘要后文件授权仍泄漏的证据。
+
+测试夹具只在拒绝prune分支的最后一个padding响应明确返回合成usage=40000，使原35000门限真正可达，并新增摘要实际派发前置断言；原write/edit/multi_edit拒绝、重新read后成功、SQLite冷恢复/fork/rewind等断言均保留，未改生产计量系数、门限或四份黄金样本。H168三种原生压缩的旧raw/byte Surface断言同步为相同ModelClient协议的完整prompt计量，另断言移除宿主快照会减少计量；完整快照原文、唯一性和精确重放断言保留。新子运行测试的临时全局tracing初始化移除，不改变生产日志配置。
+
+36份v8编译/测试/Cargo/资产输入在每阶段前后核哈希，manifest SHA256=33497DFDB96800B98EF0CF516C70C4950ED291A0CFF89967BAAED7DFC37336B6。五阶段均以Rust1.88、--locked --offline -j2、<fixture>/probe-target和单测试线程实际执行：Context完整deepseek_tokenizer_audit为8过0败（28.041秒，日志4ADB3C046D4311FE8CF036DE08295B9CC0854AF74A21C2B100A704EFACD2354E）；Runtime tokenizer_pressure_audit扩展Pro/Flash两路为2过0败（45.892秒，四样本共8次请求，中文/符号/英文派发前compactor=1、代码=0，原54272门限不变）；AppCore file_authority完整组5过0败（220.859秒含编译、测试42.06秒，日志DAD18C28F8CCD4FA1E40E8EE605014FBDF022498FAB4926C9948CDC9FC106401）；H168原生快照消费1过0败（5.926秒，日志728ECC156E8D75E22DC553316BBB674E709A8938CC4DB6770C20E35B007BDB97）；真实子运行h297_child_override_uses_offline_unicode_pressure_and_native_compaction为1过0败（5.020秒，日志0C9FA8B601A400C5073DD01012EB6854A30BB988F6408E25E78EF994031E636D）。合计17项默认测试、零失败/忽略，不借filtered计通过；子运行恰好摘要→主请求两次，实际Flash覆盖Pro、子会话成功、旧长历史移除且近期尾部保留。
+
+随后仅在新API文档补清count_response_prompt返回模板/文本tokens、图像仍另加route reserve，重新冻结preflight manifest为02FFE0B43A9E3C75D1EFD97BE3D14B98D86412383B61F24BBF83C8251FEB043A；该注释不冒充v8原字节身份。新Rust公开辅助结构SurfaceTokenBreakdown增加source字段，仓外完整结构字面量须补字段或使用默认值；TokenCounter新增source带默认实现。事件/TS DTO形状未变，前端仅将block.source用于行key且仍标“估算”，未展示版本摘要为产品文案。分类块按权重分摊，provider usage仍是实际事实，不能称为逐块精确分词或真实计费。
+
+当前strict预检正在执行；最终当前CLI供SDK的完整workspace、workspace strict、Tauri最低版本消费方、格式、标准公共Cargo缓存续接及清理/独立提交仍待完成。原始红测、v8前两项失败及原全仓五败均保留，未调用真实模型或读取凭据。H297尚未验收/提交，246验收与有效未闭环19不因局部通过增加；下一继续最终门禁，整个goal保持active。
+
+**E-H297-06（子运行前置缺陷与冷恢复实证，2026-11-14）**：正式子运行调用了原生摘要请求，但摘要采纳被持久化尾部身份拒绝；日志明确为“cannot resolve native compaction tail in durable session log”，不是未触发压力线。首次短尾部夹具不足既有keep-window，已纠正为6段近期原文后才取得这一反例，夹具准备失败与产品证据分别保留。子运行原生exit101、0过1败，日志SHA256=3ACA596FF0D034744A7186F5001F5972140AF0AD36C5713268FBCD66CC7E6A97。用户授权另记H307独立修复、验证、提交后再继续H297，尚未混入H297提交。
+
+Kernel文件SQLite冷恢复测试实际1过0败0忽略：丢弃两代全部host owners后重开，历史保留，输出预留8192→4096；不复用前run合成usage=60000的旧锚点。generation0为1笔记/1主请求，generation1为0笔记/1主请求，按既有可选笔记路由drain，不强断言每代都要笔记。异步回调在消费后检查快照，不在transport内假定已转发。日志SHA256=6F0206B4C9EA84BE6D34B0AE882E33E7F6A81D55C312A83AE67ECDFDAF2FF64F；不是线上计费或真实模型验收。
+
+H307首轮混合受测树AppCore lib实际1704过/3败/39忽略、383.70秒；原MCP字段断言仍失败，另有H260正式摘要后的文件授权对照和H168原计量断言失败。两项新观测仍保留、归属待独立HEAD+H307对照，不冒称全量通过或直接改为通过；H297最终workspace/strict/清理/提交未完成。
+
+**E-H297-05（2026-11-14，正式消费方增强验收进行中）**：续轮先核当前工作树、27输入候选与进程状态；上轮属于真实进展，未重跑已通过的Models/Context v4完整suite。1.88 Runtime完整 `cargo test -p deepagent-runtime --no-fail-fast --target-dir <fixture>/probe-target --offline -j 2 -- --quiet --test-threads=2` 实际exit101，10个顶层结果块**519过/1败/3忽略**；唯一失败仍为未改checkpoint/access.rs的`restored test DACL differs`，与HEAD无diff，不放宽ACL断言/加ignore或将全量写绿。日志SHA256=`2C7F28F97A5C7A974F1500B709A60FD4BABE226C0B4B3420EBF507433C330D8A`。
+
+新增正式ModelAgent验收复用原AttemptTransport：Pro与Flash接真实合成usage=20000后，回答/后续中文和JSON增量、历史替换均核有符号delta；header、输出预留、工具schema或模型变化逐项断言旧锚点失效。另一验收以Pro大窗口→真实overload→Flash128000窗口fallback，派发前schema observer核实只在备用模型已跨压力线时compactor=1且source=v41，实际仅两请求。`cargo +1.88.0 test -p deepagent-runtime --lib h297_ --target-dir <fixture>/probe-target --offline -j 2 -- --nocapture --test-threads=1`真实**2过/0败**，48.16秒编译+3.44秒测试，日志SHA256=`562B23AD576D0DD8C696951942A0D7BFB2E67545298B2F5DC389999EAD8EB82C`。这是新增测试的实际证据，不新增生产修复数；provider usage明确为合成值，不代表计费或线上缓存。
+
+原压力target继续保持四份文本/正确阈值，并扩到Pro/Flash两条明确版本路由；已新增真实子运行原生压缩、Kernel文件SQLite冷重开及长原生工具结果/响应schema测试，尚在编译/待执行，不预填通过。子运行验收不新增第二套compactor，使用现有HookedReactiveContextCompactor和子会话原生落盘；Kernel丢弃全部原host owners后重开，要求历史保留但前run usage不冒充当前精确锚点。完整workspace/当前CLI SDK、strict lint、最终输入冻结、清理和commit仍未完成，H297继续修复中。
+
+**E-H297-04（27输入冻结、最低版本及相关完整suite，尚未关闭）**：首次最低版本 `cargo +1.88.0 check --workspace --all-targets --locked --offline --target-dir <fixture>/probe-target -j 2` exit0/332.892秒；同版本Tauri `check --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --offline` exit0/430.183秒（相同target/-j2）。随后额外补出候选的Chat默认值反例：Responses-only defaults.text不应被套入实际Chat wire，新增测试真实0过1败、exit101、编译24.87/测试0.93秒，日志SHA256=`A0797AD781D0BA4CAB9A317F44BEC8BBC6277DDCBC00850F6C4CF42C407F2B94`。改为把原请求交给Models按真实wire分别default/serialize，不在计量前导入另一协议默认值；原期待不改，Context target再实际7过0败（15.24秒编译、10.71秒测试）。这属于本项计量投影候选补强，不新增H或提前冒充初始候选全绿。
+
+最终冻结27份实现/测试/Cargo/数据/许可输入，manifest SHA256=`22C0A4557CCFC20A50734AFD515AFB3336B93DE5BF45BECEE0709FEE43DD3438`；之后无源变化。Rust1.88 `cargo test -p deepagent-models -p deepagent-context --all-features --no-fail-fast --target-dir <fixture>/probe-target --offline -j 2 -- --quiet --test-threads=2` exit0，30个顶层结果块**428过/0败/9忽略**（Context69单元+7集成、Models251过/3忽略单元及其余协议/本机SSE集成）；本项三个原ignore均已移除，不借默认跳过计绿。suite日志SHA256=`440610658E039D2924E003217234D4633221B116F20048F93E43C3A6E978F280`。未修改的其它审计ignore仍保留，不将其描述为已验收。
+
+同一27输入下，1.88根workspace全targets locked check再exit0/124.106秒；1.88 Tauri lib locked check再exit0/31.144秒；1.88 Runtime原压力target再**2过0败0忽略**、42.471秒含编译（中文/符号派发前各compactor=1、英文=1、代码=0），日志SHA256=`066C5599E8C8E4BFD5EEA1F740ABB08292EAF12A139DB4919D3D7D2338837938`；根fmt check exit0/8.424秒。每阶段前后27输入hash一致，结果JSON SHA256=`6C3E29C8C0E425F774BBC23C07DAA9834AED0722C1F9BF5198ACB2E56111CDA8`，diff检查通过。最低1.88未遇阻断，未擅自再抬版本；Windows本机check不等于其它OS、真实GUI或完整测试运行。Tauri Cargo.lock原本被仓库忽略且未跟踪，按既有边界仅作为本机解析/冻结输入保留，没有隐瞒为已提交的锁文件。
+
+另外核实官方recipe schema validator显式调用`.offline()`，0.58.6 jsonschema解析特性为空，不因输入$ref引入远程或文件获取；Hub/TLS虽传递编译，计量仍不调用加载/图片抓取API。65个根workspace Windows新增/更新版本的SPDX清单已检查，除MIT/Apache等还有option-ext的MPL-2.0、webpki-roots的CDLA-Permissive-2.0及xxhash的BSL-1.0，相关原许可文本及版本化源链接随数据目录保留。不能声称传递依赖全为MIT或已验证下游安装包的许可分发；本轮未发布安装包/PR。两份gzip总3727057字节，不含运行凭据/真实prompt。
+
+当前无在途Cargo进程，所有构建在专属fixture target，原共享CLI SHA256仍`453DF899238FE99504B1C30F0DBA22FE793ADD7429C437F0B571A766FCB7535D`，原用户未跟踪项未修改，desktop/dist仍不存在。尚需正式Flash/备用路由/子运行/校准后续turn与冷恢复的增强验收、Runtime/AppCore/全workspace测试和strict门禁，以及精确清理、独立commit/hash回填；没有把check或本机SSE模拟当真实供应商计费/缓存/超窗证据。H297继续修复中、未提交、新增验收0，有效未闭环仍19。剩余有效工时仍暂按6–16小时初估，整体170–430小时旧低置信分组区间未逐项重估；冷编译/设备/依赖/环境等待另计，不承诺日历完成时间。
+
+**E-H297-03（官方编码器候选与最低版本定向，尚未最终验收）**：Rust1.88独立probe实际exit0，2m41冷编译后两版各四样本原文均精确复现75000/100000/56000/43500；完整system+user模板分别再加5/6，复杂工具/推理样本349/334，日志SHA256=`B0FDDA59D0C98183D3712C21AF8AD7A383DBBC5D02AEFA94F70D730EAA348C27`。官方[模型表](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)本日确认deepseek-flash与两个旧Flash名均对应V4.1-Flash-1017，Pro为V4-Pro-0813；显式绑定这些名字，未知未来ID不靠包含关系猜版本，不外推为线上权重/模板永不变化。
+
+候选接入现有Models serializer→官方recipe converter/template→Context Surface→ModelAgent压力与provider anchor，AppCore原生压缩计量同边界，无新预算/历史store。两份官方数据gzip合计3727057字节，保留MIT通知及来源，启动按原JSON长度/SHA256校验，OnceLock/Arc一次初始化；仅from_bytes，不使用Hub/网络/image-fetcher。完整prompt计数包括工具/推理/响应schema和special区间，图片占位符扣除后仍用原1024/次路由预留。分类块由UTF8权重按完整prompt总量分摊，非逐块精确分词；block.source沿用既有字符串字段承载版本/摘要/近似来源，Runtime指纹同时绑定此来源。无匹配或recipe不支持的hosted search采用显式UTF8字节近似，计入实际序列化响应schema等字段，不称为精确服务端边界；失败回退标offline_prompt_failed且不打印可能含输入的converter错误。HeuristicTokenizer保留为片段排序近似并纠正“永不低估”承诺，不再作正式请求压力默认。
+
+已按授权更新根workspace/Tauri最低Rust为1.88，Tauri package显式继承原workspace声明，CLI去除旧单独1.88特判改为继承。临时匿名缓存只复制公共registry archive/sparse index，不复制Cargo认证/config；锁定解析保留旧主版本，新增67包并因新依赖下限更新indexmap/num-bigint/regex-automata/zmij四版本。官方依赖同时启用serde_json preserve_order，须在全回归验证键序/哈希/回放契约，不能把局部绿当无兼容性影响。Models三个资产/摘要/普通special-token测试在1.88实际3过0败，含编译3m23、测试5.28秒；未代表整个workspace最低版本通过。
+
+原Context/Runtime probe现追随已接入的模型计量边界，四份原文、固定token数和54272压力线不改，去除本项原ignore；Runtime用明确匹配的Pro而非无tokenizer元数据的合成ID，未知ID另有显式近似对照，不把所有输入强行压缩当正常控制。首次新增Context测试因作者误写不存在的web_search构造器编译失败，查当前结构后修正；第二次5过1败发现Chat计量未同步真实stream=true而被官方converter拒绝，修正同一dispatch投影后1.88 Context完整target实际6过0败、31.667秒含编译、9.11秒测试。覆盖原三probe、两协议Pro/Flash多语言/代码/JSON/普通special拼写、工具schema、未知版本、重复图片reserve和转换失败；这些不是主备/子运行/冷恢复/完整压缩/全仓/Tauri验收。Runtime最低版本定向仍在运行，后续全量/strict/最低版本全workspace/Tauri、冻结输入、清理和独立commit均未完成，H297继续修复中、新增验收0。
+
+**E-H297-01（当前真实红测）**：基线`32e76923c05fb89cb1a04adeb13b5a40f0542435`，tracked干净，原用户未跟踪项不读改。隔离HOME/PROFILE/APPDATA/TEMP/data/managed、清继承凭据与代理，以共享target、`--offline -j 2 -- --include-ignored --nocapture --test-threads=1`实际运行：`cargo test -p deepagent-context --test deepseek_tokenizer_audit` exit101、1过2败、7.426秒含编译；`cargo test -p deepagent-runtime --test tokenizer_pressure_audit` exit101、1过1败、22.949秒含编译。原四份合成文本与正确期望保持，中文/符号请求在54272压力线前未触发compactor，英文/代码对照正常。两个产品target均失败，不把外层结果打印脚本exit0当验收。日志SHA256分别`B7FAFC44A20F4E993C6D8952688B53156AAB85123A7E972D18A1C118B47E26CD`、`76ECCC5FD22C19191FBA5BF453DAFD8190E3BB35596D05E9DC700E0A21D10CB3`，暂存本轮`G:/h297-fixtures-20261114`；无真实模型、收费或凭据。
+
+**E-H297-02（方案授权与兼容性调查，未实现）**：用户已明确允许必要Rust离线分词依赖和固定摘要数据资产，并另行允许根workspace及Tauri最低Rust从1.80提升至经验证的1.88；若实测阻断，不擅自继续抬高。重新核对当前TokenCounter/Surface/ContextMeter/ModelClient/ModelAgent、模板与工具消费方以及[官方tokenizer说明](https://github.com/deepseek-ai/deepseek-recipe/blob/main/docs/tokenizer.zh.md)：匹配版本、完整prompt模板和普通文本中的special-token拼写必须分别处理，provider usage仍为实际事实；不靠调字符系数迁就四样本。
+
+官方crates.io包`deepseek-recipe`/`deepseek-recipe-encoding`0.2.0为MIT、edition2024；`tokenizers`稳定Rust包0.23.2为Apache-2.0（不是Python0.23.3）。原始crate归档经registry checksum校验，SHA256依次`7E9A3C713C6026C73883E20F51A91E21E6DCBB3DD1DD89D9EAAA82B11D97FEBC`、`136E9554E91DC94BEEB9DFA60E9955DB1D1B0A4661429C626A2C6FF2C0F74D45`、`7AFBF6E88718AFCC138BAD01D6CCC3051DBBC3B2CE9793D8B8A3AEB610969CFC`。隔离临时probe、匿名全新Cargo缓存解析241包，metadata exit0，但不是编译通过；ICU2.4声明最低1.88，官方recipe传递启用tokenizers HTTP特性，根default-features=false不能关闭，生产必须仅内置from_bytes，不用from_pretrained或联网加载。metadata SHA256=`9B991AA55305AE54F3DF1AA0EBDFB5B1808F49155376126A79B16DC6170CFF68`。
+
+从官方recipe下载的v4/v41数据分别6367146/6367247字节，SHA256=`97d2f31b020d18b5aee5c9b3d5b4efb10ea210f3fe3f7dffe3f1cd90542d6b19`/`81f64d1248a68ce3663e07ab3ee48b851e5df0e32d27cb98e4c9a268151e8d99`；随附MIT、Copyright(c)2023 DeepSeek通知必须保留，LICENSE SHA256=`F2C6C602815669D292889E5BE8C802F2ED950653B77999B1584E8E6AED25D040`。其来源README锚定V4-Pro revision b5968e9190ef611bbf34a7229255be88a0e937c1与Flash-Vision-Exp revision 6821d6ad3681a4b137b066b76094fa82ebd0a380，recipe为image token重排；不同于原审计CDN资产，尚未证明四样本计数或其它模型模板一致，未知ID不能按名字猜版本。
+
+当前仅准备资料及独立探针，没有修改生产Rust/Cargo/前端或验收关闭。Rust1.88 minimal已安装（未改变默认toolchain）；第一次隔离probe因USERPROFILE使rustup尝试另装副本，已中止，没有编译结果，下一步显式保留RUSTUP_HOME后验证。完整prompt/多语言/工具/特殊token、首请求/锚点/续turn/冷恢复/header失效、主备/子运行、相关完整suite/workspace/strict/Tauri/清理/提交仍待验。当前306主行245验收/28历史跳过/10归并/3撤销/18待修含H180/修复中H297一项/H66验收保留一项，有效未闭环仍19，新增验收0。H297初估尚余8–20有效小时，依赖与最低版本阻断可能扩展；整体170–430有效小时为旧低置信分组估算，设备/编译/依赖/策略/人工等待另计，不作完工承诺。
+
 ## H-307：原生压缩尾部未标记当前用户项无法匹配持久化身份（已修复并验收，2026-11-14）
 
 **E-H307-01（独立授权与真实红测）**：H297子运行验收已实际触发现有HookedReactiveContextCompactor，但落盘报“cannot resolve native compaction tail in durable session log”。持久化投影在完整事件流上追加[id:uN]，当前输入在live Surface仍未标记；整段尾部匹配只接受完全相等或两个相同标签，故不能采纳有效摘要。用户明确授权先另记独立问题、单独修复验证提交，再继续H297。不是分词器计数根因，不归并或重复计算H297。
@@ -11107,6 +11193,7 @@ finally真实返回原CLI/snap.new/sidecar三项保护均true，独立再次逐�
 据原始1过1败（日志SHA256=95AF87707E3E853FA49FB3655D2AA56D3120AED88894599FF30777180FD68692）、独立四项回归、冷重开及全仓消费方，本项代码和Windows本机功能验收成立。范围限合成transport、真实Session/EventStore/SQLite与所列CLI/SDK；未验真实供应商、其它OS、GUI/断电。无新增依赖、公共API、协议、SQL迁移或权限放宽；未改UI/桥接，未重跑前端构建。当前仅本轮fixture及临时target的AppCore/CLI缓存清理待执行，先独立提交代码和当时双文，不混入H297实现。
 
 307唯一台账暂为245验收、28历史跳过、10归并、3撤销、18待修含H180、H297修复中1、H307清理阻塞1、H66验收保留1，有效未闭环20；功能新增修复1、完整关闭暂0。清理核对后再关闭并回填真实fix hash，不amend或推送。本项仅清理/回填尚余约0.2–0.5有效小时，策略/设备等待另计；全余170–430有效小时仍为未逐项重估的历史低置信区间，依据模型/Hook/工具/画布跨层工作，等待无可靠总上界。完成本项后继续H297，整个goal保持active。
+
 
 **E-H307-04（独立提交、清理实证与关闭，2026-11-14）**：修复已正常独立提交为3a8e2d20656966fb1652b7556c7da7d2456d278d（【fix】修复原生压缩尾部的用户身份匹配），仅input_runtime.rs及当时双文共3文件；H297生产代码、分词依赖/资产及E-H297证据未纳入。提交前后核对源SHA256、307唯一编号/8列、精确index白名单与新增内容，未amend、推送或创建PR。
 

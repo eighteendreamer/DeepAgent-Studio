@@ -1,7 +1,6 @@
 //! H-219: capability evidence must describe the real registry and provider wire.
 use super::*;
 use deepagent_app_core::{HarnessRunOverrides, SandboxMode};
-use sha2::{Digest, Sha256};
 
 #[derive(Default)]
 struct CapabilityModel(Mutex<Vec<serde_json::Value>>);
@@ -651,10 +650,7 @@ async fn h219_actual_search_function_wire_hash_is_not_the_internal_catalog_hash(
         .unwrap();
     assert_eq!(actual[index]["type"], "function");
     assert_eq!(saved[index]["kind"], "function");
-    let hash = format!(
-        "{:x}",
-        Sha256::digest(serde_json::to_vec(&actual[index]).unwrap())
-    );
+    let hash = canonical_schema_hash(&actual[index]);
     assert_eq!(saved[index]["schemaHash"], hash);
     assert_ne!(
         saved[index]["schemaHash"],
@@ -758,10 +754,7 @@ async fn h219_actual_registry_snapshot_matches_wire_and_survives_database_reopen
     assert_eq!(wire.data["wireSchema"]["model"], requests[0]["model"]);
     assert_eq!(
         wire.data["wireSchema"]["schemaHash"],
-        format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(&requests[0]["tools"]).unwrap())
-        )
+        canonical_schema_hash(&requests[0]["tools"])
     );
     assert_eq!(
         events
@@ -780,10 +773,7 @@ async fn h219_actual_registry_snapshot_matches_wire_and_survives_database_reopen
     for ((tool, wire_ref), source_ref) in actual_tools.iter().zip(wire_refs).zip(source_refs) {
         assert_eq!(wire_ref["name"], source_ref["name"]);
         assert_eq!(wire_ref["kind"], tool["type"]);
-        assert_eq!(
-            wire_ref["schemaHash"],
-            format!("{:x}", Sha256::digest(serde_json::to_vec(tool).unwrap()))
-        );
+        assert_eq!(wire_ref["schemaHash"], canonical_schema_hash(tool));
         let entry = projected
             .iter()
             .find(|item| item["name"] == source_ref["name"])
@@ -793,7 +783,7 @@ async fn h219_actual_registry_snapshot_matches_wire_and_survives_database_reopen
             let schema = serde_json::json!({"type":"function", "function":{
                 "name":tool["name"], "description":tool["description"], "parameters":tool["parameters"]
             }});
-            let hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&schema).unwrap()));
+            let hash = canonical_schema_hash(&schema);
             assert_eq!(entry["schemaHash"], hash);
         } else {
             assert_ne!(entry["schemaHash"], wire_ref["schemaHash"]);

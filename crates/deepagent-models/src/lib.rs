@@ -42,6 +42,7 @@ pub mod responses;
 pub mod sampling;
 pub mod sse;
 pub mod stream;
+pub mod tokenizer;
 mod tool_choice;
 pub mod transport;
 pub mod usage;

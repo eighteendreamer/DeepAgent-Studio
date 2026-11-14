@@ -2,9 +2,7 @@
 name = "deepagent-cli"
 version.workspace = true
 edition.workspace = true
-# Local override: the workspace claims 1.80, but ratatui 0.30 requires 1.88 and
-# this is the only crate that pulls it in.
-rust-version = "1.88"
+rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Interactive and headless DeepAgent Harness CLI."

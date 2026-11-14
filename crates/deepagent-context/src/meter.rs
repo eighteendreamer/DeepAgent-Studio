@@ -3,7 +3,7 @@
 use deepagent_core::response_item::ResponseInputItem;
 use deepagent_models::ToolSchema;
 
-use crate::{CacheScope, ContextBlockKind, ContextBlockUsage, HeuristicTokenizer, TokenCounter};
+use crate::{ByteTokenCounter, CacheScope, ContextBlockKind, ContextBlockUsage, TokenCounter};
 use std::hash::{Hash, Hasher};
 
 /// Shared assembly boundary; the separator itself remains model-visible.
@@ -12,6 +12,8 @@ pub const DYNAMIC_INSTRUCTIONS_BOUNDARY: &str = "\n\n<<<DYNAMIC>>>\n\n";
 /// Token categories used by the context panel and compaction decisions.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SurfaceTokenBreakdown {
+    /// Pricing provenance, also bound into provider-anchor fingerprints.
+    pub source: &'static str,
     pub instructions: usize,
     pub dynamic_runtime: usize,
     pub messages: usize,
@@ -45,7 +47,46 @@ pub fn measure_response_surface(
     items: &[ResponseInputItem],
     tools: &[ToolSchema],
 ) -> SurfaceTokenBreakdown {
-    measure_response_surface_with(&HeuristicTokenizer::new(), instructions, items, tools)
+    measure_response_surface_with(&ByteTokenCounter, instructions, items, tools)
+}
+
+/// Full prepared provider request, shared by pressure management and native
+/// compaction accounting. Block weights are UTF-8 estimates apportioned to the
+/// official full-prompt total; they are not independent exact token counts.
+pub fn measure_response_request(
+    client: &deepagent_models::ModelClient,
+    request: &deepagent_models::ResponseRequest,
+    image_price: impl FnMut(&deepagent_core::message::MessageAttachment) -> usize,
+) -> SurfaceTokenBreakdown {
+    let original_request = request;
+    let request = client.prepare_response_request(request.clone());
+    let mut measured = measure_response_surface_for_route(
+        request.instructions.as_deref(),
+        &request.input,
+        &request.tools,
+        image_price,
+    );
+    match client.count_response_prompt(original_request) {
+        Ok(Some(text_tokens)) => {
+            let tokenizer =
+                deepagent_models::tokenizer::DeepSeekTokenizer::for_model(&request.model)
+                    .expect("a prompt count requires an explicit tokenizer match");
+            measured.apportion_text_tokens(text_tokens);
+            measured.source = tokenizer.source();
+        }
+        Ok(None) => {
+            measured.include_request_byte_estimate(client, original_request);
+        }
+        Err(_) => {
+            // Do not log a converter's input-dependent diagnostic (it may
+            // quote prompt/tool data). The fallible model API retains it; this
+            // infallible projection visibly reports uncertain fallback.
+            measured.source = "utf8_bytes_estimate:offline_prompt_failed";
+            measured.include_request_byte_estimate(client, original_request);
+            tracing::warn!("offline prompt projection failed; using UTF-8 byte estimate");
+        }
+    }
+    measured
 }
 
 /// Measure the routed representation of attachments using the same pricing
@@ -77,6 +118,7 @@ pub fn measure_response_surface_with<C: TokenCounter + ?Sized>(
         .split_once(DYNAMIC_INSTRUCTIONS_BOUNDARY)
         .unwrap_or((instructions.unwrap_or(""), ""));
     let mut out = SurfaceTokenBreakdown {
+        source: counter.source(),
         instructions: counter.count(stable) + if stable.is_empty() { 0 } else { 4 },
         dynamic_runtime: counter.count(dynamic)
             + if dynamic.is_empty() {
@@ -193,6 +235,48 @@ impl ContextMeter {
 }
 
 impl SurfaceTokenBreakdown {
+    fn include_request_byte_estimate(
+        &mut self,
+        client: &deepagent_models::ModelClient,
+        request: &deepagent_models::ResponseRequest,
+    ) {
+        if let Ok(bytes) = client.response_prompt_byte_estimate(request) {
+            self.apportion_text_tokens(bytes.max(self.total().saturating_sub(self.attachments)));
+        }
+    }
+
+    fn apportion_text_tokens(&mut self, tokens: usize) {
+        let total = self.total().saturating_sub(self.attachments);
+        let fields = [
+            &mut self.instructions,
+            &mut self.dynamic_runtime,
+            &mut self.messages,
+            &mut self.reasoning,
+            &mut self.tool_calls,
+            &mut self.tool_outputs,
+            &mut self.tools,
+        ];
+        let mut apportioned = 0;
+        for field in fields {
+            *field = if total == 0 {
+                0
+            } else {
+                ((*field as u128 * tokens as u128) / total as u128) as usize
+            };
+            apportioned += *field;
+        }
+        // Includes BOS/assistant prefix even when the instructions are empty.
+        self.instructions += tokens.saturating_sub(apportioned);
+    }
+
+    fn pricing_source(self) -> &'static str {
+        if self.source.is_empty() {
+            "surface_meter"
+        } else {
+            self.source
+        }
+    }
+
     /// Partition the calibrated total using the same measurement as pressure
     /// management. Integer remainder is assigned to the final nonempty block.
     pub fn blocks(self, projected: usize) -> Vec<ContextBlockUsage> {
@@ -217,7 +301,7 @@ impl SurfaceTokenBreakdown {
                     kind: ContextBlockKind::Other,
                     tokens: projected,
                     cache_scope: CacheScope::Dynamic,
-                    source: "surface_meter".into(),
+                    source: self.pricing_source().into(),
                 }]
             };
         }
@@ -236,7 +320,7 @@ impl SurfaceTokenBreakdown {
                 } else {
                     CacheScope::Dynamic
                 },
-                source: "surface_meter".into(),
+                source: self.pricing_source().into(),
             })
             .collect();
         let remainder = projected.saturating_sub(blocks.iter().map(|block| block.tokens).sum());
@@ -319,7 +403,7 @@ mod tests {
         let ResponseInputItem::Message { content, .. } = &item else {
             unreachable!()
         };
-        let expected = HeuristicTokenizer::new().count(content) + 8;
+        let expected = ByteTokenCounter.count(content) + 8;
         let measured = measure_response_surface(Some("stable"), &[item], &[]);
         assert_eq!(measured.dynamic_runtime, expected);
         assert_eq!(measured.messages, 0);

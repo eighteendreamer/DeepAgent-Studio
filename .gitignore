@@ -85,6 +85,9 @@ choice-preview-*.html
 temp_*.mp4
 video_frames*/
 assets/
+!/crates/deepagent-models/assets/
+/crates/deepagent-models/assets/*
+!/crates/deepagent-models/assets/deepseek-tokenizers/
 !/apps/desktop/src-tauri/resources/plugins/superpowers/assets/
 !/apps/desktop/src-tauri/resources/plugins/superpowers/assets/superpowers-small.svg
 /apps/desktop/public/file-viewer/

@@ -1507,6 +1507,7 @@ impl ModelAgent {
         &self,
         request: &ResponseRequest,
     ) -> (u64, deepagent_context::SurfaceTokenBreakdown) {
+        let original_request = request;
         let request = self.client.prepare_response_request(request.clone());
         // A pricing-only resolver may read/encode bytes. Unsupported images
         // must not be materialized even while estimating a doomed request;
@@ -1518,15 +1519,9 @@ impl ModelAgent {
         let header = serde_json::json!({"model": request.model, "max_output_tokens": request.max_output_tokens,
             "reasoning_effort": request.reasoning_effort, "tool_choice": request.tool_choice, "text": request.text,
             "temperature": request.temperature, "top_p": request.top_p, "user": request.user});
-        let key = deepagent_context::ContextMeter::request_fingerprint(
-            &header.to_string(),
-            request.instructions.as_deref(),
-            &request.tools,
-        );
-        let surface = deepagent_context::measure_response_surface_for_route(
-            request.instructions.as_deref(),
-            &request.input,
-            &request.tools,
+        let surface = deepagent_context::measure_response_request(
+            &self.client,
+            original_request,
             |attachment| {
                 if images_allowed
                     && self
@@ -1539,6 +1534,11 @@ impl ModelAgent {
                     0
                 }
             },
+        );
+        let key = deepagent_context::ContextMeter::request_fingerprint(
+            &format!("{}:{}", surface.source, header),
+            request.instructions.as_deref(),
+            &request.tools,
         );
         (key, surface)
     }
@@ -3199,6 +3199,8 @@ mod tests {
     include!("model_reasoning_tests.rs");
 
     include!("model_chat_interrupt_tests.rs");
+
+    include!("model_tokenizer_tests.rs");
 
     #[test]
     fn h168_runtime_projection_keeps_middle_system_in_place() {

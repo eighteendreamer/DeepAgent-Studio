@@ -9,14 +9,18 @@
 pub trait TokenCounter: Send + Sync {
     /// Estimated number of tokens in `text`.
     fn count(&self, text: &str) -> usize;
+
+    fn source(&self) -> &'static str {
+        "custom_text_estimate"
+    }
 }
 
 /// A fast, dependency-free heuristic tokenizer.
 ///
 /// Uses a blend of character- and word-based estimation that approximates
-/// typical BPE behaviour for English + code (~4 chars/token). This is good
-/// enough for budgeting decisions; it is intentionally conservative (rounds
-/// up) so we never *under*-estimate and blow the context window.
+/// typical BPE behaviour for English + code (~4 chars/token). This is only
+/// a cheap fragment-ranking estimate. It can substantially underestimate
+/// Unicode and must not be used as a conservative provider pressure count.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct HeuristicTokenizer;
 
@@ -28,6 +32,10 @@ impl HeuristicTokenizer {
 }
 
 impl TokenCounter for HeuristicTokenizer {
+    fn source(&self) -> &'static str {
+        "heuristic_char4_estimate"
+    }
+
     fn count(&self, text: &str) -> usize {
         if text.is_empty() {
             return 0;
@@ -38,6 +46,55 @@ impl TokenCounter for HeuristicTokenizer {
         let by_chars = chars.div_ceil(4);
         let by_words = text.split_whitespace().count();
         by_chars.max(by_words).max(1)
+    }
+}
+
+/// Deliberately cautious fallback when no matching prompt template is known.
+/// UTF-8 byte length is not a claim about an arbitrary provider's tokenizer or
+/// hidden prompt. It trades early compaction for avoiding character/4's known
+/// multilingual undercount; provider usage still calibrates subsequent turns.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ByteTokenCounter;
+
+impl TokenCounter for ByteTokenCounter {
+    fn count(&self, text: &str) -> usize {
+        text.len()
+    }
+
+    fn source(&self) -> &'static str {
+        "utf8_bytes_estimate:unmatched_template"
+    }
+}
+
+/// Plain-text counter at the existing TokenCounter seam. Full requests must
+/// additionally use the model client's official template/serializer boundary.
+#[derive(Debug, Clone, Copy)]
+pub struct ModelTokenCounter(Option<deepagent_models::tokenizer::DeepSeekTokenizer>);
+
+impl ModelTokenCounter {
+    pub fn for_model(model: &str) -> Self {
+        Self(deepagent_models::tokenizer::DeepSeekTokenizer::for_model(
+            model,
+        ))
+    }
+}
+
+impl TokenCounter for ModelTokenCounter {
+    fn count(&self, text: &str) -> usize {
+        match self.0.map(|tokenizer| tokenizer.count_text(text)) {
+            Some(Ok(count)) => count,
+            Some(Err(_)) => {
+                tracing::warn!("offline text encoding failed; using UTF-8 byte estimate");
+                ByteTokenCounter.count(text)
+            }
+            None => ByteTokenCounter.count(text),
+        }
+    }
+
+    fn source(&self) -> &'static str {
+        // Even a matched text counter is not a full prompt measurement. Its
+        // infallible trait may use byte fallback on an encoder failure.
+        "model_text_estimate:byte_fallback_possible"
     }
 }
 

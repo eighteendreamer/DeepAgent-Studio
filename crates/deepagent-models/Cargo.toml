@@ -11,7 +11,8 @@ description = "DeepSeek-native Responses client: input/output items, semantic SS
 default = []
 # The real network transport (reqwest + rustls). Kept optional so the default
 # build and CI exercise 100% of the streaming/accumulator logic offline via the
-# mock transport, without pulling a TLS stack.
+# mock transport. The pinned offline encoder separately pulls upstream Hub/TLS
+# dependencies, but the adapter never invokes their network-loading APIs.
 http = ["dep:reqwest", "dep:time"]
 
 [dependencies]
@@ -27,6 +28,12 @@ time = { workspace = true, optional = true }
 base64.workspace = true
 sha2.workspace = true
 url.workspace = true
+# Pinned official prompt templates and offline BPE. The upstream encoding crate
+# enables tokenizers' HTTP feature transitively; our adapter only uses from_bytes.
+deepseek-recipe = "=0.2.0"
+deepseek-recipe-encoding = "=0.2.0"
+tokenizers = { version = "=0.23.2", default-features = false }
+flate2.workspace = true
 # Reuse the locked decoder, with only DeepSeek's four raster codecs in the
 # default model graph. Existing desktop image features remain unchanged.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }

@@ -7,8 +7,8 @@
 //!   are *structured* (priority + source + content), not raw strings.
 //! - [`budget`]  — the [`budget::PromptBudget`] token-economy system that decides
 //!   which fragments survive when the context window is tight.
-//! - [`tokenizer`] — a pluggable [`tokenizer::TokenCounter`] (a heuristic
-//!   estimator now; a real BPE tokenizer can be slotted in later).
+//! - [`tokenizer`] — a pluggable [`tokenizer::TokenCounter`], with pinned offline
+//!   DeepSeek BPE and an explicitly approximate UTF-8 byte fallback.
 //!
 //! Composed pipeline:
 //! - [`compaction`] — structured-summary compaction (开发提示词.md §4 Layer 2)
@@ -51,8 +51,8 @@ pub use config_overlay::{
     USER_CLAUDE_PRECEDENCE, USER_DEEPAGENT_PRECEDENCE,
 };
 pub use meter::{
-    measure_response_surface, measure_response_surface_for_route, measure_response_surface_with,
-    ContextMeter, SurfaceTokenBreakdown,
+    measure_response_request, measure_response_surface, measure_response_surface_for_route,
+    measure_response_surface_with, ContextMeter, SurfaceTokenBreakdown,
 };
 pub use model_compactor::{ModelCompactionError, ModelCompactor};
 pub use pack::{
@@ -62,4 +62,4 @@ pub use pack::{
 pub use policy::{CompactionKeepWindow, ContextBudget, ContextPolicy};
 pub use prompt::{CompiledPrompt, PromptFragment, PromptSource};
 pub use reminder::{append_to_tool_result, wrap};
-pub use tokenizer::{HeuristicTokenizer, TokenCounter};
+pub use tokenizer::{ByteTokenCounter, HeuristicTokenizer, ModelTokenCounter, TokenCounter};
