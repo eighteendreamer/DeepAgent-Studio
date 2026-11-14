@@ -2755,6 +2755,46 @@ mod tests {
             }
         }
     }
+
+    #[tokio::test]
+    async fn h296_child_model_uses_its_partial_output_capacity_instead_of_the_parent_limit() {
+        use deepagent_models::discovery::{ModelCatalog, ModelInfo, ModelRole, DEEPSEEK_BASE_URL};
+        let root = tempfile::tempdir().unwrap();
+        let transport = Arc::new(AuditResumeTransport::default());
+        let mut runner = audit_child_runner(root.path(), transport.clone());
+        let models: Vec<ModelInfo> = serde_json::from_value(serde_json::json!([
+            {"id":"deepseek-flash","context_window":1_000_000,"max_output_tokens":65_536},
+            {"id":"audit-capacity-child","max_output_tokens":8_192}
+        ]))
+        .unwrap();
+        let catalog = ModelCatalog::auto_select(DEEPSEEK_BASE_URL, models).unwrap();
+        let mut config = deepagent_models::ModelConfig::from_catalog(
+            "synthetic-h296",
+            &catalog,
+            ModelRole::Chat,
+        );
+        config.defaults.max_output_tokens = Some(32_768);
+        runner.client = Arc::new(ModelClient::new(transport.clone(), config));
+        let request = deepagent_builtins::SubagentRequest {
+            description: "h296 child capacity".into(),
+            prompt: "Reply briefly".into(),
+            subagent_type: None,
+            allowed_tools: vec![],
+            model: Some("audit-capacity-child".into()),
+            effort: None,
+            skills: vec![],
+            isolation: "shared".into(),
+            fork: false,
+            phase: None,
+            label: None,
+            schema: None,
+        };
+        runner.run_inner(request, None).await.unwrap();
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["model"], "audit-capacity-child");
+        assert_eq!(requests[0]["max_output_tokens"], 8_192);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

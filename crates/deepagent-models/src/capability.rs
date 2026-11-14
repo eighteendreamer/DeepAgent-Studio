@@ -25,6 +25,8 @@ pub enum CapabilitySource {
     UserOverride,
     /// Capability was not known; conservative defaults were used.
     ConservativeFallback,
+    /// Context and output capacities have different sources, detailed in fallback_reason.
+    Mixed,
 }
 
 /// Resolved model capability used by context budgeting.
@@ -140,8 +142,7 @@ impl ModelCapabilityResolver {
     pub fn resolve_model_id(&self, model_id: impl AsRef<str>) -> ModelCapability {
         let model_id = model_id.as_ref();
         let mut capability = self
-            .provider_metadata_capability(model_id, None, None)
-            .or_else(|| self.official_snapshot_capability(model_id))
+            .official_snapshot_capability(model_id)
             .unwrap_or_else(|| self.fallback(model_id));
         capability.input_modalities = official_input_modalities(model_id);
         capability
@@ -150,14 +151,48 @@ impl ModelCapabilityResolver {
     /// Resolve from a provider model entry. Future `/models` extensions can
     /// fill the optional fields on [`ModelInfo`] and automatically win.
     pub fn resolve_model(&self, model: &ModelInfo) -> ModelCapability {
-        let mut capability = self
-            .provider_metadata_capability(
-                &model.id,
-                model.context_window.map(|v| v as usize),
-                model.max_output_tokens.map(|v| v as usize),
-            )
-            .or_else(|| self.official_snapshot_capability(&model.id))
-            .unwrap_or_else(|| self.fallback(&model.id));
+        let mut capability = self.resolve_model_id(&model.id);
+        let fallback_source = match capability.capability_source {
+            CapabilitySource::BundledOfficialSnapshot => "bundled_official_snapshot",
+            _ => "conservative_fallback",
+        };
+        // Preserve a supplied zero instead of treating it as absent. On narrow
+        // platforms only cap unrepresentable values; never wrap them to a smaller
+        // unrelated number. The raw u64 declaration remains in ModelCatalog.
+        let platform_capacity = |value| usize::try_from(value).unwrap_or(usize::MAX);
+        if let Some(context) = model.context_window {
+            capability.context_window = platform_capacity(context);
+            // Preserve the existing feature heuristic; this is not capacity provenance.
+            capability.supports_thinking = looks_like_high_context_model_id(&model.id)
+                || looks_like_reasoner_model_id(&model.id)
+                || model.id.contains("reason");
+        }
+        if let Some(output) = model.max_output_tokens {
+            capability.max_output_tokens = platform_capacity(output);
+        }
+        match (model.context_window, model.max_output_tokens) {
+            (Some(_), Some(_)) => {
+                capability.capability_source = CapabilitySource::ProviderMetadata;
+                capability.fallback_reason = None;
+            }
+            (Some(_), None) | (None, Some(_)) => {
+                let context_source = if model.context_window.is_some() {
+                    "provider_metadata"
+                } else {
+                    fallback_source
+                };
+                let output_source = if model.max_output_tokens.is_some() {
+                    "provider_metadata"
+                } else {
+                    fallback_source
+                };
+                capability.capability_source = CapabilitySource::Mixed;
+                capability.fallback_reason = Some(format!(
+                    "missing provider capacity field; context_window={context_source}; max_output_tokens={output_source}"
+                ));
+            }
+            (None, None) => {}
+        }
         capability.input_modalities = model
             .input_modalities
             .clone()
@@ -167,30 +202,6 @@ impl ModelCapabilityResolver {
             capability.supports_thinking = !effort.supported_levels.is_empty();
         }
         capability
-    }
-
-    fn provider_metadata_capability(
-        &self,
-        model_id: &str,
-        context_window: Option<usize>,
-        max_output_tokens: Option<usize>,
-    ) -> Option<ModelCapability> {
-        let context_window = context_window?;
-        let max_output_tokens = max_output_tokens.unwrap_or(self.fallback_max_output_tokens);
-        Some(ModelCapability {
-            input_modalities: None,
-            effort: None,
-            model_id: model_id.to_string(),
-            context_window,
-            max_output_tokens,
-            supports_tools: true,
-            supports_thinking: looks_like_high_context_model_id(model_id)
-                || looks_like_reasoner_model_id(model_id)
-                || model_id.contains("reason"),
-            supports_json_output: true,
-            capability_source: CapabilitySource::ProviderMetadata,
-            fallback_reason: None,
-        })
     }
 
     fn official_snapshot_capability(&self, model_id: &str) -> Option<ModelCapability> {
@@ -271,6 +282,82 @@ mod tests {
         assert_eq!(cap.context_window, 2_000_000);
         assert_eq!(cap.max_output_tokens, 500_000);
         assert_eq!(cap.capability_source, CapabilitySource::ProviderMetadata);
+    }
+
+    #[test]
+    fn h296_capacity_fields_merge_independently_and_describe_mixed_sources() {
+        for (id, window, output, base_source) in [
+            (
+                "deepseek-flash",
+                1_000_000,
+                384_000,
+                "bundled_official_snapshot",
+            ),
+            (
+                "audit-capacity-model",
+                128_000,
+                32_000,
+                "conservative_fallback",
+            ),
+        ] {
+            for context in [None, Some(2_000_000)] {
+                for completion in [None, Some(8_192)] {
+                    let model: ModelInfo = serde_json::from_value(serde_json::json!({
+                        "id":id,"context_window":context,"max_output_tokens":completion,
+                        "input_modalities":["text"],
+                        "effort":{"supported_levels":["low"],"default_level":"low"}
+                    }))
+                    .unwrap();
+                    let cap = ModelCapabilityResolver::new().resolve_model(&model);
+                    assert_eq!(cap.context_window, context.unwrap_or(window) as usize);
+                    assert_eq!(cap.max_output_tokens, completion.unwrap_or(output) as usize);
+                    let source = match (context, completion) {
+                        (None, None) => base_source,
+                        (Some(_), Some(_)) => "provider_metadata",
+                        _ => "mixed",
+                    };
+                    assert_eq!(serde_json::to_value(cap.capability_source).unwrap(), source);
+                    if context.is_some() != completion.is_some() {
+                        let reason = cap
+                            .fallback_reason
+                            .as_deref()
+                            .expect("mixed field provenance");
+                        assert!(reason.contains(base_source));
+                        assert!(reason.contains("context_window"));
+                        assert!(reason.contains("max_output_tokens"));
+                        assert!(reason.contains("provider_metadata"));
+                    }
+                    assert_eq!(cap.input_modalities, model.input_modalities);
+                    assert_eq!(cap.effort, model.effort);
+                    let restored: ModelCapability =
+                        serde_json::from_value(serde_json::to_value(&cap).unwrap()).unwrap();
+                    assert_eq!(restored, cap);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn h296_present_zero_is_not_absence_and_combined_capacity_stays_bounded() {
+        for (context, output) in [
+            (None, Some(0)),
+            (Some(0), None),
+            (Some(4_096), Some(8_192)),
+            (Some(u64::MAX), Some(u64::MAX)),
+        ] {
+            let model: ModelInfo = serde_json::from_value(serde_json::json!({
+                "id":"audit-capacity-model","context_window":context,"max_output_tokens":output
+            }))
+            .unwrap();
+            let cap = ModelCapabilityResolver::new().resolve_model(&model);
+            let platform = |value| usize::try_from(value).unwrap_or(usize::MAX);
+            assert_eq!(cap.context_window, platform(context.unwrap_or(128_000)));
+            assert_eq!(cap.max_output_tokens, platform(output.unwrap_or(32_000)));
+            assert_eq!(
+                cap.bound_output_tokens(65_536),
+                65_536.min(cap.context_window).min(cap.max_output_tokens)
+            );
+        }
     }
 
     #[test]

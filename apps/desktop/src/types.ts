@@ -296,7 +296,9 @@ export type CapabilitySource =
   | "provider_metadata"
   | "bundled_official_snapshot"
   | "user_override"
-  | "conservative_fallback";
+  | "conservative_fallback"
+  /** Context/output sources differ; fallback_reason identifies each field. */
+  | "mixed";
 
 /**
  * Resolved capability for one model (mirrors deepagent-models::ModelCapability).

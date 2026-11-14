@@ -103,7 +103,6 @@ async fn absent_metadata_keeps_existing_fallbacks() {
 }
 
 #[tokio::test]
-#[ignore = "audit: supplied output capacity must survive missing context metadata"]
 async fn output_only_metadata_must_not_be_discarded_by_context_fallback() {
     let mut violations = Vec::new();
     for model in ["deepseek-flash", "audit-capacity-model"] {

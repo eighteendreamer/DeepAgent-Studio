@@ -185,3 +185,68 @@ mod h49_tests {
         );
     }
 }
+
+mod h296_tests {
+    use super::*;
+    use deepagent_models::discovery::{ModelCatalog, ModelInfo, ModelRole, DEEPSEEK_BASE_URL};
+
+    #[tokio::test]
+    async fn h296_partial_fallback_metadata_reaches_wire_budget_and_next_step() {
+        let models: Vec<ModelInfo> = serde_json::from_value(serde_json::json!([
+            {"id":"deepseek-flash","context_window":1_000_000},
+            {"id":"audit-capacity-model","max_output_tokens":8_192}
+        ]))
+        .unwrap();
+        let catalog = ModelCatalog::auto_select(DEEPSEEK_BASE_URL, models).unwrap();
+        let mut config = ModelConfig::from_catalog("synthetic-h296", &catalog, ModelRole::Chat);
+        config.defaults.max_output_tokens = Some(32_768);
+        let primary = config.capability("deepseek-flash");
+        let transport = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([
+                vec!["__ERROR_OVERLOADED__".into()],
+                response_text_completed("fallback"),
+                response_text_completed("next"),
+            ])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let (sink, mut rx) = crate::events::ChannelSink::new();
+        let mut agent = ModelAgent::new(
+            Arc::new(ModelClient::new(transport.clone(), config)),
+            "deepseek-flash",
+            "synthetic",
+            "synthetic",
+            vec![],
+        )
+        .with_fallback_model(Some("audit-capacity-model".into()))
+        .with_context_policy(
+            deepagent_context::ContextPolicy::for_capability(&primary, ReasoningEffort::High),
+            None,
+            None,
+        )
+        .with_context_snapshot(snapshot_estimating(1, primary.context_window))
+        .with_events(Arc::new(sink));
+        agent.think(0, &[]).await.unwrap();
+        agent.think(1, &[]).await.unwrap();
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[0]["max_output_tokens"], 32_768);
+        assert!(requests[1..]
+            .iter()
+            .all(|body| body["model"] == "audit-capacity-model"
+                && body["max_output_tokens"] == 8_192));
+        let snapshots: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|event| match event {
+                RuntimeEvent::ContextUsage { snapshot }
+                    if snapshot.model_id == "audit-capacity-model" =>
+                {
+                    Some(snapshot)
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(!snapshots.is_empty());
+        assert!(snapshots
+            .iter()
+            .all(|s| s.context_window == 128_000 && s.reserved_output_tokens == 8_192));
+    }
+}

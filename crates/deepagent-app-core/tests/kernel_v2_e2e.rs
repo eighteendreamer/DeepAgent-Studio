@@ -24,6 +24,9 @@ mod settings_host_updates;
 #[path = "kernel_v2_e2e/reasoning_capability.rs"]
 mod reasoning_capability;
 
+#[path = "kernel_v2_e2e/partial_capacity.rs"]
+mod partial_capacity;
+
 #[path = "kernel_v2_e2e/credential_lifecycle.rs"]
 mod credential_lifecycle;
 
