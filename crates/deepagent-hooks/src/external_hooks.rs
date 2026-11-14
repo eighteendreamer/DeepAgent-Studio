@@ -1591,6 +1591,11 @@ fn build_hook_payload(event: HookEvent, ctx: &HookContext) -> serde_json::Value 
         serde_json::json!(ctx.session_id.to_string()),
     );
     payload.insert("hook_event_name".into(), serde_json::json!(event.label()));
+    if event == HookEvent::Stop {
+        // The current completion gate does not recursively invoke Stop hooks;
+        // expose that stable state instead of omitting Claude's required flag.
+        payload.insert("stop_hook_active".into(), serde_json::json!(false));
+    }
     if let Some(base) = &ctx.base_input {
         payload.insert("cwd".into(), serde_json::json!(base.cwd));
         payload.insert(

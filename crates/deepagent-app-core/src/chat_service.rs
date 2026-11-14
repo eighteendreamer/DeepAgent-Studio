@@ -3486,7 +3486,6 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    #[ignore = "audit H-105: Stop hook input must include its required event fields"]
     async fn audit_stop_hook_payload_includes_stop_hook_active() {
         let (db, settings, dir) = seeded().await;
         let root = dir.path().join("workspace");
