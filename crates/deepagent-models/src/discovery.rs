@@ -48,6 +48,18 @@ pub struct ModelInfo {
     /// list must not be replaced with a more permissive bundled declaration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_modalities: Option<Vec<String>>,
+    /// Model-level Responses reasoning metadata returned by DeepSeek.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<ModelEffortMetadata>,
+}
+
+/// Provider-declared reasoning levels. Keep raw labels for forward-compatible
+/// catalog persistence; the capability layer validates known canonical values.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelEffortMetadata {
+    pub supported_levels: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_level: Option<String>,
 }
 
 /// The raw `GET /models` response envelope.
@@ -293,6 +305,7 @@ mod tests {
         ids.iter()
             .map(|id| ModelInfo {
                 input_modalities: None,
+                effort: None,
                 id: (*id).to_string(),
                 object: "model".into(),
                 owned_by: "deepseek".into(),
@@ -410,6 +423,13 @@ mod tests {
         assert_eq!(
             restored.available[0].input_modalities,
             Some(vec!["text".into(), "image".into()])
+        );
+        assert_eq!(
+            restored.available[0].effort,
+            Some(ModelEffortMetadata {
+                supported_levels: vec!["low".into(), "high".into(), "max".into()],
+                default_level: Some("high".into()),
+            })
         );
         let capability =
             crate::ModelCapabilityResolver::new().resolve_model(&restored.available[0]);

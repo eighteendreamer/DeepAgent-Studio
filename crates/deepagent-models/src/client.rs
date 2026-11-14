@@ -80,6 +80,9 @@ pub struct ModelConfig {
     /// Immutable provider catalog capabilities, shared by main and child runs.
     /// Host-only metadata; never serialized into a provider request.
     pub capabilities: Vec<crate::ModelCapability>,
+    /// Host selection provenance, never serialized into provider requests.
+    /// When true, a published model default wins over the compatibility default.
+    pub prefer_model_reasoning_default: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -104,6 +107,7 @@ impl ModelConfig {
             defaults: ResponseDefaults::default(),
             wire_mode: WireMode::Responses,
             capabilities: Vec::new(),
+            prefer_model_reasoning_default: false,
         }
     }
 
@@ -115,6 +119,7 @@ impl ModelConfig {
             defaults: ResponseDefaults::default(),
             wire_mode: WireMode::ChatCompletions,
             capabilities: Vec::new(),
+            prefer_model_reasoning_default: false,
         }
     }
 
@@ -137,7 +142,61 @@ impl ModelConfig {
                 .iter()
                 .map(|model| crate::ModelCapabilityResolver::new().resolve_model(model))
                 .collect(),
+            prefer_model_reasoning_default: false,
         }
+    }
+
+    pub fn with_model_reasoning_defaults(mut self, enabled: bool) -> Self {
+        self.prefer_model_reasoning_default = enabled;
+        self
+    }
+
+    pub fn capability(&self, model: &str) -> crate::ModelCapability {
+        self.capabilities
+            .iter()
+            .find(|capability| capability.model_id == model)
+            .cloned()
+            .unwrap_or_else(|| crate::ModelCapabilityResolver::new().resolve_model_id(model))
+    }
+
+    /// None retains model-default selection across retries and fallback.
+    pub fn configured_reasoning_effort(&self) -> Option<ReasoningEffort> {
+        (!self.prefer_model_reasoning_default)
+            .then_some(self.defaults.reasoning_effort)
+            .flatten()
+    }
+
+    fn reasoning_effort_input(
+        &self,
+        capability: &crate::ModelCapability,
+        requested: Option<ReasoningEffort>,
+    ) -> Option<ReasoningEffort> {
+        requested.or_else(|| {
+            let published_default = self.wire_mode == WireMode::Responses
+                && self.prefer_model_reasoning_default
+                && capability
+                    .effort
+                    .as_ref()
+                    .is_some_and(|effort| effort.default_level.is_some());
+            if published_default {
+                None
+            } else {
+                self.defaults.reasoning_effort
+            }
+        })
+    }
+
+    pub fn effective_reasoning_effort(
+        &self,
+        model: &str,
+        requested: Option<ReasoningEffort>,
+    ) -> Result<Option<ReasoningEffort>> {
+        let capability = self.capability(model);
+        let effort = self.reasoning_effort_input(&capability, requested);
+        if self.wire_mode != WireMode::Responses {
+            return Ok(effort);
+        }
+        capability.resolve_reasoning_effort(effort)
     }
 
     /// The fully-qualified DeepSeek Responses endpoint.
@@ -188,12 +247,26 @@ impl ModelClient {
 
     /// Provider metadata wins; uncatalogued ids use the same bundled resolver.
     pub fn capability(&self, model: &str) -> crate::ModelCapability {
-        self.config
-            .capabilities
-            .iter()
-            .find(|capability| capability.model_id == model)
-            .cloned()
-            .unwrap_or_else(|| crate::ModelCapabilityResolver::new().resolve_model_id(model))
+        self.config.capability(model)
+    }
+
+    pub fn configured_reasoning_effort(&self) -> Option<ReasoningEffort> {
+        self.config.configured_reasoning_effort()
+    }
+
+    pub fn prefers_model_reasoning_default(&self) -> bool {
+        self.config.prefer_model_reasoning_default
+    }
+
+    /// Resolve the requested reasoning level against model metadata before a
+    /// Responses request reaches the provider. `none` is the documented
+    /// thinking-off switch and is valid even when no thinking level is listed.
+    pub fn effective_reasoning_effort(
+        &self,
+        model: &str,
+        requested: Option<ReasoningEffort>,
+    ) -> Result<Option<ReasoningEffort>> {
+        self.config.effective_reasoning_effort(model, requested)
     }
 
     /// An explicit request/default is an upper bound, never a promise to exceed
@@ -320,7 +393,7 @@ impl ModelClient {
                 .await;
         }
         request.stream = true;
-        self.prepare_response_sampling(&mut request);
+        self.prepare_response_sampling(&mut request)?;
         request.validate()?;
         self.validate_output_tokens(request.max_output_tokens)?;
         self.validate_response_input_modalities(&request)?;
@@ -384,7 +457,7 @@ impl ModelClient {
                 .await;
         }
         request.stream = true;
-        self.prepare_response_sampling(&mut request);
+        self.prepare_response_sampling(&mut request)?;
         request.validate()?;
         self.validate_output_tokens(request.max_output_tokens)?;
         self.validate_response_input_modalities(&request)?;
@@ -526,10 +599,13 @@ impl ModelClient {
         accumulator.finish()
     }
 
-    /// Apply the same defaults used by dispatch, for request budgeting and UI.
-    /// This does not serialize or send anything.
+    /// Project defaults for budgeting and UI; this is not request validation.
+    /// Final dispatch validates the retained raw capability before any HTTP.
     pub fn prepare_response_request(&self, mut request: ResponseRequest) -> ResponseRequest {
-        self.prepare_response_sampling(&mut request);
+        self.apply_defaults(&mut request);
+        if let Some(sampling) = self.response_sampling(&request) {
+            request.top_p = sampling.wire_top_p;
+        }
         request
     }
 
@@ -551,9 +627,7 @@ impl ModelClient {
         Some(crate::resolve_responses_sampling(
             &request.model,
             request.top_p.or(self.config.defaults.top_p),
-            request
-                .reasoning_effort
-                .or(self.config.defaults.reasoning_effort),
+            self.reasoning_effort_hint(&request.model, request.reasoning_effort),
             supported_tools,
             request
                 .tool_choice
@@ -562,11 +636,14 @@ impl ModelClient {
         ))
     }
 
-    fn prepare_response_sampling(&self, request: &mut ResponseRequest) {
+    fn prepare_response_sampling(&self, request: &mut ResponseRequest) -> Result<()> {
         self.apply_defaults(request);
+        request.reasoning_effort =
+            self.effective_reasoning_effort(&request.model, request.reasoning_effort)?;
         if let Some(sampling) = self.response_sampling(request) {
             request.top_p = sampling.wire_top_p;
         }
+        Ok(())
     }
 
     /// Project through the exact defaulting and serializers used by dispatch.
@@ -609,9 +686,8 @@ impl ModelClient {
         if request.top_logprobs.is_none() {
             request.top_logprobs = self.config.defaults.top_logprobs;
         }
-        if request.reasoning_effort.is_none() {
-            request.reasoning_effort = self.config.defaults.reasoning_effort;
-        }
+        request.reasoning_effort =
+            self.reasoning_effort_hint(&request.model, request.reasoning_effort);
         if request.text.is_none() {
             request.text = self.config.defaults.text.clone();
         }
@@ -621,6 +697,30 @@ impl ModelClient {
         if request.user.is_none() {
             request.user = self.config.defaults.user.clone();
         }
+    }
+
+    /// An infallible projection only: unknown labels remain in the capability
+    /// and are rejected by `effective_reasoning_effort`, not treated as absent.
+    fn reasoning_effort_hint(
+        &self,
+        model: &str,
+        requested: Option<ReasoningEffort>,
+    ) -> Option<ReasoningEffort> {
+        let capability = self.capability(model);
+        self.config
+            .reasoning_effort_input(&capability, requested)
+            .or_else(|| {
+                if self.config.wire_mode != WireMode::Responses {
+                    return None;
+                }
+                capability
+                    .effort
+                    .as_ref()?
+                    .default_level
+                    .as_deref()
+                    .and_then(ReasoningEffort::parse_responses)
+                    .filter(|effort| *effort != ReasoningEffort::None)
+            })
     }
 
     fn apply_chat_defaults(&self, request: &mut ChatCompletionRequest) -> Result<()> {
@@ -1666,6 +1766,7 @@ mod tests {
             reasoner_model: "deepseek-flash".into(),
             available: vec![crate::discovery::ModelInfo {
                 input_modalities: None,
+                effort: None,
                 id: "deepseek-flash".into(),
                 object: "model".into(),
                 owned_by: "deepseek".into(),

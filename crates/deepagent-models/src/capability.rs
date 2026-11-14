@@ -6,7 +6,12 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::discovery::{looks_like_high_context_model_id, looks_like_reasoner_model_id, ModelInfo};
+use deepagent_core::error::{CoreError, Result};
+
+use crate::discovery::{
+    looks_like_high_context_model_id, looks_like_reasoner_model_id, ModelEffortMetadata, ModelInfo,
+};
+use crate::ReasoningEffort;
 
 /// Where a model capability came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,6 +40,10 @@ pub struct ModelCapability {
     /// None means unknown, not implicit permission to send images.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_modalities: Option<Vec<String>>,
+    /// Raw provider declaration, retained independently of capacity provenance.
+    /// Missing means unknown; an empty or unrecognized list is not unrestricted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<ModelEffortMetadata>,
     /// Provenance of the existing context/output budgeting fields. Input
     /// modalities are independently merged from metadata or the exact snapshot.
     pub capability_source: CapabilitySource,
@@ -43,6 +52,60 @@ pub struct ModelCapability {
 }
 
 impl ModelCapability {
+    /// Resolve Responses effort without silently downgrading an explicit value.
+    /// `none` is the independent thinking-off switch, not a supported-level entry.
+    pub fn resolve_reasoning_effort(
+        &self,
+        requested: Option<ReasoningEffort>,
+    ) -> Result<Option<ReasoningEffort>> {
+        let Some(metadata) = self.effort.as_ref() else {
+            return Ok(requested);
+        };
+        if requested == Some(ReasoningEffort::None) {
+            return Ok(requested);
+        }
+        let invalid_metadata = || {
+            CoreError::invalid(format!(
+                "model '{}' has invalid reasoning effort metadata",
+                self.model_id
+            ))
+        };
+        if metadata.supported_levels.is_empty()
+            || metadata
+                .supported_levels
+                .iter()
+                .any(|level| ReasoningEffort::parse_responses(level) == Some(ReasoningEffort::None))
+        {
+            return Err(invalid_metadata());
+        }
+        let supports = |effort| {
+            metadata
+                .supported_levels
+                .iter()
+                .any(|level| ReasoningEffort::parse_responses(level) == Some(effort))
+        };
+        let default = metadata
+            .default_level
+            .as_deref()
+            .map(|level| {
+                ReasoningEffort::parse_responses(level)
+                    .filter(|effort| *effort != ReasoningEffort::None && supports(*effort))
+                    .ok_or_else(invalid_metadata)
+            })
+            .transpose()?;
+        let effort = requested.or(default);
+        if let Some(effort) = effort {
+            if !supports(effort) {
+                return Err(CoreError::invalid(format!(
+                    "model '{}' does not support reasoning effort '{}'",
+                    self.model_id,
+                    effort.label()
+                )));
+            }
+        }
+        Ok(effort)
+    }
+
     /// A requested upper bound cannot exceed either provider output capacity
     /// or the whole context window. This does not invent a request default.
     pub fn bound_output_tokens(&self, requested: usize) -> usize {
@@ -99,6 +162,10 @@ impl ModelCapabilityResolver {
             .input_modalities
             .clone()
             .or_else(|| official_input_modalities(&model.id));
+        capability.effort = model.effort.clone();
+        if let Some(effort) = &model.effort {
+            capability.supports_thinking = !effort.supported_levels.is_empty();
+        }
         capability
     }
 
@@ -112,6 +179,7 @@ impl ModelCapabilityResolver {
         let max_output_tokens = max_output_tokens.unwrap_or(self.fallback_max_output_tokens);
         Some(ModelCapability {
             input_modalities: None,
+            effort: None,
             model_id: model_id.to_string(),
             context_window,
             max_output_tokens,
@@ -131,6 +199,7 @@ impl ModelCapabilityResolver {
         }
         Some(ModelCapability {
             input_modalities: None,
+            effort: None,
             model_id: model_id.to_string(),
             context_window: 1_000_000,
             max_output_tokens: 384_000,
@@ -145,6 +214,7 @@ impl ModelCapabilityResolver {
     fn fallback(&self, model_id: &str) -> ModelCapability {
         ModelCapability {
             input_modalities: None,
+            effort: None,
             model_id: model_id.to_string(),
             context_window: self.fallback_context_window,
             max_output_tokens: self.fallback_max_output_tokens,
@@ -190,6 +260,7 @@ mod tests {
     fn provider_metadata_wins_when_present() {
         let model = ModelInfo {
             input_modalities: None,
+            effort: None,
             id: "future-model".into(),
             object: "model".into(),
             owned_by: "deepseek".into(),
@@ -200,6 +271,101 @@ mod tests {
         assert_eq!(cap.context_window, 2_000_000);
         assert_eq!(cap.max_output_tokens, 500_000);
         assert_eq!(cap.capability_source, CapabilitySource::ProviderMetadata);
+    }
+
+    #[test]
+    fn reasoning_metadata_preserves_unknown_levels_and_normalizes_supported_aliases() {
+        let model = ModelInfo {
+            id: "limited".into(),
+            object: "model".into(),
+            owned_by: "deepseek".into(),
+            context_window: None,
+            max_output_tokens: None,
+            input_modalities: None,
+            effort: Some(crate::discovery::ModelEffortMetadata {
+                supported_levels: vec!["minimal".into(), "xhigh".into(), "mystery".into()],
+                default_level: Some("minimal".into()),
+            }),
+        };
+        let capability = ModelCapabilityResolver::new().resolve_model(&model);
+        assert_eq!(capability.effort, model.effort);
+        assert_eq!(
+            capability.resolve_reasoning_effort(None).unwrap(),
+            Some(ReasoningEffort::Low)
+        );
+        assert_eq!(
+            capability
+                .resolve_reasoning_effort(Some(ReasoningEffort::High))
+                .unwrap(),
+            Some(ReasoningEffort::High)
+        );
+        assert!(capability
+            .resolve_reasoning_effort(Some(ReasoningEffort::Max))
+            .is_err());
+    }
+
+    #[test]
+    fn reasoning_metadata_does_not_turn_invalid_or_empty_declarations_into_unknown_support() {
+        for metadata in [
+            ModelEffortMetadata {
+                supported_levels: vec![],
+                default_level: None,
+            },
+            ModelEffortMetadata {
+                supported_levels: vec!["low".into()],
+                default_level: Some("high".into()),
+            },
+            ModelEffortMetadata {
+                supported_levels: vec!["future".into()],
+                default_level: Some("future".into()),
+            },
+            ModelEffortMetadata {
+                supported_levels: vec!["none".into()],
+                default_level: None,
+            },
+        ] {
+            let mut capability = ModelCapabilityResolver::new().resolve_model_id("limited");
+            capability.effort = Some(metadata);
+            let restored: ModelCapability =
+                serde_json::from_value(serde_json::to_value(&capability).unwrap()).unwrap();
+            assert_eq!(restored, capability);
+            for request in [None, Some(ReasoningEffort::Low)] {
+                assert!(restored.resolve_reasoning_effort(request).is_err());
+            }
+            assert_eq!(
+                restored
+                    .resolve_reasoning_effort(Some(ReasoningEffort::None))
+                    .unwrap(),
+                Some(ReasoningEffort::None)
+            );
+        }
+    }
+
+    #[test]
+    fn missing_effort_metadata_is_compatible_but_missing_required_levels_is_not() {
+        let capability = ModelCapabilityResolver::new().resolve_model_id("unknown");
+        assert_eq!(capability.resolve_reasoning_effort(None).unwrap(), None);
+        assert_eq!(
+            capability
+                .resolve_reasoning_effort(Some(ReasoningEffort::High))
+                .unwrap(),
+            Some(ReasoningEffort::High)
+        );
+        assert!(
+            serde_json::from_value::<ModelEffortMetadata>(serde_json::json!({
+                "default_level": "low"
+            }))
+            .is_err()
+        );
+        let mut capability = capability;
+        capability.effort = Some(ModelEffortMetadata {
+            supported_levels: vec!["low".into()],
+            default_level: None,
+        });
+        assert_eq!(capability.resolve_reasoning_effort(None).unwrap(), None);
+        assert!(capability
+            .resolve_reasoning_effort(Some(ReasoningEffort::High))
+            .is_err());
     }
 
     #[test]

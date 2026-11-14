@@ -150,6 +150,7 @@ mod tests {
                 vec![
                     deepagent_models::ModelInfo {
                         input_modalities: None,
+                        effort: None,
                         id: "deepseek-v4-flash".into(),
                         object: "model".into(),
                         owned_by: "deepseek".into(),
@@ -158,6 +159,7 @@ mod tests {
                     },
                     deepagent_models::ModelInfo {
                         input_modalities: None,
+                        effort: None,
                         id: "deepseek-v4-pro".into(),
                         object: "model".into(),
                         owned_by: "deepseek".into(),
@@ -175,6 +177,7 @@ mod tests {
             permission_rules: deepagent_hooks::PermissionRules::default(),
             hooks_json: String::new(),
             reasoning_effort: deepagent_models::ReasoningEffort::default(),
+            reasoning_effort_explicit: true,
             responses: crate::settings::ResponsesApiSettings::default(),
             verification_policy: crate::settings::VerificationPolicy::default(),
             web_search: crate::settings::WebSearchSettings::default(),

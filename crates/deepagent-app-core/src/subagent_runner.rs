@@ -837,10 +837,16 @@ impl ChatSubagentRunner {
         });
         let task = session.create_task(&request.prompt)?;
         let sub_model = request.model.clone().unwrap_or_else(|| self.model.clone());
-        let sub_reasoning_effort = subagent_reasoning_effort(
-            subagent_effort_str(agent_profile, &request),
-            self.reasoning_effort,
-        )?;
+        let requested_effort = subagent_effort_str(agent_profile, &request)
+            .map(|effort| subagent_reasoning_effort(Some(effort), self.reasoning_effort))
+            .transpose()?
+            .or_else(|| {
+                (!self.client.prefers_model_reasoning_default()).then_some(self.reasoning_effort)
+            });
+        let sub_reasoning_effort = self
+            .client
+            .effective_reasoning_effort(&sub_model, requested_effort)?
+            .unwrap_or_default();
         // Sub-agents run their own model loop; without compaction a long task
         // would only be bounded by the 64-step / 1M-token hard ceilings. Give it
         // the same reactive + proactive compaction the main run uses. The
@@ -879,6 +885,7 @@ impl ChatSubagentRunner {
             session_id: session.id(),
         }))
         .with_reasoning_effort(sub_reasoning_effort)
+        .with_reasoning_effort_selection(requested_effort)
         .with_reactive_compactor(reactive_compactor)
         .with_proactive_compaction(context_policy.autocompact_threshold_tokens(None, None) as u64)
         .with_context_policy(context_policy, None, None);
@@ -2694,6 +2701,58 @@ mod tests {
         }
         for alias in ["minimal", "medium", "xhigh", "simple", "deep"] {
             assert!(subagent_reasoning_effort(Some(alias), ReasoningEffort::None).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn h157_child_model_override_preserves_default_selection_and_checks_explicit_effort() {
+        use deepagent_models::discovery::ModelEffortMetadata;
+        for (model_default, explicit, rejected, expected) in [
+            (true, None, false, "low"),
+            (true, Some("none"), false, "none"),
+            (true, Some("high"), true, ""),
+            (false, None, true, ""),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let transport = Arc::new(AuditResumeTransport::default());
+            let mut runner = audit_child_runner(dir.path(), transport.clone());
+            let mut config = deepagent_models::ModelConfig::deepseek("synthetic")
+                .with_model_reasoning_defaults(model_default);
+            let mut capability =
+                deepagent_models::ModelCapabilityResolver::new().resolve_model_id("h157-child");
+            capability.effort = Some(ModelEffortMetadata {
+                supported_levels: vec!["low".into()],
+                default_level: Some("low".into()),
+            });
+            config.capabilities = vec![capability];
+            config.defaults.reasoning_effort = Some(ReasoningEffort::High);
+            runner.client = Arc::new(ModelClient::new(transport.clone(), config));
+            runner.reasoning_effort = ReasoningEffort::High;
+            let request = deepagent_builtins::SubagentRequest {
+                description: "h157 child reasoning".into(),
+                prompt: "Reply briefly".into(),
+                subagent_type: None,
+                allowed_tools: vec![],
+                model: Some("h157-child".into()),
+                effort: explicit.map(str::to_owned),
+                skills: vec![],
+                isolation: "shared".into(),
+                fork: false,
+                phase: None,
+                label: None,
+                schema: None,
+            };
+            let result = runner.run_inner(request, None).await;
+            let requests = transport.requests.lock().unwrap();
+            if rejected {
+                assert!(result.is_err());
+                assert!(requests.is_empty());
+            } else {
+                result.unwrap();
+                assert_eq!(requests.len(), 1);
+                assert_eq!(requests[0]["model"], "h157-child");
+                assert_eq!(requests[0]["reasoning"]["effort"], expected);
+            }
         }
     }
 }

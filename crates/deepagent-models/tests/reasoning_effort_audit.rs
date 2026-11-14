@@ -53,7 +53,6 @@ impl HttpTransport for AuditTransport {
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: model-advertised effort levels must constrain the Responses request"]
 async fn audit_model_effort_metadata_constrains_responses_request() {
     let transport = Arc::new(AuditTransport::default());
     let catalog = ModelDiscovery::deepseek(transport.clone())
@@ -73,17 +72,136 @@ async fn audit_model_effort_metadata_constrains_responses_request() {
         "deepseek-effort-limited",
         vec![Message::user("Reply briefly.")],
     );
-    client.stream_response(request).await.unwrap();
+    let error = client.stream_response(request).await.unwrap_err();
 
     let requests = transport.requests.lock().unwrap();
-    let actual_effort = requests[0]["reasoning"]["effort"].as_str();
+    let actual_effort = requests
+        .first()
+        .and_then(|request| request["reasoning"]["effort"].as_str());
     eprintln!(
         "model-effort audit: metadata_retained={effort_metadata_retained} advertised=[low] default=low wire_effort={actual_effort:?}"
     );
+    assert!(effort_metadata_retained);
+    assert!(requests.is_empty());
     assert!(
-        effort_metadata_retained && actual_effort != Some("high"),
-        "the discovered model declares only low effort, but the catalog discarded that capability and the Responses request still sent high"
+        actual_effort.is_none(),
+        "unsupported effort must not reach transport"
     );
+    assert!(error
+        .to_string()
+        .contains("does not support reasoning effort"));
+}
+
+#[tokio::test]
+async fn model_effort_metadata_supplies_default_without_overriding_explicit_none() {
+    let transport = Arc::new(AuditTransport::default());
+    let catalog = ModelDiscovery::deepseek(transport.clone())
+        .discover("offline-audit-placeholder")
+        .await
+        .unwrap();
+    let config = ModelConfig::from_catalog("offline-audit-placeholder", &catalog, ModelRole::Chat);
+    let client = ModelClient::new(transport.clone(), config);
+    let preview = client.prepare_response_request(ResponseRequest::new(
+        "deepseek-effort-limited",
+        vec![Message::user("preview")],
+    ));
+    assert_eq!(preview.reasoning_effort, Some(ReasoningEffort::Low));
+    client
+        .stream_response(ResponseRequest::new(
+            "deepseek-effort-limited",
+            vec![Message::user("default")],
+        ))
+        .await
+        .unwrap();
+    let request = requests(&transport)[0].clone();
+    assert_eq!(request["reasoning"]["effort"], "low");
+
+    let mut none = ResponseRequest::new("deepseek-effort-limited", vec![Message::user("none")]);
+    none.reasoning_effort = Some(ReasoningEffort::None);
+    client.stream_response(none).await.unwrap();
+    assert_eq!(requests(&transport)[1]["reasoning"]["effort"], "none");
+}
+
+#[tokio::test]
+async fn h157_every_responses_entry_rejects_unsupported_effort_before_transport() {
+    let transport = Arc::new(AuditTransport::default());
+    let catalog = ModelDiscovery::deepseek(transport.clone())
+        .discover("offline-audit-placeholder")
+        .await
+        .unwrap();
+    let client = ModelClient::new(
+        transport.clone(),
+        ModelConfig::from_catalog("offline-audit-placeholder", &catalog, ModelRole::Chat),
+    );
+    for entry in 0..4 {
+        let request =
+            ResponseRequest::new("deepseek-effort-limited", vec![Message::user("offline")])
+                .with_reasoning_effort(ReasoningEffort::High);
+        // Projection must neither hide an invalid explicit value nor turn it
+        // into the model's low default. Dispatch owns authoritative validation.
+        let prepared = client.prepare_response_request(request);
+        assert_eq!(prepared.reasoning_effort, Some(ReasoningEffort::High));
+        let mut observer = deepagent_models::stream::NoopObserver;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let result = match entry {
+            0 => client.stream_response(prepared).await,
+            1 => {
+                client
+                    .stream_response_observed(prepared, &mut observer)
+                    .await
+            }
+            2 => client.stream_response_cancelled(prepared, cancel).await,
+            3 => {
+                client
+                    .stream_response_observed_cancelled(prepared, &mut observer, cancel)
+                    .await
+            }
+            _ => unreachable!(),
+        };
+        let error = result.unwrap_err();
+        assert_eq!(
+            deepagent_models::classify_model_error(&error),
+            deepagent_models::ModelFailureKind::InvalidRequest,
+        );
+        assert!(error
+            .to_string()
+            .contains("does not support reasoning effort"));
+    }
+    assert!(requests(&transport).is_empty());
+}
+
+fn requests(transport: &Arc<AuditTransport>) -> Vec<serde_json::Value> {
+    transport.requests.lock().unwrap().clone()
+}
+
+#[tokio::test]
+async fn h157_model_defaults_override_only_implicit_compatibility_not_explicit_requests() {
+    let transport = Arc::new(AuditTransport::default());
+    let catalog = ModelDiscovery::deepseek(transport.clone())
+        .discover("offline-audit-placeholder")
+        .await
+        .unwrap();
+    let config = ModelConfig::from_catalog("offline-audit-placeholder", &catalog, ModelRole::Chat)
+        .with_defaults(ResponseDefaults {
+            reasoning_effort: Some(ReasoningEffort::High),
+            ..Default::default()
+        })
+        .with_model_reasoning_defaults(true);
+    let client = ModelClient::new(transport.clone(), config);
+    assert_eq!(client.configured_reasoning_effort(), None);
+    let request = ResponseRequest::new("deepseek-effort-limited", vec![Message::user("default")]);
+    client.stream_response(request.clone()).await.unwrap();
+    assert_eq!(requests(&transport)[0]["reasoning"]["effort"], "low");
+    let error = client
+        .stream_response(request.with_reasoning_effort(ReasoningEffort::High))
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("does not support reasoning effort"));
+    assert_eq!(requests(&transport).len(), 1);
+    let body = &requests(&transport)[0];
+    assert!(body.get("prefer_model_reasoning_default").is_none());
 }
 
 #[tokio::test]

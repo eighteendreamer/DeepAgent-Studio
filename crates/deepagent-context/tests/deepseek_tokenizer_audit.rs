@@ -75,6 +75,7 @@ fn audit_official_offline_text_is_not_underestimated() {
 fn audit_offline_text_pressure_reaches_the_shared_context_threshold() {
     let capability = ModelCapability {
         input_modalities: None,
+        effort: None,
         model_id: "audit-offline-tokenizer".into(),
         context_window: 128_000,
         max_output_tokens: 8192,

@@ -23,7 +23,7 @@ use deepagent_hooks::{bash_prefix_rule, rule_command_prefix, PermissionRules};
 use deepagent_models::balance::{fetch_balance, BalanceResponse};
 use deepagent_models::capability::{ModelCapability, ModelCapabilityResolver};
 use deepagent_models::chat::validate_responses_user_identifier;
-use deepagent_models::discovery::{ModelCatalog, ModelDiscovery};
+use deepagent_models::discovery::{ModelCatalog, ModelDiscovery, ModelRole};
 use deepagent_models::transport::HttpTransport;
 use deepagent_models::ReasoningEffort;
 use deepagent_persistence::document_store::DocumentStore;
@@ -912,6 +912,10 @@ pub struct AppSettings {
     /// User-selected DeepSeek Responses reasoning effort.
     #[serde(default)]
     pub reasoning_effort: ReasoningEffort,
+    /// Missing in old documents means preserve their saved global choice.
+    /// New initialization explicitly writes false; user selection writes true.
+    #[serde(default = "default_true")]
+    pub reasoning_effort_explicit: bool,
     /// Global Responses API controls; system-managed request fields are never
     /// accepted from this object.
     #[serde(default)]
@@ -1419,6 +1423,7 @@ impl SettingsService {
                     "discovered_at": discovered_at,
                     "sandbox_mode": SandboxMode::default(),
                     "tool_search_mode": Self::DEFAULT_TOOL_SEARCH_MODE,
+                    "reasoning_effort_explicit": false,
                 }))?,
             };
             settings.catalog = catalog;
@@ -1609,7 +1614,14 @@ impl SettingsService {
 
     /// The current DeepSeek Thinking Mode depth.
     pub fn reasoning_effort(&self) -> Result<ReasoningEffort> {
-        Ok(self.load()?.map(|s| s.reasoning_effort).unwrap_or_default())
+        let Some(settings) = self.load()? else {
+            return Ok(ReasoningEffort::default());
+        };
+        Ok(
+            crate::model_runtime::model_config(&settings, ModelRole::Chat, None)?
+                .effective_reasoning_effort(&settings.catalog.chat_model, None)?
+                .unwrap_or_default(),
+        )
     }
 
     /// Effective proactive auto-compact reserve buffer override. Precedence:
@@ -2086,6 +2098,7 @@ impl SettingsService {
     pub fn set_reasoning_effort(&self, effort: ReasoningEffort) -> Result<SettingsView> {
         let settings = self.update_settings(|settings| {
             settings.reasoning_effort = effort;
+            settings.reasoning_effort_explicit = true;
             Ok(())
         })?;
         let key = self.api_key()?;
@@ -2254,6 +2267,18 @@ impl SettingsService {
         // Resolve through the same resolver the runtime uses so the UI never
         // has to guess a model's context window from its id.
         let capability_resolver = ModelCapabilityResolver::new();
+        let reasoning_effort =
+            match crate::model_runtime::model_config(settings, ModelRole::Chat, None).and_then(
+                |config| config.effective_reasoning_effort(&settings.catalog.chat_model, None),
+            ) {
+                Ok(effort) => effort.unwrap_or_default(),
+                Err(error) => {
+                    // Preserve an invalid saved value as an editable configuration,
+                    // not as a claim that this effort is valid for the active model.
+                    tracing::warn!(%error, "reasoning setting is not valid for the active model");
+                    settings.reasoning_effort
+                }
+            };
         Ok(SettingsView {
             api_key_masked: key.map(mask_key).unwrap_or_else(|| "(not set)".to_string()),
             base_url: settings.catalog.base_url.clone(),
@@ -2276,7 +2301,7 @@ impl SettingsService {
             approval_policy: settings.approval_policy.label().to_string(),
             sandbox_mode: settings.sandbox_mode.label().to_string(),
             terminal_shell: settings.terminal_shell.label().to_string(),
-            reasoning_effort: settings.reasoning_effort.label().to_string(),
+            reasoning_effort: reasoning_effort.label().to_string(),
             responses: settings.responses.clone(),
             responses_sampling: responses_sampling_preview(settings),
             web_search: normalized_web_search_settings(settings.web_search.clone()),
@@ -2328,6 +2353,10 @@ mod credential_lifecycle;
 mod sampling;
 use sampling::responses_sampling_preview;
 pub use sampling::ResponsesSamplingPreview;
+
+#[cfg(test)]
+#[path = "settings/reasoning_tests.rs"]
+mod reasoning_tests;
 
 #[cfg(test)]
 #[path = "settings/repair_tests.rs"]
@@ -3383,6 +3412,7 @@ mod tests {
                 vec![
                     deepagent_models::ModelInfo {
                         input_modalities: None,
+                        effort: None,
                         id: "deepseek-v4-flash".into(),
                         object: "model".into(),
                         owned_by: "deepseek".into(),
@@ -3391,6 +3421,7 @@ mod tests {
                     },
                     deepagent_models::ModelInfo {
                         input_modalities: None,
+                        effort: None,
                         id: "deepseek-v4-pro".into(),
                         object: "model".into(),
                         owned_by: "deepseek".into(),
@@ -3406,6 +3437,7 @@ mod tests {
             sandbox_mode: SandboxMode::WorkspaceWrite,
             terminal_shell: TerminalShell::default(),
             reasoning_effort: ReasoningEffort::High,
+            reasoning_effort_explicit: true,
             responses: ResponsesApiSettings::default(),
             permission_rules: PermissionRules::default(),
             hooks_json: String::new(),

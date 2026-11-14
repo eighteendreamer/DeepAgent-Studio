@@ -80,6 +80,7 @@ impl HttpTransport for RecordingModel {
 async fn observe(sample: &Value) -> (usize, usize) {
     let capability = ModelCapability {
         input_modalities: None,
+        effort: None,
         model_id: "audit-offline-tokenizer".into(),
         context_window: 128_000,
         max_output_tokens: 8192,

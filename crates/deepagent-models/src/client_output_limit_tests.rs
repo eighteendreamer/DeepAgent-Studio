@@ -28,6 +28,7 @@ fn config(mode: WireMode, window: usize, limit: usize, configured: Option<u32>) 
     config.defaults.max_output_tokens = configured;
     config.capabilities = vec![crate::ModelCapability {
         model_id: "active".into(),
+        effort: None,
         context_window: window,
         max_output_tokens: limit,
         input_modalities: None,

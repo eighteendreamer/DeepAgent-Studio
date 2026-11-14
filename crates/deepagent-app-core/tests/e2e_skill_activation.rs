@@ -161,6 +161,7 @@ fn settings_default() -> AppSettings {
             vec![
                 ModelInfo {
                     input_modalities: None,
+                    effort: None,
                     id: "deepseek-v4-flash".into(),
                     object: "model".into(),
                     owned_by: "deepseek".into(),
@@ -169,6 +170,7 @@ fn settings_default() -> AppSettings {
                 },
                 ModelInfo {
                     input_modalities: None,
+                    effort: None,
                     id: "deepseek-v4-pro".into(),
                     object: "model".into(),
                     owned_by: "deepseek".into(),
@@ -186,6 +188,7 @@ fn settings_default() -> AppSettings {
         permission_rules: Default::default(),
         hooks_json: String::new(),
         reasoning_effort: Default::default(),
+        reasoning_effort_explicit: true,
         responses: Default::default(),
         verification_policy: Default::default(),
         web_search: Default::default(),

@@ -646,6 +646,7 @@ impl<'a> RunAssembler<'a> {
         let client = run_model.client;
         let model = run_model.model;
         let reasoning_effort = run_model.reasoning_effort;
+        let requested_reasoning_effort = client.configured_reasoning_effort();
         let fallback_model = run_model.fallback_model;
         let subagent_reasoning_effort = reasoning_effort;
 
@@ -1222,6 +1223,7 @@ impl<'a> RunAssembler<'a> {
         ))
         .with_tool_schema_observer(capabilities.wire_observer())
         .with_reasoning_effort(effective_reasoning_effort)
+        .with_reasoning_effort_selection(requested_reasoning_effort)
         .with_fallback_model(fallback_model)
         .with_reactive_compactor(reactive_compactor)
         .with_history(history)

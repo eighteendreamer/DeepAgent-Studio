@@ -312,6 +312,8 @@ export interface ModelCapability {
   supports_json_output: boolean;
   /** Missing means unknown; never infer image support from the model name. */
   input_modalities?: string[];
+  /** Raw model-level declaration; missing means unknown, not unrestricted. */
+  effort?: { supported_levels: string[]; default_level?: string };
   capability_source: CapabilitySource;
   fallback_reason?: string;
 }

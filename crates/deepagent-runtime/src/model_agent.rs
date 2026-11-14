@@ -623,6 +623,9 @@ pub struct ModelAgent {
     pending_response_items: Vec<ResponseOutputItem>,
     /// DeepSeek Responses reasoning effort applied to every request.
     reasoning_effort: ReasoningEffort,
+    /// Explicit selection, distinct from this attempt's resolved effort above.
+    /// None keeps model-default provenance across retries and fallback.
+    requested_reasoning_effort: Option<ReasoningEffort>,
     /// Provider attempts per turn for transient/empty-stream failures.
     max_model_attempts: usize,
     /// Optional same-endpoint model used once when the primary deployment is
@@ -752,6 +755,11 @@ impl ModelAgent {
             Message::user(goal).with_attachments(attachments),
         ];
         let response_history = ResponseHistory::from_messages(&messages);
+        let requested_reasoning_effort = if client.prefers_model_reasoning_default() {
+            None
+        } else {
+            Some(ReasoningEffort::default())
+        };
         Self {
             client,
             model: model.into(),
@@ -769,6 +777,7 @@ impl ModelAgent {
             tool_context_reset: None,
             pending_response_items: Vec::new(),
             reasoning_effort: ReasoningEffort::default(),
+            requested_reasoning_effort,
             max_model_attempts: 3,
             fallback_model: None,
             reactive_compactor: None,
@@ -1078,6 +1087,7 @@ impl ModelAgent {
 
     fn request_for_current_history(&self) -> Result<ResponseRequest> {
         let mut request = self.response_history.request(self.model.clone());
+        request.reasoning_effort = self.requested_reasoning_effort;
         self.client.validate_response_input_modalities(&request)?;
         if let Some(resolver) = self.attachment_resolver.as_ref() {
             let mut urls = std::collections::BTreeMap::new();
@@ -1134,6 +1144,17 @@ impl ModelAgent {
     /// Attach the user's DeepSeek Responses reasoning effort.
     pub fn with_reasoning_effort(mut self, effort: ReasoningEffort) -> Self {
         self.reasoning_effort = effort;
+        self.requested_reasoning_effort = Some(effort);
+        self
+    }
+
+    /// Set provenance after seeding the initial effective effort for context UI.
+    /// A default selection is resolved again for every actual model attempt.
+    pub fn with_reasoning_effort_selection(mut self, effort: Option<ReasoningEffort>) -> Self {
+        self.requested_reasoning_effort = effort;
+        if let Some(effort) = effort {
+            self.reasoning_effort = effort;
+        }
         self
     }
 
@@ -1185,14 +1206,14 @@ impl ModelAgent {
 
     fn current_context_policy(&self) -> Option<deepagent_context::ContextPolicy> {
         self.context_policy.as_ref()?;
-        let request = self
-            .client
-            .prepare_response_request(self.response_history.request(self.model.clone()));
+        let mut request = self.response_history.request(self.model.clone());
+        request.reasoning_effort = self.requested_reasoning_effort;
+        let request = self.client.prepare_response_request(request);
         let capability = self.client.capability(&self.model);
         Some(
             deepagent_context::ContextPolicy::for_capability_with_output(
                 &capability,
-                self.reasoning_effort,
+                request.reasoning_effort.unwrap_or(self.reasoning_effort),
                 self.request_max_output_override
                     .or(request.max_output_tokens)
                     .map(|value| value as usize),
@@ -1476,8 +1497,8 @@ impl ModelAgent {
         let mut request = self
             .response_history
             .request(self.model.clone())
-            .with_reasoning_effort(self.reasoning_effort)
             .with_tools(self.tools.clone());
+        request.reasoning_effort = self.requested_reasoning_effort;
         request.max_output_tokens = self.request_max_output_override;
         self.measure_request(&request)
     }
@@ -2532,6 +2553,10 @@ impl ModelAgent {
             return Err(CoreError::other("request cancelled by user"));
         }
         self.request_max_output_override = None;
+        self.reasoning_effort = self
+            .client
+            .effective_reasoning_effort(&self.model, self.requested_reasoning_effort)?
+            .unwrap_or_default();
         // Tool execution has already updated the host's discovery set. Read
         // its committed schema generation before producing native catalogs.
         if let Some(source) = &self.tool_schema_source {
@@ -2558,7 +2583,6 @@ impl ModelAgent {
 
         let mut request = self
             .request_for_current_history()?
-            .with_reasoning_effort(self.reasoning_effort)
             .with_tools(self.tools.clone());
         let request_started_at = std::time::Instant::now();
 
@@ -2579,6 +2603,12 @@ impl ModelAgent {
                 return Err(CoreError::other("request cancelled by user"));
             }
             attempt += 1;
+            self.reasoning_effort = self
+                .client
+                .effective_reasoning_effort(&request.model, self.requested_reasoning_effort)?
+                .unwrap_or_default();
+            tracing::debug!(model = %request.model, requested = ?self.requested_reasoning_effort,
+                effective = self.reasoning_effort.label(), "resolved attempt reasoning effort");
             request.max_output_tokens = self
                 .client
                 .effective_output_tokens(&request.model, request.max_output_tokens);
@@ -2718,7 +2748,6 @@ impl ModelAgent {
                         self.push_message(Message::user(MAX_OUTPUT_RECOVERY_PROMPT));
                         request = self
                             .request_for_current_history()?
-                            .with_reasoning_effort(self.reasoning_effort)
                             .with_tools(self.tools.clone());
                         max_output_recoveries += 1;
                         emit_attempt_reset(
@@ -2761,7 +2790,6 @@ impl ModelAgent {
                                     }
                                     request = self
                                         .request_for_current_history()?
-                                        .with_reasoning_effort(self.reasoning_effort)
                                         .with_tools(self.tools.clone());
                                     continue;
                                 }
@@ -2802,7 +2830,6 @@ impl ModelAgent {
                                         }
                                         request = self
                                             .request_for_current_history()?
-                                            .with_reasoning_effort(self.reasoning_effort)
                                             .with_tools(self.tools.clone());
                                         emit_attempt_reset(
                                             self.events.as_ref(),
@@ -3168,6 +3195,8 @@ mod tests {
 
     // Keep the shared real serializer/attempt fixtures in one test boundary.
     include!("model_output_limit_tests.rs");
+
+    include!("model_reasoning_tests.rs");
 
     include!("model_chat_interrupt_tests.rs");
 
@@ -4362,6 +4391,7 @@ mod tests {
     ) -> deepagent_context::ContextUsageSnapshot {
         let capability = deepagent_models::ModelCapability {
             input_modalities: None,
+            effort: None,
             model_id: "test".into(),
             context_window: window,
             max_output_tokens: 8_192,
@@ -5323,6 +5353,7 @@ mod tests {
             for fallback_limit in [32_768, 8_192] {
                 let primary = deepagent_models::ModelCapability {
                     input_modalities: None,
+                    effort: None,
                     model_id: "audit-primary".into(),
                     context_window: 1_000_000,
                     max_output_tokens: 32_768,

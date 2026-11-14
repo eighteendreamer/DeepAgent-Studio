@@ -211,6 +211,7 @@ mod tests {
     fn snapshot_sums_blocks_and_keeps_cache_separate() {
         let cap = ModelCapability {
             input_modalities: None,
+            effort: None,
             model_id: "deepseek-v4-flash".into(),
             context_window: 1_000_000,
             max_output_tokens: 384_000,

@@ -11,8 +11,12 @@ pub struct ResponsesSamplingPreview {
 }
 
 pub(super) fn responses_sampling_preview(settings: &AppSettings) -> Vec<ResponsesSamplingPreview> {
-    let effort = match crate::model_runtime::resolve_reasoning_effort(settings, None) {
-        Ok(effort) => effort,
+    let config = match crate::model_runtime::model_config(
+        settings,
+        deepagent_models::ModelRole::Chat,
+        None,
+    ) {
+        Ok(config) => config,
         Err(error) => {
             // A bad legacy setting must remain editable. The runtime still
             // rejects it; do not invent an effective mode or fail get_settings.
@@ -28,7 +32,14 @@ pub(super) fn responses_sampling_preview(settings: &AppSettings) -> Vec<Response
     }
     models
         .into_iter()
-        .flat_map(|model| {
+        .filter_map(|model| match config.effective_reasoning_effort(&model, None) {
+            Ok(effort) => Some((model, effort)),
+            Err(error) => {
+                tracing::warn!(%error, "sampling preview unavailable for model reasoning capability");
+                None
+            }
+        })
+        .flat_map(|(model, effort)| {
             let choice = choice.as_ref();
             [false, true]
                 .into_iter()
@@ -36,7 +47,7 @@ pub(super) fn responses_sampling_preview(settings: &AppSettings) -> Vec<Response
                     sampling: resolve_responses_sampling(
                         &model,
                         top_p,
-                        Some(effort),
+                        effort,
                         advertised_tools,
                         choice,
                     ),

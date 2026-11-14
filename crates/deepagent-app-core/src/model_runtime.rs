@@ -58,19 +58,12 @@ pub(crate) fn build_model_client(
     let api_key = settings
         .api_key()?
         .ok_or_else(|| CoreError::invalid("API key not set: initialize the project first"))?;
-    let reasoning_effort = resolve_reasoning_effort(&loaded, None)?;
     let model = loaded.catalog.model_for(role).to_string();
-    let defaults = ResponseDefaults {
-        temperature: loaded.responses.effective_temperature(),
-        top_p: loaded.responses.effective_top_p(),
-        max_output_tokens: loaded.responses.effective_max_output_tokens(),
-        top_logprobs: loaded.responses.effective_top_logprobs(),
-        reasoning_effort: Some(reasoning_effort),
-        text: loaded.responses.effective_text(),
-        tool_choice: loaded.responses.effective_tool_choice(),
-        user: loaded.responses.effective_user(),
-    };
-    let config = ModelConfig::from_catalog(api_key, &loaded.catalog, role).with_defaults(defaults);
+    let mut config = model_config(&loaded, role, None)?;
+    let reasoning_effort = config
+        .effective_reasoning_effort(&model, None)?
+        .unwrap_or_default();
+    config.api_key = api_key;
     let client = Arc::new(
         ModelClient::new(transport, config).with_image_file_cache(settings.image_file_cache()),
     );
@@ -115,7 +108,6 @@ pub(crate) fn resolve_run_model(
     model_override: Option<&str>,
     reasoning_effort_override: Option<&str>,
 ) -> Result<RunModelPlan> {
-    let reasoning_effort = resolve_reasoning_effort(loaded, reasoning_effort_override)?;
     let model = match model_override {
         Some(id) if loaded.catalog.has_model(id) => id.to_owned(),
         Some(id) => {
@@ -127,16 +119,6 @@ pub(crate) fn resolve_run_model(
     };
     let fallback_model = Some(loaded.catalog.model_for(fallback_role).to_string())
         .filter(|fallback| fallback != &model);
-    let defaults = ResponseDefaults {
-        temperature: loaded.responses.effective_temperature(),
-        top_p: loaded.responses.effective_top_p(),
-        max_output_tokens: loaded.responses.effective_max_output_tokens(),
-        top_logprobs: loaded.responses.effective_top_logprobs(),
-        reasoning_effort: Some(reasoning_effort),
-        text: loaded.responses.effective_text(),
-        tool_choice: loaded.responses.effective_tool_choice(),
-        user: loaded.responses.effective_user(),
-    };
     if let Some(provider) = provider_override {
         if provider != DEEPSEEK_OFFICIAL_PROVIDER {
             return Err(CoreError::invalid(format!(
@@ -144,9 +126,10 @@ pub(crate) fn resolve_run_model(
             )));
         }
     }
-    let config = ModelConfig::from_catalog("", &loaded.catalog, role)
-        .with_defaults(defaults)
-        .with_wire_mode(WireMode::Responses);
+    let config = model_config(loaded, role, reasoning_effort_override)?;
+    let reasoning_effort = config
+        .effective_reasoning_effort(&model, None)?
+        .unwrap_or_default();
     Ok(RunModelPlan {
         config,
         override_applied: model_override.is_some(),
@@ -156,13 +139,38 @@ pub(crate) fn resolve_run_model(
     })
 }
 
+/// One credential-free settings projection for admission, runtime and preview.
+pub(crate) fn model_config(
+    settings: &crate::settings::AppSettings,
+    role: ModelRole,
+    run_override: Option<&str>,
+) -> Result<ModelConfig> {
+    let requested = resolve_reasoning_effort(settings, run_override)?;
+    let defaults = ResponseDefaults {
+        temperature: settings.responses.effective_temperature(),
+        top_p: settings.responses.effective_top_p(),
+        max_output_tokens: settings.responses.effective_max_output_tokens(),
+        top_logprobs: settings.responses.effective_top_logprobs(),
+        // The retained global value is only a compatibility default when a
+        // model publishes no default. The same capability validator checks it.
+        reasoning_effort: requested.or(Some(settings.reasoning_effort)),
+        text: settings.responses.effective_text(),
+        tool_choice: settings.responses.effective_tool_choice(),
+        user: settings.responses.effective_user(),
+    };
+    Ok(ModelConfig::from_catalog("", &settings.catalog, role)
+        .with_defaults(defaults)
+        .with_model_reasoning_defaults(requested.is_none())
+        .with_wire_mode(WireMode::Responses))
+}
+
 pub(crate) fn resolve_reasoning_effort(
     settings: &crate::settings::AppSettings,
     run_override: Option<&str>,
-) -> Result<ReasoningEffort> {
+) -> Result<Option<ReasoningEffort>> {
     let response_effort = settings.responses.effective_reasoning_effort();
     if let Some(value) = run_override {
-        return ReasoningEffort::parse(value).ok_or_else(|| {
+        return ReasoningEffort::parse(value).map(Some).ok_or_else(|| {
             CoreError::invalid(format!(
                 "reasoning effort must be none, low, high, or max; got '{value}'"
             ))
@@ -175,7 +183,9 @@ pub(crate) fn resolve_reasoning_effort(
             "stored Responses reasoning effort is invalid; select none, low, high, or max",
         ));
     }
-    Ok(response_effort.unwrap_or(settings.reasoning_effort))
+    Ok(response_effort.or(settings
+        .reasoning_effort_explicit
+        .then_some(settings.reasoning_effort)))
 }
 
 #[cfg(test)]
@@ -194,11 +204,11 @@ mod tests {
         settings.reasoning_effort = ReasoningEffort::Low;
         assert_eq!(
             resolve_reasoning_effort(&settings, None).unwrap(),
-            ReasoningEffort::Low
+            Some(ReasoningEffort::Low)
         );
         assert_eq!(
             resolve_reasoning_effort(&settings, Some("max")).unwrap(),
-            ReasoningEffort::Max
+            Some(ReasoningEffort::Max)
         );
         settings.responses = ResponsesApiSettings {
             reasoning_effort: Some("high".into()),
@@ -206,7 +216,7 @@ mod tests {
         };
         assert_eq!(
             resolve_reasoning_effort(&settings, None).unwrap(),
-            ReasoningEffort::High
+            Some(ReasoningEffort::High)
         );
         for value in ["minimal", "medium", "xhigh", "simple", "deep"] {
             assert!(
@@ -217,7 +227,53 @@ mod tests {
         settings.responses.reasoning_effort = Some("medium".into());
         assert_eq!(
             resolve_reasoning_effort(&settings, None).unwrap(),
-            ReasoningEffort::High
+            Some(ReasoningEffort::High)
+        );
+    }
+
+    #[test]
+    fn h157_admission_distinguishes_model_default_from_global_and_turn_selections() {
+        let mut settings: AppSettings = serde_json::from_value(serde_json::json!({
+            "catalog": { "base_url": deepagent_models::DEEPSEEK_BASE_URL,
+                "available": [
+                    {"id":"primary","effort":{"supported_levels":["low"],"default_level":"low"}},
+                    {"id":"fallback","effort":{"supported_levels":["high"],"default_level":"high"}}
+                ], "chat_model":"primary", "reasoner_model":"fallback" },
+            "discovered_at":0, "sandbox_mode":"workspace_write"
+        }))
+        .unwrap();
+        let resolve = |settings: &AppSettings, effort| {
+            super::resolve_run_model(
+                settings,
+                deepagent_models::ModelRole::Chat,
+                deepagent_models::ModelRole::Reasoner,
+                None,
+                None,
+                effort,
+            )
+        };
+        // An old document's retained global high must not be silently downgraded.
+        assert!(settings.reasoning_effort_explicit);
+        assert!(resolve(&settings, None).is_err());
+        settings.reasoning_effort_explicit = false;
+        assert_eq!(resolve_reasoning_effort(&settings, None).unwrap(), None);
+        let plan = resolve(&settings, None).unwrap();
+        assert_eq!(plan.reasoning_effort, ReasoningEffort::Low);
+        assert_eq!(plan.config.configured_reasoning_effort(), None);
+        assert_eq!(
+            plan.config
+                .effective_reasoning_effort("fallback", None)
+                .unwrap(),
+            Some(ReasoningEffort::High)
+        );
+        assert!(resolve(&settings, Some("high")).is_err());
+        assert_eq!(
+            resolve(&settings, Some("none")).unwrap().reasoning_effort,
+            ReasoningEffort::None
+        );
+        assert_eq!(
+            resolve(&settings, Some("low")).unwrap().reasoning_effort,
+            ReasoningEffort::Low
         );
     }
 }
