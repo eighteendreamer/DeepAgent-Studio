@@ -8,16 +8,16 @@
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 247 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-30、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-47、H-48、H-49、H-50、H-51、H-52、H-53、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-69、H-70、H-71、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-82、H-84、H-87、H-88、H-89、H-91、H-92、H-93、H-95、H-96、H-97、H-101、H-102、H-103、H-104、H-107、H-108、H-111、H-115、H-116、H-117、H-125、H-126、H-127、H-130、H-131、H-132、H-133、H-134、H-135、H-136、H-137、H-138、H-139、H-140、H-141、H-142、H-143、H-144、H-145、H-146、H-147、H-148、H-149、H-150、H-151、H-152、H-155、H-156、H-157、H-158、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-166、H-167、H-168、H-169、H-170、H-171、H-175、H-176、H-178、H-179、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-196、H-197、H-198、H-199、H-200、H-204、H-205、H-206、H-207、H-208、H-209、H-210、H-212、H-213、H-214、H-215、H-216、H-217、H-218、H-219、H-220、H-221、H-222、H-223、H-224、H-225、H-226、H-227、H-228、H-229、H-230、H-231、H-233、H-234、H-235、H-236、H-237、H-239、H-240、H-241、H-242、H-244、H-245、H-247、H-248、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-256、H-257、H-258、H-259、H-260、H-261、H-265、H-266、H-267、H-268、H-269、H-270、H-271、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-289、H-290、H-292、H-293、H-294、H-295、H-296、H-297、H-298、H-300、H-302、H-303、H-304、H-307；逐项验收边界与清理状态以对应记录为准 |
+| 本阶段已修复并验收 | 248 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-30、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-47、H-48、H-49、H-50、H-51、H-52、H-53、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-69、H-70、H-71、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-82、H-84、H-87、H-88、H-89、H-91、H-92、H-93、H-95、H-96、H-97、H-100、H-101、H-102、H-103、H-104、H-107、H-108、H-111、H-115、H-116、H-117、H-125、H-126、H-127、H-130、H-131、H-132、H-133、H-134、H-135、H-136、H-137、H-138、H-139、H-140、H-141、H-142、H-143、H-144、H-145、H-146、H-147、H-148、H-149、H-150、H-151、H-152、H-155、H-156、H-157、H-158、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-166、H-167、H-168、H-169、H-170、H-171、H-175、H-176、H-178、H-179、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-196、H-197、H-198、H-199、H-200、H-204、H-205、H-206、H-207、H-208、H-209、H-210、H-212、H-213、H-214、H-215、H-216、H-217、H-218、H-219、H-220、H-221、H-222、H-223、H-224、H-225、H-226、H-227、H-228、H-229、H-230、H-231、H-233、H-234、H-235、H-236、H-237、H-239、H-240、H-241、H-242、H-244、H-245、H-247、H-248、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-256、H-257、H-258、H-259、H-260、H-261、H-265、H-266、H-267、H-268、H-269、H-270、H-271、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-289、H-290、H-292、H-293、H-294、H-295、H-296、H-297、H-298、H-300、H-302、H-303、H-304、H-307；逐项验收边界与清理状态以对应记录为准 |
 | 历史已修复跳过 | 29 | 17项原审计历史修复；另H77/H83/H238/H246/H301/H232/H68/H177/H174/H54/H55/H94在独立复核前已随共享边界或ReasoningEffort历史迁移消除，来源和独立验收另列，不重复记新生产修复 |
 | 归并 | 10 | H173同根归并H127；H243归并H53；只在唯一有效项修复，不增加完成数 |
 | 撤销 | 3 | H-211/H-263/H-305，不作为缺陷或修复成果 |
 | 已修复（验收保留） | 1 | H66按用户2026-11-10收尾要求交付代码；现有定向验证有效，不记作完整验收通过，残余范围见E-H66-08 |
-| 修复中 | 0 | H94已按E03清理核验关闭，下一准备H100 |
-| 待修复 | 17 | 含H180授权不修；16项有效待处理 |
+| 修复中 | 0 | H100已按E-H100-01～02修复、回归和清理闭环，下一准备H98 |
+| 待修复 | 16 | 含H180授权不修；15项有效待处理 |
 | 阻塞待处理 | 0 | H94本轮fixture及启动脚本已不存在，10份输入及3份原件独立核验一致 |
 
-未完整闭环槽位当前为 **18（含H180授权不修；有效未闭环17：16待修、H66验收保留1）**。307唯一主行：247验收、29历史跳过、10归并、3撤销、17待修、验收保留1、修复中/阻塞0；本轮H94新增历史跳过1、新增生产修复0，H297不重复计数。不报完成率。
+未完整闭环槽位当前为 **18（含H180授权不修；有效未闭环17：16待修、H66验收保留1）**。307唯一主行：248验收、29历史跳过、10归并、3撤销、16待修、修复中/阻塞0、验收保留1；H100新增完整验收1、H94/H297不重复计数。不报完成率。
 
 H296已按E01～05完成原红→单一resolver修复→正式消费链/全仓门禁→清理闭环；19份冻结输入、原CLI/快照/sidecar保持，完整workspace5425/5/140、前端358/1及strict旧8+2原样保留，不称全仓全绿。独立提交`e9c55cab`，E06仅普通文档回填真实hash。H157的344d907c/0142b745及H168等为前轮成果，不重计；H155/H156尚待的历史清理不冒领。本项实现/验收/清理余0，下一准备H297本地token计量压力，先原probe及依赖核对。整体余170–430有效小时仍为未逐项重估的低置信历史分组估算，依据剩余模型/Hook/工具/画布跨层修改与验收；编译、设备、依赖、策略和人工等待另计，无可靠日历上界。
 
@@ -30,6 +30,43 @@ H296已按E01～05完成原红→单一resolver修复→正式消费链/全仓�
 最新交付H132按E-H132-04新增验收1，累计215；306唯一行仍为28历史跳过/10归并/3撤销，50待修含H180授权不修、修复中0，实际有效剩余49。表中H132与原报告均按该验收范围关闭；全仓5失败、末次仅测试lint等价改写后的补验范围另列，不代表整个系统全绿。下一准备H144。
 
 最新交付H144按E-H144-04新增验收1，累计216；306唯一行：28历史跳过/10归并/3撤销，49待修含H180授权不修，修复中0，实际有效剩余48。最终18源矩阵全仓5失败/strict旧阻断及同二进制隔离复核范围均明确保留；下一准备H66。
+
+## H-100 SDK响应字段存在性（修复中，2026-11-14）
+
+**E-H100-01（2026-11-14，原probe复核、同根反例及候选修复）**：起点059779cb666d373875bb843b9a1146073671cf84，tracked干净；七组原用户untracked保留，不读正文、改动或暂存。先实际运行 `cargo +1.88.0 test -p deepagent-harness-sdk --lib client::audit_tests::audit_initialize_rejects_response_without_result_or_error --target-dir G:/h100-fixtures-20261114/target --locked --offline -j 2 -- --ignored --exact --nocapture --test-threads=1`：exit0，1过/0败/0忽略、84过滤，225.187秒含冷编译，13份原输入与3份原件保护一致；日志SHA256=8A9BE1AED15131996C4A8E3C760CF58A124F1472E27473E374E882CD5C75F5B1。没有把原probe当前通过直接当作本项历史关闭：git历史及当前initialize.rs确认H206提交d7c4406312eb582c0d5861cfa1d46caf16cbef15只补了成功result的身份/能力门禁，仍未校验响应封装字段的存在性互斥。原始审计0/1失败记录保留，不人为撤销H206制造红。
+
+继续读取唯一Rust入站gate、RpcResponse的Option反序列化、pending/connection所有者、正常CLI生产方与TS消费方，并核实[JSON-RPC官方response/error规则](https://www.jsonrpc.org/specification#response_object)：result/error按成员存在性恰一；error必须为有整数code和字符串message的对象，result的值可为null。参考Codex同目录rpc.rs把成功必需result与错误分型，未复制其业务实现。Rust的Option把error:null等同缺失，TS以truthiness检查error，两者均可把完整合法result加error:null的畸形封装当成成功。它们是同一协议存在性规则在两种SDK既有消费边界缺失，故本项同步修两种SDK，不混入H206的能力字段校验或H101的连接生命周期根因。
+
+先仅补测试且两份生产文件与HEAD一致，再真实执行新矩阵：Rust0过/3败，14.380秒，非法握手明确返回Ok且initialized=true、真实peer仍活着；非法业务回复也误成功，合法result:null还被Option吞掉存在性。TS新增矩阵1过/16败，1.178秒，null/false/zero与正常RPC错误对照原已通过，其余8种坏封装各覆盖握手/业务两入口失败。两路都使用真实本机管道、合成peer与占位内容，不接真实供应商。红日志SHA256分别C4F4FC4AC9F83987FE5A646FC12209FF7CD3A5EA7F6BA029029C7453B73DCB34、C4583E384B9625133E3A27450A575D3B3806EE3B0549FE678910EA05D0935263。首次测试文件拼接多出加号导致Rust/Node语法失败，已修正且单独保存setup日志；该次不作为产品根因红或有效验收，也未修改生产来迁就它。
+
+候选修复仅使用原入站边界：Rust在decode_server_line进入DTO/移除pending前校验字段存在性XOR及error对象，继续调用原decoder以保留既有重复字段拒绝；合法result:null仅在验证后的live响应还原Some(Null)。公开raw decode_line及公共DTO形状/原Option语义不变，它仍不是授权边界。非法封装沿H101原DecodeFailure/ConnectionState退役，pending/克隆共享原清理，不新增store、重试、取消或错误体系。TS在handleLine移除pending之前执行同一字段存在性及typed error校验，沿原failPending传播同一脱敏错误并禁止迟到成功复活；不修改通知、版本或ID匹配策略。正常RPC错误仍是业务拒绝，不退役连接；合法null/false/zero成功保留。无依赖、协议版本、SQL迁移、UI/桌面桥接或权限变化；仅原来容忍的非法peer封装改为显式失败。
+
+原probe移除ignore，新增Rust4项（含raw/live边界对照）与TS17项候选全过，分别20.430/1.197秒；green日志SHA256为9CA124EA11D29253A1C158988ADB24AD7C683DC712C594FD0C827802CD74D53C、F676A3C0CBBAC0C4CB127787319B4246496919AEF4A29814461254A716446C9F。正常/异常矩阵覆盖并发pending、活peer未EOF即拒绝、克隆后续拒绝且无重发、迟到合法回复不复活、正常RPC错误及合法null；现有版本/错ID/通知/握手契约保留在完整SDK组。Rust各命令固定1.88.0、--target-dir G:/h100-fixtures-20261114/target --locked --offline -j 2；隔离HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/XDG/data/managed与insta pending，清继承凭据/代理环境。前置完整验证真实结果：
+
+| 实际命令（Rust补上述共同参数，fmt除外） | 实际结果 |
+|---|---|
+| cargo fmt --all -- --check | exit0，5.759秒 |
+| cargo +1.88.0 clippy -p deepagent-harness-sdk --all-targets --all-features --no-deps -- -D warnings | exit0，77.566秒 |
+| cargo +1.88.0 test -p deepagent-harness-protocol --all-features --no-fail-fast -- --quiet --test-threads=2 | exit0，6结果块29/0/0，22.344秒 |
+| cargo +1.88.0 test -p deepagent-harness-sdk --lib --all-features --no-fail-fast -- --quiet --test-threads=2 | exit0，86过/0败/3忽略，29.999秒；原H100 probe已默认实际执行 |
+| packages/sdk：pnpm typecheck | exit0，1.577秒 |
+| packages/sdk：pnpm test（含build及配置的全部15份测试文件） | exit0，200过/0败/0跳过，6.226秒；只复用现有node_modules，未安装依赖 |
+
+协议日志SHA256=07804E8A116F63A11981C57F3F45910C1318B7A5A67AB0BE7C423DAD55EB4554；SDK lib日志=DE547CD0609B20E40D5EF71B17D7706FDF79962701C97FDC60B4A86BC88458B8；TS完整日志=37531B8F1931A3BA2766BE5E95264F65C309AD84156CC837A18D8DB95FD63C29。当前已冻结1051份参与代码/资产输入，启动串行新CLI构建、Rust SDK含真实stdio、TS真实stdio/JSONL、额外配置消费者、完整workspace、SDK/workspace strict及fmt矩阵。脚本G:/h100-fixtures-20261114/run-matrix.ps1的SHA256=D5BEE24A256708E5633B42B811D4643A9900E873232F9C96236E3C3870C84B4D；原共享CLI先备份，finally核hash/长度/UTC写入和创建ticks/属性恢复，用户snap.new和sidecar只做保护校验。该矩阵尚在运行，未声称完成、未提交或清理；H297旧workspace九败与全部原红保留。没有UI/TS DTO更改，不重跑前端或真实模型/账单验收。
+
+本项状态为修复中，新增验收/历史跳过/归并/撤销均0；307唯一行当前247验收、29历史跳过、10归并、3撤销、16待修含H180授权不修、H100修复中1、H66验收保留1，仍17项有效未闭环。H100预估尚余2–5有效小时用于完整结果归因、必要补验、双文/独立提交及安全清理，编译/设备/环境等待另计；总170–430有效小时仍是未逐项重估低置信历史区间，不承诺精确日期，不以局部绿替代完整交付。
+
+**E-H100-02（2026-11-14，根因修复、完整消费回归与清理闭环）**：候选修复在独立红测后提交为`4544d458f38bf8ce2d6cac805995f275e37ac242`（【fix】校验Harness SDK响应字段互斥），仅6份Rust/TS生产与测试文件；无依赖、DTO、协议版本、SQL、权限、UI或桥接形状变化。Rust `decode_server_line` 在DTO解码及pending移除前校验 `result/error` 成员恰一、error为typed object，并在live响应中保留合法`result:null`；公共raw `decode_line` 与Option DTO语义不变。TS `handleLine` 使用同一存在性/typed error门禁，沿原连接退役和pending清理，不自动重试；合法null/false/zero及正常RPC error保持可用。
+
+原H100探针已去ignore并通过1/0/0；同根红测Rust0/3、TS1/16与候选绿测Rust4/0、TS17/0均已保留。定向前置门禁：Rust SDK strict exit0；协议29/0/0；SDK lib86/0/3忽略；TS typecheck及完整SDK测试200/0/0；fmt exit0。日志SHA256：原probe 8A9BE1AED15131996C4A8E3C760CF58A124F1472E27473E374E882CD5C75F5B1，红Rust C4F4FC4AC9F83987FE5A646FC12209FF7CD3A5EA7F6BA029C7453B73DCB34，红TS C4583E384B9625133E3A27450A575D3B3806EE3B0549FE678910EA05D0935263，绿Rust 9CA124EA11D29253A1C158988ADB24AD7C683DC712C594FD0C827802CD74D53C，绿TS F676A3C0CBBAC0C4CB127787319B4246496919AEF4A29814461254A716446C9F。
+
+完整矩阵使用Rust1.88、`--locked --offline -j 2`、隔离用户目录/凭据环境和专属`G:/h100-fixtures-20261114/target`，冻结1051份输入。新CLI首轮构建产物SHA256=8574E44B58A7442DB009C6953C91B670E7B0C4F46834D3B450EC77E52B7301FF；workspace结束后重建得到本轮实际消费CLI SHA256=088389A0529128937C70D97D484A94160076232C4590FA99028BFE3A6F25555F，发布前后均核对，finally恢复共享CLI原SHA256=453DF899238FE99504B1C30F0DBA22FE793ADD7429C437F0B571A766FCB7535D及长度/UTC写入、创建ticks/属性。完整workspace按164个有结果目标逐项配对：5450过/5败/136忽略；AppCore 1706/1/48、Kernel 373/1/7、CLI 225/1/7、Prompts 27/1/0、Runtime 493/1/3。五个失败均为既有边界：MCP hook旧字段预期、图片DACL恢复、CLI TUI快照临时路径、H306视频编辑空默认提示词、Runtime checkpoint DACL恢复；未修改、未抑制、未把它们归入H100。workspace strict仍被`deepagent-tools/src/lib.rs:246`既有`map_or`告警阻断；SDK strict、fmt通过。矩阵日志SHA256=9BEBAAA3970245C2A6D512E4C64D431F99A1627AB66FB17CBFCC7B929D5F09C，workspace-targets清单SHA256=9C323B17B41E6C3A2DF5FA86161A5AB767C02379528F274B945AFE868AC78EEE。
+
+使用实际发布CLI的同一SDK测试binary`C1534DF7424B126A0ED2E391FDBF2B04FDC4D35A255649479E5A105A7A1C11BC`，H204/H256两个显式真实本机stdio生命周期测试各实际1过/0败/0忽略（分别9.685秒、3.799秒）；不是0 filtered。TS真实stdio6/0、JSONL1/0、配置重启1/0。两项测试均不接真实模型、凭据或外部服务。
+
+清理脚本SHA256=08812CE5D9FFFE084F575C5BA39711D2965B52E54312DEDB3112CABED0078773，实际只删除三根：`G:/h100-fixtures-20261114`盘点14643文件/36608433294逻辑字节、`G:/h100-review-20261114.ps1` 3928字节、此前不存在的`packages/sdk/dist` 16文件/113363字节；均零reparse，WhatIf后原生Remove-Item exit0，最终JSON `reviewedRoots=3, remaining=0, frozenInputs=1051, frozenInputsUnchanged=true, originalsUnchanged=true`。删除前后G盘free观测34061324288→69773512704字节，不与逻辑大小相加或声称独占归因。随后独立复核1051份输入与CLI、用户snap.new、sidecar三份原件全一致；共享target/debug、node_modules、公共Cargo缓存、用户文件未删。未经管理员权限提升，不换执行器绕过策略。
+
+H100按本机离线Rust/TS SDK与真实CLI消费范围已修复并验收；未验真实供应商、其它OS、真实桌面窗口/截图、全量workspace既有失败项。下一准备H98；本轮新增完整验收1、生产修复1，历史跳过/归并/撤销0。
 
 ## H-94 相邻 reasoning 投影（历史已修复跳过，2026-11-14）
 
@@ -6413,7 +6450,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-97：调度器停止不取消或等待已派发的定时运行](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H97-01～03；仅本项，不归并H96；原失败证据保留 | 本scope跟踪新接纳run、复用原RunCoordinator取消并有界等待Kernel终态；桌面持有worker接入ExitRequested，错误/超时不伪造成功 | 默认原探针1过、全cron22过/4忽略、H96专项9过、真实Wry两种退出/SQLite重开通过；全仓4557过/1既有H306败/240忽略，严格门禁既有失败详E03 | `09b8f48d3ab0fc2a9dc03bdabf13ee540bd3a7a6`（【fix】管理定时运行生命周期并等待退出落账） | 限E03 Windows合成数据/离线模型/原生退出验收；非协作超时或drop仅明确未解决/发送取消，强杀/全GUI/其他OS未验；本项剩余0，整套200–400有效小时历史粗估、等待另计 |
 | [H-98：DeepSeek Chat Completions 的 JSON 输出模式被拒绝或静默丢弃](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-99：Chat Completions 静默忽略配置中的 top_logprobs 默认值](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-100：Harness SDK initialize 接受缺少 result/error 的 JSON-RPC response](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-100：Harness SDK initialize 接受缺少 result/error 的 JSON-RPC response](system-harness-audit-2026-10-21.md) | P3 | 已修复并验收 | E-H100-01～02；H206原成功结果门禁保留，新增result/error成员存在性互斥及typed error门禁；原红仍保留，不重复计H206 | Rust/TS复用各自现有入站边界：成员恰一、合法result:null保留、非法封装退役/拒绝pending；无第二协议链 | 原probe1/0；候选Rust4/0、TS17/0；SDK lib86/0/3、协议29/0、TS200/0、SDK strict/typecheck/fmt通过；workspace164目标5450/5/136，SDK真实stdio/CLI显式H204/H256各1/0，清理3根remaining=0 | 4544d458f38bf8ce2d6cac805995f275e37ac242（代码/测试）；双文回填提交另列 | 5个workspace失败及workspace strict旧Tools告警保留；未验真实供应商/其他OS/真实桌面窗口；本项余0 |
 | [H-101：Harness SDK 忽略畸形 stdout 行并让请求持续 pending](system-harness-audit-2026-10-21.md#h-101harness-sdk-忽略畸形-stdout-行并让请求持续-pending) | P3 | 已修复并验收 | 用户确认保留H212版本拒收、3种H213畸形帧迁入H101断开回归，其余H213断言不变；E05删除两根并复核原资产 | 同一连接owner记录首个脱敏协议解码失败并收束pending；不重试、不重派，保留已交付结果 | E-H101-01～05：原probe默认1/0；SDK默认/all-features各95/0/4；H1017/0、H2125/0、H2134/0；protocol25过、SDK no-deps strict/fmt通过；全仓5340/4/151及依赖Runtime strict旧失败保留 | 18b0e098668d39e39137cae36403d2ec30a09e03 | 远端mutation是否被接纳未知；全依赖strict受Runtime两项既有lint失败；本项余0，下一H115 |
 | [H-102：InstructionsLoaded 外部 hook 缺少兼容输入必需字段](system-harness-audit-2026-10-21.md#h-102instructionsloaded-外部-hook-缺少兼容输入必需字段) | P3 | 已修复并验收 | E-H102-01真实红；用户确认逐文件/初次root/续聊不重复；最终预创建会话首轮也验收；E05核验5目标不存在 | 加载点通过兼容新增返回值保留来源；统一typed serializer、root/nested逐文件，原session事件判断首轮；不新建hook链 | E-H102-01～05：Context68+1过2忽略，Hooks100/0，原probe/PreparedChat真实通过，nested5/0；workspace仅旧H103断言和H306两个失败目标；Runtime482/0/3。fmt与Context/Hooks strict通过；AppCore strict8旧lint未改 | `921a3aa6a8c02f7ba645f640d45923c474e2838c`（代码/测试/当时双文）；`5ea4fad2`（首次回填） | 限Windows本机；legacy无来源不造兼容字段，无新增Local/Managed/include/glob/compact加载能力；原snap.new内容已按原SHA恢复但mtime无法保证；5目标已不存在，本项余0；下一P2 H217，全部工时沿E03 |
 | [H-103：工具生命周期 hook 缺少调用 ID 与真实工具结果](system-harness-audit-2026-10-21.md#h-103工具生命周期-hook-缺少调用-id-与真实工具结果) | P3 | 已修复并验收 | E-H103-01红证据保留；E-H103-02代码/定向验收；E-H103-03代码commit；E-H103-04核验两根目录不存在；非H-115归并 | 现有HookData::Tool携带可选call_id/result/error；ToolPipeline透传稳定身份和规范预算后ToolOutput.value；统一serializer按事件构造标准字段 | Hooks98/0；Runtime原probe成功/失败各1/0；并发Runtime回归1/0；ToolPipeline22/0/1忽略；builtins376/0/3忽略；AppCore synthetic入口1/0、cargo check通过、fmt与hooks strict通过。Runtime全lib481/1/3，唯一既有checkpoint DACL失败；Runtime/AppCore strict lint各被既有告警阻断；详情见审计E-H103-02 | `da5f3291ca522444f6c5166e238dce6b1cfd7856`（代码/测试）；`364d1de5448e9933a385897f9073d229a9b78895`（清理阻塞回填）；`ec4059eb`（清理状态回填） | E-H103-04核验两根当前均不存在，H103完整交付余0；下一项H-102。公开辅助构造器原签名保留，direct struct variant需同步新字段；参数改写、真实截断和其他OS未动态验 |

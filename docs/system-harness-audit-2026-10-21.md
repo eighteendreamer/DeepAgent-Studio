@@ -4,7 +4,7 @@
 
 用户已授权按本报告逐项进行本地代码修复与测试；已修复、撤销和归并条目跳过，不重新计数。分析阶段完成不再是当前总体任务的完成状态。每项完成后更新原项状态、保留失败证据、独立提交并汇报验收与剩余工时。本轮不操作真实用户文件或外部服务。
 
-**当前续接（2026-11-14）**：307唯一台账：247验收、29历史跳过、10归并、3撤销、17待修含H180、H66验收保留1、修复中/阻塞0，有效未完整闭环17。H94原probe及Models完整352/0/9通过，已确认6bc2d660历史修复并按E-H94-01～03清理关闭；本轮新增生产修复0、历史跳过1。H297原全仓/strict红仍保留；下一准备H100。历史汇总按原日期保留。
+**当前续接（2026-11-14）**：307唯一台账：248验收、29历史跳过、10归并、3撤销、16待修含H180、H66验收保留1、修复中/阻塞0，有效未完整闭环17。H100已按E-H100-01～02完成Rust/TS入站字段互斥修复、完整消费回归、显式CLI检查与三根清理闭环，代码提交4544d458；workspace五个既有失败与strict旧阻断保留。H94已历史跳过、H297延迟清理回执按E14补记，下一准备H98。历史汇总按原日期保留。
 
 **历史唯一台账（2026-11-12，H107验收补强/提交/清理已闭环）**：306行233已修复并验收、28历史跳过、10归并、3撤销、31待修含H180授权不修、0修复中/阻塞、1验收保留H66。30有效待处理加H66共31项有效未完整闭环。本轮恢复H107验收关闭1、新增生产修复0；原生产64f9d169不变，补强test提交629a42784ca4bf080f53ab19139761adeb7aff17，hash/清理回填见E17。SDK完整默认/全特性各89/0/5、CLI同宿主/busy及AppCore/原probe过，strict依赖旧失败及未重跑范围保留，详原项及[台账](system-harness-repair-progress.md)。非全系统全绿、不推送，整个任务未完成。
 
@@ -4694,6 +4694,8 @@ AppCore cargo clippy --target-dir <本轮root> -p deepagent-app-core --all-targe
 
 ### H-100：Harness SDK initialize 接受缺少 result/error 的 JSON-RPC response
 
+**当前状态：已修复并验收（2026-11-14，E-H100-01～02）。** 原缺失字段probe当前被H206成功结果门禁阻断，但字段存在性互斥反例已由Rust/TS共同入站门禁修复；完整消费矩阵、显式CLI检查、原件保护和清理均通过。以下原审计失败和当时根因保留。
+
 **级别：低（P3，条件性 SDK 协议校验缺陷）；触发条件：Harness SDK 连接的服务端对 initialize 请求返回一个 JSON-RPC response object，但同时省略 `result` 和 `error`。** 正常的本系统 CLI app-server 通过 `RpcResponse::success/error` 创建响应，本项不证明默认 CLI/Tauri 服务会发出畸形响应。
 
 - 根因与生产路径：协议 DTO 将 `RpcResponse.result` 和 `RpcResponse.error` 都表示为可选字段；`HarnessClient::call_unchecked()` 只在 `error` 存在时返回错误，否则返回 response。`initialize()` 收到该成功结果后直接设置共享 `initialized=true`。因此只含 `jsonrpc` 和 `id` 的非法 response 会被当作握手成功，后续 SDK 调用也会通过初始化门禁。
@@ -4702,6 +4704,41 @@ AppCore cargo clippy --target-dir <本轮root> -p deepagent-app-core --all-targe
 - 成熟实现对照：Codex `codex-rs/app-server-protocol/src/rpc.rs` 将 `JSONRPCResponse.result` 定义为必需字段；其 remote initialize 路径会解析握手返回的数据再完成初始化。本系统 CLI 正常构造路径使用 `RpcResponse::success/error`，目前没有证据表明它会生成该非法 envelope。因此缺陷边界是 SDK 对不符合规范的外部/替代 server 响应校验不足，不外推为默认 Harness server 的常规运行故障。
 - 影响及限制：当服务端返回该畸形 envelope 时，SDK 会错误地报告初始化成功，随后请求可能继续发送并以超时或远端错误失败，令握手兼容性问题难以在边界处诊断。没有验证生产环境有服务端会返回此响应，也没有测得真实调用频率。
 - 收敛方向（尚未实施，本地设计）：在现有 RPC response 解码/校验边界拒绝同时缺失 `result` 与 `error`、或同时出现二者的 envelope，并确保 initialize 只在匹配请求 ID、协议版本及有效成功结果后标记已初始化。补充非法 envelope、错误 response、正常 initialize 和错配 ID 的 SDK 回归；复用单一 protocol DTO 与既有错误类型，不增加第二套协议层。
+
+**E-H100-01（2026-11-14，原probe复核、同根反例及候选修复）**：起点059779cb666d373875bb843b9a1146073671cf84，tracked干净；七组原用户untracked保留，不读正文、改动或暂存。先实际运行 `cargo +1.88.0 test -p deepagent-harness-sdk --lib client::audit_tests::audit_initialize_rejects_response_without_result_or_error --target-dir G:/h100-fixtures-20261114/target --locked --offline -j 2 -- --ignored --exact --nocapture --test-threads=1`：exit0，1过/0败/0忽略、84过滤，225.187秒含冷编译，13份原输入与3份原件保护一致；日志SHA256=8A9BE1AED15131996C4A8E3C760CF58A124F1472E27473E374E882CD5C75F5B1。没有把原probe当前通过直接当作本项历史关闭：git历史及当前initialize.rs确认H206提交d7c4406312eb582c0d5861cfa1d46caf16cbef15只补了成功result的身份/能力门禁，仍未校验响应封装字段的存在性互斥。原始审计0/1失败记录保留，不人为撤销H206制造红。
+
+继续读取唯一Rust入站gate、RpcResponse的Option反序列化、pending/connection所有者、正常CLI生产方与TS消费方，并核实[JSON-RPC官方response/error规则](https://www.jsonrpc.org/specification#response_object)：result/error按成员存在性恰一；error必须为有整数code和字符串message的对象，result的值可为null。参考Codex同目录rpc.rs把成功必需result与错误分型，未复制其业务实现。Rust的Option把error:null等同缺失，TS以truthiness检查error，两者均可把完整合法result加error:null的畸形封装当成成功。它们是同一协议存在性规则在两种SDK既有消费边界缺失，故本项同步修两种SDK，不混入H206的能力字段校验或H101的连接生命周期根因。
+
+先仅补测试且两份生产文件与HEAD一致，再真实执行新矩阵：Rust0过/3败，14.380秒，非法握手明确返回Ok且initialized=true、真实peer仍活着；非法业务回复也误成功，合法result:null还被Option吞掉存在性。TS新增矩阵1过/16败，1.178秒，null/false/zero与正常RPC错误对照原已通过，其余8种坏封装各覆盖握手/业务两入口失败。两路都使用真实本机管道、合成peer与占位内容，不接真实供应商。红日志SHA256分别C4F4FC4AC9F83987FE5A646FC12209FF7CD3A5EA7F6BA029029C7453B73DCB34、C4583E384B9625133E3A27450A575D3B3806EE3B0549FE678910EA05D0935263。首次测试文件拼接多出加号导致Rust/Node语法失败，已修正且单独保存setup日志；该次不作为产品根因红或有效验收，也未修改生产来迁就它。
+
+候选修复仅使用原入站边界：Rust在decode_server_line进入DTO/移除pending前校验字段存在性XOR及error对象，继续调用原decoder以保留既有重复字段拒绝；合法result:null仅在验证后的live响应还原Some(Null)。公开raw decode_line及公共DTO形状/原Option语义不变，它仍不是授权边界。非法封装沿H101原DecodeFailure/ConnectionState退役，pending/克隆共享原清理，不新增store、重试、取消或错误体系。TS在handleLine移除pending之前执行同一字段存在性及typed error校验，沿原failPending传播同一脱敏错误并禁止迟到成功复活；不修改通知、版本或ID匹配策略。正常RPC错误仍是业务拒绝，不退役连接；合法null/false/zero成功保留。无依赖、协议版本、SQL迁移、UI/桌面桥接或权限变化；仅原来容忍的非法peer封装改为显式失败。
+
+原probe移除ignore，新增Rust4项（含raw/live边界对照）与TS17项候选全过，分别20.430/1.197秒；green日志SHA256为9CA124EA11D29253A1C158988ADB24AD7C683DC712C594FD0C827802CD74D53C、F676A3C0CBBAC0C4CB127787319B4246496919AEF4A29814461254A716446C9F。正常/异常矩阵覆盖并发pending、活peer未EOF即拒绝、克隆后续拒绝且无重发、迟到合法回复不复活、正常RPC错误及合法null；现有版本/错ID/通知/握手契约保留在完整SDK组。Rust各命令固定1.88.0、--target-dir G:/h100-fixtures-20261114/target --locked --offline -j 2；隔离HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/XDG/data/managed与insta pending，清继承凭据/代理环境。前置完整验证真实结果：
+
+| 实际命令（Rust补上述共同参数，fmt除外） | 实际结果 |
+|---|---|
+| cargo fmt --all -- --check | exit0，5.759秒 |
+| cargo +1.88.0 clippy -p deepagent-harness-sdk --all-targets --all-features --no-deps -- -D warnings | exit0，77.566秒 |
+| cargo +1.88.0 test -p deepagent-harness-protocol --all-features --no-fail-fast -- --quiet --test-threads=2 | exit0，6结果块29/0/0，22.344秒 |
+| cargo +1.88.0 test -p deepagent-harness-sdk --lib --all-features --no-fail-fast -- --quiet --test-threads=2 | exit0，86过/0败/3忽略，29.999秒；原H100 probe已默认实际执行 |
+| packages/sdk：pnpm typecheck | exit0，1.577秒 |
+| packages/sdk：pnpm test（含build及配置的全部15份测试文件） | exit0，200过/0败/0跳过，6.226秒；只复用现有node_modules，未安装依赖 |
+
+协议日志SHA256=07804E8A116F63A11981C57F3F45910C1318B7A5A67AB0BE7C423DAD55EB4554；SDK lib日志=DE547CD0609B20E40D5EF71B17D7706FDF79962701C97FDC60B4A86BC88458B8；TS完整日志=37531B8F1931A3BA2766BE5E95264F65C309AD84156CC837A18D8DB95FD63C29。当前已冻结1051份参与代码/资产输入，启动串行新CLI构建、Rust SDK含真实stdio、TS真实stdio/JSONL、额外配置消费者、完整workspace、SDK/workspace strict及fmt矩阵。脚本G:/h100-fixtures-20261114/run-matrix.ps1的SHA256=D5BEE24A256708E5633B42B811D4643A9900E873232F9C96236E3C3870C84B4D；原共享CLI先备份，finally核hash/长度/UTC写入和创建ticks/属性恢复，用户snap.new和sidecar只做保护校验。该矩阵尚在运行，未声称完成、未提交或清理；H297旧workspace九败与全部原红保留。没有UI/TS DTO更改，不重跑前端或真实模型/账单验收。
+
+本项状态为修复中，新增验收/历史跳过/归并/撤销均0；307唯一行当前247验收、29历史跳过、10归并、3撤销、16待修含H180授权不修、H100修复中1、H66验收保留1，仍17项有效未闭环。H100预估尚余2–5有效小时用于完整结果归因、必要补验、双文/独立提交及安全清理，编译/设备/环境等待另计；总170–430有效小时仍是未逐项重估低置信历史区间，不承诺精确日期，不以局部绿替代完整交付。
+
+**E-H100-02（2026-11-14，根因修复、完整消费回归与清理闭环）**：候选修复在独立红测后提交为`4544d458f38bf8ce2d6cac805995f275e37ac242`（【fix】校验Harness SDK响应字段互斥），仅6份Rust/TS生产与测试文件；无依赖、DTO、协议版本、SQL、权限、UI或桥接形状变化。Rust `decode_server_line` 在DTO解码及pending移除前校验 `result/error` 成员恰一、error为typed object，并在live响应中保留合法`result:null`；公共raw `decode_line` 与Option DTO语义不变。TS `handleLine` 使用同一存在性/typed error门禁，沿原连接退役和pending清理，不自动重试；合法null/false/zero及正常RPC error保持可用。
+
+原H100探针已去ignore并通过1/0/0；同根红测Rust0/3、TS1/16与候选绿测Rust4/0、TS17/0均已保留。定向前置门禁：Rust SDK strict exit0；协议29/0/0；SDK lib86/0/3忽略；TS typecheck及完整SDK测试200/0/0；fmt exit0。日志SHA256：原probe 8A9BE1AED15131996C4A8E3C760CF58A124F1472E27473E374E882CD5C75F5B1，红Rust C4F4FC4AC9F83987FE5A646FC12209FF7CD3A5EA7F6BA029C7453B73DCB34，红TS C4583E384B9625133E3A27450A575D3B3806EE3B0549FE678910EA05D0935263，绿Rust 9CA124EA11D29253A1C158988ADB24AD7C683DC712C594FD0C827802CD74D53C，绿TS F676A3C0CBBAC0C4CB127787319B4246496919AEF4A29814461254A716446C9F。
+
+完整矩阵使用Rust1.88、`--locked --offline -j 2`、隔离用户目录/凭据环境和专属`G:/h100-fixtures-20261114/target`，冻结1051份输入。新CLI首轮构建产物SHA256=8574E44B58A7442DB009C6953C91B670E7B0C4F46834D3B450EC77E52B7301FF；workspace结束后重建得到本轮实际消费CLI SHA256=088389A0529128937C70D97D484A94160076232C4590FA99028BFE3A6F25555F，发布前后均核对，finally恢复共享CLI原SHA256=453DF899238FE99504B1C30F0DBA22FE793ADD7429C437F0B571A766FCB7535D及长度/UTC写入、创建ticks/属性。完整workspace按164个有结果目标逐项配对：5450过/5败/136忽略；AppCore 1706/1/48、Kernel 373/1/7、CLI 225/1/7、Prompts 27/1/0、Runtime 493/1/3。五个失败均为既有边界：MCP hook旧字段预期、图片DACL恢复、CLI TUI快照临时路径、H306视频编辑空默认提示词、Runtime checkpoint DACL恢复；未修改、未抑制、未把它们归入H100。workspace strict仍被`deepagent-tools/src/lib.rs:246`既有`map_or`告警阻断；SDK strict、fmt通过。矩阵日志SHA256=9BEBAAA3970245C2A6D512E4C64D431F99A1627AB66FB17CBFCC7B929D5F09C，workspace-targets清单SHA256=9C323B17B41E6C3A2DF5FA86161A5AB767C02379528F274B945AFE868AC78EEE。
+
+使用实际发布CLI的同一SDK测试binary`C1534DF7424B126A0ED2E391FDBF2B04FDC4D35A255649479E5A105A7A1C11BC`，H204/H256两个显式真实本机stdio生命周期测试各实际1过/0败/0忽略（分别9.685秒、3.799秒）；不是0 filtered。TS真实stdio6/0、JSONL1/0、配置重启1/0。两项测试均不接真实模型、凭据或外部服务。
+
+清理脚本SHA256=08812CE5D9FFFE084F575C5BA39711D2965B52E54312DEDB3112CABED0078773，实际只删除三根：`G:/h100-fixtures-20261114`盘点14643文件/36608433294逻辑字节、`G:/h100-review-20261114.ps1` 3928字节、此前不存在的`packages/sdk/dist` 16文件/113363字节；均零reparse，WhatIf后原生Remove-Item exit0，最终JSON `reviewedRoots=3, remaining=0, frozenInputs=1051, frozenInputsUnchanged=true, originalsUnchanged=true`。删除前后G盘free观测34061324288→69773512704字节，不与逻辑大小相加或声称独占归因。随后独立复核1051份输入与CLI、用户snap.new、sidecar三份原件全一致；共享target/debug、node_modules、公共Cargo缓存、用户文件未删。未经管理员权限提升，不换执行器绕过策略。
+
+H100按本机离线Rust/TS SDK与真实CLI消费范围已修复并验收；未验真实供应商、其它OS、真实桌面窗口/截图、全量workspace既有失败项。下一准备H98；本轮新增完整验收1、生产修复1，历史跳过/归并/撤销0。
 
 ### H-101：Harness SDK 忽略畸形 stdout 行并让请求持续 pending
 
