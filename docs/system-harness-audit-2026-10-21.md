@@ -4,7 +4,7 @@
 
 用户已授权按本报告逐项进行本地代码修复与测试；已修复、撤销和归并条目跳过，不重新计数。分析阶段完成不再是当前总体任务的完成状态。每项完成后更新原项状态、保留失败证据、独立提交并汇报验收与剩余工时。本轮不操作真实用户文件或外部服务。
 
-**当前续接（2026-11-14）**：307唯一台账：248验收、29历史跳过、10归并、3撤销、16待修含H180、H66验收保留1、修复中/阻塞0，有效未完整闭环17。H100已按E-H100-01～02完成Rust/TS入站字段互斥修复、完整消费回归、显式CLI检查与三根清理闭环，代码提交4544d458；workspace五个既有失败与strict旧阻断保留。H94已历史跳过、H297延迟清理回执按E14补记，下一准备H98。历史汇总按原日期保留。
+**当前续接（2026-11-15）**：307唯一台账：249验收、29历史跳过、10归并、3撤销、15待修含H180、H66验收保留1、修复中/阻塞0，有效未完整闭环16。H98已按E-H98-01～02完成Chat JSON输出映射、Models/Runtime回归和三根清理闭环，代码提交9162ab16；Models strict旧告警与离线Tauri依赖缺失保留。H100已按E-H100-01～02闭环，下一准备H99。历史汇总按原日期保留。
 
 **历史唯一台账（2026-11-12，H107验收补强/提交/清理已闭环）**：306行233已修复并验收、28历史跳过、10归并、3撤销、31待修含H180授权不修、0修复中/阻塞、1验收保留H66。30有效待处理加H66共31项有效未完整闭环。本轮恢复H107验收关闭1、新增生产修复0；原生产64f9d169不变，补强test提交629a42784ca4bf080f53ab19139761adeb7aff17，hash/清理回填见E17。SDK完整默认/全特性各89/0/5、CLI同宿主/busy及AppCore/原probe过，strict依赖旧失败及未重跑范围保留，详原项及[台账](system-harness-repair-progress.md)。非全系统全绿、不推送，整个任务未完成。
 
@@ -4672,6 +4672,8 @@ AppCore cargo clippy --target-dir <本轮root> -p deepagent-app-core --all-targe
 
 ### H-98：DeepSeek Chat Completions 的 JSON 输出模式被拒绝或静默丢弃
 
+**当前状态：已修复并验收（2026-11-15，E-H98-01～02）。** Chat adapter 已支持 DeepSeek Chat 的 `text`/`json_object` response format，并对 Responses-only schema 与畸形输入明确拒绝；默认值和请求值共用同一映射。以下原审计失败和协议边界保留。
+
 **级别：低（P3，条件性适配器缺陷）；触发条件：显式使用公开 `WireMode::ChatCompletions`，并通过 `ResponseRequest.text` 或客户端默认值请求 `json_object`。** 当前桌面模型组装固定使用 Responses，因此本项不覆盖默认桌面对话。DeepSeek Chat 文档支持 `text` 和 `json_object`；不把 Responses 的 JSON Schema 格式假定为 Chat 协议能力。
 
 - 根因与生产路径：`ModelClient::stream_response_observed()` 将 Chat 路由交给 `response_to_chat_completion()`。该函数遇到任何 `request.text` 都在发送前返回 `text response format is not supported by DeepSeek Chat Completions`，没有区分官方支持的 `json_object`。若调用方将格式放在 `ModelConfig.defaults.text`，Chat 路径调用的 `apply_chat_defaults()` 不读取该字段；`ChatCompletionRequest` 与自定义 serializer 也没有 `response_format`，所以该默认值不会进入 wire，且不会报错。
@@ -4680,6 +4682,12 @@ AppCore cargo clippy --target-dir <本轮root> -p deepagent-app-core --all-targe
 - 成熟实现对照：Claude Code SDK 在 `entrypoints/sdk/coreSchemas.ts` 显式定义 `json_schema` 输出格式；Grok `acp_session_impl/turn.rs` 校验 schema，并根据 backend 能力选择原生 schema 或 `StructuredOutput` 工具回退。两者使用各自协议，不能据此将 JSON Schema wire 形状套到 DeepSeek Chat。DeepSeek Harness 的 `llm-deepseek` 使用 Messages 协议，本次代码搜索未发现同构 Chat `response_format` serializer，因此以 DeepSeek 官方 Chat 字段定义为本项的协议依据。可借鉴的工程边界是结构化格式需要显式校验、按 adapter 能力映射或拒绝，不能静默丢弃。
 - 影响及限制：显式请求 JSON 输出的 Chat 调用会在本地失败；仅设置默认值时调用表面成功但模型没有收到 JSON 模式约束。未验证真实供应商下游表现、最终回答格式或实际 Chat 生产调用频率。`select_run_model()` 固定选择 Responses，故不外推为桌面默认请求故障。
 - 收敛方向（尚未实施，本地设计）：在现有 Chat adapter 增加 provider 明确支持的 `response_format` 表达，将 `ResponseRequest.text.format.type=json_object` 和配置默认值统一解析并序列化为 DeepSeek Chat `{ "type": "json_object" }`；对 `json_schema`、未知类型或其余 Responses-only 形状在发送前给出明确的不支持错误。补充请求级、默认值、`text` 模式和不支持模式的 wire/拒绝回归，不改 Messages/Responses 协议。
+
+**E-H98-02（2026-11-15，完整回归与清理闭环）**：代码/测试独立提交为`9162ab16b077b3153d21c88994e6eb33808505cd`（【fix】接入Chat JSON输出格式），仅`crates/deepagent-models/src/client.rs`、`crates/deepagent-models/src/chat_completions.rs`；无依赖、Responses/Messages协议、数据库、权限、UI或桥接变化。Chat请求新增受校验的`response_format`，请求级`text.format`和`ResponseDefaults.text`统一映射`text`/`json_object`；`json_schema`、未知类型、缺失/错形`format`在transport前明确拒绝。合法默认和请求值都实际捕获到`{"type":"json_object"}` wire，直接Chat请求也复用同一validator。
+
+H98原始请求probe在补齐合法用户输入后仍为0过/1败（旧拒绝错误），默认probe为0过/1败（wire缺失）；初始空input失败仅为审计夹具自身不满足Responses输入契约，不替代根因红证据。修复后Models lib默认特性255过/0败/1忽略，`--all-features --no-fail-fast`全目标exit0；Runtime `model_agent::tests` 109过/0败/1忽略；fmt exit0。Models strict仍exit101，保留chat.rs/chat_completions.rs/responses.rs/stream_terminal.rs既有8项告警；Tauri check exit101仅因离线缓存缺少`unicode-width 0.2.3`，未自动安装或联网补依赖。未重跑全workspace，未验真实供应商/其它OS/真实桌面窗口。
+
+本轮冻结10份输入，fixture在清理前5241文件、7780511492逻辑字节；清理脚本SHA256=`00E0175FC9F8813A4F1ED99A0C6109CDCC3AC86B2C1FB14FBEE6A83AF086391D`，只删除`G:/h98-fixtures-20261115`、`G:/h98-review-20261115.ps1`、`G:/h98-cleanup-20261115.ps1`三根，均零reparse，WhatIf后实际删除，最终`reviewedRoots=3, remaining=0, frozenInputs=10, frozenInputsUnchanged=true, originalsUnchanged=true`。G盘free观测61952299008→69628620800字节，不与逻辑大小相加或声称独占归因；共享target/debug、node_modules、公共Cargo缓存、用户文件未删。原CLI、用户snap.new、sidecar三份原件独立核验一致。H98本项余0，下一准备H99。
 
 ### H-99：Chat Completions 静默忽略配置中的 top_logprobs 默认值
 
