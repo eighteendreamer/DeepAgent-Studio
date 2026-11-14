@@ -4,7 +4,7 @@
 
 用户已授权按本报告逐项进行本地代码修复与测试；已修复、撤销和归并条目跳过，不重新计数。分析阶段完成不再是当前总体任务的完成状态。每项完成后更新原项状态、保留失败证据、独立提交并汇报验收与剩余工时。本轮不操作真实用户文件或外部服务。
 
-**当前续接（2026-11-15）**：307唯一台账：250验收、29历史跳过、10归并、3撤销、14待修含H180、H66验收保留1、修复中/阻塞0，有效未完整闭环15。H99已按E-H99-01～02完成Chat默认参数拒绝、Models/Runtime回归和三根清理闭环，代码提交4076a603；Models strict旧告警保留。H98/H100已闭环，下一准备H105。历史汇总按原日期保留。
+**当前续接（2026-11-15）**：307唯一台账：251验收、29历史跳过、10归并、3撤销、13待修含H180、H66验收保留1、修复中/阻塞0，有效未完整闭环14。H105已按E-H105-01～02完成Stop hook字段修复、Hooks/Runtime回归和三根清理闭环，代码提交8b89b9d7；strict旧告警与工具链fmt缺失保留。H99已闭环，下一准备H106。历史汇总按原日期保留。
 
 **历史唯一台账（2026-11-12，H107验收补强/提交/清理已闭环）**：306行233已修复并验收、28历史跳过、10归并、3撤销、31待修含H180授权不修、0修复中/阻塞、1验收保留H66。30有效待处理加H66共31项有效未完整闭环。本轮恢复H107验收关闭1、新增生产修复0；原生产64f9d169不变，补强test提交629a42784ca4bf080f53ab19139761adeb7aff17，hash/清理回填见E17。SDK完整默认/全特性各89/0/5、CLI同宿主/busy及AppCore/原probe过，strict依赖旧失败及未重跑范围保留，详原项及[台账](system-harness-repair-progress.md)。非全系统全绿、不推送，整个任务未完成。
 
@@ -5005,6 +5005,8 @@ AppCore `cargo clippy -p deepagent-app-core --all-targets --no-deps --offline -j
 
 ### H-105：Stop hook 缺少必需的 stop_hook_active 字段
 
+**当前状态：已修复并验收（2026-11-15，E-H105-01～02）。** Stop hook payload 现在包含稳定布尔 `stop_hook_active=false`；原红、回归和清理证据见后文。以下原审计失败和边界保留。
+
 **级别：低（P3，条件性 hooks 事件契约缺陷）；触发条件：已授权的项目配置 `Stop` 外部 hook，并在模型生成最终答复时触发 completion gate。** 未配置 `Stop` hook 的普通会话不受此项影响；这与 H-104 的所有事件公共字段缺失是不同层次的问题。
 
 - 根因与生产路径：`RuntimeEngine::completion_gate()` 在候选答复通过 `BeforeResponse` 后，以 `HookPoint::Stop` 和 `HookData::Response { content }` 派发事件。`ExternalCommandHook::build_payload()` 将其序列化为 `content`，但没有生成 Stop 事件专属状态 `stop_hook_active`。
@@ -5012,6 +5014,10 @@ AppCore `cargo clippy -p deepagent-app-core --all-targets --no-deps --offline -j
 - 成熟实现对照：Claude Code `entrypoints/sdk/coreSchemas.ts::StopHookInputSchema` 要求 `stop_hook_active: boolean`，`last_assistant_message` 为可选；`utils/hooks.ts` 构造 Stop 输入时会传递 `stop_hook_active` 和候选答复文本。本系统已有 Stop veto 流程，但兼容 payload 未携带必需的防递归状态。
 - 影响及限制：对 `Stop` 输入使用 Claude schema 校验或依据 `stop_hook_active` 避免递归阻断的脚本，会收到不完整 payload，无法区分当前是否由 Stop hook 触发的重入。没有运行第三方脚本，也没有证明本系统会递归执行 Stop hook；该探针不代表默认会话故障。
 - 收敛方向（尚未实施，本地设计）：在现有完成门状态中明确维护 Stop hook 重入标记，按 Claude 兼容字段传递该布尔值，并把候选答复映射到 `last_assistant_message`；若产品不支持重入，也应以稳定的 false/受控状态表达，而不是省略必需字段。通过首次 Stop、Stop hook 要求重试、重试后再次 Stop、StopFailure 及 schema 验证覆盖，确保字段语义与重入次数一致。
+
+**E-H105-01（2026-11-15，原探针复核）**：隔离Windows离线运行原ignored探针 `cargo +1.88.0 test -p deepagent-app-core --lib chat_service::tests::audit_stop_hook_payload_includes_stop_hook_active --target-dir G:/h105-fixtures-20261115/target --locked --offline -j 2 -- --ignored --exact --nocapture --test-threads=1`，真实Stop命令hook捕获payload但缺少 `stop_hook_active`，0过/1败；payload同时含已有base字段和候选答复，未访问真实模型/凭据/公网。该红证据保留。
+
+**E-H105-02（2026-11-15，修复、回归与清理）**：代码/测试提交 `8b89b9d7f5c681bb76bc04f6e5820a755dbac6cd`（【fix】补齐Stop hook活动状态），仅 `external_hooks.rs` 与H105正式探针；`build_hook_payload`在 `HookEvent::Stop`统一写入稳定布尔 `stop_hook_active=false`。当前完成门没有递归Stop状态，不伪造重入；StopFailure/H106、H104公共字段和SubagentStop独立边界不混修。隔离绿探针真实1/0，payload显示 `stop_hook_active:false`；Hooks全套79/0及cancellation5、dedup8、once8通过，Runtime `stop_failure_lifecycle`通过。默认 `cargo fmt --all -- --check`通过；Hooks strict exit101仅3项既有 `uninlined_format_args`，`+1.88` rustfmt组件缺失不被绕过。清理脚本SHA256=`3DA71AFCD9895BA651EFF44C942CB7375B75E9E36F076853B2B4E9037C2C0A74`，清理前fixture6478文件/5766917263逻辑字节，三根remaining=0；G盘free62462885888→67950977024字节。9份输入及CLI、用户snap.new、sidecar三份原件独立核验一致，共享target/debug、node_modules、公共Cargo缓存、用户文件未删。本项余0，下一准备H106。
 
 ### H-106：StopFailure hook 缺少必需的 error 分类
 
