@@ -4,7 +4,7 @@
 
 用户已授权按本报告逐项进行本地代码修复与测试；已修复、撤销和归并条目跳过，不重新计数。分析阶段完成不再是当前总体任务的完成状态。每项完成后更新原项状态、保留失败证据、独立提交并汇报验收与剩余工时。本轮不操作真实用户文件或外部服务。
 
-**当前续接（2026-11-15）**：307唯一台账：251验收、29历史跳过、10归并、3撤销、12待修含H180、H106修复中1、H66验收保留1、阻塞0，有效未完整闭环13。H105已按E-H105-01～02闭环，代码8b89b9d7、双文687a2678；strict旧告警与工具链fmt缺失保留。H106原probe隔离复现0过1败，尚无生产修改，分类契约待用户选择，详E-H106-01。历史汇总按原日期保留。
+**当前续接（2026-11-15）**：307唯一台账：251验收、29历史跳过、10归并、3撤销、12待修含H180、H106阻塞待处理1、H66验收保留1、修复中0，有效未完整闭环13。H105已按E-H105-01～02闭环，代码8b89b9d7、双文687a2678；strict旧告警与工具链fmt缺失保留。H106两路分类缺失已红测，尚无生产修复；原生分类或完整Claude语义的关键选择连续三轮未获答复，详E-H106-03。历史汇总按原日期保留。
 
 **历史唯一台账（2026-11-12，H107验收补强/提交/清理已闭环）**：306行233已修复并验收、28历史跳过、10归并、3撤销、31待修含H180授权不修、0修复中/阻塞、1验收保留H66。30有效待处理加H66共31项有效未完整闭环。本轮恢复H107验收关闭1、新增生产修复0；原生产64f9d169不变，补强test提交629a42784ca4bf080f53ab19139761adeb7aff17，hash/清理回填见E17。SDK完整默认/全特性各89/0/5、CLI同宿主/busy及AppCore/原probe过，strict依赖旧失败及未重跑范围保留，详原项及[台账](system-harness-repair-progress.md)。非全系统全绿、不推送，整个任务未完成。
 
@@ -5021,7 +5021,7 @@ AppCore `cargo clippy -p deepagent-app-core --all-targets --no-deps --offline -j
 
 ### H-106：StopFailure hook 缺少必需的 error 分类
 
-**当前状态：修复中（2026-11-15，E-H106-01）。** 原缺字段已在隔离环境复现；尚无生产修复或验收提交。
+**当前状态：阻塞待处理（2026-11-15，E-H106-01～03）。** Stop拒绝及最终供应商失败两路缺字段均在隔离环境复现；尚无生产修复或验收提交，分类契约仍待用户选择，不以替代方案擅自关闭。
 
 **级别：低（P3，条件性 hooks 事件契约缺陷）；触发条件：已授权项目配置 `Stop` hook 拒绝候选答复，且同时配置 `StopFailure` hook。** 未配置这两个 hook 或 Stop 未拒绝时不触发。
 
@@ -5036,6 +5036,14 @@ AppCore `cargo clippy -p deepagent-app-core --all-targets --no-deps --offline -j
 已沿唯一链核对completion_gate两处BeforeResponse/Stop拒绝，以及H117最终CoreError::Provider派发；三者现共用fire_stop_failure并把类型压入Response.content。设置页sample_hook_data也把StopFailure当普通Response，command/HTTP/host动作共用build_hook_payload。已核对本地Claude schema/构造器，其error仅为API错误enum，不能拿hook拒绝原因伪造该枚举。已向用户询问是否采用版本化DeepAgent原生分类并保留现有两类触发语义；答复前只完成不依赖此决策的准备，不修改生产、测试或外部契约。本项预计尚余2–6有效修复验收小时，依据Hooks/Runtime/AppCore的typed生产消费、回归及全仓门禁，冷构建与人工等待另计，未验范围不作通过声明。
 
 本次重新逐行核对307唯一编号/8列：251验收、29历史跳过、10归并、3撤销、12待修含H180、H106修复中1、H66保留1。未闭环槽位14含H180，排除授权不修H180后为13（11有效待修+H106+H66）；纠正前轮顶部多算1的剩余数，不新增验收/跳过/归并/撤销。整体目标active，下一步仍H106；全余170–430有效小时仍为未逐项重估的低置信历史区间，设备/依赖/编译/环境/人工等待另计，无可靠日历上界。fixture暂留供同一项后续复用，验收后按授权边界清理。
+
+**E-H106-02（2026-11-15，供应商路径补充TDD红；非修复验收）**：工作树起点e470a965，无tracked改动。仅在chat_service.rs既有默认Provider生命周期probe中增加非空error分类断言及合成payload诊断，不改生产路径、事件触发语义、模型错误映射或终态策略；没有预先选择原生/Claude枚举值。原H117的派发/终态断言保留，本次失败属于新增H106 payload oracle，不将H117重新计数。首次使用1.88 Cargo绝对路径却仍从PATH选到1.96 rustc，触发47项E0514不兼容缓存错误，0测试执行；保留provider-classification-red.log，不算行为红、不删除缓存或降低编译要求。显式将RUSTUP_TOOLCHAIN、RUSTC、RUSTDOC与Cargo均固定到已安装1.88.0，保留E01隔离HOME/managed目录，执行同一原probe的--locked --offline/-j2/exact/nocapture单线程命令，exit101、158.44秒（含冷增量编译2分24秒），0过1败0忽略、测试体7.16秒。正常完成、合成503重试恢复对照均真实succeeded且仅SessionStart/Stop；终止invalid_request_error真实failed、单一run_terminal且SessionStart/StopFailure，但真实命令stdin仍仅含content及公共字段，新增断言terminal provider failure is missing its error classification失败。未访问真实模型、内网或凭据。
+
+provider-classification-red-v2.log SHA256=647F9FE2B9D56E71B0159B13F4E5235D5DABA4919CC661EB1F39913BDDDD1F32；13份实现/测试/Cargo/工具链输入在运行前后哈希一致。随后仅按rustfmt要求将新断言的方法链换行，保留受测原manifest，不用格式后文件冒称同一二进制已重编；默认cargo fmt --all -- --check与git diff --check实际通过，格式后chat_service.rs SHA256=3C8C6CA220F0A4FC55FF682A106C8B11E01E207901D925A88FBD7DCE7EFDFA0B。目前11行测试补强和本段双文仍为未提交WIP，未创建修复commit；原Stop ignored probe未被忽略策略改变。生产修复、最终相关crate/workspace/lint与清理尚未执行，不能据已建立红测宣称修复。现已取得不依赖分类选型的两路证据，下一步需用户对E01已发出的契约问题作选择；不擅自以更窄原生契约替代兼容验收、不重复提问或空跑。状态/计数及低置信工时口径不变，目标active。
+
+**E-H106-03（2026-11-15，契约选择阻塞审计）**：原契约提问轮、供应商补充红测轮及本轮三个连续goal轮均未收到用户对原生分类/完整Claude语义的答复。前两轮有实际进展，分别建立Stop拒绝和最终Provider失败的真实payload反例；本轮只读复核已有结果、工作树及进程，cargo/rustc实际活动数0，不将等待对话或已终态进程当运行中。代码diff仍仅chat_service.rs的11行测试断言/诊断，无生产修改；原用户未跟踪项只列名保留。接下来的typed输入、对外分类与触发语义实施取决于该选择：不把本地hook拒绝伪造成Claude模型错误，也不未经确认删除现有拒绝通知，不能靠更窄契约、降低断言、重复测试或跳去其他H来绕过决策。
+
+因此H106由修复中转阻塞待处理，整个goal按连续三轮阻塞规则登记blocked，非paused或complete；解除条件是用户回答E01已发出的契约问题。已有两路红测、13份源manifest和本轮fixture暂留供续接；11行测试补强继续未提交WIP，本轮仅提交双文准备/阻塞记录，不宣称修复、不推送。完整相关crate/workspace/lint及验收后清理未执行；等待期间不空跑构建，也不删除将继续复用的本项产物或任何用户/共享缓存。台账仍307唯一行/8列，251验收、29历史跳过、10归并、3撤销、12待修含H180、H106阻塞1、H66保留1、修复中0；本轮新增修复/验收/历史跳过/归并/撤销均0，有效未闭环13不变。下一步仍H106，2–6有效小时及全余170–430有效小时均沿用E01低置信旧估，人工/编译/设备/依赖等待另计，未重估或承诺日期。
 
 ### 复核但未登记：Responses `tool_search_call`
 

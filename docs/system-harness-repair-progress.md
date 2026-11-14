@@ -13,11 +13,11 @@
 | 归并 | 10 | H173同根归并H127；H243归并H53；只在唯一有效项修复，不增加完成数 |
 | 撤销 | 3 | H-211/H-263/H-305，不作为缺陷或修复成果 |
 | 已修复（验收保留） | 1 | H66按用户2026-11-10收尾要求交付代码；现有定向验证有效，不记作完整验收通过，残余范围见E-H66-08 |
-| 修复中 | 1 | H106原probe隔离复现，尚无生产修改；版本化原生分类契约待用户选择 |
+| 修复中 | 0 | H106转阻塞待处理，未实施生产修改，不跳过该项或擅自选替代契约 |
 | 待修复 | 12 | 含H180授权不修；11项有效待处理 |
-| 阻塞待处理 | 0 | H94本轮fixture及启动脚本已不存在，10份输入及3份原件独立核验一致 |
+| 阻塞待处理 | 1 | H106原生分类或完整Claude语义的关键选择连续三轮未获答复，见E-H106-03 |
 
-未完整闭环槽位当前为 **14（含H180授权不修；有效未闭环13：11有效待修、H106修复中1、H66验收保留1）**。307唯一主行：251验收、29历史跳过、10归并、3撤销、12待修、修复中1/阻塞0、验收保留1；H105已闭环且不重复计数。逐行重算纠正前轮顶部剩余数多算1的问题，不新增验收/跳过/归并/撤销。不报完成率。
+未完整闭环槽位当前为 **14（含H180授权不修；有效未闭环13：11有效待修、H106阻塞1、H66验收保留1）**。307唯一主行：251验收、29历史跳过、10归并、3撤销、12待修、修复中0/阻塞1、验收保留1；H105已闭环且不重复计数。逐行重算纠正前轮顶部剩余数多算1的问题，不新增验收/跳过/归并/撤销。不报完成率。
 
 H296已按E01～05完成原红→单一resolver修复→正式消费链/全仓门禁→清理闭环；19份冻结输入、原CLI/快照/sidecar保持，完整workspace5425/5/140、前端358/1及strict旧8+2原样保留，不称全仓全绿。独立提交`e9c55cab`，E06仅普通文档回填真实hash。H157的344d907c/0142b745及H168等为前轮成果，不重计；H155/H156尚待的历史清理不冒领。本项实现/验收/清理余0，下一准备H297本地token计量压力，先原probe及依赖核对。整体余170–430有效小时仍为未逐项重估的低置信历史分组估算，依据剩余模型/Hook/工具/画布跨层修改与验收；编译、设备、依赖、策略和人工等待另计，无可靠日历上界。
 
@@ -93,6 +93,14 @@ H100按本机离线Rust/TS SDK与真实CLI消费范围已修复并验收；未�
 已沿唯一链核对completion_gate两处BeforeResponse/Stop拒绝，以及H117最终CoreError::Provider派发；三者现共用fire_stop_failure并把类型压入Response.content。设置页sample_hook_data也把StopFailure当普通Response，command/HTTP/host动作共用build_hook_payload。已核对本地Claude schema/构造器，其error仅为API错误enum，不能拿hook拒绝原因伪造该枚举。已向用户询问是否采用版本化DeepAgent原生分类并保留现有两类触发语义；答复前只完成不依赖此决策的准备，不修改生产、测试或外部契约。本项预计尚余2–6有效修复验收小时，依据Hooks/Runtime/AppCore的typed生产消费、回归及全仓门禁，冷构建与人工等待另计，未验范围不作通过声明。
 
 本次重新逐行核对307唯一编号/8列：251验收、29历史跳过、10归并、3撤销、12待修含H180、H106修复中1、H66保留1。未闭环槽位14含H180，排除授权不修H180后为13（11有效待修+H106+H66）；纠正前轮顶部多算1的剩余数，不新增验收/跳过/归并/撤销。整体目标active，下一步仍H106；全余170–430有效小时仍为未逐项重估的低置信历史区间，设备/依赖/编译/环境/人工等待另计，无可靠日历上界。fixture暂留供同一项后续复用，验收后按授权边界清理。
+
+**E-H106-02（2026-11-15，供应商路径补充TDD红；非修复验收）**：工作树起点e470a965，无tracked改动。仅在chat_service.rs既有默认Provider生命周期probe中增加非空error分类断言及合成payload诊断，不改生产路径、事件触发语义、模型错误映射或终态策略；没有预先选择原生/Claude枚举值。原H117的派发/终态断言保留，本次失败属于新增H106 payload oracle，不将H117重新计数。首次使用1.88 Cargo绝对路径却仍从PATH选到1.96 rustc，触发47项E0514不兼容缓存错误，0测试执行；保留provider-classification-red.log，不算行为红、不删除缓存或降低编译要求。显式将RUSTUP_TOOLCHAIN、RUSTC、RUSTDOC与Cargo均固定到已安装1.88.0，保留E01隔离HOME/managed目录，执行同一原probe的--locked --offline/-j2/exact/nocapture单线程命令，exit101、158.44秒（含冷增量编译2分24秒），0过1败0忽略、测试体7.16秒。正常完成、合成503重试恢复对照均真实succeeded且仅SessionStart/Stop；终止invalid_request_error真实failed、单一run_terminal且SessionStart/StopFailure，但真实命令stdin仍仅含content及公共字段，新增断言terminal provider failure is missing its error classification失败。未访问真实模型、内网或凭据。
+
+provider-classification-red-v2.log SHA256=647F9FE2B9D56E71B0159B13F4E5235D5DABA4919CC661EB1F39913BDDDD1F32；13份实现/测试/Cargo/工具链输入在运行前后哈希一致。随后仅按rustfmt要求将新断言的方法链换行，保留受测原manifest，不用格式后文件冒称同一二进制已重编；默认cargo fmt --all -- --check与git diff --check实际通过，格式后chat_service.rs SHA256=3C8C6CA220F0A4FC55FF682A106C8B11E01E207901D925A88FBD7DCE7EFDFA0B。目前11行测试补强和本段双文仍为未提交WIP，未创建修复commit；原Stop ignored probe未被忽略策略改变。生产修复、最终相关crate/workspace/lint与清理尚未执行，不能据已建立红测宣称修复。现已取得不依赖分类选型的两路证据，下一步需用户对E01已发出的契约问题作选择；不擅自以更窄原生契约替代兼容验收、不重复提问或空跑。状态/计数及低置信工时口径不变，目标active。
+
+**E-H106-03（2026-11-15，契约选择阻塞审计）**：原契约提问轮、供应商补充红测轮及本轮三个连续goal轮均未收到用户对原生分类/完整Claude语义的答复。前两轮有实际进展，分别建立Stop拒绝和最终Provider失败的真实payload反例；本轮只读复核已有结果、工作树及进程，cargo/rustc实际活动数0，不将等待对话或已终态进程当运行中。代码diff仍仅chat_service.rs的11行测试断言/诊断，无生产修改；原用户未跟踪项只列名保留。接下来的typed输入、对外分类与触发语义实施取决于该选择：不把本地hook拒绝伪造成Claude模型错误，也不未经确认删除现有拒绝通知，不能靠更窄契约、降低断言、重复测试或跳去其他H来绕过决策。
+
+因此H106由修复中转阻塞待处理，整个goal按连续三轮阻塞规则登记blocked，非paused或complete；解除条件是用户回答E01已发出的契约问题。已有两路红测、13份源manifest和本轮fixture暂留供续接；11行测试补强继续未提交WIP，本轮仅提交双文准备/阻塞记录，不宣称修复、不推送。完整相关crate/workspace/lint及验收后清理未执行；等待期间不空跑构建，也不删除将继续复用的本项产物或任何用户/共享缓存。台账仍307唯一行/8列，251验收、29历史跳过、10归并、3撤销、12待修含H180、H106阻塞1、H66保留1、修复中0；本轮新增修复/验收/历史跳过/归并/撤销均0，有效未闭环13不变。下一步仍H106，2–6有效小时及全余170–430有效小时均沿用E01低置信旧估，人工/编译/设备/依赖等待另计，未重估或承诺日期。
 
 ## H-94 相邻 reasoning 投影（历史已修复跳过，2026-11-14）
 
@@ -6482,7 +6490,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-103：工具生命周期 hook 缺少调用 ID 与真实工具结果](system-harness-audit-2026-10-21.md#h-103工具生命周期-hook-缺少调用-id-与真实工具结果) | P3 | 已修复并验收 | E-H103-01红证据保留；E-H103-02代码/定向验收；E-H103-03代码commit；E-H103-04核验两根目录不存在；非H-115归并 | 现有HookData::Tool携带可选call_id/result/error；ToolPipeline透传稳定身份和规范预算后ToolOutput.value；统一serializer按事件构造标准字段 | Hooks98/0；Runtime原probe成功/失败各1/0；并发Runtime回归1/0；ToolPipeline22/0/1忽略；builtins376/0/3忽略；AppCore synthetic入口1/0、cargo check通过、fmt与hooks strict通过。Runtime全lib481/1/3，唯一既有checkpoint DACL失败；Runtime/AppCore strict lint各被既有告警阻断；详情见审计E-H103-02 | `da5f3291ca522444f6c5166e238dce6b1cfd7856`（代码/测试）；`364d1de5448e9933a385897f9073d229a9b78895`（清理阻塞回填）；`ec4059eb`（清理状态回填） | E-H103-04核验两根当前均不存在，H103完整交付余0；下一项H-102。公开辅助构造器原签名保留，direct struct variant需同步新字段；参数改写、真实截断和其他OS未动态验 |
 | [H-104：Claude 兼容 hook 公共输入缺少 transcript_path 和 cwd](system-harness-audit-2026-10-21.md#h-104claude-兼容-hook-公共输入缺少-transcript_path-和-cwd) | P3 | 已修复并验收 | 用户接受DeepAgent原生只读视图；E06已核验两根不存在，提交/清理闭环 | 唯一外部Hook边界提供真实cwd与callback租约式原生Event快照；复用EventStore/JSON导出 | E-H104-01～06：原probe默认1/0、新9/0、Hooks97/0、当前CLI＋SDK各89/0/5、Tauri/fmt通过；全仓5332/4/152和strict旧失败保留 | 6445d497719ef915e23280a276cd9c62f49e15c8 | 非Claude JSONL；readonly非沙箱、强杀可能残留、O(n)成本未基准；本项余0，下一H101 |
 | [H-105：Stop hook 缺少必需的 stop_hook_active 字段](system-harness-audit-2026-10-21.md) | P3 | 已修复并验收 | E-H105-01～02；Stop payload补稳定`stop_hook_active=false`，不混入H106/H104/SubagentStop | 既有`build_hook_payload`按Stop事件补字段，完成门无递归状态，不新增hook链 | 原probe0/1；绿Stop1/0；Hooks79/0+cancellation5+dedup8+once8，Runtime StopFailure通过，fmt过；strict旧3项，+1.88 rustfmt缺组件；清理3根remaining=0 | 8b89b9d7f5c681bb76bc04f6e5820a755dbac6cd（代码/测试）；双文回填提交另列 | 未验真实供应商/其他OS/真实窗口；本项余0，下一H106 |
-| [H-106：StopFailure hook 缺少必需的 error 分类](system-harness-audit-2026-10-21.md) | P3 | 修复中 | E-H106-01原probe隔离真实0过1败；无跳过依据 | Stop/BeforeResponse拒绝与最终Provider错误均压成Response.content；typed契约待用户选择，无生产修改 | +1.88冷编译通过；首次fable环境阻断不算行为红；隔离原binary 0/1、missing required error，详E-H106-01；最终回归未执行 | 尚无修复提交 | 原生版本化分类或完整Claude语义待确认；本项预计余2–6有效小时，等待另计；整体仍active |
+| [H-106：StopFailure hook 缺少必需的 error 分类](system-harness-audit-2026-10-21.md) | P3 | 阻塞待处理 | E-H106-01～03：Stop拒绝及终止Provider两路真实缺error；无跳过依据 | Stop/BeforeResponse拒绝与最终Provider错误均压成Response.content；typed契约待用户选择，无生产修改 | 原Stop probe0/1；新增Provider分类断言0/1，成功/重试恢复对照真实执行；fmt过；E0514工具链混用失败另存不计红；最终回归未执行 | 尚无修复提交；11行红测WIP未提交 | 原生版本化分类或完整Claude语义连续三轮待确认；goal登记blocked而非完成；本项预计余2–6有效小时，等待另计 |
 | [H-107：续聊的每个 turn 结束都会触发 SessionEnd hook](system-harness-audit-2026-10-21.md#h-107续聊的每个-turn-结束都会触发-sessionend-hook) | P3 | 已修复并验收 | E01原probe0/1、只读/Fork6/2、缺通知及E14验收时序红均保留，无跳过/归并 | 原显式End/只读/Fork/唯一终态实现不变；E16仅SDK测试改用实际进程退出屏障，增强live/durable身份与每次冷读对账 | SDK默认/全特性各89/0/5含stdio15；CLI同宿主/busy各1/0、AppCore8/0、原probe1/0、SDK自身strict/fmt过；依赖strict旧失败及未重跑范围详E16 | 原生产`64f9d16924d388bcb2c7ec5b6c0710fda508555e`；本轮test补强`629a42784ca4bf080f53ab19139761adeb7aff17`，不重复计生产修复 | E17两根均已不存在，原共享CLI/用户快照哈希一致，本项完整交付余0；原H107/H108旧清理仍有效；下一复核H104，发布/hook窗口限制不变，总余170–430有效小时低置信旧估，等待另计 |
 | [H-108：SessionStart/SessionEnd payload 缺少必需的事件元数据](system-harness-audit-2026-10-21.md#h-108sessionstartsessionend-payload-缺少必需的事件元数据) | P3 | 已修复并验收 | E01原probe0/1、E02设置真红/新历史断言误设均保留，无跳过/归并 | typed source/reason供现有生产者/设置测试，5类action同一serializer；H107频率/内部explicit_end不变 | E04：Hooks96/0/0及strict、65份payload、AppCore2/0、原probe默认1/0、H107八项过；workspace161目标5320/5/153含SDK时序新反例，Tauri/fmt过，旧strict保留 | `cff915be970fe86764841c4f34bcf9bb1aa1026f`（独立修复提交；未推送） | E05两根均已不存在，原共享CLI/用户快照哈希一致，本项完整交付余0；H104公共字段及来源matcher独立；未验UI/真实服务/OS强杀；下一H107验收补强，总余170–430有效小时低置信旧估，等待另计 |
 | [H-109：SubagentStop hook 缺少必需的停止状态与 transcript 路径](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
