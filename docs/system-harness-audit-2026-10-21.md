@@ -17576,6 +17576,8 @@ finally真实返回原CLI/snap.new/sidecar三项保护均true，独立再次逐�
 
 #### 修复准备：原探针与官方离线依赖（修复中，2026-11-14）
 
+**E-H297-14（延迟清理回执补记，2026-11-14）**：H94复核提交7ee848cef475522bf892606f99cf6a0f07295f64后，收到用户实际执行 `pwsh -NoProfile -File 'G:\h297-fixtures-20261114\cleanup-h297.ps1'` 的完整回执：fixture盘点105382文件、65498668359逻辑字节、reparsePoints=0、protectedInputs=41；真实最后JSON为label=h297-cleanup、reviewedRoots=1、remaining=0，originalCliRestored/originalSnapshotUnchanged/originalSidecarUnchanged/frozenInputsUnchanged均true。它与E13删除前盘点、目录不存在及41输入/3原件独立核验一致；E13当时尚未收到JSON的事实保留，不再推断删除权限。本次只读再次确认G:/h297-fixtures-20261114及desktop/dist不存在，未重复删除、重建fixture或重跑测试。本次仅双文补记回执，不改变原workspace九败/strict或限定验收，不新增修复、历史跳过或关闭计数；当前台账仍以顶部H94关闭后的247验收、29历史跳过、10归并、3撤销、17待修含H180与H66保留1为准，有效未闭环17。
+
 **E-H297-13（清理独立核验与关闭，2026-11-14）**：本次续接先只读核实，G:/h297-fixtures-20261114及其中cleanup-h297.ps1均已不存在、desktop/dist仍不存在，当前无Cargo/rustc/link进程。没有收到本次删除的最后JSON或进程退出回执，因此不声称是谁执行、脚本是否逐步运行或用了何种权限；本项清理结论仅依据当前目录不存在和删除前可信完整清单的独立核验。前轮保留的41份冻结输入及3份原件（CLI、用户snap.new、sidecar）逐份检查：SHA256全同，原件长度、写入/创建UTC ticks、属性全同，HEAD仍95bb704f7f18202c6a7b16fdf10bf148ab02265b；未重建任何测试产物、未改源码或用户未跟踪项。
 
 删除前fixture盘点105382文件、65498668359逻辑字节、零链接，脚本SHA256=247525920D02305F487444387D884E0747632D554027D3319C75A6DD09784360。G盘free从5865529344至69939798016字节，观测增加约59.674GiB；磁盘口径和逻辑盘点不相加、不保证全部差额都由本项独占造成。原共享target/debug、标准公共Cargo缓存、node_modules及原用户文件不在删除根中，原件保护复核成立。原失败/候选/全仓九败及最终Kernel373/1/7与strict残余已保留双文，不因清理完成改写测试结论；日志等一次性材料已按用户清理要求回收。
