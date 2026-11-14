@@ -37,6 +37,8 @@ pub struct ChatCompletionRequest {
     /// Native Chat choice: strings or {type:function,function:{name}}.
     /// Canonical Responses choices are converted by the client boundary.
     pub tool_choice: Option<serde_json::Value>,
+    /// DeepSeek Chat response format (`text` or `json_object`).
+    pub response_format: Option<serde_json::Value>,
     /// Internal end-user identity, serialized as Chat's `user_id` (Responses
     /// uses `user`). Kept named `user` for source/defaults compatibility.
     pub user: Option<String>,
@@ -76,6 +78,12 @@ impl Serialize for ChatCompletionRequest {
             map.serialize_entry(
                 "stream_options",
                 &serde_json::json!({"include_usage": true}),
+            )?;
+        }
+        if let Some(value) = &self.response_format {
+            map.serialize_entry(
+                "response_format",
+                &normalize_response_format(value).map_err(serde::ser::Error::custom)?,
             )?;
         }
         if let Some(thinking) = &self.thinking {
@@ -140,6 +148,7 @@ impl ChatCompletionRequest {
             max_tokens: None,
             top_p: None,
             tool_choice: None,
+            response_format: None,
             user: None,
             attachment_data_urls: BTreeMap::new(),
             image_file_ids: BTreeMap::new(),
@@ -198,11 +207,19 @@ impl ChatCompletionRequest {
         self
     }
 
+    pub fn with_response_format(mut self, value: serde_json::Value) -> Self {
+        self.response_format = Some(value);
+        self
+    }
+
     pub fn validate(&self) -> Result<()> {
         self.validate_tool_choice()?;
         self.validate_user_identity()?;
         self.validate_image_roles()?;
         self.validate_image_references()?;
+        if let Some(value) = &self.response_format {
+            normalize_response_format(value)?;
+        }
         if self
             .thinking
             .as_ref()
@@ -303,6 +320,22 @@ impl ChatCompletionRequest {
         }
         Ok(())
     }
+}
+
+/// Normalize the small response-format vocabulary supported by DeepSeek Chat.
+/// Responses JSON Schema objects must not leak onto the Chat wire.
+pub(crate) fn normalize_response_format(value: &serde_json::Value) -> Result<serde_json::Value> {
+    let kind = value
+        .as_object()
+        .and_then(|object| object.get("type"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| CoreError::invalid("Chat response_format must contain a string type"))?;
+    if !matches!(kind, "text" | "json_object") {
+        return Err(CoreError::invalid(
+            "DeepSeek Chat response_format supports only text or json_object",
+        ));
+    }
+    Ok(serde_json::json!({"type": kind}))
 }
 
 struct ChatMessages<'a>(
@@ -803,6 +836,17 @@ mod tests {
         let request = ChatCompletionRequest::new("deepseek-flash", vec![Message::user("plain")]);
         let json = serde_json::to_value(&request).unwrap();
         assert_eq!(json["messages"][0]["content"], "plain");
+    }
+
+    #[test]
+    fn chat_wire_serializes_supported_response_format() {
+        let request = ChatCompletionRequest::new("deepseek-flash", vec![Message::user("json")])
+            .with_response_format(serde_json::json!({"type":"json_object"}));
+        let json = serde_json::to_value(request).unwrap();
+        assert_eq!(
+            json["response_format"],
+            serde_json::json!({"type":"json_object"})
+        );
     }
 
     #[test]

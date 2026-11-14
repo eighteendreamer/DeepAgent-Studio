@@ -802,6 +802,11 @@ impl ModelClient {
                 .map(crate::tool_choice::responses_tool_choice_to_chat)
                 .transpose()?;
         }
+        if request.response_format.is_none() {
+            if let Some(text) = &self.config.defaults.text {
+                request.response_format = Some(chat_response_format(text)?);
+            }
+        }
         if request.user.is_none() {
             request.user = self.config.defaults.user.clone();
         }
@@ -882,17 +887,20 @@ fn response_to_chat_completion(request: ResponseRequest) -> Result<ChatCompletio
             "top_logprobs is not supported by DeepSeek Chat Completions",
         ));
     }
-    if request.text.is_some() {
-        return Err(deepagent_core::error::CoreError::invalid(
-            "text response format is not supported by DeepSeek Chat Completions",
-        ));
-    }
+    let response_format = request
+        .text
+        .as_ref()
+        .map(chat_response_format)
+        .transpose()?;
     let chat_input = request.chat_projection_items();
     let messages = crate::responses::messages_from_response_items(
         request.instructions.as_deref(),
         &chat_input,
     );
     let mut chat = ChatCompletionRequest::new(request.model, messages).with_tools(request.tools);
+    if let Some(value) = response_format {
+        chat = chat.with_response_format(value);
+    }
     if let Some(value) = request.temperature {
         chat = chat.with_temperature(value);
     }
@@ -911,6 +919,18 @@ fn response_to_chat_completion(request: ResponseRequest) -> Result<ChatCompletio
     chat.user = request.user;
     chat.attachment_data_urls = request.attachment_data_urls;
     Ok(chat)
+}
+
+fn chat_response_format(text: &serde_json::Value) -> Result<serde_json::Value> {
+    let format = text
+        .as_object()
+        .and_then(|object| object.get("format"))
+        .ok_or_else(|| {
+            deepagent_core::error::CoreError::invalid(
+                "Chat text format must contain a format object",
+            )
+        })?;
+    crate::chat_completions::normalize_response_format(format)
 }
 
 #[cfg(test)]
@@ -992,9 +1012,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit reproducer: map the supported DeepSeek Chat JSON response format"]
     fn audit_chat_json_object_format_reaches_provider_request() {
-        let mut request = ResponseRequest::new("deepseek-flash", Vec::new());
+        let mut request = ResponseRequest::new(
+            "deepseek-flash",
+            vec![Message::user("Return a JSON object.")],
+        );
         request.text = Some(serde_json::json!({
             "format": { "type": "json_object" }
         }));
@@ -1009,7 +1031,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: Chat Completions must apply its configured JSON response format"]
     async fn audit_chat_default_json_object_format_reaches_provider_request() {
         struct CaptureBodyTransport {
             body: Arc<std::sync::Mutex<Option<String>>>,
@@ -1065,6 +1086,23 @@ mod tests {
             wire["response_format"],
             serde_json::json!({ "type": "json_object" })
         );
+    }
+
+    #[test]
+    fn audit_chat_rejects_unsupported_response_formats_before_transport() {
+        for text in [
+            serde_json::json!({"format":{"type":"json_schema","json_schema":{}}}),
+            serde_json::json!({"format":{"type":"yaml"}}),
+            serde_json::json!({"format":"json_object"}),
+            serde_json::json!({"type":"json_object"}),
+        ] {
+            let mut request = ResponseRequest::new(
+                "deepseek-flash",
+                vec![Message::user("Return structured output.")],
+            );
+            request.text = Some(text);
+            assert!(response_to_chat_completion(request).is_err());
+        }
     }
 
     #[tokio::test]
