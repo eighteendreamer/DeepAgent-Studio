@@ -4,7 +4,7 @@
 
 用户已授权按本报告逐项进行本地代码修复与测试；已修复、撤销和归并条目跳过，不重新计数。分析阶段完成不再是当前总体任务的完成状态。每项完成后更新原项状态、保留失败证据、独立提交并汇报验收与剩余工时。本轮不操作真实用户文件或外部服务。
 
-**当前续接（2026-11-15）**：307唯一台账：249验收、29历史跳过、10归并、3撤销、15待修含H180、H66验收保留1、修复中/阻塞0，有效未完整闭环16。H98已按E-H98-01～02完成Chat JSON输出映射、Models/Runtime回归和三根清理闭环，代码提交9162ab16；Models strict旧告警与离线Tauri依赖缺失保留。H100已按E-H100-01～02闭环，下一准备H99。历史汇总按原日期保留。
+**当前续接（2026-11-15）**：307唯一台账：250验收、29历史跳过、10归并、3撤销、14待修含H180、H66验收保留1、修复中/阻塞0，有效未完整闭环15。H99已按E-H99-01～02完成Chat默认参数拒绝、Models/Runtime回归和三根清理闭环，代码提交4076a603；Models strict旧告警保留。H98/H100已闭环，下一准备H105。历史汇总按原日期保留。
 
 **历史唯一台账（2026-11-12，H107验收补强/提交/清理已闭环）**：306行233已修复并验收、28历史跳过、10归并、3撤销、31待修含H180授权不修、0修复中/阻塞、1验收保留H66。30有效待处理加H66共31项有效未完整闭环。本轮恢复H107验收关闭1、新增生产修复0；原生产64f9d169不变，补强test提交629a42784ca4bf080f53ab19139761adeb7aff17，hash/清理回填见E17。SDK完整默认/全特性各89/0/5、CLI同宿主/busy及AppCore/原probe过，strict依赖旧失败及未重跑范围保留，详原项及[台账](system-harness-repair-progress.md)。非全系统全绿、不推送，整个任务未完成。
 
@@ -4691,6 +4691,8 @@ H98原始请求probe在补齐合法用户输入后仍为0过/1败（旧拒绝错
 
 ### H-99：Chat Completions 静默忽略配置中的 top_logprobs 默认值
 
+**当前状态：已修复并验收（2026-11-15，E-H99-01～02）。** Chat adapter 现在对配置默认 `top_logprobs` 与请求级值使用同一明确拒绝边界；不伪造未实现的 Chat `logprobs` wire 语义。以下原审计失败和协议边界保留。
+
 **级别：低（P3，条件性配置映射缺陷）；触发条件：显式使用 `WireMode::ChatCompletions`，且 `ModelConfig.defaults.top_logprobs` 已配置。** 请求级 `ResponseRequest.top_logprobs` 会在 Chat 转换前被明确拒绝；问题只发生在该值来自客户端默认配置时。当前桌面固定使用 Responses，不覆盖默认桌面运行。
 
 - 根因与生产路径：Chat 分支先将 `ResponseRequest` 交给 `response_to_chat_completion()`，之后才调用 `apply_chat_defaults()`。后者没有处理 `ResponseDefaults.top_logprobs`；前者仅检查请求对象自己的 `top_logprobs`，不会读取客户端 defaults。Chat request 结构及 serializer 也没有 `logprobs` / `top_logprobs` 字段，因此默认配置被绕过校验，正常请求可继续发送。
@@ -4699,6 +4701,10 @@ H98原始请求probe在补齐合法用户输入后仍为0过/1败（旧拒绝错
 - 成熟实现对照：DeepSeek Harness 的 `llm-deepseek` 是 Messages serializer，本次搜索未发现对应 Chat `logprobs` 路由；Codex 参考树里关于 OpenAI 模型移除 `top_logprobs` 的说明属于其他模型/provider，不能当作 DeepSeek Chat 限制。就本项而言，DeepSeek 官方字段依赖是唯一直接协议判据；适配器应根据完整能力映射这组参数，或明确拒绝配置。
 - 影响及限制：当调用者期望该配置在 Chat 请求中生效时，系统实际不发字段且仍报告调用成功。当前响应类型也未证明能保留/暴露 token logprob 结果，因此本项不把“应当支持 logprobs”作为结论，只确认默认值被静默忽略。公开 Chat adapter 的生产使用频率和真实设置组合尚未验证。
 - 收敛方向（尚未实施，本地设计）：对 defaults 和 request 先经过同一协议能力校验。第一版若 Chat adapter 尚未支持 `logprobs` 请求与返回数据，就在发送前对 `top_logprobs` 默认值明确报不支持；完整支持时则成对设置 `logprobs=true` 和范围合法的 `top_logprobs`，并验证响应信息的保留。补充请求级拒绝、默认值拒绝及完整支持时的线级形状测试。
+
+**E-H99-02（2026-11-15，回归与清理闭环）**：代码/测试提交`4076a6033f7001942e0aaf37f8c69aba8dc93d1e`（【fix】拒绝Chat默认top_logprobs），仅在既有`ModelClient::apply_chat_defaults`增加发送前拒绝并将H99探针转默认；不新增依赖、字段、数据库、权限或UI。原ignored探针在修复前实际0过/1败并确认transport被调用；修复后该探针默认通过，Models lib233/0/0，`--all-features --no-fail-fast` exit0，Runtime model_agent109/0/1，fmt exit0。Models strict exit101仍为既有8项告警；未重跑全workspace、Tauri或真实供应商/其它OS。
+
+清理脚本SHA256=`EAD52625DCC1D0792C804A8A6ECD780710800B88E33780795845B69D6574449C`，清理前fixture5049文件/7140254331逻辑字节，实际删除fixture、review脚本、cleanup脚本三根，零reparse，最终`reviewedRoots=3, remaining=0, frozenInputs=10, frozenInputsUnchanged=true, originalsUnchanged=true`。G盘free观测60923432960→67958550528字节；共享target/debug、node_modules、公共Cargo缓存、用户文件未删；原CLI、用户snap.new、sidecar三份原件和10份输入独立核验一致。本项余0，下一准备H105。
 
 ### H-100：Harness SDK initialize 接受缺少 result/error 的 JSON-RPC response
 
