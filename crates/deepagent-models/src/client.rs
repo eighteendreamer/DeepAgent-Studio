@@ -781,6 +781,11 @@ impl ModelClient {
     }
 
     fn apply_chat_defaults(&self, request: &mut ChatCompletionRequest) -> Result<()> {
+        if self.config.defaults.top_logprobs.is_some() {
+            return Err(deepagent_core::error::CoreError::invalid(
+                "top_logprobs is not supported by DeepSeek Chat Completions",
+            ));
+        }
         if request.temperature.is_none() {
             request.temperature = self.config.defaults.temperature;
         }
@@ -1106,7 +1111,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: Chat must not silently ignore unsupported top_logprobs defaults"]
     async fn audit_chat_top_logprobs_default_is_rejected_before_transport() {
         struct CountingTransport {
             calls: Arc<std::sync::atomic::AtomicUsize>,
