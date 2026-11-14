@@ -4,7 +4,7 @@
 
 用户已授权按本报告逐项进行本地代码修复与测试；已修复、撤销和归并条目跳过，不重新计数。分析阶段完成不再是当前总体任务的完成状态。每项完成后更新原项状态、保留失败证据、独立提交并汇报验收与剩余工时。本轮不操作真实用户文件或外部服务。
 
-**当前续接（2026-11-14）**：307唯一台账：247验收、28历史跳过、10归并、3撤销、18待修含H180、H66验收保留1、修复中/阻塞0，有效未完整闭环18。H297代码/限定验收/清理独立核验已闭环（183331b6，E13），原全仓/strict红仍保留；下一准备H94。历史汇总按原日期保留。
+**当前续接（2026-11-14）**：307唯一台账：247验收、29历史跳过、10归并、3撤销、17待修含H180、H66验收保留1、修复中/阻塞0，有效未完整闭环17。H94原probe及Models完整352/0/9通过，已确认6bc2d660历史修复并按E-H94-01～03清理关闭；本轮新增生产修复0、历史跳过1。H297原全仓/strict红仍保留；下一准备H100。历史汇总按原日期保留。
 
 **历史唯一台账（2026-11-12，H107验收补强/提交/清理已闭环）**：306行233已修复并验收、28历史跳过、10归并、3撤销、31待修含H180授权不修、0修复中/阻塞、1验收保留H66。30有效待处理加H66共31项有效未完整闭环。本轮恢复H107验收关闭1、新增生产修复0；原生产64f9d169不变，补强test提交629a42784ca4bf080f53ab19139761adeb7aff17，hash/清理回填见E17。SDK完整默认/全特性各89/0/5、CLI同宿主/busy及AppCore/原probe过，strict依赖旧失败及未重跑范围保留，详原项及[台账](system-harness-repair-progress.md)。非全系统全绿、不推送，整个任务未完成。
 
@@ -4542,6 +4542,8 @@ E-H93-07（清理闭环，2026-11-12）：用户回传“已删除”后只读�
 
 ### H-94：Chat 兼容投影覆盖相邻 reasoning item，只保留最后一段
 
+**当前状态：历史已修复跳过（2026-11-14，限E-H94-01～03范围）。** 下列原审计失败与当时收敛建议保留；当前实现已随6bc2d660修复，本轮原probe/完整Models复核及清理通过，strict旧告警与未验边界见后续证据，不新增生产修复。
+
 **级别：低（P3，条件性适配器缺陷）；触发条件：显式使用 `WireMode::ChatCompletions`，并传入两个或更多相邻 Responses reasoning items，随后跟 assistant message 或 function call。** 单段 reasoning 和桌面默认 Responses 路由不在本项范围内。
 
 - 根因与生产路径：`response_to_chat_completion` 通过 `messages_from_response_items` 把原生历史投影为 Chat 的 `Message`。该函数遇到每个 `ResponseItem::Reasoning` 都执行 `pending_reasoning = Some(content.clone())`；连续 item 后一项覆盖前一项，再将只剩的值放入 assistant `reasoning_content`。DeepSeek 官方 [Responses API 输入定义](https://api-docs.deepseek.com/api/create-response) 将 `reasoning` 列为可用 input item，并支持有序 item list。Chat 仅提供单个 `reasoning_content` 字段，转换应合并相邻文本或明确拒绝不能表达的历史，不能静默丢段。
@@ -4549,6 +4551,23 @@ E-H93-07（清理闭环，2026-11-12）：用户回传“已删除”后只读�
 - 成熟实现对照：DeepSeek Harness `packages/llm/llm-deepseek/src/translate.ts::startBlock` 将每个 native `thinking` block 建成独立 reasoning block，`deltaChunk` 保留各自 block index；`serialize.ts::assistant` 按顺序遍历所有 assistant content blocks 并逐块发出 thinking。该代码走 DeepSeek Messages，而非本系统 Chat Completions，因此只佐证成熟 Harness 保留分段 reasoning 的内部历史，不作为 Chat provider wire 格式依据。
 - 影响及限制：Chat 路由的下一请求会遗漏较早的 reasoning 文本，模型收到的内部续轮上下文变短；其对最终回答、工具选择或 provider 接受性的具体影响没有经过真实模型验证。Responses 输出通常是单个 reasoning item 的路径已被覆盖，但当前类型、累加器和输入协议均允许多个 item；本项仍不能外推为用户桌面默认路径已触发。
 - 收敛方向（尚未实施，本地设计）：将尚未 flush 的相邻 reasoning 文本按输入顺序追加到一个 pending buffer，并在 assistant message / tool-call grouping 处一次消费；不要跨 user/tool 边界携带。补充一段、多段、reasoning 后工具调用、reasoning 被非 assistant item 隔断及重开后相同投影的回归，并保持现有 provider-native Surface 不变。
+
+**E-H94-01（2026-11-14，历史修复来源复核）**：本轮开始于92c548f332cb9180eb908cbd4c9a619648d8b5ec，tracked干净；七组原用户untracked保留，不读正文、改动或暂存。原审计的相邻reasoning覆盖失败仍保留。本轮原探针已默认执行、断言仍为first second，没有为制造TDD红撤销既有修复。当前messages_from_response_items对非空reasoning在同一pending buffer按输入顺序push_str，并由assistant/tool-call分组消费。git历史diff、blame及merge-base已确认来源是当前HEAD祖先6bc2d66013c6116a8b2ea2c454fa29f3c854090d（2026-10-27，【fix】修复H-05 Chat工具响应投影归属）；该提交同时移除原probe的ignore并补充平行工具及多reasoning段控制。因此本项记“历史已修复跳过”，本轮新增生产修复0，不重复归并或冒计H05成果；没有修改任何生产、测试、依赖或配置。
+
+**E-H94-02（2026-11-14，当前源码独立验证）**：使用G:/h94-fixtures-20261114专属target，固定Rust1.88.0及标准公共Cargo缓存，隔离HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/XDG/data/managed与insta pending，清继承凭据/代理环境；不调用真实模型。10份源码/Cargo输入在每阶段前后SHA256一致。启动脚本G:/h94-review-20261114.ps1的SHA256为72693E570A8DA9449DE6E78A9CC9471017EFF6C7F580512366EBF4F1FE421918。以下test/clippy均实际附加--target-dir G:/h94-fixtures-20261114/target --locked --offline -j 2。
+
+| 本轮实际命令（补上述共同参数） | 实际结果 |
+|---|---|
+| cargo +1.88.0 test -p deepagent-models --lib client::tests::audit_chat_projection_preserves_all_reasoning_items -- --exact --nocapture --test-threads=1 | exit0，1过/0败/0忽略，230过滤；212.633秒含冷编译 |
+| cargo +1.88.0 test -p deepagent-models --all-features --no-fail-fast -- --quiet --test-threads=2 | exit0，27结果块共352过/0败/9忽略、0过滤；257.983秒含编译；默认执行原probe及现有单段/工具叙述/平行调用与多段reasoning对照，不把ignored当验收 |
+| cargo +1.88.0 clippy -p deepagent-models --all-targets --all-features --no-deps -- -D warnings | exit101，60.657秒；8项既有lib lint，lib test同样报告8项，不相加成16种缺陷；未改或抑制 |
+| cargo fmt --all -- --check（不带共同target/locked/offline/j参数） | exit0，8.510秒 |
+
+原probe日志SHA256=FB954716F1E16BC4C2B5EAA06CAA5C37249F4EF24ED54AE3ABCA16D4A630AB4A，完整Models日志=A6BABB6B7C2A8767BF6FB8A82342DE176E28C271A8DFA41A64D1C3EFA59BA889，strict日志=B94FEC23E43A0B0C83913CFED0D09633387C2E448D393B5E02ECB4A360A48D59。strict具体为chat.rs的3项nonminimal_bool与1项unnecessary_map_or、chat_completions.rs的2项nonminimal_bool、responses.rs的1项unnecessary_map_or、stream_terminal.rs的1项nonminimal_bool；与本轮前源码一致。最终gate的scriptFailure=null、sourceInputsUnchanged/originalsUnchanged=true（SHA256=EA24546ABA4BAC8AF3E90EACD40652E9DE7E18A5A645B77353F3268972CCE93F）。未重跑整个workspace、Runtime、Tauri、前端/UI或真实provider：本轮无实现/测试变化，原probe和所属完整crate已执行；这些未跑范围不借历史结果改称本轮通过。H297完整workspace九败及其它既有失败保留。本项验收限定为原相邻段覆盖及现有Chat投影正常对照，不外推其它非相邻reasoning边界、跨OS或真实供应商效果。
+
+**E-H94-03（2026-11-14，清理与历史跳过关闭）**：PowerShell原生清理仅两项：G:/h94-fixtures-20261114整根及G:/h94-review-20261114.ps1启动脚本。先核绝对路径/祖先/后代零reparse及无活动编译/夹具进程；fixture盘点4560文件、6608793176逻辑字节，启动脚本4821字节。先WhatIf再实际Remove-Item -LiteralPath，exit0；清理脚本SHA256=A3293A89D0754D9A2D05482BDC9D6A1DD308AD088395377B6372A695D67FC95C。真实JSON为reviewedRoots=2、remaining=0、frozenInputsUnchanged/originalsUnchanged=true。随后使用删除前独立保存的可信manifest再次核验：两项均不存在，10份冻结输入、原CLI/用户snap.new/sidecar三份原件的hash、长度、UTC写入/创建ticks及属性一致。原CLI/sidecar SHA256仍453DF899238FE99504B1C30F0DBA22FE793ADD7429C437F0B571A766FCB7535D，用户snap.new仍D514BFE28BA6F207C714DDAD2FEFE9E521B3AA1FD7DF1AF243FA2CC2ED911F17。G盘free观测63374159872→69915242496字节，不将增量与逻辑大小相加或声称独占归因；共享target/debug、node_modules、标准公共缓存及原用户文件未删。临时日志/target/脚本依授权回收，关键命令、结果和hash保留双文。
+
+本轮只提交双文复核记录，不重复提交生产修复、不推送。307唯一行/每行8列重算为247已验收、29历史跳过、10归并、3撤销、17待修含H180授权不修、H66验收保留1、修复中/阻塞0；有效未闭环17=16有效待修+H66。本轮新增修复0、历史跳过1、归并/撤销0；本项剩余0。下一准备H100，优先核SDK握手/JSON-RPC边界的误成功与当前原probe，不先修改代码。全余170–430有效小时仍为未逐项重估的低置信历史分组估算，依据剩余模型参数/Hook/SDK/画布跨层验收；编译、设备、依赖与策略等待另计且无可靠总上界，不承诺精确日期；整个goal保持active。
 
 ### H-95：启动恢复把同一 session 的最新中断原因套用到所有未完成 run
 
