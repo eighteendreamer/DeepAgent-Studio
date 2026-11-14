@@ -13,9 +13,14 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   if (request.method === "initialize") {
     if (request.params.protocolVersion !== 1) process.exit(31);
     if (mode === "rpc-error") send({ jsonrpc: "2.0", id: request.id, error: { code: -32602, message: "synthetic rejection" } });
-    else reply(request.id, result);
+    else if (mode === "envelope") send({ jsonrpc: "2.0", id: request.id, ...result });
+    else reply(request.id, mode === "business-envelope" ? valid : result);
     reply(request.id, valid);
     send({ jsonrpc: "2.0", method: "harness/event", params: { type: "thread.started", threadId: "handshake-barrier", protocolVersion: 1 } });
   } else if (request.method === "audit/count") reply(request.id, { business });
-  else { business++; reply(request.id, { threadId: "t", turnId: "r", status: "ready", threads: [] }); }
+  else {
+    business++;
+    if (mode === "business-envelope") send({ jsonrpc: "2.0", id: request.id, ...result });
+    reply(request.id, { threadId: "t", turnId: "r", status: "ready", threads: [] });
+  }
 });

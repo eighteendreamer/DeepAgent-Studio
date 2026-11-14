@@ -590,7 +590,6 @@ mod audit_tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: initialize must reject an invalid JSON-RPC response envelope"]
     async fn audit_initialize_rejects_response_without_result_or_error() {
         let script = r#"$null = [Console]::In.ReadLine(); [Console]::Out.WriteLine('{"jsonrpc":"2.0","id":1}')"#;
         let mut child = tokio::process::Command::new("powershell.exe")

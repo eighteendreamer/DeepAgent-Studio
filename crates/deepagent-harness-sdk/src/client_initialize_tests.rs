@@ -1,7 +1,150 @@
 //! H-206: handshake result is a gate, not just a JSON-RPC success bit.
+//! H-100: response member presence is validated before that result gate.
 use super::*;
 use serde_json::{json, Value};
 use std::time::Duration;
+
+fn invalid_envelopes() -> Vec<Value> {
+    vec![
+        json!({"result":valid(),"error":null}),
+        json!({}),
+        json!({"error":null}),
+        json!({"result":null,"error":null}),
+        json!({"result":valid(),"error":{"code":-32004,"message":"PRIVATE_PAYLOAD"}}),
+        json!({"result":null,"error":{"code":-32004,"message":"PRIVATE_PAYLOAD"}}),
+        json!({"error":"PRIVATE_PAYLOAD"}),
+        json!({"error":[]}),
+    ]
+}
+
+// Both modes hold stdout open until client EOF. A business test waits for two
+// concurrent requests before emitting the bad frame; late successes must not
+// revive either the connection or the handshake.
+fn envelope_peer(mut body: Value, business: bool) -> (Child, HarnessClient) {
+    let id = if business { 2 } else { 1 };
+    body["jsonrpc"] = json!("2.0");
+    body["id"] = json!(id);
+    let first = json!({"jsonrpc":"2.0","id":1,"result":valid()});
+    let late = json!({"jsonrpc":"2.0","id":id,"result":valid()});
+    let other = json!({"jsonrpc":"2.0","id":3,"result":{"source":"other"}});
+    let reads = if business { 3 } else { 1 };
+    let script = format!(
+        r#"$count=0
+while ($null -ne ($line=[Console]::In.ReadLine())) {{
+ $count++
+ if ({business} -and $count -eq 1) {{ [Console]::Out.WriteLine('{first}') }}
+ if ($count -eq {reads}) {{
+  [Console]::Out.WriteLine('{body}')
+  [Console]::Out.WriteLine('{late}')
+  if ({business}) {{ [Console]::Out.WriteLine('{other}') }}
+ }}
+ if ($count -gt {reads}) {{ exit 9 }}
+}}
+exit 0"#,
+        business = if business { "$true" } else { "$false" },
+        first = first.to_string().replace('\'', "''"),
+        body = body.to_string().replace('\'', "''"),
+        late = late.to_string().replace('\'', "''"),
+        other = other.to_string().replace('\'', "''"),
+    );
+    spawn_peer(&script)
+}
+
+#[tokio::test]
+async fn h100_ambiguous_handshake_envelopes_never_authorize_or_wait_for_eof() {
+    for (index, body) in invalid_envelopes().into_iter().enumerate() {
+        let (mut child, client) = envelope_peer(body, false);
+        let result =
+            tokio::time::timeout(Duration::from_secs(5), client.initialize("h100", "1")).await;
+        let alive = child.try_wait().unwrap().is_none();
+        let initialized = *client.initialized.lock().unwrap();
+        let pending = client.pending.lock().unwrap().len();
+        let decode = match &result {
+            Ok(Err(SdkError::Decode(error))) => Some(error.to_string()),
+            _ => None,
+        };
+        if let Some(cause) = &decode {
+            let clone = client.clone();
+            let late = clone.thread_list().await.unwrap_err();
+            assert!(matches!(late, SdkError::Decode(_)));
+            assert!(!late.to_string().contains("PRIVATE_PAYLOAD"));
+            assert!(!cause.contains("PRIVATE_PAYLOAD"));
+            assert_eq!(client.next_id.load(Ordering::Relaxed), 2);
+        }
+        finish(child, &client).await;
+        assert!(
+            decode.is_some() && alive && !initialized && pending == 0,
+            "invalid envelope {index}: result={result:?}, alive={alive}, initialized={initialized}, pending={pending}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn h100_business_envelopes_settle_pending_and_retire_clones_without_replay() {
+    for (index, body) in invalid_envelopes().into_iter().enumerate() {
+        let (mut child, client) = envelope_peer(body, true);
+        client.initialize("h100", "1").await.unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(client.thread_list(), client.tool_list())
+        })
+        .await;
+        let alive = child.try_wait().unwrap().is_none();
+        let pending = client.pending.lock().unwrap().len();
+        let rejected = matches!(
+            &result,
+            Ok((Err(SdkError::Decode(_)), Err(SdkError::Decode(_))))
+        );
+        if rejected {
+            let (left, right) = result.as_ref().unwrap();
+            assert_eq!(
+                left.as_ref().unwrap_err().to_string(),
+                right.as_ref().unwrap_err().to_string()
+            );
+            let clone = client.clone();
+            let late = clone.thread_list().await.unwrap_err();
+            assert!(matches!(late, SdkError::Decode(_)));
+            assert!(!late.to_string().contains("PRIVATE_PAYLOAD"));
+            assert_eq!(client.next_id.load(Ordering::Relaxed), 4);
+        }
+        finish(child, &client).await;
+        assert!(
+            rejected && alive && pending == 0,
+            "invalid envelope {index}: result={result:?}, alive={alive}, pending={pending}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn h100_null_success_and_rpc_errors_keep_the_connection_usable() {
+    for body in [
+        json!({"result":null}),
+        json!({"result":false}),
+        json!({"result":0}),
+        json!({"error":{"code":-32004,"message":"synthetic rejection"}}),
+    ] {
+        let (child, client) = envelope_peer(body.clone(), true);
+        client.initialize("h100", "1").await.unwrap();
+        let (response, other) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(client.thread_list(), client.tool_list())
+        })
+        .await
+        .unwrap();
+        assert_eq!(other.unwrap().result()["source"], "other");
+        assert!(!client.lifecycle.borrow().is_closed());
+        assert!(client.pending.lock().unwrap().is_empty());
+        finish(child, &client).await;
+        if let Some(expected) = body.get("result") {
+            let response = response.unwrap();
+            assert!(
+                response.is_success(),
+                "null remains a present success member"
+            );
+            assert_eq!(response.result.as_ref(), Some(expected));
+        } else {
+            assert!(matches!(response, Err(SdkError::Rpc { code: -32004, .. })));
+        }
+    }
+}
 
 fn valid() -> Value {
     json!({"protocolVersion":1,"serverName":"synthetic-peer","serverVersion":"1",

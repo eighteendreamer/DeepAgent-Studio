@@ -1,11 +1,76 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { DeepAgent, HarnessRpcError, HarnessProtocolError } from "../dist/index.js";
+import { DeepAgent, HarnessRpcError, HarnessProtocolError, HarnessTransportError } from "../dist/index.js";
 const fixture = fileURLToPath(new URL("./initialize-fixture.mjs", import.meta.url));
 const valid = () => ({ protocolVersion: 1, serverName: "synthetic-peer", serverVersion: "1",
   capabilities: { threadLifecycle: true, streaming: true, interrupt: true,
     steer: true, approval: true, reconnect: true } });
+
+const invalidEnvelopes = [
+  { result: valid(), error: null }, {}, { error: null }, { result: null, error: null },
+  { result: valid(), error: { code: -32004, message: "PRIVATE_PAYLOAD" } },
+  { result: null, error: { code: -32004, message: "PRIVATE_PAYLOAD" } },
+  { error: "PRIVATE_PAYLOAD" }, { error: [] },
+];
+for (const [index, body] of invalidEnvelopes.entries()) {
+  test(`H100 invalid handshake envelope ${index} cannot authorize or use late success`, { timeout: 10000 }, async () => {
+    const agent = peer(body, "envelope");
+    try {
+      await assert.rejects(() => agent.startThread(), (error) => {
+        assert.ok(error instanceof HarnessTransportError);
+        assert.ok(!error.message.includes("PRIVATE_PAYLOAD"));
+        return true;
+      });
+      assert.equal(agent.transport.initialized, false);
+      assert.equal(agent.transport.pending.size, 0);
+      assert.equal(agent.transport.child.exitCode, null, "reject before EOF");
+      const id = agent.transport.nextId;
+      const cause = agent.transport.failure;
+      await assert.rejects(() => agent.startThread(), (error) => error === cause);
+      await assert.rejects(() => agent.transport.request("thread/list", {}), (error) => error === cause);
+      assert.equal(agent.transport.nextId, id, "no late request or automatic retry");
+    } finally { await agent.close(); }
+  });
+  test(`H100 invalid business envelope ${index} settles every pending request`, { timeout: 10000 }, async () => {
+    const agent = peer(body, "business-envelope");
+    try {
+      await agent.transport.initialize({ clientName: "h100", clientVersion: "1", protocolVersion: 1 });
+      const results = await Promise.allSettled([
+        agent.transport.request("thread/list", {}), agent.transport.request("tool/list", {}),
+      ]);
+      assert.ok(results.every((result) => result.status === "rejected"));
+      const cause = results[0].reason;
+      assert.ok(cause instanceof HarnessTransportError);
+      assert.ok(!cause.message.includes("PRIVATE_PAYLOAD"));
+      assert.equal(results[1].reason, cause);
+      assert.equal(agent.transport.initialized, false);
+      assert.equal(agent.transport.pending.size, 0);
+      assert.equal(agent.transport.child.exitCode, null, "reject before EOF");
+      const id = agent.transport.nextId;
+      await assert.rejects(() => agent.transport.request("thread/list", {}), (error) => error === cause);
+      assert.equal(agent.transport.nextId, id);
+    } finally { await agent.close(); }
+  });
+}
+test("H100 valid null/false/zero successes and RPC errors retain the connection", { timeout: 10000 }, async () => {
+  for (const body of [{ result: null }, { result: false }, { result: 0 },
+    { error: { code: -32004, message: "synthetic rejection" } }]) {
+    const agent = peer(body, "business-envelope");
+    try {
+      await agent.transport.initialize({ clientName: "h100", clientVersion: "1", protocolVersion: 1 });
+      if (Object.hasOwn(body, "result")) {
+        assert.equal(await agent.transport.request("thread/list", {}), body.result);
+      } else {
+        await assert.rejects(() => agent.transport.request("thread/list", {}), HarnessRpcError);
+      }
+      assert.equal(agent.transport.initialized, true);
+      assert.equal(agent.transport.failure, undefined);
+      assert.deepEqual(await agent.transport.request("audit/count", {}), { business: 1 });
+    } finally { await agent.close(); }
+  }
+});
+
 const cases = [null, [], "PRIVATE_PAYLOAD", {}];
 for (const version of [0, 2, 999, -1, 1.5, "1", null]) cases.push({ ...valid(), protocolVersion: version });
 for (const field of ["protocolVersion", "serverName", "serverVersion", "capabilities"]) {

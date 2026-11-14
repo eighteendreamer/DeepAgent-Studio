@@ -78,10 +78,29 @@ pub(crate) fn decode_server_line(line: &str) -> Result<WireMessage, ServerLineEr
                 "unsupported JSON-RPC notification version"
             }));
         }
+        // Presence, not Option truthiness: error:null is not an error object,
+        // and result:null is still a success member. Validate before the DTO
+        // decoder erases the distinction between absent and null fields.
+        if object.contains_key("id")
+            && (object.contains_key("result") == object.contains_key("error")
+                || object.get("error").is_some_and(|error| !error.is_object()))
+        {
+            return Err(ServerLineError::Decode(
+                <serde_json::Error as serde::de::Error>::custom(
+                    "invalid JSON-RPC response members",
+                ),
+            ));
+        }
     }
     // Keep the original DTO decoder (including duplicate-field rejection).
     // A Value round trip here would silently collapse repeated wire fields.
-    decode_line(line).map_err(ServerLineError::Decode)
+    let mut message = decode_line(line).map_err(ServerLineError::Decode)?;
+    if let WireMessage::Response(response) = &mut message {
+        if value.get("result").is_some_and(serde_json::Value::is_null) {
+            response.result = Some(serde_json::Value::Null);
+        }
+    }
+    Ok(message)
 }
 
 /// The single notification-to-event projection used by the client reader.
@@ -106,6 +125,53 @@ pub(crate) fn notification_event(
 mod tests {
     use super::*;
     use deepagent_harness_protocol::RpcError;
+
+    #[test]
+    fn h100_live_gate_checks_member_presence_without_narrowing_raw_decode() {
+        for body in [
+            serde_json::json!({}),
+            serde_json::json!({"result":{},"error":null}),
+            serde_json::json!({"result":null,"error":{"code":-32004,"message":"synthetic"}}),
+            serde_json::json!({"error":null}),
+        ] {
+            let mut frame = body;
+            frame["jsonrpc"] = "2.0".into();
+            frame["id"] = 1.into();
+            let line = frame.to_string();
+            assert!(
+                decode_line(&line).is_ok(),
+                "raw DTO compatibility is unchanged"
+            );
+            assert!(matches!(
+                decode_server_line(&line),
+                Err(ServerLineError::Decode(_))
+            ));
+        }
+        for result in [
+            serde_json::Value::Null,
+            serde_json::json!(false),
+            serde_json::json!(0),
+            serde_json::json!(""),
+            serde_json::json!([]),
+            serde_json::json!({}),
+        ] {
+            let line = serde_json::json!({"jsonrpc":"2.0","id":1,"result":result}).to_string();
+            let WireMessage::Response(response) = decode_server_line(&line).unwrap() else {
+                panic!("expected validated response");
+            };
+            assert!(response.is_success());
+            assert_eq!(response.result, Some(result));
+        }
+        let WireMessage::Response(raw) =
+            decode_line(r#"{"jsonrpc":"2.0","id":1,"result":null}"#).unwrap()
+        else {
+            panic!("expected raw response");
+        };
+        assert!(
+            raw.result.is_none(),
+            "raw Option DTO semantics remain unchanged"
+        );
+    }
 
     #[test]
     fn h101_gate_distinguishes_corrupt_frames_from_version_rejection_without_raw_decode_changes() {

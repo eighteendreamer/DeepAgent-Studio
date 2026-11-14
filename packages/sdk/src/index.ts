@@ -528,6 +528,18 @@ class StdioTransport implements RpcTransport {
     if (!("id" in message) || message.id === undefined || message.id === null) {
       return;
     }
+    // Validate member presence before removing a pending request. A null
+    // result is valid success data; a null error is not a JSON-RPC error.
+    const response = message as RpcResponse;
+    const hasResult = Object.hasOwn(response, "result");
+    const hasError = Object.hasOwn(response, "error");
+    const error = response.error;
+    if (hasResult === hasError || (hasError &&
+      (!error || typeof error !== "object" || Array.isArray(error) ||
+        !Number.isInteger(error.code) || typeof error.message !== "string"))) {
+      this.failPending(new HarnessTransportError("app-server emitted invalid JSON-RPC response envelope"));
+      return;
+    }
     if (typeof message.id !== "number") {
       return;
     }
@@ -536,7 +548,6 @@ class StdioTransport implements RpcTransport {
       return;
     }
     this.pending.delete(message.id);
-    const response = message as RpcResponse;
     if (response.error) {
       request.reject(
         new HarnessRpcError(
