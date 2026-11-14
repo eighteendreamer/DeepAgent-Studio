@@ -17440,6 +17440,8 @@ H295本机修复、E03所列验收及代码提交余0；E04本轮C盘251,443,695
 
 **当前修复状态：已修复并验收（2026-11-14，仅所列Windows本机、合成目录/transport、临时SQLite、真实CLI pipe及桌面编译范围）。单一resolver按字段保留已知容量；10项定向、Models/Context419项和相应消费方验证通过。完整workspace五败、前端一败及strict旧8+2保留，不称全仓全绿；清理已核实，独立提交见E06。下文历史发现及原失败证据保留。**
 
+**E-H296-06（独立提交回填，2026-11-14）**：8份本项Rust/TypeScript实现/回归及当时双文已按白名单独立提交`e9c55caba72e8a8f21d5636e6c3cabaeed207ec1`（`【fix】逐字段保留模型容量与混合来源`），共10文件；未amend、推送或建PR。staged路径集合/diff/敏感标记核对通过，306唯一编号及8列完整，只有H296主行变化，其余305主行逐字不变；统计245/28/10/3/19/1与顶部相符。未提交产物/日志/一次性脚本或原用户未跟踪项，19份受测输入与E04/E05一致。此次仅普通双文回填真实hash，不新增第二次修复；E01原失败、E04全仓五败及strict8+2、前端TodoReminderProgress失败和全部未验边界继续保留。代码/验收/清理/提交闭环，本项剩余0，下一准备H297，整个goal仍active。
+
 **E-H296-05（清理实证与限定验收，2026-11-14）**：自动删除在CreateProcess前被本机策略拒绝，进程未启动、零删除，未重试/升权/换工具绕过。仅准备并AST检查用户终端脚本`cleanup-h296.ps1`，SHA256=`FC72649B2875E50673BC15F162C287595CE3DEB2F448F1EA0E1C06AAC83C8BC8`。用户实际执行回传reviewedRoots=2、remaining=0及三项原件/冻结输入保护true；随后独立确认`G:/h296-fixtures-20261114`与`G:/Code_Warehouse/DeepAgent-Studio/apps/desktop/dist`两根均不存在，19份冻结输入hash零变化，原CLI/snap.new hash及原UTC写入/创建ticks、长度、属性一致，原sidecar hash/长度/属性一致，node_modules保留。删除前fixture2411文件/1,330,321,321逻辑字节、dist3376文件/192,931,141字节，合计1,523,252,462字节约1.419GiB，非磁盘空闲增量实测。两根及祖先/后代均核实无reparse，未进入链接目标；没有删除共享target/debug、原sidecar、依赖缓存、源码、用户文件或其它H目录。
 
 本次只清理可再生隔离数据/CLI测试副本/dist/日志/一次性脚本；E01～04的原失败、结果、命令与hash已存双文，不承诺被清理的原日志仍在。不存在本轮独立h296 target，不为清理本项误删原共享构建树。根因及实现收敛于现有ModelCapabilityResolver→ModelConfig/ModelClient→ContextPolicy，原完整/全缺省对照保持，旧H157 effort/modalities/选型不扩改。混合容量以原source字段新增mixed及原fallback_reason明确，仓外穷尽枚举消费者需适配；无依赖、SQL迁移、配置新增或权限放宽。E04真实供应商/32位/其它OS/GUI/长历史压缩等未验限制仍保留，旧五项workspace/一项前端/strict 8+2失败不改绿。
