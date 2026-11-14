@@ -539,7 +539,7 @@ pub(crate) fn sequence_of_response_item_tail(
                 .iter()
                 .map(|(_, item)| item)
                 .zip(&tail)
-                .all(|(item, wanted)| response_items_match(item, wanted))
+                .all(|(item, wanted)| response_items_match_with_untagged_user(item, wanted))
         })
         .map(|window| window[0].0)
         .collect();
@@ -573,6 +573,40 @@ fn response_items_match(item: &ResponseInputItem, wanted: &ResponseInputItem) ->
             ) => a == b,
             _ => user_tag(wanted).is_some_and(|tag| user_tag(item).as_ref() == Some(&tag)),
         }
+}
+
+/// Tail matching additionally accepts the live untagged user projection for a
+/// tagged durable item. Single-item lookup keeps its historical first-match
+/// semantics, while the caller still requires a unique complete tail.
+fn response_items_match_with_untagged_user(
+    item: &ResponseInputItem,
+    wanted: &ResponseInputItem,
+) -> bool {
+    if response_items_match(item, wanted) {
+        return true;
+    }
+
+    fn user_parts(
+        candidate: &ResponseInputItem,
+    ) -> Option<(&str, &[deepagent_core::message::MessageAttachment])> {
+        match candidate {
+            ResponseInputItem::Message { role, content } if role == "user" => Some((content, &[])),
+            ResponseInputItem::InputMessage {
+                role,
+                content,
+                attachments,
+            } if role == "user" => Some((content, attachments)),
+            _ => None,
+        }
+    }
+    match (user_parts(item), user_parts(wanted)) {
+        (Some((a, a_attachments)), Some((b, b_attachments))) => {
+            let a_body = without_user_tag(a);
+            let b_body = without_user_tag(b);
+            a_attachments == b_attachments && a_body == b_body && (a_body == a || b_body == b)
+        }
+        _ => false,
+    }
 }
 
 /// The event slice the model should see, plus the summary standing in for the
@@ -1029,6 +1063,200 @@ pub(crate) fn mcp_instructions_delta(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn h307_native_tail_resolves_an_untagged_current_user_projection() {
+        use deepagent_core::clock::SystemClock;
+        use deepagent_core::response_item::ResponseItem;
+        use deepagent_persistence::event_store::EventStore;
+        use deepagent_persistence::Database;
+        let db = Database::open_in_memory().unwrap();
+        let clock = SystemClock;
+        let mut session = deepagent_session::Session::create(&db, &clock, None).unwrap();
+        session
+            .append_response_item(ResponseItem::Message {
+                role: "user".into(),
+                content: "earlier".into(),
+            })
+            .unwrap();
+        let kept = session
+            .append_response_item(ResponseItem::Message {
+                role: "assistant".into(),
+                content: "kept answer".into(),
+            })
+            .unwrap();
+        let current = ResponseItem::Message {
+            role: "user".into(),
+            content: "current task".into(),
+        };
+        session.append_response_item(current.clone()).unwrap();
+        let events = EventStore::new(&db).load_session(session.id()).unwrap();
+        let tail = vec![
+            ResponseItem::Message {
+                role: "assistant".into(),
+                content: "kept answer".into(),
+            },
+            current,
+        ];
+        assert_eq!(
+            super::sequence_of_response_item_tail(&events, &tail),
+            Some(kept.sequence)
+        );
+        let mut changed = tail.clone();
+        changed[1] = ResponseItem::Message {
+            role: "user".into(),
+            content: "different task".into(),
+        };
+        assert_eq!(
+            super::sequence_of_response_item_tail(&events, &changed),
+            None
+        );
+        changed[1] = ResponseItem::Message {
+            role: "user".into(),
+            content: "current task\n[id:u99]".into(),
+        };
+        assert_eq!(
+            super::sequence_of_response_item_tail(&events, &changed),
+            None,
+            "two explicit, unequal identities must not match by text"
+        );
+    }
+
+    #[test]
+    fn h307_untagged_ambiguous_tail_is_rejected() {
+        use deepagent_core::clock::SystemClock;
+        use deepagent_core::response_item::ResponseItem;
+        use deepagent_persistence::event_store::EventStore;
+        use deepagent_persistence::Database;
+        let db = Database::open_in_memory().unwrap();
+        let clock = SystemClock;
+        let mut session = deepagent_session::Session::create(&db, &clock, None).unwrap();
+        let item = ResponseItem::Message {
+            role: "user".into(),
+            content: "same body".into(),
+        };
+        session.append_response_item(item.clone()).unwrap();
+        session.append_response_item(item.clone()).unwrap();
+        let events = EventStore::new(&db).load_session(session.id()).unwrap();
+        assert_eq!(
+            super::sequence_of_response_item_tail(&events, &[item]),
+            None
+        );
+    }
+
+    #[test]
+    fn h307_untagged_tail_preserves_attachment_identity_and_single_item_lookup() {
+        let attachment = deepagent_core::message::MessageAttachment {
+            id: "synthetic-image".into(),
+            kind: "image".into(),
+            media_type: Some("image/png".into()),
+            path: Some("not-read.png".into()),
+            sha256: Some("a".repeat(64)),
+        };
+        let current = ResponseInputItem::InputMessage {
+            role: "user".into(),
+            content: "inspect image".into(),
+            attachments: vec![attachment],
+        };
+        let events = vec![event(
+            SessionId::nil(),
+            7,
+            EventPayload::ResponseItemAppended {
+                item: current.clone(),
+            },
+        )];
+        assert_eq!(
+            sequence_of_response_item_tail(&events, &[current.clone()]),
+            Some(7)
+        );
+        assert_eq!(sequence_of_response_item(&events, &current), Some(7));
+        let mut changed = current.clone();
+        if let ResponseInputItem::InputMessage { attachments, .. } = &mut changed {
+            attachments[0].sha256 = Some("b".repeat(64));
+        }
+        assert_eq!(sequence_of_response_item_tail(&events, &[changed]), None);
+        assert_eq!(
+            sequence_of_response_item_tail(
+                &events,
+                &[ResponseInputItem::Message {
+                    role: "user".into(),
+                    content: "inspect image".into(),
+                }]
+            ),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn h307_native_compactor_adopts_untagged_current_input_across_cold_replay() {
+        use crate::context_runtime::HookedReactiveContextCompactor;
+        use crate::session_memory::testing::{scripted_client, ScriptedTransport};
+        use deepagent_runtime::{CompactionTrigger, ReactiveContextCompactor};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("session.db");
+        let db = std::sync::Arc::new(deepagent_persistence::Database::open(&path).unwrap());
+        let clock = deepagent_core::clock::SystemClock;
+        let mut session = deepagent_session::Session::create(&db, &clock, None).unwrap();
+        session
+            .append_response_item(ResponseInputItem::Message {
+                role: "user".into(),
+                content: "old detail ".repeat(15_000),
+            })
+            .unwrap();
+        for index in 0..6 {
+            session
+                .append_response_item(ResponseInputItem::Message {
+                    role: if index % 2 == 0 { "user" } else { "assistant" }.into(),
+                    content: format!("recent {index}: {}", "tail ".repeat(2_200)),
+                })
+                .unwrap();
+        }
+        let store = deepagent_persistence::event_store::EventStore::new(&db);
+        let mut live = response_items_from_events(&store.load_session(session.id()).unwrap());
+        let current = ResponseInputItem::Message {
+            role: "user".into(),
+            content: "current untagged task".into(),
+        };
+        session.append_response_item(current.clone()).unwrap();
+        live.push(current);
+        let sid = session.id();
+        let compactor = HookedReactiveContextCompactor::new(
+            scripted_client(vec![ScriptedTransport::text(
+                r#"{"goal":"current task","completed":["earlier work"]}"#,
+            )]),
+            "deepseek-flash".into(),
+            std::sync::Arc::new(deepagent_hooks::HookRegistry::new()),
+            sid,
+            db.clone(),
+        );
+        let compacted = compactor
+            .compact_response_items(None, &live, CompactionTrigger::ContextOverflow)
+            .await
+            .unwrap()
+            .expect("valid summary must be adopted");
+        assert!(compacted.tokens_after < compacted.tokens_before);
+        let mut expected = compacted.response_items.unwrap();
+        deepagent_runtime::tag_response_user_items(&mut expected);
+        let after = store.load_session(sid).unwrap();
+        assert!(after.iter().any(|event| matches!(
+            event.payload,
+            EventPayload::ContextCompacted {
+                summary: Some(_),
+                first_kept_sequence: Some(_),
+                ..
+            }
+        )));
+        assert_eq!(response_items_from_events(&after), expected);
+        drop(compactor);
+        drop(session);
+        drop(db);
+        let reopened = deepagent_persistence::Database::open(&path).unwrap();
+        let cold = deepagent_persistence::event_store::EventStore::new(&reopened)
+            .load_session(sid)
+            .unwrap();
+        assert_eq!(response_items_from_events(&cold), expected);
+        assert!(cold.len() > live.len(), "raw events remain append-only");
+    }
+
     use super::*;
 
     #[test]
