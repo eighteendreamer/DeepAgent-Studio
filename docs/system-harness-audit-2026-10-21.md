@@ -18582,3 +18582,10 @@ H307按E03所列Windows本机范围已修复并验收，代码、回归、清理
 完整workspace严格Clippy真实exit101/84.24秒，止于未改deepagent-tools/src/lib.rs:246的既有unnecessary_map_or；未改旧lint或添加allow，日志SHA256=E6C1D36612DC90244F60E61C443E2D53B763B301DDB992C0B8670F1A04972281。当前CLI构建exit0/237.48秒，完整driver finally恢复共享`target/debug/deepagent.exe`，保护核验原CLI、Tauri sidecar、用户snap.new与`.git/h114-unaccepted-candidate.patch`的hash、长度、创建/写入ticks、属性全部true；当前CLI构建日志SHA256=CCB58DB42925D60EA14E5301F91D343B3A0622BC5304DE04F7E1AE92D4F5A860。28份冻结输入在各阶段前后不变；未运行真实模型/凭据、前端/UI或Tauri缺离线依赖路径，不把全仓6败/strict失败归于本项。
 
 H203变更范围仅`deepagent-models/src/chat.rs`、`client.rs`及`responses_input_role_audit.rs`，没有依赖、core持久化、协议DTO、工具output、图片规则、权限、SQL或前端变化。根cargo fmt与git diff --check均通过。该项达到当前本机离线范围的功能验收；待独立提交后普通回填hash，不amend/推送/PR。专属fixture清理需先停止所有cargo/rustc并运行仅删除本根的安全脚本，完成前不宣称清理闭环。新增验收计1，累计258；历史跳过29、归并10、撤销3、待修6（含H180授权不修）、修复中0、H66验收保留1；有效未闭环7。下一项按台账为H114；总余170–430有效小时仍是未逐项重估的历史低置信区间，编译/设备/依赖/人工等待另计。
+
+
+**E-H203-04（2026-11-15，独立提交与安全清理闭环）**：修复提交为`934df3287f88a2df4af4f53b799d984a59b8ccba`（【fix】校验Responses消息角色边界），仅3份Models源码/测试及两份双文；未包含已有AppCore状态、任何用户untracked、fixture或共享target/node_modules。提交前暂存白名单、git diff --cached --check及307行/307唯一ID台账校验通过；未amend、推送或创建PR。
+
+提交后执行`pwsh -NoProfile -File G:/h203-fixtures-20261115/cleanup-h203.ps1`：仅删除本项一根fixture，先核祖先/全后代零reparse、活动构建零，再WhatIf后Remove-Item；实际清理13870文件、11414412479逻辑字节，脚本exit0，最终`remaining=0`、`protectedInputsUnchanged=true`。共享target/debug、node_modules、公共Cargo缓存、用户源码/文件及已有未跟踪项未删；清理脚本和日志随fixture回收，摘要、关键日志hash与保护结果已写入本报告和进度台账。普通权限执行，无管理员token或UAC，不冒称最高管理员。
+
+H203现在完成本机Windows离线功能验收与专属产物清理；未验真实供应商/凭据、其他OS、Tauri/UI和长期压力范围保留。累计258项已修复验收，历史跳过29、归并10、撤销3、待修6（含H180授权不修）、修复中0、H66验收保留1，有效未闭环7；下一项H114。全余170–430有效小时继续沿未逐项重估的低置信历史区间，编译/设备/依赖/人工等待另计。
