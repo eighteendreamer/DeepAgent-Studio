@@ -18627,3 +18627,10 @@ H114完成当前Windows离线范围：后台子Agent成功真实hook、typed成�
 提交后执行`pwsh -NoProfile -File G:/h172-fixtures-20261115/cleanup-h172.ps1`：仅删除本项一根fixture，先核全后代零reparse、活动Cargo/rustc/link零，再WhatIf后Remove-Item；实际清理4747文件、2568984392逻辑字节，exit0，最终`remaining=0`、`protectedInputsUnchanged=true`。共享target/debug、node_modules、公共Cargo缓存、源码和用户未跟踪项未删；普通权限执行，无管理员token或UAC，不冒称最高管理员。
 
 H172完成当前Windows离线范围：数值request/defaults、text.format request/defaults、ordinary/cancel-aware和合法边界均在最终Responses provider seam验证；未验完整workspace、真实供应商/模型、Tauri/UI、其它OS和长期压力，保留为残余限制。累计260项已修复验收，历史跳过29、归并10、撤销3、待修4（含H180授权不修）、修复中0、H66验收保留1；有效未闭环5。下一项H201；全余170–430有效小时仍沿未逐项重估的低置信历史区间，编译/设备/依赖/人工等待另计。
+
+
+**E-H201-04（2026-11-15，独立提交与清理闭环）**：修复提交为`d6180e6e5065a998bf1cd0521e7dfbb947217fac`（【fix】保持画布缩放中心锚定），仅3个生产TSX/测试脚本及两份双文；未包含已有AppCore修改、任何用户untracked、fixture或node_modules。提交前暂存白名单、diff检查与构建前冻结输入核对通过；未amend、推送或创建PR。
+
+提交后执行`pwsh -NoProfile -File G:/h201-fixtures-20261115/cleanup-h201.ps1`：仅清理本项fixture和本次直接Vite构建生成的桌面`dist`两根，先核全后代零reparse、无活跃本项Node/Vite进程，再WhatIf后Remove-Item；fixture 5文件/60177逻辑字节，dist 3376文件/192931179逻辑字节，exit0，最终`reviewedRoots=2`、`remaining=0`、`frozenInputsUnchanged=true`。未删除node_modules、共享target、源码或用户未跟踪项；普通权限执行，无管理员token或UAC，不冒称最高管理员。
+
+H201完成当前本机handler数学、TypeScript、Vite构建和专属产物清理范围；未验Tauri/WebView像素、真实GUI交互、其它OS和长期压力。累计261项已修复验收，历史跳过29、归并10、撤销3、待修3（含H180授权不修）、修复中0、H66验收保留1；有效未闭环4。下一项H202；全余170–430有效小时仍沿未逐项重估的低置信历史区间，编译/设备/依赖/人工等待另计。
