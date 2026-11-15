@@ -3322,6 +3322,7 @@ E-H65-20261027-16（独立提交与真实hash回填）：生产修复、默认�
 - E-H66-07末次：AppCore搜索lib11/0/0，no-web check与Tauri check均0；修正H66新增host import的feature边界后no-web无warning。AppCore lib scoped clippy原生0但保留6个旧warning，非strict通过。fmt/diff-check0；306唯一台账行一致。修改后的整个workspace未重跑、DeepSeek后续实际HTTP凭据生命周期及最终验收未齐，不关闭H66。
 - E-H66-08：用户要求及时标记代码已修复并收尾，当前状态改为“已修复（验收保留）”，不计入216项完整验收，也不宣布整个任务完成。DeepSeek换Key/退出到真实HTTP的单条端到端组合、修改后完整workspace、Tauri实际窗口/IPC及最终跨入口穷尽复核保留；已有各层真实测试与失败记录继续有效，不把失败写成通过。源码/测试/双文独立提交，不推送；可再生产物清理及commit回填另记。
 - E-H66-08提交结果：代码/测试/双文52文件提交`557c877f8a75b6b002e3f6472d9425575e1a53b2`；收尾快速前端9/0、fmt/diff-check0。默认CLI/用户快照恢复且哈希复核。两精确任务目录只读统计约59.42GiB，清理命令被策略在CreateProcess前拒绝，零文件删除，未换方式规避；目录、字节数与未验范围见台账，不把清理说成已完成。
+- E-H66-09（2026-11-16，本机离线复核）：固定Rust1.88并隔离用户配置后，Builtins web_search 26/0/0、AppCore web_search 11/0/0、Kernel `search_capability::` 6/0/0、桌面设置/摘要/hover 12/0/0。未隔离配置的首次Kernel失败归因为外部未知模型`fable`与一次取消观察超时，隔离后全组通过；不改生产/测试、不将该复核扩大为真实供应商或Tauri验收。Builtins strict no-deps clippy仍有既有6项诊断；新follow-up target及原H66产物清理再次被CreateProcess策略拒绝，零删除。H66继续保持“已修复（验收保留）”，不新增完整验收计数。
 
 ### H-67：当前轮图片未进入实时模型 Surface，原生镜像也丢附件，已有会话的图片在下一轮仍不出现
 

@@ -9852,6 +9852,8 @@ E07末次补验：同一`$build`的`cargo test --target-dir $build -p deepagent-
 
 清理前实际核对默认CLI SHA256与E07一致、用户原`.snap.new`与备份哈希一致，未发现Cargo/rustc或上述目录中的测试进程；两个清理根均为已解析的精确绝对路径且非reparse根。只读统计：`G:\Code_Warehouse\DeepAgent-Studio\target\h66-repair-20261110` 29,115文件、61,522,433,118字节（57.30GiB）；`G:\h66-fixtures-20261110` 6,020文件、2,280,313,293字节（2.12GiB），合计约59.42GiB。随后含“先检查嵌套reparse点，再精确Remove-Item”的PowerShell清理命令在CreateProcess前被本机策略拒绝，**脚本未启动，零文件删除**；不换API/脚本/权限规避、不称已释放空间。两目录仍在，供用户本机策略允许后清理，不能删除其父目录、默认target/debug、全局Cargo缓存或用户文件。原失败日志目前仍在原target内；本文已保留关键失败原文，即便后续删除可再生产物也不删除审计历史。
 
+**E-H66-09（2026-11-16，本机离线复核；不改变验收保留状态）**：为确认提交后代码仍可复现，在隔离配置目录且固定Rust1.88下重跑现有搜索回归。Builtins web_search：26/0/0；AppCore web_search：11/0/0；Kernel `search_capability::`：6/0/0；前端设置/摘要/hover：12/0/0。首次未隔离用户配置时Kernel组出现5项失败，其中4项是外部配置残留的未知模型`fable`，另1项是取消观察超时；未改测试或生产代码，隔离HOME/APPDATA/TEMP后重跑全部通过。Builtins strict no-deps clippy仍被既有6项非本项诊断阻断。新建的`target/h66-followup-20261116`清理命令再次被本机CreateProcess策略拒绝，未换方式删除；该产物及原H66两根目录的策略阻断继续保留，不声称空间已释放。
+
 ## H-152 原生工具发现适配（已修复并验收，2026-11-10，限E04本机范围）
 
 **E-H152-01**：原审计探针经当前正式ModelClient显式执行仍0/1失败；输出现在为Ok(Response{output_items:[]})而非历史空assistant item，静默丢失根因仍成立。正常stream组28/0，不视为本项已修复。命令、耗时、官方链接、参考实现及缺项详见原审计H152同名E01，双文状态均为阻塞待处理。
