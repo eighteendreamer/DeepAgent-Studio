@@ -4,7 +4,7 @@
 
 用户已授权按本报告逐项进行本地代码修复与测试；已修复、撤销和归并条目跳过，不重新计数。分析阶段完成不再是当前总体任务的完成状态。每项完成后更新原项状态、保留失败证据、独立提交并汇报验收与剩余工时。本轮不操作真实用户文件或外部服务。
 
-**当前续接（2026-11-15）**：307唯一台账：251验收、29历史跳过、10归并、3撤销、12待修含H180、H106阻塞待处理1、H66验收保留1、修复中0，有效未完整闭环13。H105已按E-H105-01～02闭环，代码8b89b9d7、双文687a2678；strict旧告警与工具链fmt缺失保留。H106两路分类缺失已红测，尚无生产修复；原生分类或完整Claude语义的关键选择连续三轮未获答复，详E-H106-03。历史汇总按原日期保留。
+**当前续接（2026-11-15）**：307唯一台账：252验收、29历史跳过、10归并、3撤销、12待修含H180、H66验收保留1、修复中/阻塞0，有效未完整闭环12。H106已按用户指定DeepSeek Harness原则完成本地结构化错误适配、本机回归及清理，详E-H106-04～06；官方该版本不支持StopFailure，不冒称官方原样或Claude完整兼容。完整workspace5462过7败131忽略、strict失败保留；H297/H98交叉红测下一轮独立复核，未混修或提前改变原项状态。历史失败与计数快照保留。
 
 **历史唯一台账（2026-11-12，H107验收补强/提交/清理已闭环）**：306行233已修复并验收、28历史跳过、10归并、3撤销、31待修含H180授权不修、0修复中/阻塞、1验收保留H66。30有效待处理加H66共31项有效未完整闭环。本轮恢复H107验收关闭1、新增生产修复0；原生产64f9d169不变，补强test提交629a42784ca4bf080f53ab19139761adeb7aff17，hash/清理回填见E17。SDK完整默认/全特性各89/0/5、CLI同宿主/busy及AppCore/原probe过，strict依赖旧失败及未重跑范围保留，详原项及[台账](system-harness-repair-progress.md)。非全系统全绿、不推送，整个任务未完成。
 
@@ -5021,7 +5021,7 @@ AppCore `cargo clippy -p deepagent-app-core --all-targets --no-deps --offline -j
 
 ### H-106：StopFailure hook 缺少必需的 error 分类
 
-**当前状态：阻塞待处理（2026-11-15，E-H106-01～03）。** Stop拒绝及最终供应商失败两路缺字段均在隔离环境复现；尚无生产修复或验收提交，分类契约仍待用户选择，不以替代方案擅自关闭。
+**当前状态：已修复并验收（2026-11-15，仅E-H106-04～06所列本机离线原生扩展范围）。** 用户已指定参考DeepSeek Harness并复现；本地两路typed错误、唯一serializer及正式消费回归通过，完整回归七败和strict残余原样保留，清理已闭环。不宣称Claude schema兼容或官方已有该hook实现；外部Rust消费者适配注意及未验范围见E04～06。
 
 **级别：低（P3，条件性 hooks 事件契约缺陷）；触发条件：已授权项目配置 `Stop` hook 拒绝候选答复，且同时配置 `StopFailure` hook。** 未配置这两个 hook 或 Stop 未拒绝时不触发。
 
@@ -5044,6 +5044,32 @@ provider-classification-red-v2.log SHA256=647F9FE2B9D56E71B0159B13F4E5235D5DABA4
 **E-H106-03（2026-11-15，契约选择阻塞审计）**：原契约提问轮、供应商补充红测轮及本轮三个连续goal轮均未收到用户对原生分类/完整Claude语义的答复。前两轮有实际进展，分别建立Stop拒绝和最终Provider失败的真实payload反例；本轮只读复核已有结果、工作树及进程，cargo/rustc实际活动数0，不将等待对话或已终态进程当运行中。代码diff仍仅chat_service.rs的11行测试断言/诊断，无生产修改；原用户未跟踪项只列名保留。接下来的typed输入、对外分类与触发语义实施取决于该选择：不把本地hook拒绝伪造成Claude模型错误，也不未经确认删除现有拒绝通知，不能靠更窄契约、降低断言、重复测试或跳去其他H来绕过决策。
 
 因此H106由修复中转阻塞待处理，整个goal按连续三轮阻塞规则登记blocked，非paused或complete；解除条件是用户回答E01已发出的契约问题。已有两路红测、13份源manifest和本轮fixture暂留供续接；11行测试补强继续未提交WIP，本轮仅提交双文准备/阻塞记录，不宣称修复、不推送。完整相关crate/workspace/lint及验收后清理未执行；等待期间不空跑构建，也不删除将继续复用的本项产物或任何用户/共享缓存。台账仍307唯一行/8列，251验收、29历史跳过、10归并、3撤销、12待修含H180、H106阻塞1、H66保留1、修复中0；本轮新增修复/验收/历史跳过/归并/撤销均0，有效未闭环13不变。下一步仍H106，2–6有效小时及全余170–430有效小时均沿用E01低置信旧估，人工/编译/设备/依赖等待另计，未重估或承诺日期。
+
+**E-H106-04（2026-11-15，用户指定官方参考、真实复现及候选验证；非最终验收）**：用户明确要求“参考deepseek harness的实现，看看官方是怎么做的，然后复现”。据此续接H106，不再重复索要原生/Claude抽象选项。核对本地参考HEAD=5badb15009ae1756c3afe0ae0cef1faafc290ccc、版本0.2.1-alpha.1、MIT许可，所涉源码无改动；官方GitHub同一commit的[hooks说明](https://github.com/deepseek-ai/deepseek-harness/blob/5badb15009ae1756c3afe0ae0cef1faafc290ccc/packages/hooks/hooks-claude-code/README.md#known-limitations-and-deferred-work)亦明确StopFailure不受支持，config.ts白名单未含该事件。不能称已找到可照搬的官方StopFailure；未核实最新发布版本，不把本地快照当最新官方版本。其Stop在agent/turn-stopping以steer促使同轮下一步；Provider adapter保留LlmFailure结构事实，agent/request-error处理恢复，未恢复才将失败写入turn/end，二者没有混成同一API错误枚举。
+
+在隔离HOME/PROFILE/AppData/TEMP下，使用已安装Node22.22.1与参考现有依赖，直接调用官方config.ts/providerError：Stop注册、StopFailure不注册；合成401/402/429/400/500分别得到AUTH/QUOTA/RATE_LIMIT/INVALID_REQUEST/SERVER及真实status，实际exit0。随后按参考自己的Vitest源码图执行request-error.spec.ts，4过0败；contract-regressions.spec.ts按steering和finish-error组筛选，4过0败40过滤，验证同轮继续、AUTH/status/retry-delay/request-id保留、ABORTED与UNKNOWN及无伪造成功消息。没有把40过滤项或Windows默认排除的POSIX hooks suite计为通过，没有安装依赖或访问模型/凭据/内网。自写直接runtime回放首次因Windows import绝对路径非file URL失败，第二次因参考已有lib产物混版本缺CallId导出失败，均0测试执行；停止混用lib路线，改用参考既有源码Vitest，不修改参考产物/配置或把加载失败当业务反例。日志official-parser-provider、official-request-error-tests、official-stop-error-contract-tests均留本项fixture。
+
+**本地适配边界**：只借鉴上述原生结构化失败及继续反馈原则，不复制参考业务代码或因其不支持就删除本系统已验收的H117通知。新增HookData::StopFailure和typed StopFailureError：hook_rejection携带BeforeResponse/Stop真实gate及message，provider直接保留CoreError::Provider的message/code/status/retry_after_ms/request_id；缺失可选事实不造0或误标具体供应商类别。本系统保留原provider code，没有额外移植官方Messages协议的AUTH等分类、替换Responses适配器或更改重试策略。唯一build_hook_payload为command/HTTP/prompt/agent/MCP同样生成error对象和error_format=deepagent.stop_failure.v1，legacy content逐字保留；非匹配事件/point和旧Response上下文不伪造错误信息。设置页sample同步typed输入，三处原派发点同步真实原因；事件触发频率、取消优先、H117唯一失败终态及hook异常保留原Provider原因均不改变。外部Rust消费者若依赖旧Response匹配StopFailure数据须适配新variant；原custom Response仍可用但无新增error。此为明确版本化的DeepAgent原生扩展，不是Claude error字符串枚举，也不是官方原样StopFailure。
+
+原两路payload红保留；新增typed carrier但尚无序列化实现时，Hooks h106组真实1过2败0忽略（57.52秒含编译），分别缺error_format和error对象；随后补唯一serializer和owner传参。候选16份Rust/Cargo/工具链输入冻结且6阶段末尾哈希一致：Hooks all-targets/all-features共83单元+5 cancellation+8 dedup+8 once全部通过；Runtime stop_failure_lifecycle 4/0，真实保留可选Provider事实/legacy文本、普通Agent错误/取消零派发及hook异常不盖原cause；Runtime gate组1/0覆盖两gate的Deny/Ask四组合并正常重试完成，原Stop测试1/0。AppCore默认stop_failure组3/0，含真实PowerShell Stop拒绝与Provider失败payload及设置sample；另settings exact组1/0是重复项，不累计为第4项。原H106 probe已取消ignore，按用户指定参考原则核验native对象的精确origin/gate/message，不再要求一个伪造Claude错误字符串。35.17/125.31/40.78/1.28/176.07/1.83秒为六阶段耗时，候选全通过不等于全仓通过。
+
+当前实现/测试无修复commit，计数不增，用户未跟踪项不读改/暂存；完整workspace前置当前CLI构建及全仓/strict单一串行driver已启动，16份输入仍冻结。原共享CLI=453DF899238FE99504B1C30F0DBA22FE793ADD7429C437F0B571A766FCB7535D，先备份后核hash供SDK临时使用，只有finally实际校验恢复后才能称归还；原用户snap.new与sidecar仅hash/元数据保护，insta真实INSTA_PENDING_DIR重定向且INSTA_UPDATE=no，不放宽快照断言、不删除原件。没有前端或Tauri command/TS类型/权限/SQL/依赖变化，未运行前端构建/UI、真实provider或其他OS。完整结果、严格lint、独立提交与安全清理待收齐，本项暂不关闭；本轮新增验收/跳过/归并/撤销均0，有效未闭环13，H106改修复中1/阻塞0。剩余工时沿E01低置信口径，等待另计。
+
+**E-H106-05（2026-11-15，完整回归、残余失败及恢复核验）**：16份冻结输入未变，`cargo +1.88.0 build -p deepagent-cli --target-dir G:/h106-fixtures-20261115/target --locked --offline -j 2`实际exit0/145.35秒。SDK按仓内真实cli_binary路径消费共享target/debug/deepagent.exe，driver以本次产物临时发布且核SHA256=EE19F3DF740794F7A2146C4AC93C2058DF38B2932B4E0A8FE858967C5FC09544，不使用原旧CLI冒充当前消费者。完整`cargo +1.88.0 test --workspace --target-dir G:/h106-fixtures-20261115/target --locked --offline --no-fail-fast -j 2 -- --quiet --test-threads=2`实际exit101/3020.35秒，含16分04秒编译；164个顶层Running/Doc-tests块均有最终summary，共5462过7败131忽略，AppCore内H92 nested helper额外1过不重复累计。AppCore1708/2/46、Kernel373/1/7、Runtime494/1/3，Hooks104/0；SDK lib86/0/3及真实stdio15/0/0通过，原H106两路默认probe及正式CLI/AppCore生产消费均实际执行。
+
+七败原样保留，未加ignore、改时限、更新golden或弱化断言：①AppCore mcp_hook_schema_valid_static_arguments_reach_connected_tool旧expected缺tool_use_id；②verification_commands::lifecycle_tests::dropping_active_verification_future_stops_real_descendant的cold真实build未在4000ms到compiler-started；③Kernel image_preparation::read_failure::real_read_data_dacl_denial_fails_without_sampling_and_recovers的原DACL精确恢复；④CLI viewport_snapshot_with_a_pending_approval的隔离HOME路径差异；⑤Context chat_defaults_do_not_import_responses_only_text_into_prompt_pricing在deepseek_tokenizer_audit.rs:243的offline_prompt_estimate前缀断言；⑥Prompts H306 creative.video-edit.v1空defaultUserPrompt；⑦Runtime checkpoint::access::native::tests::restrictive_tree_is_protected_before_copying_any_bytes的DACL恢复。①②③④⑥⑦与已有记录同名同断言，本轮相关失败分支未改；⑤不能统称旧失败，使用完整workspace同一Context binary在相同隔离环境exact独立复核仍0过1败、1.11秒，日志SHA256=5383AF30229BE9CBB2D730243EF8D3090B94140A2E68AABD3CA048B4EF03552C。该测试原属H297，仍写Chat忽略defaults.text，但H98现已通过apply_chat_defaults映射JSON格式，静态契约存在交叉旧预期；本轮未改Models/Context、不在H106中修它，也未充分证明仅测试陈旧或生产回归，留作下一独立核验，不能用定向绿覆盖此红。
+
+严格全仓`cargo +1.88.0 clippy --workspace --all-targets --all-features --target-dir <本项target> --locked --offline -j 2 -- -D warnings`实际exit101/102.79秒，止于未改Tools lib.rs:246的unnecessary_map_or。随后Hooks、Runtime、AppCore分别all-targets/all-features/no-deps严格检查，exit均101，耗时25.25/79.07/190.94秒；各自输出为既有3项uninlined_format_args、Runtime lib9/test10项、AppCore lib33/test37项诊断。对三日志52处诊断定位和当前diff新增行范围核验，无定位落在本轮改变的hunk；这不是严格lint通过，不删除旧诊断、不给代码加allow或降低-D门禁。最终默认cargo fmt --all -- --check及git diff --check通过。workspace日志SHA256=4E1309E0172BCC79DDE28F5B8313513557CC599BFC7DC1F188D56C7956C72406，full-final.json=DD504EE051BD51824607C62A53B3E8E29FF0BA2F3C503E9CB2F69813C3B764A1，候选manifest=13F2E6DAF9037DABF04869B28BF6B8819CCA8C20D4EAE185F56A50DCCFAE1FD5，typed投影原红日志=6FD58A621A1AB36F8E7B264F048BF0E24D52C00B9A225280D280067E5B42C8AC。
+
+workspace driver finally实际恢复原CLI，另独立核对CLI、原用户snap.new、sidecar的hash/长度/UTC写入及创建ticks/属性均true，原CLI与sidecar仍453DF899238FE99504B1C30F0DBA22FE793ADD7429C437F0B571A766FCB7535D、snap.new仍D514BFE28BA6F207C714DDAD2FEFE9E521B3AA1FD7DF1AF243FA2CC2ED911F17。16份输入全同；候选/全仓/strict进程均已终态，无Cargo/rustc/link活动。未改协议事件名、持久化schema、权限、供应商适配或前端/Tauri DTO；未运行前端/UI/真实第三方hook或模型、其他OS、长期压力/强杀验收，不将本机测试外推。正式功能范围按E04原生扩展验收，但提交和本轮fixture清理尚未闭环，当前不加完成数。清理脚本仅一根，发现链接/活动构建即停，16输入加双文及3原件前后保护；AST通过，SHA256=6B6C9723D497B4D3D4FCCF68B1E62869A2EC3A1C3727C05B75A93E887B72EF17，尚未执行。实现/提交/清理余约0.2–0.5有效小时，人工/设备等待另计；总体低置信旧估与13有效未闭环口径不变。
+
+**E-H106-06（2026-11-15，安全清理与本项验收）**：执行前复核当前HEAD仍bac59ba6、白名单9份Rust源码/测试及双文，E05六份关键日志/manifest/脚本摘要与实物一致；直接核对官方参考HEAD仍5badb15009ae1756c3afe0ae0cef1faafc290ccc、README明确不支持StopFailure。沿用已终态测试，不重复空跑Cargo；没有把本地原生扩展称为官方StopFailure原样复现。
+
+真实执行 `pwsh -NoProfile -File 'G:\h106-fixtures-20261115\cleanup-h106.ps1'`，脚本SHA256=6B6C9723D497B4D3D4FCCF68B1E62869A2EC3A1C3727C05B75A93E887B72EF17。仅一根本轮fixture，16957文件/37313314492逻辑字节，根/祖先及枚举均零reparse、无活动构建/fixture程序；先WhatIf、再原生Remove-Item，exit0且独立Test-Path=false。最终JSON reviewedRoots=1、remaining=0、originalCliRestored/originalSnapshotUnchanged/originalSidecarUnchanged/frozenInputsUnchanged/documentsUnchanged均true；16冻结输入加双文18项及三原件前后保护。G盘可用空间观测31533322240→67746426880字节，不与逻辑大小相加或声称全部变化独占归因。共享target/debug、node_modules、标准公共Cargo缓存及用户未跟踪文件均未删除；日志内容不提交，关键结果与摘要已在双文保留。
+
+H106按E04～05所列Windows本机离线、真实命令hook、五种动作后端投影、原Runtime/AgentKernel/AppCore及CLI/SDK消费边界已修复并验收，功能与本轮临时产物清理完成。本轮仅9份Rust源码/测试及双文准备独立fix提交，实际hash取得后普通回填，不amend/推送/PR；不会因局部绿改写原红、完整workspace七败或strict失败。未验真实模型/凭据/第三方hook、其他OS、GUI、长期压力/强杀范围保持；没有前端/Tauri DTO、依赖或迁移变化，未运行前端构建，不虚报。
+
+本项新增验收1、历史跳过/归并/撤销0；307唯一编号/8列重算为252验收、29历史跳过、10归并、3撤销、12待修含H180、H66保留1、修复中/阻塞0，有效未完整闭环12（11有效待修加H66）。下一先独立复核E05的H297/H98交叉红测，不在H106中改测试预期或先跳H109；未将该调查擅自记为新缺陷或重新打开旧项。本项实现/验收/清理余0，仅提交与hash回填待本次收尾；整个审计修复任务未完成。全余170–430有效小时仍为未逐项重估的低置信历史区间，编译/依赖/设备/环境/人工等待另计，不作日期保证。
 
 ### 复核但未登记：Responses `tool_search_call`
 

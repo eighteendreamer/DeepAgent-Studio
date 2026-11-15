@@ -15,7 +15,10 @@ use deepagent_core::id::TaskId;
 use deepagent_core::message::{Message, ToolCall};
 use deepagent_core::response_item::ResponseOutputItem;
 use deepagent_core::task::TaskState;
-use deepagent_hooks::{HookContext, HookData, HookOutcome, HookPoint, HookRegistry, ToolBatchItem};
+use deepagent_hooks::{
+    CompletionHook, HookContext, HookData, HookOutcome, HookPoint, HookRegistry, StopFailureError,
+    ToolBatchItem,
+};
 use deepagent_session::Session;
 use deepagent_tools::permission::PermissionSet;
 use deepagent_tools::{ToolExecutionContext, ToolObservationScope, ToolRegistry};
@@ -728,9 +731,24 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     break;
                 }
                 Err(e) => {
-                    if matches!(&e, CoreError::Provider { .. }) {
-                        if let Err(hook_error) =
-                            self.fire_stop_failure(session_id, "", &e.to_string()).await
+                    if let CoreError::Provider {
+                        status,
+                        code,
+                        message,
+                        retry_after_ms,
+                        request_id,
+                    } = &e
+                    {
+                        let error = StopFailureError::Provider {
+                            status: *status,
+                            code: code.clone(),
+                            message: message.clone(),
+                            retry_after_ms: *retry_after_ms,
+                            request_id: request_id.clone(),
+                        };
+                        if let Err(hook_error) = self
+                            .fire_stop_failure(session_id, "", &e.to_string(), error)
+                            .await
                         {
                             tracing::warn!(
                                 error = %hook_error,
@@ -2417,8 +2435,16 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 .unwrap_or(&candidate)
                 .to_string(),
             HookOutcome::Ask { reason, .. } | HookOutcome::Deny { reason, .. } => {
-                self.fire_stop_failure(session_id, &candidate, &reason)
-                    .await?;
+                self.fire_stop_failure(
+                    session_id,
+                    &candidate,
+                    &reason,
+                    StopFailureError::HookRejection {
+                        hook_point: CompletionHook::BeforeResponse,
+                        message: reason.clone(),
+                    },
+                )
+                .await?;
                 return Ok(CompletionDecision::Retry(completion_feedback(reason)));
             }
         };
@@ -2436,8 +2462,16 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             | HookOutcome::AsyncPending { .. }
             | HookOutcome::Modify { .. } => Ok(CompletionDecision::Accept(candidate)),
             HookOutcome::Ask { reason, .. } | HookOutcome::Deny { reason, .. } => {
-                self.fire_stop_failure(session_id, &candidate, &reason)
-                    .await?;
+                self.fire_stop_failure(
+                    session_id,
+                    &candidate,
+                    &reason,
+                    StopFailureError::HookRejection {
+                        hook_point: CompletionHook::Stop,
+                        message: reason.clone(),
+                    },
+                )
+                .await?;
                 Ok(CompletionDecision::Retry(completion_feedback(reason)))
             }
         }
@@ -2448,6 +2482,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         session_id: deepagent_core::id::SessionId,
         candidate: &str,
         reason: &str,
+        error: StopFailureError,
     ) -> Result<()> {
         let content = if reason.is_empty() {
             candidate.to_string()
@@ -2457,7 +2492,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         self.fire_hook(
             session_id,
             HookPoint::StopFailure,
-            HookData::Response { content },
+            HookData::StopFailure { content, error },
         )
         .await?;
         Ok(())
@@ -4690,7 +4725,9 @@ mod tests {
 
     struct StopFailureRecorder {
         stop_calls: std::sync::atomic::AtomicUsize,
-        failures: Arc<std::sync::Mutex<Vec<String>>>,
+        gate: HookPoint,
+        ask: bool,
+        failures: Arc<std::sync::Mutex<Vec<HookData>>>,
     }
 
     #[async_trait]
@@ -4701,24 +4738,26 @@ mod tests {
 
         async fn run(&self, ctx: &HookContext) -> Result<HookOutcome> {
             match ctx.point {
-                HookPoint::Stop => {
+                point if point == self.gate => {
                     if self
                         .stop_calls
                         .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
                         == 0
                     {
-                        Ok(HookOutcome::deny("revise final answer"))
+                        Ok(if self.ask {
+                            HookOutcome::ask("revise final answer")
+                        } else {
+                            HookOutcome::deny("revise final answer")
+                        })
                     } else {
                         Ok(HookOutcome::Continue)
                     }
                 }
                 HookPoint::StopFailure => {
-                    if let HookData::Response { content } = &ctx.data {
-                        self.failures
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .push(content.clone());
-                    }
+                    self.failures
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .push(ctx.data.clone());
                     Ok(HookOutcome::Continue)
                 }
                 _ => Ok(HookOutcome::Continue),
@@ -4728,6 +4767,23 @@ mod tests {
 
     #[tokio::test]
     async fn stop_failure_hook_fires_when_stop_blocks_completion() {
+        assert_rejected_completion(HookPoint::Stop, CompletionHook::Stop, false).await;
+    }
+
+    #[tokio::test]
+    async fn h106_rejected_gates_keep_their_origin_for_deny_and_ask() {
+        for ask in [false, true] {
+            assert_rejected_completion(
+                HookPoint::BeforeResponse,
+                CompletionHook::BeforeResponse,
+                ask,
+            )
+            .await;
+            assert_rejected_completion(HookPoint::Stop, CompletionHook::Stop, ask).await;
+        }
+    }
+
+    async fn assert_rejected_completion(gate: HookPoint, origin: CompletionHook, ask: bool) {
         let db = Database::open_in_memory().unwrap();
         let clock = FixedClock::new(1);
         let mut session = Session::create(&db, &clock, None).unwrap();
@@ -4735,10 +4791,12 @@ mod tests {
         let failures = Arc::new(std::sync::Mutex::new(Vec::new()));
         let hook = Arc::new(StopFailureRecorder {
             stop_calls: std::sync::atomic::AtomicUsize::new(0),
+            gate,
+            ask,
             failures: failures.clone(),
         });
         let mut hooks = HookRegistry::new();
-        hooks.register(HookPoint::Stop, hook.clone());
+        hooks.register(gate, hook.clone());
         hooks.register(HookPoint::StopFailure, hook);
 
         let reg = registry();
@@ -4752,9 +4810,16 @@ mod tests {
         let outcome = engine.run(&mut session, task, &mut agent).await.unwrap();
         assert_eq!(outcome, RunOutcome::Completed("revised".into()));
         let recorded = failures.lock().unwrap().clone();
-        assert_eq!(recorded.len(), 1);
-        assert!(recorded[0].contains("draft"));
-        assert!(recorded[0].contains("revise final answer"));
+        assert_eq!(
+            recorded,
+            [HookData::StopFailure {
+                content: "draft\n\nStop failure reason: revise final answer".into(),
+                error: StopFailureError::HookRejection {
+                    hook_point: origin,
+                    message: "revise final answer".into(),
+                },
+            }]
+        );
     }
 
     // --- UserPromptSubmit gate (Prompt Submission layer) ---

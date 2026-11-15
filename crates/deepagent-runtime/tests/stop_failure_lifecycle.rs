@@ -6,7 +6,9 @@ use deepagent_core::{
     error::{CoreError, Result},
     task::TaskState,
 };
-use deepagent_hooks::{Hook, HookContext, HookOutcome, HookPoint, HookRegistry};
+use deepagent_hooks::{
+    Hook, HookContext, HookData, HookOutcome, HookPoint, HookRegistry, StopFailureError,
+};
 use deepagent_persistence::Database;
 use deepagent_runtime::{
     Agent, AgentDecision, AgentKernel, CancellationTree, Observation, RunRequest, RuntimeConfig,
@@ -39,6 +41,7 @@ impl Agent for FailingAgent {
 
 struct StopFailureRecorder {
     calls: Arc<Mutex<Vec<String>>>,
+    data: Arc<Mutex<Vec<HookData>>>,
     fail: bool,
 }
 
@@ -51,6 +54,7 @@ impl Hook for StopFailureRecorder {
     async fn run(&self, ctx: &HookContext) -> Result<HookOutcome> {
         if ctx.point == HookPoint::StopFailure {
             self.calls.lock().unwrap().push(ctx.point.label().into());
+            self.data.lock().unwrap().push(ctx.data.clone());
             if self.fail {
                 return Err(CoreError::other("synthetic StopFailure hook error"));
             }
@@ -63,7 +67,7 @@ async fn run(
     error: CoreError,
     cancel: Option<CancellationTree>,
     hook_fails: bool,
-) -> (String, Vec<String>) {
+) -> (String, Vec<String>, Vec<HookData>) {
     let db = Arc::new(Database::open_in_memory().unwrap());
     let clock = FixedClock::new(1);
     let run_id = "h117-provider-terminal";
@@ -71,11 +75,13 @@ async fn run(
     let task = session.create_task(run_id).unwrap();
     let registry = ToolRegistry::new();
     let calls = Arc::new(Mutex::new(Vec::new()));
+    let data = Arc::new(Mutex::new(Vec::new()));
     let mut hooks = HookRegistry::new();
     hooks.register(
         HookPoint::StopFailure,
         Arc::new(StopFailureRecorder {
             calls: calls.clone(),
+            data: data.clone(),
             fail: hook_fails,
         }),
     );
@@ -104,12 +110,13 @@ async fn run(
         TerminalKind::Failed | TerminalKind::Cancelled
     ));
     let calls = calls.lock().unwrap().clone();
-    (terminal.reason.unwrap_or_default(), calls)
+    let data = data.lock().unwrap().clone();
+    (terminal.reason.unwrap_or_default(), calls, data)
 }
 
 #[tokio::test]
 async fn h117_terminal_provider_error_dispatches_stop_failure_once() {
-    let (reason, calls) = run(
+    let (reason, calls, _) = run(
         CoreError::provider(
             Some(400),
             Some("invalid_request_error".into()),
@@ -125,12 +132,12 @@ async fn h117_terminal_provider_error_dispatches_stop_failure_once() {
 
 #[tokio::test]
 async fn h117_agent_errors_and_cancellation_do_not_dispatch_stop_failure() {
-    let (reason, calls) = run(CoreError::other("synthetic agent failure"), None, false).await;
+    let (reason, calls, _) = run(CoreError::other("synthetic agent failure"), None, false).await;
     assert!(reason.contains("synthetic agent failure"));
     assert!(calls.is_empty());
 
     let cancellation = CancellationTree::new();
-    let (reason, calls) = run(
+    let (reason, calls, _) = run(
         CoreError::other("synthetic cancelled provider call"),
         Some(cancellation),
         false,
@@ -142,7 +149,7 @@ async fn h117_agent_errors_and_cancellation_do_not_dispatch_stop_failure() {
 
 #[tokio::test]
 async fn h117_stop_failure_hook_error_preserves_provider_failure_terminal() {
-    let (reason, calls) = run(
+    let (reason, calls, _) = run(
         CoreError::provider(None, Some("server_error".into()), PROVIDER_FAILURE),
         None,
         true,
@@ -150,4 +157,38 @@ async fn h117_stop_failure_hook_error_preserves_provider_failure_terminal() {
     .await;
     assert!(reason.contains(PROVIDER_FAILURE));
     assert_eq!(calls, [HookPoint::StopFailure.label()]);
+}
+
+#[tokio::test]
+async fn h106_terminal_provider_failure_keeps_structured_facts_and_legacy_content() {
+    for present in [false, true] {
+        let status = present.then_some(429);
+        let code = present.then(|| "rate_limit_error".to_string());
+        let retry_after_ms = present.then_some(1_234);
+        let request_id = present.then(|| "synthetic-request".to_string());
+        let error = CoreError::provider_with_metadata(
+            status,
+            code.clone(),
+            PROVIDER_FAILURE,
+            retry_after_ms,
+            request_id.clone(),
+        );
+        let legacy_content = format!("\n\nStop failure reason: {error}");
+        let (reason, calls, data) = run(error, None, false).await;
+        assert!(reason.contains(PROVIDER_FAILURE));
+        assert_eq!(calls, [HookPoint::StopFailure.label()]);
+        assert_eq!(
+            data,
+            [HookData::StopFailure {
+                content: legacy_content,
+                error: StopFailureError::Provider {
+                    status,
+                    code,
+                    message: PROVIDER_FAILURE.to_string(),
+                    retry_after_ms,
+                    request_id,
+                },
+            }]
+        );
+    }
 }

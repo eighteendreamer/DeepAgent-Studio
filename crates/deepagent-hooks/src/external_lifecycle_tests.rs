@@ -201,6 +201,13 @@ async fn payload_matrix(base: Option<crate::HookBaseInput>) {
             json!({"tool_use_id":"call_denied_1","tool_name":"read_file","tool_input":{"path":"synthetic.txt"},"reason":"ordinary rejection"}),
         ),
     ]);
+    assert_payload_matrix(base, cases).await;
+}
+
+pub(super) async fn assert_payload_matrix(
+    base: Option<crate::HookBaseInput>,
+    cases: Vec<(HookEvent, HookData, Value)>,
+) {
     let count = cases.len();
     let captured = Arc::new(Capture::default());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

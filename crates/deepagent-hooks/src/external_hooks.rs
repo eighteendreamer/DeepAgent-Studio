@@ -1673,6 +1673,17 @@ fn build_hook_payload(event: HookEvent, ctx: &HookContext) -> serde_json::Value 
         HookData::Response { content } => {
             payload.insert("content".into(), serde_json::json!(content));
         }
+        HookData::StopFailure { content, error }
+            if event == HookEvent::StopFailure && ctx.point == HookPoint::StopFailure =>
+        {
+            payload.insert("content".into(), serde_json::json!(content));
+            payload.insert(
+                "error_format".into(),
+                serde_json::json!("deepagent.stop_failure.v1"),
+            );
+            payload.insert("error".into(), serde_json::json!(error));
+        }
+        HookData::StopFailure { .. } => {}
         HookData::Instructions { paths } => {
             payload.insert("paths".into(), serde_json::json!(paths));
         }
@@ -1820,6 +1831,10 @@ mod external_context_tests;
 #[cfg(test)]
 #[path = "external_lifecycle_tests.rs"]
 mod external_lifecycle_tests;
+
+#[cfg(test)]
+#[path = "external_stop_failure_tests.rs"]
+mod external_stop_failure_tests;
 
 /// Parse a structured decision from a hook's stdout, if any.
 /// Parse the common structured decision protocol used by command, MCP,

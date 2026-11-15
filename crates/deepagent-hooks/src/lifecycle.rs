@@ -214,6 +214,38 @@ impl InstructionLoadReason {
     }
 }
 
+/// Completion gate that rejected a candidate, not a failed model request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletionHook {
+    BeforeResponse,
+    Stop,
+}
+
+/// Native StopFailure facts. DeepSeek Harness retains structured failures but
+/// does not implement this hook; this projection is a local, versioned adapter,
+/// not Claude's assistant-error enum. Optional provider facts stay optional.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "origin", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum StopFailureError {
+    HookRejection {
+        hook_point: CompletionHook,
+        message: String,
+    },
+    Provider {
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status: Option<u16>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        retry_after_ms: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+    },
+}
+
 /// Point-specific data carried by a [`HookContext`].
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -264,6 +296,11 @@ pub enum HookData {
     Response {
         /// The candidate response text.
         content: String,
+    },
+    /// Legacy display content plus the failure owner's structured facts.
+    StopFailure {
+        content: String,
+        error: StopFailureError,
     },
     Instructions {
         paths: Vec<String>,

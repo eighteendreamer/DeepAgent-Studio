@@ -8,9 +8,9 @@ use async_trait::async_trait;
 use deepagent_core::clock::SystemClock;
 use deepagent_core::error::{CoreError, Result};
 use deepagent_hooks::{
-    parse_structured_hook_output, HookAction, HookActionExecutor, HookActionType,
+    parse_structured_hook_output, CompletionHook, HookAction, HookActionExecutor, HookActionType,
     HookCommandResult, HookCommandRunner, HookCommandShell, HookContext, HookData, HookDefinitions,
-    HookEvent, HookOutcome, HookRegistry, SystemHookRunner, ToolBatchItem,
+    HookEvent, HookOutcome, HookRegistry, StopFailureError, SystemHookRunner, ToolBatchItem,
 };
 use deepagent_models::{ModelClient, ReasoningEffort, ResponseRequest, ToolSchema};
 use deepagent_persistence::Database;
@@ -196,8 +196,15 @@ fn sample_hook_data(event: HookEvent, matcher: Option<&str>) -> HookData {
             reason: "settings-page hook test".to_string(),
         },
         HookEvent::UserPromptSubmit => HookData::prompt("Test prompt from hooks settings"),
-        HookEvent::Stop | HookEvent::StopFailure => HookData::Response {
+        HookEvent::Stop => HookData::Response {
             content: "Test session completed".to_string(),
+        },
+        HookEvent::StopFailure => HookData::StopFailure {
+            content: "Test session completed".to_string(),
+            error: StopFailureError::HookRejection {
+                hook_point: CompletionHook::Stop,
+                message: "synthetic settings-page rejection".to_string(),
+            },
         },
         HookEvent::PreCompact => HookData::Compact {
             trigger: "manual_test".to_string(),
@@ -774,5 +781,30 @@ fn hook_command_outcome(result: &HookCommandResult) -> String {
         0 => "continued".to_string(),
         2 => "blocked".to_string(),
         _ => "error".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod stop_failure_tests {
+    use super::*;
+
+    #[test]
+    fn h106_settings_test_uses_native_failure_without_claiming_a_provider_call() {
+        assert_eq!(
+            sample_hook_data(HookEvent::StopFailure, None),
+            HookData::StopFailure {
+                content: "Test session completed".into(),
+                error: StopFailureError::HookRejection {
+                    hook_point: CompletionHook::Stop,
+                    message: "synthetic settings-page rejection".into(),
+                },
+            }
+        );
+        assert_eq!(
+            sample_hook_data(HookEvent::Stop, None),
+            HookData::Response {
+                content: "Test session completed".into(),
+            }
+        );
     }
 }

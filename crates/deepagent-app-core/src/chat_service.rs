@@ -3530,7 +3530,6 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    #[ignore = "audit H-106: StopFailure hook input must include its typed error"]
     async fn audit_stop_failure_hook_payload_includes_error() {
         let (db, settings, dir) = seeded().await;
         let root = dir.path().join("workspace");
@@ -3575,7 +3574,17 @@ mod tests {
         let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
         eprintln!("StopFailure payload: {payload}");
         assert_eq!(payload["hook_event_name"], "StopFailure");
-        assert!(payload["error"].is_string(), "missing required error");
+        assert_eq!(payload["error_format"], "deepagent.stop_failure.v1");
+        assert_eq!(
+            payload["error"],
+            serde_json::json!({
+                "origin":"hook_rejection", "hook_point":"stop", "message":"blocked by external hook"
+            })
+        );
+        assert_eq!(
+            payload["content"],
+            "Hello from the agent.\n\nStop failure reason: blocked by external hook"
+        );
     }
 
     #[cfg(windows)]
@@ -3689,6 +3698,18 @@ mod tests {
             assert!(events.contains(&"SessionStart"));
             if api_failure {
                 assert!(!events.contains(&"Stop"), "API errors must not enter Stop");
+                let failure = payloads
+                    .iter()
+                    .find(|payload| payload["hook_event_name"] == "StopFailure")
+                    .expect("terminal provider failure must notify StopFailure");
+                eprintln!("H-106 terminal provider payload: {failure}");
+                assert_eq!(failure["error_format"], "deepagent.stop_failure.v1");
+                assert_eq!(
+                    failure["error"],
+                    serde_json::json!({
+                        "origin":"provider", "code":"invalid_request_error", "message":"audit invalid request"
+                    })
+                );
             } else {
                 assert_eq!(events, expected_events, "successful command-hook control");
             }
