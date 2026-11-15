@@ -395,21 +395,44 @@ fn h113_file_change_wire_maps_known_kinds_and_rejects_unknown() {
             kind: "created".into(),
         },
     );
-    assert_eq!(
-        super::build_hook_payload(HookEvent::FileChanged, &context)["event"],
-        "add"
-    );
-    let mut unknown = context;
-    unknown.data = HookData::FileChange {
-        path: "src/main.rs".into(),
-        kind: "unchanged".into(),
-    };
-    assert!(
-        super::build_hook_payload(HookEvent::FileChanged, &unknown)
-            .get("file_path")
-            .is_none(),
-        "unknown mutation labels must fail closed"
-    );
+    for (kind, event) in [
+        ("created", "add"),
+        ("modified", "change"),
+        ("deleted", "unlink"),
+    ] {
+        let mut ctx = context.clone();
+        ctx.data = HookData::FileChange {
+            path: "src/main.rs".into(),
+            kind: kind.into(),
+        };
+        let payload = super::build_hook_payload(HookEvent::FileChanged, &ctx);
+        assert_eq!(payload["event"], event);
+        assert_eq!(payload["file_path"], "src/main.rs");
+    }
+    for kind in ["unchanged", "", "unknown"] {
+        let mut ctx = context.clone();
+        ctx.data = HookData::FileChange {
+            path: "src/main.rs".into(),
+            kind: kind.into(),
+        };
+        let payload = super::build_hook_payload(HookEvent::FileChanged, &ctx);
+        assert!(payload.get("file_path").is_none());
+        assert!(
+            payload.get("event").is_none(),
+            "unknown labels must fail closed"
+        );
+    }
+    let wrong_event = super::build_hook_payload(HookEvent::WorktreeRemove, &context);
+    let mut wrong_point = context;
+    wrong_point.point = HookPoint::WorktreeRemove;
+    let wrong_point = super::build_hook_payload(HookEvent::FileChanged, &wrong_point);
+    for payload in [wrong_event, wrong_point] {
+        assert!(payload.get("file_path").is_none());
+        assert!(
+            payload.get("event").is_none(),
+            "mismatched events must not invent file changes"
+        );
+    }
 }
 
 #[test]
