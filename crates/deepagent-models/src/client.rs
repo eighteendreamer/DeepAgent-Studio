@@ -886,6 +886,7 @@ fn log_response_input_pairs(request: &ResponseRequest) {
 fn response_to_chat_completion(request: ResponseRequest) -> Result<ChatCompletionRequest> {
     request.validate_input_presence()?;
     request.validate_image_roles(WireMode::ChatCompletions)?;
+    request.validate_message_roles()?;
     crate::responses::validate_tool_call_history(&request.input)?;
     if request.top_logprobs.is_some() {
         return Err(deepagent_core::error::CoreError::invalid(

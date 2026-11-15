@@ -222,6 +222,8 @@ impl Serialize for ResponseRequest {
         S: Serializer,
     {
         use serde::ser::SerializeMap;
+        self.validate_message_roles()
+            .map_err(serde::ser::Error::custom)?;
         validate_response_tool_schemas(&self.tools).map_err(serde::ser::Error::custom)?;
         self.validate_tool_choice()
             .map_err(serde::ser::Error::custom)?;
@@ -631,6 +633,7 @@ impl ResponseRequest {
     pub fn validate(&self) -> Result<()> {
         self.validate_input_presence()?;
         self.validate_image_roles(crate::client::WireMode::Responses)?;
+        self.validate_message_roles()?;
         if let Some(user) = &self.user {
             validate_responses_user_identifier(user)?;
         }
@@ -650,6 +653,23 @@ impl ResponseRequest {
 
     pub fn clear_image_file_ids(&mut self) {
         self.image_file_ids.clear();
+    }
+
+    /// Admit the final public input before serialization or lossy Chat projection.
+    /// Keep historical core roles as strings; only the provider boundary is strict.
+    pub(crate) fn validate_message_roles(&self) -> Result<()> {
+        for item in &self.input {
+            if let ResponseInputItem::Message { role, .. }
+            | ResponseInputItem::InputMessage { role, .. } = item
+            {
+                if !matches!(role.as_str(), "user" | "assistant" | "system" | "developer") {
+                    return Err(CoreError::invalid(
+                        "Responses message role must be user, assistant, system, or developer",
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Role-only gate used before reading bytes and before Chat projection.
