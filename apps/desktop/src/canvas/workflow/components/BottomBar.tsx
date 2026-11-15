@@ -33,6 +33,7 @@ import { CanvasToolbarDock } from "./CanvasToolbarDock";
 
 interface Props {
   viewport: Viewport;
+  viewportSize: { width: number; height: number };
   onViewportChange: (vp: Viewport) => void;
   rfInstance: ReactFlowInstance | null;
 }
@@ -59,7 +60,7 @@ const ALIGN_BUTTONS: Array<{ mode: NodeAlignMode; title: string; Icon: LucideIco
   { mode: "bottom", title: "底端对齐", Icon: AlignVerticalJustifyEnd },
 ];
 
-export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
+export function BottomBar({ viewport, viewportSize, onViewportChange, rfInstance }: Props) {
   const mode = useCanvasStore((s) => s.mode);
   const gridVisible = useCanvasStore((s) => s.gridVisible);
   const toggleGrid = useCanvasStore((s) => s.toggleGrid);
@@ -114,19 +115,28 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
   const zoom = viewport.zoom;
   const percent = Math.round(zoom * 100);
 
+  const zoomAtViewportCenter = (nextZoom: number) => {
+    const centerX = (viewportSize.width / 2 - viewport.x) / viewport.zoom;
+    const centerY = (viewportSize.height / 2 - viewport.y) / viewport.zoom;
+    const next = {
+      x: viewportSize.width / 2 - centerX * nextZoom,
+      y: viewportSize.height / 2 - centerY * nextZoom,
+      zoom: nextZoom,
+    };
+    onViewportChange(next);
+    rfInstance?.setViewport(next);
+  };
+
   const handleZoomIn = () => {
     const next = Math.min(zoom + 0.1, 3);
-    onViewportChange({ ...viewport, zoom: next });
-    rfInstance?.setViewport({ ...viewport, zoom: next });
+    zoomAtViewportCenter(next);
   };
   const handleZoomOut = () => {
     const next = Math.max(zoom - 0.1, 0.2);
-    onViewportChange({ ...viewport, zoom: next });
-    rfInstance?.setViewport({ ...viewport, zoom: next });
+    zoomAtViewportCenter(next);
   };
   const handleResetZoom = () => {
-    onViewportChange({ ...viewport, zoom: 1 });
-    rfInstance?.setViewport({ ...viewport, zoom: 1 });
+    zoomAtViewportCenter(1);
   };
   const handleFitScreen = () => {
     rfInstance?.fitView({ padding: 0.2, duration: 300, maxZoom: 0.9 });
@@ -134,8 +144,7 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
 
   const handleSlider = (e: React.ChangeEvent<HTMLInputElement>) => {
     const next = Number(e.target.value) / 100;
-    onViewportChange({ ...viewport, zoom: next });
-    rfInstance?.setViewport({ ...viewport, zoom: next });
+    zoomAtViewportCenter(next);
   };
 
   const handleAutoLayout = () => {

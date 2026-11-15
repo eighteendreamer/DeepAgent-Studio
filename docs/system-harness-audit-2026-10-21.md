@@ -9825,6 +9825,14 @@ G盘本轮前端/SDK产物经绝对路径与祖先核对后尝试原生PowerShel
 
 本轮 H-201 只新增 opt-in 生产 handler 审计探针和报告，未修改生产画布行为。
 
+**E-H201-01（2026-11-15，原生产handler探针复现；非修复验收）**：起点762992b5；只读核对`BottomBar.tsx`、`MiniMap.tsx`、`CanvasApp.tsx`及现有AST审计。按审计命令`$env:RUN_HARNESS_AUDIT='1'; node --test apps/desktop/scripts/audit-workflow-zoom-anchor.test.cjs`实际得到0过/1败：底栏放大后中心从(1000,540)漂到(909.0909,490.9091)，缩小到(1111.1111,600)，滑杆同样漂移，reset从(766.6667,440)漂到(1150,660)，小地图两条路径同样漂移。测试提取并执行当前生产TSX handler，不是字符串检查；未启动Tauri/WebView或截图。原红输出保留在本轮交接记录，未改生产。
+
+**E-H201-02（2026-11-15，根因修复与真实handler回归）**：复用CanvasApp已有Ctrl/Meta+wheel锚定公式，在BottomBar统一新增`zoomAtViewportCenter`，按传入容器尺寸反算旧中心世界坐标并同时更新x/y/zoom；MiniMap复用同一中心变换，CanvasApp传入实际containerSize。放大、缩小、滑杆、reset和小地图按钮均不再只替换zoom；滚轮指针锚定路径、节点数据、工作流执行和H202持久化边界不改。审计夹具同步传入生产handler新增依赖，避免另写第二套测试算法。
+
+修复后同一命令实际1过/0败：六条生产handler在正负平移、当前zoom=1/1.5和两种控件下中心误差均小于1e-9。结果摘要SHA256=`1CB54B823C13A18DFEE40E046D31B581DAF55F2BE3CFC6ECEA1EEBC9B1241186`。这只证明handler数学与状态提交边界，不冒称GUI像素或WebView已验证。
+
+**E-H201-03（2026-11-15，前端类型/构建门禁）**：仓库`pnpm exec tsc --noEmit`因pnpm发现node_modules与锁文件不同步而尝试自动install，非TTY下被`ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`拒绝，未删除或安装依赖；随后直接调用现有`apps/desktop/node_modules/.bin/tsc.cmd --noEmit`实际exit0。直接调用现有`node_modules/.bin/vite.cmd build`实际成功，`✓ built in 55.96s`并复制40/40 renderer assets；构建日志SHA256=`DFE95CBB06001E1C7E18F1C058A5CDF1119C80A772AA642F6E9A0FD66C6768F2`。未用pnpm强行重装，不把包装器失败伪称代码失败；清理和提交待收口，H201仍修复中。
+
 ### H-202：工作流图持久化不包含视口，重启后用户的画布导航状态无法恢复
 
 **级别：低（P3，画布编辑连续性）；触发条件：用户平移/缩放创作或专业画布、修改图并等待保存，然后重启/重新挂载桌面应用。** 图节点与连线仍会恢复；丢失的是相机平移/缩放状态，ReactFlow 会按当前 `fitView` 设置重新计算初始视图。本项不影响工作流执行输入或已保存图数据。

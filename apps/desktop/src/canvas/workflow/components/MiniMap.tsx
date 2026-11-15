@@ -172,7 +172,13 @@ export function MiniMap({ containerWidth, containerHeight }: Props) {
   const changeZoom = (delta: number) => {
     const current = getViewport();
     const zoom = Math.min(3, Math.max(0.2, current.zoom + delta));
-    void setFlowViewport({ ...current, zoom });
+    const centerX = (containerWidth / 2 - current.x) / current.zoom;
+    const centerY = (containerHeight / 2 - current.y) / current.zoom;
+    void setFlowViewport({
+      x: containerWidth / 2 - centerX * zoom,
+      y: containerHeight / 2 - centerY * zoom,
+      zoom,
+    });
   };
 
   const handleFitView = () => {

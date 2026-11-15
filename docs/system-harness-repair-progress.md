@@ -13,11 +13,11 @@
 | 归并 | 10 | H173同根归并H127；H243归并H53；只在唯一有效项修复，不增加完成数 |
 | 撤销 | 3 | H-211/H-263/H-305，不作为缺陷或修复成果 |
 | 已修复（验收保留） | 1 | H66按用户2026-11-10收尾要求交付代码；现有定向验证有效，不记作完整验收通过，残余范围见E-H66-08 |
-| 修复中 | 0 | H172已完成本机离线验收与清理；下一项H201 |
-| 待修复 | 4 | 含H180授权不修；3项有效待处理 |
+| 修复中 | 1 | H201原handler探针已红、候选已绿，前端门禁及清理提交待收齐 |
+| 待修复 | 3 | 含H180授权不修；2项有效待处理，另H201在修 |
 | 阻塞待处理 | 0 | H106旧选择阻塞已解除并按官方原则完成本地适配；官方该版本无该hook，不伪称原样实现 |
 
-未完整闭环槽位当前为 **5（含H180授权不修；有效未闭环4：3有效待修、H66验收保留1、H172已验收）**。307唯一主行：260验收、29历史跳过、10归并、3撤销、4待修、修复中0/阻塞0、验收保留1。H113按E05～06补验/清理恢复关闭，不重复计生产修复；H110/H112共用fixture已实际清理。H306已限定验收；新全仓5479/9/127、strict与Tauri离线缺依赖保留；H203已验收，当前处理H201。
+未完整闭环槽位当前为 **5（含H180授权不修；有效未闭环4：2有效待修、H201在修1、H66验收保留1、H172已验收）**。307唯一主行：260验收、29历史跳过、10归并、3撤销、3待修、修复中1/阻塞0、验收保留1。H113按E05～06补验/清理恢复关闭，不重复计生产修复；H110/H112共用fixture已实际清理。H306已限定验收；新全仓5479/9/127、strict与Tauri离线缺依赖保留；H203已验收，当前处理H201。
 
 H296已按E01～05完成原红→单一resolver修复→正式消费链/全仓门禁→清理闭环；19份冻结输入、原CLI/快照/sidecar保持，完整workspace5425/5/140、前端358/1及strict旧8+2原样保留，不称全仓全绿。独立提交`e9c55cab`，E06仅普通文档回填真实hash。H157的344d907c/0142b745及H168等为前轮成果，不重计；H155/H156尚待的历史清理不冒领。本项实现/验收/清理余0，下一准备H172公开Responses数值参数边界，先原probe及依赖核对。整体余170–430有效小时仍为未逐项重估的低置信历史分组估算，依据剩余模型/Hook/工具/画布跨层修改与验收；编译、设备、依赖、策略和人工等待另计，无可靠日历上界。
 
@@ -6619,7 +6619,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-198：OR 条件组从 true 开始累加，所有子条件为 false 仍选择 true 分支](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H198-01～03；原探针与默认Kernel TDD红→绿，非历史跳过 | 私有ConditionPlan编译非空组，AND all/OR any；复用值解析/比较器/Kernel，无二次解释或静默错误 | 原探针1/0；conditions6/0+八图生产consumer1/0；Runtime410/0、workflow122/0；全仓4251/2（H306+历史build对照超时），exact对照1/0，lint旧失败；H199负对照仍0/1；命令/未验E03 | `c87349786d303b46f7eceb07fc12aca383269207`；E04回填 | 本项本机剩余0；错误/空组/冲突别名拒绝，缺logic默认AND；H199端口仍待修；全局历史粗估200–400有效小时，等待另计 |
 | [H-199：多 case 条件删除 false 端口，但 executor 无匹配时仍返回 false](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H199-01～03；原探针与默认Kernel TDD红→绿，非历史跳过 | 共享v1 BranchContract闭合单/多case与fallback；compiler/evaluator/UI/serializer一致，无静默改线 | 原探针1/0；branches5/0+八图consumer1/0+真实UI；Runtime411/0、workflow128/0；全仓4259/1，lint旧失败；命令/未验E03 | `04a205eec8f591fbd28c3ec376e5ba1b030ae73d`；E04回填 | 本项本机剩余0；旧合法v1图兼容，保留字冲突拒绝、不自动迁移边；全局历史粗估200–400有效小时，等待另计 |
 | [H-200：Responses 生命周期事件丢弃响应身份、服务端模型与序号，durable run 无法关联完整流](system-harness-audit-2026-10-21.md#h-200responses-生命周期事件丢弃响应身份服务端模型与序号durable-run-无法关联完整流) | P2 | 已修复并验收 | E01～04原探针/TDD红绿；H210序号已有，不归并/历史跳过 | 每物理请求有界身份快照、先验终态再投影，沿原事件/日志/SQLite保留 | Models201/0、HTTP217/0、Kernel313及317过、全仓4785/1仅H306；双SDK/前端/Tauri过，旧lint；命令/未验E04 | `670fb5f4bf492cf2b5b010a043e8251341c8a0e9`；E06回填 | 本项验收余0；E02诊断边界/SDK真实供应商未验；E05部分清理/残余阻塞；下一H204；总200–400有效小时低置信历史粗估，等待另计 |
-| [H-201：工作流画布缩放控件改变 zoom 却保留平移偏移，视口焦点随每次缩放跳动](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-201：工作流画布缩放控件改变 zoom 却保留平移偏移，视口焦点随每次缩放跳动](system-harness-audit-2026-10-21.md) | P3 | 修复中 | E-H201-01原生产handler探针确认六条路径焦点漂移；不混H202持久化 | BottomBar与MiniMap统一中心锚定公式，CanvasApp传入真实containerSize；不改滚轮指针锚定/H202存储 | E-H201-01原红；E-H201-02六条handler全绿；E-H201-03直接tsc/Vite通过，pnpm wrapper因依赖不同步非TTY拒绝 | 尚未提交 | 未验Tauri/WebView像素、真实GUI、其它OS；构建产物待清理 |
 | [H-202：工作流图持久化不包含视口，重启后用户的画布导航状态无法恢复](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-203：Responses `message` 的公开字符串角色缺少 provider 边界校验](system-harness-audit-2026-10-21.md) | P3 | 已修复并验收 | E-H203-03完成本机离线跨入口验收；官方四角色契约与参考adapter边界已核实 | ResponseRequest集中provider gate，validate/Serialize/Chat转换共用；历史core String兼容 | E-H203-01原红、E-H203-02 Models全套、E-H203-03 workspace 5490/6/125及strict旧阻断；无H203相关红 | 934df328 | 不混H172/H209/图片；未验真实服务端、其他OS与Tauri/UI |
 | [H-204：Harness SDK 对无响应但未断开的 RPC 无期限等待，调用取消后 pending 不回收](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E01～07原探针/TDD/真实CLI红绿与退出回执；H90同根归并 | Rust单一RAII registration/帧owner、独立initialize/普通期限，未知结果不重放 | SDK46/0/8+stdio9/0+doc2/0、真实CLI1/0；全仓4799/1仅H306、旧lint；命令/未验E04 | `5afa1b2ce9a5107bb9971527c03cc6861a79150f`；E09回填 | 本项验收余0；E05/08部分清理/残余阻塞；TS deadline/其他OS/flush注入未验，下一H205；全余200–400历史粗估，等待另计 |
@@ -11490,3 +11490,11 @@ H114完成当前Windows离线范围：后台子Agent成功真实hook、typed成�
 提交后执行`pwsh -NoProfile -File G:/h172-fixtures-20261115/cleanup-h172.ps1`：仅删除本项一根fixture，先核全后代零reparse、活动Cargo/rustc/link零，再WhatIf后Remove-Item；实际清理4747文件、2568984392逻辑字节，exit0，最终`remaining=0`、`protectedInputsUnchanged=true`。共享target/debug、node_modules、公共Cargo缓存、源码和用户未跟踪项未删；普通权限执行，无管理员token或UAC，不冒称最高管理员。
 
 H172完成当前Windows离线范围：数值request/defaults、text.format request/defaults、ordinary/cancel-aware和合法边界均在最终Responses provider seam验证；未验完整workspace、真实供应商/模型、Tauri/UI、其它OS和长期压力，保留为残余限制。累计260项已修复验收，历史跳过29、归并10、撤销3、待修4（含H180授权不修）、修复中0、H66验收保留1；有效未闭环5。下一项H201；全余170–430有效小时仍沿未逐项重估的低置信历史区间，编译/设备/依赖/人工等待另计。
+
+**E-H201-01（2026-11-15，原生产handler探针复现；非修复验收）**：起点762992b5；只读核对`BottomBar.tsx`、`MiniMap.tsx`、`CanvasApp.tsx`及现有AST审计。按审计命令`$env:RUN_HARNESS_AUDIT='1'; node --test apps/desktop/scripts/audit-workflow-zoom-anchor.test.cjs`实际得到0过/1败：底栏放大后中心从(1000,540)漂到(909.0909,490.9091)，缩小到(1111.1111,600)，滑杆同样漂移，reset从(766.6667,440)漂到(1150,660)，小地图两条路径同样漂移。测试提取并执行当前生产TSX handler，不是字符串检查；未启动Tauri/WebView或截图。原红输出保留在本轮交接记录，未改生产。
+
+**E-H201-02（2026-11-15，根因修复与真实handler回归）**：复用CanvasApp已有Ctrl/Meta+wheel锚定公式，在BottomBar统一新增`zoomAtViewportCenter`，按传入容器尺寸反算旧中心世界坐标并同时更新x/y/zoom；MiniMap复用同一中心变换，CanvasApp传入实际containerSize。放大、缩小、滑杆、reset和小地图按钮均不再只替换zoom；滚轮指针锚定路径、节点数据、工作流执行和H202持久化边界不改。审计夹具同步传入生产handler新增依赖，避免另写第二套测试算法。
+
+修复后同一命令实际1过/0败：六条生产handler在正负平移、当前zoom=1/1.5和两种控件下中心误差均小于1e-9。结果摘要SHA256=`1CB54B823C13A18DFEE40E046D31B581DAF55F2BE3CFC6ECEA1EEBC9B1241186`。这只证明handler数学与状态提交边界，不冒称GUI像素或WebView已验证。
+
+**E-H201-03（2026-11-15，前端类型/构建门禁）**：仓库`pnpm exec tsc --noEmit`因pnpm发现node_modules与锁文件不同步而尝试自动install，非TTY下被`ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`拒绝，未删除或安装依赖；随后直接调用现有`apps/desktop/node_modules/.bin/tsc.cmd --noEmit`实际exit0。直接调用现有`node_modules/.bin/vite.cmd build`实际成功，`✓ built in 55.96s`并复制40/40 renderer assets；构建日志SHA256=`DFE95CBB06001E1C7E18F1C058A5CDF1119C80A772AA642F6E9A0FD66C6768F2`。未用pnpm强行重装，不把包装器失败伪称代码失败；清理和提交待收口，H201仍修复中。

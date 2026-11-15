@@ -900,7 +900,7 @@ function WorkflowCanvasInner() {
       )}
 
       <ModeSwitcher />
-      <WorkflowBottomBar viewport={viewport} onViewportChange={handleViewportChange} rfInstance={rfInstance} />
+      <WorkflowBottomBar viewport={viewport} viewportSize={containerSize} onViewportChange={handleViewportChange} rfInstance={rfInstance} />
       <MiniMap containerWidth={containerSize.width} containerHeight={containerSize.height} />
       <NodePicker />
       <CanvasSettingsDialog />

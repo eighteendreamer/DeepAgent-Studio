@@ -50,8 +50,18 @@ function runBottomBarHandler(name, args = [], viewport = START) {
     {
       zoom: viewport.zoom,
       viewport,
+      viewportSize: { width: WIDTH, height: HEIGHT },
       onViewportChange: (viewport) => { nextViewport = viewport; },
       rfInstance: { setViewport: (viewport) => { nextViewport = viewport; } },
+      zoomAtViewportCenter: (nextZoom) => {
+        const centerX = (WIDTH / 2 - viewport.x) / viewport.zoom;
+        const centerY = (HEIGHT / 2 - viewport.y) / viewport.zoom;
+        nextViewport = {
+          x: WIDTH / 2 - centerX * nextZoom,
+          y: HEIGHT / 2 - centerY * nextZoom,
+          zoom: nextZoom,
+        };
+      },
     },
   );
   handler(...args);
@@ -66,6 +76,8 @@ function runMiniMapZoom(delta) {
     "changeZoom",
     {
       getViewport: () => START,
+      containerWidth: WIDTH,
+      containerHeight: HEIGHT,
       setFlowViewport: (viewport) => { nextViewport = viewport; },
     },
   );
