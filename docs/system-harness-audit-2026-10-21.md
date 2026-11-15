@@ -18127,6 +18127,11 @@ H307首轮混合受测树AppCore lib实际1704过/3败/39忽略、383.70秒；�
 - 类型与构建：直接调用现有 `apps/desktop/node_modules/.bin/tsc.cmd --noEmit`：**exit 0**；根 `cargo check -p deepagent-core -p deepagent-runtime -p deepagent-app-core --offline -j 2`：**exit 0**；`cargo fmt --all -- --check` 与 `git diff --check`：**exit 0**。未调用会触发依赖重装的 pnpm 包装器；尚未运行真实 Tauri/WebView、真实供应商/账单或其他 OS。
 - 兼容边界：`UsageRecorded` 新字段均为 optional，旧事件/旧 DTO 可反序列化；旧消息没有显式投影时继续使用 legacy 字段，不宣称能从历史缺失字段恢复精确 billed prompt。没有 SQL migration、依赖、权限/沙箱或账本归属变更；H-163/H-180/H66 与真实 provider 费用验证保持独立。
 
+#### E-H299-02（2026-11-16，独立提交与状态回填）
+
+- 代码、回归测试与本项两份文档已独立提交为 `3056cc28`（`【fix】统一工具回合实时与重载用量语义`），未推送、未创建 PR、未 amend；提交仅包含 H-299 相关 16 个文件。
+- H-299 按 Windows 本机、离线合成 provider、正式 Runtime/Event/DTO/桌面 mapper 范围标记“已修复并验收”。真实 Tauri/WebView、真实供应商/账单、其他 OS、完整 workspace 仍未验证，不扩大结论；旧 DTO 缺失投影时的 legacy fallback 保留。
+
 #### H-277 重连路径补充证据（2026-10-25）
 
 - 去重：这是 H-277 同一根因在 `ConfigReconnectFactory::reconnect` 上的补充，不新增 H 编号；此前 H-277 已动态覆盖首次设置页 probe 与 `McpService::start_preparation`，但明确未覆盖重连握手。
