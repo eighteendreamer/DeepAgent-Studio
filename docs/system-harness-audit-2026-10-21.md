@@ -18597,3 +18597,10 @@ H203变更范围仅`deepagent-models/src/chat.rs`、`client.rs`及`responses_inp
 提交后执行`pwsh -NoProfile -File G:/h203-fixtures-20261115/cleanup-h203.ps1`：仅删除本项一根fixture，先核祖先/全后代零reparse、活动构建零，再WhatIf后Remove-Item；实际清理13870文件、11414412479逻辑字节，脚本exit0，最终`remaining=0`、`protectedInputsUnchanged=true`。共享target/debug、node_modules、公共Cargo缓存、用户源码/文件及已有未跟踪项未删；清理脚本和日志随fixture回收，摘要、关键日志hash与保护结果已写入本报告和进度台账。普通权限执行，无管理员token或UAC，不冒称最高管理员。
 
 H203现在完成本机Windows离线功能验收与专属产物清理；未验真实供应商/凭据、其他OS、Tauri/UI和长期压力范围保留。累计258项已修复验收，历史跳过29、归并10、撤销3、待修6（含H180授权不修）、修复中0、H66验收保留1，有效未闭环7；下一项H114。全余170–430有效小时继续沿未逐项重估的低置信历史区间，编译/设备/依赖/人工等待另计。
+
+
+**E-H114-04（2026-11-15，独立提交与清理闭环）**：修复提交为`0d843dbf0cf5dc4db2cd6031eaec03cef5f0f9ee`（【fix】补齐子Agent通知类别契约），仅6份Rust实现/测试及两份双文；未包含已有AppCore `context_runtime.rs`修改、任何用户untracked、fixture或共享target/node_modules。提交前白名单暂存、`git diff --cached --check`、fmt和307行/307唯一ID台账检查通过；未amend、推送或创建PR。
+
+提交后执行`pwsh -NoProfile -File G:/h114-fixtures-20261115/cleanup-h114.ps1`：仅删除本项一根fixture，先核全后代零reparse、活动Cargo/rustc/link零，再WhatIf后Remove-Item；实际清理8049文件、2578990505逻辑字节，exit0，最终`remaining=0`、`protectedInputsUnchanged=true`。共享target/debug、node_modules、公共Cargo缓存、源码和用户未跟踪项未删；fixture日志/脚本随根目录回收，关键日志hash和结果已写入前述E-H114-01～03及本记录。普通权限执行，无管理员token或UAC，不冒称最高管理员。
+
+H114完成当前Windows离线范围：后台子Agent成功真实hook、typed成功/失败/取消类别矩阵、Hooks action backend及AppCore消费边界已验证；未验完整workspace、真实外部hook/模型、Tauri/UI、其它OS和长期压力，保留为残余限制。累计259项已修复验收，历史跳过29、归并10、撤销3、待修5（含H180授权不修）、修复中0、H66验收保留1；有效未闭环6。下一项H172；全余170–430有效小时仍沿未逐项重估的低置信历史区间，编译/设备/依赖/人工等待另计。
