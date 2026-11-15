@@ -200,6 +200,22 @@ async fn payload_matrix(base: Option<crate::HookBaseInput>) {
             },
             json!({"tool_use_id":"call_denied_1","tool_name":"read_file","tool_input":{"path":"synthetic.txt"},"reason":"ordinary rejection"}),
         ),
+        (
+            HookEvent::PreCompact,
+            HookData::Compact {
+                trigger: "context_overflow".into(),
+                summary: None,
+            },
+            json!({"trigger":"auto","custom_instructions":null}),
+        ),
+        (
+            HookEvent::PostCompact,
+            HookData::Compact {
+                trigger: "micro_compact".into(),
+                summary: Some("synthetic compact summary".into()),
+            },
+            json!({"trigger":"auto","compact_summary":"synthetic compact summary"}),
+        ),
     ]);
     assert_payload_matrix(base, cases).await;
 }
@@ -278,6 +294,42 @@ pub(super) async fn assert_payload_matrix(
         }
     }
     server.await.unwrap();
+}
+
+#[test]
+fn h110_compaction_wire_uses_protocol_trigger_and_rejects_mismatched_points() {
+    let mut context = HookContext::new(
+        deepagent_core::id::SessionId::nil(),
+        HookPoint::BeforeCompact,
+        HookData::Compact {
+            trigger: "manual".into(),
+            summary: None,
+        },
+    );
+    assert_eq!(
+        super::build_hook_payload(HookEvent::PreCompact, &context),
+        json!({
+            "hook_event_name":"PreCompact",
+            "session_id":deepagent_core::id::SessionId::nil().to_string(),
+            "trigger":"manual",
+            "custom_instructions":null,
+        })
+    );
+    context.point = HookPoint::PostCompact;
+    context.data = HookData::Compact {
+        trigger: "auto_compact_threshold".into(),
+        summary: Some("summary".into()),
+    };
+    assert_eq!(
+        super::build_hook_payload(HookEvent::PostCompact, &context)["trigger"],
+        "auto"
+    );
+    assert!(
+        super::build_hook_payload(HookEvent::PreCompact, &context)
+            .get("custom_instructions")
+            .is_none(),
+        "a mismatched compaction point must not manufacture PreCompact fields"
+    );
 }
 
 #[test]

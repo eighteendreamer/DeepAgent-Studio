@@ -207,11 +207,11 @@ fn sample_hook_data(event: HookEvent, matcher: Option<&str>) -> HookData {
             },
         },
         HookEvent::PreCompact => HookData::Compact {
-            trigger: "manual_test".to_string(),
+            trigger: "manual".to_string(),
             summary: None,
         },
         HookEvent::PostCompact => HookData::Compact {
-            trigger: "manual_test".to_string(),
+            trigger: "manual".to_string(),
             summary: Some("Test summary".to_string()),
         },
         HookEvent::SubagentStart => HookData::Subagent {

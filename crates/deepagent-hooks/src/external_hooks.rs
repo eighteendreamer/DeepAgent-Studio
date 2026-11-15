@@ -1583,6 +1583,17 @@ impl Hook for ExternalHttpHook {
     }
 }
 
+/// Map internal compaction reasons to the stable Claude-compatible trigger.
+/// The detailed reason remains in runtime events; hook consumers only receive
+/// the protocol's manual/automatic distinction.
+fn compact_hook_trigger(trigger: &str) -> &'static str {
+    if trigger == "manual" {
+        "manual"
+    } else {
+        "auto"
+    }
+}
+
 // One wire projection for command stdin, HTTP body and host-owned actions.
 fn build_hook_payload(event: HookEvent, ctx: &HookContext) -> serde_json::Value {
     let mut payload = serde_json::Map::new();
@@ -1719,10 +1730,30 @@ fn build_hook_payload(event: HookEvent, ctx: &HookContext) -> serde_json::Value 
             payload.insert("reason".into(), serde_json::json!(reason));
         }
         HookData::PermissionDenied { .. } => {}
-        HookData::Compact { trigger, summary } => {
-            payload.insert("trigger".into(), serde_json::json!(trigger));
-            payload.insert("compact_summary".into(), serde_json::json!(summary));
+        HookData::Compact {
+            trigger,
+            summary: _,
+        } if event == HookEvent::PreCompact && ctx.point == HookPoint::BeforeCompact => {
+            // `custom_instructions` is nullable until an explicit manual
+            // compaction API supplies one.
+            payload.insert(
+                "trigger".into(),
+                serde_json::json!(compact_hook_trigger(trigger)),
+            );
+            payload.insert("custom_instructions".into(), serde_json::Value::Null);
         }
+        HookData::Compact { trigger, summary }
+            if event == HookEvent::PostCompact && ctx.point == HookPoint::PostCompact =>
+        {
+            payload.insert(
+                "trigger".into(),
+                serde_json::json!(compact_hook_trigger(trigger)),
+            );
+            if let Some(summary) = summary {
+                payload.insert("compact_summary".into(), serde_json::json!(summary));
+            }
+        }
+        HookData::Compact { .. } => {}
         HookData::Subagent {
             agent_id,
             agent_type,
