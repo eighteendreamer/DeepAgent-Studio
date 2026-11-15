@@ -135,6 +135,11 @@ struct TrackedSubagent<'a> {
     // A field, not a later stack local: Drop must retain the origin exclusion
     // until its existing terminal/transcript finalizer has finished too.
     origin_activity: Option<deepagent_persistence::event_store::SessionActivityGuard>,
+    /// Set once the Stop hook has been given a readable current-attempt view.
+    stop_transcript_ready: bool,
+    stop_transcript_state: Option<String>,
+    /// Ephemeral transcript lease for non-persistent child runs.
+    stop_transcript_view: Option<tempfile::NamedTempFile>,
 }
 
 impl TrackedSubagent<'_> {
@@ -148,7 +153,15 @@ impl TrackedSubagent<'_> {
         let mut terminal_state = state;
         let mut persistence_result = Ok(());
         if persist {
-            let transcript_result = self.persist_transcript(state, summary);
+            let transcript_result = if self.stop_transcript_ready {
+                if self.stop_transcript_state.as_deref() == Some(state) {
+                    Ok(())
+                } else {
+                    self.update_stop_transcript(state, summary)
+                }
+            } else {
+                self.persist_transcript(state, summary)
+            };
             if transcript_result.is_err() {
                 if state != "cancelled" {
                     terminal_state = "failed";
@@ -191,6 +204,83 @@ impl TrackedSubagent<'_> {
                 });
         }
         persistence_result
+    }
+
+    fn prepare_stop_transcript(&mut self, state: &str, summary: &str) -> Result<String> {
+        let path = self
+            .runner
+            .transcript_root
+            .join(format!("{}.json", self.id));
+        if self.persist {
+            self.persist_transcript(state, summary)?;
+        } else {
+            std::fs::create_dir_all(&self.runner.transcript_root).map_err(|error| {
+                CoreError::Persistence(format!("create ephemeral transcript directory: {error}"))
+            })?;
+            let mut view = tempfile::Builder::new()
+                .prefix(".subagent-stop-")
+                .suffix(".json")
+                .tempfile_in(&self.runner.transcript_root)
+                .map_err(|error| {
+                    CoreError::Persistence(format!("create ephemeral transcript view: {error}"))
+                })?;
+            let transcript = serde_json::json!({
+                "subagent_id": self.id,
+                "parent_run_id": self.runner.parent_run_id,
+                "state": state,
+                "summary": summary,
+                "context": {
+                    "version": 1,
+                    "attempt": 0,
+                    "items": &self.seed_history,
+                },
+            });
+            serde_json::to_writer_pretty(&mut view, &transcript)?;
+            view.as_file_mut().sync_all().map_err(|error| {
+                CoreError::Persistence(format!("flush ephemeral transcript view: {error}"))
+            })?;
+            let path = view.path().to_path_buf();
+            self.stop_transcript_view = Some(view);
+            self.stop_transcript_ready = true;
+            self.stop_transcript_state = Some(state.to_string());
+            return Ok(path.to_string_lossy().into_owned());
+        }
+        self.stop_transcript_ready = true;
+        self.stop_transcript_state = Some(state.to_string());
+        Ok(path.to_string_lossy().into_owned())
+    }
+
+    fn update_stop_transcript(&self, state: &str, summary: &str) -> Result<()> {
+        let path = self
+            .stop_transcript_view
+            .as_ref()
+            .map(|view| view.path().to_path_buf())
+            .unwrap_or_else(|| {
+                self.runner
+                    .transcript_root
+                    .join(format!("{}.json", self.id))
+            });
+        let bytes = std::fs::read(&path)
+            .map_err(|error| CoreError::Persistence(format!("read Stop transcript: {error}")))?;
+        let mut transcript: serde_json::Value = serde_json::from_slice(&bytes)?;
+        transcript["state"] = serde_json::Value::String(state.to_string());
+        transcript["summary"] = serde_json::Value::String(summary.to_string());
+        if let Some(attempt) = transcript["attempts"]
+            .as_array_mut()
+            .and_then(|attempts| attempts.last_mut())
+        {
+            attempt["state"] = serde_json::Value::String(state.to_string());
+            attempt["summary"] = serde_json::Value::String(summary.to_string());
+        }
+        let bytes = serde_json::to_vec_pretty(&transcript)?;
+        if self.stop_transcript_view.is_some() {
+            std::fs::write(path, bytes).map_err(|error| {
+                CoreError::Persistence(format!("write Stop transcript: {error}"))
+            })?;
+        } else {
+            crate::atomic_file::write_file_atomically(&path, &bytes)?;
+        }
+        Ok(())
     }
     fn persist_transcript(&self, state: &str, summary: &str) -> Result<()> {
         let subagent_id = &self.id;
@@ -570,6 +660,9 @@ impl ChatSubagentRunner {
             surface: None,
             seed_history: history,
             origin_activity: None,
+            stop_transcript_ready: false,
+            stop_transcript_state: None,
+            stop_transcript_view: None,
         };
         // Child transcripts may use a separate DB. Their durable origin still
         // owns archive admission, including background work after main teardown.
@@ -667,6 +760,29 @@ impl ChatSubagentRunner {
             Err(error) => error.to_string(),
         };
         let bounded_summary = subagent_summary(&summary, 2_000);
+        let transcript_path = match lifecycle.prepare_stop_transcript(state, &summary) {
+            Ok(path) => path,
+            Err(error) => {
+                tracing::warn!(%error, subagent_id, "failed to prepare readable Stop hook transcript");
+                self.transcript_root
+                    .join(format!("{subagent_id}.json"))
+                    .to_string_lossy()
+                    .into_owned()
+            }
+        };
+        let cancelled_during_stop_preparation = cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+            || cancel_token
+                .as_ref()
+                .is_some_and(CancellationToken::is_cancelled);
+        if cancelled_during_stop_preparation && state != "cancelled" {
+            lifecycle.finish(
+                "cancelled",
+                "sub-agent execution cancelled before Stop hook dispatch",
+            )?;
+            return Err(CoreError::other("sub-agent was cancelled"));
+        }
         let _ = self
             .dispatch_child_hook(
                 HookPoint::SubagentStop,
@@ -680,11 +796,7 @@ impl ChatSubagentRunner {
                     // The current runner has no stop-hook re-entry loop; keep
                     // this explicit instead of inferring it from the event.
                     stop_hook_active: false,
-                    agent_transcript_path: self
-                        .transcript_root
-                        .join(format!("{subagent_id}.json"))
-                        .to_string_lossy()
-                        .into_owned(),
+                    agent_transcript_path: transcript_path,
                 },
             )
             .await;
@@ -1604,12 +1716,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let start_payload_path = dir.path().join("subagent-start.json");
         let stop_payload_path = dir.path().join("subagent-stop.json");
+        let observed_transcript = dir.path().join("observed-child-transcript.json");
         let capture_command = |path: &Path| {
             let quoted = path.to_string_lossy().replace('\'', "''");
             format!(
                 "$payload = [Console]::In.ReadToEnd(); [System.IO.File]::WriteAllText('{quoted}', $payload)"
             )
         };
+        let transcript_copy = observed_transcript.to_string_lossy().replace('\'', "''");
+        let stop_command = format!(
+            "{}; $hook = $payload | ConvertFrom-Json; $child = [System.IO.File]::ReadAllText($hook.agent_transcript_path); [System.IO.File]::WriteAllText('{transcript_copy}', $child)",
+            capture_command(&stop_payload_path)
+        );
         let definitions = HookDefinitions::parse(
             &serde_json::json!({
                 "hooks": {
@@ -1619,7 +1737,7 @@ mod tests {
                     }] }],
                     "SubagentStop": [{ "hooks": [{
                         "type": "command", "shell": "powershell", "timeout": 5,
-                        "command": capture_command(&stop_payload_path)
+                        "command": stop_command
                     }] }]
                 }
             })
@@ -1672,6 +1790,15 @@ mod tests {
         assert!(start_payload.get("agent_transcript_path").is_none());
         let agent_id = stop_payload["agent_id"].as_str().unwrap();
         let transcript_path = stop_payload["agent_transcript_path"].as_str().unwrap();
+        let during_hook: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(observed_transcript)
+                .expect("the child transcript must be readable DURING the Stop callback"),
+        )
+        .unwrap();
+        assert_eq!(during_hook["subagent_id"], agent_id);
+        assert!(during_hook["context"]["items"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()));
         assert!(
             stop_payload["stop_hook_active"] == false
                 && !agent_id.is_empty()
