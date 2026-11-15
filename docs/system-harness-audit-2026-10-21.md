@@ -4,7 +4,7 @@
 
 用户已授权按本报告逐项进行本地代码修复与测试；已修复、撤销和归并条目跳过，不重新计数。分析阶段完成不再是当前总体任务的完成状态。每项完成后更新原项状态、保留失败证据、独立提交并汇报验收与剩余工时。本轮不操作真实用户文件或外部服务。
 
-**当前续接（2026-11-15）**：307唯一台账：253验收、29历史跳过、10归并、3撤销、11待修含H180、H66验收保留1、修复中/阻塞0，有效未完整闭环11。H106已按用户指定DeepSeek Harness原则完成本地结构化错误适配、本机回归及清理，详E-H106-04～07；fix为a0560739，官方该版本不支持StopFailure，不冒称官方原样或Claude完整兼容。完整workspace5462过7败131忽略、strict失败保留；H297/H98交叉测试契约已独立复核，未改变生产状态或修复计数。H109已按E-H109-04补齐Stop回调可读transcript并完成限定验收，提交`55fe90eb`；H110候选未提交。历史失败与计数快照保留。
+**当前续接（2026-11-15）**：307唯一台账：254验收、29历史跳过、10归并、3撤销、10待修含H180、H66验收保留1、修复中/阻塞0，有效未完整闭环10。H106已按用户指定DeepSeek Harness原则完成本地结构化错误适配、本机回归及清理，详E-H106-04～07；fix为a0560739，官方该版本不支持StopFailure，不冒称官方原样或Claude完整兼容。完整workspace5462过7败131忽略、strict失败保留；H297/H98交叉测试契约已独立复核，未改变生产状态或修复计数。H109已按E-H109-04补齐Stop回调可读transcript并完成限定验收，提交`55fe90eb`；H110已按E-H110-01～02完成本机schema适配与回归，代码提交`aee1b8d5f010c7b09f22f4fb25e253f790715f11`。历史失败与计数快照保留。
 
 **历史唯一台账（2026-11-12，H107验收补强/提交/清理已闭环）**：306行233已修复并验收、28历史跳过、10归并、3撤销、31待修含H180授权不修、0修复中/阻塞、1验收保留H66。30有效待处理加H66共31项有效未完整闭环。本轮恢复H107验收关闭1、新增生产修复0；原生产64f9d169不变，补强test提交629a42784ca4bf080f53ab19139761adeb7aff17，hash/清理回填见E17。SDK完整默认/全特性各89/0/5、CLI同宿主/busy及AppCore/原probe过，strict依赖旧失败及未重跑范围保留，详原项及[台账](system-harness-repair-progress.md)。非全系统全绿、不推送，整个任务未完成。
 
@@ -5300,13 +5300,17 @@ H110原两路schema红已复现，未提交候选即使局部绿仍有未知trig
 **E-H109-04（2026-11-15，回调可读transcript补强、回归与清理）**：原E-H109-03红测保留；生产补强在Stop dispatch前发布当前attempt，非持久子运行使用只读临时JSON lease，取消/Drop复用同一owner更新终态。H45三点1/0、AppCore相关50/0/2忽略、正式Stop callback1/0，Hooks86/0；fmt/diff通过。修复补强提交`55fe90eb`，前置`d9a37277`；清理G:/h110-fixtures-20261115盘点5066文件/4524989793逻辑字节、零reparse，最终remaining=0且原件/源码文档保护true。未验全workspace/strict/真实schema validator/供应商/其他OS/UI。下一H110。
 ### H-110：PreCompact/PostCompact payload 不符合事件输入 schema
 
+**当前状态：已修复并验收（2026-11-15，仅下列 Windows 本机、离线模型与外部 hook 投影范围）。** 原始失败证据保留；DeepSeek Harness 官方当前参考实现明确不支持 `PreCompact`/`PostCompact`，本项采用其“内部状态与 hook 协议边界分离”的原则，按 Claude schema 做本地兼容投影，不宣称官方原样实现。
+
 **级别：低（P3，条件性 hook 输入契约缺陷）；触发条件：配置 `PreCompact` 或 `PostCompact` command hook，且发生自动阈值或 provider overflow 压缩。** 未配置这些 hook 时不影响压缩。
 
 - 根因与生产路径：`HookedReactiveContextCompactor` 在消息与原生 ResponseItem 压缩路径都复用 `HookData::Compact` 和固定 serializer。PreCompact 写出 `trigger` 与 `compact_summary: null`；PostCompact 写出 `trigger` 与 summary。`CompactionTrigger::as_str()` 的 `auto_compact_threshold` / `context_overflow`，以及 micro-compact 的 `micro_compact`，均不属于参考 schema 的 `manual|auto`。
 - 动态复现：Windows ignored 探针 `context_runtime::tests::audit_precompact_payload_includes_required_fields` 经正式 Message compactor 捕获 PreCompact payload `{"compact_summary":null,"hook_event_name":"PreCompact","session_id":"…","trigger":"context_overflow"}`；`audit_postcompact_payload_includes_required_fields` 捕获 PostCompact payload，含真实 `compact_summary` 但仍是 `trigger=context_overflow`。两个 schema 断言均失败（合跑 **0 passed / 2 failed**）；compaction 与离线摘要请求实际执行。
 - 成熟实现对照：Claude Code `entrypoints/sdk/coreSchemas.ts::PreCompactHookInputSchema` 要求 `trigger` 为 `manual|auto` 且 `custom_instructions` 存在（可为 null）；`PostCompactHookInputSchema` 同样要求 `manual|auto` 并要求字符串 `compact_summary`。`hooksConfigManager.ts` 对两事件声明同一 trigger 集合。
 - 影响及限制：依赖字段校验或按触发类型过滤的 PreCompact hook 无法处理输入；PostCompact hook 的 summary 可读，但严格校验仍会因 trigger 被拒。本次动态覆盖 Message compactor 的 overflow；ResponseItem 路径在源码上使用相同 DTO，但未单独运行，也未启动第三方 schema validator。
-- 收敛方向（尚未实施，本地设计）：区分 hook 协议 trigger (`auto`/`manual`) 与内部压缩原因，只在现有 hook DTO 边界映射；为 PreCompact 使用 `custom_instructions`，为 PostCompact 保留字符串 `compact_summary`。分别覆盖自动阈值、provider overflow、micro-compact、原生 Responses compaction 及手动路径（若产品提供）。
+- **E-H110-01（原红复现，2026-11-15）**：在隔离 `HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP`、Rust 1.88.0、`--locked --offline` 下运行原 ignored 两路探针，`cargo test -p deepagent-app-core --lib compact_payload_includes_required_fields --target-dir G:/h110-fixtures-20261115/target --locked --offline -j 2 -- --ignored --nocapture --test-threads=1`，exit101、0过/2败；PreCompact/PostCompact 均泄露 `trigger=context_overflow`，前者输出 `compact_summary:null` 而非 `custom_instructions:null`。日志 `h110-original-red.log` SHA256=`07EBD4F935B2FC786294FE313B33F6D929BFC82B0FE40659677FB87FBBDA4182`。
+- **E-H110-02（根因修复、回归与边界）**：在唯一 `build_hook_payload` 投影边界将内部 `auto_compact_threshold`、`context_overflow`、`micro_compact` 统一映射为协议 `auto`，显式 `manual` 保留；PreCompact 输出 `custom_instructions:null`，不输出 Post 字段；PostCompact 仅输出非空字符串 `compact_summary`。错配 event/point 不制造字段；设置页 sample 使用合法 `manual`。补充 Hooks 三种动作后端矩阵和错配单测；`cargo test -p deepagent-hooks --lib --offline -- --test-threads=1` 为87过/0败，AppCore 原两路复验为2过/0败，`cargo test -p deepagent-app-core --lib context_runtime::tests --offline` 为31过/0败/2忽略，`cargo fmt --all -- --check` 与 `git diff --check` 通过。日志 `h110-green.log` SHA256=`915F0A80CECF2B081E8A6EDCE7749392188FE99821D0091379DC7BDBFA221013`。
+- **实现与限制**：不修改内部 `CompactionTrigger`、压缩算法、持久化、取消或用量账本；Message 与 ResponseItem 共用同一 serializer，ResponseItem 本轮由共享矩阵覆盖，未另跑正式 native compactor ignored 探针。未运行完整 workspace、strict Clippy、真实第三方 schema validator、真实供应商、其他 OS、Tauri/UI 或前端构建；DeepSeek Harness 官方参考版本仍不支持这两个 hook。专属 fixture 清理前盘点4494文件/3,672,528,537逻辑字节、零reparse；Remove-Item在进程启动前被本机策略拒绝，零删除，G:/h110-fixtures-20261115仍待用户终端清理；共享target/debug、node_modules、源码和用户文件未触碰。
 
 ### H-111：PreCompact hook 的 stdout 指令没有进入摘要请求
 
