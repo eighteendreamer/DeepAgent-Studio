@@ -239,6 +239,14 @@ async fn payload_matrix(base: Option<crate::HookBaseInput>) {
             },
             json!({"old_cwd":"C:/workspace","new_cwd":"C:/worktrees/feature-a"}),
         ),
+        (
+            HookEvent::FileChanged,
+            HookData::FileChange {
+                path: "src/main.rs".into(),
+                kind: "modified".into(),
+            },
+            json!({"file_path":"src/main.rs","event":"change"}),
+        ),
     ]);
     assert_payload_matrix(base, cases).await;
 }
@@ -374,6 +382,33 @@ fn h112_worktree_wire_rejects_mismatched_event_data() {
             .get("worktree_path")
             .is_none(),
         "a mismatched worktree event must not manufacture its path field"
+    );
+}
+
+#[test]
+fn h113_file_change_wire_maps_known_kinds_and_rejects_unknown() {
+    let context = HookContext::new(
+        deepagent_core::id::SessionId::nil(),
+        HookPoint::FileChanged,
+        HookData::FileChange {
+            path: "src/main.rs".into(),
+            kind: "created".into(),
+        },
+    );
+    assert_eq!(
+        super::build_hook_payload(HookEvent::FileChanged, &context)["event"],
+        "add"
+    );
+    let mut unknown = context;
+    unknown.data = HookData::FileChange {
+        path: "src/main.rs".into(),
+        kind: "unchanged".into(),
+    };
+    assert!(
+        super::build_hook_payload(HookEvent::FileChanged, &unknown)
+            .get("file_path")
+            .is_none(),
+        "unknown mutation labels must fail closed"
     );
 }
 

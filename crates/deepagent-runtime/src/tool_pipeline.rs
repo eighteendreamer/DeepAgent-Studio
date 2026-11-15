@@ -2526,7 +2526,6 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    #[ignore = "audit H-113: FileChanged hook payload must satisfy its required input schema"]
     async fn audit_file_changed_hook_payload_includes_required_fields() {
         use deepagent_hooks::{HookDefinitions, SystemHookRunner};
 

@@ -1583,6 +1583,16 @@ impl Hook for ExternalHttpHook {
     }
 }
 
+/// Map checkpoint mutation labels to the stable Claude-compatible event enum.
+fn file_change_event(kind: &str) -> Option<&'static str> {
+    match kind {
+        "created" => Some("add"),
+        "modified" => Some("change"),
+        "deleted" => Some("unlink"),
+        _ => None,
+    }
+}
+
 /// Map internal compaction reasons to the stable Claude-compatible trigger.
 /// The detailed reason remains in runtime events; hook consumers only receive
 /// the protocol's manual/automatic distinction.
@@ -1787,10 +1797,15 @@ fn build_hook_payload(event: HookEvent, ctx: &HookContext) -> serde_json::Value 
             payload.insert("task_id".into(), serde_json::json!(task_id));
             payload.insert("task_subject".into(), serde_json::json!(subject));
         }
-        HookData::FileChange { path, kind } => {
-            payload.insert("path".into(), serde_json::json!(path));
-            payload.insert("change_kind".into(), serde_json::json!(kind));
+        HookData::FileChange { path, kind }
+            if event == HookEvent::FileChanged && ctx.point == HookPoint::FileChanged =>
+        {
+            if let Some(file_event) = file_change_event(kind) {
+                payload.insert("file_path".into(), serde_json::json!(path));
+                payload.insert("event".into(), serde_json::json!(file_event));
+            }
         }
+        HookData::FileChange { .. } => {}
         HookData::WorktreeCreate { name, .. }
             if event == HookEvent::WorktreeCreate && ctx.point == HookPoint::WorktreeCreate =>
         {
@@ -2563,7 +2578,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn file_changed_hook_sees_path_and_kind_payload() {
+    async fn file_changed_hook_uses_schema_field_names_and_event_values() {
         let runner = Arc::new(MockRunner::new(0, "", ""));
         let hook = ExternalCommandHook {
             event: HookEvent::FileChanged,
@@ -2592,8 +2607,8 @@ mod tests {
         let stdin = runner.last_stdin.lock().unwrap().clone().unwrap();
         let payload: serde_json::Value = serde_json::from_str(&stdin).unwrap();
         assert_eq!(payload["hook_event_name"], "FileChanged");
-        assert_eq!(payload["path"], "src/main.rs");
-        assert_eq!(payload["change_kind"], "modified");
+        assert_eq!(payload["file_path"], "src/main.rs");
+        assert_eq!(payload["event"], "change");
     }
 
     #[tokio::test]
