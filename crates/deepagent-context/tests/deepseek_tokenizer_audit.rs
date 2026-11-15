@@ -230,22 +230,149 @@ fn unmodelled_hosted_tools_and_conversion_errors_are_not_priced_as_exact() {
     assert!(failed.total() > 0);
 }
 
+#[tokio::test]
+async fn chat_json_defaults_and_overrides_price_the_dispatched_format() {
+    use async_trait::async_trait;
+    use deepagent_core::error::Result;
+    use deepagent_models::transport::EventSink;
+    use deepagent_models::{HttpTransport, TransportRequest};
+    use serde_json::json;
+    use std::sync::{atomic::AtomicBool, Mutex};
+
+    #[derive(Default)]
+    struct CaptureTransport(Mutex<Vec<String>>);
+
+    #[async_trait]
+    impl HttpTransport for CaptureTransport {
+        async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            self.0.lock().unwrap().push(request.body);
+            for event in [
+                r#"{"choices":[{"delta":{"content":"{}"},"finish_reason":null}]}"#,
+                r#"{"choices":[{"delta":{"content":""},"finish_reason":"stop"}]}"#,
+                "[DONE]",
+            ] {
+                if sink.on_event(event)? {
+                    break;
+                }
+            }
+            Ok(())
+        }
+    }
+
+    let mut paths = 0;
+    for model in ["deepseek-v4-pro", "deepseek-flash"] {
+        let mut base = ResponseRequest::with_instructions_and_user_input(
+            model,
+            "rules",
+            "请输出 JSON，例如 {\"answer\":\"合成原文\"}。",
+        );
+        base.reasoning_effort = Some(ReasoningEffort::None);
+        base.max_output_tokens = Some(8192);
+        let plain_client = ModelClient::new(
+            Arc::new(MockTransport::new([])),
+            ModelConfig::deepseek_chat("offline-placeholder"),
+        );
+        let plain = plain_client.count_response_prompt(&base).unwrap().unwrap();
+        // H-98 made defaults.text meaningful to Chat; request-level text still wins.
+        for (default_format, request_format, expected_format) in [
+            (None, None, None),
+            (Some("json_object"), None, Some("json_object")),
+            (None, Some("json_object"), Some("json_object")),
+            (Some("json_object"), Some("text"), Some("text")),
+            (Some("text"), Some("json_object"), Some("json_object")),
+        ] {
+            for cancel_aware in [false, true] {
+                let capture = Arc::new(CaptureTransport::default());
+                let mut config = ModelConfig::deepseek_chat("offline-placeholder");
+                config.defaults.text = default_format.map(|kind| json!({"format":{"type":kind}}));
+                let client = ModelClient::new(capture.clone(), config);
+                let mut request = base.clone();
+                request.text = request_format.map(|kind| json!({"format":{"type":kind}}));
+                let measured = measure_response_request(&client, &request, |_| 0);
+                assert!(measured.source.starts_with("offline_prompt_estimate:"));
+                assert_eq!(
+                    client.count_response_prompt(&request).unwrap(),
+                    Some(measured.total())
+                );
+                let bytes = client.response_prompt_byte_estimate(&request).unwrap();
+                assert!(
+                    capture.0.lock().unwrap().is_empty(),
+                    "pricing must not dispatch"
+                );
+                if cancel_aware {
+                    client
+                        .stream_response_cancelled(
+                            request.clone(),
+                            Arc::new(AtomicBool::new(false)),
+                        )
+                        .await
+                        .unwrap();
+                } else {
+                    client.stream_response(request.clone()).await.unwrap();
+                }
+                let bodies = capture.0.lock().unwrap();
+                assert_eq!(bodies.len(), 1);
+                assert_eq!(bytes, bodies[0].len(), "price the final serialized request");
+                let wire: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+                assert_eq!(wire["model"], model);
+                assert_eq!(wire["stream"], true);
+                assert!(
+                    wire.get("text").is_none(),
+                    "Chat uses response_format, not text"
+                );
+                assert_eq!(
+                    wire.get("response_format").cloned(),
+                    expected_format.map(|kind| json!({"type":kind}))
+                );
+                let mut observed = base.clone();
+                observed.text = wire
+                    .get("response_format")
+                    .map(|format| json!({"format":format}));
+                assert_eq!(
+                    plain_client.count_response_prompt(&observed).unwrap(),
+                    Some(measured.total()),
+                    "the captured format and effective default must have the same prompt price"
+                );
+                if expected_format == Some("json_object") {
+                    assert!(
+                        measured.total() > plain,
+                        "JSON template tokens cannot disappear"
+                    );
+                } else {
+                    assert_eq!(measured.total(), plain, "plain-text control is unchanged");
+                }
+                assert_eq!(
+                    request.text,
+                    request_format.map(|kind| json!({"format":{"type":kind}})),
+                    "pricing must not mutate the caller's request"
+                );
+                paths += 1;
+            }
+        }
+    }
+    assert_eq!(paths, 20);
+    eprintln!("H297/H98 Chat prompt pricing: {paths} dispatched paths verified");
+}
+
 #[test]
-fn chat_defaults_do_not_import_responses_only_text_into_prompt_pricing() {
-    let mut config = ModelConfig::deepseek_chat("offline");
-    let plain_client = ModelClient::new(Arc::new(MockTransport::new([])), config.clone());
-    config.defaults.text = Some(serde_json::json!({"format":{"type":"json_object"}}));
-    let configured_client = ModelClient::new(Arc::new(MockTransport::new([])), config);
-    let request =
-        ResponseRequest::with_instructions_and_user_input("deepseek-flash", "rules", "合成原文");
-    let plain = measure_response_request(&plain_client, &request, |_| 0);
-    let configured = measure_response_request(&configured_client, &request, |_| 0);
-    assert!(configured.source.starts_with("offline_prompt_estimate:"));
-    assert_eq!(
-        configured.total(),
-        plain.total(),
-        "Chat dispatch ignores Responses-only defaults.text"
-    );
+fn chat_json_without_an_instruction_keeps_the_visible_conversion_failure() {
+    for model in ["deepseek-v4-pro", "deepseek-flash"] {
+        let mut config = ModelConfig::deepseek_chat("offline-placeholder");
+        config.defaults.text = Some(serde_json::json!({"format":{"type":"json_object"}}));
+        let client = ModelClient::new(Arc::new(MockTransport::new([])), config);
+        // Preserve the original failing input instead of silently adding JSON to it.
+        let request = ResponseRequest::with_instructions_and_user_input(model, "rules", "合成原文");
+        let error = client
+            .count_response_prompt(&request)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("offline_prompt_conversion:"));
+        assert!(error.contains("Prompt must contain the word 'json'"));
+        let measured = measure_response_request(&client, &request, |_| 0);
+        assert_eq!(measured.source, "utf8_bytes_estimate:offline_prompt_failed");
+        assert!(measured.total() >= client.response_prompt_byte_estimate(&request).unwrap());
+        assert!(measured.total() > 0);
+    }
 }
 
 #[test]

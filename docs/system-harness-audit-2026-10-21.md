@@ -4,7 +4,7 @@
 
 用户已授权按本报告逐项进行本地代码修复与测试；已修复、撤销和归并条目跳过，不重新计数。分析阶段完成不再是当前总体任务的完成状态。每项完成后更新原项状态、保留失败证据、独立提交并汇报验收与剩余工时。本轮不操作真实用户文件或外部服务。
 
-**当前续接（2026-11-15）**：307唯一台账：252验收、29历史跳过、10归并、3撤销、12待修含H180、H66验收保留1、修复中/阻塞0，有效未完整闭环12。H106已按用户指定DeepSeek Harness原则完成本地结构化错误适配、本机回归及清理，详E-H106-04～07；fix为a0560739，官方该版本不支持StopFailure，不冒称官方原样或Claude完整兼容。完整workspace5462过7败131忽略、strict失败保留；H297/H98交叉红测下一轮独立复核，未混修或提前改变原项状态。历史失败与计数快照保留。
+**当前续接（2026-11-15）**：307唯一台账：252验收、29历史跳过、10归并、3撤销、12待修含H180、H66验收保留1、修复中/阻塞0，有效未完整闭环12。H106已按用户指定DeepSeek Harness原则完成本地结构化错误适配、本机回归及清理，详E-H106-04～07；fix为a0560739，官方该版本不支持StopFailure，不冒称官方原样或Claude完整兼容。完整workspace5462过7败131忽略、strict失败保留；H297/H98交叉测试契约已独立复核，未改变生产状态或修复计数。历史失败与计数快照保留。
 
 **历史唯一台账（2026-11-12，H107验收补强/提交/清理已闭环）**：306行233已修复并验收、28历史跳过、10归并、3撤销、31待修含H180授权不修、0修复中/阻塞、1验收保留H66。30有效待处理加H66共31项有效未完整闭环。本轮恢复H107验收关闭1、新增生产修复0；原生产64f9d169不变，补强test提交629a42784ca4bf080f53ab19139761adeb7aff17，hash/清理回填见E17。SDK完整默认/全特性各89/0/5、CLI同宿主/busy及AppCore/原probe过，strict依赖旧失败及未重跑范围保留，详原项及[台账](system-harness-repair-progress.md)。非全系统全绿、不推送，整个任务未完成。
 
@@ -4670,9 +4670,13 @@ AppCore cargo clippy --target-dir <本轮root> -p deepagent-app-core --all-targe
 - 当前证据只证明 stopping tick loop 不影响已经派发的模型请求；并未关闭 Tauri 整个 runtime、杀进程、验证启动恢复或真实供应商调用。桌面宿主退出时后台 future 如何被 runtime drop 处理，以及数据库记录如何重启恢复，仍需单独验证。
 - 收敛方向（尚未实施，本地设计）：为 CronService 的 fire 工作建立明确 owner。宿主 shutdown 时停止接纳新 occurrence，再按既有 RunCoordinator 取消/等待已运行项并记录终态；如果产品语义要求 fire 独立于调度器继续运行，则至少要由宿主级任务 supervisor 持有并在重启时恢复/呈现。运行 ID 与稳定 occurrence identity 关联应复用现有 RunStore，不另建任务 store。验收需覆盖 fire 前 shutdown、模型请求中、工具/审批等待、取消审计失败、正常完成竞争、真实桌面退出与重启，且一个 scheduler shutdown 不能影响其他会话或插件宿主任务。
 
+**E-H98-03（交叉计量证据，2026-11-15）**：H98的生产修复仍为`9162ab16`，本次H297测试契约补强仅验证该映射在离线计量与正式Chat wire中保持一致；完整证据见同文档的E-H297-15，不新增H98生产修复或验收计数。
+
+
+
 ### H-98：DeepSeek Chat Completions 的 JSON 输出模式被拒绝或静默丢弃
 
-**当前状态：已修复并验收（2026-11-15，E-H98-01～02）。** Chat adapter 已支持 DeepSeek Chat 的 `text`/`json_object` response format，并对 Responses-only schema 与畸形输入明确拒绝；默认值和请求值共用同一映射。以下原审计失败和协议边界保留。
+**当前状态：已修复并验收（2026-11-15，E-H98-01～03）。** Chat adapter 已支持 DeepSeek Chat 的 `text`/`json_object` response format，并对 Responses-only schema 与畸形输入明确拒绝；默认值和请求值共用同一映射。以下原审计失败和协议边界保留。
 
 **级别：低（P3，条件性适配器缺陷）；触发条件：显式使用公开 `WireMode::ChatCompletions`，并通过 `ResponseRequest.text` 或客户端默认值请求 `json_object`。** 当前桌面模型组装固定使用 Responses，因此本项不覆盖默认桌面对话。DeepSeek Chat 文档支持 `text` 和 `json_object`；不把 Responses 的 JSON Schema 格式假定为 Chat 协议能力。
 
@@ -5073,7 +5077,7 @@ H106按E04～05所列Windows本机离线、真实命令hook、五种动作后端
 
 **E-H106-07（2026-11-15，独立提交与真实hash回填）**：修复提交为 `a05607397507105e62d39fc38501cdb1fb780c65`（【fix】保留停止失败的结构化来源与原因），父提交bac59ba6，仅9份Rust源码/测试及两份当时双文；未amend、推送或创建PR。提交前再次核对9份受测源码SHA256一致、fmt/diff与暂存diff检查通过，白名单精确11文件；其余用户未跟踪项未读正文、改动、暂存或删除。307唯一编号/8列、252顶部验收成员与主行逐一相符，除H106外306行主记录与bac59ba6逐字未变，E01～03历史证据保持、E04～06双文一致。复核脚本首次因仅接受编号后中文冒号而漏掉H305的“撤销”标题，未改台账迁就脚本；修正编号匹配后全307行校验通过，该次检查失败不当作产品红测。
 
-本次仅普通双文回填真实fix hash，不递归填写本次docs自身hash，不新增第二次验收。E01～06原红、加载/工具链失败、完整workspace5462过7败131忽略、strict残余及未验边界保留；H297/H98交叉红测尚未归因，下一独立复核。本项实现/验收/清理/源码提交均余0，252验收与12有效未闭环口径不变；整个逐项审计修复任务未完成。
+本次仅普通双文回填真实fix hash，不递归填写本次docs自身hash，不新增第二次验收。E01～06原红、加载/工具链失败、完整workspace5462过7败131忽略、strict残余及未验边界保留；H297/H98交叉测试契约已由后续E-H297-15独立核实，不改变本项历史验收事实。本项实现/验收/清理/源码提交均余0，252验收与12有效未闭环口径不变；整个逐项审计修复任务未完成。
 
 ### 复核但未登记：Responses `tool_search_call`
 
@@ -17673,6 +17677,12 @@ finally真实返回原CLI/snap.new/sidecar三项保护均true，独立再次逐�
 - 官方包附带的Python例子使用transformers；本轮未执行包内代码或trust_remote_code，而将已查证的 `tokenizers==0.23.3` 二进制wheel单独安装到target下，用其Tokenizer.from_file读取该JSON，对原始文本encode(add_special_tokens=false)。不安装到项目或全局Python环境，不新增Rust依赖。包内tokenizer_config.json的model_max_length=16384及模板未明确证明与线上当前Flash/Pro完全相同，**不把文件名当版本匹配保证，也不使用该值替代线上上下文容量**。
 - 首次执行 `scripts/audit_deepseek_tokenizer.py --tokenizer target/audit-deepseek-tokenizer/unpacked/deepseek_v4_tokenizer/tokenizer.json --python-packages target/audit-deepseek-tokenizer/python-packages` 退出0，四样本均完整encode/decode往返一致。英文345000字符→75000 token；中文180000字符/540000 UTF-8字节→100000；Unicode符号32000字符/120000字节→56000；含中文注释Rust112500字符/166500字节→43500。结果已立即固定到测试fixture；它们是**该官方离线文件的原始文本token数，不是完整请求token、真实provider usage或费用**。
 - 正在用正式HeuristicTokenizer、Surface meter及ContextPolicy核对这些样本是否低估、是否跨越压力阈值；在这一步执行前不预填产品故障或通过结果。官方约0.3/0.6的换算只是粗略说明，未被当作样本的精确答案。
+
+**E-H297-15（2026-11-15，H297/H98交叉测试契约独立复核）**：完整workspace同一Context测试二进制的失败不是新的生产计量故障，而是旧测试仍假定 Chat 忽略 `ResponseDefaults.text`；H98提交`9162ab16`已按 DeepSeek 官方 Chat `response_format` 契约将`defaults.text`映射到 Chat。原失败输入“合成原文”又不含官方 JSON Output 要求的`json`指令，离线官方转换器因此正确拒绝并回退为可见的`utf8_bytes_estimate:offline_prompt_failed`；原红日志SHA256=`5383AF30229BE9CBB2D730243EF8D3090B94140A2E68AABD3CA048B4EF03552C`保留。
+
+TDD先保留失败对照，再只改`crates/deepagent-context/tests/deepseek_tokenizer_audit.rs`：新增真实`HttpTransport`捕获最终 Chat wire，覆盖 Pro/Flash、默认/请求级 text、请求覆盖默认、取消感知入口和纯文本对照共20条路径；新增无JSON指令的显式转换失败回归，禁止把失败静默变成零token。测量路径核对同一最终序列化body字节长度、`response_format`形状、source及调用方request不变。候选精确运行：原红0过/1败（含冷编译216.49秒）；修正后定向2过/0败、21.73秒；Models/Context all-targets/all-features全组**429过/0败/9忽略**、264.06秒；Context no-deps strict **exit0/51.22秒**；默认fmt及diff检查通过。未修改生产代码、Cargo依赖、协议/DTO/权限/数据库；未访问真实模型/凭据/公网，不把测试oracle修正计为新H修复或改变H98/H297状态。
+
+证据日志SHA256：原红`D0B61EE75F884AE494E3823AD0A6E9663F6819AB5FDCB73659B28A48D197AC2D`、交叉绿`A7EBFFBD28319E82A1C8A7993FFF87F267171BA90D03E17C4749E9B012886D03`、完整组`D5D9552A77B269560F3128C30F81ABE88CBD845162043D26A74AF01A485A165F`、strict`3903AADA13107F5DCF25F1F5C4ED9F051E70EEDA719E914987A967F414E2135D`。本轮只修正测试契约，不新增验收/跳过/归并/撤销；H297/H98生产验收与原完整workspace其他失败原样保留。
 
 ### H-297：默认字符密度计数低估官方离线文本，冷计量可漏过既定压缩压力阈值
 
