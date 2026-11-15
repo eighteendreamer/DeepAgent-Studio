@@ -10,7 +10,8 @@ use deepagent_core::error::{CoreError, Result};
 use deepagent_hooks::{
     parse_structured_hook_output, CompletionHook, HookAction, HookActionExecutor, HookActionType,
     HookCommandResult, HookCommandRunner, HookCommandShell, HookContext, HookData, HookDefinitions,
-    HookEvent, HookOutcome, HookRegistry, StopFailureError, SystemHookRunner, ToolBatchItem,
+    HookEvent, HookOutcome, HookRegistry, NotificationType, StopFailureError, SystemHookRunner,
+    ToolBatchItem,
 };
 use deepagent_models::{ModelClient, ReasoningEffort, ResponseRequest, ToolSchema};
 use deepagent_persistence::Database;
@@ -247,6 +248,7 @@ fn sample_hook_data(event: HookEvent, matcher: Option<&str>) -> HookData {
         },
         HookEvent::Notification => HookData::Notification {
             message: "Test notification from hooks settings".to_string(),
+            notification_type: NotificationType::SubagentFinished,
         },
         HookEvent::InstructionsLoaded => HookData::InstructionsLoaded {
             file_path: "CLAUDE.md".to_string(),

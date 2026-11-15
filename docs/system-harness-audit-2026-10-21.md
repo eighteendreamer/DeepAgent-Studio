@@ -5384,6 +5384,14 @@ workspace日志SHA256=C63B77F8E2CF4EBECD2DDD1F389ADE54BCF618C7C30FB3F8969C1AC64C
 - 影响及限制：依赖 schema 校验或按通知类别筛选的兼容 hook 会拒绝该 payload，无法区分后台 Agent 完成等通知类型。本探针证明字段缺失，没有运行第三方 schema validator，也未验证 Claude 对 `notification_type` 的具体枚举约束；schema 将它定义为字符串。
 - 收敛方向（尚未实施，本地设计）：在现有 typed `HookData::Notification` 中定义通知类别来源，并由唯一 serializer 输出 `notification_type`；确认各通知调用方能提供稳定类别后，再覆盖后台子 Agent 成功、失败、取消及其它通知来源，避免从 message 文本推断类别。
 
+**E-H114-01（2026-11-15，原探针复现；非修复验收）**：起点151a8cc3e1dd52179eeffad182735a32817ab416；工作树中三份既有AppCore修改及全部用户untracked仅列名保留。使用固定Rust1.88.0、隔离HOME/PROFILE/AppData/TEMP/XDG/managed、独立`G:/h114-fixtures-20261115/target`、`--locked --offline -j2`执行正式Windows PowerShell command hook探针（修正一次错误的libtest参数过滤后）：`subagent_runner::tests::audit_background_subagent_notification_includes_required_fields`为0过/1败/0忽略；真实payload含`message`但缺`notification_type`，原红日志SHA256=`9E5641E012247DCC56D48B1B7FF991F846F0EB950FD829237688241B2029C021`。首次错误过滤命令实际0测试/exit0，另留setup日志，不计作业务结果。
+
+**E-H114-02（2026-11-15，根因修复与候选回归）**：参考Claude schema确认`notification_type`是必需字符串，参考DeepSeek Harness只借鉴其按命名method/typed subagent生命周期区分通知，不复制其协议。新增`NotificationType` typed来源（`subagent_finished`、`subagent_failed`、`subagent_cancelled`）及`for_subagent_state`映射；后台子Agent唯一Notification生产方从已确定的终态state映射类别，serializer对command/HTTP/其它action统一输出`notification_type`，设置页合成样例同步。没有从message反推、没有新增hook链/存储/权限/协议迁移；未知内部状态保留为finished类别，同时原message仍保留真实state。扩展外部hook payload矩阵覆盖成功、失败、取消三类；Hooks all-targets实际89个单元测试通过，另外3个action backend矩阵在同一测试中验证。
+
+正式AppCore探针移除ignore后，候选真实后台子Agent运行1过/0败/0忽略，payload为`notification_type=subagent_finished`，日志SHA256=`CCC0318CCFEDBAF30BBCECF3295672E51E54A5C1008A702FD264F1BE75A2568C`。Hooks候选89过/0败/0忽略，日志SHA256=`4C74732576CB35231FA9446D0927810981648A3561C1A6F705585A3AA3D54D80`。这是provider-neutral hook边界修复，不把Claude的枚举范围冒称本地官方约束。
+
+**E-H114-03（2026-11-15，相关门禁）**：固定1.88.0、专属target下，`cargo test -p deepagent-hooks --all-targets --locked --offline -j2`实际所有分组通过（89+5+8+8=110过，0败）；strict `cargo clippy -p deepagent-hooks --all-targets --all-features --no-deps --locked --offline -j2 -- -D warnings` exit101，仅3项既有`uninlined_format_args`诊断，未改旧lint或加allow，日志SHA256=`840A25E58F8385F994188E0A162110F0DFA31F7C7D27B23D31FCF8D89A7008B9`。AppCore完整lib回归在初次字段修复后为1715过/2败/35忽略；2个失败是既有MCP hook expected及completion-plan fixture时序，不是H114；日志SHA256=`ECEFCFF406A5BE8A4D11BD3E9AC5F11FA61A10B1CCE18A7501F38E00971DDF19`。随后`cargo check -p deepagent-app-core --lib` exit0，且新增enum映射后的正式H114探针再次1过/0败；根fmt与git diff --check通过。未运行完整workspace、Tauri/UI、真实外部服务或其它OS；这些不作为本项通过依据。提交和清理待收口，当前仍修复中。
+
 ### H-115：PermissionDenied hook 丢失工具调用关联 ID
 
 **当前状态（2026-11-13）：已修复并验收（所列Windows本机范围）。** 根因修复及相关 crate 验收通过，代码与文档已独立提交；先前清理命令曾被本机策略阻止，但恢复目标后只读核验两根专属目录均已不存在，详见 E-H115-01～04。

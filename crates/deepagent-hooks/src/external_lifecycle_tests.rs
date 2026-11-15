@@ -247,6 +247,33 @@ async fn payload_matrix(base: Option<crate::HookBaseInput>) {
             },
             json!({"file_path":"src/main.rs","event":"change"}),
         ),
+        (
+            HookEvent::Notification,
+            HookData::Notification {
+                message: "synthetic subagent finished".into(),
+                notification_type: crate::NotificationType::SubagentFinished,
+            },
+            json!({
+                "message":"synthetic subagent finished",
+                "notification_type":"subagent_finished"
+            }),
+        ),
+        (
+            HookEvent::Notification,
+            HookData::Notification {
+                message: "synthetic subagent failed".into(),
+                notification_type: crate::NotificationType::SubagentFailed,
+            },
+            json!({"message":"synthetic subagent failed","notification_type":"subagent_failed"}),
+        ),
+        (
+            HookEvent::Notification,
+            HookData::Notification {
+                message: "synthetic subagent cancelled".into(),
+                notification_type: crate::NotificationType::SubagentCancelled,
+            },
+            json!({"message":"synthetic subagent cancelled","notification_type":"subagent_cancelled"}),
+        ),
     ]);
     assert_payload_matrix(base, cases).await;
 }

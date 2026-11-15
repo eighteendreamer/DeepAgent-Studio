@@ -2,7 +2,7 @@
 
 ## 当前状态与计数口径（2026-11-15）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；当前257项均限各自所列本机验收；H107在E14重新打开后经E16/E17验收补强、提交与清理恢复关闭，H108已按E05闭环，H-169经E06核实清理完成后新增验收1项，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；该次只纠正汇总，不计为新增修复。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；当前258项均限各自所列本机验收；H107在E14重新打开后经E16/E17验收补强、提交与清理恢复关闭，H108已按E05闭环，H-169经E06核实清理完成后新增验收1项，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；该次只纠正汇总，不计为新增修复。
 
 本台账按 **H-01～H-307 的 307 个编号槽位一一对应（306个历史编号与独立新证H307）**，编号槽位不等于有效缺陷数。历史306槽位原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
@@ -13,13 +13,13 @@
 | 归并 | 10 | H173同根归并H127；H243归并H53；只在唯一有效项修复，不增加完成数 |
 | 撤销 | 3 | H-211/H-263/H-305，不作为缺陷或修复成果 |
 | 已修复（验收保留） | 1 | H66按用户2026-11-10收尾要求交付代码；现有定向验证有效，不记作完整验收通过，残余范围见E-H66-08 |
-| 修复中 | 0 | H203已完成本机离线验收；下一项H114 |
-| 待修复 | 6 | 含H180授权不修；5项有效待处理 |
+| 修复中 | 1 | H114原探针已红、候选已绿，相关门禁及清理提交待收齐 |
+| 待修复 | 5 | 含H180授权不修；4项有效待处理 |
 | 阻塞待处理 | 0 | H106旧选择阻塞已解除并按官方原则完成本地适配；官方该版本无该hook，不伪称原样实现 |
 
-未完整闭环槽位当前为 **8（含H180授权不修；有效未闭环7：5有效待修、H203在修1、H66验收保留1）**。307唯一主行：257验收、29历史跳过、10归并、3撤销、6待修、修复中0/阻塞0、验收保留1。H113按E05～06补验/清理恢复关闭，不重复计生产修复；H110/H112共用fixture已实际清理。H306已限定验收；新全仓5479/9/127、strict与Tauri离线缺依赖保留，下一H203。
+未完整闭环槽位当前为 **8（含H180授权不修；有效未闭环7：4有效待修、H114在修1、H66验收保留1）**。307唯一主行：258验收、29历史跳过、10归并、3撤销、5待修、修复中1/阻塞0、验收保留1。H113按E05～06补验/清理恢复关闭，不重复计生产修复；H110/H112共用fixture已实际清理。H306已限定验收；新全仓5479/9/127、strict与Tauri离线缺依赖保留；H203已验收，当前处理H114。
 
-H296已按E01～05完成原红→单一resolver修复→正式消费链/全仓门禁→清理闭环；19份冻结输入、原CLI/快照/sidecar保持，完整workspace5425/5/140、前端358/1及strict旧8+2原样保留，不称全仓全绿。独立提交`e9c55cab`，E06仅普通文档回填真实hash。H157的344d907c/0142b745及H168等为前轮成果，不重计；H155/H156尚待的历史清理不冒领。本项实现/验收/清理余0，下一准备H297本地token计量压力，先原probe及依赖核对。整体余170–430有效小时仍为未逐项重估的低置信历史分组估算，依据剩余模型/Hook/工具/画布跨层修改与验收；编译、设备、依赖、策略和人工等待另计，无可靠日历上界。
+H296已按E01～05完成原红→单一resolver修复→正式消费链/全仓门禁→清理闭环；19份冻结输入、原CLI/快照/sidecar保持，完整workspace5425/5/140、前端358/1及strict旧8+2原样保留，不称全仓全绿。独立提交`e9c55cab`，E06仅普通文档回填真实hash。H157的344d907c/0142b745及H168等为前轮成果，不重计；H155/H156尚待的历史清理不冒领。本项实现/验收/清理余0，下一准备H172公开Responses数值参数边界，先原probe及依赖核对。整体余170–430有效小时仍为未逐项重估的低置信历史分组估算，依据剩余模型/Hook/工具/画布跨层修改与验收；编译、设备、依赖、策略和人工等待另计，无可靠日历上界。
 
 本轮H138按E-H138-03新增验收1，累计208；其后H137按E-H137-04新增验收1，累计209。28历史跳过、10归并、3撤销不变，修复中0，56待修含H180授权跳过，实际55项有效待处理。
 
@@ -6532,7 +6532,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-111：PreCompact hook 的 stdout 指令没有进入摘要请求](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H111-01～05保留原红/候选/清理；不归并H110/H140 | 单一HookReport交付有界user侧指令；prefire重新摘要原prefix且hook一次，accounted保留不采用用量 | 扩展10/0、context53/0/3；全仓5099/4/176保留四旧失败；scope strict/CLI/SDK/Tauri通过，旧lint阻断见E04 | 57c58530df6b878fd0ae1a157280ffad34aca8d2 | 仅同步command PreCompact、本机Windows离线验收；真实模型遵循率未验；本项余0，E05已清理 |
 | [H-112：工作树生命周期 hook 缺少事件专属字段](system-harness-audit-2026-10-21.md) | P3 | 已修复并验收 | E-H112-03重新打开后，E-H112-04补齐真实Git生命周期、拒绝/清理、兼容字段与完整门禁；原失败与全仓失败保留 | 事件专属typed carrier与唯一serializer；创建投影`name`并保留legacy `path`、移除投影`worktree_path`、目录切换投影`old_cwd`/`new_cwd`，既有路径安全边界保留 | 真实Git 4/0；Hooks 110/0；AppCore子运行56/0/1忽略；CLI build/恢复0；fmt/diff过；strict与workspace只保留既有失败 | `75fd65c6` | Windows本机、Rust1.88、离线模型与外部hook投影；DeepSeek Harness参考版本不支持这些事件；E-H113-06已实际清理共用fixture |
 | [H-113：FileChanged hook 字段名与变化类型不符合 schema](system-harness-audit-2026-10-21.md) | P3 | 已修复并验收 | E-H113-04～07：真实builtin/命令hook与重开补验，清理实证；不重复计原生产修复 | 原serializer映射保持；补8场景、callback磁盘事实、action/manifest冷读与未知/错配负对照 | 原probe1/0、正式8场景1/0、Hooks110/0；Runtime495/1/2；workspace5475/9/128及strict旧失败保留；fmt/diff通过 | `f7bd0482`（原生产）；`023bd5451c6fb590538094dc26e5ab072fbe510f`（本轮补验） | Windows1.88离线限定范围；E06一根remaining=0，H110/H112遗留一并清理；下一优先H306 |
-| [H-114：后台子 Agent Notification hook 缺少必需的通知类别](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-114：后台子 Agent Notification hook 缺少必需的通知类别](system-harness-audit-2026-10-21.md) | P3 | 修复中 | E-H114-01原探针确认字段缺失；无跳过依据 | typed NotificationType来源与统一serializer候选已完成；提交/清理待收口 | E-H114-02候选探针1/0/0、Hooks89/0/0；E-H114-03相关门禁及既有失败边界 | 尚未提交 | 覆盖成功/失败/取消typed类别；完整workspace、真实外部hook及其它OS未执行 |
 | [H-115：PermissionDenied hook 丢失工具调用关联 ID](system-harness-audit-2026-10-21.md#h-115permissiondenied-hook-丢失工具调用关联-id) | P3 | 已修复并验收 | E-H115-01红证据保留；E-H115-02代码/测试验收和commit；E-H115-04核验两根目录不存在 | 新增拒绝事件专属typed载荷并从现有Runtime拒绝边界传call_id；统一serializer只在匹配PermissionDenied event/point输出ID；PermissionRequest语义不变 | hooks 97/0；原Runtime PowerShell probe1/0；Runtime lib479/0/5忽略；AppCore check、fmt、hooks strict clippy通过；Runtime strict clippy被两项既有告警阻断。workspace/Tauri/UI未执行，详审计E-H115-02 | `aacc376a4a3f272970de67d1f9a1dddc7ce889b4` | E-H115-04确认两根清理目标当前不存在；源码修复/验收余0。限制：Windows本机；其他生产拒绝路径/OS未逐项动态覆盖，见E-H115-02；下一项H-103 |
 | [H-116：步数上限终止的失败任务仍触发 TaskCompleted hook](system-harness-audit-2026-10-21.md#h-116步数上限终止的失败任务仍触发-taskcompleted-hook) | P2 | 已修复并验收 | E01原probe真实0/1/0；E02回归先红后绿；非历史/归并 | 统一收尾仅按RunOutcome::Completed派发；原probe取消ignore；保留既有Kernel规范终态 | Runtime 481/0/7，AppCore 2199/0/111，SDK stdio 13/0/0；workspace保留H306失败，严格Clippy被旧告警阻断 | `84848ff6c90440a868ab51d0d5484f353b06c177` | 区分内层TaskState与外层RunTerminal；H117独立；当前60未关闭含H180跳过，实际59有效待处理；全余162–418小时，等待另计 |
 | [H-117：API 错误终止未派发 StopFailure，反而只在完成被拒绝时触发](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E01原probe真实0/1保留；E02默认跨层红绿；非历史/归并 | 最终CoreError::Provider只派发一次StopFailure；取消优先、普通Agent错误不触发；hook失败保留原Provider cause | Runtime 484/0/7；AppCore 2200/0/110；workspace 5039/1/183，唯一H306；严格Clippy有旧诊断 | `a03884bacf8ff938c6c95c9abbe9994d7b27c5a7` | 结构化Provider错误范围；H-106 payload字段独立；60未关闭含H180跳过，实际59有效待处理；全余162–418小时，等待另计 |
@@ -11460,3 +11460,11 @@ H203变更范围仅`deepagent-models/src/chat.rs`、`client.rs`及`responses_inp
 提交后执行`pwsh -NoProfile -File G:/h203-fixtures-20261115/cleanup-h203.ps1`：仅删除本项一根fixture，先核祖先/全后代零reparse、活动构建零，再WhatIf后Remove-Item；实际清理13870文件、11414412479逻辑字节，脚本exit0，最终`remaining=0`、`protectedInputsUnchanged=true`。共享target/debug、node_modules、公共Cargo缓存、用户源码/文件及已有未跟踪项未删；清理脚本和日志随fixture回收，摘要、关键日志hash与保护结果已写入本报告和进度台账。普通权限执行，无管理员token或UAC，不冒称最高管理员。
 
 H203现在完成本机Windows离线功能验收与专属产物清理；未验真实供应商/凭据、其他OS、Tauri/UI和长期压力范围保留。累计258项已修复验收，历史跳过29、归并10、撤销3、待修6（含H180授权不修）、修复中0、H66验收保留1，有效未闭环7；下一项H114。全余170–430有效小时继续沿未逐项重估的低置信历史区间，编译/设备/依赖/人工等待另计。
+
+**E-H114-01（2026-11-15，原探针复现；非修复验收）**：起点151a8cc3e1dd52179eeffad182735a32817ab416；工作树中三份既有AppCore修改及全部用户untracked仅列名保留。使用固定Rust1.88.0、隔离HOME/PROFILE/AppData/TEMP/XDG/managed、独立`G:/h114-fixtures-20261115/target`、`--locked --offline -j2`执行正式Windows PowerShell command hook探针（修正一次错误的libtest参数过滤后）：`subagent_runner::tests::audit_background_subagent_notification_includes_required_fields`为0过/1败/0忽略；真实payload含`message`但缺`notification_type`，原红日志SHA256=`9E5641E012247DCC56D48B1B7FF991F846F0EB950FD829237688241B2029C021`。首次错误过滤命令实际0测试/exit0，另留setup日志，不计作业务结果。
+
+**E-H114-02（2026-11-15，根因修复与候选回归）**：参考Claude schema确认`notification_type`是必需字符串，参考DeepSeek Harness只借鉴其按命名method/typed subagent生命周期区分通知，不复制其协议。新增`NotificationType` typed来源（`subagent_finished`、`subagent_failed`、`subagent_cancelled`）及`for_subagent_state`映射；后台子Agent唯一Notification生产方从已确定的终态state映射类别，serializer对command/HTTP/其它action统一输出`notification_type`，设置页合成样例同步。没有从message反推、没有新增hook链/存储/权限/协议迁移；未知内部状态保留为finished类别，同时原message仍保留真实state。扩展外部hook payload矩阵覆盖成功、失败、取消三类；Hooks all-targets实际89个单元测试通过，另外3个action backend矩阵在同一测试中验证。
+
+正式AppCore探针移除ignore后，候选真实后台子Agent运行1过/0败/0忽略，payload为`notification_type=subagent_finished`，日志SHA256=`CCC0318CCFEDBAF30BBCECF3295672E51E54A5C1008A702FD264F1BE75A2568C`。Hooks候选89过/0败/0忽略，日志SHA256=`4C74732576CB35231FA9446D0927810981648A3561C1A6F705585A3AA3D54D80`。这是provider-neutral hook边界修复，不把Claude的枚举范围冒称本地官方约束。
+
+**E-H114-03（2026-11-15，相关门禁）**：固定1.88.0、专属target下，`cargo test -p deepagent-hooks --all-targets --locked --offline -j2`实际所有分组通过（89+5+8+8=110过，0败）；strict `cargo clippy -p deepagent-hooks --all-targets --all-features --no-deps --locked --offline -j2 -- -D warnings` exit101，仅3项既有`uninlined_format_args`诊断，未改旧lint或加allow，日志SHA256=`840A25E58F8385F994188E0A162110F0DFA31F7C7D27B23D31FCF8D89A7008B9`。AppCore完整lib回归在初次字段修复后为1715过/2败/35忽略；2个失败是既有MCP hook expected及completion-plan fixture时序，不是H114；日志SHA256=`ECEFCFF406A5BE8A4D11BD3E9AC5F11FA61A10B1CCE18A7501F38E00971DDF19`。随后`cargo check -p deepagent-app-core --lib` exit0，且新增enum映射后的正式H114探针再次1过/0败；根fmt与git diff --check通过。未运行完整workspace、Tauri/UI、真实外部服务或其它OS；这些不作为本项通过依据。提交和清理待收口，当前仍修复中。

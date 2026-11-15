@@ -182,6 +182,36 @@ pub enum SessionEndReason {
     Other,
 }
 
+/// Stable matcher category for a notification hook. The wire value is not
+/// inferred from the human-readable message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum NotificationType {
+    SubagentFinished,
+    SubagentFailed,
+    SubagentCancelled,
+}
+
+impl NotificationType {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::SubagentFinished => "subagent_finished",
+            Self::SubagentFailed => "subagent_failed",
+            Self::SubagentCancelled => "subagent_cancelled",
+        }
+    }
+
+    /// Map the runner's authoritative terminal state to a stable matcher.
+    pub fn for_subagent_state(state: &str) -> Self {
+        match state {
+            "failed" | "error" => Self::SubagentFailed,
+            "cancelled" | "canceled" => Self::SubagentCancelled,
+            _ => Self::SubagentFinished,
+        }
+    }
+}
+
 /// Instruction category exposed by the Claude-compatible load hook.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstructionMemoryType {
@@ -371,6 +401,7 @@ pub enum HookData {
     },
     Notification {
         message: String,
+        notification_type: NotificationType,
     },
 }
 

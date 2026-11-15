@@ -1831,8 +1831,15 @@ fn build_hook_payload(event: HookEvent, ctx: &HookContext) -> serde_json::Value 
         HookData::Path { path } => {
             payload.insert("path".into(), serde_json::json!(path));
         }
-        HookData::Notification { message } => {
+        HookData::Notification {
+            message,
+            notification_type,
+        } => {
             payload.insert("message".into(), serde_json::json!(message));
+            payload.insert(
+                "notification_type".into(),
+                serde_json::json!(notification_type.label()),
+            );
         }
         HookData::None => {}
     }

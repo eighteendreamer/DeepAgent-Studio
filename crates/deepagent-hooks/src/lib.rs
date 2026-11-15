@@ -46,7 +46,8 @@ pub use hook::{
 };
 pub use lifecycle::{
     CompletionHook, HookBaseInput, HookContext, HookData, HookPoint, InstructionLoadReason,
-    InstructionMemoryType, SessionEndReason, SessionStartSource, StopFailureError, ToolBatchItem,
+    InstructionMemoryType, NotificationType, SessionEndReason, SessionStartSource,
+    StopFailureError, ToolBatchItem,
 };
 pub use permission_rules::{
     bash_prefix_rule, rule_command_prefix, PermissionRules, PermissionRulesHook, RuleDecision,

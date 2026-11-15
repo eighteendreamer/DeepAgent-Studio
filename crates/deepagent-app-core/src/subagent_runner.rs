@@ -15,7 +15,9 @@ use std::sync::Arc;
 
 use deepagent_core::clock::SystemClock;
 use deepagent_core::error::{CoreError, Result};
-use deepagent_hooks::{HookContext, HookData, HookOutcome, HookPoint, HookRegistry};
+use deepagent_hooks::{
+    HookContext, HookData, HookOutcome, HookPoint, HookRegistry, NotificationType,
+};
 use deepagent_models::{ModelClient, ReasoningEffort, ResponseInputItem, ToolSchema};
 use deepagent_persistence::Database;
 use deepagent_runtime::{RuntimeEvent, RuntimeEventSink};
@@ -820,6 +822,7 @@ impl ChatSubagentRunner {
                         message: format!(
                             "background sub-agent {subagent_id} finished ({state}): {bounded_summary}"
                         ),
+                        notification_type: NotificationType::for_subagent_state(state),
                     },
                 )
                 .await;
