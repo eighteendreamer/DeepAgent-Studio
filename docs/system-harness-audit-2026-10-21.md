@@ -4,7 +4,7 @@
 
 用户已授权按本报告逐项进行本地代码修复与测试；已修复、撤销和归并条目跳过，不重新计数。分析阶段完成不再是当前总体任务的完成状态。每项完成后更新原项状态、保留失败证据、独立提交并汇报验收与剩余工时。本轮不操作真实用户文件或外部服务。
 
-**当前续接（2026-11-15）**：307唯一台账：255验收、29历史跳过、10归并、3撤销、9待修含H180、H66验收保留1、修复中/阻塞0，有效未完整闭环9。H106已按用户指定DeepSeek Harness原则完成本地结构化错误适配、本机回归及清理，详E-H106-04～07；fix为a0560739，官方该版本不支持StopFailure，不冒称官方原样或Claude完整兼容。完整workspace5462过7败131忽略、strict失败保留；H297/H98交叉测试契约已独立复核，未改变生产状态或修复计数。H109已按E-H109-04补齐Stop回调可读transcript并完成限定验收，提交`55fe90eb`；H110已按E-H110-01～02完成本机schema适配与回归，代码提交`aee1b8d5f010c7b09f22f4fb25e253f790715f11`；H112已按E-H112-01～02完成工作树生命周期字段适配与本机回归。历史失败与计数快照保留。
+**当前续接（2026-11-15）**：307唯一台账：256验收、29历史跳过、10归并、3撤销、8待修含H180、H66验收保留1、修复中/阻塞0，有效未完整闭环8。H106已按用户指定DeepSeek Harness原则完成本地结构化错误适配、本机回归及清理，详E-H106-04～07；fix为a0560739，官方该版本不支持StopFailure，不冒称官方原样或Claude完整兼容。完整workspace5462过7败131忽略、strict失败保留；H297/H98交叉测试契约已独立复核，未改变生产状态或修复计数。H109已按E-H109-04补齐Stop回调可读transcript并完成限定验收，提交`55fe90eb`；H110已按E-H110-01～02完成本机schema适配与回归，代码提交`aee1b8d5f010c7b09f22f4fb25e253f790715f11`；H112已按E-H112-01～02完成工作树生命周期字段适配与本机回归；H113已按E-H113-01～02完成文件变更 hook 字段映射与本机回归。历史失败与计数快照保留。
 
 **历史唯一台账（2026-11-12，H107验收补强/提交/清理已闭环）**：306行233已修复并验收、28历史跳过、10归并、3撤销、31待修含H180授权不修、0修复中/阻塞、1验收保留H66。30有效待处理加H66共31项有效未完整闭环。本轮恢复H107验收关闭1、新增生产修复0；原生产64f9d169不变，补强test提交629a42784ca4bf080f53ab19139761adeb7aff17，hash/清理回填见E17。SDK完整默认/全特性各89/0/5、CLI同宿主/busy及AppCore/原probe过，strict依赖旧失败及未重跑范围保留，详原项及[台账](system-harness-repair-progress.md)。非全系统全绿、不推送，整个任务未完成。
 
@@ -5340,13 +5340,17 @@ H110原两路schema红已复现，未提交候选即使局部绿仍有未知trig
 
 ### H-113：FileChanged hook 字段名与变化类型不符合 schema
 
+**当前状态：已修复并验收（2026-11-15，仅下列 Windows 本机、离线工具管线与外部 hook 投影范围）。** 原始失败证据保留；采用唯一 serializer 的显式内部 mutation 到协议事件映射，未知标签 fail closed。
+
 **级别：低（P3，条件性 hook 输入契约缺陷）；触发条件：配置 `FileChanged` command hook，且工具通过正式 checkpoint 变更工作区文件。** 未配置该 hook 时不影响文件写入。
 
 - 根因与生产路径：`ToolExecutionPipeline::fire_file_changed_hooks()` 根据 checkpoint mutation evidence 派发 `HookData::FileChange`；serializer 输出 `path` / `change_kind`，且类型值是 `created`、`modified`、`deleted`。参考 schema 要求字段 `file_path` 和枚举 `event: add|change|unlink`，本系统没有相应映射。
 - 动态复现：Windows ignored 探针 `tool_pipeline::tests::audit_file_changed_hook_payload_includes_required_fields` 经正式 ToolExecutionPipeline、CheckpointManager 和 `write_file` 工具创建临时文件，真实 PowerShell hook 捕获 `{"change_kind":"created","hook_event_name":"FileChanged","path":"…/created.txt","session_id":"…"}`。schema 字段及枚举断言以 **0 passed / 1 failed** 退出；没有访问用户文件或网络。
 - 成熟实现对照：Claude Code `entrypoints/sdk/coreSchemas.ts::FileChangedHookInputSchema` 要求 `file_path`，`event` 只能是 `change`、`add`、`unlink`。
 - 影响及限制：按文件路径或 add/change/unlink 类型处理的兼容 hook 无法通过字段校验，也不能区分创建、修改和删除。本探针动态覆盖创建；其它映射值由生产 `mutation_kind_label()` 代码确认，未逐个执行编辑和删除工具。
-- 收敛方向（尚未实施，本地设计）：在既有 `MutationKind` 到 hook DTO 的唯一边界映射标准字段和值，同时保留内部事件名；以真实 write/edit/delete pipeline 和 checkpoint evidence 验证 add/change/unlink，并覆盖失败、未变化和多路径工具。
+- **E-H113-01（根因修复）**：`FileChanged` 对外由 `path/change_kind` 改为 `file_path/event`；内部 `created`→`add`、`modified`→`change`、`deleted`→`unlink`，未知 mutation label 不生成字段，错配 event/point 不制造 payload。既有 checkpoint evidence、工具执行和 mutation kind 保持不变。
+- **E-H113-02（回归）**：正式 Windows PowerShell FileChanged probe 由0过/1败变为1过/0败；Hooks全量89过/0败，Runtime `tool_pipeline::tests` 为23过/0败，`cargo fmt --all -- --check`、`git diff --check`通过。代码提交`f7bd0482`。
+- **实现与限制**：未改变文件写入、checkpoint、权限、取消或持久化；未跑完整 workspace、strict Clippy、真实第三方 schema validator、真实供应商、其他 OS、UI 或前端构建。
 
 ### H-114：后台子 Agent Notification hook 缺少必需的通知类别
 
