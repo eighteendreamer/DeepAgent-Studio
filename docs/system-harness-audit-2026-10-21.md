@@ -4,7 +4,7 @@
 
 用户已授权按本报告逐项进行本地代码修复与测试；已修复、撤销和归并条目跳过，不重新计数。分析阶段完成不再是当前总体任务的完成状态。每项完成后更新原项状态、保留失败证据、独立提交并汇报验收与剩余工时。本轮不操作真实用户文件或外部服务。
 
-**当前续接（2026-11-15）**：307唯一台账：252验收、29历史跳过、10归并、3撤销、12待修含H180、H66验收保留1、修复中/阻塞0，有效未完整闭环12。H106已按用户指定DeepSeek Harness原则完成本地结构化错误适配、本机回归及清理，详E-H106-04～07；fix为a0560739，官方该版本不支持StopFailure，不冒称官方原样或Claude完整兼容。完整workspace5462过7败131忽略、strict失败保留；H297/H98交叉测试契约已独立复核，未改变生产状态或修复计数。历史失败与计数快照保留。
+**当前续接（2026-11-15）**：307唯一台账：253验收、29历史跳过、10归并、3撤销、11待修含H180、H66验收保留1、修复中/阻塞0，有效未完整闭环11。H106已按用户指定DeepSeek Harness原则完成本地结构化错误适配、本机回归及清理，详E-H106-04～07；fix为a0560739，官方该版本不支持StopFailure，不冒称官方原样或Claude完整兼容。完整workspace5462过7败131忽略、strict失败保留；H297/H98交叉测试契约已独立复核，未改变生产状态或修复计数。H109已按E-H109-01完成本机修复、清理和独立提交，下一项H110。历史失败与计数快照保留。
 
 **历史唯一台账（2026-11-12，H107验收补强/提交/清理已闭环）**：306行233已修复并验收、28历史跳过、10归并、3撤销、31待修含H180授权不修、0修复中/阻塞、1验收保留H66。30有效待处理加H66共31项有效未完整闭环。本轮恢复H107验收关闭1、新增生产修复0；原生产64f9d169不变，补强test提交629a42784ca4bf080f53ab19139761adeb7aff17，hash/清理回填见E17。SDK完整默认/全特性各89/0/5、CLI同宿主/busy及AppCore/原probe过，strict依赖旧失败及未重跑范围保留，详原项及[台账](system-harness-repair-progress.md)。非全系统全绿、不推送，整个任务未完成。
 
@@ -5270,7 +5270,7 @@ E-H108-01（当前复现、边界及TDD准备，2026-11-12，修复中）：基�
 
 ### H-109：SubagentStop hook 缺少必需的停止状态与 transcript 路径
 
-**级别：低（P3，条件性 hook 输入契约缺陷）；触发条件：项目或用户配置了 `SubagentStop` command hook，并有子 Agent 正常或异常结束。** 未配置该 hook 时不影响子运行结果。
+**当前状态：已修复并验收（2026-11-15，E-H109-01，限所列Windows本机离线范围）。** Stop专属字段已在typed carrier和唯一serializer中补齐；原失败证据保留。**级别：低（P3，条件性 hook 输入契约缺陷）；触发条件：项目或用户配置了 `SubagentStop` command hook，并有子 Agent 正常或异常结束。** 未配置该 hook 时不影响子运行结果。
 
 - 根因与生产路径：`ChatSubagentRunner::run_tracked()` 结束子运行后只将 `agent_id`、`agent_type` 和可选 summary 放入 `HookData::Subagent`。`ExternalCommandHook::build_payload()` 对该类型只序列化这些值与 `last_assistant_message`，没有传入该子运行的 transcript 文件路径，也没有停止 hook 的重入状态。
 - 动态复现：Windows ignored 探针 `subagent_runner::tests::audit_subagent_stop_hook_includes_required_fields` 经正式 `ChatSubagentRunner::run_inner()` 同时触发 Start/Stop command hooks，并从 PowerShell stdin 捕获 JSON。Start 收到 `agent_id`、`agent_type`；Stop 实际为 `{"agent_id":"…","agent_type":"review","hook_event_name":"SubagentStop","last_assistant_message":"…","session_id":"…"}`，`stop_hook_active` 与 `agent_transcript_path` 缺失，schema 断言以 **0 passed / 1 failed** 退出。使用临时目录、离线模型 transport，无公网请求。
@@ -5278,6 +5278,19 @@ E-H108-01（当前复现、边界及TDD准备，2026-11-12，修复中）：基�
 - 影响及限制：依赖 schema 校验或读取 agent transcript 的兼容 hook 会拒绝输入或无法定位子运行记录。本探针证明字段缺失，没有运行第三方 schema validator 或用户 hook 的实际逻辑；没有据此判断 `stop_hook_active` 的正确取值语义。
 - 收敛方向（尚未实施，本地设计）：让子运行完成上下文携带稳定 transcript path 与有明确定义的 Stop hook 重入状态，在现有 typed hook data / serializer 边界构造事件 payload；验证成功、失败、取消、Stop hook 要求继续及再次触发 Stop 的路径，并对照官方 schema 校验。
 
+### H-109 SubagentStop typed 输入（修复中，2026-11-15）
+
+**E-H109-01（2026-11-15，SubagentStop typed 修复、正式消费回归与清理闭环）**：按原审计的 Claude `SubagentStopHookInputSchema` 对照，缺失字段的原 ignored 探针实际运行 `cargo +1.88.0 test -p deepagent-app-core --lib subagent_runner::tests::audit_subagent_stop_hook_includes_required_fields --target-dir G:/h109-fixtures-20261115/target --locked --offline -j 2 -- --ignored --exact --nocapture --test-threads=1`，exit101、0过/1败、538.535秒（含冷编译）；PowerShell捕获的Stop payload只有公共字段、agent_id/type和summary，`stop_hook_active`/`agent_transcript_path`缺失。原终态JSON SHA256=`043394C78A48903C14C591D1CA938B91B58BD362A4A83DF72D137E8FDD5ED965`。
+
+根因修复只沿现有HookData→ExternalCommandHook边界：新增`HookData::SubagentStop` typed carrier，和Start的legacy `Subagent`分离；`ChatSubagentRunner`在唯一Stop派发点传子运行稳定`transcript_root/<subagent_id>.json`并显式`stop_hook_active=false`（当前没有Stop重入循环，不猜测为true）；serializer仅在`HookEvent::SubagentStop`与`HookPoint::SubagentStop`同时匹配时输出五个专属字段，错配不制造字段；设置页sample同步。未改公共base `transcript_path`、持久化schema、取消/终态、审批或H104路径语义。
+
+TDD绿测：同一正式AppCore/PowerShell路径修正后1过/0败、139.470秒，捕获路径以`<agent_id>.json`结尾且包含`transcripts`、Start不含Stop字段；新增Hooks typed serializer 3项及五种动作后端回归，`cargo +1.88.0 test -p deepagent-hooks --all-targets --all-features --target-dir ... --locked --offline -j2`实际86单元+5 cancellation+8 dedup+8 once，全部0失败、75.794秒。默认`cargo fmt --all -- --check`与`git diff --check`通过；未运行全workspace/strict/Tauri/前端、真实第三方schema validator、真实供应商或其他OS。
+
+证据日志SHA256：AppCore绿`A4D7E3551E91236EFC98C85DECA61C01F9B4BE09FC5BF9A251E497BDAA81247D`、Hooks`EC91B7D389EF70B08C24135E89502937790175D83C992B39DB1F02243664A2FD`、候选结果`1BB115CFA25512B561D6D14A822E7DD2584548C15AB6178AC8C1168C928C2CB6`、Hooks结果`55FC3E0881DC392EA16BF4BC86EFB0CE93DA81119A680E64E837D4EF4264D11A`、10份冻结输入manifest`20AA9E7034239B5DE895E2E573FA84A1A37F7CFD16B4447A3D5D9F1EC2A1F1EE`。本项已完成安全清理与独立提交；不把局部绿替代全仓验证，不新增H-180处理。真实fix为`d9a37277115e4a98c6050a18fa04c0adb568d020`，双文hash回填另列。
+
+**E-H109-02（2026-11-15，独立提交、清理与计数回填）**：修复独立提交为`d9a37277115e4a98c6050a18fa04c0adb568d020`（【fix】补齐SubagentStop停止状态与转录路径），父提交e477dc2f，5份代码/测试文件；未amend、推送或创建PR。清理脚本AST检查通过后实际执行，仅删除`G:/h109-fixtures-20261115`，盘点4966文件、4469027947逻辑字节、零reparse；WhatIf后Remove-Item exit0，最终remaining=0，frozenInputsUnchanged/documentsUnchanged/originalsUnchanged均true，12项冻结/文档与CLI、snap.new、sidecar原件保护有效。G盘可用空间观测63239315456→67462184960字节，不与逻辑大小相加或声称差额独占归因；共享target/debug、node_modules、公共Cargo缓存和用户文件未删。
+
+H109按Windows本机离线、PowerShell command和五类外部hook后端范围已修复并验收；完整workspace/strict、真实schema validator/供应商、其他OS/UI未执行。新增验收1、修复1，历史跳过/归并/撤销0；307唯一台账253验收、29历史跳过、10归并、3撤销、11待修含H180、H66保留1、修复中/阻塞0，有效未完整闭环11。下一项按风险顺序准备H110；全余170–430有效小时仍为未逐项重估的低置信历史区间，等待另计。
 ### H-110：PreCompact/PostCompact payload 不符合事件输入 schema
 
 **级别：低（P3，条件性 hook 输入契约缺陷）；触发条件：配置 `PreCompact` 或 `PostCompact` command hook，且发生自动阈值或 provider overflow 压缩。** 未配置这些 hook 时不影响压缩。
