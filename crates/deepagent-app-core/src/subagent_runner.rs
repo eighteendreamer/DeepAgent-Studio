@@ -670,13 +670,21 @@ impl ChatSubagentRunner {
         let _ = self
             .dispatch_child_hook(
                 HookPoint::SubagentStop,
-                HookData::Subagent {
+                HookData::SubagentStop {
                     agent_id: subagent_id.clone(),
                     agent_type: request
                         .subagent_type
                         .clone()
                         .unwrap_or_else(|| "general".to_string()),
                     summary: Some(bounded_summary.clone()),
+                    // The current runner has no stop-hook re-entry loop; keep
+                    // this explicit instead of inferring it from the event.
+                    stop_hook_active: false,
+                    agent_transcript_path: self
+                        .transcript_root
+                        .join(format!("{subagent_id}.json"))
+                        .to_string_lossy()
+                        .into_owned(),
                 },
             )
             .await;
@@ -1590,7 +1598,6 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    #[ignore = "audit H-109: SubagentStop payload must satisfy its required input schema"]
     async fn audit_subagent_stop_hook_includes_required_fields() {
         use deepagent_hooks::{HookDefinitions, SystemHookRunner};
 
@@ -1661,11 +1668,16 @@ mod tests {
         eprintln!("SubagentStop payload: {stop_payload}");
         assert!(start_payload["agent_id"].is_string());
         assert!(start_payload["agent_type"].is_string());
+        assert!(start_payload.get("stop_hook_active").is_none());
+        assert!(start_payload.get("agent_transcript_path").is_none());
+        let agent_id = stop_payload["agent_id"].as_str().unwrap();
+        let transcript_path = stop_payload["agent_transcript_path"].as_str().unwrap();
         assert!(
-            stop_payload["stop_hook_active"].is_boolean()
-                && stop_payload["agent_id"].is_string()
-                && stop_payload["agent_transcript_path"].is_string()
-                && stop_payload["agent_type"].is_string(),
+            stop_payload["stop_hook_active"] == false
+                && !agent_id.is_empty()
+                && stop_payload["agent_type"].is_string()
+                && transcript_path.ends_with(&format!("{agent_id}.json"))
+                && transcript_path.contains("transcripts"),
             "SubagentStop payload misses required schema fields: {stop_payload}"
         );
     }

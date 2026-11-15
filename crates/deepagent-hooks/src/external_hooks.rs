@@ -1732,6 +1732,26 @@ fn build_hook_payload(event: HookEvent, ctx: &HookContext) -> serde_json::Value 
             payload.insert("agent_type".into(), serde_json::json!(agent_type));
             payload.insert("last_assistant_message".into(), serde_json::json!(summary));
         }
+        HookData::SubagentStop {
+            agent_id,
+            agent_type,
+            summary,
+            stop_hook_active,
+            agent_transcript_path,
+        } if event == HookEvent::SubagentStop && ctx.point == event.point() => {
+            payload.insert("agent_id".into(), serde_json::json!(agent_id));
+            payload.insert("agent_type".into(), serde_json::json!(agent_type));
+            payload.insert("last_assistant_message".into(), serde_json::json!(summary));
+            payload.insert(
+                "stop_hook_active".into(),
+                serde_json::json!(stop_hook_active),
+            );
+            payload.insert(
+                "agent_transcript_path".into(),
+                serde_json::json!(agent_transcript_path),
+            );
+        }
+        HookData::SubagentStop { .. } => {}
         HookData::Task { task_id, subject } => {
             payload.insert("task_id".into(), serde_json::json!(task_id));
             payload.insert("task_subject".into(), serde_json::json!(subject));
@@ -1835,6 +1855,10 @@ mod external_lifecycle_tests;
 #[cfg(test)]
 #[path = "external_stop_failure_tests.rs"]
 mod external_stop_failure_tests;
+
+#[cfg(test)]
+#[path = "external_subagent_stop_tests.rs"]
+mod external_subagent_stop_tests;
 
 /// Parse a structured decision from a hook's stdout, if any.
 /// Parse the common structured decision protocol used by command, MCP,

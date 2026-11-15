@@ -332,6 +332,17 @@ pub enum HookData {
         agent_type: String,
         summary: Option<String>,
     },
+    /// Terminal child-agent data for the SubagentStop hook schema.
+    ///
+    /// These fields are intentionally separate from the start payload so a
+    /// start hook cannot accidentally claim a stop state or child transcript.
+    SubagentStop {
+        agent_id: String,
+        agent_type: String,
+        summary: Option<String>,
+        stop_hook_active: bool,
+        agent_transcript_path: String,
+    },
     Task {
         task_id: String,
         subject: String,

@@ -219,10 +219,12 @@ fn sample_hook_data(event: HookEvent, matcher: Option<&str>) -> HookData {
             agent_type: "general".to_string(),
             summary: None,
         },
-        HookEvent::SubagentStop => HookData::Subagent {
+        HookEvent::SubagentStop => HookData::SubagentStop {
             agent_id: "sub_test".to_string(),
             agent_type: "general".to_string(),
             summary: Some("Test subagent completed".to_string()),
+            stop_hook_active: false,
+            agent_transcript_path: "test-subagent-transcript.json".to_string(),
         },
         HookEvent::TaskCreated | HookEvent::TaskCompleted => HookData::Task {
             task_id: "task_test".to_string(),
