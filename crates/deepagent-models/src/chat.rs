@@ -222,6 +222,8 @@ impl Serialize for ResponseRequest {
         S: Serializer,
     {
         use serde::ser::SerializeMap;
+        self.validate_responses_parameters()
+            .map_err(serde::ser::Error::custom)?;
         self.validate_message_roles()
             .map_err(serde::ser::Error::custom)?;
         validate_response_tool_schemas(&self.tools).map_err(serde::ser::Error::custom)?;
@@ -632,6 +634,7 @@ impl ResponseRequest {
     /// Validate provider-bound fields after defaults have been applied.
     pub fn validate(&self) -> Result<()> {
         self.validate_input_presence()?;
+        self.validate_responses_parameters()?;
         self.validate_image_roles(crate::client::WireMode::Responses)?;
         self.validate_message_roles()?;
         if let Some(user) = &self.user {
@@ -667,6 +670,98 @@ impl ResponseRequest {
                         "Responses message role must be user, assistant, system, or developer",
                     ));
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate the final Responses-only request shape after defaults have
+    /// been merged. Chat Completions has a separate serializer and policy.
+    fn validate_responses_parameters(&self) -> Result<()> {
+        if let Some(value) = self.temperature {
+            if !value.is_finite() || !(0.0..=2.0).contains(&value) {
+                return Err(CoreError::invalid(
+                    "Responses temperature must be a number between 0 and 2",
+                ));
+            }
+        }
+        if let Some(value) = self.top_p {
+            if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                return Err(CoreError::invalid(
+                    "Responses top_p must be a number between 0 and 1",
+                ));
+            }
+        }
+        if self.top_logprobs.is_some_and(|value| value > 20) {
+            return Err(CoreError::invalid(
+                "Responses top_logprobs must be an integer between 0 and 20",
+            ));
+        }
+        let Some(text) = &self.text else {
+            return Ok(());
+        };
+        let Some(text) = text.as_object() else {
+            return Err(CoreError::invalid("Responses text must be an object"));
+        };
+        if text.keys().any(|key| key != "format") {
+            return Err(CoreError::invalid(
+                "DeepSeek Responses text only supports `format`",
+            ));
+        }
+        let Some(format) = text.get("format").and_then(serde_json::Value::as_object) else {
+            return Err(CoreError::invalid(
+                "Responses text.format must be an object",
+            ));
+        };
+        let Some(format_type) = format.get("type").and_then(serde_json::Value::as_str) else {
+            return Err(CoreError::invalid("Responses text.format.type is required"));
+        };
+        match format_type {
+            "text" | "json_object" => {
+                if format.keys().any(|key| key != "type") {
+                    return Err(CoreError::invalid(format!(
+                        "Responses text.format `{format_type}` has unknown fields"
+                    )));
+                }
+            }
+            "json_schema" => {
+                if format.keys().any(|key| {
+                    !matches!(
+                        key.as_str(),
+                        "type" | "name" | "description" | "schema" | "strict"
+                    )
+                }) {
+                    return Err(CoreError::invalid(
+                        "Responses text.format json_schema has unknown fields",
+                    ));
+                }
+                if format
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::is_empty)
+                    .unwrap_or(true)
+                    || format
+                        .get("schema")
+                        .map(|value| !value.is_object())
+                        .unwrap_or(true)
+                {
+                    return Err(CoreError::invalid(
+                        "Responses text.format json_schema requires a non-empty name and object schema",
+                    ));
+                }
+                if format
+                    .get("strict")
+                    .is_some_and(|value| !value.is_boolean())
+                {
+                    return Err(CoreError::invalid(
+                        "Responses text.format.strict must be boolean",
+                    ));
+                }
+            }
+            _ => {
+                return Err(CoreError::invalid(
+                    "Responses text.format.type must be text, json_object, or json_schema",
+                ));
             }
         }
         Ok(())

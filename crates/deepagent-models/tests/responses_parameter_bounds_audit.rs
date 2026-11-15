@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use deepagent_core::error::Result;
 use deepagent_core::message::Message;
 use deepagent_models::transport::{EventSink, HttpTransport, TransportRequest};
-use deepagent_models::{ModelClient, ModelConfig, ResponseRequest};
+use deepagent_models::{ModelClient, ModelConfig, ReasoningEffort, ResponseRequest};
 
 #[derive(Default)]
 struct RecordingTransport {
@@ -37,7 +37,7 @@ impl HttpTransport for RecordingTransport {
 
 fn request() -> ResponseRequest {
     ResponseRequest::new(
-        "deepseek-flash",
+        "deepseek-v4-pro",
         vec![Message::user("Reply briefly for an offline audit.")],
     )
 }
@@ -154,7 +154,8 @@ async fn audit_documented_responses_parameter_boundaries_reach_transport() {
             request()
                 .with_temperature(0.0)
                 .with_top_p(0.0)
-                .with_top_logprobs(0),
+                .with_top_logprobs(0)
+                .with_reasoning_effort(ReasoningEffort::None),
         )
         .await
         .unwrap();
@@ -163,7 +164,8 @@ async fn audit_documented_responses_parameter_boundaries_reach_transport() {
             request()
                 .with_temperature(2.0)
                 .with_top_p(1.0)
-                .with_top_logprobs(20),
+                .with_top_logprobs(20)
+                .with_reasoning_effort(ReasoningEffort::None),
         )
         .await
         .unwrap();
