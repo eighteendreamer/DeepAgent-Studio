@@ -28,7 +28,6 @@ fn individual_canvas_contracts_and_prompt_resolution_remain_available() {
 }
 
 #[test]
-#[ignore = "audit reproducer: bundled local-editor profile must not invalidate the whole catalog"]
 fn audit_bundled_local_editor_does_not_block_public_prompt_catalog() {
     let result = canvas_prompt_catalog();
     eprintln!(
@@ -41,4 +40,54 @@ fn audit_bundled_local_editor_does_not_block_public_prompt_catalog() {
         result.is_ok(),
         "the public catalog must remain readable for the shipped profiles: {result:?}"
     );
+    let catalog = result.unwrap();
+    assert_eq!(catalog.profiles.len(), CREATIVE_NODE_KINDS.len());
+    assert_eq!(catalog.contracts.len(), CREATIVE_NODE_KINDS.len());
+    assert_eq!(
+        catalog.skills.len(),
+        deepagent_prompts::canvas_prompt::canvas_skills().len()
+    );
+    for kind in CREATIVE_NODE_KINDS {
+        assert_eq!(
+            catalog
+                .profiles
+                .iter()
+                .filter(|p| p.node_kind == kind)
+                .count(),
+            1
+        );
+        assert_eq!(
+            catalog
+                .contracts
+                .iter()
+                .filter(|c| c.node_kind == kind)
+                .count(),
+            1
+        );
+        let profile = catalog
+            .profiles
+            .iter()
+            .find(|p| p.node_kind == kind)
+            .unwrap();
+        let resolved = resolve_canvas_prompt(kind, None, None).unwrap();
+        assert_eq!(resolved.prompt_profile_id, profile.id);
+        assert_eq!(resolved.prompt_profile_version, profile.version);
+        assert_eq!(resolved.resolved_user_prompt, profile.default_user_prompt);
+        assert_eq!(resolved.system_prompt, profile.system_prompt);
+    }
+    let wire = serde_json::to_value(&catalog).unwrap();
+    let restored = serde_json::from_value(wire).unwrap();
+    assert_eq!(catalog, restored);
+    let local = catalog
+        .profiles
+        .iter()
+        .find(|p| p.node_kind == "video-edit")
+        .unwrap();
+    assert!(
+        local.default_user_prompt.is_empty(),
+        "do not invent model input for local editing"
+    );
+    assert_eq!(local.prompt_usage, "local_editor");
+    let text = resolve_canvas_prompt("text-gen", Some("custom"), Some("保留用户内容")).unwrap();
+    assert_eq!(text.resolved_user_prompt, "保留用户内容");
 }

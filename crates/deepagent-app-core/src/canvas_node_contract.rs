@@ -304,6 +304,25 @@ pub fn canvas_prompt_catalog() -> Result<CanvasPromptCatalogDto> {
     })
 }
 
+/// The resource's usage must agree with the executor, so relabeling a model
+/// profile as local cannot bypass the required-input validation.
+fn validate_prompt_executor(
+    profile: &deepagent_prompts::canvas_prompt::PromptProfile,
+    executor: CanvasExecutorKind,
+) -> Result<()> {
+    let model_input = !matches!(
+        executor,
+        Executor::ContractOnly | Executor::Local | Executor::Unsupported
+    );
+    if profile.requires_default_user_prompt()? != model_input {
+        return Err(CoreError::invalid(format!(
+            "canvas prompt profile `{}` promptUsage does not match executor `{executor:?}`",
+            profile.id
+        )));
+    }
+    Ok(())
+}
+
 /// Guard the cross-registry invariants the plan pins: node kind ↔ prompt profile
 /// ↔ profile id, skill allowlist agreement, and graph-registry visibility.
 pub fn validate_canvas_node_contracts() -> Result<()> {
@@ -317,6 +336,7 @@ pub fn validate_canvas_node_contracts() -> Result<()> {
             )));
         }
         let profile = creative_profile(&contract.node_kind)?;
+        validate_prompt_executor(profile, contract.executor_kind)?;
         if profile.id != contract.prompt_profile_id {
             return Err(CoreError::invalid(format!(
                 "node `{}` contract profile `{}` does not match profile id `{}`",
@@ -424,6 +444,7 @@ pub fn resolve_canvas_prompt(
 ) -> Result<CanvasPromptResolution> {
     let contract = canvas_node_contract(node_kind)?;
     let profile = creative_profile(&contract.node_kind)?;
+    validate_prompt_executor(profile, contract.executor_kind)?;
     let mode = user_prompt_mode.unwrap_or("default");
     let (resolved_user_prompt, is_default) = match mode {
         "custom" => (
@@ -452,6 +473,30 @@ pub fn resolve_canvas_prompt(
 mod tests {
     use super::*;
     use deepagent_prompts::canvas_prompt::CREATIVE_NODE_KINDS;
+
+    #[test]
+    fn h306_model_executor_cannot_claim_prompt_free_local_usage() {
+        let mut profile = creative_profile("text-gen").unwrap().clone();
+        profile.prompt_usage = "local_editor".into();
+        profile.default_user_prompt.clear();
+        for executor in [
+            Executor::Responses,
+            Executor::CanvasMedia,
+            Executor::Embedding,
+            Executor::MediaJob,
+            Executor::Composite,
+        ] {
+            assert!(validate_prompt_executor(&profile, executor).is_err());
+        }
+        let model_profile = creative_profile("text-gen").unwrap();
+        for executor in [
+            Executor::ContractOnly,
+            Executor::Local,
+            Executor::Unsupported,
+        ] {
+            assert!(validate_prompt_executor(model_profile, executor).is_err());
+        }
+    }
 
     #[test]
     fn contracts_profiles_and_graph_registry_agree() {

@@ -4,7 +4,7 @@
 
 用户已授权按本报告逐项进行本地代码修复与测试；已修复、撤销和归并条目跳过，不重新计数。分析阶段完成不再是当前总体任务的完成状态。每项完成后更新原项状态、保留失败证据、独立提交并汇报验收与剩余工时。本轮不操作真实用户文件或外部服务。
 
-**当前续接（2026-11-15）**：307唯一台账：256验收、29历史跳过、10归并、3撤销、8待修含H180、H66验收保留1、修复中/阻塞0，有效未完整闭环8。H106已按用户指定DeepSeek Harness原则完成本地结构化错误适配、本机回归及清理，详E-H106-04～07；fix为a0560739，官方该版本不支持StopFailure，不冒称官方原样或Claude完整兼容。完整workspace失败与strict失败保留；H297/H98交叉测试契约已独立复核，未改变生产状态或修复计数。H109已按E-H109-04补齐Stop回调可读transcript并完成限定验收，提交`55fe90eb`；H110已按E-H110-01～02完成本机schema适配与回归，代码提交`aee1b8d5f010c7b09f22f4fb25e253f790715f11`；H112按E-H112-04完成真实Git生命周期、拒绝/清理、1.88门禁与CLI恢复核验；H113按E-H113-04～06完成正式builtin补验与清理；完整workspace5475过9败128忽略/strict失败保留；下一优先H306。历史失败与计数快照保留。
+**当前续接（2026-11-15）**：307唯一台账：257验收、29历史跳过、10归并、3撤销、7待修含H180、H66验收保留1、修复中/阻塞0，有效未完整闭环7。H106已按用户指定DeepSeek Harness原则完成本地结构化错误适配、本机回归及清理，详E-H106-04～07；fix为a0560739，官方该版本不支持StopFailure，不冒称官方原样或Claude完整兼容。完整workspace失败与strict失败保留；H297/H98交叉测试契约已独立复核，未改变生产状态或修复计数。H109已按E-H109-04补齐Stop回调可读transcript并完成限定验收，提交`55fe90eb`；H110已按E-H110-01～02完成本机schema适配与回归，代码提交`aee1b8d5f010c7b09f22f4fb25e253f790715f11`；H112按E-H112-04完成真实Git生命周期、拒绝/清理、1.88门禁与CLI恢复核验；H113按E-H113-04～06完成正式builtin补验与清理；完整workspace5475过9败128忽略/strict失败保留；H306已按E01～03完成目录根因修复/回归/清理；新workspace5479/9/127，Tauri缺离线依赖及strict保留。下一H203。历史失败与计数快照保留。
 
 **历史唯一台账（2026-11-12，H107验收补强/提交/清理已闭环）**：306行233已修复并验收、28历史跳过、10归并、3撤销、31待修含H180授权不修、0修复中/阻塞、1验收保留H66。30有效待处理加H66共31项有效未完整闭环。本轮恢复H107验收关闭1、新增生产修复0；原生产64f9d169不变，补强test提交629a42784ca4bf080f53ab19139761adeb7aff17，hash/清理回填见E17。SDK完整默认/全特性各89/0/5、CLI同宿主/busy及AppCore/原probe过，strict依赖旧失败及未重跑范围保留，详原项及[台账](system-harness-repair-progress.md)。非全系统全绿、不推送，整个任务未完成。
 
@@ -18337,7 +18337,9 @@ Tool Calls 的 strict Beta 文档使用 `/beta`、Chat 嵌套 `function.strict=t
 
 ### H-306：本地视频编辑的空默认提示词使公开画布提示词目录整体不可读
 
-**级别：低（P3，内置资源/全量目录校验漂移）；状态：正式公开 AppCore 函数已复现，未修复。** 不声称默认画布全部不能运行：现有前端节点调用的是单项 `canvas_prompt_resolve`，不是此全量目录 command。
+**当前状态：已修复并验收（2026-11-15，限E-H306-01～03所列Windows1.88/离线公开目录及单项解析范围）。** 原红及全仓九败、AppCore strict与Tauri离线依赖缺失保留，不称全仓或桌面实机全绿。
+
+**原审计级别：低（P3，内置资源/全量目录校验漂移）；原状态：正式公开 AppCore 函数已复现，未修复。** 不声称默认画布全部不能运行：现有前端节点调用的是单项 `canvas_prompt_resolve`，不是此全量目录 command。
 
 #### 首次有效 Evidence（复现后即时追加）
 
@@ -18366,6 +18368,24 @@ Tool Calls 的 strict Beta 文档使用 `/beta`、Chat 嵌套 `function.strict=t
 - 补跑之前被 Cargo 早停跳过的 `cargo test -p deepagent-tracing -p deepagent-security --lib --offline`：**23 passed / 0 failed**（tracing 11、security 12）。与首次九 crate 命令分开记录，不覆盖 prompts 的真实失败。
 - H-306 缺陷探针默认 ignored，正常控制默认执行；未修改生产 validator、资源、协议或前端。没有启动真实 Tauri/WebView、执行视频编辑、访问网络、用户数据库/凭据或默认 CLI；没有重跑既有故障探针。
 - 实际 `cargo test -p deepagent-app-core --test canvas_prompt_catalog_audit --offline`：**1 passed / 0 failed / 1 ignored**，退出 0。这不覆盖先前显式故障失败，也不表示 prompts crate 默认失败已修复。`cargo fmt --all -- --check`、`git diff --check` 均退出 0。
+
+**E-H306-01（2026-11-15，原探针复现与根因候选，尚未完整验收）**：起点51321e3a；仅保留原三份M状态标记及七组用户未跟踪项，不重置/暂存/删除。Rust1.88.0已安装，独立G:/h306-fixtures-20261115/target、隔离HOME/USERPROFILE/AppData/managed/TEMP、离线锁定依赖，未安装包或访问真实模型/凭据。为减小专属target，DEV/TEST debug信息均通过本进程环境设0（不改Cargo配置），结果不冒称默认debug=2 profile。原 `cargo test -p deepagent-prompts --lib canvas_prompt::tests::every_node_kind_owns_exactly_one_profile --locked --offline -j2 -- --exact --nocapture` 实际0过1败/exit101/182.207秒；公开AppCore `--test canvas_prompt_catalog_audit -- --include-ignored --nocapture --test-threads=1` 实际1过1败/exit101/238.017秒：21个单项解析正常，全目录因local_editor空defaultUserPrompt失败。原red源码冻结，日志SHA256分别674EA0060469094F396C8222D758E37C8CCC447B75B835AF194A7E41348BD675、296B1CEB10FC476EE96732476A0C37272F48322D996A8C0C20F87A9B1B462A5A。
+
+候选为明确的本地资源/执行器契约设计，不套用模型供应商的input约束：PromptProfile沿现有promptUsage标签集中判定默认用户输入是否必需，已知本地/contract用途允许空，模型用途仍拒空，未知usage拒绝；所有用途继续要求系统说明、身份/版本/启用、技能与厂商中立约束，8192字符限制包含纯空白。AppCore的全量契约检查与单项resolve复用一个usage/executor一致性检查，防止模型profile通过改成local标签绕开要求；不另建目录、注册表或执行链。原21份资源（包括video-edit空默认值）、profile/DTO字段与标签原样不改；数量断言改为既有CREATIVE_NODE_KINDS集合长度而非20魔法数字。新增所有profile清空默认值的分类矩阵、7类损坏资源负对照、模型/本地executor错配及全目录/单项/JSON往返/自定义文本一致性测试，原ignored故障探针改默认执行。初步Prompts30/0、公开目录2/0，但不是最终验收；冻结后的相关套件、strict、CLI/SDK、完整workspace及Tauri检查正在串行执行，提交与安全清理待完成。状态改修复中，新增关闭0；有效未闭环仍8，H180按原授权跳过。
+
+**E-H306-02（2026-11-15，冻结候选最终门禁及残余）**：34份冻结输入（含21份资源、源码/Cargo与前端消费方），全部哈希前后不变，最终8阶段已终态。共同环境为Rust1.88.0、`--locked --offline -j2`、独立target及E01隔离路径、debug信息0。实际命令：Prompts `test -p deepagent-prompts --all-targets` 30过0败/7.623秒；AppCore `test -p deepagent-app-core --lib canvas_node_contract::tests` 8/0/128.015秒；原 `--test canvas_prompt_catalog_audit` 默认2/0/57.071秒，ignored已移除，21项目录/单项相等、JSON往返和custom文本均真实执行。`clippy -p deepagent-prompts --all-targets --no-deps -- -D warnings` exit0/105.671秒；AppCore `--lib --test canvas_prompt_catalog_audit --no-deps` strict exit101/118.921秒，仅未改lib33项既有诊断，不降级lint或宣称新integration target已完整strict通过。根fmt/diff通过。
+
+当前 `build -p deepagent-cli` exit0/156.638秒，SDK硬编码默认CLI路径在finally保护下临时消费当前SHA256=8F5B530555F728D7488BFEA4BB3CE0CB9C6551E86E08EBAFCD3051A13593EF12。完整 `test --workspace --no-fail-fast -- --quiet --test-threads=2` exit101/3008.889秒（含11分48秒冷编译）；165个顶层Running/Doc-tests均有summary，**5479过9败127忽略**，额外H92 nested helper1过不重计。Prompts原默认失败消除，AppCore新h306及公开目录默认执行；AppCore1711/6/44、Kernel373/1/7、Runtime495/1/2，SDK86/0/3与stdio15/0。九败逐项保留：MCP旧expected缺tool_use_id、completion_plan discovered_real_build_completes_after_release缺build-started、verification_commands四项（dropping_active_verification_future_stops_real_descendant、production_build_parent_exit_with_inherited_pipes_still_owns_worker、post_edit_default_timeout_stops_real_descendant、production_cold_compiler_gate_normal_cancel_and_deadline）原marker时限、Kernel图片DACL精确恢复、CLI隔离HOME快照、Runtime checkpoint DACL。原H306 Prompts失败已不在末尾failed targets；新增dropping失败为既有历史已观察项，但本轮没有独立因果复核，不把全部残余武断归为环境。上述源码/断言本项无diff，未修改时限、忽略、golden或串修。
+
+独立Tauri `check --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --locked --offline` exit101/7.874秒，因标准缓存缺 `unicode-width v0.2.3`，尚未执行到本轮桌面消费方编译；未联网安装或修改锁文件。Tauri command/wire DTO/TS/UI均未变，公开AppCore动态消费已覆盖，仍明确保留Tauri编译未验边界；未运行pnpm build/UI、真实媒体/模型、其他OS。最终原CLI/sidecar哈希仍453DF899238FE99504B1C30F0DBA22FE793ADD7429C437F0B571A766FCB7535D，原snap.new仍D514BFE28BA6F207C714DDAD2FEFE9E521B3AA1FD7DF1AF243FA2CC2ED911F17，finally恢复原CLI元数据；没有依赖、SQL、权限或执行器路由变更。兼容性：保持21份资源和既有usage字符串；未知usage现在明确拒绝，超长纯空白不再绕过8192字符上限；公开`PromptProfile::requires_default_user_prompt`提供同一判断给AppCore，目录仍全量强一致，不静默过滤坏项。
+
+workspace.log SHA256=ADDC2F173A6DF260C848C7A0D8A550F9A6650EA056B974B03C00D6D2F9A3488D；contracts.log=E571BB144B61F81878774FA0E8C0DA23A3B676F7468D90A4D67154C6282EB17A；catalog.log=FD93B6FD72B266C0B2E5FDEF17F0E808208477BF9250022948D452305019AB85；8阶段final-results=CDE79859CBE9DB67653606B9658CA66319F8C0D6DFEB66FA024FBDE58240AA92；34输入manifest=B3ED5C33D81FCC8F4A3685BFF8274DDC706D0E670574BE3EE43FC5F12C1E20AC。8阶段之外的root fmt为stable已装rustfmt实跑，不冒称1.88 rustfmt组件存在。清理脚本AST通过、SHA256=58F14031E02A8F70D7EDAC270EDAAEF2C12D80BAD8F902548AEDE71E6F222D85，待执行前核验根/所有reparse及冻结/原件。本项尚未提交/关闭，新增验收0，不以部分suite取代目标完成。
+
+**E-H306-03（2026-11-15，清理实证与限定验收）**：最终所有Cargo/fixture进程均已退出。第一次cleanup在任何删除前因原件元数据比较中止，零删除；逐项检查发现ConvertFrom-Json已把ISO时间转为DateTime，再DateTime.Parse隐式经当前文化转成字符串丢失小数ticks，造成三份原件全报假差异。直接读取并对比原Datetime UTC ticks证明三份创建/写入时刻全部相等，文件长度/属性/hash亦相等；仅修正清理器时间比较，不修改原件或放松检查。E02的58F140…是首次中止版脚本摘要，修正后摘要未另留存，不用旧hash冒充最终脚本。
+
+再次执行原生 `pwsh -NoProfile -File G:/h306-fixtures-20261115/cleanup-h306.ps1`：仅一根、本轮14207文件/10572856122逻辑字节（约9.85GiB），祖先/全后代零reparse，34冻结输入+双文36份及CLI/snap.new/sidecar三原件前后核验。先WhatIf再Remove-Item，exit0，真实JSON reviewedRoots=1、remaining=0及四项original/frozen保护均true；独立Test-Path=false，原CLI/sidecar/hash及用户snap.new未变。G盘free清理后62439751680字节，未宣称空闲差值全归本项；普通权限即实际成功，本进程无管理员token、未UAC或冒称最高管理员。共享target/debug、node_modules、公共Cargo缓存、原用户文件/源码没有删除；fixture内日志/脚本已回收，关键原红/门禁摘要已保留本记录。
+
+H306按E01～02所列Windows1.88、离线、公开Prompts→AppCore catalog/resolve及跨注册表边界已修复并验收；不宣称Tauri编译/GUI/真实视频导出通过。新增功能修复及验收各1，历史跳过/归并/撤销新增0。只白名单3份Rust实现/测试加当时双文独立commit；取得hash后普通回填，不amend/推送/PR。307主行重算257验收、29历史跳过、10归并、3撤销、7待修含H180、H66保留1、修复中/阻塞0；6有效待修加H66保留共7有效未闭环。下一按输入边界风险先复核H203公开Responses字符串role，H114候选继续保全不混修，H180保持授权跳过。本项实现/门禁/清理余0，全部剩余仍沿170–430有效小时低置信旧分组估算（模型输入、工作流持久化/视口、实时用量及H66范围仍需逐项确认），不是按条数机械递减；本次全仓50.15分钟为编译/设备执行等待，依赖/人工等待另计，无精确日历保证；整个目标未完成。
 
 <a id="audit-module-coverage"></a>
 

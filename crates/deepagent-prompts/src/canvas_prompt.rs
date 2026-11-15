@@ -41,6 +41,35 @@ pub struct PromptProfile {
     pub enabled: bool,
 }
 
+impl PromptProfile {
+    /// Defaults are model input only for usages that actually invoke a model.
+    /// Keep the wire's existing usage labels, and reject unknown labels rather
+    /// than interpreting a misspelled model usage as a prompt-free local node.
+    pub fn requires_default_user_prompt(&self) -> Result<bool> {
+        match self.prompt_usage.as_str() {
+            "IntentNormalization"
+            | "ArtifactContract"
+            | "ConstraintContract"
+            | "LocalVideoCompose"
+            | "local_editor" => Ok(false),
+            "ResponsesText"
+            | "CanvasImage"
+            | "LocalCompareOrSemanticVision"
+            | "CanvasImageEdit"
+            | "MediaJobVideo"
+            | "ResponsesDirectionPlan"
+            | "ResponsesTemplateExpansion"
+            | "CharacterContext"
+            | "SpeechMedia"
+            | "ResponsesStoryboard" => Ok(true),
+            _ => Err(CoreError::invalid(format!(
+                "canvas prompt profile `{}` has an unknown promptUsage `{}`",
+                self.id, self.prompt_usage
+            ))),
+        }
+    }
+}
+
 /// A provider-agnostic skill block a node may attach.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -175,7 +204,10 @@ pub fn canvas_skill(skill_id: &str) -> Option<&'static CanvasSkill> {
 /// Reject profiles that could bind a prompt to the wrong node or smuggle a
 /// vendor name into a supposedly provider-neutral prompt.
 pub fn validate_canvas_prompts() -> Result<()> {
-    let profiles = creative_profiles();
+    validate_profiles(creative_profiles())
+}
+
+fn validate_profiles(profiles: &[PromptProfile]) -> Result<()> {
     if profiles.len() != CREATIVE_NODE_KINDS.len() {
         return Err(CoreError::invalid(format!(
             "canvas prompt profiles expect {} entries, found {}",
@@ -218,18 +250,23 @@ pub fn validate_canvas_prompts() -> Result<()> {
                 profile.id
             )));
         }
-        for (field, value) in [
-            ("systemPrompt", &profile.system_prompt),
-            ("defaultUserPrompt", &profile.default_user_prompt),
+        let needs_user_prompt = profile.requires_default_user_prompt()?;
+        for (field, value, required) in [
+            ("systemPrompt", &profile.system_prompt, true),
+            (
+                "defaultUserPrompt",
+                &profile.default_user_prompt,
+                needs_user_prompt,
+            ),
         ] {
             let trimmed = value.trim();
-            if trimmed.is_empty() {
+            if required && trimmed.is_empty() {
                 return Err(CoreError::invalid(format!(
                     "canvas prompt profile `{}` has an empty {field}",
                     profile.id
                 )));
             }
-            if trimmed.chars().count() > MAX_PROMPT_CHARS {
+            if value.chars().count() > MAX_PROMPT_CHARS {
                 return Err(CoreError::invalid(format!(
                     "canvas prompt profile `{}` exceeds {MAX_PROMPT_CHARS} characters in {field}",
                     profile.id
@@ -308,8 +345,59 @@ mod tests {
     #[test]
     fn every_node_kind_owns_exactly_one_profile() {
         validate_canvas_prompts().expect("canvas prompts valid");
-        assert_eq!(creative_profiles().len(), 20);
+        assert_eq!(creative_profiles().len(), CREATIVE_NODE_KINDS.len());
         assert_eq!(canvas_skills().len(), 4);
+    }
+
+    #[test]
+    fn h306_empty_defaults_follow_usage_without_relaxing_model_profiles() {
+        for original in creative_profiles() {
+            let mut profiles = creative_profiles().to_vec();
+            let profile = profiles.iter_mut().find(|p| p.id == original.id).unwrap();
+            profile.default_user_prompt.clear();
+            let result = validate_profiles(&profiles);
+            if original.requires_default_user_prompt().unwrap() {
+                let error = result
+                    .expect_err("model profiles still need default input")
+                    .to_string();
+                assert!(error.contains(&original.id) && error.contains("empty defaultUserPrompt"));
+            } else {
+                result.expect("local and contract usages do not require model input");
+            }
+        }
+    }
+
+    #[test]
+    fn h306_prompt_free_usage_still_rejects_broken_resources() {
+        for field in [
+            "system",
+            "usage",
+            "length",
+            "whitespace_length",
+            "identity",
+            "skill",
+            "disabled",
+        ] {
+            let mut profiles = creative_profiles().to_vec();
+            let local = profiles
+                .iter_mut()
+                .find(|p| p.node_kind == "video-edit")
+                .unwrap();
+            match field {
+                "system" => local.system_prompt.clear(),
+                "usage" => local.prompt_usage = "local_editro".into(),
+                "length" => local.default_user_prompt = "字".repeat(MAX_PROMPT_CHARS + 1),
+                "whitespace_length" => local.default_user_prompt = " ".repeat(MAX_PROMPT_CHARS + 1),
+                "identity" => local.id = "creative.text-gen.v1".into(),
+                "skill" => local.default_skill_ids.push("unknown-skill".into()),
+                "disabled" => local.enabled = false,
+                _ => unreachable!(),
+            }
+            assert!(
+                validate_profiles(&profiles).is_err(),
+                "invalid {field} must fail closed"
+            );
+        }
     }
 
     #[test]
