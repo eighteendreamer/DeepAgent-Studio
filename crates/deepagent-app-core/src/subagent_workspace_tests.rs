@@ -157,6 +157,252 @@ fn repo(root: &Path) {
     git(root, &["commit", "-m", "fixture"]);
 }
 
+#[cfg(windows)]
+fn h112_install_commands(runner: &ChatSubagentRunner, log: &Path, deny_create: bool) {
+    use deepagent_hooks::{HookDefinitions, SystemHookRunner};
+    let quoted = log.to_string_lossy().replace('\'', "''");
+    let command = format!(
+        // Decode the documented UTF-8 wire rather than depending on the host
+        // console code page; the production runner itself is not changed here.
+        "$reader=[IO.StreamReader]::new([Console]::OpenStandardInput(),[Text.Encoding]::UTF8); \
+         $raw=$reader.ReadToEnd(); $p=$raw | ConvertFrom-Json; \
+         $path=$p.path; if($p.worktree_path){{$path=$p.worktree_path}}; \
+         if($p.new_cwd){{$path=$p.new_cwd}}; \
+         $exists=if($path){{[IO.Directory]::Exists($path)}}else{{$null}}; \
+         $entry=@{{payload=$p;directory_exists=$exists}} | ConvertTo-Json -Compress -Depth 20; \
+         [IO.File]::AppendAllText('{quoted}',$entry+[Environment]::NewLine)"
+    );
+    let mut definitions = json!({"hooks":{}});
+    for event in ["WorktreeCreate", "WorktreeRemove", "CwdChanged"] {
+        let command = if deny_create && event == "WorktreeCreate" {
+            format!("{command}; [Console]::Error.Write('h112 deliberate veto'); exit 2")
+        } else {
+            command.clone()
+        };
+        definitions["hooks"][event] = json!([{"hooks":[{
+            "type":"command","shell":"powershell","timeout":5,"command":command
+        }]}]);
+    }
+    let mut hooks = HookRegistry::new();
+    assert_eq!(
+        HookDefinitions::parse(&definitions.to_string())
+            .unwrap()
+            .register_into(&mut hooks, Arc::new(SystemHookRunner)),
+        3
+    );
+    assert!(runner.hooks.set(Arc::new(hooks)).is_ok());
+}
+
+#[cfg(windows)]
+fn h112_read_commands(log: &Path) -> Vec<Value> {
+    std::fs::read_to_string(log)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn h112_real_git_hooks_keep_identity_paths_timing_and_shared_control() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("项目 repo");
+    repo(&root);
+    let head = git(&root, &["rev-parse", "HEAD"]);
+    let db_path = temp.path().join("state.sqlite");
+    let db = Arc::new(Database::open(&db_path).unwrap());
+    let transport = WorkspaceTransport::new(vec![]);
+    let mut runner = audit_child_runner_with_db(&root, transport.clone(), db.clone());
+    runner.transcript_root = temp.path().join("transcripts");
+    let log = temp.path().join("hook-events.jsonl");
+    h112_install_commands(&runner, &log, false);
+    runner.run_inner(request("shared"), None).await.unwrap();
+    assert!(
+        !log.exists(),
+        "shared child must not claim worktree lifecycle"
+    );
+    runner.run_inner(request("worktree"), None).await.unwrap();
+    let store = SubagentRunStore::new(&db);
+    let record = store
+        .list_for_parent("audit-parent")
+        .unwrap()
+        .into_iter()
+        .find(|record| record.worktree_path.is_some())
+        .unwrap();
+    let child = record.worktree_path.as_ref().unwrap();
+    assert!(Path::new(child).join("base.txt").is_file());
+    assert!(git(&root, &["worktree", "list", "--porcelain"]).contains(&record.id));
+    assert!(runner.cleanup(&record.id).await.unwrap());
+    assert!(!Path::new(child).exists());
+    assert_eq!(git(&root, &["rev-parse", "HEAD"]), head);
+    assert_eq!(
+        std::fs::read_to_string(root.join("base.txt")).unwrap(),
+        "original"
+    );
+    let observed = h112_read_commands(&log);
+    assert_eq!(observed.len(), 3);
+    let create = &observed[0]["payload"];
+    let cwd = &observed[1]["payload"];
+    let remove = &observed[2]["payload"];
+    assert_eq!(create["hook_event_name"], "WorktreeCreate");
+    assert_eq!(create["name"], record.id);
+    assert_eq!(
+        create["path"], *child,
+        "legacy guard consumers still receive planned path"
+    );
+    assert_eq!(
+        observed[0]["directory_exists"], false,
+        "create hook precedes Git"
+    );
+    assert_eq!(cwd["hook_event_name"], "CwdChanged");
+    assert_eq!(cwd["old_cwd"], root.to_string_lossy().as_ref());
+    assert_eq!(cwd["new_cwd"], *child);
+    assert_eq!(cwd["path"], *child);
+    assert_eq!(observed[1]["directory_exists"], true);
+    assert_eq!(remove["hook_event_name"], "WorktreeRemove");
+    assert_eq!(remove["worktree_path"], *child);
+    assert_eq!(remove["path"], *child);
+    assert_eq!(
+        observed[2]["directory_exists"], true,
+        "remove hook precedes deletion"
+    );
+    for entry in &observed {
+        assert_eq!(
+            entry["payload"]["session_id"],
+            runner.parent_session_id().unwrap().to_string()
+        );
+    }
+    let before = store.get(&record.id).unwrap().unwrap();
+    assert!(before.worktree_path.is_none());
+    assert_eq!(before.state, "succeeded");
+    assert_eq!(transport.requests.lock().unwrap().len(), 2);
+    drop(runner);
+    drop(db);
+    let reopened = Database::open(&db_path).unwrap();
+    assert_eq!(
+        SubagentRunStore::new(&reopened)
+            .get(&record.id)
+            .unwrap()
+            .unwrap(),
+        before
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn h112_create_veto_prevents_git_and_model_without_changing_parent() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("repo");
+    repo(&root);
+    let head = git(&root, &["rev-parse", "HEAD"]);
+    let transport = WorkspaceTransport::new(vec![]);
+    let mut runner = audit_child_runner(&root, transport.clone());
+    runner.transcript_root = temp.path().join("transcripts");
+    let log = temp.path().join("veto.jsonl");
+    h112_install_commands(&runner, &log, true);
+    let error = runner
+        .run_inner(request("worktree"), None)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("h112 deliberate veto"));
+    assert!(transport.requests.lock().unwrap().is_empty());
+    let records = SubagentRunStore::new(&runner.db)
+        .list_for_parent("audit-parent")
+        .unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].state, "failed");
+    assert!(records[0].worktree_path.is_none());
+    assert!(!runner.worktree_base().join(&records[0].id).exists());
+    let observed = h112_read_commands(&log);
+    assert_eq!(observed.len(), 1);
+    assert_eq!(observed[0]["payload"]["name"], records[0].id);
+    assert_eq!(observed[0]["directory_exists"], false);
+    assert_eq!(git(&root, &["rev-parse", "HEAD"]), head);
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn h112_failed_child_notifies_before_real_git_cleanup() {
+    struct FailedChild(AtomicUsize);
+    #[async_trait::async_trait]
+    impl deepagent_models::transport::HttpTransport for FailedChild {
+        async fn stream(
+            &self,
+            _: deepagent_models::transport::TransportRequest,
+            _: &mut dyn deepagent_models::transport::EventSink,
+        ) -> Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(CoreError::invalid("h112 synthetic child failure"))
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("repo");
+    repo(&root);
+    let head = git(&root, &["rev-parse", "HEAD"]);
+    let transport = Arc::new(FailedChild(AtomicUsize::new(0)));
+    let mut runner = audit_child_runner(&root, transport.clone());
+    runner.transcript_root = temp.path().join("transcripts");
+    let log = temp.path().join("failed-child.jsonl");
+    h112_install_commands(&runner, &log, false);
+    assert!(runner.run_inner(request("worktree"), None).await.is_err());
+    assert_eq!(transport.0.load(Ordering::SeqCst), 1);
+    let records = SubagentRunStore::new(&runner.db)
+        .list_for_parent("audit-parent")
+        .unwrap();
+    assert_eq!(records.len(), 1);
+    let child = runner.worktree_base().join(&records[0].id);
+    assert_eq!(records[0].state, "failed");
+    assert!(records[0].worktree_path.is_none());
+    assert!(!child.exists());
+    assert!(!git(&root, &["worktree", "list", "--porcelain"]).contains(&records[0].id));
+    let observed = h112_read_commands(&log);
+    assert_eq!(observed.len(), 3);
+    assert_eq!(observed[0]["payload"]["name"], records[0].id);
+    assert_eq!(observed[0]["directory_exists"], false);
+    assert_eq!(
+        observed[1]["payload"]["new_cwd"],
+        child.to_string_lossy().as_ref()
+    );
+    assert_eq!(
+        observed[2]["payload"]["worktree_path"],
+        child.to_string_lossy().as_ref()
+    );
+    assert_eq!(observed[2]["directory_exists"], true);
+    assert_eq!(git(&root, &["rev-parse", "HEAD"]), head);
+}
+
+#[tokio::test]
+async fn h112_managed_creation_rejects_path_rewrite_before_git_and_model() {
+    struct Rewrite;
+    #[async_trait::async_trait]
+    impl deepagent_hooks::Hook for Rewrite {
+        fn name(&self) -> &str {
+            "h112-rewrite"
+        }
+        async fn run(&self, _: &HookContext) -> Result<HookOutcome> {
+            Ok(HookOutcome::modify(json!({"path":"outside-managed-root"})))
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("repo");
+    repo(&root);
+    let transport = WorkspaceTransport::new(vec![]);
+    let mut runner = audit_child_runner(&root, transport.clone());
+    runner.transcript_root = temp.path().join("transcripts");
+    let mut hooks = HookRegistry::new();
+    hooks.register(HookPoint::WorktreeCreate, Arc::new(Rewrite));
+    assert!(runner.hooks.set(Arc::new(hooks)).is_ok());
+    let error = runner
+        .run_inner(request("worktree"), None)
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("rewrite the managed worktree path"));
+    assert!(transport.requests.lock().unwrap().is_empty());
+    assert!(!runner.worktree_base().exists());
+}
+
 #[tokio::test]
 async fn dag_relative_absolute_read_edit_search_and_checkpoint_use_child_root() {
     let temp = tempfile::tempdir().unwrap();

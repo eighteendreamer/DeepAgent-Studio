@@ -4,7 +4,7 @@
 
 用户已授权按本报告逐项进行本地代码修复与测试；已修复、撤销和归并条目跳过，不重新计数。分析阶段完成不再是当前总体任务的完成状态。每项完成后更新原项状态、保留失败证据、独立提交并汇报验收与剩余工时。本轮不操作真实用户文件或外部服务。
 
-**当前续接（2026-11-15）**：307唯一台账：256验收、29历史跳过、10归并、3撤销、8待修含H180、H66验收保留1、修复中/阻塞0，有效未完整闭环8。H106已按用户指定DeepSeek Harness原则完成本地结构化错误适配、本机回归及清理，详E-H106-04～07；fix为a0560739，官方该版本不支持StopFailure，不冒称官方原样或Claude完整兼容。完整workspace5462过7败131忽略、strict失败保留；H297/H98交叉测试契约已独立复核，未改变生产状态或修复计数。H109已按E-H109-04补齐Stop回调可读transcript并完成限定验收，提交`55fe90eb`；H110已按E-H110-01～02完成本机schema适配与回归，代码提交`aee1b8d5f010c7b09f22f4fb25e253f790715f11`；H112已按E-H112-01～02完成工作树生命周期字段适配与本机回归；H113已按E-H113-01～02完成文件变更 hook 字段映射与本机回归。历史失败与计数快照保留。
+**当前续接（2026-11-15）**：307唯一台账：255验收、29历史跳过、10归并、3撤销、9待修含H180、H66验收保留1、修复中/阻塞0，有效未完整闭环10。H106已按用户指定DeepSeek Harness原则完成本地结构化错误适配、本机回归及清理，详E-H106-04～07；fix为a0560739，官方该版本不支持StopFailure，不冒称官方原样或Claude完整兼容。完整workspace失败与strict失败保留；H297/H98交叉测试契约已独立复核，未改变生产状态或修复计数。H109已按E-H109-04补齐Stop回调可读transcript并完成限定验收，提交`55fe90eb`；H110已按E-H110-01～02完成本机schema适配与回归，代码提交`aee1b8d5f010c7b09f22f4fb25e253f790715f11`；H112按E-H112-04完成真实Git生命周期、拒绝/清理、1.88门禁与CLI恢复核验；H113仍按E-H113-03待独立补验。历史失败与计数快照保留。
 
 **历史唯一台账（2026-11-12，H107验收补强/提交/清理已闭环）**：306行233已修复并验收、28历史跳过、10归并、3撤销、31待修含H180授权不修、0修复中/阻塞、1验收保留H66。30有效待处理加H66共31项有效未完整闭环。本轮恢复H107验收关闭1、新增生产修复0；原生产64f9d169不变，补强test提交629a42784ca4bf080f53ab19139761adeb7aff17，hash/清理回填见E17。SDK完整默认/全特性各89/0/5、CLI同宿主/busy及AppCore/原probe过，strict依赖旧失败及未重跑范围保留，详原项及[台账](system-harness-repair-progress.md)。非全系统全绿、不推送，整个任务未完成。
 
@@ -5326,7 +5326,7 @@ H110原两路schema红已复现，未提交候选即使局部绿仍有未知trig
 
 ### H-112：工作树生命周期 hook 缺少事件专属字段
 
-**当前状态：已修复并验收（2026-11-15，仅下列 Windows 本机、离线模型与外部 hook 投影范围）。** 原始失败证据保留；使用事件专属 typed carrier 和唯一 serializer，不改变工作树创建、移除、取消或路径安全边界。
+**原局部状态（由下述E-H112-03撤回）：已修复并验收（2026-11-15，仅下列 Windows 本机、离线模型与外部 hook 投影范围）。** 原始失败证据保留；使用事件专属 typed carrier 和唯一 serializer，不改变工作树创建、移除、取消或路径安全边界。
 
 **级别：低（P3，条件性 hook 输入契约缺陷）；触发条件：配置 `WorktreeCreate`、`WorktreeRemove` 或 `CwdChanged` command hook，并执行隔离子 Agent 的工作树创建、移除或工作目录切换。** 普通共享目录子运行不触发这组事件。
 
@@ -5338,9 +5338,15 @@ H110原两路schema红已复现，未提交候选即使局部绿仍有未知trig
 - **E-H112-02（回归）**：删除原 ignored 标记，正式 PowerShell probe 为1过/0败；Hooks 三后端矩阵含三种事件为88过/0败，错配保护单测通过；`subagent_runner::tests` 为22过/0败/1忽略；`cargo fmt --all -- --check`、`git diff --check`通过。代码提交`e01db291`。
 - **实现与限制**：未改变真实 Git provider、工作树清理、hook veto/modify 语义或权限边界；未运行完整 workspace、strict Clippy（AppCore 仍有既有24项诊断）、真实第三方 schema validator、真实供应商、其他 OS、UI 或前端构建。
 
+**E-H112-03（2026-11-15，自审重新打开，修复中）**：e01db291只验typed输入与serializer，未执行真实Git创建/失败清理/拒绝或证明生产owner提供正确身份；还删除了旧path字段，可能破坏依赖它的hook与rewrite echo。撤回E02完整验收，不回滚真实局部通过与代码提交。已用H110冻结binary运行原ignored probe，0过/1败/exit101，日志SHA256=3495F88BAA71538A217A33DBAF509BFFCD70471F76AF92580142CBA2B7140571。先补真实Git/Unicode路径/回调时序/共享对照及拒绝零模型红测，再在同一serializer恢复兼容路径；H114未接受候选已保存并精确撤回，不混入本项。
+
+**E-H112-04（2026-11-15，真实生产链回归与门禁收尾）**：按用户指定的 DeepSeek Harness/Claude schema 边界，在同一 serializer 恢复 `path` 兼容字段，同时保留官方事件专属字段：`WorktreeCreate`=`name`、`WorktreeRemove`=`worktree_path`、`CwdChanged`=`old_cwd/new_cwd`。新增真实 Git worktree 回归覆盖中文路径、创建前拒绝、子运行失败后的通知/清理、父仓库 HEAD/文件不变，以及 managed path rewrite fail-closed；4/0通过。H112相关 AppCore 子运行套件56/0/1忽略，Hooks全套110/0；所有输入为UTF-8读取，避免Windows控制台代码页伪造路径失败。
+
+门禁脚本固定 Rust 1.88.0、独立 `G:/h110-fixtures-20261115/h112-target-1.88` 和隔离配置；Hooks strict exit101（既有3项 `uninlined_format_args`），AppCore strict exit101（既有33项 lint），当前 CLI build exit0，随后以原哈希/长度/时间属性恢复共享 `target/debug/deepagent.exe`，原 CLI、Tauri sidecar、用户 `snap.new` 均核验未变。完整 workspace exit101，失败仍为既有 AppCore 生命周期/MCP 断言、Kernel/Runtime DACL、CLI隔离快照及 Prompts 空 profile 等其他条目；未修改、忽略或转移这些失败。根工作区 `cargo fmt --all -- --check` 与 `git diff --check`通过。H112 代码/测试与本轮证据可提交，fixture 尚留待后续按同一保护脚本清理；H114候选不混入本项。
+
 ### H-113：FileChanged hook 字段名与变化类型不符合 schema
 
-**当前状态：已修复并验收（2026-11-15，仅下列 Windows 本机、离线工具管线与外部 hook 投影范围）。** 原始失败证据保留；采用唯一 serializer 的显式内部 mutation 到协议事件映射，未知标签 fail closed。
+**原局部状态（由下述E-H113-03撤回）：已修复并验收（2026-11-15，仅下列 Windows 本机、离线工具管线与外部 hook 投影范围）。** 原始失败证据保留；采用唯一 serializer 的显式内部 mutation 到协议事件映射，未知标签 fail closed。
 
 **级别：低（P3，条件性 hook 输入契约缺陷）；触发条件：配置 `FileChanged` command hook，且工具通过正式 checkpoint 变更工作区文件。** 未配置该 hook 时不影响文件写入。
 
@@ -5351,6 +5357,8 @@ H110原两路schema红已复现，未提交候选即使局部绿仍有未知trig
 - **E-H113-01（根因修复）**：`FileChanged` 对外由 `path/change_kind` 改为 `file_path/event`；内部 `created`→`add`、`modified`→`change`、`deleted`→`unlink`，未知 mutation label 不生成字段，错配 event/point 不制造 payload。既有 checkpoint evidence、工具执行和 mutation kind 保持不变。
 - **E-H113-02（回归）**：正式 Windows PowerShell FileChanged probe 由0过/1败变为1过/0败；Hooks全量89过/0败，Runtime `tool_pipeline::tests` 为23过/0败，`cargo fmt --all -- --check`、`git diff --check`通过。代码提交`f7bd0482`。
 - **实现与限制**：未改变文件写入、checkpoint、权限、取消或持久化；未跑完整 workspace、strict Clippy、真实第三方 schema validator、真实供应商、其他 OS、UI 或前端构建。
+
+**E-H113-03（2026-11-15，自审重新打开，待补验）**：f7bd0482的字段映射和已有创建回归有效，但E02没有本轮修前复现、正式修改/删除/不变/失败/多路径测试及跨crate workspace，不能支持完整关闭；撤回完整验收状态，原局部结果/提交仍保留。下一轮独立补强，不与H112混修；本轮stable工具链测试不能写成1.88验收。
 
 ### H-114：后台子 Agent Notification hook 缺少必需的通知类别
 

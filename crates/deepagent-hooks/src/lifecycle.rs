@@ -352,7 +352,7 @@ pub enum HookData {
         kind: String,
     },
     /// A managed worktree is about to be created. `path` is retained for the
-    /// host's path-rewrite guard; the external schema exposes only `name`.
+    /// host's path-rewrite guard and legacy wire consumers alongside `name`.
     WorktreeCreate {
         name: String,
         path: String,

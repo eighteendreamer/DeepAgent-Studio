@@ -222,14 +222,14 @@ async fn payload_matrix(base: Option<crate::HookBaseInput>) {
                 name: "feature-a".into(),
                 path: "C:/worktrees/feature-a".into(),
             },
-            json!({"name":"feature-a"}),
+            json!({"name":"feature-a","path":"C:/worktrees/feature-a"}),
         ),
         (
             HookEvent::WorktreeRemove,
             HookData::WorktreeRemove {
                 worktree_path: "C:/worktrees/feature-a".into(),
             },
-            json!({"worktree_path":"C:/worktrees/feature-a"}),
+            json!({"worktree_path":"C:/worktrees/feature-a","path":"C:/worktrees/feature-a"}),
         ),
         (
             HookEvent::CwdChanged,
@@ -237,7 +237,7 @@ async fn payload_matrix(base: Option<crate::HookBaseInput>) {
                 old_cwd: "C:/workspace".into(),
                 new_cwd: "C:/worktrees/feature-a".into(),
             },
-            json!({"old_cwd":"C:/workspace","new_cwd":"C:/worktrees/feature-a"}),
+            json!({"old_cwd":"C:/workspace","new_cwd":"C:/worktrees/feature-a","path":"C:/worktrees/feature-a"}),
         ),
         (
             HookEvent::FileChanged,
