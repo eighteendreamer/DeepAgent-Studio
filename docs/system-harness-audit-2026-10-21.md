@@ -18612,3 +18612,10 @@ H203现在完成本机Windows离线功能验收与专属产物清理；未验真
 提交后执行`pwsh -NoProfile -File G:/h114-fixtures-20261115/cleanup-h114.ps1`：仅删除本项一根fixture，先核全后代零reparse、活动Cargo/rustc/link零，再WhatIf后Remove-Item；实际清理8049文件、2578990505逻辑字节，exit0，最终`remaining=0`、`protectedInputsUnchanged=true`。共享target/debug、node_modules、公共Cargo缓存、源码和用户未跟踪项未删；fixture日志/脚本随根目录回收，关键日志hash和结果已写入前述E-H114-01～03及本记录。普通权限执行，无管理员token或UAC，不冒称最高管理员。
 
 H114完成当前Windows离线范围：后台子Agent成功真实hook、typed成功/失败/取消类别矩阵、Hooks action backend及AppCore消费边界已验证；未验完整workspace、真实外部hook/模型、Tauri/UI、其它OS和长期压力，保留为残余限制。累计259项已修复验收，历史跳过29、归并10、撤销3、待修5（含H180授权不修）、修复中0、H66验收保留1；有效未闭环6。下一项H172；全余170–430有效小时仍沿未逐项重估的低置信历史区间，编译/设备/依赖/人工等待另计。
+
+
+**E-H172-04（2026-11-15，独立提交与安全清理闭环）**：修复提交为`59a0f0e4bdb14dbe8cb1e1a859e20d553c8c4a8d`（【fix】补齐Responses参数边界校验），仅Models生产/回归测试及两份双文；未包含已有AppCore `context_runtime.rs`修改、任何用户untracked、fixture或共享target/node_modules。提交前暂存白名单、`git diff --cached --check`、fmt和307行/307唯一ID台账校验通过；未amend、推送或创建PR。
+
+提交后执行`pwsh -NoProfile -File G:/h172-fixtures-20261115/cleanup-h172.ps1`：仅删除本项一根fixture，先核全后代零reparse、活动Cargo/rustc/link零，再WhatIf后Remove-Item；实际清理4747文件、2568984392逻辑字节，exit0，最终`remaining=0`、`protectedInputsUnchanged=true`。共享target/debug、node_modules、公共Cargo缓存、源码和用户未跟踪项未删；普通权限执行，无管理员token或UAC，不冒称最高管理员。
+
+H172完成当前Windows离线范围：数值request/defaults、text.format request/defaults、ordinary/cancel-aware和合法边界均在最终Responses provider seam验证；未验完整workspace、真实供应商/模型、Tauri/UI、其它OS和长期压力，保留为残余限制。累计260项已修复验收，历史跳过29、归并10、撤销3、待修4（含H180授权不修）、修复中0、H66验收保留1；有效未闭环5。下一项H201；全余170–430有效小时仍沿未逐项重估的低置信历史区间，编译/设备/依赖/人工等待另计。
