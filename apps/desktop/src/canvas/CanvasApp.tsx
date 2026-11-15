@@ -95,6 +95,8 @@ function WorkflowCanvasInner() {
   const openNodePicker = useCanvasStore((s) => s.openNodePicker);
   const closeNodePicker = useCanvasStore((s) => s.closeNodePicker);
   const setViewport = useCanvasStore((s) => s.setViewport);
+  const viewportHydrated = useCanvasStore((s) => s.viewportHydrated);
+  const viewport = useCanvasStore((s) => s.viewport);
   const cropTarget = useCanvasStore((s) => s.cropTarget);
   const setCropTarget = useCanvasStore((s) => s.setCropTarget);
   const drawingTarget = useCanvasStore((s) => s.drawingTarget);
@@ -115,7 +117,6 @@ function WorkflowCanvasInner() {
   const proOnEdgesChange = useProfessionalStore((s) => s.onEdgesChange);
 
   const [rfInstance, setRfInstance] = useState<ReactFlowInstance | null>(null);
-  const [viewport, setLocalViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
   const containerRef = useRef<HTMLDivElement>(null);
   const rfWrapperRef = useRef<HTMLDivElement>(null);
   const batchConnectionSvgRef = useRef<SVGSVGElement>(null);
@@ -535,7 +536,6 @@ function WorkflowCanvasInner() {
 
   const handleViewportChange = useCallback(
     (vp: Viewport) => {
-      setLocalViewport(vp);
       setViewport(vp);
     },
     [setViewport],
@@ -848,8 +848,9 @@ function WorkflowCanvasInner() {
         edgeTypes={edgeTypes}
         snapToGrid={snapToGrid}
         snapGrid={[24, 24]}
-        fitView
+        fitView={!viewportHydrated}
         fitViewOptions={{ maxZoom: 0.9 }}
+        defaultViewport={viewportHydrated ? viewport : undefined}
         minZoom={0.2}
         maxZoom={3}
         // 左键拖动交给框选，避免桌面 WebView 的原生 mousedown 被 pan 手势抢走。

@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCreativeStore } from "../store/creativeStore";
 import { useProfessionalStore } from "../store/professionalStore";
 import type { WorkflowNode, WorkflowEdge } from "../types";
+import { useCanvasStore } from "../store/canvasStore";
+import type { Viewport } from "@xyflow/react";
 
 /**
  * Canvas graph persistence.
@@ -16,6 +18,8 @@ export type CanvasMode = "creative" | "professional";
 interface CanvasGraph {
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
+  /** Optional for old graph documents written before viewport persistence. */
+  viewport?: Viewport;
 }
 
 const CANVAS_MODES: CanvasMode[] = ["creative", "professional"];
@@ -36,17 +40,33 @@ function isTauriRuntime(): boolean {
 function graphOf(mode: CanvasMode): CanvasGraph {
   const state =
     mode === "creative" ? useCreativeStore.getState() : useProfessionalStore.getState();
-  return { nodes: state.nodes, edges: state.edges };
+  return {
+    nodes: state.nodes,
+    edges: state.edges,
+    viewport: useCanvasStore.getState().viewports[mode],
+  };
 }
 
 function applyGraph(mode: CanvasMode, graph: CanvasGraph) {
   if (mode === "creative") {
     useCreativeStore.setState({ nodes: graph.nodes, edges: graph.edges });
-    return;
+  } else {
+    const store = useProfessionalStore.getState();
+    store.setNodes(graph.nodes);
+    store.setEdges(graph.edges);
   }
-  const store = useProfessionalStore.getState();
-  store.setNodes(graph.nodes);
-  store.setEdges(graph.edges);
+  const canvas = useCanvasStore.getState();
+  const viewport = graph.viewport ?? canvas.viewports[mode];
+  useCanvasStore.setState({
+    viewports: { ...canvas.viewports, [mode]: viewport },
+    hydratedViewports: {
+      ...canvas.hydratedViewports,
+      [mode]: !!graph.viewport,
+    },
+    ...(canvas.mode === mode
+      ? { viewport, viewportHydrated: !!graph.viewport }
+      : {}),
+  });
 }
 
 /** 旧版本 id 计数器重载后可能写入同 id 节点，恢复时按 id 去重（保留首个）。 */
@@ -59,9 +79,18 @@ function normalizeGraph(value: unknown): CanvasGraph | null {
   if (!value || typeof value !== "object") return null;
   const graph = value as Partial<CanvasGraph>;
   if (!Array.isArray(graph.nodes)) return null;
+  const viewport = graph.viewport;
+  const validViewport = viewport && typeof viewport === "object"
+    && Number.isFinite(viewport.x)
+    && Number.isFinite(viewport.y)
+    && Number.isFinite(viewport.zoom)
+    && viewport.zoom > 0
+    ? { x: viewport.x, y: viewport.y, zoom: viewport.zoom }
+    : undefined;
   return {
     nodes: dedupeNodes(graph.nodes),
     edges: Array.isArray(graph.edges) ? graph.edges : [],
+    ...(validViewport ? { viewport: validViewport } : {}),
   };
 }
 
@@ -133,6 +162,7 @@ function receipt(value: unknown): string {
 // 每个模式只建立一个订阅；数据库仍是唯一持久化来源。
 const slots = new Map<CanvasMode, PersistenceSlot>();
 let hydration: Promise<void> | null = null;
+let viewportSubscription: (() => void) | undefined;
 const listeners = new Set<() => void>();
 const notify = () => listeners.forEach((listener) => listener());
 
@@ -194,6 +224,20 @@ function subscribe(mode: CanvasMode) {
   });
 }
 
+function subscribeViewport() {
+  if (viewportSubscription) return;
+  viewportSubscription = useCanvasStore.subscribe((state, previous) => {
+    if (state.viewport === previous.viewport) return;
+    const mode = state.mode;
+    const slot = slots.get(mode);
+    if (!slot || slot.error?.conflict || slot.recovering) return;
+    if (slot.timer) clearTimeout(slot.timer);
+    slot.timer = setTimeout(() => {
+      void persist(mode).catch((error) => console.error(`[canvas] 保存 ${mode} 视口失败:`, error));
+    }, PERSIST_DEBOUNCE_MS);
+  });
+}
+
 /** 恢复完成后才能挂载编辑器。读取失败保留旧数据，并允许显式重试。 */
 export function whenWorkflowPersistenceReady(): Promise<void> {
   if (!isTauriRuntime()) return Promise.resolve();
@@ -221,6 +265,7 @@ export function whenWorkflowPersistenceReady(): Promise<void> {
       slots.set(mode, { saved: JSON.stringify(graphOf(mode)), revision });
       subscribe(mode);
     }
+    subscribeViewport();
   })().catch((error) => {
     hydration = null;
     throw error;

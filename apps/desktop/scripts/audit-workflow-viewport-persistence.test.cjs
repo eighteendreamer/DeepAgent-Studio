@@ -51,10 +51,10 @@ function readReactFlowPersistenceProps() {
     if (ts.isJsxOpeningElement(node) && node.tagName.getText(ast) === "ReactFlow") {
       const attributes = node.attributes.properties;
       result = {
-        fitView: attributes.some((attribute) =>
-          ts.isJsxAttribute(attribute) && attribute.name.getText(ast) === "fitView"),
-        defaultViewport: attributes.some((attribute) =>
-          ts.isJsxAttribute(attribute) && attribute.name.getText(ast) === "defaultViewport"),
+        fitView: attributes.find((attribute) =>
+          ts.isJsxAttribute(attribute) && attribute.name.getText(ast) === "fitView")?.initializer?.getText(ast),
+        defaultViewport: attributes.find((attribute) =>
+          ts.isJsxAttribute(attribute) && attribute.name.getText(ast) === "defaultViewport")?.initializer?.getText(ast),
       };
     }
     ts.forEachChild(node, visit);
@@ -96,13 +96,14 @@ test("canvas viewport survives workflow graph save and reload", {
       }
       throw new Error(`unexpected Tauri command: ${command}`);
     };
-    const makePersistence = () => loadTypeScript("../src/canvas/workflow/utils/workflowPersistence.ts", {
+    const makePersistence = (canvasStoreModule) => loadTypeScript("../src/canvas/workflow/utils/workflowPersistence.ts", {
       "@tauri-apps/api/core": { invoke },
       "../store/creativeStore": { useCreativeStore: creative },
       "../store/professionalStore": { useProfessionalStore: professional },
+      "../store/canvasStore": { useCanvasStore: canvasStoreModule },
     });
 
-    const firstBoot = makePersistence();
+    const firstBoot = makePersistence(canvasStore);
     await firstBoot.whenWorkflowPersistenceReady();
     const savedViewport = { x: -975, y: -430, zoom: 1.65 };
     canvasStore.getState().setViewport(savedViewport);
@@ -117,7 +118,7 @@ test("canvas viewport survives workflow graph save and reload", {
 
     // A fresh module instance models a new WebView process and uses the production Zustand defaults.
     const restartedCanvasStore = loadTypeScript("../src/canvas/workflow/store/canvasStore.ts").useCanvasStore;
-    const secondBoot = makePersistence();
+    const secondBoot = makePersistence(restartedCanvasStore);
     await secondBoot.whenWorkflowPersistenceReady();
     await firstBoot.flushWorkflowPersistence();
     const reactFlowProps = readReactFlowPersistenceProps();
@@ -139,6 +140,13 @@ test("canvas viewport survives workflow graph save and reload", {
       savedViewport,
       "the durable canvas graph must retain its viewport for exact restoration",
     );
+    assert.deepEqual(
+      restoredViewport,
+      savedViewport,
+      "a fresh canvas store must restore the persisted viewport",
+    );
+    assert.equal(reactFlowProps.fitView, "{!viewportHydrated}");
+    assert.equal(reactFlowProps.defaultViewport, "{viewportHydrated ? viewport : undefined}");
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;

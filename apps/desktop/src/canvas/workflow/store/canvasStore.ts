@@ -49,6 +49,9 @@ interface CanvasState {
   setMode: (mode: CanvasMode) => void;
 
   viewport: Viewport;
+  viewports: Record<CanvasMode, Viewport>;
+  hydratedViewports: Record<CanvasMode, boolean>;
+  viewportHydrated: boolean;
   setViewport: (vp: Viewport) => void;
 
   gridVisible: boolean;
@@ -87,10 +90,23 @@ export const useCanvasStore = create<CanvasState>((set) => ({
   workflowApproval: null,
   setWorkflowApproval: (workflowApproval) => set({ workflowApproval }),
   mode: "creative",
-  setMode: (mode) => set({ mode }),
+  setMode: (mode) => set((state) => ({
+    mode,
+    viewport: state.viewports[mode],
+    viewportHydrated: state.hydratedViewports[mode],
+  })),
 
   viewport: { x: 0, y: 0, zoom: 1 },
-  setViewport: (viewport) => set({ viewport }),
+  viewports: {
+    creative: { x: 0, y: 0, zoom: 1 },
+    professional: { x: 0, y: 0, zoom: 1 },
+  },
+  hydratedViewports: { creative: false, professional: false },
+  viewportHydrated: false,
+  setViewport: (viewport) => set((state) => ({
+    viewport,
+    viewports: { ...state.viewports, [state.mode]: viewport },
+  })),
 
   gridVisible: true,
   toggleGrid: () => set((s) => ({ gridVisible: !s.gridVisible })),

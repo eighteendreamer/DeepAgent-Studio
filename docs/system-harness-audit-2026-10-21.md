@@ -9856,6 +9856,14 @@ G盘本轮前端/SDK产物经绝对路径与祖先核对后尝试原生PowerShel
 
 本轮 H-202 只新增 opt-in 生产持久化探针和报告，未修改生产 viewport 或 graph contract。
 
+**E-H202-01（2026-11-15，原生产持久化探针复现；非修复验收）**：起点4f55aaaa；正式`workflowPersistence.ts`、CanvasStore和CanvasApp只读核对。`$env:RUN_HARNESS_AUDIT='1'; node --test apps/desktop/scripts/audit-workflow-viewport-persistence.test.cjs`实际0过/1败：写入graph只有nodes/edges，viewport为undefined；新store恢复默认`{x:0,y:0,zoom:1}`，ReactFlow为fitView且无defaultViewport。原红日志SHA256=`1A33AA0F0602DE2EBE885B3E353EEFFEB3A7383318908DD1588049137C4C26DA`。真实Tauri/WebView未启动。
+
+**E-H202-02（2026-11-15，根因修复与跨mode回归）**：扩展现有CanvasGraph为可选viewport，normalizeGraph只接受有限正zoom，旧文档缺viewport保持fitView兼容；graphOf/工作流写入携带每个mode的viewport，applyGraph恢复对应mode。CanvasStore新增per-mode `viewports`、hydratedViewports和当前`viewportHydrated`；CanvasApp在已有viewport时关闭fitView并传入defaultViewport，仍通过同一onMove/setViewport链路更新。viewport订阅沿用既有500ms debounce、revision/CAS和关闭flush，不新增持久化表或Rust/Tauri command。
+
+正式生产探针修复后1过/0败，写入keys为edges/nodes/viewport，恢复viewport精确等于`{x:-975,y:-430,zoom:1.65}`；结果日志SHA256=`7898BDE3F0F5E04356D264B80BBC4B70843732EF5932BC0B3C320D2C9E6021A0`。新增前端回归覆盖creative/professional独立viewport和旧图缺viewport继续fitView，`check-canvas-persistence.test.cjs`实际22过/0败/0忽略，日志SHA256=`AAE79F0A7A82395C2441DA41CECDE54D5A1C476AFDC7F3865AB0B18B1CF1AEC9`。
+
+**E-H202-03（2026-11-15，TypeScript/Vite门禁）**：现有`node_modules/.bin/tsc.cmd --noEmit`实际exit0，空诊断日志SHA256=`E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855`；直接调用现有`node_modules/.bin/vite.cmd build`实际exit0，`✓ built in 57.72s`，日志SHA256=`F37EA4CB663F8787228EB02B99B31052A339611A4386A190E82A1ACADB7483EA`。未用pnpm自动重装，不把依赖不同步引起的包装器行为混入生产修复。
+
 ### H-203：Responses `message` 的公开字符串角色缺少 provider 边界校验
 
 **级别：低（P3，条件性公共 API 协议缺口）；触发条件：调用者、历史导入器或未来 Harness/SDK 直接构造 `ResponseInputItem::Message` / `InputMessage`，并提供 Responses 不支持的 `role` 字符串。** 当前桌面普通消息由 `deepagent_core::message::Role` 的四个变体产生，通常路径不会生成任意 role；本项不表示日常聊天已发送非法角色。

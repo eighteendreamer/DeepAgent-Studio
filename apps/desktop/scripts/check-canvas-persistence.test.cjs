@@ -54,6 +54,7 @@ function fixture(database = {}, override = async () => {}) {
   global.localStorage = { getItem: (key) => legacy.get(key) ?? null, removeItem: (key) => legacy.delete(key) };
   const creative = load(`${base}store/creativeStore.ts`, { "../utils/canvasPromptProfile": { canvasPromptProfilePatch: async () => null } }).useCreativeStore;
   const professional = load(`${base}store/professionalStore.ts`, { "../utils/nodeRegistry": registry }).useProfessionalStore;
+  const canvas = load(`${base}store/canvasStore.ts`).useCanvasStore;
   const calls = [];
   const invoke = async (command, args) => {
     calls.push({ command, ...structuredClone(args) });
@@ -84,8 +85,9 @@ function fixture(database = {}, override = async () => {}) {
     "@tauri-apps/api/core": { invoke },
     "../store/creativeStore": { useCreativeStore: creative },
     "../store/professionalStore": { useProfessionalStore: professional },
+    "../store/canvasStore": { useCanvasStore: canvas },
   });
-  return { ...persistence, creative, professional, legacy, calls, database, backups: backend.backups };
+  return { ...persistence, creative, professional, canvas, legacy, calls, database, backups: backend.backups };
 }
 const writes = (f) => f.calls.filter((call) => call.command === "canvas_workflow_state_write");
 
@@ -95,6 +97,7 @@ test("repeated initialization shares hydration; both real stores restore and con
   assert.equal(first, f.whenWorkflowPersistenceReady());
   await first;
   assert.equal(f.calls.length, 2);
+  assert.equal(f.canvas.getState().viewportHydrated, false, "legacy graphs keep fitView behavior");
   for (const [mode, store] of [["creative", f.creative], ["professional", f.professional]]) {
     assert.equal(store.getState().nodes[0].data.output, "AI");
     assert.equal(store.getState().edges.length, 1);
@@ -126,6 +129,27 @@ test("new nodes and edges save immediately on flush, then survive a new window",
   }
   await reopened.flushWorkflowPersistence();
   assert.equal(writes(reopened).length, 0);
+});
+
+test("creative and professional canvases persist independent viewports", async () => {
+  const database = {};
+  const f = fixture(database);
+  await f.whenWorkflowPersistenceReady();
+  const creativeViewport = { x: -120, y: -80, zoom: 1.25 };
+  const professionalViewport = { x: 240, y: -35, zoom: 0.75 };
+  f.canvas.getState().setMode("creative");
+  f.canvas.getState().setViewport(creativeViewport);
+  f.creative.setState(graph("creative", "creative-viewport"));
+  f.canvas.getState().setMode("professional");
+  f.canvas.getState().setViewport(professionalViewport);
+  f.professional.setState(graph("professional", "professional-viewport"));
+  await f.flushWorkflowPersistence();
+
+  const reopened = fixture(database);
+  await reopened.whenWorkflowPersistenceReady();
+  assert.deepEqual(reopened.canvas.getState().viewport, creativeViewport);
+  reopened.canvas.getState().setMode("professional");
+  assert.deepEqual(reopened.canvas.getState().viewport, professionalViewport);
 });
 
 test("automatic debounce persists edits and ignores undo metadata without graph changes", async () => {
