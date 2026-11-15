@@ -245,6 +245,11 @@ fn owned_hook_rows_do_not_steal_the_next_legacy_turn_cost_after_reopen() {
                 prompt_cache_miss_tokens: prompt,
                 duration_ms: 1,
                 raw_responses_usage: None,
+                last_request_completion_tokens: None,
+                last_request_reasoning_tokens: None,
+                turn_total_prompt_tokens: None,
+                turn_total_prompt_cache_hit_tokens: None,
+                turn_total_prompt_cache_miss_tokens: None,
             })
             .unwrap();
         if prompt == 200 {

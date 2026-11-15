@@ -56,6 +56,7 @@ import type { PreflightToolCall, RuntimeEvent, SshConnection } from "./api";
 import type {
   ApprovalRequest,
   ChatMessage,
+  ConversationUsageBuckets,
   ComposerAttachment,
   ComposerMention,
   ComposerSkillSelection,
@@ -70,6 +71,7 @@ import type {
   SessionDetail,
   SessionSummary,
   ToolCall,
+  TokenUsageRequest,
 } from "./types";
 import { DesktopUpdateController } from "./components/DesktopUpdateController";
 import { AppContextMenu } from "./components/AppContextMenu";
@@ -205,6 +207,17 @@ function asObjectRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+function mapUsageBuckets(usage: ConversationUsageBuckets): TokenUsageRequest {
+  return {
+    promptTokens: usage.prompt_tokens,
+    completionTokens: usage.completion_tokens,
+    reasoningTokens: usage.reasoning_tokens,
+    totalTokens: usage.total_tokens,
+    cacheHitTokens: usage.prompt_cache_hit_tokens,
+    cacheMissTokens: usage.prompt_cache_miss_tokens,
+  };
+}
+
 function mapConversationToChatMessages(conversation: ConversationMessage[]): ChatMessage[] {
   const mapped: ChatMessage[] = [];
   conversation.forEach((m) => {
@@ -268,12 +281,22 @@ function mapConversationToChatMessages(conversation: ConversationMessage[]): Cha
       attachments,
       usage: m.usage
         ? {
-            promptTokens: m.usage.prompt_tokens,
-            completionTokens: m.usage.completion_tokens,
-            reasoningTokens: m.usage.reasoning_tokens,
-            totalTokens: m.usage.total_tokens,
-            cacheHitTokens: m.usage.prompt_cache_hit_tokens,
-            cacheMissTokens: m.usage.prompt_cache_miss_tokens,
+            ...mapUsageBuckets(m.usage.turn_total ?? {
+              prompt_tokens: m.usage.prompt_tokens,
+              completion_tokens: m.usage.completion_tokens,
+              reasoning_tokens: m.usage.reasoning_tokens,
+              total_tokens: m.usage.total_tokens,
+              prompt_cache_hit_tokens: m.usage.prompt_cache_hit_tokens,
+              prompt_cache_miss_tokens: m.usage.prompt_cache_miss_tokens,
+            }),
+            lastRequest: mapUsageBuckets(m.usage.last_request ?? {
+              prompt_tokens: m.usage.prompt_tokens,
+              completion_tokens: m.usage.completion_tokens,
+              reasoning_tokens: m.usage.reasoning_tokens,
+              total_tokens: m.usage.total_tokens,
+              prompt_cache_hit_tokens: m.usage.prompt_cache_hit_tokens,
+              prompt_cache_miss_tokens: m.usage.prompt_cache_miss_tokens,
+            }),
             costYuan: m.usage.cost_yuan,
           }
         : undefined,
@@ -1460,13 +1483,11 @@ export function App() {
         }, patch.status === "running" || patch.status === "blocked" ? "working" : undefined);
       };
 
-      // Merge a per-request usage report onto the (last) assistant message of
-      // the run. The provider reports per-turn usage for stateless models like
-      // DeepSeek: every field reflects THIS turn's usage, not cumulative totals.
-      // `prompt_tokens` is the current context window size (grows until compaction).
-      // `completion_tokens` is THIS turn's output (not cumulative).
-      // All fields are last-wins to reflect the most recent provider report.
-      // `totalTokens` should equal `promptTokens + completionTokens` for the turn.
+      // Fold each physical request into the turn aggregate, while retaining the
+      // newest request as a separate projection. This mirrors DeepSeek Harness:
+      // attempt usage is summed for the completed turn and the last sample is
+      // kept for context-pressure consumers. A tool loop therefore has the
+      // same footer before and after session replay.
       const addUsage = (u: {
         prompt: number;
         completion: number;
@@ -1488,19 +1509,23 @@ export function App() {
             cacheHitTokens: 0,
             cacheMissTokens: 0,
           };
-          // All fields are last-wins (per-turn, not cumulative).
-          const promptTokens = u.prompt;
-          const completionTokens = u.completion;
-          const reasoningTokens = u.reasoning;
           next[lastIdx] = {
             ...msg,
             usage: {
-              promptTokens,
-              completionTokens,
-              reasoningTokens,
-              totalTokens: promptTokens + completionTokens,
-              cacheHitTokens: u.cacheHit,
-              cacheMissTokens: u.cacheMiss,
+              promptTokens: cur.promptTokens + u.prompt,
+              completionTokens: cur.completionTokens + u.completion,
+              reasoningTokens: cur.reasoningTokens + u.reasoning,
+              totalTokens: cur.totalTokens + u.prompt + u.completion,
+              cacheHitTokens: cur.cacheHitTokens + u.cacheHit,
+              cacheMissTokens: cur.cacheMissTokens + u.cacheMiss,
+              lastRequest: {
+                promptTokens: u.prompt,
+                completionTokens: u.completion,
+                reasoningTokens: u.reasoning,
+                totalTokens: u.prompt + u.completion,
+                cacheHitTokens: u.cacheHit,
+                cacheMissTokens: u.cacheMiss,
+              },
               costYuan: u.costYuan ?? cur.costYuan,
             },
           };

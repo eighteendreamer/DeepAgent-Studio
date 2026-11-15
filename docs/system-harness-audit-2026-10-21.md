@@ -18119,6 +18119,14 @@ H307首轮混合受测树AppCore lib实际1704过/3败/39忽略、383.70秒；�
 - 在不改变既有后端历史字段兼容性的前提下，给桌面消费增加显式的 `last_request_*` 与 `turn_total_*` 投影，或让重载映射显示与热态相同的请求级值，并在另一个位置展示累计值；不得继续让同名 `completion_tokens` 在两条路径代表不同含义。应覆盖单请求、多工具多请求、重试/取消、失败终态、重载、分叉和旧DTO。
 - 本轮仅新增桌面审计脚本与报告，未修生产UI/DTO。随后实际运行 `pnpm --dir apps/desktop build`：**成功，Vite built in 44.42s**；构建同时通过项目既有脚本、TypeScript检查和Vite打包，但输出了第三方Node内置模块 externalized 及大chunk warning，本轮未把这些既有构建警告冒充H-299。未运行真实Tauri窗口、截图验收、真实provider或SDK消费；用户既有未跟踪项保持不读取、不暂存，全系统审计仍未完成。
 
+#### E-H299-01（2026-11-16，DeepSeek Harness 分层复现与根因修复）
+
+- 参考本地 `借鉴/deepseek-harness/packages/llm/token-meter/src/turn-usage.ts` 与 `usage-projection.ts`：官方实现先按物理 attempt 做严格归一化，再生成整轮 aggregate，同时保留同一步最新 usage sample；不会让一个 `outputTokens` 字段在热态和重载时分别表示 last sample 与 aggregate。未复制其业务代码或协议，沿用本项目现有 `RunUsage`、`UsageRecorded`、`ConversationUsageDto` 与 `RuntimeEvent::Usage` 边界。
+- 根因修复：`RunUsage` 记录最近一次 completion/reasoning，并把 billed prompt/cache 桶与累计 output/reasoning 一并写入 `UsageRecorded` 的可选版本化字段；会话 DTO 新增 `turn_total` 与 `last_request` 两个显式投影，旧字段和旧事件仍可读。前端 live usage 按每个物理请求累加 turn aggregate，同时更新 `lastRequest`；重载优先读取同一 `turn_total`，上下文占用回退读取 `lastRequest`，footer 不再依 arrival path 改变语义。
+- 原审计脚本升级为生产 mapper/source seam 回归：合成两请求工具回合现断言 live/reload 均为 `prompt=500, output=50, reasoning=37, total=550`，同时保留最新请求 `prompt=300, output=30, reasoning=25, total=330`。实际 `node --test apps/desktop/scripts/audit-live-reload-turn-usage.test.cjs`：**1 passed / 0 failed**；`node --test apps/desktop/scripts/check-session-usage.test.cjs apps/desktop/scripts/check-process-collapse.test.cjs`：**29 passed / 0 failed**。新增 AppCore service 回归 `session_conversation_separates_last_request_and_turn_total_usage`：**1 passed / 0 failed**；Runtime agent usage 单元组 **142 passed / 0 failed / 1 ignored**。
+- 类型与构建：直接调用现有 `apps/desktop/node_modules/.bin/tsc.cmd --noEmit`：**exit 0**；根 `cargo check -p deepagent-core -p deepagent-runtime -p deepagent-app-core --offline -j 2`：**exit 0**；`cargo fmt --all -- --check` 与 `git diff --check`：**exit 0**。未调用会触发依赖重装的 pnpm 包装器；尚未运行真实 Tauri/WebView、真实供应商/账单或其他 OS。
+- 兼容边界：`UsageRecorded` 新字段均为 optional，旧事件/旧 DTO 可反序列化；旧消息没有显式投影时继续使用 legacy 字段，不宣称能从历史缺失字段恢复精确 billed prompt。没有 SQL migration、依赖、权限/沙箱或账本归属变更；H-163/H-180/H66 与真实 provider 费用验证保持独立。
+
 #### H-277 重连路径补充证据（2026-10-25）
 
 - 去重：这是 H-277 同一根因在 `ConfigReconnectFactory::reconnect` 上的补充，不新增 H 编号；此前 H-277 已动态覆盖首次设置页 probe 与 `McpService::start_preparation`，但明确未覆盖重连握手。

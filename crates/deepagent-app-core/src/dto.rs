@@ -584,17 +584,31 @@ pub struct ConversationTurnDto {
     pub final_answer: Option<String>,
 }
 
+/// One explicit provider-usage view. A turn total sums all billed requests,
+/// while `last_request` is the newest request gauge, matching the split used
+/// by DeepSeek Harness's attempt aggregate and last sample projection.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConversationUsageBucketsDto {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    #[serde(default)]
+    pub reasoning_tokens: u32,
+    pub total_tokens: u32,
+    pub prompt_cache_hit_tokens: u32,
+    pub prompt_cache_miss_tokens: u32,
+}
+
 /// Persisted per-turn token usage + duration (mirrors `UsageRecorded`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConversationUsageDto {
-    /// Prompt (input) tokens.
+    /// Latest-request prompt (input) gauge kept for legacy consumers.
     pub prompt_tokens: u32,
-    /// Completion (output) tokens.
+    /// Turn-total completion (output) tokens across all billed requests.
     pub completion_tokens: u32,
-    /// Reasoning tokens already included in completion tokens.
+    /// Turn-total reasoning tokens already included in completion tokens.
     #[serde(default)]
     pub reasoning_tokens: u32,
-    /// Total tokens.
+    /// Latest-request total gauge kept for legacy consumers.
     pub total_tokens: u32,
     /// Prompt tokens served from the context cache.
     pub prompt_cache_hit_tokens: u32,
@@ -608,6 +622,13 @@ pub struct ConversationUsageDto {
     /// Backend-computed RMB cost for this assistant turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_yuan: Option<f64>,
+    /// Usage from the newest physical provider request, when the runtime can
+    /// prove request-level fields separately from the aggregate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_request: Option<ConversationUsageBucketsDto>,
+    /// Exact aggregate across all provider requests in this turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_total: Option<ConversationUsageBucketsDto>,
 }
 
 /// A command-palette action the UI can present and dispatch.

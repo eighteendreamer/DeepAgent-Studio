@@ -232,12 +232,13 @@ function productionUsageNodes() {
   const found = {};
   function visit(node) {
     if (ts.isFunctionDeclaration(node) && node.name?.text === "mapConversationToChatMessages") found.mapper = node;
+    if (ts.isFunctionDeclaration(node) && node.name?.text === "mapUsageBuckets") found.usageBuckets = node;
     if (ts.isVariableDeclaration(node) && node.name.getText(ast) === "addUsage") found.live = node;
     if (ts.isCaseClause(node) && node.expression.getText(ast) === '"cost_recorded"') found.cost = node;
     ts.forEachChild(node, visit);
   }
   visit(ast);
-  assert.deepEqual(Object.keys(found).sort(), ["cost", "live", "mapper"]);
+  assert.deepEqual(Object.keys(found).sort(), ["cost", "live", "mapper", "usageBuckets"]);
   const compile = (code) => ts.transpileModule(code, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText;
@@ -262,10 +263,11 @@ function loadUsageComponent(relative, imports = {}) {
 
 test("workflow persisted usage reaches the production mapper and rendered footer", () => {
   const { ast, found, compile } = productionUsageNodes();
-  const mapper = new Function(`${compile(found.mapper.getText(ast))}; return mapConversationToChatMessages;`)();
-  // Same canonical shape as the real two-provider workflow integration test:
-  // gauges describe the last request; output/reasoning are run accumulators.
-  // H-299 owns the live/reload semantic difference and is deliberately unchanged.
+  const mapper = new Function(
+    `${compile(found.usageBuckets.getText(ast))};${compile(found.mapper.getText(ast))}; return mapConversationToChatMessages;`,
+  )();
+  // Legacy payloads still map safely; current payloads carry explicit
+  // turn_total/last_request buckets so live and replay share one footer.
   const [message] = mapper([{
     id: "workflow", role: "assistant", content: "answer", parts: [],
     usage: { prompt_tokens: 50, completion_tokens: 30, reasoning_tokens: 17,
@@ -274,7 +276,12 @@ test("workflow persisted usage reaches the production mapper and rendered footer
   }]);
   assert.deepEqual(message.usage, {
     promptTokens: 50, completionTokens: 30, reasoningTokens: 17, totalTokens: 60,
-    cacheHitTokens: 20, cacheMissTokens: 30, costYuan: 0.000310,
+    cacheHitTokens: 20, cacheMissTokens: 30,
+    lastRequest: {
+      promptTokens: 50, completionTokens: 30, reasoningTokens: 17, totalTokens: 60,
+      cacheHitTokens: 20, cacheMissTokens: 30,
+    },
+    costYuan: 0.000310,
   });
   assert.equal(message.runMs, 12);
   const React = require("react");
@@ -295,7 +302,7 @@ test("workflow persisted usage reaches the production mapper and rendered footer
   assert.ok(render({ ...message.usage, costYuan: undefined }).includes("￥--"), "unknown pricing must not display a measured zero");
 });
 
-test("one aggregate workflow cost receipt preserves the production per-request usage projection", () => {
+test("one aggregate workflow cost receipt preserves the production turn projection", () => {
   const { ts, ast, found, compile } = productionUsageNodes();
   let messages = [{ role: "assistant", content: "answer" }];
   const updateTranscript = (update) => { messages = update(messages); };
@@ -303,8 +310,12 @@ test("one aggregate workflow cost receipt preserves the production per-request u
   addUsage({ prompt: 100, completion: 20, reasoning: 12, cacheHit: 80, cacheMiss: 20 });
   addUsage({ prompt: 50, completion: 10, reasoning: 5, cacheHit: 0, cacheMiss: 50 });
   const before = { ...messages[0].usage };
-  assert.equal(before.promptTokens, 50);
-  assert.equal(before.totalTokens, 60);
+  assert.equal(before.promptTokens, 150);
+  assert.equal(before.completionTokens, 30);
+  assert.equal(before.reasoningTokens, 17);
+  assert.equal(before.totalTokens, 180);
+  assert.equal(before.cacheHitTokens, 80);
+  assert.equal(before.cacheMissTokens, 70);
   // Execute the actual cost case without its switch-only break statement.
   const block = found.cost.statements[0];
   assert.ok(ts.isBlock(block));

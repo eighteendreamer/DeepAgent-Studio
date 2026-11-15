@@ -250,45 +250,64 @@ export interface ConversationMessage {
   usage?: ConversationUsage;
 }
 
-/** Persisted per-turn usage (mirrors ConversationUsageDto). */
+/** Persisted usage with legacy gauges plus explicit request/turn projections. */
 export interface ConversationUsage {
+  /** Latest-request prompt gauge kept for old readers. */
   prompt_tokens: number;
+  /** Turn-total output fields retained for old readers. */
   completion_tokens: number;
   reasoning_tokens: number;
+  /** Latest-request total gauge kept for old readers. */
   total_tokens: number;
   prompt_cache_hit_tokens: number;
   prompt_cache_miss_tokens: number;
   duration_ms: number;
   raw_responses_usage?: unknown;
   cost_yuan?: number;
+  /** Newest physical request, separate from the aggregate turn total. */
+  last_request?: ConversationUsageBuckets;
+  /** Exact aggregate across all physical requests in this turn. */
+  turn_total?: ConversationUsageBuckets;
 }
 
-/**
- * Token usage for THIS assistant turn (per-turn, not cumulative).
- *
- * For stateless models like DeepSeek, every request resends the full context:
- * - `promptTokens`: current context window size (grows until compaction)
- * - `completionTokens`: THIS turn's output tokens (NOT cumulative)
- * - `totalTokens`: should equal `promptTokens + completionTokens`
- *
- * For cumulative session-wide statistics, see `CostSummary` (billing ledger).
- * For current window occupancy, see `ContextUsageSnapshot.projected_request_tokens`.
- */
+/** One explicit request or turn-total usage projection. */
+export interface ConversationUsageBuckets {
+  prompt_tokens: number;
+  completion_tokens: number;
+  reasoning_tokens: number;
+  total_tokens: number;
+  prompt_cache_hit_tokens: number;
+  prompt_cache_miss_tokens: number;
+}
+
+/** Aggregate usage shown by the turn footer, with the newest request retained separately. */
 export interface TokenUsage {
-  /** Prompt (input) tokens from THIS turn (current context window size). */
+  /** Billed prompt tokens summed across all requests in this turn. */
   promptTokens: number;
-  /** Completion (output) tokens from THIS turn (NOT cumulative). */
+  /** Completion (output) tokens summed across all requests in this turn. */
   completionTokens: number;
-  /** Reasoning tokens from THIS turn (subset of completionTokens). */
+  /** Reasoning tokens summed across all requests in this turn. */
   reasoningTokens: number;
-  /** Total tokens for THIS turn (should equal promptTokens + completionTokens). */
+  /** Exact aggregate prompt plus output tokens for this turn. */
   totalTokens: number;
-  /** Cache hit tokens from THIS turn (last-wins). */
+  /** Cache-hit prompt tokens summed across all requests in this turn. */
   cacheHitTokens: number;
-  /** Cache miss tokens from THIS turn (last-wins). */
+  /** Cache-miss prompt tokens summed across all requests in this turn. */
   cacheMissTokens: number;
-  /** Cost in CNY/RMB for THIS turn. undefined when pricing unavailable. */
+  /** Newest physical request, used for context pressure diagnostics. */
+  lastRequest?: TokenUsageRequest;
+  /** Cost in CNY/RMB for this turn. undefined when pricing unavailable. */
   costYuan?: number;
+}
+
+/** Provider usage from one physical request inside a turn. */
+export interface TokenUsageRequest {
+  promptTokens: number;
+  completionTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
+  cacheHitTokens: number;
+  cacheMissTokens: number;
 }
 
 /** Where a resolved model capability came from (mirrors CapabilitySource). */

@@ -220,6 +220,23 @@ pub enum EventPayload {
         /// exposing prompt text or credentials.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         raw_responses_usage: Option<serde_json::Value>,
+        /// Completion tokens from the last provider request. The legacy
+        /// `completion_tokens` field is the exact turn aggregate.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_request_completion_tokens: Option<u32>,
+        /// Reasoning tokens from the last provider request. The legacy
+        /// `reasoning_tokens` field is the exact turn aggregate.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_request_reasoning_tokens: Option<u32>,
+        /// Billed prompt buckets summed across every provider request in the
+        /// turn. The legacy `prompt_tokens` fields remain the latest-request
+        /// gauges for old readers.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_total_prompt_tokens: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_total_prompt_cache_hit_tokens: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_total_prompt_cache_miss_tokens: Option<u32>,
     },
 
     /// A run's cost receipt over existing ledger rows, not a second ledger.

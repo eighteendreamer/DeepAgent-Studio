@@ -790,6 +790,11 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
                         duration_ms: 0,
                         raw_responses_usage: (!raw_responses_usage.is_empty())
                             .then_some(serde_json::Value::Array(raw_responses_usage)),
+                        last_request_completion_tokens: usage.last_request_completion_tokens,
+                        last_request_reasoning_tokens: usage.last_request_reasoning_tokens,
+                        turn_total_prompt_tokens: Some(usage.billed_prompt_tokens),
+                        turn_total_prompt_cache_hit_tokens: Some(usage.billed_cache_hit_tokens),
+                        turn_total_prompt_cache_miss_tokens: Some(usage.billed_cache_miss_tokens),
                     });
                 }
                 KernelTerminal {

@@ -1134,6 +1134,11 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 duration_ms,
                 raw_responses_usage: (!raw_responses_usage.is_empty())
                     .then_some(serde_json::Value::Array(raw_responses_usage)),
+                last_request_completion_tokens: u.last_request_completion_tokens,
+                last_request_reasoning_tokens: u.last_request_reasoning_tokens,
+                turn_total_prompt_tokens: Some(u.billed_prompt_tokens),
+                turn_total_prompt_cache_hit_tokens: Some(u.billed_cache_hit_tokens),
+                turn_total_prompt_cache_miss_tokens: Some(u.billed_cache_miss_tokens),
             })?;
         }
 

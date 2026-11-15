@@ -140,6 +140,12 @@ pub struct RunUsage {
     pub billed_cache_hit_tokens: u32,
     /// Cache-miss prompt tokens summed over every answered request (billing ledger).
     pub billed_cache_miss_tokens: u32,
+    /// Completion tokens from the most recent answered provider request.
+    /// `None` means this agent supplied a synthetic usage snapshot without a
+    /// request-level sample.
+    pub last_request_completion_tokens: Option<u32>,
+    /// Reasoning tokens from the most recent answered provider request.
+    pub last_request_reasoning_tokens: Option<u32>,
 }
 
 impl RunUsage {
@@ -156,6 +162,8 @@ impl RunUsage {
         self.total_tokens = call.total_tokens;
         self.prompt_cache_hit_tokens = call.prompt_cache_hit_tokens;
         self.prompt_cache_miss_tokens = call.prompt_cache_miss_tokens;
+        self.last_request_completion_tokens = Some(call.completion_tokens);
+        self.last_request_reasoning_tokens = Some(call.reasoning_tokens);
         self.completion_tokens += call.completion_tokens;
         self.reasoning_tokens += call.reasoning_tokens;
         self.billed_prompt_tokens += call.prompt_tokens;
@@ -355,6 +363,8 @@ mod tests {
             run.completion_tokens, 90,
             "output tokens are genuine per-step deltas, so they sum"
         );
+        assert_eq!(run.last_request_completion_tokens, Some(40));
+        assert_eq!(run.last_request_reasoning_tokens, Some(0));
     }
 
     #[test]
@@ -364,5 +374,6 @@ mod tests {
         assert_eq!(run.prompt_cache_hit_tokens, run.billed_cache_hit_tokens);
         assert_eq!(run.prompt_cache_miss_tokens, run.billed_cache_miss_tokens);
         assert_eq!(run.total_tokens, 960);
+        assert_eq!(run.last_request_completion_tokens, Some(60));
     }
 }

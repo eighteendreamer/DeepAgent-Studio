@@ -969,6 +969,7 @@ export function ChatView({
     // Use !== undefined to distinguish a legitimate 0 from missing usage data.
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const usage = messages[i]?.usage;
+      if (usage?.lastRequest?.promptTokens !== undefined) return usage.lastRequest.promptTokens;
       if (usage?.promptTokens !== undefined) return usage.promptTokens;
     }
     return 0;

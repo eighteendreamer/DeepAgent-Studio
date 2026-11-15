@@ -24,9 +24,9 @@ use crate::commands::{builtin_commands, commands_from_roots, filter_commands};
 use crate::diff::{diff_lines, DiffResult};
 use crate::dto::{
     AttachmentDto, CommandDto, ConversationMessageDto, ConversationPartDto, ConversationTurnDto,
-    ConversationUsageDto, ForkResultDto, RewindResultDto, RunRecoveryDto, SessionDetailDto,
-    SessionSearchHitDto, SessionSearchIssueDto, SessionSearchReportDto, SessionStatsDto,
-    SessionSummaryDto, TimelineEntryDto, TranscriptDto,
+    ConversationUsageBucketsDto, ConversationUsageDto, ForkResultDto, RewindResultDto,
+    RunRecoveryDto, SessionDetailDto, SessionSearchHitDto, SessionSearchIssueDto,
+    SessionSearchReportDto, SessionStatsDto, SessionSummaryDto, TimelineEntryDto, TranscriptDto,
 };
 use crate::host_lock::{self, HostRole};
 use crate::{ArchiveService, ProjectService, SessionStateService};
@@ -859,10 +859,48 @@ impl AppService {
                     prompt_cache_miss_tokens,
                     duration_ms,
                     raw_responses_usage,
+                    last_request_completion_tokens,
+                    last_request_reasoning_tokens,
+                    turn_total_prompt_tokens,
+                    turn_total_prompt_cache_hit_tokens,
+                    turn_total_prompt_cache_miss_tokens,
                 } => {
                     // Attach the run's persisted usage to the current (last)
                     // assistant turn so the replayed footer matches the live one.
                     let idx = ensure_assistant(&mut messages);
+                    let last_request = last_request_completion_tokens
+                        .as_ref()
+                        .zip(last_request_reasoning_tokens.as_ref())
+                        .map(
+                            |(completion_tokens, reasoning_tokens)| ConversationUsageBucketsDto {
+                                prompt_tokens: *prompt_tokens,
+                                completion_tokens: *completion_tokens,
+                                reasoning_tokens: *reasoning_tokens,
+                                total_tokens: *total_tokens,
+                                prompt_cache_hit_tokens: *prompt_cache_hit_tokens,
+                                prompt_cache_miss_tokens: *prompt_cache_miss_tokens,
+                            },
+                        );
+                    let turn_total = turn_total_prompt_tokens
+                        .as_ref()
+                        .zip(turn_total_prompt_cache_hit_tokens.as_ref())
+                        .zip(turn_total_prompt_cache_miss_tokens.as_ref())
+                        .map(
+                            |(
+                                (prompt_tokens, prompt_cache_hit_tokens),
+                                prompt_cache_miss_tokens,
+                            )| {
+                                ConversationUsageBucketsDto {
+                                    prompt_tokens: *prompt_tokens,
+                                    completion_tokens: *completion_tokens,
+                                    reasoning_tokens: *reasoning_tokens,
+                                    total_tokens: (*prompt_tokens)
+                                        .saturating_add(*completion_tokens),
+                                    prompt_cache_hit_tokens: *prompt_cache_hit_tokens,
+                                    prompt_cache_miss_tokens: *prompt_cache_miss_tokens,
+                                }
+                            },
+                        );
                     messages[idx].usage = Some(ConversationUsageDto {
                         prompt_tokens: *prompt_tokens,
                         completion_tokens: *completion_tokens,
@@ -875,6 +913,8 @@ impl AppService {
                         cost_yuan: current_task
                             .and_then(|task| run_costs.get(&task).copied())
                             .unwrap_or_else(|| recorded_costs.next().and_then(|c| c.cost_yuan)),
+                        last_request,
+                        turn_total,
                     });
                 }
                 // A durable compaction boundary is part of what the user reads
@@ -1500,6 +1540,55 @@ mod tests {
             .unwrap();
         }
         (AppService::new(db), sid)
+    }
+
+    #[test]
+    fn session_conversation_separates_last_request_and_turn_total_usage() {
+        use deepagent_core::event::EventPayload;
+        use deepagent_core::message::Message;
+
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1_000);
+        let mut session = Session::create(&db, &clock, Some("usage projection")).unwrap();
+        let sid = session.id().to_string();
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::user("question"),
+            })
+            .unwrap();
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::assistant("answer"),
+            })
+            .unwrap();
+        session
+            .append(EventPayload::UsageRecorded {
+                prompt_tokens: 300,
+                completion_tokens: 50,
+                reasoning_tokens: 37,
+                total_tokens: 330,
+                prompt_cache_hit_tokens: 250,
+                prompt_cache_miss_tokens: 50,
+                duration_ms: 12,
+                raw_responses_usage: None,
+                last_request_completion_tokens: Some(30),
+                last_request_reasoning_tokens: Some(25),
+                turn_total_prompt_tokens: Some(500),
+                turn_total_prompt_cache_hit_tokens: Some(300),
+                turn_total_prompt_cache_miss_tokens: Some(200),
+            })
+            .unwrap();
+
+        let conversation = AppService::new(db).session_conversation(&sid).unwrap();
+        let usage = conversation
+            .iter()
+            .find_map(|message| message.usage.as_ref())
+            .expect("assistant usage projection");
+        assert_eq!(usage.last_request.as_ref().unwrap().completion_tokens, 30);
+        assert_eq!(usage.last_request.as_ref().unwrap().reasoning_tokens, 25);
+        assert_eq!(usage.turn_total.as_ref().unwrap().prompt_tokens, 500);
+        assert_eq!(usage.turn_total.as_ref().unwrap().completion_tokens, 50);
+        assert_eq!(usage.turn_total.as_ref().unwrap().total_tokens, 550);
     }
 
     #[test]
