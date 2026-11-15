@@ -216,6 +216,29 @@ async fn payload_matrix(base: Option<crate::HookBaseInput>) {
             },
             json!({"trigger":"auto","compact_summary":"synthetic compact summary"}),
         ),
+        (
+            HookEvent::WorktreeCreate,
+            HookData::WorktreeCreate {
+                name: "feature-a".into(),
+                path: "C:/worktrees/feature-a".into(),
+            },
+            json!({"name":"feature-a"}),
+        ),
+        (
+            HookEvent::WorktreeRemove,
+            HookData::WorktreeRemove {
+                worktree_path: "C:/worktrees/feature-a".into(),
+            },
+            json!({"worktree_path":"C:/worktrees/feature-a"}),
+        ),
+        (
+            HookEvent::CwdChanged,
+            HookData::CwdChanged {
+                old_cwd: "C:/workspace".into(),
+                new_cwd: "C:/worktrees/feature-a".into(),
+            },
+            json!({"old_cwd":"C:/workspace","new_cwd":"C:/worktrees/feature-a"}),
+        ),
     ]);
     assert_payload_matrix(base, cases).await;
 }
@@ -329,6 +352,28 @@ fn h110_compaction_wire_uses_protocol_trigger_and_rejects_mismatched_points() {
             .get("custom_instructions")
             .is_none(),
         "a mismatched compaction point must not manufacture PreCompact fields"
+    );
+}
+
+#[test]
+fn h112_worktree_wire_rejects_mismatched_event_data() {
+    let context = HookContext::new(
+        deepagent_core::id::SessionId::nil(),
+        HookPoint::WorktreeCreate,
+        HookData::WorktreeCreate {
+            name: "feature-a".into(),
+            path: "C:/worktrees/feature-a".into(),
+        },
+    );
+    assert_eq!(
+        super::build_hook_payload(HookEvent::WorktreeCreate, &context)["name"],
+        "feature-a"
+    );
+    assert!(
+        super::build_hook_payload(HookEvent::WorktreeRemove, &context)
+            .get("worktree_path")
+            .is_none(),
+        "a mismatched worktree event must not manufacture its path field"
     );
 }
 

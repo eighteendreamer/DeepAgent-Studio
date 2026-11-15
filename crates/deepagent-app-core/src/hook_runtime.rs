@@ -230,11 +230,17 @@ fn sample_hook_data(event: HookEvent, matcher: Option<&str>) -> HookData {
             task_id: "task_test".to_string(),
             subject: "Test task".to_string(),
         },
-        HookEvent::WorktreeCreate | HookEvent::WorktreeRemove | HookEvent::CwdChanged => {
-            HookData::Path {
-                path: "test-worktree".to_string(),
-            }
-        }
+        HookEvent::WorktreeCreate => HookData::WorktreeCreate {
+            name: "test-worktree".to_string(),
+            path: "C:/test-worktree".to_string(),
+        },
+        HookEvent::WorktreeRemove => HookData::WorktreeRemove {
+            worktree_path: "C:/test-worktree".to_string(),
+        },
+        HookEvent::CwdChanged => HookData::CwdChanged {
+            old_cwd: "C:/workspace".to_string(),
+            new_cwd: "C:/test-worktree".to_string(),
+        },
         HookEvent::FileChanged => HookData::FileChange {
             path: "src/main.rs".to_string(),
             kind: "modified".to_string(),

@@ -581,7 +581,8 @@ impl ChatSubagentRunner {
         match self
             .dispatch_child_hook(
                 HookPoint::WorktreeCreate,
-                HookData::Path {
+                HookData::WorktreeCreate {
+                    name: subagent_id.to_string(),
                     path: planned.to_string_lossy().to_string(),
                 },
             )
@@ -619,8 +620,8 @@ impl ChatSubagentRunner {
         let _ = self
             .dispatch_child_hook(
                 HookPoint::WorktreeRemove,
-                HookData::Path {
-                    path: path.to_string(),
+                HookData::WorktreeRemove {
+                    worktree_path: path.to_string(),
                 },
             )
             .await?;
@@ -710,8 +711,9 @@ impl ChatSubagentRunner {
             let _ = self
                 .dispatch_child_hook(
                     HookPoint::CwdChanged,
-                    HookData::Path {
-                        path: execution_root.to_string_lossy().to_string(),
+                    HookData::CwdChanged {
+                        old_cwd: self.root.to_string_lossy().to_string(),
+                        new_cwd: execution_root.to_string_lossy().to_string(),
                     },
                 )
                 .await;
@@ -1866,7 +1868,6 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    #[ignore = "audit H-112: worktree lifecycle hook payloads must satisfy their event schemas"]
     async fn audit_worktree_hook_payloads_include_required_fields() {
         use deepagent_hooks::{HookData, HookDefinitions, HookPoint, SystemHookRunner};
 
@@ -1908,20 +1909,29 @@ mod tests {
 
         let runner = audit_child_runner(dir.path(), Arc::new(AuditResumeTransport::default()));
         assert!(runner.hooks.set(Arc::new(hooks)).is_ok());
-        for (point, path) in [
-            (HookPoint::WorktreeCreate, "planned-worktree"),
-            (HookPoint::WorktreeRemove, "existing-worktree"),
-            (HookPoint::CwdChanged, "child-worktree"),
+        for (point, data) in [
+            (
+                HookPoint::WorktreeCreate,
+                HookData::WorktreeCreate {
+                    name: "planned-worktree".to_string(),
+                    path: "C:/worktrees/planned-worktree".to_string(),
+                },
+            ),
+            (
+                HookPoint::WorktreeRemove,
+                HookData::WorktreeRemove {
+                    worktree_path: "C:/worktrees/existing-worktree".to_string(),
+                },
+            ),
+            (
+                HookPoint::CwdChanged,
+                HookData::CwdChanged {
+                    old_cwd: "C:/workspace".to_string(),
+                    new_cwd: "C:/worktrees/child-worktree".to_string(),
+                },
+            ),
         ] {
-            runner
-                .dispatch_child_hook(
-                    point,
-                    HookData::Path {
-                        path: path.to_string(),
-                    },
-                )
-                .await
-                .unwrap();
+            runner.dispatch_child_hook(point, data).await.unwrap();
         }
 
         let create: serde_json::Value =

@@ -351,6 +351,21 @@ pub enum HookData {
         path: String,
         kind: String,
     },
+    /// A managed worktree is about to be created. `path` is retained for the
+    /// host's path-rewrite guard; the external schema exposes only `name`.
+    WorktreeCreate {
+        name: String,
+        path: String,
+    },
+    /// A managed worktree is about to be removed.
+    WorktreeRemove {
+        worktree_path: String,
+    },
+    /// The child execution root changed after worktree preparation.
+    CwdChanged {
+        old_cwd: String,
+        new_cwd: String,
+    },
     Path {
         path: String,
     },

@@ -1791,6 +1791,25 @@ fn build_hook_payload(event: HookEvent, ctx: &HookContext) -> serde_json::Value 
             payload.insert("path".into(), serde_json::json!(path));
             payload.insert("change_kind".into(), serde_json::json!(kind));
         }
+        HookData::WorktreeCreate { name, .. }
+            if event == HookEvent::WorktreeCreate && ctx.point == HookPoint::WorktreeCreate =>
+        {
+            payload.insert("name".into(), serde_json::json!(name));
+        }
+        HookData::WorktreeRemove { worktree_path }
+            if event == HookEvent::WorktreeRemove && ctx.point == HookPoint::WorktreeRemove =>
+        {
+            payload.insert("worktree_path".into(), serde_json::json!(worktree_path));
+        }
+        HookData::CwdChanged { old_cwd, new_cwd }
+            if event == HookEvent::CwdChanged && ctx.point == HookPoint::CwdChanged =>
+        {
+            payload.insert("old_cwd".into(), serde_json::json!(old_cwd));
+            payload.insert("new_cwd".into(), serde_json::json!(new_cwd));
+        }
+        HookData::WorktreeCreate { .. }
+        | HookData::WorktreeRemove { .. }
+        | HookData::CwdChanged { .. } => {}
         HookData::Path { path } => {
             payload.insert("path".into(), serde_json::json!(path));
         }
