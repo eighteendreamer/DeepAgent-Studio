@@ -17,7 +17,7 @@
 | 待修复 | 11 | 含H180授权不修；10项有效待处理 |
 | 阻塞待处理 | 0 | H106旧选择阻塞已解除并按官方原则完成本地适配；官方该版本无该hook，不伪称原样实现 |
 
-未完整闭环槽位当前为 **12（含H180授权不修；有效未闭环11：10有效待修、H66验收保留1）**。307唯一主行：253验收、29历史跳过、10归并、3撤销、11待修、修复中0/阻塞0、验收保留1；H109按E-H109-01新增本机范围验收1，不重复计算H106。历史跳过/归并/撤销不增，不报完成率。完整workspace七败与strict失败保留；H297/H98交叉测试契约已独立复核并补强，未改变两项生产状态或修复计数。
+未完整闭环槽位当前为 **12（含H180授权不修；有效未闭环11：10有效待修、H66验收保留1）**。307唯一主行：253验收、29历史跳过、10归并、3撤销、11待修、修复中0/阻塞0、验收保留1；H109按E-H109-04新增本机范围验收1。历史跳过/归并/撤销不增，不报完成率。完整workspace七败与strict失败保留；H297/H98交叉测试契约已独立复核并补强，未改变两项生产状态或修复计数。
 
 H296已按E01～05完成原红→单一resolver修复→正式消费链/全仓门禁→清理闭环；19份冻结输入、原CLI/快照/sidecar保持，完整workspace5425/5/140、前端358/1及strict旧8+2原样保留，不称全仓全绿。独立提交`e9c55cab`，E06仅普通文档回填真实hash。H157的344d907c/0142b745及H168等为前轮成果，不重计；H155/H156尚待的历史清理不冒领。本项实现/验收/清理余0，下一准备H297本地token计量压力，先原probe及依赖核对。整体余170–430有效小时仍为未逐项重估的低置信历史分组估算，依据剩余模型/Hook/工具/画布跨层修改与验收；编译、设备、依赖、策略和人工等待另计，无可靠日历上界。
 
@@ -6527,7 +6527,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-106：StopFailure hook 缺少必需的 error 分类](system-harness-audit-2026-10-21.md) | P3 | 已修复并验收 | E-H106-01～07：两路原红保留，按用户指定官方原则完成本地适配及清理 | 既有owner提供typed StopFailureError，单一serializer投影版本化native对象，legacy内容/触发行为保留 | 官方源码8/0；Hooks104/0、Runtime相关6/0、AppCore去重3/0；workspace5462/7/131，strict失败保留；fmt/diff过；16冻结输入及3原件不变 | `a05607397507105e62d39fc38501cdb1fb780c65`；E07普通回填，不amend/推送/PR | 官方该版本不支持StopFailure；非Claude error枚举；本机离线范围见E04～06，外部Rust消费者须适配新variant；H297/H98交叉测试契约已由E-H297-15核实；下一H109 |
 | [H-107：续聊的每个 turn 结束都会触发 SessionEnd hook](system-harness-audit-2026-10-21.md#h-107续聊的每个-turn-结束都会触发-sessionend-hook) | P3 | 已修复并验收 | E01原probe0/1、只读/Fork6/2、缺通知及E14验收时序红均保留，无跳过/归并 | 原显式End/只读/Fork/唯一终态实现不变；E16仅SDK测试改用实际进程退出屏障，增强live/durable身份与每次冷读对账 | SDK默认/全特性各89/0/5含stdio15；CLI同宿主/busy各1/0、AppCore8/0、原probe1/0、SDK自身strict/fmt过；依赖strict旧失败及未重跑范围详E16 | 原生产`64f9d16924d388bcb2c7ec5b6c0710fda508555e`；本轮test补强`629a42784ca4bf080f53ab19139761adeb7aff17`，不重复计生产修复 | E17两根均已不存在，原共享CLI/用户快照哈希一致，本项完整交付余0；原H107/H108旧清理仍有效；下一复核H104，发布/hook窗口限制不变，总余170–430有效小时低置信旧估，等待另计 |
 | [H-108：SessionStart/SessionEnd payload 缺少必需的事件元数据](system-harness-audit-2026-10-21.md#h-108sessionstartsessionend-payload-缺少必需的事件元数据) | P3 | 已修复并验收 | E01原probe0/1、E02设置真红/新历史断言误设均保留，无跳过/归并 | typed source/reason供现有生产者/设置测试，5类action同一serializer；H107频率/内部explicit_end不变 | E04：Hooks96/0/0及strict、65份payload、AppCore2/0、原probe默认1/0、H107八项过；workspace161目标5320/5/153含SDK时序新反例，Tauri/fmt过，旧strict保留 | `cff915be970fe86764841c4f34bcf9bb1aa1026f`（独立修复提交；未推送） | E05两根均已不存在，原共享CLI/用户快照哈希一致，本项完整交付余0；H104公共字段及来源matcher独立；未验UI/真实服务/OS强杀；下一H107验收补强，总余170–430有效小时低置信旧估，等待另计 |
-| [H-109：SubagentStop hook 缺少必需的停止状态与 transcript 路径](system-harness-audit-2026-10-21.md) | P3 | 已修复并验收 | E-H109-01：原SubagentStop schema红保留，typed stop carrier与唯一serializer完成 | Stop专属字段与SubagentStart分离；runner传稳定子transcript路径、显式stop_hook_active=false；仅匹配事件/point投影 | 原ignored 0过/1败；AppCore正式1/0；Hooks86/0、cancellation5、dedup8、once8；fmt/diff过；未跑全workspace/strict | 独立fix提交`d9a37277115e4a98c6050a18fa04c0adb568d020`，E-H109-02普通回填，不amend/推送/PR | Windows本机离线、PowerShell/五类hook后端范围；无真实schema validator/供应商/其他OS；下一H110 |
+| [H-109：SubagentStop hook 缺少必需的停止状态与 transcript 路径](system-harness-audit-2026-10-21.md) | P3 | 已修复并验收 | E-H109-01～04：原红保留，补typed carrier、回调可读transcript lease及取消/Drop一致收尾 | Stop专属字段与Start分离；持久子运行先发布当前attempt，非持久子运行使用只读临时lease；当前身份/内容可读且不复用父历史 | AppCore相关50/0/2忽略、H45 1/0、focused1/0；Hooks86/0、cancellation5、dedup8、once8；fmt/diff过；未跑全workspace/strict | `55fe90eb`（回调可读transcript补强），前置`d9a37277`；不amend/推送/PR | Windows本机离线范围；真实schema validator/供应商/其他OS/UI未验；下一H110 |
 | [H-110：PreCompact/PostCompact payload 不符合事件输入 schema](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-111：PreCompact hook 的 stdout 指令没有进入摘要请求](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H111-01～05保留原红/候选/清理；不归并H110/H140 | 单一HookReport交付有界user侧指令；prefire重新摘要原prefix且hook一次，accounted保留不采用用量 | 扩展10/0、context53/0/3；全仓5099/4/176保留四旧失败；scope strict/CLI/SDK/Tauri通过，旧lint阻断见E04 | 57c58530df6b878fd0ae1a157280ffad34aca8d2 | 仅同步command PreCompact、本机Windows离线验收；真实模型遵循率未验；本项余0，E05已清理 |
 | [H-112：工作树生命周期 hook 缺少事件专属字段](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
@@ -11191,6 +11191,13 @@ TDD绿测：同一正式AppCore/PowerShell路径修正后1过/0败、139.470秒�
 **E-H109-02（2026-11-15，独立提交、清理与计数回填）**：修复独立提交为`d9a37277115e4a98c6050a18fa04c0adb568d020`（【fix】补齐SubagentStop停止状态与转录路径），父提交e477dc2f，5份代码/测试文件；未amend、推送或创建PR。清理脚本AST检查通过后实际执行，仅删除`G:/h109-fixtures-20261115`，盘点4966文件、4469027947逻辑字节、零reparse；WhatIf后Remove-Item exit0，最终remaining=0，frozenInputsUnchanged/documentsUnchanged/originalsUnchanged均true，12项冻结/文档与CLI、snap.new、sidecar原件保护有效。G盘可用空间观测63239315456→67462184960字节，不与逻辑大小相加或声称差额独占归因；共享target/debug、node_modules、公共Cargo缓存和用户文件未删。
 
 H109按Windows本机离线、PowerShell command和五类外部hook后端范围已修复并验收；完整workspace/strict、真实schema validator/供应商、其他OS/UI未执行。新增验收1、修复1，历史跳过/归并/撤销0；307唯一台账253验收、29历史跳过、10归并、3撤销、11待修含H180、H66保留1、修复中/阻塞0，有效未完整闭环11。下一项按风险顺序准备H110；全余170–430有效小时仍为未逐项重估的低置信历史区间，等待另计。
+
+**E-H109-03（收尾自审红测）**：将Stop command改为回调内`File.ReadAllText(agent_transcript_path)`并核对`subagent_id`/`context.items`，原实现实际0过/1败（EOF）。H110候选已撤去，不混入本轮。
+
+**E-H109-04（根因补强、正式回归与清理）**：复用现有`TrackedSubagent` owner，在Stop dispatch前为持久子运行发布当前attempt；非持久子运行创建只读临时JSON lease，包含当前subagent_id/state/summary/context；取消/Drop在同一owner内更新终态，不建立第二历史权威。Stop回调真实读取并核对当前身份和非空context，未用父transcript或旧resume文件。H45 forced-drop三点1/0、AppCore相关50/0/2忽略、focused1/0；Hooks86/0、cancellation5、dedup8、once8，fmt/diff过。`55fe90eb`为本次补强提交，前置fix为`d9a37277`；清理仅删除G:/h110-fixtures-20261115，5066文件/4524989793逻辑字节，零reparse，原件/6份源码文档保护均true，remaining=0。
+
+本项按Windows本机离线、PowerShell command、临时/持久transcript和取消/Drop边界已修复并验收；未跑全workspace/strict、真实schema validator/供应商、其他OS/UI。下一准备H110。
+
 ### H-296 部分容量元数据合并（已修复并验收，2026-11-14）
 
 **E-H296-06（独立提交回填，2026-11-14）**：8份本项Rust/TypeScript实现/回归及当时双文已按白名单独立提交`e9c55caba72e8a8f21d5636e6c3cabaeed207ec1`（`【fix】逐字段保留模型容量与混合来源`），共10文件；未amend、推送或建PR。staged路径集合/diff/敏感标记核对通过，306唯一编号及8列完整，只有H296主行变化，其余305主行逐字不变；统计245/28/10/3/19/1与顶部相符。未提交产物/日志/一次性脚本或原用户未跟踪项，19份受测输入与E04/E05一致。此次仅普通双文回填真实hash，不新增第二次修复；E01原失败、E04全仓五败及strict8+2、前端TodoReminderProgress失败和全部未验边界继续保留。代码/验收/清理/提交闭环，本项剩余0，下一准备H297，整个goal仍active。
