@@ -4,7 +4,7 @@
 
 用户已授权按本报告逐项进行本地代码修复与测试；已修复、撤销和归并条目跳过，不重新计数。分析阶段完成不再是当前总体任务的完成状态。每项完成后更新原项状态、保留失败证据、独立提交并汇报验收与剩余工时。本轮不操作真实用户文件或外部服务。
 
-**当前续接（2026-11-15）**：307唯一台账：254验收、29历史跳过、10归并、3撤销、10待修含H180、H66验收保留1、修复中/阻塞0，有效未完整闭环10。H106已按用户指定DeepSeek Harness原则完成本地结构化错误适配、本机回归及清理，详E-H106-04～07；fix为a0560739，官方该版本不支持StopFailure，不冒称官方原样或Claude完整兼容。完整workspace5462过7败131忽略、strict失败保留；H297/H98交叉测试契约已独立复核，未改变生产状态或修复计数。H109已按E-H109-04补齐Stop回调可读transcript并完成限定验收，提交`55fe90eb`；H110已按E-H110-01～02完成本机schema适配与回归，代码提交`aee1b8d5f010c7b09f22f4fb25e253f790715f11`。历史失败与计数快照保留。
+**当前续接（2026-11-15）**：307唯一台账：255验收、29历史跳过、10归并、3撤销、9待修含H180、H66验收保留1、修复中/阻塞0，有效未完整闭环9。H106已按用户指定DeepSeek Harness原则完成本地结构化错误适配、本机回归及清理，详E-H106-04～07；fix为a0560739，官方该版本不支持StopFailure，不冒称官方原样或Claude完整兼容。完整workspace5462过7败131忽略、strict失败保留；H297/H98交叉测试契约已独立复核，未改变生产状态或修复计数。H109已按E-H109-04补齐Stop回调可读transcript并完成限定验收，提交`55fe90eb`；H110已按E-H110-01～02完成本机schema适配与回归，代码提交`aee1b8d5f010c7b09f22f4fb25e253f790715f11`；H112已按E-H112-01～02完成工作树生命周期字段适配与本机回归。历史失败与计数快照保留。
 
 **历史唯一台账（2026-11-12，H107验收补强/提交/清理已闭环）**：306行233已修复并验收、28历史跳过、10归并、3撤销、31待修含H180授权不修、0修复中/阻塞、1验收保留H66。30有效待处理加H66共31项有效未完整闭环。本轮恢复H107验收关闭1、新增生产修复0；原生产64f9d169不变，补强test提交629a42784ca4bf080f53ab19139761adeb7aff17，hash/清理回填见E17。SDK完整默认/全特性各89/0/5、CLI同宿主/busy及AppCore/原probe过，strict依赖旧失败及未重跑范围保留，详原项及[台账](system-harness-repair-progress.md)。非全系统全绿、不推送，整个任务未完成。
 
@@ -5326,13 +5326,17 @@ H110原两路schema红已复现，未提交候选即使局部绿仍有未知trig
 
 ### H-112：工作树生命周期 hook 缺少事件专属字段
 
+**当前状态：已修复并验收（2026-11-15，仅下列 Windows 本机、离线模型与外部 hook 投影范围）。** 原始失败证据保留；使用事件专属 typed carrier 和唯一 serializer，不改变工作树创建、移除、取消或路径安全边界。
+
 **级别：低（P3，条件性 hook 输入契约缺陷）；触发条件：配置 `WorktreeCreate`、`WorktreeRemove` 或 `CwdChanged` command hook，并执行隔离子 Agent 的工作树创建、移除或工作目录切换。** 普通共享目录子运行不触发这组事件。
 
 - 根因与生产路径：`ChatSubagentRunner::execution_root()`、`remove_worktree()` 与 `run_tracked()` 分别派发三个 hook，但统一使用 `HookData::Path`；外部 command/HTTP serializer 只生成 `path`，无法表达工作树名称、删除路径或切换前后的目录。
 - 动态复现：Windows ignored 探针 `subagent_runner::tests::audit_worktree_hook_payloads_include_required_fields` 通过正式 `dispatch_child_hook()` 和真实 PowerShell command hooks 分别捕获三种 payload，实际均为 `hook_event_name`、`session_id`、`path`。`name`、`worktree_path`、`old_cwd`、`new_cwd` 联合断言以 **0 passed / 1 failed** 退出。该探针直接验证生产 dispatcher 和 serializer，传入代表性事件数据；未创建真实 Git worktree。
 - 成熟实现对照：Claude Code `entrypoints/sdk/coreSchemas.ts` 的 `WorktreeCreateHookInputSchema` 要求 `name`，`WorktreeRemoveHookInputSchema` 要求 `worktree_path`，`CwdChangedHookInputSchema` 要求 `old_cwd` 与 `new_cwd`。
 - 影响及限制：依赖 schema 校验、按目录切换同步状态或清理特定 worktree 的 hook 会因必需字段缺失而无法工作。本探针未测试真实 Git create/remove 的执行顺序、hook 拒绝或隔离目录路径的安全边界。
-- 收敛方向（尚未实施，本地设计）：使用事件专属 typed hook data；创建事件携带稳定名称，删除事件携带实际 worktree 路径，目录切换事件在同一切换点传递旧/新绝对路径。通过真实隔离子 Agent、创建拒绝、子运行失败清理和 Windows 路径 schema 回归。
+- **E-H112-01（根因修复）**：新增 `HookData::WorktreeCreate { name, path }`、`WorktreeRemove { worktree_path }` 与 `CwdChanged { old_cwd, new_cwd }`。创建 hook 对外只投影稳定 `name`，内部保留计划路径供既有 rewrite guard；移除投影实际路径；目录切换投影旧/新绝对路径。生产 `ChatSubagentRunner`、设置页 sample 和审计夹具统一使用 typed data，旧 `HookData::Path` 不再承载这三类事件。
+- **E-H112-02（回归）**：删除原 ignored 标记，正式 PowerShell probe 为1过/0败；Hooks 三后端矩阵含三种事件为88过/0败，错配保护单测通过；`subagent_runner::tests` 为22过/0败/1忽略；`cargo fmt --all -- --check`、`git diff --check`通过。代码提交`e01db291`。
+- **实现与限制**：未改变真实 Git provider、工作树清理、hook veto/modify 语义或权限边界；未运行完整 workspace、strict Clippy（AppCore 仍有既有24项诊断）、真实第三方 schema validator、真实供应商、其他 OS、UI 或前端构建。
 
 ### H-113：FileChanged hook 字段名与变化类型不符合 schema
 
