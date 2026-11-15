@@ -9850,9 +9850,11 @@ E07末次补验：同一`$build`的`cargo test --target-dir $build -p deepagent-
 
 **E08提交与清理实际结果**：代码/测试/双文已独立提交`557c877f8a75b6b002e3f6472d9425575e1a53b2`（52文件），未push、未PR、未绕hook；本次仅文档另提交回填，不amend自身hash。暂存范围已排除用户untracked、日志/产物和凭据形状新增；原用户文件保持未跟踪，不读改/提交。
 
-清理前实际核对默认CLI SHA256与E07一致、用户原`.snap.new`与备份哈希一致，未发现Cargo/rustc或上述目录中的测试进程；两个清理根均为已解析的精确绝对路径且非reparse根。只读统计：`G:\Code_Warehouse\DeepAgent-Studio\target\h66-repair-20261110` 29,115文件、61,522,433,118字节（57.30GiB）；`G:\h66-fixtures-20261110` 6,020文件、2,280,313,293字节（2.12GiB），合计约59.42GiB。随后含“先检查嵌套reparse点，再精确Remove-Item”的PowerShell清理命令在CreateProcess前被本机策略拒绝，**脚本未启动，零文件删除**；不换API/脚本/权限规避、不称已释放空间。两目录仍在，供用户本机策略允许后清理，不能删除其父目录、默认target/debug、全局Cargo缓存或用户文件。原失败日志目前仍在原target内；本文已保留关键失败原文，即便后续删除可再生产物也不删除审计历史。
+清理前实际核对默认CLI SHA256与E07一致、用户原`.snap.new`与备份哈希一致，未发现Cargo/rustc或上述目录中的测试进程；两个清理根均为已解析的精确绝对路径且非reparse根。只读统计：`G:\Code_Warehouse\DeepAgent-Studio\target\h66-repair-20261110` 29,115文件、61,522,433,118字节（57.30GiB）；`G:\h66-fixtures-20261110` 6,020文件、2,280,313,293字节（2.12GiB），合计约59.42GiB。首次清理命令曾在CreateProcess前被本机策略拒绝，原失败保留；用户随后手动执行精确 `Remove-Item`，确认 `h66-followup-20261116` 与 `apps/desktop/dist` 均 `Remaining=False`，当前复核两根均不存在且无Cargo/rustc活动。原H66两根目录本轮前已不存在；没有删除父目录、默认target/debug、全局Cargo缓存或用户文件。
 
 **E-H66-09（2026-11-16，本机离线复核；不改变验收保留状态）**：为确认提交后代码仍可复现，在隔离配置目录且固定Rust1.88下重跑现有搜索回归。Builtins web_search：26/0/0；AppCore web_search：11/0/0；Kernel `search_capability::`：6/0/0；前端设置/摘要/hover：12/0/0。首次未隔离用户配置时Kernel组出现5项失败，其中4项是外部配置残留的未知模型`fable`，另1项是取消观察超时；未改测试或生产代码，隔离HOME/APPDATA/TEMP后重跑全部通过。Builtins strict no-deps clippy仍被既有6项非本项诊断阻断。新建的`target/h66-followup-20261116`清理命令再次被本机CreateProcess策略拒绝，未换方式删除；该产物及原H66两根目录的策略阻断继续保留，不声称空间已释放。
+
+**E-H66-10（2026-11-16，用户手动清理回执）**：用户在 PowerShell 7 对两根精确路径执行递归删除，回执显示 `target/h66-followup-20261116` 与 `apps/desktop/dist` 均 `Removed`，随后 `Remaining=False`。本机复核两路径均不存在，未发现Cargo/rustc活动；清理闭环完成，不删除源码、用户文件、共享target/debug或公共缓存。
 
 ## H-152 原生工具发现适配（已修复并验收，2026-11-10，限E04本机范围）
 
