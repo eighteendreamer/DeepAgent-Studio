@@ -181,6 +181,7 @@ test("no durable event disappears from the transcript without a decision", () =>
     Note: "consolidation result for the observation timeline, not the chat",
     McpInstructionsDelta: "bookkeeping about which servers announced",
     ToolsDiscovered: "deferred tool catalog bookkeeping",
+    TodoReminderProgress: "durable pacing counters for the periodic todo reminder; the row it triggers is a model-visible attachment, not a transcript entry",
   };
   const unmapped = [];
   for (const variant of variants) {

@@ -35,17 +35,49 @@ const edge = (source, target, extra = {}) => ({ id: `edge-${source}-${target}`, 
 const sample = () => capture([node("a")], []);
 const library = (fragment = sample()) => ({ version: 1, snippets: [{ id: "snippet-a", name: "本地片段", createdAt: 1, ...fragment }] });
 const loadProfessional = () => loadTypeScript(`${base}store/professionalStore.ts`, { "../utils/nodeRegistry": registry }).useProfessionalStore;
-const loadLibrary = () => loadTypeScript(`${base}store/snippetStore.ts`, { "../utils/workflowSnippets": snippets });
 
-function storageHarness(t, initial = null) {
-  const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
-  const state = { raw: initial, writes: 0, failRead: false, failWrite: false };
-  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
-    getItem: () => { if (state.failRead) throw new Error("unavailable"); return state.raw; },
-    setItem: (_key, raw) => { if (state.failWrite) throw new Error("unavailable"); state.raw = raw; state.writes++; },
-  } });
-  t.after(() => { if (previous) Object.defineProperty(globalThis, "localStorage", previous); else delete globalThis.localStorage; });
-  return state;
+/** In-memory stand-in for the canvas preference documents. The snippet library
+ *  moved into the kernel database in 80c5cd50; this suite owns the store's
+ *  naming/validation/mutation contract, while hydration, debounce and legacy
+ *  migration stay covered by check-canvas-persistence. */
+const preferenceState = {
+  documents: new Map(), hydrated: false, writes: 0, failRead: false, failWrite: false,
+};
+const preferences = {
+  hasCanvasPreference: (key) => preferenceState.hydrated || preferenceState.documents.has(key),
+  readCanvasPreference: (key, fallback) => {
+    if (preferenceState.failRead) throw new Error("读取失败：没有权限访问偏好文档");
+    return preferenceState.documents.has(key) ? preferenceState.documents.get(key) : fallback;
+  },
+  writeCanvasPreference: (key, value) => {
+    if (preferenceState.failWrite) throw new Error("写入失败：偏好文档不可写");
+    preferenceState.writes++;
+    preferenceState.documents.set(key, value);
+  },
+};
+const loadLibrary = () => loadTypeScript(`${base}store/snippetStore.ts`, {
+  "../utils/workflowSnippets": snippets,
+  "../utils/canvasPreferences": preferences,
+});
+
+function preferenceHarness(t, initial = null, { hydrated = true } = {}) {
+  const previous = {
+    documents: preferenceState.documents, hydrated: preferenceState.hydrated,
+    writes: preferenceState.writes, failRead: preferenceState.failRead,
+    failWrite: preferenceState.failWrite,
+  };
+  preferenceState.documents = new Map();
+  preferenceState.hydrated = hydrated;
+  preferenceState.writes = 0;
+  preferenceState.failRead = false;
+  preferenceState.failWrite = false;
+  // An unhydrated library has no readable document at all; seeding one would
+  // make hasCanvasPreference report loaded and hide the guard under test.
+  if (hydrated && initial !== null) {
+    preferenceState.documents.set("workflow-snippets", initial);
+  }
+  t.after(() => Object.assign(preferenceState, previous));
+  return preferenceState;
 }
 
 test("capture keeps only selected professional nodes, internal ports and relative layout", () => {
@@ -223,13 +255,13 @@ test("stored credential-bearing headers are rejected rather than silently saniti
 });
 
 test("library persistence survives reload, rejects duplicate names and deletes only the requested item", (t) => {
-  const storage = storageHarness(t);
+  const storage = preferenceHarness(t, { version: 1, snippets: [] });
   const { useSnippetStore } = loadLibrary();
   const store = useSnippetStore.getState();
   assert.equal(store.load(), true);
   store.saveSnippet("  My Snippet  ", [node("a")], []);
   assert.equal(storage.writes, 1);
-  assert.equal(JSON.parse(storage.raw).version, 1);
+  assert.equal(storage.documents.get("workflow-snippets").version, 1);
   assert.throws(() => store.saveSnippet("my snippet", [node("b")], []), /同名/);
   assert.equal(storage.writes, 1);
   store.saveSnippet("Other", [node("b")], []);
@@ -237,12 +269,15 @@ test("library persistence survives reload, rejects duplicate names and deletes o
   assert.equal(restored.getState().load(), true);
   assert.equal(restored.getState().snippets.length, 2);
   restored.getState().deleteSnippet(restored.getState().snippets[0].id);
-  assert.deepEqual(JSON.parse(storage.raw).snippets.map((item) => item.name), ["Other"]);
+  assert.deepEqual(
+    storage.documents.get("workflow-snippets").snippets.map((item) => item.name),
+    ["Other"],
+  );
   assert.throws(() => store.saveSnippet("  ", [node("a")], []), /名称/);
 });
 
 test("write failures never report saved state or remove items from memory", (t) => {
-  const storage = storageHarness(t, JSON.stringify(library()));
+  const storage = preferenceHarness(t, library());
   const { useSnippetStore } = loadLibrary();
   const store = useSnippetStore.getState();
   store.load();
@@ -255,14 +290,15 @@ test("write failures never report saved state or remove items from memory", (t) 
 });
 
 test("broken library and denied reads preserve original storage and block all mutations", (t) => {
-  const storage = storageHarness(t, '{"version":99,"snippets":[]}');
+  const broken = { version: 99, snippets: [] };
+  const storage = preferenceHarness(t, broken);
   const { useSnippetStore } = loadLibrary();
   const store = useSnippetStore.getState();
   assert.equal(store.load(), false);
   assert.ok(useSnippetStore.getState().error);
   assert.throws(() => store.saveSnippet("New", [node("a")], []));
   assert.throws(() => store.deleteSnippet("snippet-a"));
-  assert.equal(storage.raw, '{"version":99,"snippets":[]}');
+  assert.deepEqual(storage.documents.get("workflow-snippets"), broken);
   assert.equal(storage.writes, 0);
   storage.failRead = true;
   assert.equal(store.load(), false);
@@ -271,14 +307,26 @@ test("broken library and denied reads preserve original storage and block all mu
   assert.equal(storage.writes, 0);
 });
 
+test("an unhydrated library refuses to read or write instead of starting empty", (t) => {
+  // hasCanvasPreference distinguishes "no data yet" from "not loaded"; treating
+  // the two as one would let a mutation overwrite a library still in flight.
+  const storage = preferenceHarness(t, { version: 1, snippets: [] }, { hydrated: false });
+  const { useSnippetStore } = loadLibrary();
+  const store = useSnippetStore.getState();
+  assert.equal(store.load(), false);
+  assert.match(useSnippetStore.getState().error, /载入/);
+  assert.throws(() => store.saveSnippet("New", [node("a")], []), /载入/);
+  assert.equal(storage.writes, 0);
+});
+
 test("every mutation re-reads storage so stale in-memory items cannot overwrite broken data", (t) => {
-  const storage = storageHarness(t);
+  const storage = preferenceHarness(t, { version: 1, snippets: [] });
   const { useSnippetStore } = loadLibrary();
   useSnippetStore.getState().saveSnippet("Saved", [node("a")], []);
-  storage.raw = "broken later";
+  storage.documents.set("workflow-snippets", "broken later");
   const writes = storage.writes;
   assert.throws(() => useSnippetStore.getState().deleteSnippet(useSnippetStore.getState().snippets[0].id));
-  assert.equal(storage.raw, "broken later");
+  assert.equal(storage.documents.get("workflow-snippets"), "broken later");
   assert.equal(storage.writes, writes);
 });
 
