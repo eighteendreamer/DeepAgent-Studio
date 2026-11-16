@@ -459,6 +459,8 @@ export function ConnectionsSettings() {
               <div className="space-y-3 px-5 py-4">
                 <SshHostTrustField
                   id="settings-known-hosts"
+                  host={form.host}
+                  port={Number(form.port)}
                   value={form.knownHostsPath}
                   onChange={(knownHostsPath) => setForm({ ...form, knownHostsPath })}
                 />

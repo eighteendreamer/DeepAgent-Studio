@@ -1167,6 +1167,8 @@ export function RemoteSidebar({
 
                       <SshHostTrustField
                         id="remote-known-hosts"
+                        host={form.host}
+                        port={Number(form.port)}
                         value={form.knownHostsPath}
                         onChange={(knownHostsPath) => setForm({ ...form, knownHostsPath })}
                       />

@@ -3,7 +3,7 @@ use super::config::{
     UpdateSshConnectionRequest,
 };
 use super::error::{SshError, SshResult};
-use super::host_trust::HostTrust;
+use super::host_trust::{HostTrust, SshHostTrustInspection};
 use super::remote::{
     RemoteBundleManifest, RemoteBundleRequest, RemoteBundleResult, RemoteInstallRequest,
     RemoteInstallResult, RemoteManifestEntry, RemoteProbeResult, RemotePushFileRequest,
@@ -174,6 +174,25 @@ impl SshServiceImpl {
         }
         out.sort_by(|a, b| a.name.cmp(&b.name).then(a.host.cmp(&b.host)));
         out
+    }
+
+    pub async fn inspect_host_trust(
+        &self,
+        host: &str,
+        port: u16,
+        known_hosts_path: Option<&str>,
+    ) -> SshResult<SshHostTrustInspection> {
+        // Unsaved connection editors need endpoint validation, not credentials or a session.
+        let mut config = SshConnectionConfig::new(
+            "trust inspection",
+            host.trim(),
+            port,
+            "trust inspection",
+            SshAuthType::Agent,
+        );
+        validate_config(&config, None, None)?;
+        config.known_hosts_path = Some(self.resolve_known_hosts(known_hosts_path)?);
+        Ok(HostTrust::load(&config).await?.inspection(&config))
     }
 
     pub async fn create_connection(

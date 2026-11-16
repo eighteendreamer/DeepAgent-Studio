@@ -5261,6 +5261,20 @@ impl From<DtoSshExecResult> for SshExecResultFrontend {
 }
 
 #[tauri::command]
+async fn ssh_inspect_host_trust(
+    state: State<'_, AppState>,
+    host: String,
+    port: u16,
+    known_hosts_path: Option<String>,
+) -> Result<deepagent_ssh::SshHostTrustInspection, String> {
+    state
+        .ssh
+        .inspect_host_trust(&host, port, known_hosts_path.as_deref())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn ssh_list_connections(
     state: State<'_, AppState>,
 ) -> Result<Vec<SshConnectionFrontendDto>, String> {
@@ -7659,6 +7673,7 @@ pub fn run() {
             terminal_session_release,
             terminal_session_close,
             ssh_list_connections,
+            ssh_inspect_host_trust,
             ssh_create_connection,
             ssh_update_connection,
             ssh_remove_connection,

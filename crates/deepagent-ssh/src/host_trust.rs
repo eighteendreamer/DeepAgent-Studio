@@ -4,13 +4,33 @@
 //! be independently verified before the user supplies a known_hosts entry.
 
 use crate::{SshConnectionConfig, SshError, SshResult};
+use russh::keys::{HashAlg, PublicKey};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::Path;
+
+/// A key already recorded in the selected local trust source, not a remote verdict.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SshKnownHostKey {
+    pub line_number: usize,
+    pub algorithm: String,
+    pub fingerprint: String,
+}
+
+/// Read-only view for both connection editors. Contains no authentication material.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SshHostTrustInspection {
+    pub host: String,
+    pub port: u16,
+    pub known_hosts_path: String,
+    pub keys: Vec<SshKnownHostKey>,
+}
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct HostTrust {
     pub(crate) path: String,
     digest: [u8; 32],
+    keys: Vec<(usize, PublicKey)>,
 }
 
 impl HostTrust {
@@ -48,10 +68,48 @@ impl HostTrust {
                 "unknown host: no verified host+port entry",
             ));
         }
+        // russh 0.55's reported counter skips '#' comment lines. Adapt source
+        // positions for display only; keep its key/host/port parser authoritative.
+        let source_lines = text
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| !line.starts_with('#'))
+            .map(|(index, _)| index + 1)
+            .collect::<Vec<_>>();
+        let keys = keys
+            .into_iter()
+            .map(|(line_number, key)| {
+                let line_number = source_lines
+                    .get(line_number.saturating_sub(1))
+                    .copied()
+                    .ok_or_else(|| Self::error(config, "trust source changed during inspection"))?;
+                Ok((line_number, key))
+            })
+            .collect::<SshResult<Vec<_>>>()?;
         Ok(Self {
             path: path.to_owned(),
             digest: Sha256::digest(bytes).into(),
+            keys,
         })
+    }
+
+    pub(crate) fn inspection(self, config: &SshConnectionConfig) -> SshHostTrustInspection {
+        SshHostTrustInspection {
+            host: config.host.clone(),
+            port: config.port,
+            known_hosts_path: self.path,
+            // Fingerprinting is UI inspection work, not a tax on every PTY read
+            // that revalidates an already connected client's trust source.
+            keys: self
+                .keys
+                .into_iter()
+                .map(|(line_number, key)| SshKnownHostKey {
+                    line_number,
+                    algorithm: key.algorithm().as_str().to_owned(),
+                    fingerprint: key.fingerprint(HashAlg::Sha256).to_string(),
+                })
+                .collect(),
+        }
     }
 
     pub(crate) fn error(config: &SshConnectionConfig, reason: &str) -> SshError {

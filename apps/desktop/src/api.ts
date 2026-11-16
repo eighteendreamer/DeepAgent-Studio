@@ -3908,6 +3908,24 @@ export async function sshListConnections(): Promise<SshConnection[]> {
   return [];
 }
 
+/** Local trust-file contents only; never a remote identity verification verdict. */
+export interface SshHostTrustInspection {
+  host: string;
+  port: number;
+  known_hosts_path: string;
+  keys: { line_number: number; algorithm: string; fingerprint: string }[];
+}
+
+export async function sshInspectHostTrust(
+  host: string,
+  port: number,
+  knownHostsPath?: string,
+): Promise<SshHostTrustInspection> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("Host trust inspection requires the desktop app");
+  return invoke<SshHostTrustInspection>("ssh_inspect_host_trust", { host, port, knownHostsPath });
+}
+
 export async function sshCreateDir(connectionId: string, path: string): Promise<void> {
   const invoke = getInvoke();
   if (!invoke) throw new Error("tauri invoke unavailable");

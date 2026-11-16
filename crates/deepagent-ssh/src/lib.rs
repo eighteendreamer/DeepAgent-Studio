@@ -26,6 +26,7 @@ pub use config::{
     UpdateSshConnectionRequest,
 };
 pub use error::{SshError, SshResult};
+pub use host_trust::{SshHostTrustInspection, SshKnownHostKey};
 pub use remote::{
     RemoteBundleManifest, RemoteBundleRequest, RemoteBundleResult, RemoteInstallRequest,
     RemoteInstallResult, RemoteManifestEntry, RemoteProbeResult, RemotePushFileRequest,
@@ -322,6 +323,18 @@ impl SshService {
 
     pub async fn list_connections(&self) -> Vec<SshConnectionDto> {
         self.inner.list_connections().await
+    }
+
+    /// Inspect the local trust source without networking, authentication or enrollment.
+    pub async fn inspect_host_trust(
+        &self,
+        host: &str,
+        port: u16,
+        known_hosts_path: Option<&str>,
+    ) -> SshResult<SshHostTrustInspection> {
+        self.inner
+            .inspect_host_trust(host, port, known_hosts_path)
+            .await
     }
 
     pub async fn create_connection(
