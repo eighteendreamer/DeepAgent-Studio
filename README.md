@@ -77,6 +77,15 @@ pnpm install
 pnpm tauri dev      # 编译 Rust 外壳 + 打开桌面窗口
 ```
 
+桌面入口会先用 Cargo 构建当前 CLI，并生成 Tauri 要求的
+`apps/desktop/src-tauri/binaries/deepagent-<target-triple>[.exe]`。
+清理 `target` / `binaries` 后不需要手工找回旧二进制；首次启动会重新编译。
+开发时先完成 CLI 构建再启动 Tauri，避免冷编译占用前端服务器的等待窗口；
+`pnpm tauri build` 则由构建前置 hook 按实际目标和 debug/release 模式准备旁车。
+如果直接调用 Cargo 构建桌面端（不经过 Tauri CLI），需先在 `apps/desktop`
+运行 `node scripts/prepare-sidecar.cjs dev`；交叉编译时设置对应
+`TAURI_ENV_TARGET_TRIPLE`。生成物仍不提交 Git。
+
 > 原生选择文件夹对话框、API Key 校验等桌面特性，只在 Tauri 窗口
 > （`pnpm tauri dev`）中生效，纯 `pnpm dev` 的浏览器预览下不可用。
 
