@@ -20,6 +20,8 @@ type Props = {
   staggerContent?: boolean;
   unstyled?: boolean;
   triggerLayout?: "inline" | "block";
+  /** Frequent compact controls can settle faster without changing the spring path. */
+  durationScale?: number;
   children: ReactNode;
 };
 
@@ -29,7 +31,7 @@ const CLOSED_SHADOW = "0 0 0 rgba(0,0,0,0)";
 /** The approved share demo's single shell, compact face and expanded face. */
 export function MorphingMenuShell({ open, onOpenChange, layoutId, trigger, className,
   panelClassName, panelShadow = OPEN_SHADOW, panelAlign = "left", panelPlacement = "above", zIndex = 50,
-  staggerContent = false, unstyled = false, triggerLayout = "inline", children,
+  staggerContent = false, unstyled = false, triggerLayout = "inline", durationScale = 1, children,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const anchorRef = useRef<HTMLDivElement>(null);
@@ -158,6 +160,7 @@ export function MorphingMenuShell({ open, onOpenChange, layoutId, trigger, class
       shell.style.overflow = "hidden";
       const motion = open ? SHARE_MOTION.open : SHARE_MOTION.close;
       timeline = gsap.timeline({ onComplete: finish });
+      timeline.timeScale(1 / durationScale);
       timeline.to(shell, { width: open ? expanded.width : closed.width, duration: motion.width.duration,
         ease: springEase(motion.width.stiffness, motion.width.damping, motion.width.duration) }, motion.width.delay);
       timeline.to(shell, { height: open ? expanded.height : closed.height, duration: motion.height.duration,
@@ -191,7 +194,7 @@ export function MorphingMenuShell({ open, onOpenChange, layoutId, trigger, class
       gsap.killTweensOf(shell, widthChanged ? "width,height,x" : "height,x");
       const motion = SHARE_MOTION.resize;
       resize = gsap.to(shell, { ...(widthChanged ? { width: expanded.width } : {}), x: expanded.x, height: expanded.height,
-        duration: prefersReducedMotion() ? 0 : motion.duration,
+        duration: prefersReducedMotion() ? 0 : motion.duration * durationScale,
         ease: springEase(motion.stiffness, motion.damping, motion.duration) });
     };
     const observer = new ResizeObserver(retarget);
@@ -207,7 +210,7 @@ export function MorphingMenuShell({ open, onOpenChange, layoutId, trigger, class
       window.removeEventListener("resize", retarget);
       media.removeEventListener("change", play);
     };
-  }, [open, showPanel, panelAlign, panelPlacement, panelShadow, triggerLayout]);
+  }, [open, showPanel, panelAlign, panelPlacement, panelShadow, triggerLayout, durationScale]);
 
   return <div ref={containerRef} className={cn("relative", className)}>
     <div ref={anchorRef} className={cn("relative max-w-full align-top", triggerLayout === "block" ? "flex w-full" : "inline-flex")}>

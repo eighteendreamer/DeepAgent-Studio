@@ -602,6 +602,9 @@ export function App() {
   );
   // Always-current activeId, readable from inside the long-lived run handler.
   const activeIdRef = useRef<string | null>(null);
+  // A remembered sidebar selection is not necessarily an open conversation.
+  const visibleSessionIdRef = useRef<string | null>(null);
+  visibleSessionIdRef.current = view === "chat" && !activePendingRunKey ? activeId : null;
   const activePendingRunKeyRef = useRef<string | null>(null);
   const activeRunIdsRef = useRef<Map<string, string>>(new Map());
   const preflightAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
@@ -671,11 +674,18 @@ export function App() {
 
   useEffect(() => {
     activeIdRef.current = activeId;
-    if (!activeId) {
+    if (view !== "chat" || (!activeId && !activePendingRunKey)) {
       setDetail(null);
       setPlanMode(false);
       return;
     }
+    // A new run still carries the previous activeId until session_registered.
+    // Keep its explicitly requested mode, never hydrate the old conversation.
+    if (activePendingRunKey) {
+      setDetail(null);
+      return;
+    }
+    if (!activeId) return;
     let cancelled = false;
     getSessionDetail(activeId)
       .then((next) => {
@@ -703,7 +713,7 @@ export function App() {
         message.error(`计划模式状态读取失败，请明确选择 /plan 或 /execute：${String(error)}`);
       });
     return () => { cancelled = true; };
-  }, [activeId]);
+  }, [activeId, view, activePendingRunKey]);
 
   // Keep a ref mirror of `messages` for stale-closure-free reads in onSubmit.
   useEffect(() => {
@@ -2196,13 +2206,13 @@ export function App() {
           // The run created (or continued) a session under the active project;
           // refresh the sidebar lists and focus that session.
           refreshSessions();
-          if (newSessionId) {
+          if (newSessionId && visibleSessionIdRef.current === newSessionId) {
             getPlanMode(newSessionId)
               .then((next) => {
-                if (activeIdRef.current === newSessionId) setPlanMode(next);
+                if (visibleSessionIdRef.current === newSessionId) setPlanMode(next);
               })
               .catch((error) => {
-                if (activeIdRef.current !== newSessionId) return;
+                if (visibleSessionIdRef.current !== newSessionId) return;
                 setPlanMode(null);
                 message.error(`计划模式状态读取失败，请明确选择 /plan 或 /execute：${String(error)}`);
               });

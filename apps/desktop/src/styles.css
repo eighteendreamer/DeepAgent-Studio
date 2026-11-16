@@ -2457,7 +2457,6 @@ html.theme-translucent-sidebar.dark .bg-sidebar-bg {
 }
 .reasoning-effort-stops {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: center;
   margin-top: 6px;
   font-size: 11px;

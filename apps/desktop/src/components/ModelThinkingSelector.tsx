@@ -124,6 +124,7 @@ export function ModelThinkingSelector({
     <HoverInfo content={`${selectModelLabel} / ${selectedThinkingOption.label}`}><TintButton
       type="button"
       disabled={disabled}
+      aria-expanded={open}
       onClick={() => onOpenChange(!open)}
       className={cn("flex h-8 max-w-[210px] flex-shrink-0 items-center rounded-full px-3 text-xs", triggerClassName)}
 
@@ -144,6 +145,7 @@ export function ModelThinkingSelector({
       className="flex h-8 min-w-0 max-w-full items-center"
       panelClassName="w-[264px]"
       panelAlign="right"
+      durationScale={0.4}
       zIndex={50}
     >
           <div className="py-2">
@@ -185,7 +187,8 @@ export function ModelThinkingSelector({
 
                         selected={selected}
 
-                        onClick={switching ? undefined : () => onChooseModel(id)}
+                        aria-busy={switching || undefined}
+                        onClick={() => onChooseModel(id)}
 
                         className={cn(
                           "cursor-pointer px-2.5 py-2 text-left",

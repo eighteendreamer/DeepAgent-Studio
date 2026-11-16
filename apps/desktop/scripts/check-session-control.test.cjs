@@ -151,6 +151,7 @@ function planModeEffect(getPlanMode) {
   const state = { mode: true, errors: [] };
   const bindings = {
     activeId: "synthetic-session", activeIdRef: { current: null },
+    view: "chat", activePendingRunKey: null,
     getSessionDetail: async () => ({ context_usage: null }), getPlanMode,
     setDetail: () => {}, setContextUsageByKey: () => {},
     setPlanMode: (value) => { state.mode = value; },

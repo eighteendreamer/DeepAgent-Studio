@@ -134,7 +134,7 @@ test("session detail and plan mode loaders reject late responses after navigatio
     const planRequest = deferred();
     requests.set(activeId, { detailRequest, planRequest });
     return vm.runInNewContext(`(${effect})()`, {
-      activeId, activeIdRef,
+      activeId, activeIdRef, view: "chat", activePendingRunKey: null,
       getSessionDetail: () => detailRequest.promise,
       getPlanMode: () => planRequest.promise,
       setDetail: value => { detail = value; },

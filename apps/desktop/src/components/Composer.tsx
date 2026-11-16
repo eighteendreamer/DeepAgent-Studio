@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { ContextCapacityIndicator } from "./ContextCapacityIndicator";
 import { ComposerSuggestPanel } from "./ComposerSuggestPanel";
 import { ModelThinkingSelector } from "./ModelThinkingSelector";
+import { useComposerModelSettings } from "../hooks/useComposerModelSettings";
 import { InputSurface } from "./ui/InputSurface";
 import { useMessageSendMotion } from "./ui/MessageSendMotionContext";
 import { ComposerAttachButton } from "./ComposerAttachButton";
@@ -23,13 +24,11 @@ import {
   getActivePermissionPreset,
   getCommands,
   getPermissionPresetVisibility,
-  getSettings,
   listSkills,
   searchProjectFiles,
   setActivePermissionPreset,
-  setChatModel,
-  setReasoningEffort,
 } from "../api";
+import type { SettingsChangedDetail } from "../api";
 import { message } from "./message";
 import type {
   Command,
@@ -37,7 +36,6 @@ import type {
   ComposerMention,
   ComposerSkillSelection,
   ContextUsageSnapshot,
-  ModelCapability,
   ProjectFileEntry,
   Skill,
 } from "../types";
@@ -253,16 +251,8 @@ export function Composer({
   const composerRef = useRef<HTMLDivElement>(null);
   const messageSendMotion = useMessageSendMotion();
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
-  // Real discovered models + the active chat model, loaded from the backend
-  // settings (populated by API-key validation at login).
-  const [models, setModels] = useState<string[]>([]);
-  const [selectedModel, setSelectedModel] = useState<string>("");
-  // Resolved capability (context window / max output) per discovered model,
-  // straight from the backend resolver the runtime itself uses. Keeps the
-  // capacity indicator from guessing from the model id.
-  const [modelCapabilities, setModelCapabilities] = useState<ModelCapability[]>([]);
-  const [selectedThinking, setSelectedThinking] = useState<"none" | "low" | "high" | "max">("high");
-  const [switching, setSwitching] = useState(false);
+  const { models, selectedModel, modelCapabilities, selectedThinking, switching,
+    chooseModel, chooseThinking } = useComposerModelSettings();
   const [slashResults, setSlashResults] = useState<SlashChoice[]>([]);
   const [slashSelected, setSlashSelected] = useState(0);
   const [atSections, setAtSections] = useState<AtSection[]>([]);
@@ -279,31 +269,6 @@ export function Composer({
   // reflected without a chat-page refresh.
   const [skills, setSkills] = useState<Skill[]>([]);
 
-  const reloadSettings = useCallback((cancelled?: () => boolean) => {
-    getSettings()
-      .then((s) => {
-        if (cancelled?.() || !s) return;
-        setModels(s.available_models);
-        setModelCapabilities(s.model_capabilities ?? []);
-        setSelectedModel(s.chat_model);
-        setSelectedThinking(s.reasoning_effort ?? "high");
-      })
-      .catch(() => {
-        /* browser preview / uninitialized: leave the list empty */
-      });
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    reloadSettings(() => cancelled);
-    const onSettingsChanged = () => reloadSettings();
-    window.addEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
-    return () => {
-      cancelled = true;
-      window.removeEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
-    };
-  }, [reloadSettings]);
-
   // Load the skill registry for the slash-command candidate list, and refresh
   // when settings change (catches install / uninstall / reload mid-session).
   useEffect(() => {
@@ -318,7 +283,10 @@ export function Composer({
         });
     };
     load();
-    const onSettingsChanged = () => load();
+    const onSettingsChanged = (event: Event) => {
+      const reason = (event as CustomEvent<SettingsChangedDetail>).detail?.reason;
+      if (!reason || ["skill_catalog", "skill_ai_review", "slash_settings", "other"].includes(reason)) load();
+    };
     window.addEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
     return () => {
       cancelled = true;
@@ -344,44 +312,13 @@ export function Composer({
     pendingDraftValueRef.current = value;
   }, [draftValue, value]);
 
-  const chooseModel = async (id: string) => {
-    if (id === selectedModel || switching) return;
-    const prev = selectedModel;
-    setSelectedModel(id); // optimistic
-    setSwitching(true);
-    try {
-      const view = await setChatModel(id);
-      setSelectedModel(view.chat_model);
-      message.success(t("composer.modelSwitched", { model: view.chat_model }));
-    } catch (e) {
-      setSelectedModel(prev); // revert on failure
-      message.error(t("composer.modelSwitchFailed"));
-      console.error("set_chat_model failed:", e);
-    } finally {
-      setSwitching(false);
-    }
-  };
-
   const THINKING_OPTIONS = [
     { id: "none", label: "composer.thinkingNone", icon: Feather },
     { id: "low", label: "composer.thinkingLow", icon: Lightbulb },
-    { id: "high", label: "composer.thinkingHigh", icon: Brain },
-    { id: "max", label: "composer.thinkingMax", icon: Sparkles },
+    // Display ranks are ordinal; DeepSeek's wire values remain high / max.
+    { id: "high", label: "composer.thinkingMedium", icon: Brain },
+    { id: "max", label: "composer.thinkingHigh", icon: Sparkles },
   ] as const;
-
-  const chooseThinking = async (id: "none" | "low" | "high" | "max") => {
-    if (id === selectedThinking) return;
-    const prev = selectedThinking;
-    setSelectedThinking(id);
-    try {
-      const view = await setReasoningEffort(id);
-      setSelectedThinking(view.reasoning_effort ?? id);
-    } catch (e) {
-      setSelectedThinking(prev);
-      message.error(t("composer.thinkingSwitchFailed"));
-      console.error("set_reasoning_effort failed:", e);
-    }
-  };
 
   const ALL_APPROVAL_OPTIONS = [
     { id: "default", label: "composer.defaultPermission", desc: "composer.defaultPermissionDesc", icon: Hand },
@@ -539,8 +476,8 @@ export function Composer({
         const choices = [
           { id: "none", title: "none", description: "关闭推理", category: "推理强度" },
           { id: "low", title: "low", description: "低推理强度", category: "推理强度" },
-          { id: "high", title: "high", description: "高推理强度", category: "推理强度" },
-          { id: "max", title: "max", description: "最高推理强度", category: "推理强度" },
+          { id: "high", title: "high", description: "中档推理强度（API：high）", category: "推理强度" },
+          { id: "max", title: "max", description: "高档推理强度（API：max）", category: "推理强度" },
         ]
           .filter((opt) => opt.title.includes(argQuery) || opt.description.includes(argQuery))
           .map((opt) => ({

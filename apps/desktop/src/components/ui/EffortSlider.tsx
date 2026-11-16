@@ -129,7 +129,7 @@ export function EffortSlider<T extends string>({ stops, value, onChange, ariaLab
         </div>
         <span className="reasoning-effort-thumb" aria-hidden="true" />
       </SliderPrimitive>
-      <div className="reasoning-effort-stops">
+      <div className="reasoning-effort-stops" style={{ gridTemplateColumns: `repeat(${stops.length}, minmax(0, 1fr))` }}>
         {stops.map((stop, index) => (
           <Button key={stop.value} variant="ghost" size="sm" disabled={disabled} aria-pressed={index === selected}
             className="h-auto rounded px-0.5 py-[3px] text-[11px] font-normal hover:bg-transparent"
