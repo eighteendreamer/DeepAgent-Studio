@@ -764,6 +764,14 @@
       "hostKeyError": "Host identity verification failed. Verify the administrator fingerprint and host, port and key in known_hosts; never blindly delete the old key.",
       "selectIdentityFile": "Choose an identity file",
       "inspectTrust": "Inspect trusted keys",
+      "trustManager": {
+        "title": "Host trust", "direct": "Direct", "help": "The application SQLite trust store holds public keys only. Independently verify fingerprints with a trusted administrator; this page never accepts remote keys automatically.",
+        "empty": "No application trust records for this endpoint. Strict verification is still required.", "busy": "Working…", "trusted": "Trusted", "revoked": "Revoked",
+        "preview": "Preview known_hosts import", "review": "Verify before importing", "acknowledge": "I independently verified every fingerprint above and approve adding these public keys to application trust.",
+        "confirmImport": "Confirm import", "cancel": "Cancel", "revoke": "Revoke", "confirmRevoke": "Confirm revocation", "refresh": "Refresh", "close": "Close",
+        "revokeWarning": "Revocation closes the current connection for this profile. Ordinary import cannot restore the old key. Verify the fingerprint below before proceeding.",
+        "sessionWarning": "Successful import or revocation closes this profile's SSH/Terminal session. Reconnect manually. Closing this dialog does not cancel a submitted write."
+      },
       "trustLine": "line",
       "trustInspectionHelp": "Matching keys from the local trust file only; this does not verify the remote server. Independently verify fingerprints through a trusted channel. No server connection or automatic key enrollment occurs.",
       "browse": "Browse",

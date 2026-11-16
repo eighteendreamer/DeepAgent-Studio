@@ -3926,6 +3926,32 @@ export async function sshInspectHostTrust(
   return invoke<SshHostTrustInspection>("ssh_inspect_host_trust", { host, port, knownHostsPath });
 }
 
+export interface SshHostKeyRecord {
+  algorithm: string;
+  fingerprint: string;
+  source: string;
+  trusted_at_ms: number;
+  revoked: boolean;
+}
+
+export async function sshListHostKeys(id: string): Promise<SshHostKeyRecord[]> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("Application host trust requires the desktop app");
+  return invoke<SshHostKeyRecord[]>("ssh_list_host_keys", { id });
+}
+
+export async function sshImportHostTrust(id: string, expected: SshHostTrustInspection): Promise<SshHostKeyRecord[]> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("Application host trust requires the desktop app");
+  return invoke<SshHostKeyRecord[]>("ssh_import_host_trust", { id, expected });
+}
+
+export async function sshRevokeHostKey(id: string, fingerprint: string): Promise<void> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("Application host trust requires the desktop app");
+  return invoke<void>("ssh_revoke_host_key", { id, fingerprint });
+}
+
 export async function sshCreateDir(connectionId: string, path: string): Promise<void> {
   const invoke = getInvoke();
   if (!invoke) throw new Error("tauri invoke unavailable");

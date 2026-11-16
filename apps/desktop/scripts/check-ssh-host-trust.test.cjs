@@ -245,3 +245,137 @@ test('inspection ignores repeated clicks while a read is pending', async () => {
   complete({ host: props.host, port: 22, known_hosts_path: 'C:\\trusted', keys: [] });
   await pending;
 });
+
+test('application host trust API preserves the reviewed snapshot and never fakes browser writes', async () => {
+  const expected = { host: 'fixture.invalid', port: 22, known_hosts_path: 'C:\\fixture', keys: [] };
+  for (const [name, command, args, payload] of [
+    ['sshListHostKeys', 'ssh_list_host_keys', ['id'], { id: 'id' }],
+    ['sshImportHostTrust', 'ssh_import_host_trust', ['id', expected], { id: 'id', expected }],
+    ['sshRevokeHostKey', 'ssh_revoke_host_key', ['id', 'SHA256:fixture'], { id: 'id', fingerprint: 'SHA256:fixture' }],
+  ]) {
+    const calls = [];
+    await production('api.ts', name, { getInvoke: () => async (command, args) => calls.push({ command, args }) })(...args);
+    assert.equal(calls[0].command, command);
+    assert.deepEqual(JSON.parse(JSON.stringify(calls[0].args)), payload);
+    await assert.rejects(production('api.ts', name, { getInvoke: () => null })(...args), /desktop app/);
+    const rust = readFileSync(path.join(root, '../src-tauri/src/lib.rs'), 'utf8');
+    assert.match(rust, new RegExp(`#\\[tauri::command\\]\\s*async fn ${command}\\(`));
+    assert.match(rust, new RegExp(`generate_handler!\\[[\\s\\S]*?\\b${command},`));
+  }
+});
+
+function trustManagerDriver(api = {}) {
+  const slots = [];
+  let cursor = 0;
+  let effects = [];
+  const names = ['Dialog', 'DialogContent', 'DialogHeader', 'DialogTitle', 'DialogDescription', 'DialogFooter'];
+  const context = Object.fromEntries(names.map(name => [name, 'div']));
+  const fn = production('components/remote/SshHostTrustManager.tsx', 'HostTrustPanel', {
+    ...context, React, Button: 'button', Checkbox: 'fixture-checkbox', Label: 'label',
+    useTranslation: () => ({ t: translate }),
+    sshListHostKeys: async () => [], sshInspectHostTrust: async () => { throw Error('unexpected inspection'); },
+    sshImportHostTrust: async () => { throw Error('unexpected import'); },
+    sshRevokeHostKey: async () => { throw Error('unexpected revoke'); }, ...api,
+    useRef: initial => { const at = cursor++; return slots[at] ??= { current: initial }; },
+    useState: initial => {
+      const at = cursor++;
+      if (!(at in slots)) slots[at] = initial;
+      return [slots[at], value => { slots[at] = typeof value === 'function' ? value(slots[at]) : value; }];
+    },
+    useEffect: (effect, deps) => {
+      const at = cursor++;
+      const previous = slots[at];
+      if (!previous || deps.some((dep, index) => dep !== previous.deps[index])) {
+        previous?.cleanup?.();
+        effects.push(() => { slots[at] = { deps, cleanup: effect(), effect }; });
+      }
+    },
+  });
+  function flatten(node, result = []) {
+    if (!node || typeof node !== 'object') return result;
+    if (Array.isArray(node)) { node.forEach(child => flatten(child, result)); return result; }
+    result.push(node); flatten(node.props?.children, result); return result;
+  }
+  function label(node) {
+    if (typeof node === 'string') return node;
+    if (Array.isArray(node)) return node.map(label).join('');
+    return node && typeof node === 'object' ? label(node.props?.children) : '';
+  }
+  return {
+    render(props) {
+      cursor = 0; const element = fn(props);
+      effects.splice(0).forEach(effect => effect());
+      const nodes = flatten(element);
+      return { nodes, button: text => nodes.find(node => node.type === 'button' && label(node) === text), text: label(element) };
+    },
+    unmount() { for (const slot of slots) slot?.cleanup?.(); },
+    replayEffects() { for (const slot of slots) { if (slot?.effect) { slot.cleanup?.(); slot.cleanup = slot.effect(); } } },
+  };
+}
+
+const managerText = key => translate(`settings.connections.trustManager.${key}`);
+const managerProps = () => ({ connection: { id: 'id', host: 'fixture.invalid', port: 2222, known_hosts_path: 'C:\\fixture' }, onClose() {}, onChanged() {} });
+const flushManager = () => new Promise(resolve => setImmediate(resolve));
+
+test('host trust manager previews without writing, and cancellation never grants trust', async () => {
+  let inspections = 0; let writes = 0;
+  const expected = { host: 'fixture.invalid', port: 2222, known_hosts_path: 'C:\\fixture', keys: [{algorithm:'ssh-ed25519',fingerprint:'SHA256:fixture',line_number:1}] };
+  const driver = trustManagerDriver({ sshInspectHostTrust: async () => { inspections++; return expected; }, sshImportHostTrust: async () => { writes++; return []; } });
+  const props = managerProps(); driver.render(props); await flushManager();
+  assert.equal(inspections, 0); assert.equal(writes, 0);
+  await driver.render(props).button(managerText('preview')).props.onClick();
+  const preview = driver.render(props);
+  assert.ok(preview.text.includes('SHA256:fixture'));
+  assert.equal(preview.button(managerText('confirmImport')).props.disabled, true);
+  preview.button(managerText('cancel')).props.onClick();
+  assert.equal(driver.render(props).button(managerText('confirmImport')), undefined);
+  assert.equal(writes, 0);
+});
+
+test('host trust manager requires acknowledgement and sends one immutable preview', async () => {
+  const expected = { host: 'fixture.invalid', port: 2222, known_hosts_path: 'C:\\fixture', keys: [{algorithm:'ssh-ed25519',fingerprint:'SHA256:fixture',line_number:1}] };
+  let complete; const calls = [];
+  const driver = trustManagerDriver({ sshInspectHostTrust: async () => expected, sshImportHostTrust: async (...args) => { calls.push(args); return new Promise(resolve => { complete = resolve; }); } });
+  const props = managerProps(); driver.render(props); await flushManager();
+  await driver.render(props).button(managerText('preview')).props.onClick();
+  driver.render(props).nodes.find(node => node.type === 'fixture-checkbox').props.onCheckedChange(true);
+  const confirm = driver.render(props).button(managerText('confirmImport')).props.onClick;
+  const first = confirm(); await confirm();
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], ['id', expected]);
+  assert.equal(driver.render(props).button(managerText('confirmImport')).props.disabled, true);
+  driver.unmount(); complete([]); await first;
+});
+
+test('revocation needs a separate explicit confirmation and preserves errors', async () => {
+  const record = { algorithm:'ssh-ed25519', fingerprint:'SHA256:fixture', source:'fixture', trusted_at_ms:1, revoked:false };
+  const calls = [];
+  const driver = trustManagerDriver({ sshListHostKeys: async () => [record], sshRevokeHostKey: async (...args) => { calls.push(args); throw Error('storage unavailable'); } });
+  const props = managerProps(); driver.render(props); await flushManager();
+  driver.render(props).button(managerText('revoke')).props.onClick();
+  assert.equal(calls.length, 0);
+  await driver.render(props).button(managerText('confirmRevoke')).props.onClick();
+  assert.deepEqual(calls[0], ['id', 'SHA256:fixture']);
+  assert.ok(driver.render(props).text.includes('storage unavailable'));
+});
+
+test('host trust manager survives StrictMode effect cleanup/replay while initial read is pending', async () => {
+  const waiting = [];
+  const driver = trustManagerDriver({ sshListHostKeys: async () => new Promise(resolve => waiting.push(resolve)) });
+  const props = managerProps(); driver.render(props);
+  driver.replayEffects();
+  assert.equal(waiting.length, 2, 'the replay must not remain stuck behind an invalidated request');
+  waiting[0]([{algorithm:'ssh-ed25519',fingerprint:'SHA256:stale',source:'fixture',trusted_at_ms:1,revoked:false}]);
+  waiting[1]([{algorithm:'ssh-ed25519',fingerprint:'SHA256:current',source:'fixture',trusted_at_ms:1,revoked:false}]);
+  await flushManager();
+  const view = driver.render(props);
+  assert.ok(view.text.includes('SHA256:current'));
+  assert.ok(!view.text.includes('SHA256:stale'));
+  assert.equal(view.button(managerText('preview')).props.disabled, false);
+});
+
+test('both real SSH surfaces use the same application trust manager', () => {
+  for (const file of ['components/settings/ConnectionsSettings.tsx', 'components/remote/RemoteSidebar.tsx']) {
+    assert.match(readFileSync(path.join(root, file), 'utf8'), /<SshHostTrustManager\b/);
+  }
+});

@@ -5275,6 +5275,44 @@ async fn ssh_inspect_host_trust(
 }
 
 #[tauri::command]
+async fn ssh_list_host_keys(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<deepagent_ssh::SshHostKeyRecord>, String> {
+    state
+        .ssh
+        .list_host_keys(&id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn ssh_import_host_trust(
+    state: State<'_, AppState>,
+    id: String,
+    expected: deepagent_ssh::SshHostTrustInspection,
+) -> Result<Vec<deepagent_ssh::SshHostKeyRecord>, String> {
+    state
+        .ssh
+        .import_host_trust(&id, expected)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn ssh_revoke_host_key(
+    state: State<'_, AppState>,
+    id: String,
+    fingerprint: String,
+) -> Result<(), String> {
+    state
+        .ssh
+        .revoke_host_key(&id, &fingerprint)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn ssh_list_connections(
     state: State<'_, AppState>,
 ) -> Result<Vec<SshConnectionFrontendDto>, String> {
@@ -7129,10 +7167,11 @@ pub fn run() {
                 secrets: sqlite_secrets.clone(),
                 legacy_path: paths.ssh.join("connections.json"),
             });
-            let ssh = Arc::new(SshService::with_config_store(
-                paths.root.clone(),
-                ssh_store,
-            ));
+            let host_keys = Arc::new(deepagent_ssh::SshHostKeyStore::new(service.shared_database()));
+            let ssh = Arc::new(
+                SshService::with_config_store(paths.root.clone(), ssh_store)
+                    .with_host_key_store(host_keys),
+            );
             {
                 let ssh_monitor = ssh.clone();
                 tauri::async_runtime::spawn(async move {
@@ -7674,6 +7713,9 @@ pub fn run() {
             terminal_session_close,
             ssh_list_connections,
             ssh_inspect_host_trust,
+            ssh_list_host_keys,
+            ssh_import_host_trust,
+            ssh_revoke_host_key,
             ssh_create_connection,
             ssh_update_connection,
             ssh_remove_connection,

@@ -2164,6 +2164,8 @@ dependencies = [
  "async-ssh2-tokio",
  "async-trait",
  "base64 0.22.1",
+ "deepagent-core",
+ "deepagent-persistence",
  "deepagent-terminal",
  "flate2",
  "russh",

@@ -3,11 +3,13 @@
 //! Trust enrollment is deliberately external: an administrator's fingerprint must
 //! be independently verified before the user supplies a known_hosts entry.
 
-use crate::{SshConnectionConfig, SshError, SshResult};
+use crate::host_key_store::StoreSnapshot;
+use crate::{SshConnectionConfig, SshError, SshHostIdentity, SshHostKeyStore, SshResult};
 use russh::keys::{HashAlg, PublicKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::Path;
+use std::sync::Arc;
 
 /// A key already recorded in the selected local trust source, not a remote verdict.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,30 +31,62 @@ pub struct SshHostTrustInspection {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct HostTrust {
     pub(crate) path: String,
-    digest: [u8; 32],
+    digest: Option<[u8; 32]>,
     keys: Vec<(usize, PublicKey)>,
+    application: Option<StoreSnapshot>,
+    revoked: Vec<PublicKey>,
 }
 
 impl HostTrust {
     pub(crate) async fn load(config: &SshConnectionConfig) -> SshResult<Self> {
+        Self::load_with_store(config, None).await
+    }
+
+    pub(crate) async fn load_with_store(
+        config: &SshConnectionConfig,
+        store: Option<Arc<SshHostKeyStore>>,
+    ) -> SshResult<Self> {
         let config = config.clone();
-        tokio::task::spawn_blocking(move || Self::read(&config))
+        tokio::task::spawn_blocking(move || Self::read_with_store(&config, store.as_deref()))
             .await
             .map_err(|error| SshError::Internal(format!("SSH trust reader failed: {error}")))?
     }
 
+    #[cfg(test)]
     fn read(config: &SshConnectionConfig) -> SshResult<Self> {
+        Self::read_with_store(config, None)
+    }
+
+    fn read_with_store(
+        config: &SshConnectionConfig,
+        store: Option<&SshHostKeyStore>,
+    ) -> SshResult<Self> {
+        let identity = SshHostIdentity::direct(&config.host, config.port)?;
+        let application = store.map(|store| store.snapshot(&identity)).transpose()?;
+        let application_keys = application
+            .as_ref()
+            .map(StoreSnapshot::keys)
+            .transpose()?
+            .unwrap_or_default();
         let path = config.known_hosts_path.as_deref().unwrap_or_default();
         if !Path::new(path).is_absolute() {
             return Err(Self::error(config, "known_hosts requires an absolute path"));
         }
-        let bytes = std::fs::read(path).map_err(|error| {
-            Self::error(
-                config,
-                &format!("known_hosts is unavailable ({:?})", error.kind()),
-            )
-        })?;
-        let text = std::str::from_utf8(&bytes)
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => Some(bytes),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound && !application_keys.is_empty() =>
+            {
+                None
+            }
+            Err(error) => {
+                return Err(Self::error(
+                    config,
+                    &format!("known_hosts is unavailable ({:?})", error.kind()),
+                ))
+            }
+        };
+        let text = std::str::from_utf8(bytes.as_deref().unwrap_or_default())
             .map_err(|_| Self::error(config, "known_hosts must be UTF-8"))?;
         // russh 0.55 does not implement OpenSSH marker semantics. In particular,
         // ignoring @revoked next to an ordinary entry could accept a revoked key.
@@ -62,12 +96,6 @@ impl HostTrust {
         // Reuse russh's host+port and hashed-host rules; do not invent a second parser.
         let keys = russh::keys::known_hosts::known_host_keys_path(&config.host, config.port, path)
             .map_err(|_| Self::error(config, "known_hosts contains an invalid matching key"))?;
-        if keys.is_empty() {
-            return Err(Self::error(
-                config,
-                "unknown host: no verified host+port entry",
-            ));
-        }
         // russh 0.55's reported counter skips '#' comment lines. Adapt source
         // positions for display only; keep its key/host/port parser authoritative.
         let source_lines = text
@@ -76,7 +104,7 @@ impl HostTrust {
             .filter(|(_, line)| !line.starts_with('#'))
             .map(|(index, _)| index + 1)
             .collect::<Vec<_>>();
-        let keys = keys
+        let mut keys = keys
             .into_iter()
             .map(|(line_number, key)| {
                 let line_number = source_lines
@@ -86,10 +114,30 @@ impl HostTrust {
                 Ok((line_number, key))
             })
             .collect::<SshResult<Vec<_>>>()?;
+        let mut revoked = Vec::new();
+        for (key, is_revoked) in application_keys {
+            if is_revoked {
+                revoked.push(key);
+            } else {
+                keys.push((0, key)); // Application records have no file line number.
+            }
+        }
+        if keys.is_empty() {
+            return Err(Self::error(
+                config,
+                if revoked.is_empty() {
+                    "unknown host: no verified host+port entry"
+                } else {
+                    "application trust has revoked this host key"
+                },
+            ));
+        }
         Ok(Self {
             path: path.to_owned(),
-            digest: Sha256::digest(bytes).into(),
+            digest: bytes.map(|bytes| Sha256::digest(bytes).into()),
             keys,
+            application,
+            revoked,
         })
     }
 
@@ -121,10 +169,15 @@ impl HostTrust {
         }
     }
 
+    pub(crate) fn public_keys(&self) -> Vec<PublicKey> {
+        self.keys.iter().map(|(_, key)| key.clone()).collect()
+    }
+
     pub(crate) fn accepts(&self, presented: &PublicKey) -> bool {
         // Preserve the existing russh 0.55 fail-closed semantics for conflicting
         // same-algorithm entries, but compare the captured keys, never reopen a path.
-        self.keys.iter().any(|(_, key)| key == presented)
+        !self.revoked.iter().any(|key| key == presented)
+            && self.keys.iter().any(|(_, key)| key == presented)
             && self
                 .keys
                 .iter()

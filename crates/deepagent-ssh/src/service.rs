@@ -79,6 +79,7 @@ pub struct SshServiceImpl {
     configs: RwLock<HashMap<String, SshConnectionConfig>>,
     sessions: RwLock<HashMap<String, Arc<SshSession>>>,
     config_store: Arc<dyn SshConfigStore>,
+    pub(super) host_key_store: Option<Arc<crate::SshHostKeyStore>>,
     data_root: PathBuf,
     loaded: AtomicBool,
 }
@@ -98,6 +99,7 @@ impl SshServiceImpl {
             configs: RwLock::new(HashMap::new()),
             sessions: RwLock::new(HashMap::new()),
             config_store,
+            host_key_store: None,
             data_root: app_data.join("deepagent-ssh"),
             loaded: AtomicBool::new(false),
         }
@@ -193,6 +195,65 @@ impl SshServiceImpl {
         validate_config(&config, None, None)?;
         config.known_hosts_path = Some(self.resolve_known_hosts(known_hosts_path)?);
         Ok(HostTrust::load(&config).await?.inspection(&config))
+    }
+
+    pub async fn list_host_keys(&self, id: &str) -> SshResult<Vec<crate::SshHostKeyRecord>> {
+        self.ensure_loaded().await;
+        let _lifecycle = self.lifecycle.read().await;
+        let config = self.config_for(id).await?;
+        let store = self.application_trust_store()?;
+        let identity = crate::SshHostIdentity::direct(&config.host, config.port)?;
+        tokio::task::spawn_blocking(move || store.list(&identity))
+            .await
+            .map_err(|error| SshError::Internal(format!("SSH trust listing task: {error}")))?
+    }
+
+    pub async fn import_host_trust(
+        &self,
+        id: &str,
+        expected: SshHostTrustInspection,
+    ) -> SshResult<Vec<crate::SshHostKeyRecord>> {
+        self.ensure_loaded().await;
+        let _lifecycle = self.lifecycle.write().await;
+        let config = self.config_for(id).await?;
+        let store = self.application_trust_store()?;
+        let verified = HostTrust::load(&config).await?;
+        if verified.clone().inspection(&config) != expected {
+            return Err(HostTrust::error(
+                &config,
+                "trust preview is stale; inspect and verify again",
+            ));
+        }
+        let identity = crate::SshHostIdentity::direct(&config.host, config.port)?;
+        let keys = verified.public_keys();
+        let source = verified.path;
+        let records = tokio::task::spawn_blocking(move || {
+            store.trust_verified_batch(&identity, &keys, &source)?;
+            store.list(&identity)
+        })
+        .await
+        .map_err(|error| SshError::Internal(format!("SSH trust import task: {error}")))??;
+        self.disconnect(id).await?;
+        Ok(records)
+    }
+
+    pub async fn revoke_host_key(&self, id: &str, fingerprint: &str) -> SshResult<()> {
+        self.ensure_loaded().await;
+        let _lifecycle = self.lifecycle.write().await;
+        let config = self.config_for(id).await?;
+        let store = self.application_trust_store()?;
+        let identity = crate::SshHostIdentity::direct(&config.host, config.port)?;
+        let fingerprint = fingerprint.to_owned();
+        tokio::task::spawn_blocking(move || store.revoke(&identity, &fingerprint))
+            .await
+            .map_err(|error| SshError::Internal(format!("SSH trust revoke task: {error}")))??;
+        self.disconnect(id).await
+    }
+
+    fn application_trust_store(&self) -> SshResult<Arc<crate::SshHostKeyStore>> {
+        self.host_key_store.clone().ok_or_else(|| {
+            SshError::InvalidConfig("SSH application trust store is not configured".into())
+        })
     }
 
     pub async fn create_connection(
@@ -310,7 +371,12 @@ impl SshServiceImpl {
         let session = self.session_for(cfg.clone()).await;
         session.set_status(SshStatus::Connecting, None).await;
         let started = std::time::Instant::now();
-        let (client, trust) = match timeout(Duration::from_secs(20), connect_client(&cfg)).await {
+        let (client, trust) = match timeout(
+            Duration::from_secs(20),
+            connect_client(&cfg, self.host_key_store.clone()),
+        )
+        .await
+        {
             Ok(Ok(verified)) => verified,
             Ok(Err(err)) => {
                 let msg = err.to_string();
@@ -704,7 +770,7 @@ impl SshServiceImpl {
         cfg.known_hosts_path = Some(self.resolve_known_hosts(cfg.known_hosts_path.as_deref())?);
         let start = std::time::Instant::now();
         let result = match timeout(Duration::from_secs(20), async {
-            let (client, _) = connect_client(&cfg).await?;
+            let (client, _) = connect_client(&cfg, self.host_key_store.clone()).await?;
             let output = client.execute("echo ok").await?;
             let _ = client.disconnect().await;
             Ok::<_, SshError>(output)
@@ -1184,7 +1250,7 @@ impl SshServiceImpl {
             self.disconnect(&cfg.id).await?;
             return Ok(None);
         }
-        match HostTrust::load(cfg).await {
+        match HostTrust::load_with_store(cfg, self.host_key_store.clone()).await {
             Ok(trust) if session.host_trust.read().await.as_ref() == Some(&trust) => {
                 Ok(Some((session, client)))
             }
@@ -1318,7 +1384,7 @@ impl SshServiceImpl {
 
         let started = std::time::Instant::now();
         let outcome = timeout(Duration::from_secs(STATUS_REFRESH_TIMEOUT_SECS), async {
-            let (client, _) = connect_client(cfg).await?;
+            let (client, _) = connect_client(cfg, self.host_key_store.clone()).await?;
             execute_health_check(&client).await?;
             let _ = client.disconnect().await;
             Ok::<(), SshError>(())
@@ -1436,15 +1502,18 @@ async fn execute_health_check(client: &Client) -> SshResult<()> {
     Ok(())
 }
 
-async fn connect_client(config: &SshConnectionConfig) -> SshResult<(Client, HostTrust)> {
+async fn connect_client(
+    config: &SshConnectionConfig,
+    store: Option<Arc<crate::SshHostKeyStore>>,
+) -> SshResult<(Client, HostTrust)> {
     validate_config(
         config,
         config.key_path.as_deref(),
         config.password.as_deref(),
     )?;
-    let trust = HostTrust::load(config).await?;
-    let client = Client::connect(config, &trust).await?;
-    match HostTrust::load(config).await {
+    let trust = HostTrust::load_with_store(config, store.clone()).await?;
+    let client = Client::connect(config, &trust, store.clone()).await?;
+    match HostTrust::load_with_store(config, store).await {
         Ok(current) if current == trust => Ok((client, trust)),
         result => {
             let _ = client.disconnect().await;

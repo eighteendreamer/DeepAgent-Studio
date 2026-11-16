@@ -1,4 +1,6 @@
 import { SshHostTrustField } from "../remote/SshHostTrustField";
+import { SshHostTrustManager } from "../remote/SshHostTrustManager";
+import { Button } from "../shadcn/button";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -99,6 +101,7 @@ export function normalizeSshError(
 export function ConnectionsSettings() {
   const { t } = useTranslation();
   const [connections, setConnections] = useState<SshConnection[]>([]);
+  const [trustConnection, setTrustConnection] = useState<SshConnection | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<FormData>(emptyForm);
@@ -408,6 +411,9 @@ export function ConnectionsSettings() {
                     {testMessage(conn.id)}
                   </div>
                 )}
+                <Button className="mt-3" size="sm" variant="outline" onClick={() => setTrustConnection(conn)}>
+                  {t("settings.connections.trustManager.title")}
+                </Button>
               </div>
             ))}
 
@@ -612,6 +618,7 @@ export function ConnectionsSettings() {
           </div>
         </div>
       )}
+      <SshHostTrustManager connection={trustConnection} onClose={() => setTrustConnection(null)} onChanged={load} />
     </>
   );
 }

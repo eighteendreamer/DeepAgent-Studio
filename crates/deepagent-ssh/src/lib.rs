@@ -26,6 +26,7 @@ pub use config::{
     UpdateSshConnectionRequest,
 };
 pub use error::{SshError, SshResult};
+pub use host_key_store::{SshHostIdentity, SshHostKeyRecord, SshHostKeyStore};
 pub use host_trust::{SshHostTrustInspection, SshKnownHostKey};
 pub use remote::{
     RemoteBundleManifest, RemoteBundleRequest, RemoteBundleResult, RemoteInstallRequest,
@@ -41,6 +42,7 @@ pub use transport::{SshClient, SshCommandOutput};
 
 mod config;
 mod error;
+mod host_key_store;
 mod host_trust;
 mod remote;
 mod service;
@@ -315,6 +317,12 @@ impl SshService {
         }
     }
 
+    /// Use the application's existing SQLite database for explicit host trust.
+    pub fn with_host_key_store(mut self, store: Arc<SshHostKeyStore>) -> Self {
+        self.inner.host_key_store = Some(store);
+        self
+    }
+
     pub async fn load(&self) -> SshResult<()> {
         self.inner.load().await
     }
@@ -355,6 +363,22 @@ impl SshService {
 
     pub async fn remove_connection(&self, id: &str) -> SshResult<()> {
         self.inner.remove_connection(id).await
+    }
+
+    pub async fn list_host_keys(&self, id: &str) -> SshResult<Vec<SshHostKeyRecord>> {
+        self.inner.list_host_keys(id).await
+    }
+
+    pub async fn import_host_trust(
+        &self,
+        id: &str,
+        expected: SshHostTrustInspection,
+    ) -> SshResult<Vec<SshHostKeyRecord>> {
+        self.inner.import_host_trust(id, expected).await
+    }
+
+    pub async fn revoke_host_key(&self, id: &str, fingerprint: &str) -> SshResult<()> {
+        self.inner.revoke_host_key(id, fingerprint).await
     }
 
     pub async fn connect(&self, id: &str) -> SshResult<SshServiceHandle> {

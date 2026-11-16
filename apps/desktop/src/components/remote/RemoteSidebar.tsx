@@ -1,4 +1,5 @@
 import { SshHostTrustField } from "./SshHostTrustField";
+import { SshHostTrustManager } from "./SshHostTrustManager";
 import { HoverInfo } from "../ui/HoverInfo";
 import {
   ArrowLeft,
@@ -174,6 +175,7 @@ export function RemoteSidebar({
   const [connections, setConnections] = useState<SshConnection[]>([]);
   const [connectingId, setConnectingId] = useState<string | null>(null);
   const [managerOpen, setManagerOpen] = useState(false);
+  const [trustConnection, setTrustConnection] = useState<SshConnection | null>(null);
   const [managerMode, setManagerMode] = useState<ManagerMode>("list");
   const [form, setForm] = useState<ConnectionForm>(emptyForm);
   const [filter, setFilter] = useState("");
@@ -851,6 +853,9 @@ export function RemoteSidebar({
                 <Pencil className="mr-2 h-3.5 w-3.5 text-text-secondary" />
                 {t("remote.connEdit")}
               </ContextMenuItem>
+              <ContextMenuItem onSelect={() => { setTrustConnection(conn); setManagerOpen(false); }}>
+                {t("settings.connections.trustManager.title")}
+              </ContextMenuItem>
               <ContextMenuSeparator />
               {deleteConnectionMenuItem(conn)}
             </ContextMenuContent>
@@ -862,6 +867,10 @@ export function RemoteSidebar({
 
   return (
     <aside className="flex h-full w-[240px] flex-shrink-0 flex-col bg-sidebar-bg no-select pb-2">
+      <SshHostTrustManager connection={trustConnection} onClose={() => setTrustConnection(null)} onChanged={() => {
+        void loadConnections();
+        if (selected && selected.id === trustConnection?.id) onSelect({ ...selected, status: "disconnected" });
+      }} />
       <div className="px-3 pt-4 pb-3">
         <button
           type="button"

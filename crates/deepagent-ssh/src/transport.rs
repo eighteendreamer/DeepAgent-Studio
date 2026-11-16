@@ -4,7 +4,7 @@
 //! revalidated before any credentials are offered, not just after authentication.
 
 use crate::host_trust::HostTrust;
-use crate::{SshAuthType, SshConnectionConfig, SshError, SshResult};
+use crate::{SshAuthType, SshConnectionConfig, SshError, SshHostKeyStore, SshResult};
 use russh::client::{self, Handle, Msg};
 use russh::keys::{self, HashAlg, PrivateKeyWithHashAlg, PublicKey};
 use russh::{Channel, ChannelMsg, Disconnect};
@@ -47,6 +47,7 @@ impl SshClient {
     pub(crate) async fn connect(
         config: &SshConnectionConfig,
         trust: &HostTrust,
+        store: Option<Arc<SshHostKeyStore>>,
     ) -> SshResult<Self> {
         let rejected = Arc::new(Mutex::new(None));
         let handler = IdentityHandler {
@@ -75,7 +76,7 @@ impl SshClient {
         })?;
 
         let authentication = async {
-            if &HostTrust::load(config).await? != trust {
+            if &HostTrust::load_with_store(config, store).await? != trust {
                 return Err(HostTrust::error(
                     config,
                     "trust source changed before authentication",

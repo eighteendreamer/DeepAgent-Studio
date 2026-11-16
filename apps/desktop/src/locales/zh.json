@@ -763,6 +763,14 @@
       "knownHostsHelp": "首次连接前，先通过可信渠道与管理员核验主机指纹，再将其公钥写入此文件。默认 22 端口用 host，其他端口用 [host]:port。保存后重新编辑可查看默认路径；未知或变更密钥一律拒绝，不自动接受。",
       "hostKeyError": "主机身份校验失败：请核验管理员提供的指纹及 known_hosts 中的主机、端口、公钥；不要盲目删除旧密钥。",
       "inspectTrust": "检查已信任密钥",
+      "trustManager": {
+        "title": "主机信任", "direct": "直连", "help": "应用 SQLite 信任库仅保存公钥。请先通过管理员等可信渠道独立核验指纹；本页不会自动接受远端密钥。",
+        "empty": "此目标尚无应用信任记录；连接仍需通过严格校验。", "busy": "处理中…", "trusted": "已信任", "revoked": "已撤销",
+        "preview": "预览 known_hosts 导入", "review": "核验后再导入", "acknowledge": "我已通过可信渠道核验以上全部指纹，确认将这些公钥加入应用信任库。",
+        "confirmImport": "确认导入", "cancel": "取消", "revoke": "撤销", "confirmRevoke": "确认撤销", "refresh": "刷新", "close": "关闭",
+        "revokeWarning": "撤销会关闭此配置的当前连接；旧公钥不能通过普通导入恢复。请确认已核对以下指纹。",
+        "sessionWarning": "导入或撤销成功后会关闭此配置的当前 SSH/Terminal 会话，请手动重新连接。已提交的写入不会因关闭窗口而自动取消。"
+      },
       "trustLine": "行",
       "trustInspectionHelp": "仅显示本地信任文件中的匹配密钥，不代表远端服务器已通过校验；请通过可信渠道独立核验指纹。此检查不会连接服务器或自动接受密钥。",
       "selectIdentityFile": "点击浏览选择密钥文件",
