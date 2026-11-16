@@ -1,0 +1,5 @@
+{
+  "identifier": "installer",
+  "windows": ["installer"],
+  "permissions": ["core:event:default", "core:window:allow-start-dragging", "core:window:allow-minimize"]
+}

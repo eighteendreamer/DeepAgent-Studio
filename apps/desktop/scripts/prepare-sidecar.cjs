@@ -29,7 +29,7 @@ function buildPlan(mode, env, host) {
   return { target, release, args };
 }
 
-function runCargo(args, { cwd, env }) {
+function runCargo(args, { cwd, env, binary = "deepagent" }) {
   return new Promise((resolve, reject) => {
     const child = spawn(env.CARGO || "cargo", args, {
       cwd, env, windowsHide: true, stdio: ["ignore", "pipe", "inherit"],
@@ -39,7 +39,7 @@ function runCargo(args, { cwd, env }) {
     lines.on("line", (line) => {
       let message;
       try { message = JSON.parse(line); } catch { process.stdout.write(line + "\n"); return; }
-      if (message.reason === "compiler-artifact" && message.target?.name === "deepagent" &&
+      if (message.reason === "compiler-artifact" && message.target?.name === binary &&
           message.target.kind?.includes("bin") && message.executable) {
         executable = message.executable;
       }
@@ -47,7 +47,7 @@ function runCargo(args, { cwd, env }) {
     child.on("error", reject);
     child.on("close", (code, signal) => {
       if (code !== 0) reject(new Error(`CLI sidecar build failed (${signal || code})`));
-      else if (!executable) reject(new Error("Cargo did not report a deepagent CLI executable"));
+      else if (!executable) reject(new Error(`Cargo did not report a ${binary} executable`));
       else resolve(executable);
     });
   });

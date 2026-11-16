@@ -1,0 +1,46 @@
+name: Windows Installer Checks
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+permissions:
+  contents: read
+jobs:
+  installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/installer/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Install UI dependencies
+        working-directory: apps/installer
+        run: pnpm install --frozen-lockfile
+      - name: Build and check UI and packaging contract
+        working-directory: apps/installer
+        run: |
+          pnpm build
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          pnpm test
+      - name: Format and native commands
+        run: |
+          cargo fmt -p deepagent-installer -- --check
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo clippy --locked -p deepagent-installer --all-targets --features gui -- -D warnings
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo test --locked -p deepagent-installer --features gui
+      - name: Install NSIS compiler
+        run: choco install nsis --yes --no-progress
+      - name: Run isolated real NSIS fixtures
+        run: |
+          $env:DEEPAGENT_NSIS = Join-Path ${env:ProgramFiles(x86)} 'NSIS/makensis.exe'
+          cargo test --locked -p deepagent-installer --features gui --test nsis -- --ignored --nocapture

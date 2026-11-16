@@ -1,0 +1,39 @@
+[package]
+name = "deepagent-installer"
+version = "0.0.8"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Windows HTML bootstrapper for the original DeepAgent Studio NSIS installer"
+default-run = "deepagent-installer"
+
+[features]
+default = []
+gui = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-dialog"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[[bin]]
+name = "deepagent-installer"
+path = "src/main.rs"
+required-features = ["gui"]
+
+[[bin]]
+name = "deepagent-install-options"
+path = "src/bin/options.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+winreg = "=0.55.0"
+windows = { version = "=0.61.3", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+tauri = { version = "=2.11.2", optional = true }
+tauri-plugin-dialog = { version = "=2.7.1", optional = true }
+
+[target.'cfg(windows)'.build-dependencies]
+tauri-build = { version = "=2.6.2", optional = true }
+sha2 = "0.10"
+serde_json = "1"

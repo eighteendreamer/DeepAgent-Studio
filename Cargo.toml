@@ -43,6 +43,7 @@ members = [
     "crates/deepagent-mobile-android",
     "crates/deepagent-mobile-ios",
     "apps/cli",
+    "apps/installer/src-tauri",
 ]
 # The Tauri desktop shell is its own workspace root (it carries the WebView
 # toolchain dependency tree). Exclude it so this kernel workspace ignores it.

@@ -71,6 +71,16 @@ cargo run -p deepagent-cli
 
 ### 桌面应用
 
+**Windows 安装**：在 [Releases](https://github.com/eighteendreamer/DeepAgent-Studio/releases)
+选择 `DeepAgent-Studio-Setup-x64.exe`（品牌引导程序，首次加入本次发布流程；发布成功后可下载）。
+默认安装到当前用户目录，不需要管理员权限。自定义页可选择目录、桌面/开始菜单入口、
+用户 PATH 与登录启动。点击“立即体验”后，安装器退出，由主程序播放现有启动动画。
+
+品牌引导程序内嵌原始 NSIS 包；没有 WebView2 时，在创建 HTML 窗口之前回退到原生安装向导。
+缺少 WebView2 的机器仍需联网安装运行时；离线环境请提前部署 Microsoft 官方运行时。
+原 `*-setup.exe` NSIS 包仍保留，用于原生向导和自动更新；`latest.json` 不指向品牌引导程序。
+macOS 与 Linux 安装包不变。构建说明见 [`apps/installer/README.md`](apps/installer/README.md)。
+
 ```bash
 cd apps/desktop
 pnpm install

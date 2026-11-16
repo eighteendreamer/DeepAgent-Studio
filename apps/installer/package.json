@@ -1,0 +1,33 @@
+{
+  "name": "deepagent-installer",
+  "version": "0.0.8",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "tauri": "tauri",
+    "test": "node --test scripts/*.test.cjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.11.0",
+    "clsx": "2.1.1",
+    "gsap": "3.12.7",
+    "lucide-react": "1.43.0",
+    "radix-ui": "1.4.3",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "tailwind-merge": "3.6.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.2",
+    "@types/react": "18.3.12",
+    "@types/react-dom": "18.3.1",
+    "@vitejs/plugin-react": "4.3.4",
+    "autoprefixer": "10.4.20",
+    "postcss": "8.4.49",
+    "tailwindcss": "3.4.17",
+    "typescript": "5.6.3",
+    "vite": "5.4.21"
+  }
+}

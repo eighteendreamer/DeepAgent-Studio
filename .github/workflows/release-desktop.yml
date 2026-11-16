@@ -75,6 +75,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build and upload installers
+        id: desktop-release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -92,7 +93,53 @@ jobs:
             The release assets include Windows, macOS, and Linux installers plus updater metadata.
           releaseDraft: true
           prerelease: false
-          uploadUpdaterJson: true
+          includeUpdaterJson: true
           updaterJsonPreferNsis: true
-          uploadUpdaterSignatures: true
-          releaseAssetNamePattern: DeepAgent-Studio-[version]-[platform]-[arch][setup].[ext]
+          assetNamePattern: DeepAgent-Studio-[version]-[platform]-[arch][setup].[ext]
+
+      - name: Install bootstrapper frontend dependencies
+        if: matrix.platform == 'windows-latest'
+        working-directory: apps/installer
+        run: pnpm install --frozen-lockfile
+
+      - name: Build branded Windows bootstrapper
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          ARTIFACT_PATHS: ${{ steps.desktop-release.outputs.artifactPaths }}
+        run: |
+          $packages = @($env:ARTIFACT_PATHS | ConvertFrom-Json | Where-Object { $_ -match '[\\/]bundle[\\/]nsis[\\/].*\.exe$' })
+          $scripts = @(Get-ChildItem apps/desktop/src-tauri/target/release/nsis -Recurse -Filter installer.nsi)
+          if ($packages.Count -ne 1 -or $scripts.Count -ne 1) { throw 'Expected exactly one original NSIS package and its generated script' }
+          ./apps/installer/scripts/build-bootstrapper.ps1 -Nsis $packages[0] -NsisScript $scripts[0].FullName
+
+      - name: Optionally sign branded setup
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if (-not $env:WINDOWS_CERTIFICATE) { Write-Host 'No Authenticode certificate configured; setup remains unsigned.'; exit 0 }
+          $certificate = Join-Path $env:RUNNER_TEMP 'deepagent-setup-signing.pfx'
+          try {
+            [IO.File]::WriteAllBytes($certificate, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+            $signtool = Get-ChildItem 'C:/Program Files (x86)/Windows Kits/10/bin' -Recurse -Filter signtool.exe | Where-Object { $_.DirectoryName -match '[\\/]x64$' } | Sort-Object FullName -Descending | Select-Object -First 1
+            if (-not $signtool) { throw 'signtool.exe not found' }
+            & $signtool.FullName sign /fd SHA256 /td SHA256 /tr https://timestamp.digicert.com /f $certificate /p $env:WINDOWS_CERTIFICATE_PASSWORD target/installer-package/output/DeepAgent-Studio-Setup-x64.exe
+            if ($LASTEXITCODE) { throw 'Setup signing failed' }
+          } finally { if (Test-Path -LiteralPath $certificate) { Remove-Item -LiteralPath $certificate -Force } }
+
+      - name: Upload branded setup to the same release
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.desktop-release.outputs.releaseId }}
+        run: |
+          if ($env:RELEASE_ID -notmatch '^\d+$') { throw 'Missing release ID' }
+          $tag = gh api "repos/$env:GITHUB_REPOSITORY/releases/$env:RELEASE_ID" --jq .tag_name
+          if ($LASTEXITCODE) { throw 'Cannot resolve release' }
+          gh release upload $tag target/installer-package/output/DeepAgent-Studio-Setup-x64.exe --clobber
+          if ($LASTEXITCODE) { throw 'Setup upload failed' }
+          # latest.json is generated only by tauri-action for the original NSIS.
