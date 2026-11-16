@@ -509,8 +509,8 @@ impl<E: Embedder + Clone> KnowledgeBase<E> {
         let pool = (limit.saturating_mul(3)).max(10);
         let chunks = self.retriever.retrieve_filtered(query, pool, |id| {
             self.entries.get(id).is_some_and(|entry| {
-                scope.map_or(true, |scope| entry.scope == scope)
-                    && kind.map_or(true, |kind| entry.kind == kind)
+                scope.is_none_or(|scope| entry.scope == scope)
+                    && kind.is_none_or(|kind| entry.kind == kind)
             })
         });
 

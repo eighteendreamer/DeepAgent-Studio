@@ -155,7 +155,6 @@ impl LocalVideoProvider {
         let release = release_poll.clone();
         let status = status_after_release.to_owned();
         let task_id_prefix = task_id_prefix.to_owned();
-        let video_bytes = video_bytes;
         let submit_count = Arc::new(AtomicUsize::new(0));
         let submitted = submit_count.clone();
         let server = tokio::spawn(async move {
@@ -3126,7 +3125,7 @@ async fn audit_provider_image_url_cannot_fetch_loopback_resource() {
     assert_eq!(terminals.len(), 1);
     assert_eq!(approvals, 1);
     assert_ne!(terminals[0].data["kind"], "succeeded");
-    assert!(!result.is_ok());
+    assert!(result.is_err());
     assert_ne!(image.status, NodeExecutionStatus::Completed);
     assert!(image.artifacts.is_empty());
     assert!(

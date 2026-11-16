@@ -27,6 +27,18 @@ apps/desktop/src-tauri/resources/skills/*
 *.sqlite
 /.deepagent/runtime
 /data
+# Host runtime state: locks, ownership markers and scheduled-task locks are
+# written by every launch and must never be committed.
+.deepagent/host.lock
+.deepagent/host.owner
+.deepagent/files/
+**/.deepagent/*.lock
+**/.deepagent/**/*.lock
+# Local model-session transcripts and ad-hoc audit scrapes stay out of Git.
+/*.jsonl
+/.tmp-*.txt
+/cleanup-review-*/
+/apps/desktop/package-lock.json
 # Native code-graph engine artifacts (SQLite db lives alongside the projected
 # knowledge-graph.json under .understand-anything/).
 **/.understand-anything/codegraph.db
@@ -110,3 +122,4 @@ deepseek-harness/
 /.codex/previews/message-edit-motion/check-index.cjs
 /.codex/previews/message-edit-motion/stage-selected.cjs
 /apps/desktop/demos/approval-menu-preview/index.html
+/借鉴/artcraft/

@@ -110,8 +110,7 @@ pub(crate) fn build_system_manifest_with_instruction_sources(
     if let Some(lang) = user_language {
         if !lang.trim().is_empty() {
             env_lines.push(format!(
-                "- User's configured language: {}. Reply in this language for all text output. Preserve code, commands, file paths, logs, API names, and quoted text in their original language.",
-                lang
+                "- User's configured language: {lang}. Reply in this language for all text output. Preserve code, commands, file paths, logs, API names, and quoted text in their original language."
             ));
         }
     }

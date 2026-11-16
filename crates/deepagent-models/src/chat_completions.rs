@@ -233,10 +233,10 @@ impl ChatCompletionRequest {
             ));
         }
         if self.reasoning_effort == Some(ReasoningEffort::None)
-            && !self
+            && self
                 .thinking
                 .as_ref()
-                .is_some_and(|thinking| thinking.kind == "disabled")
+                .is_none_or(|thinking| thinking.kind != "disabled")
         {
             return Err(CoreError::invalid(
                 "none reasoning effort requires thinking to be disabled",
@@ -256,10 +256,10 @@ impl ChatCompletionRequest {
         // none effort is omitted by the serializer. Valid non-thinking requests
         // explicitly carry thinking=disabled (the builder does this for None).
         // Omitted mode defaults to thinking, not to an invented model-name rule.
-        let thinking_enabled = !self
+        let thinking_enabled = self
             .thinking
             .as_ref()
-            .is_some_and(|thinking| thinking.kind == "disabled");
+            .is_none_or(|thinking| thinking.kind != "disabled");
         crate::tool_choice::validate_chat_tool_choice(self.tool_choice.as_ref(), thinking_enabled)
     }
 

@@ -249,7 +249,7 @@ mod tests {
             .invoke(serde_json::json!({ "id": "planning-with-files" }))
             .await
             .unwrap();
-        assert!(out.ok, "expected success, got {:?}", out);
+        assert!(out.ok, "expected success, got {out:?}");
         assert_eq!(out.value["id"], "planning-with-files");
         assert_eq!(out.value["name"], "Planning");
         assert_eq!(out.value["body"], "Plan the work step by step.");

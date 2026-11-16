@@ -17,30 +17,50 @@ function load(relative, importer = require) {
   return module.exports;
 }
 
-const { ProcessDisclosureStore, advanceTurnActivity } = load(timeline + "processDisclosure.ts");
+const { ProcessDisclosureStore, advanceTurnActivity, turnEpoch } = load(timeline + "processDisclosure.ts");
 const { deriveTurnSections } = load(timeline + "deriveTurnSections.ts");
 const { chatMessagesToBlocks } = load(timeline + "chatMessageMapper.ts");
 const { groupTurns, stableTurnKey } = load(timeline + "groupTurns.ts");
 
-test("answer output folds; later work reopens; every outcome settles and folds", () => {
+test("a live run keeps one disclosure epoch so mid-run tool/text flips do not refold it", () => {
+  // working <-> answering is not a disclosure boundary: every tool call and
+  // every burst of text flips it, and treating each flip as a new epoch made
+  // the process panel fold and unfold over and over while the model worked.
+  assert.equal(turnEpoch("working"), turnEpoch("answering"));
+  assert.notEqual(turnEpoch("working"), turnEpoch("settled"));
+
+  const store = new ProcessDisclosureStore();
+  let activity = { id: "run", phase: "working", generation: 0 };
+  const read = () => store.read("run", turnEpoch(activity.phase), activity.phase === "working");
+  assert.equal(read().open, true);
+
+  store.setDetail("run", "reasoning", true);
+  activity = advanceTurnActivity(activity, "answering");
+  assert.equal(read().open, true, "answering must not fold the panel mid-run");
+  assert.equal(read().details["reasoning"], true, "mid-run details survive");
+  assert.equal(read().open, true, "a later tool call must not refold it");
+
+  activity = advanceTurnActivity(activity, "settled");
+  assert.equal(read().open, false, "settling folds once");
+  assert.equal(Object.keys(read().details).length, 0);
+  assert.equal(advanceTurnActivity(activity, "working"), activity, "settled is terminal");
+});
+
+test("every terminal outcome folds exactly once", () => {
   for (const outcome of ["success", "failed", "cancelled", "blocked", "max_turns", "budget_exceeded", "context_exhausted"]) {
     const store = new ProcessDisclosureStore();
     let activity = { id: outcome, phase: "working", generation: 0 };
-    const read = () => store.read(outcome, activity.phase === "settled" ? "settled" : `${activity.generation}:${activity.phase}`, activity.phase === "working");
+    const read = () => store.read(outcome, turnEpoch(activity.phase), activity.phase === "working");
     assert.equal(read().open, true);
     store.setDetail(outcome, "reasoning", true);
     activity = advanceTurnActivity(activity, "answering");
-    assert.equal(read().open, false);
-    assert.equal(Object.keys(read().details).length, 0);
+    assert.equal(read().open, true);
     activity = advanceTurnActivity(activity, "working");
     assert.equal(read().open, true);
-    store.setOpen(outcome, true);
     activity = advanceTurnActivity(activity, "settled");
     assert.equal(read().open, false);
     store.setOpen(outcome, true);
-    assert.equal(read().open, true);
-    assert.equal(advanceTurnActivity(activity, "working"), activity);
-    assert.equal(read().open, true);
+    assert.equal(read().open, true, "the user can still reopen a settled turn");
   }
 });
 

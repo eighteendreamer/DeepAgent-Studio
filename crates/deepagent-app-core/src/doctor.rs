@@ -132,7 +132,7 @@ fn diagnose_web_search_config(config: WebSearchSettingsView) -> DiagnosticResult
     if pending > 0 {
         DiagnosticResult::warning(
             "Web search",
-            format!("{} enabled search engine(s) need configuration; readiness does not verify network availability", pending),
+            format!("{pending} enabled search engine(s) need configuration; readiness does not verify network availability"),
             "Configure an API key or SearXNG instance in Settings, or disable that engine.",
         )
     } else {

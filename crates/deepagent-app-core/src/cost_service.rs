@@ -461,8 +461,7 @@ impl CostService {
         // billing cannot proceed. This enforces "pricing must come from official
         // dynamic data, never hardcoded guesses".
         Err(CoreError::invalid(format!(
-            "no official pricing for model '{}'; refresh pricing via settings",
-            model
+            "no official pricing for model '{model}'; refresh pricing via settings"
         )))
     }
 

@@ -164,10 +164,10 @@ fn redact_body_text(body: &str) -> String {
     for key in &sensitive_keys {
         // Match JSON patterns like "key": "value" or "key":"value"
         let patterns = [
-            format!("\"{}\":\"", key),
-            format!("\"{}\": \"", key),
-            format!("\"{}\" :\"", key),
-            format!("\"{}\" : \"", key),
+            format!("\"{key}\":\""),
+            format!("\"{key}\": \""),
+            format!("\"{key}\" :\""),
+            format!("\"{key}\" : \""),
         ];
         for pattern in &patterns {
             if let Some(start) = result.find(pattern) {

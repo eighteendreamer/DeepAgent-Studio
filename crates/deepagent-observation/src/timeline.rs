@@ -59,7 +59,7 @@ pub fn build_timeline(events: &[Event]) -> Vec<TimelineEntry> {
         .max();
     events
         .iter()
-        .filter(|event| model_view_from.map_or(true, |from| event.sequence >= from))
+        .filter(|event| model_view_from.is_none_or(|from| event.sequence >= from))
         .map(entry_for_event)
         .collect()
 }

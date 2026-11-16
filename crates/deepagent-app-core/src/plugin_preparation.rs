@@ -6,14 +6,18 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 type ReadySnapshot = (PluginRuntimeProjection, Arc<deepagent_mcp::McpRegistry>);
+/// Per-plugin lifecycle state: lifecycle, health, and the optional detail text.
+type PluginStateEntry = (PluginLifecycleState, PluginHealthStatus, Option<String>);
+/// Verified plugin tree: the snapshotted paths plus the projection they produced.
+type VerifiedEntry = (Vec<PathSnapshot>, PluginRuntimeProjection);
 
 pub(super) struct PluginPreparation {
     started: AtomicBool,
     revision: AtomicU64,
     ready: RwLock<ReadySnapshot>,
-    states: Mutex<BTreeMap<String, (PluginLifecycleState, PluginHealthStatus, Option<String>)>>,
+    states: Mutex<BTreeMap<String, PluginStateEntry>>,
     cancel: Mutex<deepagent_runtime::CancellationTree>,
-    verified: Mutex<BTreeMap<String, (Vec<PathSnapshot>, PluginRuntimeProjection)>>,
+    verified: Mutex<BTreeMap<String, VerifiedEntry>>,
     watcher: Mutex<Option<RecommendedWatcher>>,
     mcp_owners: Mutex<BTreeSet<String>>,
 }

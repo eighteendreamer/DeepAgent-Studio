@@ -114,7 +114,7 @@ pub fn load_page(
             if cursor.root_run_id == root_run_id
                 && budget
                     .snapshot
-                    .map_or(true, |snapshot| snapshot == cursor.snapshot) =>
+                    .is_none_or(|snapshot| snapshot == cursor.snapshot) =>
         {
             cursor.clone()
         }

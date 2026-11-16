@@ -1969,13 +1969,12 @@ async fn remote_file_size(client: &Client, remote_path: &str) -> SshResult<u64> 
 }
 
 async fn remote_sha256(client: &Client, remote_path: &str) -> SshResult<String> {
-    let quoted = shell_escape(remote_path);
+    let path = shell_escape(remote_path);
     let cmd = format!(
         "if command -v sha256sum >/dev/null 2>&1; then sha256sum {path} | awk '{{print $1}}'; \
 elif command -v shasum >/dev/null 2>&1; then shasum -a 256 {path} | awk '{{print $1}}'; \
 elif command -v openssl >/dev/null 2>&1; then openssl dgst -sha256 {path} | awk '{{print $NF}}'; \
-elif command -v python3 >/dev/null 2>&1; then python3 - {path} <<'PY'\nimport hashlib, sys\nh = hashlib.sha256()\nwith open(sys.argv[1], 'rb') as fh:\n    while True:\n        chunk = fh.read(1024 * 1024)\n        if not chunk:\n            break\n        h.update(chunk)\nprint(h.hexdigest())\nPY\nelse echo missing-sha256-tool >&2; exit 127; fi",
-        path = quoted
+elif command -v python3 >/dev/null 2>&1; then python3 - {path} <<'PY'\nimport hashlib, sys\nh = hashlib.sha256()\nwith open(sys.argv[1], 'rb') as fh:\n    while True:\n        chunk = fh.read(1024 * 1024)\n        if not chunk:\n            break\n        h.update(chunk)\nprint(h.hexdigest())\nPY\nelse echo missing-sha256-tool >&2; exit 127; fi"
     );
     let output = client.execute(&cmd).await.map_err(map_ssh_error)?;
     let exit_code = i32::try_from(output.exit_status).unwrap_or(i32::MAX);
@@ -2091,9 +2090,9 @@ fn parent_dir_string(path: &str) -> Option<String> {
 
 fn join_remote_path(base: &str, name: &str) -> String {
     if base.ends_with('/') {
-        format!("{}{}", base, name)
+        format!("{base}{name}")
     } else {
-        format!("{}/{}", base, name)
+        format!("{base}/{name}")
     }
 }
 

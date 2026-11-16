@@ -19,7 +19,7 @@ fn assert_reads(chat: &ChatService, expected: &[(String, Vec<StoredRunEvent>)]) 
             assert_eq!(
                 chat.run_events(run, after).unwrap(),
                 full.iter()
-                    .filter(|event| after.map_or(true, |after| event.sequence > after))
+                    .filter(|event| after.is_none_or(|after| event.sequence > after))
                     .cloned()
                     .collect::<Vec<_>>(),
                 "public ChatService reader: run={run}, after={after:?}"

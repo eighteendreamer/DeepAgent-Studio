@@ -971,8 +971,7 @@ fn encode_powershell_command(command: &str) -> String {
 
 fn wrap_powershell_command(command: &str) -> String {
     format!(
-        "{}; if ($null -ne $global:LASTEXITCODE) {{ exit $global:LASTEXITCODE }} elseif ($?) {{ exit 0 }} else {{ exit 1 }}",
-        command
+        "{command}; if ($null -ne $global:LASTEXITCODE) {{ exit $global:LASTEXITCODE }} elseif ($?) {{ exit 0 }} else {{ exit 1 }}"
     )
 }
 

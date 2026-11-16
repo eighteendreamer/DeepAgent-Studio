@@ -754,7 +754,7 @@ impl SessionMemoryExtractor {
                 // covered, so it stays in the window.
                 None => true,
                 Some(sequence) => crate::input_runtime::sequence_of_message(events, message)
-                    .map_or(true, |message_sequence| message_sequence > sequence),
+                    .is_none_or(|message_sequence| message_sequence > sequence),
             })
             .collect();
         if uncovered.is_empty() {

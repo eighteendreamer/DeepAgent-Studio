@@ -321,7 +321,7 @@ async fn audit_active_terminal_lease_expiry_preserves_control_or_cleanup() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn h293_shared_owner_blocks_legacy_control_and_wrong_run_takeover() {
     let dir = tempfile::tempdir().unwrap();
-    let db = Arc::new(Database::open(&dir.path().join("owner.sqlite")).unwrap());
+    let db = Arc::new(Database::open(dir.path().join("owner.sqlite")).unwrap());
     let store = Arc::new(SqliteTerminalLeaseStore::new(db.clone(), 60_000).unwrap());
     let service = Arc::new(TerminalService::with_executor(
         Arc::new(ProjectService::new(db)),

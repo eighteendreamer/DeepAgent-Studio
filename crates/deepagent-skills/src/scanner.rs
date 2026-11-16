@@ -302,7 +302,7 @@ pub fn scan_dir(root: &Path) -> Result<ScanReport> {
         return Err(CoreError::invalid("scan target has no SKILL.md"));
     }
     let skill_md_bytes =
-        fs::read(&skill_md_path).map_err(|e| CoreError::other(format!("read SKILL.md: {}", e)))?;
+        fs::read(&skill_md_path).map_err(|e| CoreError::other(format!("read SKILL.md: {e}")))?;
     let skill_md_content = match std::str::from_utf8(&skill_md_bytes) {
         Ok(s) => s.to_string(),
         Err(_) => String::from_utf8_lossy(&skill_md_bytes).into_owned(),
@@ -340,7 +340,7 @@ pub fn scan_dir(root: &Path) -> Result<ScanReport> {
                 severity: RiskSeverity::Warning,
                 file: rel.clone(),
                 line: None,
-                detail: format!("shell script: {}", kind),
+                detail: format!("shell script: {kind}"),
             });
         }
 

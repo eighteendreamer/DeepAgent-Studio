@@ -453,7 +453,7 @@ impl AppService {
         // old projection unusable; the next request will fully remeasure it.
         if events
             .last()
-            .map_or(true, |last| event.timestamp > last.timestamp.as_millis())
+            .is_none_or(|last| event.timestamp > last.timestamp.as_millis())
             || events.iter().any(|source| {
                 source.timestamp.as_millis() > event.timestamp
                     && matches!(
@@ -566,7 +566,7 @@ impl AppService {
                 if let Some(task_id) = task_id {
                     let identity_matches = run_ids
                         .get(&task_id.to_string())
-                        .map_or(true, |expected| expected == run_id);
+                        .is_none_or(|expected| expected == run_id);
                     let cost = if *version == 1 && identity_matches {
                         *cost_yuan
                     } else {

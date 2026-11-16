@@ -416,9 +416,9 @@ fn response_input_message_to_wire(
     {
         crate::client::WireMode::Responses.validate_image_role(role)?;
         if !file_ids.contains_key(&attachment.id)
-            && !data_urls
+            && data_urls
                 .get(&attachment.id)
-                .is_some_and(|url| !url.trim().is_empty())
+                .is_none_or(|url| url.trim().is_empty())
         {
             return Err(CoreError::invalid(
                 "image_input_message_unresolved: image message requires a resolved image reference; no image was sent",
@@ -808,10 +808,10 @@ impl ResponseRequest {
             {
                 for attachment in output.attachments() {
                     if attachment.kind != "image"
-                        || (!self
+                        || (self
                             .attachment_data_urls
                             .get(&attachment.id)
-                            .is_some_and(|url| !url.is_empty())
+                            .is_none_or(|url| url.is_empty())
                             && !self.image_file_ids.contains_key(&attachment.id))
                     {
                         return Err(CoreError::invalid("image_input_tool_output_unresolved: image output requires a resolved image reference; no tool image was sent"));
@@ -826,10 +826,10 @@ impl ResponseRequest {
     /// Inspect the final public input, never a stale pre-repair projection.
     pub(crate) fn validate_input_presence(&self) -> Result<()> {
         if self.input.is_empty()
-            && !self
+            && self
                 .instructions
                 .as_deref()
-                .is_some_and(|value| !value.trim().is_empty())
+                .is_none_or(|value| value.trim().is_empty())
         {
             return Err(CoreError::invalid(
                 "Responses requires input items or nonblank instructions",
@@ -1027,9 +1027,7 @@ impl Response {
                     status,
                     arguments,
                     ..
-                } if status
-                    .as_deref()
-                    .map_or(true, |status| status == "completed")
+                } if status.as_deref().is_none_or(|status| status == "completed")
                     && !call_id.trim().is_empty()
                     && arguments.is_object() =>
                 {

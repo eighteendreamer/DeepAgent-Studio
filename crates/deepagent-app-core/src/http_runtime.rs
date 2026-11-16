@@ -329,7 +329,7 @@ impl PublicHttpClient {
         }
         let text = String::from_utf8_lossy(&bytes).into_owned();
         let body = serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text));
-        return Ok(serde_json::json!({"body": body, "status_code": status, "headers": headers}));
+        Ok(serde_json::json!({"body": body, "status_code": status, "headers": headers}))
     }
 }
 

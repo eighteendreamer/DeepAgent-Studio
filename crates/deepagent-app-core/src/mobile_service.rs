@@ -629,7 +629,7 @@ mod tests {
             .iter()
             .find(|d| d.state == "Ready")
             .expect("at least one Ready device required");
-        eprintln!("Discovered device: {:?}", ready_device);
+        eprintln!("Discovered device: {ready_device:?}");
 
         let info = service.device_info(&ready_device.id).await.unwrap();
         assert!(!info.name.is_empty(), "device name should not be empty");

@@ -503,7 +503,7 @@ impl PendingApprovals {
         let Some(pending) = pending.as_deref_mut() else {
             return Ok(false);
         };
-        if !pending.sender.as_ref().is_some_and(|tx| !tx.is_closed()) {
+        if pending.sender.as_ref().is_none_or(|tx| tx.is_closed()) {
             return Ok(false);
         }
         if approved && scope == ApprovalScope::CommandPrefix {

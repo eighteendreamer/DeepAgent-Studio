@@ -76,8 +76,19 @@ impl ToolPipelineCompletion {
 }
 
 pub enum ToolPreparation {
-    Ready(PreparedToolInvocation),
-    Blocked(ToolPipelineResult),
+    /// Boxed: a prepared invocation carries a `serde_json::Value` argument
+    /// payload, so it dwarfs the blocked variant that only carries a result.
+    Ready(Box<PreparedToolInvocation>),
+    /// Boxed for the same reason in the other direction: a pipeline result
+    /// carries arguments, output and an optional raw value.
+    Blocked(Box<ToolPipelineResult>),
+}
+
+impl ToolPreparation {
+    /// Every blocked path goes through here so the `Blocked` payload stays boxed.
+    fn blocked(result: ToolPipelineResult) -> Self {
+        Self::Blocked(Box::new(result))
+    }
 }
 
 #[derive(Clone)]
@@ -570,7 +581,7 @@ impl<'a> ToolExecutionPipeline<'a> {
         let name = invocation.name.clone();
 
         if self.is_cancelled() {
-            return Ok(ToolPreparation::Blocked(self.blocked(
+            return Ok(ToolPreparation::blocked(self.blocked(
                 call_id,
                 name,
                 invocation.arguments,
@@ -595,7 +606,7 @@ impl<'a> ToolExecutionPipeline<'a> {
                 .get("parse_error")
                 .and_then(|value| value.as_str())
                 .unwrap_or("invalid JSON");
-            return Ok(ToolPreparation::Blocked(self.blocked(
+            return Ok(ToolPreparation::blocked(self.blocked(
                 call_id,
                 name,
                 invocation.arguments.clone(),
@@ -612,7 +623,7 @@ impl<'a> ToolExecutionPipeline<'a> {
         {
             Ok(value) => value,
             Err(error) => {
-                return Ok(ToolPreparation::Blocked(self.blocked(
+                return Ok(ToolPreparation::blocked(self.blocked(
                     call_id,
                     name,
                     invocation.arguments,
@@ -643,7 +654,7 @@ impl<'a> ToolExecutionPipeline<'a> {
             }
         };
         if self.is_cancelled() {
-            return Ok(ToolPreparation::Blocked(self.blocked(
+            return Ok(ToolPreparation::blocked(self.blocked(
                 call_id,
                 name,
                 invocation.arguments,
@@ -660,7 +671,7 @@ impl<'a> ToolExecutionPipeline<'a> {
                 match self.registry.validate_invocation(&name, updated_input) {
                     Ok(value) => invocation.arguments = value.arguments,
                     Err(error) => {
-                        return Ok(ToolPreparation::Blocked(self.blocked(
+                        return Ok(ToolPreparation::blocked(self.blocked(
                             call_id,
                             name,
                             invocation.arguments,
@@ -673,7 +684,7 @@ impl<'a> ToolExecutionPipeline<'a> {
                 }
             }
             HookOutcome::Deny { reason, .. } => {
-                return Ok(ToolPreparation::Blocked(self.blocked(
+                return Ok(ToolPreparation::blocked(self.blocked(
                     call_id,
                     name,
                     invocation.arguments,
@@ -688,7 +699,7 @@ impl<'a> ToolExecutionPipeline<'a> {
                     .request_approval(&call_id, &name, &invocation.arguments, reason, "hook")
                     .await?
                 {
-                    return Ok(ToolPreparation::Blocked(blocked));
+                    return Ok(ToolPreparation::blocked(blocked));
                 }
                 approval_granted = true;
             }
@@ -698,7 +709,7 @@ impl<'a> ToolExecutionPipeline<'a> {
         let spec = match self.registry.check(&name, &self.permissions, true) {
             Ok(spec) => spec,
             Err(error) => {
-                return Ok(ToolPreparation::Blocked(self.blocked(
+                return Ok(ToolPreparation::blocked(self.blocked(
                     call_id,
                     name,
                     invocation.arguments,
@@ -710,17 +721,17 @@ impl<'a> ToolExecutionPipeline<'a> {
             }
         };
         if spec.descriptor.risk.requires_approval() && !approval_granted {
-            let reason = format!("high-risk tool '{}' requires approval", name);
+            let reason = format!("high-risk tool '{name}' requires approval");
             if let Some(blocked) = self
                 .request_approval(&call_id, &name, &invocation.arguments, reason, "high")
                 .await?
             {
-                return Ok(ToolPreparation::Blocked(blocked));
+                return Ok(ToolPreparation::blocked(blocked));
             }
         }
 
         if self.is_cancelled() {
-            return Ok(ToolPreparation::Blocked(self.blocked(
+            return Ok(ToolPreparation::blocked(self.blocked(
                 call_id,
                 name,
                 invocation.arguments,
@@ -731,11 +742,11 @@ impl<'a> ToolExecutionPipeline<'a> {
             )?));
         }
 
-        Ok(ToolPreparation::Ready(PreparedToolInvocation {
+        Ok(ToolPreparation::Ready(Box::new(PreparedToolInvocation {
             call_id,
             name,
             arguments: invocation.arguments,
-        }))
+        })))
     }
 
     async fn request_approval(
@@ -916,7 +927,7 @@ impl<'a> ToolExecutionPipeline<'a> {
         let enforce_budget = self
             .registry
             .get(&prepared.name)
-            .map_or(true, |spec| spec.tool.bounded_by_run_timeout());
+            .is_none_or(|spec| spec.tool.bounded_by_run_timeout());
         let invocation = self.registry.invoke_with_context(
             &prepared.name,
             prepared.arguments.clone(),
@@ -1105,8 +1116,8 @@ impl<'a> ToolExecutionPipeline<'a> {
 
     pub async fn execute(&self, invocation: ToolInvocation) -> Result<ToolPipelineResult> {
         match self.prepare(invocation, None).await? {
-            ToolPreparation::Ready(prepared) => self.execute_prepared(prepared).await,
-            ToolPreparation::Blocked(result) => Ok(result),
+            ToolPreparation::Ready(prepared) => self.execute_prepared(*prepared).await,
+            ToolPreparation::Blocked(result) => Ok(*result),
         }
     }
 

@@ -54,14 +54,14 @@ export function createMarkdownComponents(onOpenUrl?: (url: string) => void) {
       }
 
       return !isInlineCode ? (
-        <div className="relative mb-4 mt-2 overflow-hidden rounded-lg bg-[#1e1e1e] shadow-md border border-gray-700/50">
-          <div className="flex items-center justify-between bg-[#2d2d2d] px-4 py-1.5 text-xs text-gray-400">
+        <div className="relative mb-4 mt-2 overflow-hidden rounded-lg border border-border-theme bg-hover-bg">
+          <div className="flex items-center justify-between border-b border-border-theme px-4 py-1.5 text-xs text-text-secondary">
             <span className="font-mono lowercase">{language || "text"}</span>
           </div>
           <div className="overflow-x-auto p-4 pt-2 text-[13px]">
             <Suspense
               fallback={
-                <pre className="m-0 whitespace-pre-wrap bg-transparent p-0 font-mono text-gray-100">
+                <pre className="m-0 whitespace-pre-wrap bg-transparent p-0 font-mono text-text-base">
                   {content}
                 </pre>
               }

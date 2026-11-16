@@ -30,7 +30,7 @@ pub(super) fn classify_for_task(
         .rev()
         .find(|(sequence, item)| {
             *sequence < created_sequence
-                && previous_task.map_or(true, |previous| *sequence > previous)
+                && previous_task.is_none_or(|previous| *sequence > previous)
                 && is_user_input(item)
         })
         .map_or(created_sequence, |(sequence, _)| *sequence);
@@ -46,7 +46,7 @@ pub(super) fn classify_for_task(
     classify_items(
         items
             .iter()
-            .filter(|(sequence, _)| *sequence >= start && end.map_or(true, |end| *sequence < end))
+            .filter(|(sequence, _)| *sequence >= start && end.is_none_or(|end| *sequence < end))
             .map(|(_, item)| item),
     )
 }

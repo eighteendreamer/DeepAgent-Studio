@@ -82,7 +82,7 @@ fn assert_reads(db: &Database) {
         ] {
             let expected: Vec<_> = before
                 .iter()
-                .filter(|event| after.map_or(true, |after| event.sequence > after))
+                .filter(|event| after.is_none_or(|after| event.sequence > after))
                 .cloned()
                 .collect();
             assert_eq!(

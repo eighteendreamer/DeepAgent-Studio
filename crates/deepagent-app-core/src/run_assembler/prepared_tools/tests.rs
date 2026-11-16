@@ -263,17 +263,17 @@ async fn h219_real_main_registry_can_prepare_without_model_credentials_admission
     let chat = ChatService::new(db.clone(), settings.clone(), transport.clone(), root.path());
     let assembler = chat.run_assembler();
     let base = || {
-        assembler.base_registry_request(
-            root.path(),
-            deepagent_builtins::FsAccess::ReadOnly,
-            None,
-            None,
-            Some(crate::settings::LocalExecutionMode::Direct),
-            false,
-            None,
-            true,
-            &session_id,
-        )
+        assembler.base_registry_request(BaseRegistryInputs {
+            root: root.path(),
+            access: deepagent_builtins::FsAccess::ReadOnly,
+            env_mode: None,
+            connection_id: None,
+            local_exec_mode: Some(crate::settings::LocalExecutionMode::Direct),
+            force_sandbox_backend: false,
+            local_command_executor: None,
+            bash_external_safety_gate: true,
+            session_id: &session_id,
+        })
     };
     let prepared = assembler
         .prepare_main_run_tools(MainRunPreparationRequest {

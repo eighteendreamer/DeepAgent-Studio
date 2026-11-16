@@ -426,8 +426,7 @@ async fn end_to_end_skill_activation_through_catalog_and_tool() {
         .expect("SkillTool invocation must not error");
     assert!(
         out0.ok,
-        "SkillTool invocation should succeed for a registered, visible skill; got {:?}",
-        out0
+        "SkillTool invocation should succeed for a registered, visible skill; got {out0:?}"
     );
     assert_eq!(out0.value["id"], "built-in-alpha");
     assert_eq!(out0.value["name"], "built-in-alpha");
@@ -510,8 +509,7 @@ async fn end_to_end_skill_activation_through_catalog_and_tool() {
         .expect("SkillTool invocation should not raise an error for a known id");
     assert!(
         !out2.ok,
-        "SkillTool MUST reject disable_model_invocation skills; got {:?}",
-        out2
+        "SkillTool MUST reject disable_model_invocation skills; got {out2:?}"
     );
     let err = out2.value["error"]
         .as_str()

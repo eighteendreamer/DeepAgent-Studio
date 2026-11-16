@@ -221,7 +221,7 @@ async fn observe_incomplete_reason(
         assert!(
             ceilings[0]
                 .as_u64()
-                .map_or(true, |initial_limit| escalated_limit > initial_limit),
+                .is_none_or(|initial_limit| escalated_limit > initial_limit),
             "the recovery request must raise a configured ceiling or add one when the provider default was used"
         );
     }

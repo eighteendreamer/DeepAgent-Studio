@@ -295,7 +295,7 @@ pub trait ReactiveContextCompactor: Send + Sync {
             cancel,
         )
         .await
-        .map_err(|error| CompactionFailure::new(error, note.usage.clone()))
+        .map_err(|error| CompactionFailure::new(error, note.usage))
     }
 
     /// A pre-adoption hook can require regeneration after speculative spend.
@@ -4900,13 +4900,12 @@ mod tests {
         let mut agent = ModelAgent::new(client(vec![]), "model", "sys", "goal", vec![])
             .with_snip_tool("snip_history");
         agent.push_message(Message::user(r#"{"status":"retry"}"#));
-        assert!(agent
+        assert!(!agent
             .conversation()
             .last()
             .unwrap()
             .content
-            .find("[id:u")
-            .is_none());
+            .contains("[id:u"));
         assert!(agent
             .conversation()
             .iter()

@@ -654,7 +654,7 @@ fn conflicting_or_malformed_task_identity_is_not_silently_acknowledged() {
         assert!(messages.iter().all(|message| message
             .turn
             .as_ref()
-            .map_or(true, |turn| turn.terminal_kind.is_none())));
+            .is_none_or(|turn| turn.terminal_kind.is_none())));
     }
 }
 

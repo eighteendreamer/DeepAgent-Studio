@@ -1128,7 +1128,7 @@ mod tests {
         // itself, even when the line is far longer than 80 chars.
         let long_line = "x".repeat(500);
         let rendered = format_with_line_numbers(std::slice::from_ref(&long_line), 7);
-        assert_eq!(rendered, format!("     7\t{}", long_line));
+        assert_eq!(rendered, format!("     7\t{long_line}"));
     }
 
     #[tokio::test]

@@ -1,6 +1,7 @@
 import { memo, useMemo } from "react";
 import type { ComposerMention, ComposerSkillSelection } from "../../types";
 import { deriveTurnSections, groupProcessSections } from "./deriveTurnSections";
+import { turnEpoch } from "./processDisclosure";
 import { AssistantMessageBubble, UserMessageBubble } from "./MessageBubble";
 import { ProcessSectionRow } from "./ProcessSectionRow";
 import { SessionMarkerRow } from "./SessionMarkerRow";
@@ -39,7 +40,7 @@ function MessageTurnComponent({
   const sections = useMemo(() => groupProcessSections(processBlocks), [processBlocks]);
   const phase = turn.activity?.phase ?? (processing ? "working" : "settled");
   const turnKey = turn.activity?.id ?? turn.user?.id ?? turn.blocks[0]?.id ?? "empty-turn";
-  const epoch = phase === "settled" ? "settled" : `${turn.activity?.generation ?? 0}:${phase}`;
+  const epoch = turnEpoch(phase);
   const { snapshot, setOpen, setDetail } = useTurnDisclosure(turnKey, epoch, phase === "working");
   const expanded = snapshot.open;
   const detailsContext = useMemo(() => ({ snapshot, setDetail }), [snapshot, setDetail]);

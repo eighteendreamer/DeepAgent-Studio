@@ -205,7 +205,7 @@ impl Tool for AskUserQuestionTool {
     ) -> Result<ToolOutput> {
         let questions = match parse_questions(&args) {
             Ok(questions) => questions,
-            Err(failure) => return Ok(failure),
+            Err(failure) => return Ok(*failure),
         };
         let cancel = context.cancel_flag();
         tokio::select! {
@@ -238,21 +238,25 @@ fn unanswered_output(note: &str) -> ToolOutput {
 }
 
 /// Validate the tool arguments, returning the failure output to report.
-fn parse_questions(args: &serde_json::Value) -> std::result::Result<Vec<Question>, ToolOutput> {
+/// The failure output is boxed so the `Err` variant stays small; callers only
+/// ever return it as a tool result, so the indirection costs nothing.
+fn parse_questions(
+    args: &serde_json::Value,
+) -> std::result::Result<Vec<Question>, Box<ToolOutput>> {
     let Some(value) = args.get("questions") else {
-        return Err(ToolOutput::failure("missing 'questions'"));
+        return Err(Box::new(ToolOutput::failure("missing 'questions'")));
     };
     let questions: Vec<Question> = serde_json::from_value(value.clone())
-        .map_err(|e| ToolOutput::failure(format!("invalid 'questions': {e}")))?;
+        .map_err(|e| Box::new(ToolOutput::failure(format!("invalid 'questions': {e}"))))?;
     if questions.is_empty() || questions.len() > 4 {
-        return Err(ToolOutput::failure("provide 1-4 questions"));
+        return Err(Box::new(ToolOutput::failure("provide 1-4 questions")));
     }
     for q in &questions {
         if q.options.len() < 2 || q.options.len() > 4 {
-            return Err(ToolOutput::failure(format!(
+            return Err(Box::new(ToolOutput::failure(format!(
                 "question \"{}\" must have 2-4 options",
                 q.question
-            )));
+            ))));
         }
     }
     Ok(questions)

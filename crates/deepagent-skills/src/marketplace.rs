@@ -1384,15 +1384,11 @@ mod tests {
         assert_eq!(candidates, vec![direct.to_string()]);
     }
 
-    /// The shipped default list is non-empty and every entry is a syntactic
-    /// HTTPS URL; this guards against an accidental `vec![]` in the source
-    /// or a typo'd `htps://` slipping in via copy-paste.
+    /// The shipped default list is a non-empty const array — an accidental
+    /// `vec![]` cannot compile — so this guards only the content of each
+    /// entry: a typo'd `htps://` or a missing trailing slash must not ship.
     #[test]
     fn default_github_mirrors_are_https_urls() {
-        assert!(
-            !DEFAULT_GITHUB_MIRRORS.is_empty(),
-            "default mirror list must ship at least one fallback"
-        );
         for mirror in DEFAULT_GITHUB_MIRRORS {
             assert!(
                 mirror.starts_with("https://"),

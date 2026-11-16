@@ -141,7 +141,7 @@ impl CronDocument {
         self.rows.retain(|row| {
             row.task
                 .as_ref()
-                .map_or(true, |task| !ids.contains(task.id.as_str()))
+                .is_none_or(|task| !ids.contains(task.id.as_str()))
         });
         before - self.rows.len()
     }

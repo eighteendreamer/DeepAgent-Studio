@@ -1091,6 +1091,9 @@ pub(super) mod tests {
         // `Database::open_in_memory` roots itself in a fresh temp dir, so leaving
         // the derived root in place would bake a random path into every snapshot.
         app.data_root = "/home/dev/.deepagent".to_string();
+        // The workspace is also a temp dir, whose absolute path carries the
+        // runner's username and drive. Pin it so snapshots are machine-independent.
+        app.workspace = std::path::PathBuf::from("/home/dev/project");
         // The workspace directory must outlive the service built on it.
         std::mem::forget(dir);
         app

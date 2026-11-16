@@ -1058,7 +1058,7 @@ impl deepagent_runtime::workflow::KnowledgeRetriever for WorkflowKnowledgeRetrie
             .snapshot
             .list()
             .into_iter()
-            .filter(|entry| scope.map_or(true, |scope| entry.scope == scope))
+            .filter(|entry| scope.is_none_or(|scope| entry.scope == scope))
         {
             for part in [
                 format!("{}:{}", entry.scope.label(), entry.id),

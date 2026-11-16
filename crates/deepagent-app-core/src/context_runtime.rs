@@ -481,7 +481,7 @@ impl HookedReactiveContextCompactor {
                     },
                 ),
                 cancel.clone(),
-                summary_usage.clone(),
+                summary_usage,
             )
             .await?;
         if matches!(post, HookOutcome::Deny { .. } | HookOutcome::Ask { .. }) {
@@ -503,7 +503,7 @@ impl HookedReactiveContextCompactor {
             &summary_block,
             &items[split..],
         )
-        .map_err(|error| CompactionFailure::new(error, summary_usage.clone()))?;
+        .map_err(|error| CompactionFailure::new(error, summary_usage))?;
         self.breaker
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -1123,8 +1123,7 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
         let mut compacted = Vec::with_capacity(system_end + 1 + tail.len());
         compacted.extend_from_slice(&messages[..system_end]);
         compacted.push(Message::user(format!(
-            "[Earlier conversation compacted to summary]\n{}",
-            summary
+            "[Earlier conversation compacted to summary]\n{summary}"
         )));
         compacted.extend_from_slice(tail);
 

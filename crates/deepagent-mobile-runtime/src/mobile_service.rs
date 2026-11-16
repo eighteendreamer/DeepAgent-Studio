@@ -104,7 +104,7 @@ impl MobileService {
             .get(&platform)
             .map(|entry| (entry.backend.clone(), entry.generation))
             .ok_or_else(|| MobileError::BackendUnavailable {
-                reason: format!("{:?} backend not registered", platform),
+                reason: format!("{platform:?} backend not registered"),
             })
     }
 

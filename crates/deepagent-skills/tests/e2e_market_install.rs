@@ -88,9 +88,9 @@ fn build_codeload_zip(top_dir: &str, path_within: &str, files: &[(&str, &[u8])])
 
     for (rel, bytes) in files {
         let entry_name = if path_within.is_empty() {
-            format!("{}/{}", top_dir, rel)
+            format!("{top_dir}/{rel}")
         } else {
-            format!("{}/{}/{}", top_dir, path_within, rel)
+            format!("{top_dir}/{path_within}/{rel}")
         };
         zip.start_file(entry_name, opts)
             .expect("start_file in fixture zip");

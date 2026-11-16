@@ -36,7 +36,7 @@ async fn observe_direct_output(rows: usize) -> ReadObservation {
     payload.push_str(TAIL);
     payload.push_str("\r\n");
     std::fs::write(temp.path().join("payload.txt"), payload).unwrap();
-    let db = Arc::new(Database::open(&temp.path().join("audit.sqlite")).unwrap());
+    let db = Arc::new(Database::open(temp.path().join("audit.sqlite")).unwrap());
     let projects = Arc::new(ProjectService::new(db.clone()));
     let service = Arc::new(TerminalService::with_executor(
         projects,

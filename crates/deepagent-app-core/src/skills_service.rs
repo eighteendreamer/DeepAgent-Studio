@@ -487,8 +487,7 @@ pub fn build_review_user_prompt(scan: &ScanReport) -> String {
         &md[..cut]
     };
     out.push_str(&format!(
-        "SKILL.md (first {} chars):\n",
-        SKILL_MD_USER_PROMPT_CAP
+        "SKILL.md (first {SKILL_MD_USER_PROMPT_CAP} chars):\n"
     ));
     out.push_str(snippet);
     out.push_str("\n\n");

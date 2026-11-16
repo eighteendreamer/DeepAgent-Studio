@@ -58,7 +58,7 @@ impl DocumentInputs {
             .map_err(|_| invalid("document admission lock unavailable"))?;
         if pending
             .get(&receipt.request_id)
-            .map_or(true, |stored| stored.receipt != *receipt)
+            .is_none_or(|stored| stored.receipt != *receipt)
         {
             return Err(invalid(
                 "document admission is unknown, consumed or belongs to another run",

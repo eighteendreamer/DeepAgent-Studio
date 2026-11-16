@@ -139,9 +139,10 @@ impl MemoryBackend for MemoryService {
             .into_iter()
             .filter(|entry| entry.kind == MEMORY_KIND)
             .filter(|entry| {
-                entry.tier.as_deref().map_or(true, |tier| {
-                    want_tier.map_or(true, |want| tier == tier_str(want))
-                })
+                entry
+                    .tier
+                    .as_deref()
+                    .is_none_or(|tier| want_tier.is_none_or(|want| tier == tier_str(want)))
             })
             .map(|entry| {
                 let item = MemoryItem::new(

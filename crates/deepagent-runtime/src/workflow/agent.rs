@@ -1802,7 +1802,7 @@ impl WorkflowAgent {
                         .and_then(Value::as_str)
                         .unwrap_or("");
                     let transformed =
-                        template.replace(&format!("{{{{{}}}}}", iterator_var), &item.to_string());
+                        template.replace(&format!("{{{{{iterator_var}}}}}"), &item.to_string());
                     Value::String(transformed)
                 }
                 _ => {

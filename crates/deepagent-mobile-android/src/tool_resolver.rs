@@ -222,8 +222,7 @@ mod tests {
                     .unwrap_or(false);
             assert!(
                 is_sdk || is_home,
-                "dir should be an SDK root or home: {:?}",
-                dir
+                "dir should be an SDK root or home: {dir:?}"
             );
         }
     }

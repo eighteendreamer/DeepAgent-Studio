@@ -313,7 +313,7 @@ async fn dispatch_responses(
                     && message.get("error").is_none()
                     && message
                         .get("params")
-                        .map_or(true, serde_json::Value::is_object)
+                        .is_none_or(serde_json::Value::is_object)
                 {
                     // Reader never performs discovery or waits for a consumer.
                     // The signal conveys no server-provided payload/authority.

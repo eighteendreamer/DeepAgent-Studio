@@ -52,7 +52,7 @@ pub fn extract_metadata_from_bytes(raw: &[u8], file_size: u64) -> Result<ImageMe
             // Re-open to get colour type.
             let img = image::load_from_memory(raw).map_err(|e| format!("decode image: {e}"))?;
             let ct = img.color();
-            let mode = format!("{:?}", ct).to_lowercase();
+            let mode = format!("{ct:?}").to_lowercase();
             (w, h, mode)
         }
         Err(e) => {

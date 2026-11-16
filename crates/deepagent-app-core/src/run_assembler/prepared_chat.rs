@@ -266,33 +266,33 @@ impl RunAssembler<'_> {
             environment.sandbox_mode,
             environment.sandbox_backend,
         )?;
-        let mut sub_base = self.base_registry_request(
+        let mut sub_base = self.base_registry_request(BaseRegistryInputs {
             root,
-            environment.access,
-            None,
-            None,
-            Some(environment.local_execution_mode),
-            environment.sandbox_backend.is_some(),
-            executor.clone(),
-            matches!(
+            access: environment.access,
+            env_mode: None,
+            connection_id: None,
+            local_exec_mode: Some(environment.local_execution_mode),
+            force_sandbox_backend: environment.sandbox_backend.is_some(),
+            local_command_executor: executor.clone(),
+            bash_external_safety_gate: matches!(
                 environment.policy,
                 crate::settings::ApprovalPolicy::FullAccess
             ),
             session_id,
-        );
+        });
         sub_base.project = session_project.clone();
         sub_base.question_responder = Arc::new(deepagent_builtins::RecommendedResponder);
-        let mut base = self.base_registry_request(
+        let mut base = self.base_registry_request(BaseRegistryInputs {
             root,
-            environment.access,
-            effective_env_mode,
+            access: environment.access,
+            env_mode: effective_env_mode,
             connection_id,
-            Some(environment.local_execution_mode),
-            environment.sandbox_backend.is_some(),
-            executor,
-            true,
+            local_exec_mode: Some(environment.local_execution_mode),
+            force_sandbox_backend: environment.sandbox_backend.is_some(),
+            local_command_executor: executor,
+            bash_external_safety_gate: true,
             session_id,
-        );
+        });
         base.project = session_project;
         let tools = self.prepare_main_run_tools(MainRunPreparationRequest {
             base,

@@ -210,8 +210,8 @@ impl InputField {
             (ValueType::String, Value::String(text)) => {
                 let length = text.chars().count() as u64;
                 (self.options.is_empty() || self.options.contains(text))
-                    && self.min_length.map_or(true, |min| length >= min)
-                    && self.max_length.map_or(true, |max| length <= max)
+                    && self.min_length.is_none_or(|min| length >= min)
+                    && self.max_length.is_none_or(|max| length <= max)
             }
             (ValueType::Number, Value::Number(_)) => {
                 let min = self

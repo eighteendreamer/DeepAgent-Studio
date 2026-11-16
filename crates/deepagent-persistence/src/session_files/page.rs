@@ -141,7 +141,7 @@ fn read_locked(
         let selected: Vec<_> = group
             .events
             .into_iter()
-            .filter(|event| after_sequence.map_or(true, |after| event.sequence > after))
+            .filter(|event| after_sequence.is_none_or(|after| event.sequence > after))
             .collect();
         let group_bytes = crate::bounded_read::json_len(&selected, budget.max_bytes)?;
         if selected.len() > budget.max_events {

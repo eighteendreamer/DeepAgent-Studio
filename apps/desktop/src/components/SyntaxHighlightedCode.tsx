@@ -1,5 +1,6 @@
 import { PrismLight as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vs, vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { useThemeContext } from "../theme/ThemeProvider";
 import bash from "react-syntax-highlighter/dist/esm/languages/prism/bash";
 import c from "react-syntax-highlighter/dist/esm/languages/prism/c";
 import cpp from "react-syntax-highlighter/dist/esm/languages/prism/cpp";
@@ -52,18 +53,27 @@ const THEMES = {
 
 export type CodeTheme = keyof typeof THEMES;
 
+/** Follows the active app theme unless a caller pins an explicit theme
+ *  (the remote file preview pins `light` because it renders on a white pane). */
+function useActiveCodeTheme(override?: CodeTheme): CodeTheme {
+  const { activeIsDark } = useThemeContext();
+  if (override) return override;
+  return activeIsDark ? "dark" : "light";
+}
+
 export function SyntaxHighlightedCode({
   language,
   content,
-  theme = "dark",
+  theme,
 }: {
   language: string;
   content: string;
   theme?: CodeTheme;
 }) {
+  const activeTheme = useActiveCodeTheme(theme);
   return (
     <SyntaxHighlighter
-      style={THEMES[theme]}
+      style={THEMES[activeTheme]}
       language={language || "text"}
       PreTag="div"
       customStyle={{ margin: 0, padding: 0, background: "transparent" }}

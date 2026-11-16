@@ -21,6 +21,10 @@ impl BuildFixture {
         Self::prepare(false).await
     }
 
+    /// Compiled into several test targets through `#[path]`; only the
+    /// `verification_commands` lifecycle tests build a cold fixture, so the
+    /// kernel-target copies legitimately have no caller.
+    #[allow(dead_code)]
     pub async fn cold() -> Self {
         Self::prepare(true).await
     }

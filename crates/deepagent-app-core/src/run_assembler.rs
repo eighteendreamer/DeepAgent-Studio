@@ -249,6 +249,20 @@ pub(crate) fn finish_admitted_run(
     }
 }
 
+/// Borrowed inputs for [`RunAssembler::base_registry_request`]. Grouping them
+/// keeps the request assembly readable and the argument list bounded.
+struct BaseRegistryInputs<'a> {
+    root: &'a Path,
+    access: deepagent_builtins::FsAccess,
+    env_mode: Option<&'a str>,
+    connection_id: Option<&'a str>,
+    local_exec_mode: Option<crate::settings::LocalExecutionMode>,
+    force_sandbox_backend: bool,
+    local_command_executor: Option<Arc<dyn deepagent_builtins::bash_tool::CommandExecutor>>,
+    bash_external_safety_gate: bool,
+    session_id: &'a str,
+}
+
 impl<'a> RunAssembler<'a> {
     /// Keep the shared skill registry on the same immutable plugin generation
     /// that this run captured for tools, hooks and prompt projection. A plugin
@@ -1634,17 +1648,20 @@ impl<'a> RunAssembler<'a> {
         let wf_client = run_model.as_ref().map(|rm| rm.client.clone());
         let wf_model_name = run_model.as_ref().map(|rm| rm.model.clone());
 
-        let mut tool_request = self.base_registry_request(
-            &root,
+        let mut tool_request = self.base_registry_request(BaseRegistryInputs {
+            root: &root,
             access,
-            None,
-            None,
-            Some(local_execution_mode),
-            sandbox_backend.is_some(),
-            run_local_executor,
-            matches!(policy, crate::settings::ApprovalPolicy::FullAccess),
-            &session_id,
-        );
+            env_mode: None,
+            connection_id: None,
+            local_exec_mode: Some(local_execution_mode),
+            force_sandbox_backend: sandbox_backend.is_some(),
+            local_command_executor: run_local_executor,
+            bash_external_safety_gate: matches!(
+                policy,
+                crate::settings::ApprovalPolicy::FullAccess
+            ),
+            session_id: &session_id,
+        });
         tool_request.project = session_project.clone();
         let (mut tool_registry, todo_store) = build_base_tool_registry(tool_request)?;
         // A host broker is not an escape hatch from OS isolation, including the
@@ -2000,16 +2017,19 @@ impl<'a> RunAssembler<'a> {
     /// borrowed fields.
     fn base_registry_request(
         &self,
-        root: &'a Path,
-        access: deepagent_builtins::FsAccess,
-        env_mode: Option<&'a str>,
-        connection_id: Option<&'a str>,
-        local_exec_mode: Option<crate::settings::LocalExecutionMode>,
-        force_sandbox_backend: bool,
-        local_command_executor: Option<Arc<dyn deepagent_builtins::bash_tool::CommandExecutor>>,
-        bash_external_safety_gate: bool,
-        session_id: &str,
+        inputs: BaseRegistryInputs<'a>,
     ) -> ToolRegistryBuildRequest<'a> {
+        let BaseRegistryInputs {
+            root,
+            access,
+            env_mode,
+            connection_id,
+            local_exec_mode,
+            force_sandbox_backend,
+            local_command_executor,
+            bash_external_safety_gate,
+            session_id,
+        } = inputs;
         let local_command_executor = match (self.runtime_broker, local_command_executor) {
             (Some(broker), Some(executor)) => Some(Arc::new(RuntimeCommandExecutor::new(
                 executor.clone(),

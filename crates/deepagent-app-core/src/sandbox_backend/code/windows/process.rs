@@ -47,7 +47,10 @@ fn quote(value: &OsStr) -> String {
         if c == '\\' {
             slashes += 1;
         } else {
-            result.extend(std::iter::repeat('\\').take(slashes * if c == '"' { 2 } else { 1 }));
+            result.extend(std::iter::repeat_n(
+                '\\',
+                slashes * if c == '"' { 2 } else { 1 },
+            ));
             slashes = 0;
             if c == '"' {
                 result.push('\\');
@@ -55,7 +58,7 @@ fn quote(value: &OsStr) -> String {
             result.push(c);
         }
     }
-    result.extend(std::iter::repeat('\\').take(slashes * 2));
+    result.extend(std::iter::repeat_n('\\', slashes * 2));
     result.push('"');
     result
 }

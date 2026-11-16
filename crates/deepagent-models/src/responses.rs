@@ -541,10 +541,7 @@ pub fn messages_from_response_items(
                 arguments,
                 status,
                 ..
-            } if status
-                .as_deref()
-                .map_or(true, |status| status == "completed") =>
-            {
+            } if status.as_deref().is_none_or(|status| status == "completed") => {
                 pending_tool_calls.push(deepagent_core::message::ToolCall {
                     id: call_id.clone(),
                     name: "tool_search".into(),

@@ -3269,9 +3269,9 @@ fn retain_runtime_agent_tools(
         .filter(|spec| {
             let request_allowed = request_allowlist
                 .as_ref()
-                .map_or(true, |set| set.contains(&spec.descriptor.name));
+                .is_none_or(|set| set.contains(&spec.descriptor.name));
             request_allowed
-                && agent_profile.map_or(true, |agent| {
+                && agent_profile.is_none_or(|agent| {
                     runtime_agent_tool_is_allowed(
                         &spec.descriptor.name,
                         agent,
@@ -3299,8 +3299,8 @@ fn runtime_agent_tool_is_allowed(
         runtime_agent_tool_allowlist(agent.def.disallowed_tools.as_deref().unwrap_or_default());
     profile_allowlist
         .as_ref()
-        .map_or(true, |set| set.contains(tool_name))
-        && request_allowlist.map_or(true, |set| set.contains(tool_name))
+        .is_none_or(|set| set.contains(tool_name))
+        && request_allowlist.is_none_or(|set| set.contains(tool_name))
         && !disallowed
             .as_ref()
             .is_some_and(|set| set.contains(tool_name))

@@ -252,12 +252,8 @@ fn mcp_file(plugin_root: &Path, diagnostics: &mut Vec<PluginDiagnostic>) -> Opti
         (Some(path), Some(_)) => {
             diagnostics.push(PluginDiagnostic::McpDisabled {
                 reason: format!(
-                    "both `{}` and `{}` are present; using the Agent Plugins fixed location \
-                     `{}` and ignoring `{}`",
-                    AGENT_PLUGIN_MCP_RELATIVE_PATH,
-                    CLAUDE_MCP_FILE,
-                    AGENT_PLUGIN_MCP_RELATIVE_PATH,
-                    CLAUDE_MCP_FILE
+                    "both `{AGENT_PLUGIN_MCP_RELATIVE_PATH}` and `{CLAUDE_MCP_FILE}` are present; using the Agent Plugins fixed location \
+                     `{AGENT_PLUGIN_MCP_RELATIVE_PATH}` and ignoring `{CLAUDE_MCP_FILE}`"
                 ),
             });
             mcp_convention(

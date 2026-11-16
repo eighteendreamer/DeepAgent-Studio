@@ -58,7 +58,7 @@ async fn h258_production_events_rewind_the_live_tail_without_polluting_terminal_
             assert!(!buffer_text(terminal.backend().buffer()).contains("已废弃"));
         }
     }
-    let actual = format!("{:?}", flushed);
+    let actual = format!("{flushed:?}");
     assert!(actual.contains("有效答案：乙。"));
     assert!(!actual.contains("已废弃"));
     let screen = buffer_text(terminal.backend().buffer());

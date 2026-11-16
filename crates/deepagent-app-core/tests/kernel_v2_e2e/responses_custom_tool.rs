@@ -55,9 +55,8 @@ async fn default_harness_request_does_not_advertise_apply_patch() {
         !tools.is_empty(),
         "the request must carry the normal tool set"
     );
-    assert_eq!(
-        tools.iter().any(|tool| tool["name"] == "apply_patch"),
-        false,
+    assert!(
+        !tools.iter().any(|tool| tool["name"] == "apply_patch"),
         "the default AppCore registry has no first-party apply_patch tool"
     );
 }

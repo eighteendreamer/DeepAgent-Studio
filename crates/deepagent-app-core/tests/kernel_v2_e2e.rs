@@ -1472,7 +1472,6 @@ async fn cancelled_approval_scope(scope: &str) {
     assert!(settings.command_prefix_grants().unwrap().is_empty());
     // Drop the host objects and reopen the actual SQLite file: rejection must
     // survive reconstruction, not just live in a process-local registry.
-    drop(controls);
     drop(pending);
     drop(chat);
     drop(settings);

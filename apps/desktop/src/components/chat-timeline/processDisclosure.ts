@@ -17,6 +17,20 @@ export function advanceTurnActivity(
   return { ...activity, phase, generation: activity.generation + 1 };
 }
 
+/**
+ * Disclosure epoch for a turn.
+ *
+ * Only the settled transition is a disclosure boundary. A live run flips
+ * between "working" and "answering" on every tool call and every burst of
+ * text; if each flip were its own epoch, the process panel would fold and
+ * unfold repeatedly mid-run, which reads as flicker. Keeping one "live" epoch
+ * means the panel keeps whatever the user last chose until the run ends, and
+ * folds exactly once when it settles.
+ */
+export function turnEpoch(phase: ProcessPhase): string {
+  return phase === "settled" ? "settled" : "live";
+}
+
 export interface DisclosureSnapshot {
   epoch: string;
   open: boolean;

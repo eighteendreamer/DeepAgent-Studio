@@ -1527,7 +1527,7 @@ fn find_binary_on_path(binary_name: &str) -> Option<PathBuf> {
         // On Windows also try with `.exe` extension if not already present.
         #[cfg(target_os = "windows")]
         if !binary_name.ends_with(".exe") {
-            let candidate_exe = dir.join(format!("{}.exe", binary_name));
+            let candidate_exe = dir.join(format!("{binary_name}.exe"));
             if candidate_exe.is_file() {
                 return Some(dir);
             }

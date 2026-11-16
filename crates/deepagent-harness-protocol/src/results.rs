@@ -45,7 +45,7 @@ pub fn decode_thread_list_page(
             .get("nextCursor")
             .is_some_and(|v| v.is_null() || v.is_string())
         || if page.has_more {
-            page.next_cursor.as_ref().map_or(true, |s| {
+            page.next_cursor.as_ref().is_none_or(|s| {
                 s.is_empty() || s.len() > 4096 || request.cursor.as_ref() == Some(s)
             })
         } else {
@@ -183,7 +183,7 @@ pub fn control_result_identity<'a>(
         "nonblank identity matching request when applicable",
         value.get(field),
         received.is_some_and(|id| {
-            !id.trim().is_empty() && expected.map_or(true, |expected| id == expected)
+            !id.trim().is_empty() && expected.is_none_or(|expected| id == expected)
         }),
     )?;
     Ok(received.expect("identity checked"))

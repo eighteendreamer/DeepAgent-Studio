@@ -546,7 +546,7 @@ pub(crate) fn restore_from_trash(root: &Path, session_id: SessionId) -> Result<b
         };
         if selected
             .as_ref()
-            .map_or(true, |(current, _)| deleted_at > *current)
+            .is_none_or(|(current, _)| deleted_at > *current)
         {
             selected = Some((deleted_at, entry.path()));
         }
@@ -940,7 +940,7 @@ fn current_generation_in(dir: &Path) -> Result<Option<(u64, PathBuf)>> {
         };
         if selected
             .as_ref()
-            .map_or(true, |(generation, _)| number > *generation)
+            .is_none_or(|(generation, _)| number > *generation)
         {
             selected = Some((number, entry.path()));
         }

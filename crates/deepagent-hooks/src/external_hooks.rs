@@ -865,7 +865,7 @@ async fn run_hook_process(
             return Ok(HookCommandResult {
                 exit_code: 124, // conventional timeout code
                 stdout: String::new(),
-                stderr: format!("hook timed out after {:?}", timeout),
+                stderr: format!("hook timed out after {timeout:?}"),
             });
         }
     };
@@ -1175,8 +1175,7 @@ fn encode_powershell_command(command: &str) -> String {
 
 fn wrap_powershell_command(command: &str) -> String {
     format!(
-        "{}; if ($null -ne $global:LASTEXITCODE) {{ exit $global:LASTEXITCODE }} elseif ($?) {{ exit 0 }} else {{ exit 1 }}",
-        command
+        "{command}; if ($null -ne $global:LASTEXITCODE) {{ exit $global:LASTEXITCODE }} elseif ($?) {{ exit 0 }} else {{ exit 1 }}"
     )
 }
 
@@ -3139,7 +3138,7 @@ mod tests {
             HookOutcome::AsyncPending { timeout } => {
                 assert_eq!(timeout.as_secs(), 120);
             }
-            other => panic!("expected AsyncPending, got {:?}", other),
+            other => panic!("expected AsyncPending, got {other:?}"),
         }
     }
 

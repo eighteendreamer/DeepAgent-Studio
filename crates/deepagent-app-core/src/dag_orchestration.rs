@@ -191,7 +191,7 @@ fn build_dag_execution_data(
 ) -> deepagent_builtins::DagExecutionData {
     use deepagent_builtins::{DagExecutionData, DagNodeData};
 
-    let execution_id = format!("exec_{}", start_time);
+    let execution_id = format!("exec_{start_time}");
 
     // Extract title from first node or use generic
     let title = dag

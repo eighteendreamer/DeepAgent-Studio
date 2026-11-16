@@ -377,7 +377,7 @@ impl TypeScriptVerifier {
         let mut local = None;
         for ancestor in dir
             .ancestors()
-            .take_while(|dir| root.map_or(true, |root| dir.starts_with(root)))
+            .take_while(|dir| root.is_none_or(|root| dir.starts_with(root)))
         {
             let candidate = ancestor.join(if cfg!(windows) {
                 "node_modules/.bin/tsc.cmd"

@@ -245,7 +245,7 @@ impl ToolExecutionContext {
     pub fn observation_is_current(&self) -> bool {
         self.observation
             .as_ref()
-            .map_or(true, ToolObservation::is_current)
+            .is_none_or(ToolObservation::is_current)
     }
 
     pub fn cancel_flag(&self) -> Arc<AtomicBool> {

@@ -223,10 +223,10 @@ fn validate_capability_generation(
 }
 
 fn schema_generation_number(projection: &serde_json::Value) -> Result<u64> {
-    if !projection
+    if projection
         .get("schemaHash")
         .and_then(serde_json::Value::as_str)
-        .is_some_and(|hash| !hash.is_empty())
+        .is_none_or(str::is_empty)
     {
         return Err(CoreError::invalid("capability schema has no hash"));
     }

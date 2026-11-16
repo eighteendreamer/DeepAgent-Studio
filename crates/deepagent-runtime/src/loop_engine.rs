@@ -845,7 +845,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                                 }
                                 VerifyStep::Retry(obs) => {
                                     // Hand the reflection back; keep the task running.
-                                    last_observations = vec![obs];
+                                    last_observations = vec![*obs];
                                     continue;
                                 }
                             }
@@ -922,7 +922,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                                 }
                                 VerifyStep::Retry(obs) => {
                                     // Hand the reflection back; keep the task running.
-                                    last_observations = vec![obs];
+                                    last_observations = vec![*obs];
                                     continue;
                                 }
                             }
@@ -1580,7 +1580,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     crate::tool_pipeline::ToolPreparation::Ready(ready) => {
                         let pipeline = self.tool_pipeline(session_id);
                         futs.push(async move {
-                            let result = pipeline.execute_prepared_deferred(ready).await;
+                            let result = pipeline.execute_prepared_deferred(*ready).await;
                             (index, result)
                         });
                     }
@@ -1602,7 +1602,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 .take(next - group_start)
             {
                 let completion = if let Some(result) = blocked.remove(&index) {
-                    crate::tool_pipeline::ToolPipelineCompletion::blocked(result)
+                    crate::tool_pipeline::ToolPipelineCompletion::blocked(*result)
                 } else {
                     match results
                         .remove(&index)
@@ -1874,7 +1874,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     session.append(requested)?;
                 }
                 self.metrics.incr(names::TOOL_CALLS, 1);
-                pipeline.execute_prepared_deferred(prepared).await?
+                pipeline.execute_prepared_deferred(*prepared).await?
             }
             crate::tool_pipeline::ToolPreparation::Blocked(blocked) => {
                 let requested = EventPayload::ToolCallRequested {
@@ -1889,7 +1889,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 } else {
                     session.append(requested)?;
                 }
-                crate::tool_pipeline::ToolPipelineCompletion::blocked(blocked)
+                crate::tool_pipeline::ToolPipelineCompletion::blocked(*blocked)
             }
         };
 
@@ -2399,7 +2399,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         match reflection.action {
             NextAction::Retry => {
                 // Feed the diagnosis back to the agent as a failed observation.
-                Ok(VerifyStep::Retry(Observation {
+                Ok(VerifyStep::Retry(Box::new(Observation {
                     content: Vec::new(),
                     tool: "verification".to_string(),
                     ok: false,
@@ -2410,7 +2410,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                         "failure_kind": reflection.failure_kind,
                     }),
                     call_id: None,
-                }))
+                })))
             }
             // Proceed should not occur for a failing report, but treat it as
             // "accept"; GiveUp also accepts completion (best effort reached).
@@ -2592,8 +2592,9 @@ enum VerifyStep {
     /// Verification passed; accept completion.
     Passed,
     /// Verification failed but the loop should retry; carry the observation to
-    /// feed back to the agent.
-    Retry(Observation),
+    /// feed back to the agent. Boxed because an `Observation` is far larger
+    /// than the other two variants, which are unit-like.
+    Retry(Box<Observation>),
     /// Verification failed and reflection said to stop retrying.
     GaveUp,
 }

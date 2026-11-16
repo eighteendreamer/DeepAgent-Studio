@@ -34,10 +34,10 @@ pub(super) fn validate(event: &Value, kind: &str, status: &str) -> Result<()> {
         .and_then(Value::as_object)
         .ok_or_else(|| invalid("", "an object"))?;
     for field in ["id", "model"] {
-        if !response
+        if response
             .get(field)
             .and_then(Value::as_str)
-            .is_some_and(|value| !value.trim().is_empty())
+            .is_none_or(|value| value.trim().is_empty())
         {
             return Err(invalid(&format!(".{field}"), "a nonblank string"));
         }

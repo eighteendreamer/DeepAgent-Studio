@@ -51,7 +51,7 @@ pub async fn generate_session_title(
 ) -> Result<Option<String>> {
     let id = SessionId::from_str(session_id)
         .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
-    let store = EventStore::new(&db);
+    let store = EventStore::new(db);
     let Some(record) = store.get_session(id)? else {
         return Err(CoreError::not_found(format!("session {session_id}")));
     };

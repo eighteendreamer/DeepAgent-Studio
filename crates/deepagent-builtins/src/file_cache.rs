@@ -70,7 +70,7 @@ impl CacheEntry {
         self.reads.retain(|read| {
             read.context
                 .as_ref()
-                .map_or(true, ToolObservation::is_current)
+                .is_none_or(ToolObservation::is_current)
         });
         if context.is_some_and(|context| !context.is_current()) {
             return None;

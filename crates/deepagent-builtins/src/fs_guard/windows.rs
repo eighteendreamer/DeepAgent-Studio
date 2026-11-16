@@ -260,7 +260,7 @@ fn parse_directory_page(page: &[u64], entries: &mut Vec<super::DirectoryEntry>) 
     let header = offset_of!(FILE_FULL_DIR_INFO, FileName);
     let mut offset = 0usize;
     loop {
-        if offset.checked_add(header).map_or(true, |end| end > length) {
+        if offset.checked_add(header).is_none_or(|end| end > length) {
             return Err(invalid("directory record header exceeds native buffer"));
         }
         // SAFETY: The fields read here are within the checked fixed header;

@@ -477,7 +477,7 @@ async fn multiple_models_reach_existing_ledger_ui_projection_and_reopened_sqlite
         .conversation
         .iter()
         .filter_map(|message| message.usage.as_ref())
-        .last()
+        .next_back()
         .expect("existing UI usage DTO");
     assert_eq!(
         (ui.prompt_tokens, ui.completion_tokens, ui.reasoning_tokens),
@@ -531,7 +531,7 @@ async fn partly_unreported_workflow_usage_must_not_publish_a_complete_measured_c
         .conversation
         .iter()
         .filter_map(|message| message.usage.as_ref())
-        .last()
+        .next_back()
         .unwrap();
     assert_eq!(
         ui.cost_yuan, None,
@@ -581,7 +581,7 @@ async fn workflow_cost_receipt_survives_fork_and_does_not_shift_a_legacy_cost_ro
         .conversation
         .iter()
         .filter_map(|message| message.usage.as_ref())
-        .last()
+        .next_back()
         .unwrap()
         .cost_yuan
         .unwrap();

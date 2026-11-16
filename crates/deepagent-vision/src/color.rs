@@ -112,7 +112,7 @@ pub fn analyze_colors(img: &DynamicImage) -> ColorAnalysis {
             let g = (*qg as u32 * step) as u8 + half;
             let b = (*qb as u32 * step) as u8 + half;
             DominantColor {
-                hex: format!("#{:02X}{:02X}{:02X}", r, g, b),
+                hex: format!("#{r:02X}{g:02X}{b:02X}"),
                 count: *count,
                 ratio: *count as f64 / total_pixels as f64,
             }
