@@ -13,7 +13,7 @@ function sessionLoader() {
   let effect;
   function visit(node) {
     if (ts.isCallExpression(node) && node.expression.getText(ast) === "useEffect"
-      && node.arguments[0]?.getText(ast).includes("getSessionDetail(activeId)")) {
+      && node.arguments[0]?.getText(ast).includes("sessionPrefetch.take(activeId")) {
       effect = node.arguments[0].getText(ast);
     }
     ts.forEachChild(node, visit);
@@ -26,7 +26,8 @@ function sessionLoader() {
     const cleanup = vm.runInNewContext(`(${effect})()`, {
       activeId: "legacy", view: "start", activePendingRunKey: null,
       activeIdRef: { current: null },
-      getSessionDetail: async id => { calls.push(["detail", id]); return {}; },
+      activeSessionRevision: 1,
+      sessionPrefetch: { take: async id => { calls.push(["detail", id]); return {}; } },
       getPlanMode: async id => { calls.push(["plan", id]); throw new Error("unknown legacy mode"); },
       setDetail() {}, setContextUsageByKey() {},
       setPlanMode(value) { planMode = value; },
@@ -57,13 +58,12 @@ test("a new pending chat never loads the previous session or resets its requeste
   }
 });
 
-test("opening a legacy chat still exposes unknown mode; navigating away suppresses late errors", async () => {
+test("failed auxiliary state is discarded without treating unknown mode as normal", async () => {
   const load = sessionLoader();
   const opened = load({ view: "chat" });
   await tick();
   assert.equal(opened.mode(), null);
-  assert.equal(opened.errors.length, 1);
-  assert.match(opened.errors[0], /unknown legacy mode/);
+  assert.equal(opened.errors.length, 0);
   const left = load({ view: "chat" });
   left.cleanup();
   await tick();

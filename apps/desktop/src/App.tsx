@@ -92,6 +92,8 @@ import {
 import { CustomTitleBar } from "./components/CustomTitleBar";
 import { message } from "./components/message";
 import { resolveChatRepositoryPath } from "./components/composerActivityData";
+import { createSessionPrefetch } from "./sessionPrefetch";
+import { preloadMarkdownRenderers } from "./components/MarkdownText";
 
 const StartView = lazy(() =>
   import("./components/StartView").then((module) => ({ default: module.StartView })),
@@ -563,6 +565,19 @@ export function App() {
   const [projectMapOpenSignal, setProjectMapOpenSignal] = useState(0);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [detail, setDetail] = useState<SessionDetail | null>(null);
+  const [sessionPrefetch] = useState(() => createSessionPrefetch(async (id) => {
+    const next = await getSessionDetail(id);
+    const texts = (next.conversation ?? []).flatMap(message => [
+      message.content,
+      message.turn?.final_answer ?? "",
+      ...message.parts.flatMap(part => "text" in part ? [part.text] : []),
+    ]);
+    // Renderer preparation is independent of history/auxiliary state recovery.
+    void preloadMarkdownRenderers(texts).catch(() => {
+      console.warn("history markdown renderer preload failed");
+    });
+    return next;
+  }));
   const [view, setView] = useState<View>("start");
   const [pluginsMounted, setPluginsMounted] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -672,6 +687,14 @@ export function App() {
       });
   }, []);
 
+  const activeSessionRevision = sessions.find(session => session.id === activeId)?.updated_at ?? 0;
+  useEffect(() => {
+    // Speculative work only: no visible state, no plan-mode admission, no toast.
+    if (view === "start" && activeId && !activePendingRunKey) {
+      sessionPrefetch.warm(activeId, activeSessionRevision);
+    }
+  }, [activeId, activeSessionRevision, view, activePendingRunKey, sessionPrefetch]);
+
   useEffect(() => {
     activeIdRef.current = activeId;
     if (view !== "chat" || (!activeId && !activePendingRunKey)) {
@@ -687,7 +710,7 @@ export function App() {
     }
     if (!activeId) return;
     let cancelled = false;
-    getSessionDetail(activeId)
+    sessionPrefetch.take(activeId, activeSessionRevision)
       .then((next) => {
         if (cancelled) return;
         setDetail(next);
@@ -707,10 +730,11 @@ export function App() {
     setPlanMode(null);
     getPlanMode(activeId)
       .then((next) => { if (!cancelled) setPlanMode(next); })
-      .catch((error) => {
+      .catch(() => {
         if (cancelled) return;
         setPlanMode(null);
-        message.error(`计划模式状态读取失败，请明确选择 /plan 或 /execute：${String(error)}`);
+        // Auxiliary display state is optional while browsing history. Unknown
+        // is not false; the backend still checks it when a run is submitted.
       });
     return () => { cancelled = true; };
   }, [activeId, view, activePendingRunKey]);
@@ -2211,10 +2235,9 @@ export function App() {
               .then((next) => {
                 if (visibleSessionIdRef.current === newSessionId) setPlanMode(next);
               })
-              .catch((error) => {
+              .catch(() => {
                 if (visibleSessionIdRef.current !== newSessionId) return;
                 setPlanMode(null);
-                message.error(`计划模式状态读取失败，请明确选择 /plan 或 /execute：${String(error)}`);
               });
           }
           if (newSessionId && newSessionId !== activeIdRef.current) {

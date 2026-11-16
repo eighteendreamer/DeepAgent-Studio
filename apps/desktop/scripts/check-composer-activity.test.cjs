@@ -117,7 +117,7 @@ test("session detail and plan mode loaders reject late responses after navigatio
   let effect;
   function visit(node) {
     if (ts.isCallExpression(node) && node.expression.getText(ast) === "useEffect"
-      && node.arguments[0]?.getText(ast).includes("getSessionDetail(activeId)")) {
+      && node.arguments[0]?.getText(ast).includes("sessionPrefetch.take(activeId")) {
       effect = node.arguments[0].getText(ast);
     }
     ts.forEachChild(node, visit);
@@ -135,7 +135,8 @@ test("session detail and plan mode loaders reject late responses after navigatio
     requests.set(activeId, { detailRequest, planRequest });
     return vm.runInNewContext(`(${effect})()`, {
       activeId, activeIdRef, view: "chat", activePendingRunKey: null,
-      getSessionDetail: () => detailRequest.promise,
+      activeSessionRevision: 1,
+      sessionPrefetch: { take: () => detailRequest.promise },
       getPlanMode: () => planRequest.promise,
       setDetail: value => { detail = value; },
       setPlanMode: value => { planMode = value; },

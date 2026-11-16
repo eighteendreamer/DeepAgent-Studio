@@ -152,7 +152,8 @@ function planModeEffect(getPlanMode) {
   const bindings = {
     activeId: "synthetic-session", activeIdRef: { current: null },
     view: "chat", activePendingRunKey: null,
-    getSessionDetail: async () => ({ context_usage: null }), getPlanMode,
+    activeSessionRevision: 1,
+    sessionPrefetch: { take: async () => ({ context_usage: null }) }, getPlanMode,
     setDetail: () => {}, setContextUsageByKey: () => {},
     setPlanMode: (value) => { state.mode = value; },
     message: { error: (error) => state.errors.push(error) },
@@ -172,9 +173,7 @@ test("plan state is unknown while loading and a failed read never means normal m
   reject(new Error("synthetic recovery failure"));
   await new Promise(setImmediate);
   assert.equal(f.state.mode, null);
-  assert.equal(f.state.errors.length, 1);
-  assert.match(f.state.errors[0], /\/plan.*\/execute/);
-  assert.match(f.state.errors[0], /synthetic recovery failure/);
+  assert.equal(f.state.errors.length, 0, "failed auxiliary display state is discarded quietly");
 });
 
 for (const active of [true, false]) {

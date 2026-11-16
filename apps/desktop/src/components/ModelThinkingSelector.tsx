@@ -145,7 +145,6 @@ export function ModelThinkingSelector({
       className="flex h-8 min-w-0 max-w-full items-center"
       panelClassName="w-[264px]"
       panelAlign="right"
-      durationScale={0.4}
       zIndex={50}
     >
           <div className="py-2">

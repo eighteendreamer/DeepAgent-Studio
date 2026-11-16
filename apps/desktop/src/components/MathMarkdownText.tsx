@@ -1,4 +1,5 @@
 import { memo, useEffect, useState } from "react";
+import { MarkdownLoading } from "./MarkdownLoading";
 
 import {
   createMarkdownComponents,
@@ -14,8 +15,9 @@ type MathMarkdownRuntime = {
 };
 
 let mathRuntimePromise: Promise<MathMarkdownRuntime> | null = null;
+let mathRuntime: MathMarkdownRuntime | null = null;
 
-function loadMathMarkdownRuntime() {
+export function loadMathMarkdownRuntime() {
   mathRuntimePromise ??= Promise.all([
     import("react-markdown"),
     import("rehype-katex"),
@@ -28,12 +30,16 @@ function loadMathMarkdownRuntime() {
       (window as Window & { katex?: unknown }).katex = katexModule.default;
     }
     await import("katex/contrib/mhchem/mhchem.js");
-    return {
+    mathRuntime = {
       ReactMarkdown: ReactMarkdownModule.default,
       rehypeKatex: rehypeKatexModule.default,
       remarkGfm: remarkGfmModule.default,
       remarkMath: remarkMathModule.default,
     };
+    return mathRuntime;
+  }).catch(error => {
+    mathRuntimePromise = null;
+    throw error;
   });
   return mathRuntimePromise;
 }
@@ -44,12 +50,14 @@ export const MathMarkdownText = memo(function MathMarkdownText({
   className = "",
   onOpenUrl,
 }: MarkdownTextProps) {
-  const [runtime, setRuntime] = useState<MathMarkdownRuntime | null>(null);
+  const [runtime, setRuntime] = useState<MathMarkdownRuntime | null>(() => mathRuntime);
 
   useEffect(() => {
     let cancelled = false;
     void loadMathMarkdownRuntime().then((loaded) => {
       if (!cancelled) setRuntime(loaded);
+    }).catch(error => {
+      if (!cancelled) console.error("math renderer preparation failed", error);
     });
     return () => {
       cancelled = true;
@@ -57,7 +65,7 @@ export const MathMarkdownText = memo(function MathMarkdownText({
   }, []);
 
   if (!runtime) {
-    return <div className={markdownBodyClass(tone, className)}>{text}</div>;
+    return <MarkdownLoading />;
   }
 
   const { ReactMarkdown, rehypeKatex, remarkGfm, remarkMath } = runtime;

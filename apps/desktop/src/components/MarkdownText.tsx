@@ -1,12 +1,14 @@
 import { lazy, memo, Suspense } from "react";
 import type { MarkdownTextProps } from "./MarkdownText.shared";
+import { MarkdownLoading } from "./MarkdownLoading";
 
-const MathMarkdownText = lazy(() =>
-  import("./MathMarkdownText").then((module) => ({ default: module.MathMarkdownText })),
-);
-const BasicMarkdownText = lazy(() =>
-  import("./BasicMarkdownText").then((module) => ({ default: module.BasicMarkdownText })),
-);
+const loadMathMarkdown = () => import("./MathMarkdownText").then(async (module) => {
+  await module.loadMathMarkdownRuntime();
+  return { default: module.MathMarkdownText };
+});
+const loadBasicMarkdown = () => import("./BasicMarkdownText").then((module) => ({ default: module.BasicMarkdownText }));
+const MathMarkdownText = lazy(loadMathMarkdown);
+const BasicMarkdownText = lazy(loadBasicMarkdown);
 
 const BLOCK_MATH_PATTERN = /(^|\n)\s*\$\$|\\\[|\\begin\{/;
 const INLINE_MATH_PATTERN = /(^|[\s([{])\$[^$\n]{1,240}\$($|[\s)\]},.;:!?])/;
@@ -32,6 +34,14 @@ function containsRichMarkdown(text: string): boolean {
   return RICH_MARKDOWN_PATTERN.test(text);
 }
 
+/** Warm only renderers required by the loaded transcript, not every rich asset. */
+export async function preloadMarkdownRenderers(texts: string[]): Promise<void> {
+  const pending: Promise<unknown>[] = [];
+  if (texts.some(containsMath)) pending.push(loadMathMarkdown());
+  if (texts.some(text => !containsMath(text) && containsRichMarkdown(text))) pending.push(loadBasicMarkdown());
+  await Promise.all(pending);
+}
+
 export const MarkdownText = memo(function MarkdownText({
   text,
   tone = "normal",
@@ -40,7 +50,7 @@ export const MarkdownText = memo(function MarkdownText({
 }: MarkdownTextProps) {
   if (containsMath(text)) {
     return (
-      <Suspense fallback={<PlainMarkdownText text={text} tone={tone} className={className} />}>
+      <Suspense fallback={<MarkdownLoading />}>
         <MathMarkdownText text={text} tone={tone} className={className} onOpenUrl={onOpenUrl} />
       </Suspense>
     );
@@ -48,7 +58,7 @@ export const MarkdownText = memo(function MarkdownText({
 
   if (containsRichMarkdown(text)) {
     return (
-      <Suspense fallback={<PlainMarkdownText text={text} tone={tone} className={className} />}>
+      <Suspense fallback={<MarkdownLoading />}>
         <BasicMarkdownText text={text} tone={tone} className={className} onOpenUrl={onOpenUrl} />
       </Suspense>
     );

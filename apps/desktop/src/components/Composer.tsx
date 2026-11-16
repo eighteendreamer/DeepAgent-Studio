@@ -16,7 +16,6 @@ import { MorphingMenuShell } from "./ui/MorphingMenuShell";
 import { MOTION } from "./ui/motion";
 import { MENU_ITEM_ATTR, SlidingMenuList } from "./ui/SlidingMenuList";
 import { cn } from "./shadcn/utils";
-import { Item, ItemDescription } from "./shadcn/item";
 import {
   SETTINGS_CHANGED_EVENT,
   attachmentIngest,
@@ -1453,12 +1452,6 @@ export function Composer({
           </div>
         )}
       />
-      {planMode === null && (
-        <Item role="status" size="xs" variant="outline" className="mb-2 border-amber-500/30 bg-amber-500/10">
-          <CircleAlert className="h-4 w-4 shrink-0 text-amber-700" />
-          <ItemDescription>计划模式状态尚未确认。若读取失败，请明确运行 /plan 或 /execute，不要假定已退出计划模式。</ItemDescription>
-        </Item>
-      )}
       {planMode === true && (
         <div className="mb-2 inline-flex w-fit items-center rounded-full bg-amber-500/10 px-3 py-1.5 text-[11px] font-medium text-amber-700">
           <FontAwesomeIcon icon={["fas", "list-check"]} className="mr-1.5 text-[10px]" />
