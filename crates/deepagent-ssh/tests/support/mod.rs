@@ -12,22 +12,30 @@ use tokio::task::{JoinHandle, JoinSet};
 
 #[derive(Default)]
 pub struct Counts {
+    pub accept_gate: RwLock<Option<Arc<tokio::sync::Notify>>>,
     pub auth_gate: RwLock<Option<Arc<tokio::sync::Notify>>>,
     pub connections: AtomicUsize,
     pub passwords: AtomicUsize,
     pub public_keys: AtomicUsize,
     pub public_key_offers: AtomicUsize,
     pub commands: AtomicUsize,
+    pub closed_channels: AtomicUsize,
+    pub pty_size: RwLock<Option<(u32, u32)>>,
+    pub files: Arc<RwLock<HashMap<String, Vec<u8>>>>,
 }
 
-struct Handler(Arc<Counts>);
+struct Handler {
+    counts: Arc<Counts>,
+    channels: HashMap<ChannelId, Channel<Msg>>,
+    tasks: JoinSet<()>,
+}
 
 impl server::Handler for Handler {
     type Error = russh::Error;
 
     async fn auth_password(&mut self, _: &str, _: &str) -> Result<Auth, Self::Error> {
-        let gate = self.0.auth_gate.read().unwrap().clone();
-        self.0.passwords.fetch_add(1, Ordering::SeqCst);
+        let gate = self.counts.auth_gate.read().unwrap().clone();
+        self.counts.passwords.fetch_add(1, Ordering::SeqCst);
         if let Some(gate) = gate {
             gate.notified().await;
         }
@@ -35,7 +43,7 @@ impl server::Handler for Handler {
     }
 
     async fn auth_publickey(&mut self, _: &str, _: &PublicKey) -> Result<Auth, Self::Error> {
-        self.0.public_keys.fetch_add(1, Ordering::SeqCst);
+        self.counts.public_keys.fetch_add(1, Ordering::SeqCst);
         Ok(Auth::Accept)
     }
 
@@ -44,28 +52,143 @@ impl server::Handler for Handler {
         _: &str,
         _: &PublicKey,
     ) -> Result<Auth, Self::Error> {
-        self.0.public_key_offers.fetch_add(1, Ordering::SeqCst);
+        self.counts.public_key_offers.fetch_add(1, Ordering::SeqCst);
         Ok(Auth::Accept)
     }
 
     async fn channel_open_session(
         &mut self,
-        _: Channel<Msg>,
+        channel: Channel<Msg>,
         _: &mut Session,
     ) -> Result<bool, Self::Error> {
+        self.channels.insert(channel.id(), channel);
         Ok(true)
+    }
+
+    async fn channel_close(
+        &mut self,
+        channel: ChannelId,
+        _: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.channels.remove(&channel);
+        self.counts.closed_channels.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn pty_request(
+        &mut self,
+        _: ChannelId,
+        _: &str,
+        cols: u32,
+        rows: u32,
+        _: u32,
+        _: u32,
+        _: &[(russh::Pty, u32)],
+        _: &mut Session,
+    ) -> Result<(), Self::Error> {
+        *self.counts.pty_size.write().unwrap() = Some((cols, rows));
+        Ok(())
+    }
+
+    async fn shell_request(
+        &mut self,
+        channel: ChannelId,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        session.data(channel, CryptoVec::from_slice(b"fixture$ "))?;
+        Ok(())
+    }
+
+    async fn window_change_request(
+        &mut self,
+        _: ChannelId,
+        cols: u32,
+        rows: u32,
+        _: u32,
+        _: u32,
+        _: &mut Session,
+    ) -> Result<(), Self::Error> {
+        *self.counts.pty_size.write().unwrap() = Some((cols, rows));
+        Ok(())
+    }
+
+    async fn data(
+        &mut self,
+        channel: ChannelId,
+        data: &[u8],
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        session.data(channel, CryptoVec::from_slice(data))?;
+        Ok(())
+    }
+
+    async fn subsystem_request(
+        &mut self,
+        channel: ChannelId,
+        name: &str,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        if name != "sftp" {
+            session.channel_failure(channel)?;
+            return Ok(());
+        }
+        session.channel_success(channel)?;
+        let channel = self
+            .channels
+            .remove(&channel)
+            .expect("fixture SFTP channel");
+        let files = self.counts.files.clone();
+        self.tasks.spawn(async move {
+            russh_sftp::server::run(channel.into_stream(), sftp::MemoryFiles::new(files)).await;
+        });
+        Ok(())
     }
 
     async fn exec_request(
         &mut self,
         channel: ChannelId,
-        _: &[u8],
+        command: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        self.0.commands.fetch_add(1, Ordering::SeqCst);
+        self.counts.commands.fetch_add(1, Ordering::SeqCst);
+        if command == b"fixture-rejected" {
+            session.channel_failure(channel)?;
+            return Ok(()); // Client must close this rejected channel itself.
+        }
         session.channel_success(channel)?;
-        session.data(channel, CryptoVec::from_slice(b"ok\n"))?;
-        session.exit_status_request(channel, 0)?;
+        let output = if command.starts_with(b"wc -c < ") {
+            format!(
+                "{}\n",
+                self.counts
+                    .files
+                    .read()
+                    .unwrap()
+                    .values()
+                    .next()
+                    .unwrap()
+                    .len()
+            )
+        } else if command.starts_with(b"if command -v sha256sum") {
+            use sha2::Digest;
+            format!(
+                "{:x}\n",
+                sha2::Sha256::digest(self.counts.files.read().unwrap().values().next().unwrap())
+            )
+        } else {
+            "ok\n".to_owned()
+        };
+        session.data(channel, CryptoVec::from_slice(output.as_bytes()))?;
+        if command == b"fixture-nonzero" {
+            session.extended_data(channel, 1, CryptoVec::from_slice(b"fixture error"))?;
+        }
+        if command != b"fixture-missing-status" {
+            session
+                .exit_status_request(channel, if command == b"fixture-nonzero" { 7 } else { 0 })?;
+        }
+        if command == b"fixture-late-output" {
+            session.data(channel, CryptoVec::from_slice("尾部\n".as_bytes()))?;
+            session.extended_data(channel, 1, CryptoVec::from_slice(b"late stderr"))?;
+        }
         session.eof(channel)?;
         session.close(channel)?;
         Ok(())
@@ -95,12 +218,20 @@ impl SshServer {
                     accepted = listener.accept() => {
                         let (stream, _) = accepted.expect("accept fixture client");
                         server_counts.connections.fetch_add(1, Ordering::SeqCst);
+                        let gate = server_counts.accept_gate.read().unwrap().clone();
+                        if let Some(gate) = gate {
+                            gate.notified().await;
+                        }
                         let config = Arc::new(server::Config {
                             keys: vec![server_key.read().expect("fixture key").clone()],
                             inactivity_timeout: None,
                             ..Default::default()
                         });
-                        let handler = Handler(server_counts.clone());
+                        let handler = Handler {
+                            counts: server_counts.clone(),
+                            channels: HashMap::new(),
+                            tasks: JoinSet::new(),
+                        };
                         sessions.spawn(async move {
                             if let Ok(session) = server::run_stream(config, stream, handler).await {
                                 let _ = session.await;
@@ -164,3 +295,6 @@ impl Drop for SshServer {
 pub fn random_key() -> PrivateKey {
     PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("generate temporary key")
 }
+mod sftp;
+
+use std::collections::HashMap;

@@ -121,22 +121,14 @@ impl HostTrust {
         }
     }
 
-    pub(crate) fn map_connect_error(
-        config: &SshConnectionConfig,
-        error: async_ssh2_tokio::Error,
-    ) -> SshError {
-        match error {
-            async_ssh2_tokio::Error::ServerCheckFailed
-            | async_ssh2_tokio::Error::SshError(russh::Error::UnknownKey) => {
-                tracing::warn!(target: "deepagent_ssh", connection_id = config.id,
-                    "SSH server host key rejected before authentication");
-                Self::error(
-                    config,
-                    "server key changed or does not match the verified entry",
-                )
-            }
-            other => super::service::map_ssh_error(other),
-        }
+    pub(crate) fn accepts(&self, presented: &PublicKey) -> bool {
+        // Preserve the existing russh 0.55 fail-closed semantics for conflicting
+        // same-algorithm entries, but compare the captured keys, never reopen a path.
+        self.keys.iter().any(|(_, key)| key == presented)
+            && self
+                .keys
+                .iter()
+                .all(|(_, key)| key.algorithm() != presented.algorithm() || key == presented)
     }
 }
 

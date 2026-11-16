@@ -1,7 +1,7 @@
 //! Per-connection runtime state.
 
 use super::config::{SshConnectionConfig, SshStatus};
-use async_ssh2_tokio::Client;
+use super::transport::SshClient as Client;
 use deepagent_terminal::TerminalReadChunk;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;

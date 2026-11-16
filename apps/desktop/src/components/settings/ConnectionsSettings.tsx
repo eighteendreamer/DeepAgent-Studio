@@ -50,7 +50,8 @@ export function normalizeSshError(
 
   const lower = raw.toLowerCase();
   if (lower.includes("ssh host key verification failed")) {
-    return `${t("settings.connections.hostKeyError")} ${raw}`;
+    const guidance = t("settings.connections.hostKeyError");
+    return raw.startsWith(`${guidance} `) ? raw : `${guidance} ${raw}`;
   }
   if (
     lower.includes("os error 10061") ||

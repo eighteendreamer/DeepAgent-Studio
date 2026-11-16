@@ -7,7 +7,7 @@
 //!   by Tauri commands and the frontend.
 //!
 //! Transport strategy:
-//! Native SSH via `async-ssh2-tokio`, so password and key authentication stay
+//! Native SSH via `russh`, so password and key authentication stay
 //! inside the Rust binary without relying on `ssh.exe`, `plink`, or `sshpass`.
 //!
 //! Persistence:
@@ -37,6 +37,7 @@ pub use session::{
     SshDirEntry, SshDirListing, SshExecResult, SshFileBinary, SshFileContent, SshPtyHandle,
     SshSession, SshStatusSnapshot, SshTestResult,
 };
+pub use transport::{SshClient, SshCommandOutput};
 
 mod config;
 mod error;
@@ -44,6 +45,7 @@ mod host_trust;
 mod remote;
 mod service;
 mod session;
+mod transport;
 
 use async_trait::async_trait;
 use deepagent_terminal::{

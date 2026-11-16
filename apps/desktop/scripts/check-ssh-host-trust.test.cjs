@@ -86,6 +86,16 @@ test('host-key diagnostic precedes generic auth/permission normalization', () =>
   assert.equal(normalize('authentication failed', translate), translate('settings.connections.errors.auth'));
 });
 
+test('host-key error formatting is idempotent across test results and status rendering', () => {
+  const normalize = production('components/settings/ConnectionsSettings.tsx', 'normalizeSshError');
+  const raw = 'ssh host key verification failed: presented ssh-ed25519 SHA256:fixture-only';
+  for (const t of [translate, key => key === 'settings.connections.hostKeyError' ? 'Verify the host fingerprint.' : key]) {
+    const once = normalize(raw, t);
+    assert.equal(normalize(once, t), once, 'rendering an already formatted failure must not repeat guidance');
+    assert.ok(once.includes('SHA256:fixture-only'), 'public diagnostic details remain visible');
+  }
+});
+
 test('shared production field renders accessible strict-trust guidance and edits its value', () => {
   const fn = production('components/remote/SshHostTrustField.tsx', 'SshHostTrustField', {
     React, useTranslation: () => ({ t: translate }), Input: 'input', Label: 'label', Button: 'button',

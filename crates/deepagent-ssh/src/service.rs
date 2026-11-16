@@ -13,8 +13,8 @@ use super::session::{
     PtyCommand, PtyState, SshDirEntry, SshDirListing, SshExecResult, SshFileBinary, SshFileContent,
     SshSession, SshStatusSnapshot, SshTestResult,
 };
+use super::transport::SshClient as Client;
 use super::{SshConfigStore, SshServiceHandle};
-use async_ssh2_tokio::{AuthMethod, Client, ServerCheckMethod};
 use async_trait::async_trait;
 use base64::Engine;
 use russh::ChannelMsg;
@@ -371,7 +371,7 @@ impl SshServiceImpl {
             .await
             .ok_or_else(|| SshError::ConnectionLost(handle.connection_id.clone()))?;
         let start = std::time::Instant::now();
-        let output = client.execute(command).await.map_err(map_ssh_error)?;
+        let output = client.execute(command).await?;
         let duration_ms = start.elapsed().as_millis() as u64;
         let exit_code = i32::try_from(output.exit_status).unwrap_or(i32::MAX);
         if exit_code != 0 {
@@ -705,7 +705,7 @@ impl SshServiceImpl {
         let start = std::time::Instant::now();
         let result = match timeout(Duration::from_secs(20), async {
             let (client, _) = connect_client(&cfg).await?;
-            let output = client.execute("echo ok").await.map_err(map_ssh_error)?;
+            let output = client.execute("echo ok").await?;
             let _ = client.disconnect().await;
             Ok::<_, SshError>(output)
         })
@@ -793,10 +793,7 @@ impl SshServiceImpl {
             .client()
             .await
             .ok_or_else(|| SshError::ConnectionLost(id.to_string()))?;
-        let output = client
-            .execute(REMOTE_PROBE_SCRIPT)
-            .await
-            .map_err(map_ssh_error)?;
+        let output = client.execute(REMOTE_PROBE_SCRIPT).await?;
         let exit_code = i32::try_from(output.exit_status).unwrap_or(i32::MAX);
         if exit_code != 0 {
             return Err(SshError::CommandFailed {
@@ -847,16 +844,7 @@ impl SshServiceImpl {
             );
             self.exec_remote_raw(&client, &cmd).await?;
         }
-        client
-            .upload_file(
-                &request.local_path,
-                request.remote_path.clone(),
-                Some(600),
-                Some(64 * 1024),
-                false,
-            )
-            .await
-            .map_err(map_ssh_error)?;
+        sftp_upload_file(id, &client, &request.local_path, &request.remote_path).await?;
         session.touch_keepalive();
         let local_sha256 = match request.verify_mode {
             RemoteVerifyMode::Sha256 => Some(sha256_file(&local_path).await?),
@@ -1419,7 +1407,7 @@ impl SshServiceImpl {
 
     async fn exec_remote_raw(&self, client: &Client, command: &str) -> SshResult<SshExecResult> {
         let start = std::time::Instant::now();
-        let output = client.execute(command).await.map_err(map_ssh_error)?;
+        let output = client.execute(command).await?;
         let exit_code = i32::try_from(output.exit_status).unwrap_or(i32::MAX);
         if exit_code != 0 {
             return Err(SshError::CommandFailed {
@@ -1437,10 +1425,7 @@ impl SshServiceImpl {
 }
 
 async fn execute_health_check(client: &Client) -> SshResult<()> {
-    let output = client
-        .execute(SSH_HEALTHCHECK_COMMAND)
-        .await
-        .map_err(map_ssh_error)?;
+    let output = client.execute(SSH_HEALTHCHECK_COMMAND).await?;
     let exit_code = i32::try_from(output.exit_status).unwrap_or(i32::MAX);
     if exit_code != 0 {
         return Err(SshError::CommandFailed {
@@ -1458,16 +1443,7 @@ async fn connect_client(config: &SshConnectionConfig) -> SshResult<(Client, Host
         config.password.as_deref(),
     )?;
     let trust = HostTrust::load(config).await?;
-    let auth = auth_method(config)?;
-    let addr = (config.host.as_str(), config.port);
-    let client = Client::connect(
-        addr,
-        &config.username,
-        auth,
-        ServerCheckMethod::KnownHostsFile(trust.path.clone()),
-    )
-    .await
-    .map_err(|error| HostTrust::map_connect_error(config, error))?;
+    let client = Client::connect(config, &trust).await?;
     match HostTrust::load(config).await {
         Ok(current) if current == trust => Ok((client, trust)),
         result => {
@@ -1475,45 +1451,11 @@ async fn connect_client(config: &SshConnectionConfig) -> SshResult<(Client, Host
             Err(result.err().unwrap_or_else(|| {
                 HostTrust::error(
                     config,
-                    "trust source changed during handshake; retry after verification",
+                    "trust source changed during authentication; retry after verification",
                 )
             }))
         }
     }
-}
-
-fn auth_method(config: &SshConnectionConfig) -> SshResult<AuthMethod> {
-    match config.auth_type {
-        SshAuthType::Password => {
-            let password = config.password.as_deref().ok_or_else(|| {
-                SshError::InvalidConfig("password authentication requires a password".into())
-            })?;
-            Ok(AuthMethod::with_password(password))
-        }
-        SshAuthType::KeyFile => {
-            let key_path = config.key_path.as_deref().ok_or_else(|| {
-                SshError::InvalidConfig("key_file authentication requires key_path".into())
-            })?;
-            Ok(AuthMethod::with_key_file(
-                key_path,
-                config.password.as_deref(),
-            ))
-        }
-        SshAuthType::Agent => auth_agent_method(),
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn auth_agent_method() -> SshResult<AuthMethod> {
-    Ok(AuthMethod::with_agent())
-}
-
-#[cfg(target_os = "windows")]
-fn auth_agent_method() -> SshResult<AuthMethod> {
-    Err(SshError::InvalidConfig(
-        "SSH agent authentication is not supported by async-ssh2-tokio on Windows; use password or key file auth"
-            .into(),
-    ))
 }
 
 fn validate_config(
@@ -1564,28 +1506,12 @@ fn dto_from_config(
     }
 }
 
-pub(super) fn map_ssh_error(err: async_ssh2_tokio::Error) -> SshError {
-    match err {
-        async_ssh2_tokio::Error::PasswordWrong
-        | async_ssh2_tokio::Error::KeyAuthFailed
-        | async_ssh2_tokio::Error::KeyboardInteractiveAuthFailed
-        | async_ssh2_tokio::Error::AgentAuthenticationFailed => {
-            SshError::AuthFailed("ssh".into(), err.to_string())
-        }
-        async_ssh2_tokio::Error::AddressInvalid(inner) => {
-            SshError::InvalidConfig(inner.to_string())
-        }
-        async_ssh2_tokio::Error::IoError(inner) => SshError::Process(inner),
-        other => SshError::Internal(other.to_string()),
-    }
-}
-
 async fn sftp_list_dir(
     connection_id: &str,
     client: &Client,
     path: &str,
 ) -> SshResult<SshDirListing> {
-    let channel = client.get_channel().await.map_err(map_ssh_error)?;
+    let channel = client.get_channel().await?;
     channel
         .request_subsystem(true, "sftp")
         .await
@@ -1652,7 +1578,7 @@ async fn sftp_read_file_bytes(
     path: &str,
     max_bytes: u64,
 ) -> SshResult<(Vec<u8>, Option<u64>, bool)> {
-    let channel = client.get_channel().await.map_err(map_ssh_error)?;
+    let channel = client.get_channel().await?;
     channel
         .request_subsystem(true, "sftp")
         .await
@@ -1730,13 +1656,13 @@ async fn sftp_read_file_binary(
 }
 
 /// 打开一次性 SFTP 会话（subsystem 握手），操作结束后必须配对 sftp_close_quiet。
-async fn sftp_open(client: &Client) -> SshResult<SftpSession> {
-    let channel = client.get_channel().await.map_err(map_ssh_error)?;
+async fn sftp_open(client: &Client, timeout_seconds: Option<u64>) -> SshResult<SftpSession> {
+    let channel = client.get_channel().await?;
     channel
         .request_subsystem(true, "sftp")
         .await
         .map_err(|err| SshError::Internal(err.to_string()))?;
-    SftpSession::new_opts(channel.into_stream(), None)
+    SftpSession::new_opts(channel.into_stream(), timeout_seconds)
         .await
         .map_err(|err| SshError::Internal(err.to_string()))
 }
@@ -1752,8 +1678,34 @@ async fn sftp_close_quiet(connection_id: &str, sftp: &SftpSession) {
     }
 }
 
+async fn sftp_upload_file(
+    connection_id: &str,
+    client: &Client,
+    local_path: &str,
+    remote_path: &str,
+) -> SshResult<()> {
+    let sftp = sftp_open(client, Some(600)).await?;
+    let result = async {
+        let local = tokio::fs::File::open(local_path).await?;
+        let mut reader = tokio::io::BufReader::with_capacity(64 * 1024, local);
+        let mut remote = sftp
+            .open_with_flags(
+                remote_path,
+                OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE | OpenFlags::READ,
+            )
+            .await
+            .map_err(|error| SshError::Internal(format!("open SFTP upload: {error}")))?;
+        tokio::io::copy_buf(&mut reader, &mut remote).await?;
+        remote.shutdown().await?;
+        Ok(())
+    }
+    .await;
+    sftp_close_quiet(connection_id, &sftp).await;
+    result
+}
+
 async fn sftp_create_dir(connection_id: &str, client: &Client, path: &str) -> SshResult<()> {
-    let sftp = sftp_open(client).await?;
+    let sftp = sftp_open(client, None).await?;
     let result = sftp
         .create_dir(path)
         .await
@@ -1764,7 +1716,7 @@ async fn sftp_create_dir(connection_id: &str, client: &Client, path: &str) -> Ss
 
 /// 新建空文件：CREATE|WRITE|EXCLUDE，同名文件已存在时失败，不覆盖。
 async fn sftp_create_file(connection_id: &str, client: &Client, path: &str) -> SshResult<()> {
-    let sftp = sftp_open(client).await?;
+    let sftp = sftp_open(client, None).await?;
     let result = async {
         let flags = OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::EXCLUDE;
         sftp.open_with_flags(path, flags)
@@ -1785,7 +1737,7 @@ async fn sftp_rename_path(
     old_path: &str,
     new_path: &str,
 ) -> SshResult<()> {
-    let sftp = sftp_open(client).await?;
+    let sftp = sftp_open(client, None).await?;
     let result = sftp
         .rename(old_path, new_path)
         .await
@@ -1829,7 +1781,7 @@ async fn sftp_remove_entry(
 
 /// 删除文件/符号链接/目录（目录递归删除）。顶层类型以 symlink_metadata 为准。
 async fn sftp_remove_path(connection_id: &str, client: &Client, path: &str) -> SshResult<()> {
-    let sftp = sftp_open(client).await?;
+    let sftp = sftp_open(client, None).await?;
     let result = async {
         let meta = sftp
             .symlink_metadata(path)
@@ -1968,7 +1920,7 @@ async fn remote_file_size(client: &Client, remote_path: &str) -> SshResult<u64> 
         "wc -c < {path} 2>/dev/null || stat -c %s {path} 2>/dev/null || stat -f %z {path} 2>/dev/null",
         path = shell_escape(remote_path)
     );
-    let output = client.execute(&cmd).await.map_err(map_ssh_error)?;
+    let output = client.execute(&cmd).await?;
     let exit_code = i32::try_from(output.exit_status).unwrap_or(i32::MAX);
     if exit_code != 0 {
         return Err(SshError::CommandFailed {
@@ -1995,7 +1947,7 @@ elif command -v shasum >/dev/null 2>&1; then shasum -a 256 {path} | awk '{{print
 elif command -v openssl >/dev/null 2>&1; then openssl dgst -sha256 {path} | awk '{{print $NF}}'; \
 elif command -v python3 >/dev/null 2>&1; then python3 - {path} <<'PY'\nimport hashlib, sys\nh = hashlib.sha256()\nwith open(sys.argv[1], 'rb') as fh:\n    while True:\n        chunk = fh.read(1024 * 1024)\n        if not chunk:\n            break\n        h.update(chunk)\nprint(h.hexdigest())\nPY\nelse echo missing-sha256-tool >&2; exit 127; fi"
     );
-    let output = client.execute(&cmd).await.map_err(map_ssh_error)?;
+    let output = client.execute(&cmd).await?;
     let exit_code = i32::try_from(output.exit_status).unwrap_or(i32::MAX);
     if exit_code != 0 {
         return Err(SshError::CommandFailed {
