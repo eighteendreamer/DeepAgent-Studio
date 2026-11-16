@@ -11525,11 +11525,13 @@ H201完成当前本机handler数学、TypeScript、Vite构建和专属产物清�
 
 H202完成当前前端持久化/恢复、旧图兼容、creative/professional独立viewport、回归测试、TypeScript/Vite和专属清理范围；未验Tauri/WebView像素、跨进程/断电/其它OS和长期压力。累计262项已修复验收，历史跳过29、归并10、撤销3、待修2（含H180授权不修）、修复中0、H66验收保留1；有效未闭环3。下一项H114之后台通知已完成，剩余按台账继续核对；全余170–430有效小时仍沿未逐项重估的低置信历史区间，编译/设备/依赖/人工等待另计。
 
-## H-299 桌面端工具循环用量投影（修复中，2026-11-16）
+## H-299 桌面端工具循环用量投影（已修复并验收，2026-11-16）
 
 **E-H299-01（DeepSeek Harness 分层复现与根因修复）**：参考本地 `借鉴/deepseek-harness/packages/llm/token-meter/src/turn-usage.ts`、`usage-projection.ts` 的 attempt aggregate + latest sample 分层，不把 aggregate 当成 last sample。沿用现有 `RunUsage`、`UsageRecorded`、`ConversationUsageDto` 和 `RuntimeEvent::Usage`，没有复制参考业务代码或增加第二套账本。
 
 - Runtime `RunUsage` 新增最近一次 completion/reasoning；`UsageRecorded` 新增 optional `last_request_*` 与 turn-total prompt/cache 桶，旧事件可反序列化。AppCore 会话 DTO 新增 `last_request` / `turn_total`，旧字段保持兼容。
 - Desktop live 每个物理请求累加 turn prompt/output/reasoning/cache/total，并保留 `lastRequest`；重载 mapper 优先读取相同 `turn_total`，Context fallback 读取 `lastRequest`。因此正常两请求工具回合 live/reload 均为 turn `prompt=500/output=50/reasoning=37/total=550`，last request 为 `300/30/25/330`。
 - 回归实际通过：H299 seam `1 passed / 0 failed`；`check-session-usage` + `check-process-collapse` 合计 `29 passed / 0 failed`；AppCore 新 service test `1 passed / 0 failed`；Runtime agent usage 组 `142 passed / 0 failed / 1 ignored`；相关 `cargo check`、根 fmt、diff check 通过；直接现有 `node_modules/.bin/tsc.cmd --noEmit` 通过。pnpm wrapper 未调用，避免不同步依赖触发安装。
-- 当前仍未运行真实 Tauri/WebView、真实供应商/账单、其他 OS 或完整 workspace；尚未独立提交和清理构建产物。旧 DTO 缺失新投影时只做 legacy fallback，不声称能从历史记录恢复精确 billed prompt；H-163/H-180/H66 独立。
+- 当前仍未运行真实 Tauri/WebView、真实供应商/账单、其他 OS 或完整 workspace；旧 DTO 缺失新投影时只做 legacy fallback，不声称能从历史记录恢复精确 billed prompt；H-163/H-180/H66 独立。候选阶段的“尚未提交”状态由下述提交回填覆盖。
+
+**E-H299-02（2026-11-16，独立提交与状态回填）**：代码、回归测试与本项两份文档已独立提交为 `3056cc28`（`【fix】统一工具回合实时与重载用量语义`），未推送、未创建 PR、未 amend；提交仅包含 H-299 相关 16 个文件。H-299 按 Windows 本机、离线合成 provider、正式 Runtime/Event/DTO/桌面 mapper 范围标记“已修复并验收”。真实 Tauri/WebView、真实供应商/账单、其他 OS、完整 workspace 仍未验证，不扩大结论；旧 DTO 缺失投影时的 legacy fallback 保留。
