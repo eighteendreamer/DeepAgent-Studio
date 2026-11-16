@@ -89,7 +89,7 @@ interface Props {
   title?: string | null;
   /** The session timeline, used to offer rewind anchors. */
   timeline?: TimelineEntry[];
-  /** Head-of-queue tool-approval request to show floating above the composer. */
+  /** Head-of-queue tool approval, overlaid on the composer like a question. */
   approval?: ApprovalRequest | null;
   /** Total queued approvals (including the current one). */
   approvalQueueCount?: number;
@@ -1350,15 +1350,28 @@ export function ChatView({
           </div>
         </div>
 
-        {question && (
-          <div className="absolute bottom-6 left-0 z-40 flex w-full justify-center px-6">
-            <AskUserQuestionCard
-              key={question.question_id}
-              request={question}
-              queueCount={questionQueueCount}
-              onAnswer={(req, answers) => onQuestionAnswer?.(req, answers)}
-              onDecline={(req) => onQuestionAnswer?.(req, null)}
-            />
+        {(question || approval) && (
+          <div
+            className="absolute bottom-6 left-0 z-40 flex w-full flex-col items-center px-6"
+            style={{ maxHeight: question ? undefined : "min(440px, calc(100% - 48px))" }}
+          >
+            {question ? (
+              <AskUserQuestionCard
+                key={question.question_id}
+                request={question}
+                queueCount={questionQueueCount}
+                onAnswer={(req, answers) => onQuestionAnswer?.(req, answers)}
+                onDecline={(req) => onQuestionAnswer?.(req, null)}
+              />
+            ) : (
+              <ApprovalDialog
+                key={approval?.call_id}
+                request={approval}
+                queueCount={approvalQueueCount}
+                onApprove={(req, scope) => onApprovalDecision?.(req, true, scope)}
+                onReject={(req) => onApprovalDecision?.(req, false)}
+              />
+            )}
           </div>
         )}
 
@@ -1375,19 +1388,6 @@ export function ChatView({
               gitError={gitError}
               onRefreshChanges={() => { void refreshGitChanges(); }}
             />}
-            {approval && (
-              <div
-                className="absolute left-0 right-0 z-30"
-                style={{ bottom: "calc(100% - 10px)" }}
-              >
-                <ApprovalDialog
-                  request={approval}
-                  queueCount={approvalQueueCount}
-                  onApprove={(req, scope) => onApprovalDecision?.(req, true, scope)}
-                  onReject={(req) => onApprovalDecision?.(req, false)}
-                />
-              </div>
-            )}
             <Composer
               value={value}
               onChange={setValue}
