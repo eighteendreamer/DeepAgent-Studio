@@ -3955,6 +3955,29 @@ export async function sshRevokeHostKey(id: string, fingerprint: string): Promise
   return invoke<void>("ssh_revoke_host_key", { id, fingerprint });
 }
 
+export type SshKnownHostsImportStatus = "ready" | "duplicate" | "existing_trust" | "malformed" | "hashed_host" | "unsupported_pattern" | "cert_authority" | "revoked_marker" | "revoked_source_key" | "source_conflict" | "invalid_endpoint";
+export interface SshKnownHostsImportRow {
+  line_number: number; host: string | null; port: number | null;
+  algorithm: string | null; fingerprint: string | null; status: SshKnownHostsImportStatus;
+}
+export interface SshKnownHostsImportPreview {
+  connection_id: string; host: string; port: number; known_hosts_path: string;
+  source_sha256: string; rows: SshKnownHostsImportRow[]; importable: number; skipped: number;
+}
+export interface SshKnownHostsImportResult {
+  imported: number; skipped: number; preview: SshKnownHostsImportPreview; disconnect_failed_ids: string[];
+}
+export async function sshPreviewKnownHostsImport(id: string): Promise<SshKnownHostsImportPreview> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("Application host trust requires the desktop app");
+  return invoke<SshKnownHostsImportPreview>("ssh_preview_known_hosts_import", { id });
+}
+export async function sshImportKnownHosts(id: string, expected: SshKnownHostsImportPreview): Promise<SshKnownHostsImportResult> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("Application host trust requires the desktop app");
+  return invoke<SshKnownHostsImportResult>("ssh_import_known_hosts", { id, expected });
+}
+
 export async function sshCreateDir(connectionId: string, path: string): Promise<void> {
   const invoke = getInvoke();
   if (!invoke) throw new Error("tauri invoke unavailable");

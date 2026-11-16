@@ -31,6 +31,16 @@ pub struct Document {
     pub updated_at: Timestamp,
 }
 
+/// One namespaced CAS update. `None` means the document must still be absent.
+/// Bodies stay opaque; callers retain domain validation and size limits.
+#[derive(Clone, Copy)]
+pub struct DocumentBodyChange<'a> {
+    pub collection: &'a str,
+    pub id: &'a str,
+    pub expected: Option<&'a str>,
+    pub body: &'a str,
+}
+
 /// Repository over the `documents` table.
 pub struct DocumentStore<'db> {
     db: &'db Database,
@@ -76,17 +86,15 @@ impl<'db> DocumentStore<'db> {
         body: &str,
         now: Timestamp,
     ) -> Result<bool> {
-        self.db.with_conn(|c| {
-            let changed = c
-                .execute(
-                    "INSERT INTO documents (id, collection, body, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?4)
-                 ON CONFLICT(collection, id) DO NOTHING",
-                    params![id, collection, body, now.as_millis()],
-                )
-                .map_err(map_sqlite)?;
-            Ok(changed == 1)
-        })
+        self.compare_exchange_bodies(
+            &[DocumentBodyChange {
+                collection,
+                id,
+                expected: None,
+                body,
+            }],
+            now,
+        )
     }
 
     /// Replace a document body only when it still matches the body that was
@@ -100,15 +108,48 @@ impl<'db> DocumentStore<'db> {
         body: &str,
         now: Timestamp,
     ) -> Result<bool> {
+        self.compare_exchange_bodies(
+            &[DocumentBodyChange {
+                collection,
+                id,
+                expected: Some(expected_body),
+                body,
+            }],
+            now,
+        )
+    }
+
+    /// Atomically compare and publish every body, preserving embeddings and
+    /// creation times. A stale member returns false with no writes; SQL errors
+    /// roll back too. Duplicate keys are rejected, not interpreted as a chain.
+    pub fn compare_exchange_bodies(
+        &self,
+        changes: &[DocumentBodyChange<'_>],
+        now: Timestamp,
+    ) -> Result<bool> {
+        let mut keys = std::collections::HashSet::new();
+        for change in changes {
+            if !keys.insert((change.collection, change.id)) {
+                return Err(CoreError::Persistence(
+                    "duplicate document keys in CAS batch".into(),
+                ));
+            }
+        }
+        if changes.is_empty() {
+            return Ok(true);
+        }
         self.db.with_conn(|c| {
-            let changed = c
-                .execute(
-                    "UPDATE documents SET body = ?1, updated_at = ?2
-                     WHERE collection = ?3 AND id = ?4 AND body = ?5",
-                    params![body, now.as_millis(), collection, id, expected_body],
-                )
-                .map_err(map_sqlite)?;
-            Ok(changed == 1)
+            if changes.len() == 1 {
+                return compare_body_on(c, &changes[0], now); // Keep single-statement CAS inexpensive.
+            }
+            let transaction = c.unchecked_transaction().map_err(map_sqlite)?;
+            for change in changes {
+                if !compare_body_on(&transaction, change, now)? {
+                    return Ok(false);
+                }
+            }
+            transaction.commit().map_err(map_sqlite)?;
+            Ok(true)
         })
     }
 
@@ -191,6 +232,21 @@ impl<'db> DocumentStore<'db> {
     }
 }
 
+fn compare_body_on(
+    c: &rusqlite::Connection,
+    change: &DocumentBodyChange<'_>,
+    now: Timestamp,
+) -> Result<bool> {
+    let changed = if let Some(expected) = change.expected {
+        c.execute("UPDATE documents SET body=?1, updated_at=?2 WHERE collection=?3 AND id=?4 AND body=?5",
+            params![change.body, now.as_millis(), change.collection, change.id, expected])
+    } else {
+        c.execute("INSERT INTO documents (id,collection,body,created_at,updated_at) VALUES (?1,?2,?3,?4,?4) ON CONFLICT(collection,id) DO NOTHING",
+            params![change.id, change.collection, change.body, now.as_millis()])
+    }.map_err(map_sqlite)?;
+    Ok(changed == 1)
+}
+
 fn row_to_document(row: &rusqlite::Row<'_>) -> rusqlite::Result<Document> {
     let id: String = row.get(0)?;
     let collection: String = row.get(1)?;
@@ -247,6 +303,83 @@ mod tests {
 
     fn at(ms: i64) -> Timestamp {
         Timestamp::from_millis(ms)
+    }
+
+    #[test]
+    fn body_batch_cas_rolls_back_every_write_on_a_stale_member() {
+        let db = Database::open_in_memory().unwrap();
+        let store = DocumentStore::new(&db);
+        store
+            .put("fixture", "existing", "newer", Some(&[1.0]), at(1))
+            .unwrap();
+        let changes = [
+            DocumentBodyChange {
+                collection: "fixture",
+                id: "new",
+                expected: None,
+                body: "first",
+            },
+            DocumentBodyChange {
+                collection: "fixture",
+                id: "existing",
+                expected: Some("stale"),
+                body: "replacement",
+            },
+        ];
+        assert!(!store.compare_exchange_bodies(&changes, at(2)).unwrap());
+        assert!(store.get("fixture", "new").unwrap().is_none());
+        assert_eq!(
+            store.get("fixture", "existing").unwrap().unwrap().body,
+            "newer"
+        );
+        assert!(store
+            .compare_exchange_bodies(
+                &[
+                    changes[0],
+                    DocumentBodyChange {
+                        expected: Some("newer"),
+                        ..changes[1]
+                    },
+                ],
+                at(3)
+            )
+            .unwrap());
+        let existing = store.get("fixture", "existing").unwrap().unwrap();
+        assert_eq!(existing.body, "replacement");
+        assert_eq!(existing.embedding, Some(vec![1.0]));
+        assert_eq!(existing.created_at, at(1));
+    }
+
+    #[test]
+    fn body_batch_error_or_duplicate_keys_never_partially_apply() {
+        let db = Database::open_in_memory().unwrap();
+        db.with_conn(|c| {
+            c.execute_batch("CREATE TRIGGER fixture_reject_document BEFORE INSERT ON documents WHEN NEW.id='blocked' BEGIN SELECT RAISE(FAIL, 'fixture failure'); END;").map_err(map_sqlite)
+        }).unwrap();
+        let store = DocumentStore::new(&db);
+        let first = DocumentBodyChange {
+            collection: "fixture",
+            id: "first",
+            expected: None,
+            body: "public-fixture",
+        };
+        assert!(store
+            .compare_exchange_bodies(
+                &[
+                    first,
+                    DocumentBodyChange {
+                        id: "blocked",
+                        ..first
+                    }
+                ],
+                at(1)
+            )
+            .is_err());
+        assert_eq!(store.count("fixture").unwrap(), 0);
+        assert!(store
+            .compare_exchange_bodies(&[first, first], at(1))
+            .is_err());
+        assert_eq!(store.count("fixture").unwrap(), 0);
     }
 
     #[test]

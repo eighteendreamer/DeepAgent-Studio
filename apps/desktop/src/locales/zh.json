@@ -775,6 +775,12 @@
         "once": "仅本次连接", "save": "保存并连接", "cancel": "拒绝并取消", "expires": "本次挑战有效期至", "expired": "挑战已过期，请取消并重新发起连接。", "connecting": "正在验证已确认的密钥并连接…"
       },
       "trustManager": {
+        "previewFile": "批量预览整个 known_hosts 文件", "fileReport": "全文件导入报告",
+        "importable": "可导入", "imported": "已导入", "skipped": "跳过", "trustLine": "行", "previousPage": "上一页", "nextPage": "下一页",
+        "fileWarning": "此操作覆盖本连接所配置文件内的所有明文目标，不限于当前服务器，可能影响其他连接。请独立核验每个可导入目标及指纹。仅支持直连身份；已有信任和撤销记录不覆盖。最多 1 MiB / 4096 个展开条目，每页显示 100 条。跳过导入不代表连接时会忽略撤销或不支持标记；不修改来源文件。",
+        "acknowledgeFile": "我已核验报告中全部可导入目标的指纹，确认将这些公钥加入应用信任库。",
+        "confirmFileImport": "确认批量导入", "fileCommitted": "信任已提交；关闭窗口不会撤回已导入公钥。", "cleanupFailed": "信任已提交，但这些连接清理失败，请手动断开：",
+        "fileStatus": { "ready": "待核验后导入", "duplicate": "重复公钥条目", "existing_trust": "目标已有信任记录，不覆盖", "malformed": "条目格式或编码无效", "hashed_host": "哈希主机名不参与批量导入", "unsupported_pattern": "通配、否定或不支持的模式", "cert_authority": "CA 条目不参与导入", "revoked_marker": "撤销声明不参与普通信任导入", "revoked_source_key": "此公钥在来源文件中被声明撤销", "source_conflict": "来源中同目标、同算法存在冲突密钥", "invalid_endpoint": "主机或端口无效" },
         "title": "主机信任", "direct": "直连", "help": "应用 SQLite 信任库仅保存公钥。请先通过管理员等可信渠道独立核验指纹；本页不会自动接受远端密钥。",
         "empty": "此目标尚无应用信任记录；连接仍需通过严格校验。", "busy": "处理中…", "trusted": "已信任", "revoked": "已撤销",
         "preview": "预览 known_hosts 导入", "review": "核验后再导入", "acknowledge": "我已通过可信渠道核验以上全部指纹，确认将这些公钥加入应用信任库。",

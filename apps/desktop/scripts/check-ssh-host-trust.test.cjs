@@ -381,6 +381,88 @@ const managerText = key => translate(`settings.connections.trustManager.${key}`)
 const managerProps = () => ({ connection: { id: 'id', host: 'fixture.invalid', port: 2222, known_hosts_path: 'C:\\fixture' }, onClose() {}, onChanged() {} });
 const flushManager = () => new Promise(resolve => setImmediate(resolve));
 
+const fileImportPreview = () => ({ connection_id:'id', host:'fixture.invalid', port:2222, known_hosts_path:'C:\\fixture', source_sha256:'fixture-digest', importable:1, skipped:1, rows:[
+  {line_number:1,host:'other.invalid',port:22,algorithm:'ssh-ed25519',fingerprint:'SHA256:public-fixture',status:'ready'},
+  {line_number:2,host:null,port:null,algorithm:null,fingerprint:null,status:'hashed_host'},
+] });
+
+test('whole-file API requires desktop and forwards the reviewed manifest unchanged', async () => {
+  const preview = fileImportPreview();
+  for (const [name, command, args] of [
+    ['sshPreviewKnownHostsImport','ssh_preview_known_hosts_import',['id']],
+    ['sshImportKnownHosts','ssh_import_known_hosts',['id',preview]],
+  ]) {
+    const calls=[];
+    const fn=production('api.ts',name,{getInvoke:()=>async (method,input)=>{calls.push([method,input]); return preview;}});
+    await fn(...args); assert.equal(calls[0][0],command); assert.equal(calls[0][1].id,'id');
+    if(args.length===2)assert.equal(calls[0][1].expected,preview);
+    await assert.rejects(production('api.ts',name,{getInvoke:()=>null})(...args),/desktop/i);
+  }
+});
+
+test('file import shares pending gate, requires fresh acknowledgement, and displays committed outcome', async () => {
+  let writes=0;
+  const expected=fileImportPreview();
+  const driver=trustManagerDriver({ KnownHostsImportReport:'fixture-file-report',
+    sshPreviewKnownHostsImport:async()=>expected,
+    sshImportKnownHosts:async(_id,received)=>{writes++; assert.equal(received,expected);return {preview:received,imported:1,skipped:1,disconnect_failed_ids:[]};},
+  });
+  const props=managerProps();driver.render(props);await flushManager();
+  await driver.render(props).button(managerText('previewFile')).props.onClick();
+  assert.equal(writes,0);
+  let view=driver.render(props);assert.equal(view.button(managerText('confirmFileImport')).props.disabled,true);
+  view.nodes.find(node=>node.type==='fixture-checkbox').props.onCheckedChange(true);
+  await driver.render(props).button(managerText('confirmFileImport')).props.onClick();
+  assert.equal(writes,1);
+  view=driver.render(props);assert.ok(view.nodes.some(node=>node.type==='fixture-file-report'&&node.props.imported===1));
+  assert.equal(view.button(managerText('confirmFileImport')),undefined);
+});
+
+test('file report paginates large manifests rather than mounting every row', () => {
+  let page=0;
+  const fn=production('components/remote/KnownHostsImportReport.tsx','KnownHostsImportReport',{
+    React,Button:'button',useTranslation:()=>({t:translate}),useState:()=>[page,value=>{page=typeof value==='function'?value(page):value;}],
+  });
+  const preview=fileImportPreview();preview.rows=Array.from({length:250},(_,i)=>({...preview.rows[0],line_number:i+1,host:`host-${i}.invalid`}));
+  let element=fn({preview});let html=renderToStaticMarkup(element);
+  assert.equal((html.match(/data-import-row=/g)||[]).length,100);
+  assert.ok(!html.includes('host-100.invalid'));
+  const find=node=>node&&typeof node==='object'&&(node.props?.['data-import-next']?node:React.Children.toArray(node.props?.children).map(find).find(Boolean));
+  find(element).props.onClick();
+  html=renderToStaticMarkup(fn({preview}));assert.ok(html.includes('host-100.invalid'));assert.ok(!html.includes('host-0.invalid'));
+});
+
+test('committed whole-file receipt survives a follow-up list failure without enabling a repeat write', async () => {
+  let reads=0;let writes=0;
+  const preview=fileImportPreview();
+  const driver=trustManagerDriver({KnownHostsImportReport:'fixture-file-report',
+    sshListHostKeys:async()=>{if(++reads>1)throw Error('fixture list failure');return [];},
+    sshPreviewKnownHostsImport:async()=>preview,
+    sshImportKnownHosts:async()=>{writes++;return {preview,imported:1,skipped:1,disconnect_failed_ids:[]};},
+  });
+  const props=managerProps();driver.render(props);await flushManager();
+  await driver.render(props).button(managerText('previewFile')).props.onClick();
+  driver.render(props).nodes.find(node=>node.type==='fixture-checkbox').props.onCheckedChange(true);
+  await driver.render(props).button(managerText('confirmFileImport')).props.onClick();
+  const view=driver.render(props);assert.equal(writes,1);
+  assert.ok(view.nodes.some(node=>node.type==='fixture-file-report'&&node.props.imported===1));
+  assert.ok(view.text.includes('fixture list failure'));
+  assert.equal(view.button(managerText('confirmFileImport')),undefined);
+});
+
+test('failed file commit requires a new preview and fresh acknowledgement', async () => {
+  const preview=fileImportPreview();
+  const driver=trustManagerDriver({KnownHostsImportReport:'fixture-file-report',sshPreviewKnownHostsImport:async()=>preview,
+    sshImportKnownHosts:async()=>{throw Error('stale fixture preview');},
+  });const props=managerProps();driver.render(props);await flushManager();
+  await driver.render(props).button(managerText('previewFile')).props.onClick();
+  driver.render(props).nodes.find(node=>node.type==='fixture-checkbox').props.onCheckedChange(true);
+  await driver.render(props).button(managerText('confirmFileImport')).props.onClick();
+  assert.equal(driver.render(props).button(managerText('confirmFileImport')),undefined);
+  await driver.render(props).button(managerText('previewFile')).props.onClick();
+  assert.equal(driver.render(props).button(managerText('confirmFileImport')).props.disabled,true);
+});
+
 test('host trust manager previews without writing, and cancellation never grants trust', async () => {
   let inspections = 0; let writes = 0;
   const expected = { host: 'fixture.invalid', port: 2222, known_hosts_path: 'C:\\fixture', keys: [{algorithm:'ssh-ed25519',fingerprint:'SHA256:fixture',line_number:1}] };

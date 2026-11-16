@@ -4,7 +4,10 @@
 use std::sync::Arc;
 
 use deepagent_core::clock::{Clock, SystemClock};
-use deepagent_persistence::{document_store::DocumentStore, Database};
+use deepagent_persistence::{
+    document_store::{DocumentBodyChange, DocumentStore},
+    Database,
+};
 use russh::keys::{HashAlg, PublicKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -215,12 +218,10 @@ impl SshHostKeyStore {
                     "SSH trust key limit reached".into(),
                 ));
             }
-            snapshot.document.keys.push(KeyRecord {
-                public_key: public.to_openssh().map_err(|_| invalid_document())?,
-                source: source.into(),
-                trusted_at_ms: SystemClock.now().as_millis(),
-                revoked_at_ms: None,
-            });
+            snapshot
+                .document
+                .keys
+                .push(trusted_record(&public, source)?);
         }
         if snapshot.document.keys.len() == original_count {
             return Ok(());
@@ -256,42 +257,102 @@ impl SshHostKeyStore {
         }
         let mut public = key.clone();
         public.set_comment("");
-        expected.document.keys.push(KeyRecord {
-            public_key: public.to_openssh().map_err(|_| invalid_document())?,
-            source: "accept_new".into(),
-            trusted_at_ms: SystemClock.now().as_millis(),
-            revoked_at_ms: None,
-        });
+        expected
+            .document
+            .keys
+            .push(trusted_record(&public, "accept_new")?);
         self.commit(expected, "accept_new")
     }
 
-    fn commit(&self, mut snapshot: StoreSnapshot, action: &'static str) -> SshResult<()> {
-        snapshot.document.revision = snapshot
-            .document
-            .revision
-            .checked_add(1)
-            .ok_or_else(invalid_document)?;
-        let body = serde_json::to_string(&snapshot.document).map_err(|_| invalid_document())?;
-        if body.len() > MAX_BODY {
-            return Err(invalid_document());
+    fn commit(&self, snapshot: StoreSnapshot, action: &'static str) -> SshResult<()> {
+        self.commit_many(std::iter::once(snapshot).collect(), action)
+    }
+
+    pub(crate) fn import_unknown_batch(
+        &self,
+        groups: &[(SshHostIdentity, Vec<PublicKey>)],
+        source: &str,
+    ) -> SshResult<()> {
+        if source.is_empty() || source.len() > 4096 {
+            return Err(SshError::InvalidConfig("invalid SSH trust source".into()));
         }
-        let id = snapshot.document.identity.document_id()?;
+        let mut snapshots = Vec::new();
+        for (identity, keys) in groups {
+            let mut snapshot = self.snapshot(identity)?;
+            if !snapshot.document.keys.is_empty() || keys.is_empty() || keys.len() > MAX_KEYS {
+                return Err(SshError::Persistence(
+                    "SSH import target changed or exceeds its key limit; preview again".into(),
+                ));
+            }
+            let mut algorithms = Vec::new();
+            for key in keys {
+                if algorithms.contains(&key.algorithm()) {
+                    return Err(SshError::InvalidConfig(
+                        "conflicting algorithms in SSH import batch".into(),
+                    ));
+                }
+                algorithms.push(key.algorithm());
+                snapshot.document.keys.push(trusted_record(key, source)?);
+            }
+            snapshots.push(snapshot);
+        }
+        self.commit_many(snapshots, "known_hosts_import")
+    }
+
+    fn commit_many(
+        &self,
+        mut snapshots: Vec<StoreSnapshot>,
+        action: &'static str,
+    ) -> SshResult<()> {
+        let mut documents = Vec::new();
+        for snapshot in &mut snapshots {
+            snapshot.document.revision = snapshot
+                .document
+                .revision
+                .checked_add(1)
+                .ok_or_else(invalid_document)?;
+            let body = serde_json::to_string(&snapshot.document).map_err(|_| invalid_document())?;
+            if body.len() > MAX_BODY {
+                return Err(invalid_document());
+            }
+            documents.push((snapshot.document.identity.document_id()?, body));
+        }
+        let changes = documents
+            .iter()
+            .zip(&snapshots)
+            .map(|((id, body), snapshot)| DocumentBodyChange {
+                collection: COLLECTION,
+                id,
+                body,
+                expected: snapshot.body.as_deref(),
+            })
+            .collect::<Vec<_>>();
         let store = DocumentStore::new(&self.db);
-        let now = SystemClock.now();
-        let committed = match snapshot.body {
-            Some(prior) => store.replace_body_if_unchanged(COLLECTION, &id, &prior, &body, now),
-            None => store.insert_if_absent(COLLECTION, &id, &body, now),
-        }
-        .map_err(storage_error)?;
+        let committed = store
+            .compare_exchange_bodies(&changes, SystemClock.now())
+            .map_err(storage_error)?;
         if !committed {
             return Err(SshError::Persistence(
                 "SSH trust changed concurrently; refresh and verify again".into(),
             ));
         }
-        tracing::info!(target: "deepagent_ssh", host = snapshot.document.identity.host,
+        for snapshot in snapshots {
+            tracing::info!(target: "deepagent_ssh", host = snapshot.document.identity.host,
             port = snapshot.document.identity.port, action, revision = snapshot.document.revision, "SSH application trust updated");
+        }
         Ok(())
     }
+}
+
+fn trusted_record(key: &PublicKey, source: &str) -> SshResult<KeyRecord> {
+    let mut public = key.clone();
+    public.set_comment("");
+    Ok(KeyRecord {
+        public_key: public.to_openssh().map_err(|_| invalid_document())?,
+        source: source.into(),
+        trusted_at_ms: SystemClock.now().as_millis(),
+        revoked_at_ms: None,
+    })
 }
 
 fn invalid_document() -> SshError {
@@ -311,6 +372,35 @@ mod tests {
             .unwrap()
             .public_key()
             .clone()
+    }
+
+    #[test]
+    fn file_import_sql_failure_rolls_back_all_targets_and_preserves_other_collections() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let store = SshHostKeyStore::new(db.clone());
+        DocumentStore::new(&db)
+            .put("unrelated", "fixture", "retained", None, SystemClock.now())
+            .unwrap();
+        db.with_conn(|c| c.execute_batch("CREATE TRIGGER fixture_import_failure BEFORE INSERT ON documents WHEN NEW.collection='ssh_host_trust_v1' AND instr(NEW.body, 'two.invalid')>0 BEGIN SELECT RAISE(FAIL, 'fixture only'); END;")
+            .map_err(|error|deepagent_core::error::CoreError::Persistence(error.to_string()))).unwrap();
+        let one = SshHostIdentity::direct("one.invalid", 22).unwrap();
+        let two = SshHostIdentity::direct("two.invalid", 22).unwrap();
+        assert!(store
+            .import_unknown_batch(
+                &[(one.clone(), vec![public()]), (two.clone(), vec![public()])],
+                "fixture"
+            )
+            .is_err());
+        assert!(store.list(&one).unwrap().is_empty());
+        assert!(store.list(&two).unwrap().is_empty());
+        assert_eq!(
+            DocumentStore::new(&db)
+                .get("unrelated", "fixture")
+                .unwrap()
+                .unwrap()
+                .body,
+            "retained"
+        );
     }
 
     #[test]

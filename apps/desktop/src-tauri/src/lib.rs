@@ -5303,6 +5303,31 @@ async fn ssh_import_host_trust(
 }
 
 #[tauri::command]
+async fn ssh_preview_known_hosts_import(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<deepagent_ssh::SshKnownHostsImportPreview, String> {
+    state
+        .ssh
+        .preview_known_hosts_import(&id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn ssh_import_known_hosts(
+    state: State<'_, AppState>,
+    id: String,
+    expected: deepagent_ssh::SshKnownHostsImportPreview,
+) -> Result<deepagent_ssh::SshKnownHostsImportResult, String> {
+    state
+        .ssh
+        .import_known_hosts(&id, expected)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn ssh_revoke_host_key(
     state: State<'_, AppState>,
     id: String,
@@ -7763,6 +7788,8 @@ pub fn run() {
             ssh_inspect_host_trust,
             ssh_list_host_keys,
             ssh_import_host_trust,
+            ssh_preview_known_hosts_import,
+            ssh_import_known_hosts,
             ssh_revoke_host_key,
             ssh_create_connection,
             ssh_update_connection,

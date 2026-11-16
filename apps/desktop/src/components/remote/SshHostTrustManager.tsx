@@ -2,8 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   sshImportHostTrust, sshInspectHostTrust, sshListHostKeys, sshRevokeHostKey,
+  sshPreviewKnownHostsImport, sshImportKnownHosts,
+  type SshKnownHostsImportPreview, type SshKnownHostsImportResult,
   type SshConnection, type SshHostKeyRecord, type SshHostTrustInspection,
 } from "../../api";
+import { KnownHostsImportReport } from "./KnownHostsImportReport";
 import { Button } from "../shadcn/button";
 import { Checkbox } from "../shadcn/checkbox";
 import { Label } from "../shadcn/label";
@@ -28,6 +31,8 @@ function HostTrustPanel({ connection, onClose, onChanged }: Props & { connection
   const { t } = useTranslation();
   const [records, setRecords] = useState<SshHostKeyRecord[]>([]);
   const [preview, setPreview] = useState<SshHostTrustInspection | null>(null);
+  const [filePreview, setFilePreview] = useState<SshKnownHostsImportPreview | null>(null);
+  const [fileResult, setFileResult] = useState<SshKnownHostsImportResult | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
   const [revoking, setRevoking] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -36,17 +41,30 @@ function HostTrustPanel({ connection, onClose, onChanged }: Props & { connection
   const pending = useRef(false);
   const label = (key: string) => t(`settings.connections.trustManager.${key}`);
 
-  async function run(action: "load" | "preview" | "import" | "revoke") {
-    if (pending.current || (action === "import" && (!preview || !acknowledged)) || (action === "revoke" && !revoking)) return;
+  async function run(action: "load" | "preview" | "import" | "revoke" | "preview_file" | "import_file") {
+    if (pending.current || (action === "import" && (!preview || !acknowledged)) || (action === "revoke" && !revoking) || (action === "import_file" && (!filePreview || !acknowledged || filePreview.importable === 0))) return;
     pending.current = true;
     const request = ++generation.current;
     setBusy(true);
     setError("");
     try {
+      if (action === "preview_file") {
+        const inspected = await sshPreviewKnownHostsImport(connection.id);
+        if (request !== generation.current) return;
+        setFilePreview(inspected); setFileResult(null); setPreview(null); setRevoking(null); setAcknowledged(false);
+      } else if (action === "import_file") {
+        const result = await sshImportKnownHosts(connection.id, filePreview!);
+        if (request !== generation.current) return;
+        // Keep the committed receipt visible even if the subsequent list fails.
+        setFileResult(result); setFilePreview(null); setAcknowledged(false); onChanged();
+        const next = await sshListHostKeys(connection.id);
+        if (request === generation.current) setRecords(next);
+      } else
       if (action === "preview") {
         const inspected = await sshInspectHostTrust(connection.host, connection.port, connection.known_hosts_path);
         if (request !== generation.current) return;
         setPreview(inspected);
+        setFilePreview(null); setFileResult(null);
         setAcknowledged(false);
         setRevoking(null);
       } else {
@@ -67,7 +85,10 @@ function HostTrustPanel({ connection, onClose, onChanged }: Props & { connection
         if (action !== "load") onChanged();
       }
     } catch (failure) {
-      if (request === generation.current) setError(failure instanceof Error ? failure.message : String(failure));
+      if (request === generation.current) {
+        setError(failure instanceof Error ? failure.message : String(failure));
+        if (action === "import_file") { setFilePreview(null); setAcknowledged(false); }
+      }
     } finally {
       if (request === generation.current) {
         pending.current = false;
@@ -98,7 +119,7 @@ function HostTrustPanel({ connection, onClose, onChanged }: Props & { connection
             <section key={record.fingerprint} className="space-y-1.5 rounded-xl border border-border-theme p-3">
               <div className="flex items-center justify-between gap-3">
                 <span>{record.algorithm} · {label(record.revoked ? "revoked" : "trusted")}</span>
-                <Button size="sm" variant="ghost" disabled={busy || record.revoked} onClick={() => { setRevoking(record.fingerprint); setPreview(null); setError(""); }}>{label("revoke")}</Button>
+                <Button size="sm" variant="ghost" disabled={busy || record.revoked} onClick={() => { setRevoking(record.fingerprint); setPreview(null); setFilePreview(null); setError(""); }}>{label("revoke")}</Button>
               </div>
               <p className="break-all font-mono">{record.fingerprint}</p>
               <p className="break-all text-text-secondary">{record.source}</p>
@@ -120,6 +141,24 @@ function HostTrustPanel({ connection, onClose, onChanged }: Props & { connection
               </div>
             </section>
           )}
+          {filePreview && <section className="space-y-3 rounded-xl border border-border-theme p-3">
+            <h3 className="font-medium">{label("fileReport")}</h3>
+            <p className="text-text-secondary">{label("fileWarning")}</p>
+            <KnownHostsImportReport key={filePreview.source_sha256} preview={filePreview} />
+            <div className="flex items-start gap-2">
+              <Checkbox id={acknowledgementId} checked={acknowledged} disabled={busy || filePreview.importable === 0} onCheckedChange={(value) => setAcknowledged(value === true)} />
+              <Label htmlFor={acknowledgementId} className="text-[12px] leading-5">{label("acknowledgeFile")}</Label>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" disabled={busy || !acknowledged || filePreview.importable === 0} onClick={() => run("import_file")}>{label("confirmFileImport")}</Button>
+              <Button size="sm" variant="outline" disabled={busy} onClick={() => { setFilePreview(null); setAcknowledged(false); }}>{label("cancel")}</Button>
+            </div>
+          </section>}
+          {fileResult && <section className="space-y-3 rounded-xl border border-border-theme p-3">
+            <p>{label("fileCommitted")}</p>
+            <KnownHostsImportReport preview={fileResult.preview} imported={fileResult.imported} />
+            {fileResult.disconnect_failed_ids.length > 0 && <p role="alert">{label("cleanupFailed")} {fileResult.disconnect_failed_ids.join(", ")}</p>}
+          </section>}
           {revoking && (
             <section className="space-y-3 rounded-xl border border-red-200 bg-red-50 p-3">
               <p>{label("revokeWarning")}</p><p className="break-all font-mono">{revoking}</p>
@@ -131,6 +170,7 @@ function HostTrustPanel({ connection, onClose, onChanged }: Props & { connection
           )}
           <div className="flex flex-wrap gap-2">
             <Button size="sm" variant="outline" disabled={busy} onClick={() => run("preview")}>{label("preview")}</Button>
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => run("preview_file")}>{label("previewFile")}</Button>
             <Button size="sm" variant="ghost" disabled={busy} onClick={() => run("load")}>{label("refresh")}</Button>
           </div>
           <p className="text-text-secondary">{label("sessionWarning")}</p>

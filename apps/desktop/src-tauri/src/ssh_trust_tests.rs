@@ -73,3 +73,46 @@ fn legacy_frontend_host_key_policy_defaults_to_strict() {
     let projected = serde_json::to_value(SshConnectionFrontendDto::from(dto)).unwrap();
     assert_eq!(projected["host_key_policy"], "strict");
 }
+
+#[tokio::test]
+async fn whole_file_import_round_trips_its_reviewed_dto_and_reopens_application_trust() {
+    // Generated public fixture only; its private counterpart is not retained.
+    let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILFVCraC5ndXABfSOTg/2Bh+FzEW6t9pS09obPJduaMN";
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("app.sqlite");
+    let file = temp.path().join("known_hosts");
+    std::fs::write(&file, format!("other.invalid {key}\n*.invalid {key}\n")).unwrap();
+    let app = AppService::open(&path).unwrap();
+    let host_keys = Arc::new(deepagent_ssh::SshHostKeyStore::new(app.shared_database()));
+    let ssh = SshService::new(temp.path().to_path_buf()).with_host_key_store(host_keys);
+    let connection = ssh.create_connection(serde_json::from_value(serde_json::json!({
+        "name":"fixture", "host":"selected.invalid", "port":22, "username":"fixture", "auth_type":"agent", "known_hosts_path":file,
+    })).unwrap()).await.unwrap();
+    let preview = ssh
+        .preview_known_hosts_import(&connection.id)
+        .await
+        .unwrap();
+    let wire = serde_json::to_value(&preview).unwrap();
+    assert_eq!(wire["importable"], 1);
+    assert_eq!(wire["skipped"], 1);
+    assert!(wire.get("public_key").is_none());
+    let decoded = serde_json::from_value(wire).unwrap();
+    let result = ssh
+        .import_known_hosts(&connection.id, decoded)
+        .await
+        .unwrap();
+    let receipt = serde_json::to_value(result).unwrap();
+    assert_eq!(receipt["imported"], 1);
+    assert_eq!(receipt["disconnect_failed_ids"], serde_json::json!([]));
+    drop(ssh);
+    drop(app);
+    let reopened = AppService::open(&path).unwrap();
+    let store = deepagent_ssh::SshHostKeyStore::new(reopened.shared_database());
+    assert_eq!(
+        store
+            .list(&deepagent_ssh::SshHostIdentity::direct("other.invalid", 22).unwrap())
+            .unwrap()
+            .len(),
+        1
+    );
+}

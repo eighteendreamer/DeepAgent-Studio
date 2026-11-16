@@ -29,6 +29,10 @@ pub use connection_challenge::{SshConnectionAttempt, SshHostKeyChallenge, SshHos
 pub use error::{SshError, SshResult};
 pub use host_key_store::{SshHostIdentity, SshHostKeyRecord, SshHostKeyStore};
 pub use host_trust::{SshHostTrustInspection, SshKnownHostKey};
+pub use known_hosts_import::{
+    SshKnownHostsImportPreview, SshKnownHostsImportResult, SshKnownHostsImportRow,
+    SshKnownHostsImportStatus,
+};
 pub use remote::{
     RemoteBundleManifest, RemoteBundleRequest, RemoteBundleResult, RemoteInstallRequest,
     RemoteInstallResult, RemoteManifestEntry, RemoteProbeResult, RemotePushFileRequest,
@@ -47,6 +51,7 @@ mod connection_flow;
 mod error;
 mod host_key_store;
 mod host_trust;
+mod known_hosts_import;
 mod remote;
 mod service;
 mod session;
@@ -382,6 +387,21 @@ impl SshService {
 
     pub async fn revoke_host_key(&self, id: &str, fingerprint: &str) -> SshResult<()> {
         self.inner.revoke_host_key(id, fingerprint).await
+    }
+
+    pub async fn preview_known_hosts_import(
+        &self,
+        id: &str,
+    ) -> SshResult<SshKnownHostsImportPreview> {
+        self.inner.preview_known_hosts_import(id).await
+    }
+
+    pub async fn import_known_hosts(
+        &self,
+        id: &str,
+        expected: SshKnownHostsImportPreview,
+    ) -> SshResult<SshKnownHostsImportResult> {
+        self.inner.import_known_hosts(id, expected).await
     }
 
     pub async fn connect(&self, id: &str) -> SshResult<SshServiceHandle> {
