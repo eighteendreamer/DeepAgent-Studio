@@ -172,6 +172,7 @@ impl SshServiceImpl {
                 auth_type: cfg.auth_type,
                 key_path: cfg.key_path.clone(),
                 known_hosts_path: cfg.known_hosts_path.clone(),
+                host_key_policy: cfg.host_key_policy,
                 status,
                 last_error,
                 latency_ms,
@@ -273,6 +274,7 @@ impl SshServiceImpl {
         );
         config.known_hosts_path =
             Some(self.resolve_known_hosts(request.known_hosts_path.as_deref())?);
+        config.host_key_policy = request.host_key_policy;
         validate_config(
             &config,
             request.key_path.as_deref(),
@@ -313,6 +315,7 @@ impl SshServiceImpl {
             port: request.port,
             username: request.username,
             auth_type: request.auth_type,
+            host_key_policy: request.host_key_policy.unwrap_or(cfg.host_key_policy),
             key_path: request.key_path.clone(),
             known_hosts_path: Some(
                 self.resolve_known_hosts(
@@ -1540,7 +1543,7 @@ async fn connect_client(
             }
             trust
         }
-        None => HostTrust::load_with_store(config, store.clone()).await?,
+        None => crate::connection_flow::connection_trust(config, store.clone()).await?,
     };
     let client = Client::connect(config, &trust, store.clone()).await?;
     match trust.reload(config, store).await {
@@ -1599,6 +1602,7 @@ fn dto_from_config(
         auth_type: cfg.auth_type,
         key_path: cfg.key_path.clone(),
         known_hosts_path: cfg.known_hosts_path.clone(),
+        host_key_policy: cfg.host_key_policy,
         status,
         last_error,
         latency_ms,

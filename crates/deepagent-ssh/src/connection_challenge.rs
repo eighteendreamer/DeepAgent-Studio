@@ -196,6 +196,7 @@ pub(crate) fn config_proof(cfg: &SshConnectionConfig) -> SshResult<[u8; 32]> {
         cfg.auth_type,
         &cfg.key_path,
         &cfg.known_hosts_path,
+        cfg.host_key_policy,
         &cfg.password,
         options,
     ))

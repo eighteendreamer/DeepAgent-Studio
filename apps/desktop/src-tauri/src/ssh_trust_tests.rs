@@ -26,6 +26,7 @@ async fn h125_ssh_trust_survives_encrypted_store_reopen_and_frontend_projection(
         let ssh = SshService::with_config_store(data.path().to_path_buf(), store);
         let created = ssh
             .create_connection(DtoCreateSshConnectionRequest {
+                host_key_policy: deepagent_ssh::SshHostKeyPolicy::AcceptNew,
                 name: "fixture".into(),
                 host: "127.0.0.1".into(),
                 port: 2222,
@@ -40,6 +41,7 @@ async fn h125_ssh_trust_survives_encrypted_store_reopen_and_frontend_projection(
         id = created.id.clone();
         let frontend = serde_json::to_value(SshConnectionFrontendDto::from(created)).unwrap();
         assert_eq!(frontend["known_hosts_path"], trust);
+        assert_eq!(frontend["host_key_policy"], "accept_new");
         assert!(frontend.get("password").is_none());
     }
     let app = AppService::open(&file).unwrap();
@@ -54,4 +56,20 @@ async fn h125_ssh_trust_survives_encrypted_store_reopen_and_frontend_projection(
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].id, id);
     assert_eq!(listed[0].known_hosts_path.as_deref(), Some(trust.as_str()));
+    assert_eq!(
+        listed[0].host_key_policy,
+        deepagent_ssh::SshHostKeyPolicy::AcceptNew
+    );
+}
+
+#[test]
+fn legacy_frontend_host_key_policy_defaults_to_strict() {
+    let dto: deepagent_ssh::SshConnectionDto = serde_json::from_value(serde_json::json!({
+        "id":"legacy", "name":"fixture", "host":"fixture.invalid", "port":22,
+        "username":"fixture", "auth_type":"agent", "key_path":null,
+        "status":"disconnected", "last_error":null, "latency_ms":null,
+    }))
+    .unwrap();
+    let projected = serde_json::to_value(SshConnectionFrontendDto::from(dto)).unwrap();
+    assert_eq!(projected["host_key_policy"], "strict");
 }

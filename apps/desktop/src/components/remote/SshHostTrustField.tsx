@@ -1,17 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { sshInspectHostTrust, type SshHostTrustInspection } from "../../api";
+import { sshInspectHostTrust, type SshHostTrustInspection, type SshHostKeyPolicy } from "../../api";
 import { Button } from "../shadcn/button";
 import { Input } from "../shadcn/input";
 import { Label } from "../shadcn/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../shadcn/select";
 
-/** Shared by both SSH editors; selecting a source is not automatic key enrollment. */
-export function SshHostTrustField({ id, host, port, value, onChange }: {
+/** Shared configuration; local trust inspection stays read-only under either policy. */
+export function SshHostTrustField({ id, host, port, value, onChange, policy = "strict", onPolicyChange }: {
   id: string;
   host: string;
   port: number;
   value: string;
   onChange: (value: string) => void;
+  policy?: SshHostKeyPolicy;
+  onPolicyChange?: (policy: SshHostKeyPolicy) => void;
 }) {
   const { t } = useTranslation();
   const generation = useRef(0);
@@ -55,7 +58,7 @@ export function SshHostTrustField({ id, host, port, value, onChange }: {
   };
 
   return (
-    <div className="space-y-1.5" data-ssh-host-trust="strict">
+    <div className="space-y-1.5" data-ssh-host-trust={policy}>
       <Label htmlFor={id}>{t("settings.connections.knownHostsPath")}</Label>
       <Input
         id={id}
@@ -66,7 +69,7 @@ export function SshHostTrustField({ id, host, port, value, onChange }: {
         className="h-[34px] rounded-[14px] text-[13px]"
       />
       <p id={`${id}-help`} className="text-[11px] leading-relaxed text-text-secondary">
-        {t("settings.connections.knownHostsHelp")}
+        {t(policy === "accept_new" ? "settings.connections.acceptNewFileHelp" : "settings.connections.knownHostsHelp")}
       </p>
       <Button
         type="button"
@@ -95,6 +98,25 @@ export function SshHostTrustField({ id, host, port, value, onChange }: {
           </div>
         )}
       </div>
+      {onPolicyChange && (
+        <div className="space-y-1.5 pt-3">
+          <Label htmlFor={`${id}-policy`}>{t("settings.connections.hostKeyPolicy")}</Label>
+          <Select value={policy} onValueChange={(next) => {
+            if (next === "strict" || next === "accept_new") onPolicyChange(next);
+          }}>
+            <SelectTrigger id={`${id}-policy`} aria-describedby={`${id}-policy-help`}>
+              <SelectValue placeholder={t(policy === "accept_new" ? "settings.connections.acceptNewPolicy" : "settings.connections.strictPolicy")} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="strict">{t("settings.connections.strictPolicy")}</SelectItem>
+              <SelectItem value="accept_new">{t("settings.connections.acceptNewPolicy")}</SelectItem>
+            </SelectContent>
+          </Select>
+          <p id={`${id}-policy-help`} role="note" className="text-[11px] leading-relaxed text-text-secondary">
+            {t(policy === "accept_new" ? "settings.connections.acceptNewHelp" : "settings.connections.strictPolicyHelp")}
+          </p>
+        </div>
+      )}
     </div>
   );
 }

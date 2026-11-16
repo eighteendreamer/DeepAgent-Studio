@@ -3762,6 +3762,8 @@ function mockDiff(oldText: string, newText: string): DiffResult {
 
 // ==================== SSH Long-Lived Connection API ====================
 
+export type SshHostKeyPolicy = "strict" | "accept_new";
+
 export interface SshConnection {
   id: string;
   name: string;
@@ -3771,6 +3773,7 @@ export interface SshConnection {
   auth_type: "agent" | "key_file" | "password";
   key_path?: string;
   known_hosts_path?: string;
+  host_key_policy?: SshHostKeyPolicy;
   status: "disconnected" | "connecting" | "connected" | "error";
   last_error?: string;
   latency_ms?: number;
@@ -3989,6 +3992,7 @@ export async function sshCreateConnection(
   keyPath?: string,
   password?: string,
   knownHostsPath?: string,
+  hostKeyPolicy: SshHostKeyPolicy = "strict",
 ): Promise<SshConnection> {
   const invoke = getInvoke();
   if (invoke)
@@ -4001,8 +4005,9 @@ export async function sshCreateConnection(
       keyPath,
       password,
       knownHostsPath,
+      hostKeyPolicy,
     });
-  return { id: "mock", name, host, port, username, auth_type: authType, known_hosts_path: knownHostsPath, status: "disconnected" };
+  return { id: "mock", name, host, port, username, auth_type: authType, known_hosts_path: knownHostsPath, host_key_policy: hostKeyPolicy, status: "disconnected" };
 }
 
 export async function sshUpdateConnection(
@@ -4015,6 +4020,7 @@ export async function sshUpdateConnection(
   keyPath?: string,
   password?: string,
   knownHostsPath?: string,
+  hostKeyPolicy?: SshHostKeyPolicy,
 ): Promise<SshConnection> {
   const invoke = getInvoke();
   if (invoke)
@@ -4028,8 +4034,9 @@ export async function sshUpdateConnection(
       keyPath,
       password,
       knownHostsPath,
+      hostKeyPolicy,
     });
-  return { id, name, host, port, username, auth_type: authType, known_hosts_path: knownHostsPath, status: "disconnected" };
+  return { id, name, host, port, username, auth_type: authType, known_hosts_path: knownHostsPath, host_key_policy: hostKeyPolicy, status: "disconnected" };
 }
 
 export async function sshRemoveConnection(id: string): Promise<void> {

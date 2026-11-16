@@ -13,6 +13,15 @@ pub enum SshAuthType {
     Password,
 }
 
+/// Only explicit TOFU may enroll unknown hosts; normal production has no Insecure mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SshHostKeyPolicy {
+    #[default]
+    Strict,
+    AcceptNew,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SshConnectionConfig {
     pub id: String,
@@ -26,6 +35,8 @@ pub struct SshConnectionConfig {
     /// never the process user's default SSH directory.
     #[serde(default)]
     pub known_hosts_path: Option<String>,
+    #[serde(default)]
+    pub host_key_policy: SshHostKeyPolicy,
     #[serde(default)]
     pub password: Option<String>,
     #[serde(default)]
@@ -63,6 +74,8 @@ pub struct SshConnectionDto {
     pub key_path: Option<String>,
     #[serde(default)]
     pub known_hosts_path: Option<String>,
+    #[serde(default)]
+    pub host_key_policy: SshHostKeyPolicy,
     pub status: SshStatus,
     pub last_error: Option<String>,
     pub latency_ms: Option<u64>,
@@ -78,6 +91,8 @@ pub struct CreateSshConnectionRequest {
     pub key_path: Option<String>,
     #[serde(default)]
     pub known_hosts_path: Option<String>,
+    #[serde(default)]
+    pub host_key_policy: SshHostKeyPolicy,
     pub password: Option<String>,
 }
 
@@ -93,6 +108,9 @@ pub struct UpdateSshConnectionRequest {
     /// None preserves the existing source; Some("") resets to the app default.
     #[serde(default)]
     pub known_hosts_path: Option<String>,
+    /// Legacy callers preserve the saved policy instead of silently changing it.
+    #[serde(default)]
+    pub host_key_policy: Option<SshHostKeyPolicy>,
     pub password: Option<String>,
 }
 
@@ -113,6 +131,7 @@ impl SshConnectionConfig {
             auth_type,
             key_path: None,
             known_hosts_path: None,
+            host_key_policy: SshHostKeyPolicy::Strict,
             password: None,
             extra_options: HashMap::new(),
             control_path: None,

@@ -5218,6 +5218,8 @@ struct SshConnectionFrontendDto {
     pub auth_type: &'static str,
     pub key_path: Option<String>,
     pub known_hosts_path: Option<String>,
+    #[serde(default)]
+    pub host_key_policy: deepagent_ssh::SshHostKeyPolicy,
     pub status: &'static str,
     pub last_error: Option<String>,
     pub latency_ms: Option<u64>,
@@ -5234,6 +5236,7 @@ impl From<DtoSshConnectionDto> for SshConnectionFrontendDto {
             auth_type: to_dto_auth_type(dto.auth_type),
             key_path: dto.key_path,
             known_hosts_path: dto.known_hosts_path,
+            host_key_policy: dto.host_key_policy,
             status: to_dto_status(dto.status),
             last_error: dto.last_error,
             latency_ms: dto.latency_ms,
@@ -5333,6 +5336,7 @@ async fn ssh_create_connection(
     key_path: Option<String>,
     password: Option<String>,
     known_hosts_path: Option<String>,
+    host_key_policy: Option<deepagent_ssh::SshHostKeyPolicy>,
 ) -> Result<SshConnectionFrontendDto, String> {
     let ssh = state.ssh.clone();
     let auth = match auth_type.as_str() {
@@ -5350,6 +5354,7 @@ async fn ssh_create_connection(
         key_path,
         password,
         known_hosts_path,
+        host_key_policy: host_key_policy.unwrap_or_default(),
     })
     .await
     .map(Into::into)
@@ -5369,6 +5374,7 @@ async fn ssh_update_connection(
     key_path: Option<String>,
     password: Option<String>,
     known_hosts_path: Option<String>,
+    host_key_policy: Option<deepagent_ssh::SshHostKeyPolicy>,
 ) -> Result<SshConnectionFrontendDto, String> {
     let ssh = state.ssh.clone();
     let auth = match auth_type.as_str() {
@@ -5387,6 +5393,7 @@ async fn ssh_update_connection(
         key_path,
         password,
         known_hosts_path,
+        host_key_policy,
     })
     .await
     .map(Into::into)

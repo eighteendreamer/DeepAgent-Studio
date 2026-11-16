@@ -242,6 +242,29 @@ impl SshHostKeyStore {
         self.commit(snapshot, "revoke")
     }
 
+    /// Commit against the snapshot taken BEFORE probing. A competing first
+    /// registration (even a different algorithm) must not become a second TOFU.
+    pub(crate) fn trust_unknown(
+        &self,
+        mut expected: StoreSnapshot,
+        key: &PublicKey,
+    ) -> SshResult<()> {
+        if !expected.document.keys.is_empty() {
+            return Err(SshError::Persistence(
+                "SSH host is no longer unknown".into(),
+            ));
+        }
+        let mut public = key.clone();
+        public.set_comment("");
+        expected.document.keys.push(KeyRecord {
+            public_key: public.to_openssh().map_err(|_| invalid_document())?,
+            source: "accept_new".into(),
+            trusted_at_ms: SystemClock.now().as_millis(),
+            revoked_at_ms: None,
+        });
+        self.commit(expected, "accept_new")
+    }
+
     fn commit(&self, mut snapshot: StoreSnapshot, action: &'static str) -> SshResult<()> {
         snapshot.document.revision = snapshot
             .document
@@ -288,6 +311,31 @@ mod tests {
             .unwrap()
             .public_key()
             .clone()
+    }
+
+    #[test]
+    fn concurrent_first_enrollment_has_one_winner_and_cannot_undo_revocation() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("trust.sqlite");
+        let first = SshHostKeyStore::new(Arc::new(Database::open(&path).unwrap()));
+        let second = SshHostKeyStore::new(Arc::new(Database::open(&path).unwrap()));
+        let identity = SshHostIdentity::direct("fixture.invalid", 22).unwrap();
+        let first_snapshot = first.snapshot(&identity).unwrap();
+        let second_snapshot = second.snapshot(&identity).unwrap();
+        let winner = public();
+        first.trust_unknown(first_snapshot, &winner).unwrap();
+        assert!(second
+            .trust_unknown(second_snapshot.clone(), &public())
+            .is_err());
+        first
+            .revoke(&identity, &winner.fingerprint(HashAlg::Sha256).to_string())
+            .unwrap();
+        assert!(second.trust_unknown(second_snapshot, &winner).is_err());
+        assert!(second
+            .trust_unknown(second.snapshot(&identity).unwrap(), &public())
+            .is_err());
+        assert_eq!(first.list(&identity).unwrap().len(), 1);
+        assert!(first.list(&identity).unwrap()[0].revoked);
     }
 
     #[test]

@@ -22,8 +22,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 pub use config::{
-    CreateSshConnectionRequest, SshAuthType, SshConnectionConfig, SshConnectionDto, SshStatus,
-    UpdateSshConnectionRequest,
+    CreateSshConnectionRequest, SshAuthType, SshConnectionConfig, SshConnectionDto,
+    SshHostKeyPolicy, SshStatus, UpdateSshConnectionRequest,
 };
 pub use connection_challenge::{SshConnectionAttempt, SshHostKeyChallenge, SshHostKeyDecision};
 pub use error::{SshError, SshResult};
@@ -512,6 +512,7 @@ impl SshService {
             auth_type: dto.auth_type,
             key_path: dto.key_path.clone(),
             known_hosts_path: dto.known_hosts_path.clone(),
+            host_key_policy: dto.host_key_policy,
             password: None,
             extra_options: HashMap::new(),
             control_path: None,
@@ -644,6 +645,7 @@ mod tests {
                 auth_type: SshAuthType::Agent,
                 key_path: None,
                 known_hosts_path: None,
+                host_key_policy: SshHostKeyPolicy::Strict,
                 password: None,
             })
             .await

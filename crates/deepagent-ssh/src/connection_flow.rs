@@ -6,9 +6,33 @@ use crate::connection_challenge::config_proof;
 use crate::host_trust::HostTrust;
 use crate::service::SshServiceImpl;
 use crate::{
-    SshClient, SshConnectionAttempt, SshError, SshHostIdentity, SshHostKeyDecision, SshResult,
-    SshServiceHandle,
+    SshClient, SshConnectionAttempt, SshConnectionConfig, SshError, SshHostIdentity,
+    SshHostKeyDecision, SshHostKeyPolicy, SshHostKeyStore, SshResult, SshServiceHandle,
 };
+use std::sync::Arc;
+
+/// All saved/standalone connection paths share the same policy enforcement.
+pub(crate) async fn connection_trust(
+    cfg: &SshConnectionConfig,
+    store: Option<Arc<SshHostKeyStore>>,
+) -> SshResult<HostTrust> {
+    if cfg.host_key_policy == SshHostKeyPolicy::Strict {
+        return HostTrust::load_with_store(cfg, store).await;
+    }
+    let trust = HostTrust::capture(cfg, store.clone()).await?;
+    if !trust.is_unknown() {
+        return Ok(trust); // The transport still must match a trusted, non-revoked key.
+    }
+    let store = store.ok_or_else(|| {
+        SshError::InvalidConfig(
+            "SSH AcceptNew requires the application trust store; no key was accepted".into(),
+        )
+    })?;
+    // Probe rejects the presented key and closes before authentication. Enrollment
+    // precedes a new, pinned handshake; never offer credentials on first sight.
+    let key = SshClient::probe_host_key(cfg, &trust).await?;
+    trust.persist_unknown(cfg, store, key).await
+}
 
 impl SshServiceImpl {
     pub async fn begin_connection(&self, id: &str) -> SshResult<SshConnectionAttempt> {
@@ -18,7 +42,7 @@ impl SshServiceImpl {
         let attempt_id = self.host_challenges.reserve(id)?;
         let result = async {
             let trust = HostTrust::capture(&cfg, self.host_key_store.clone()).await?;
-            if !trust.is_unknown() || self.reusable_client(&cfg).await?.is_some() {
+            if cfg.host_key_policy == SshHostKeyPolicy::AcceptNew || !trust.is_unknown() || self.reusable_client(&cfg).await?.is_some() {
                 self.host_challenges.ensure_current(id, &attempt_id)?;
                 self.connect_config(&cfg, None).await?;
                 return Ok(SshConnectionAttempt::Connected);

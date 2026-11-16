@@ -15,6 +15,7 @@ import {
   sshExec,
   sshUpdateConnection,
   type SshConnection,
+  type SshHostKeyPolicy,
   type SshTestResult,
 } from "../../api";
 
@@ -28,6 +29,7 @@ interface FormData {
   authType: AuthType;
   keyPath: string;
   knownHostsPath: string;
+  hostKeyPolicy: SshHostKeyPolicy;
   password: string;
 }
 
@@ -39,6 +41,7 @@ const emptyForm: FormData = {
   authType: "password",
   keyPath: "",
   knownHostsPath: "",
+  hostKeyPolicy: "strict",
   password: "",
 };
 
@@ -135,6 +138,7 @@ export function ConnectionsSettings() {
       authType: conn.key_path ? "file" : "password",
       keyPath: conn.key_path || "",
       knownHostsPath: conn.known_hosts_path || "",
+      hostKeyPolicy: conn.host_key_policy ?? "strict",
       password: "",
     });
     setIsModalOpen(true);
@@ -167,6 +171,7 @@ export function ConnectionsSettings() {
         keyPath,
         password,
         form.knownHostsPath,
+        form.hostKeyPolicy,
       );
     } else {
       await sshCreateConnection(
@@ -178,6 +183,7 @@ export function ConnectionsSettings() {
         keyPath,
         password,
         form.knownHostsPath,
+        form.hostKeyPolicy,
       );
     }
 
@@ -479,6 +485,8 @@ export function ConnectionsSettings() {
                   host={form.host}
                   port={Number(form.port)}
                   value={form.knownHostsPath}
+                  policy={form.hostKeyPolicy}
+                  onPolicyChange={(hostKeyPolicy) => setForm({ ...form, hostKeyPolicy })}
                   onChange={(knownHostsPath) => setForm({ ...form, knownHostsPath })}
                 />
                 <section className="space-y-2.5">

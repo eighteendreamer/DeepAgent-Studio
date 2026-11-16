@@ -96,6 +96,24 @@ impl HostTrust {
         if text.lines().any(|line| line.trim_start().starts_with('@')) {
             return Err(Self::error(config, "known_hosts markers (@revoked/@cert-authority) are unsupported; use a dedicated verified plain/hashed-host file"));
         }
+        // russh's path matcher skips incomplete lines and does not implement
+        // wildcard/negated hosts. They must not silently become "unknown" for
+        // TOFU or the explicit unknown-host confirmation flow. Validate with
+        // its existing ssh-key parser, keeping host+port/hash matching below.
+        for parsed in russh::keys::ssh_key::known_hosts::KnownHosts::new(text) {
+            let entry = parsed
+                .map_err(|_| Self::error(config, "known_hosts contains a malformed entry"))?;
+            if let russh::keys::ssh_key::known_hosts::HostPatterns::Patterns(patterns) =
+                entry.host_patterns()
+            {
+                if patterns
+                    .iter()
+                    .any(|pattern| pattern.contains(['*', '?', '!']))
+                {
+                    return Err(Self::error(config, "known_hosts wildcard/negated hosts are unsupported; use a dedicated verified plain/hashed-host file"));
+                }
+            }
+        }
         // Reuse russh's host+port and hashed-host rules; do not invent a second parser.
         let keys = russh::keys::known_hosts::known_host_keys_path(&config.host, config.port, path)
             .map_err(|_| Self::error(config, "known_hosts contains an invalid matching key"))?;
@@ -171,6 +189,35 @@ impl HostTrust {
 
     pub(crate) fn is_unknown(&self) -> bool {
         self.keys.is_empty() && self.revoked.is_empty()
+    }
+
+    pub(crate) async fn persist_unknown(
+        self,
+        config: &SshConnectionConfig,
+        store: Arc<SshHostKeyStore>,
+        key: PublicKey,
+    ) -> SshResult<Self> {
+        if !self.is_unknown() || Self::capture(config, Some(store.clone())).await? != self {
+            return Err(Self::error(config, "trust changed during AcceptNew probe"));
+        }
+        let expected = self.application.clone().ok_or_else(|| {
+            Self::error(config, "AcceptNew requires an application trust snapshot")
+        })?;
+        let public = key.clone();
+        let writer = store.clone();
+        tokio::task::spawn_blocking(move || writer.trust_unknown(expected, &public))
+            .await
+            .map_err(|error| {
+                SshError::Internal(format!("SSH AcceptNew persistence task: {error}"))
+            })??;
+        let persisted = Self::load_with_store(config, Some(store)).await?;
+        if !persisted.same_file(&self) || !persisted.accepts(&key) {
+            return Err(Self::error(
+                config,
+                "trust changed while saving an unknown key",
+            ));
+        }
+        Ok(persisted.confirm_key(key))
     }
 
     pub(crate) fn confirm_key(mut self, key: PublicKey) -> Self {

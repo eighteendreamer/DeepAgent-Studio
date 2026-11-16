@@ -45,6 +45,49 @@ test('SSH API sends and mock-projects the explicit trust path for create/update'
   }
 });
 
+test('SSH API carries explicit AcceptNew and legacy create defaults to Strict', async () => {
+  for (const name of ['sshCreateConnection', 'sshUpdateConnection']) {
+    const calls = [];
+    const args = ['fixture', '127.0.0.1', 2222, 'fixture', 'password', undefined, 'fixture-only', '', 'accept_new'];
+    if (name.includes('Update')) args.unshift('id');
+    const fn = production('api.ts', name, { getInvoke: () => async (_command, input) => { calls.push(input); return input; } });
+    await fn(...args);
+    assert.equal(calls[0].hostKeyPolicy, 'accept_new');
+    const mock = production('api.ts', name, { getInvoke: () => null });
+    assert.equal((await mock(...args)).host_key_policy, 'accept_new');
+    args.pop();
+    await fn(...args);
+    assert.equal(calls[1].hostKeyPolicy, name.includes('Create') ? 'strict' : undefined);
+  }
+});
+
+for (const file of ['components/settings/ConnectionsSettings.tsx', 'components/remote/RemoteSidebar.tsx']) {
+  test(`${file}: both save branches and edit preserve the selected host-key policy`, async () => {
+    for (const editing of [false, true]) {
+      const calls = [];
+      const form = { name: 'fixture', host: '127.0.0.1', port: '2222', username: 'fixture', authType: 'password', keyPath: '', password: 'temporary-only', knownHostsPath: '', hostKeyPolicy: 'accept_new' };
+      const noop = () => {};
+      await production(file, 'handleSave', {
+        form, editingId: editing ? 'id' : null, managerMode: editing ? 'edit' : 'create', editingConn: { id: 'id' },
+        sshCreateConnection: async (...args) => { calls.push(args); return { id: 'created' }; },
+        sshUpdateConnection: async (...args) => { calls.push(args); },
+        closeModal: noop, load: noop, loadConnections: noop, setForm: noop, setEditingConn: noop, setManagerMode: noop, handleSelect: noop, emptyForm: {},
+        normalizeSshError: error => error, message: { error: error => { throw Error(error); } }, t: translate,
+      })();
+      assert.equal(calls[0].at(-1), 'accept_new');
+    }
+    let form;
+    const edit = production(file, file.includes('RemoteSidebar') ? 'startEdit' : 'openEdit', {
+      setForm: value => { form = value; }, setEditingId() {}, setIsModalOpen() {}, setTestResult() {}, setEditingConn() {}, setManagerMode() {},
+    });
+    edit({ id: 'id', name: 'fixture', host: '127.0.0.1', port: 22, username: 'fixture', host_key_policy: 'accept_new' });
+    assert.equal(form.hostKeyPolicy, 'accept_new');
+    edit({ id: 'legacy', name: 'fixture', host: '127.0.0.1', port: 22, username: 'fixture' });
+    assert.equal(form.hostKeyPolicy, 'strict');
+    assert.match(readFileSync(path.join(root, file), 'utf8'), /policy=\{form\.hostKeyPolicy\}/);
+  });
+}
+
 for (const file of ['components/settings/ConnectionsSettings.tsx', 'components/remote/RemoteSidebar.tsx']) {
   test(`${file}: both save branches forward trust, and edit restores it without a password`, async () => {
     const isRemote = file.includes('RemoteSidebar');
@@ -61,7 +104,7 @@ for (const file of ['components/settings/ConnectionsSettings.tsx', 'components/r
       });
       await fn();
       assert.equal(calls.length, 1);
-      assert.equal(calls[0].at(-1), form.knownHostsPath);
+      assert.equal(calls[0][editing ? 8 : 7], form.knownHostsPath);
     }
     let form;
     const edit = production(file, isRemote ? 'startEdit' : 'openEdit', {
@@ -110,6 +153,27 @@ test('shared production field renders accessible strict-trust guidance and edits
   assert.match(html, /\[host\]:port/);
   element.props.children[1].props.onChange({ target: { value: 'C:\\fixture\\new' } });
   assert.equal(changed, 'C:\\fixture\\new');
+});
+
+test('shared policy selector explains TOFU, refuses invalid values, and switches back to Strict', () => {
+  const Select = ({ children }) => React.createElement('div', null, children);
+  const fn = production('components/remote/SshHostTrustField.tsx', 'SshHostTrustField', {
+    React, useTranslation: () => ({ t: translate }), Input: 'input', Label: 'label', Button: 'button',
+    Select, SelectTrigger: 'button', SelectValue: ({ placeholder }) => React.createElement('span', null, placeholder), SelectContent: 'div', SelectItem: 'div',
+    useRef: initial => ({ current: initial }), useState: initial => [initial, () => {}], useEffect() {},
+  });
+  const changed = [];
+  const element = fn({ id: 'policy-fixture', host: 'fixture.invalid', port: 22, value: '', onChange() {}, policy: 'accept_new', onPolicyChange: value => changed.push(value) });
+  assert.match(renderToStaticMarkup(element), /TOFU/);
+  assert.match(renderToStaticMarkup(element), /冒充/);
+  const find = node => node && typeof node === 'object' && (node.type === Select ? node : React.Children.toArray(node.props?.children).map(find).find(Boolean));
+  const select = find(element);
+  assert.ok(select, 'use the existing shadcn Select');
+  assert.equal(select.props.value, 'accept_new');
+  select.props.onValueChange('insecure');
+  assert.deepEqual(changed, []);
+  select.props.onValueChange('strict');
+  assert.deepEqual(changed, ['strict']);
 });
 
 test('trust inspection API uses only endpoint/source and never fakes a browser success', async () => {

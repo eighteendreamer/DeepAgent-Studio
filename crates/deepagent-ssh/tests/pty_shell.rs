@@ -42,6 +42,7 @@ async fn pty_shell_streams_prompt_and_echoes_input() {
             username: username.clone(),
             auth_type: SshAuthType::Password,
             key_path: None,
+            host_key_policy: Default::default(),
             known_hosts_path: Some(
                 std::env::var("DEEPAGENT_SSH_TEST_KNOWN_HOSTS")
                     .expect("provide an independently verified known_hosts absolute path"),

@@ -47,6 +47,7 @@ import {
   sshRenamePath,
   sshUpdateConnection,
   type SshConnection,
+  type SshHostKeyPolicy,
   type SshDirEntry,
 } from "../../api";
 
@@ -69,6 +70,7 @@ interface ConnectionForm {
   authType: AuthType;
   keyPath: string;
   knownHostsPath: string;
+  hostKeyPolicy: SshHostKeyPolicy;
   password: string;
 }
 
@@ -80,6 +82,7 @@ const emptyForm: ConnectionForm = {
   authType: "password",
   keyPath: "",
   knownHostsPath: "",
+  hostKeyPolicy: "strict",
   password: "",
 };
 
@@ -528,6 +531,7 @@ export function RemoteSidebar({
           keyPath,
           password,
           form.knownHostsPath,
+          form.hostKeyPolicy,
         );
       } else {
         const created = await sshCreateConnection(
@@ -539,6 +543,7 @@ export function RemoteSidebar({
           keyPath,
           password,
           form.knownHostsPath,
+          form.hostKeyPolicy,
         );
         void handleSelect(created);
       }
@@ -568,6 +573,7 @@ export function RemoteSidebar({
       authType: conn.key_path ? "file" : "password",
       keyPath: conn.key_path || "",
       knownHostsPath: conn.known_hosts_path || "",
+      hostKeyPolicy: conn.host_key_policy ?? "strict",
       password: "",
     });
     setEditingConn(conn);
@@ -1182,6 +1188,8 @@ export function RemoteSidebar({
                         host={form.host}
                         port={Number(form.port)}
                         value={form.knownHostsPath}
+                        policy={form.hostKeyPolicy}
+                        onPolicyChange={(hostKeyPolicy) => setForm({ ...form, hostKeyPolicy })}
                         onChange={(knownHostsPath) => setForm({ ...form, knownHostsPath })}
                       />
                       <section className="space-y-2.5 border-t border-border-theme pt-3">
