@@ -1,5 +1,6 @@
 import { SshHostTrustField } from "./SshHostTrustField";
 import { SshHostTrustManager } from "./SshHostTrustManager";
+import { useSshConnectionConfirmation } from "./SshHostKeyPrompt";
 import { HoverInfo } from "../ui/HoverInfo";
 import {
   ArrowLeft,
@@ -35,7 +36,6 @@ import {
 import { normalizeSshError } from "../settings/ConnectionsSettings";
 import {
   pickSshIdentityFile,
-  sshConnect,
   sshCreateConnection,
   sshCreateDir,
   sshCreateFile,
@@ -175,6 +175,7 @@ export function RemoteSidebar({
   const [connections, setConnections] = useState<SshConnection[]>([]);
   const [connectingId, setConnectingId] = useState<string | null>(null);
   const [managerOpen, setManagerOpen] = useState(false);
+  const confirmation = useSshConnectionConfirmation();
   const [trustConnection, setTrustConnection] = useState<SshConnection | null>(null);
   const [managerMode, setManagerMode] = useState<ManagerMode>("list");
   const [form, setForm] = useState<ConnectionForm>(emptyForm);
@@ -182,6 +183,7 @@ export function RemoteSidebar({
   const [tree, setTree] = useState<Record<string, SshDirEntry[]>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [loadingDir, setLoadingDir] = useState<string | null>(null);
+  const showDirectoryLoading = connectingId === selected?.id || loadingDir !== null;
   const [dirError, setDirError] = useState<string | null>(null);
   const [uploads, setUploads] = useState<
     Array<{
@@ -360,7 +362,7 @@ export function RemoteSidebar({
     if (conn.status !== "connected") {
       setConnectingId(conn.id);
       try {
-        await sshConnect(conn.id);
+        if (!(await confirmation.connect(conn.id))) return;
       } catch (error) {
         const displayError = normalizeSshError(
           error instanceof Error ? error.message : String(error),
@@ -867,6 +869,7 @@ export function RemoteSidebar({
 
   return (
     <aside className="flex h-full w-[240px] flex-shrink-0 flex-col bg-sidebar-bg no-select pb-2">
+      {confirmation.prompt}
       <SshHostTrustManager connection={trustConnection} onClose={() => setTrustConnection(null)} onChanged={() => {
         void loadConnections();
         if (selected && selected.id === trustConnection?.id) onSelect({ ...selected, status: "disconnected" });
@@ -973,8 +976,8 @@ export function RemoteSidebar({
             )
           ) : rootEntries === undefined ? (
             <div className="flex items-center gap-1.5 px-2.5 py-1 text-text-secondary">
-              <Loader2 className="h-3 w-3 animate-spin" />
-              {t("settings.connections.checking")}
+              {showDirectoryLoading && <Loader2 className="h-3 w-3 animate-spin" />}
+              {t(showDirectoryLoading ? "settings.connections.checking" : "remote.notConnected")}
             </div>
           ) : (
             renderRows(rootEntries, 0)

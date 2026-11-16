@@ -5415,6 +5415,47 @@ async fn ssh_disconnect(state: State<'_, AppState>, id: String) -> Result<(), St
 }
 
 #[tauri::command]
+async fn ssh_begin_connection(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<deepagent_ssh::SshConnectionAttempt, String> {
+    state
+        .ssh
+        .begin_connection(&id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn ssh_respond_host_key(
+    state: State<'_, AppState>,
+    id: String,
+    attempt_id: String,
+    challenge_id: String,
+    decision: deepagent_ssh::SshHostKeyDecision,
+) -> Result<(), String> {
+    state
+        .ssh
+        .respond_host_key(&id, &attempt_id, &challenge_id, decision)
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn ssh_cancel_host_key(
+    state: State<'_, AppState>,
+    id: String,
+    attempt_id: String,
+    challenge_id: String,
+) -> Result<(), String> {
+    state
+        .ssh
+        .cancel_host_key(&id, &attempt_id, &challenge_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn ssh_status(
     state: State<'_, AppState>,
     id: String,
@@ -7720,6 +7761,9 @@ pub fn run() {
             ssh_update_connection,
             ssh_remove_connection,
             ssh_connect,
+            ssh_begin_connection,
+            ssh_respond_host_key,
+            ssh_cancel_host_key,
             ssh_disconnect,
             ssh_status,
             ssh_test_connection,

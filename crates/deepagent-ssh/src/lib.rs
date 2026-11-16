@@ -25,6 +25,7 @@ pub use config::{
     CreateSshConnectionRequest, SshAuthType, SshConnectionConfig, SshConnectionDto, SshStatus,
     UpdateSshConnectionRequest,
 };
+pub use connection_challenge::{SshConnectionAttempt, SshHostKeyChallenge, SshHostKeyDecision};
 pub use error::{SshError, SshResult};
 pub use host_key_store::{SshHostIdentity, SshHostKeyRecord, SshHostKeyStore};
 pub use host_trust::{SshHostTrustInspection, SshKnownHostKey};
@@ -41,6 +42,8 @@ pub use session::{
 pub use transport::{SshClient, SshCommandOutput};
 
 mod config;
+mod connection_challenge;
+mod connection_flow;
 mod error;
 mod host_key_store;
 mod host_trust;
@@ -383,6 +386,26 @@ impl SshService {
 
     pub async fn connect(&self, id: &str) -> SshResult<SshServiceHandle> {
         self.inner.connect(id).await
+    }
+
+    pub async fn begin_connection(&self, id: &str) -> SshResult<SshConnectionAttempt> {
+        self.inner.begin_connection(id).await
+    }
+
+    pub async fn respond_host_key(
+        &self,
+        id: &str,
+        attempt_id: &str,
+        challenge_id: &str,
+        decision: SshHostKeyDecision,
+    ) -> SshResult<SshServiceHandle> {
+        self.inner
+            .respond_host_key(id, attempt_id, challenge_id, decision)
+            .await
+    }
+
+    pub fn cancel_host_key(&self, id: &str, attempt_id: &str, challenge_id: &str) -> SshResult<()> {
+        self.inner.cancel_host_key(id, attempt_id, challenge_id)
     }
 
     pub async fn exec(&self, handle: &SshServiceHandle, command: &str) -> SshResult<SshExecResult> {

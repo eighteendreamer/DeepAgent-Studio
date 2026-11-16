@@ -4042,6 +4042,43 @@ export async function sshConnect(id: string): Promise<void> {
   if (invoke) return invoke<void>("ssh_connect", { id });
 }
 
+export interface SshHostKeyChallenge {
+  connection_id: string;
+  attempt_id: string;
+  challenge_id: string;
+  host: string;
+  port: number;
+  username: string;
+  role: "target";
+  route: "direct";
+  kind: "unknown_host";
+  algorithm: string;
+  fingerprint: string;
+  expires_at_ms: number;
+  can_save: boolean;
+}
+
+export type SshConnectionAttempt = { status: "connected" } | { status: "confirmation_required"; challenge: SshHostKeyChallenge };
+export type SshHostKeyDecision = "once" | "save";
+
+export async function sshBeginConnection(id: string): Promise<SshConnectionAttempt> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("SSH host confirmation requires the desktop app");
+  return invoke<SshConnectionAttempt>("ssh_begin_connection", { id });
+}
+
+export async function sshRespondHostKey(id: string, attemptId: string, challengeId: string, decision: SshHostKeyDecision): Promise<void> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("SSH host confirmation requires the desktop app");
+  return invoke<void>("ssh_respond_host_key", { id, attemptId, challengeId, decision });
+}
+
+export async function sshCancelHostKey(id: string, attemptId: string, challengeId: string): Promise<void> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("SSH host confirmation requires the desktop app");
+  return invoke<void>("ssh_cancel_host_key", { id, attemptId, challengeId });
+}
+
 export async function sshDisconnect(id: string): Promise<void> {
   const invoke = getInvoke();
   if (invoke) return invoke<void>("ssh_disconnect", { id });

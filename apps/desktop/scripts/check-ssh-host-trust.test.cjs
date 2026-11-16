@@ -264,13 +264,13 @@ test('application host trust API preserves the reviewed snapshot and never fakes
   }
 });
 
-function trustManagerDriver(api = {}) {
+function trustManagerDriver(api = {}, file = 'components/remote/SshHostTrustManager.tsx', name = 'HostTrustPanel', extra = {}) {
   const slots = [];
   let cursor = 0;
   let effects = [];
   const names = ['Dialog', 'DialogContent', 'DialogHeader', 'DialogTitle', 'DialogDescription', 'DialogFooter'];
   const context = Object.fromEntries(names.map(name => [name, 'div']));
-  const fn = production('components/remote/SshHostTrustManager.tsx', 'HostTrustPanel', {
+  const fn = production(file, name, {
     ...context, React, Button: 'button', Checkbox: 'fixture-checkbox', Label: 'label',
     useTranslation: () => ({ t: translate }),
     sshListHostKeys: async () => [], sshInspectHostTrust: async () => { throw Error('unexpected inspection'); },
@@ -279,9 +279,9 @@ function trustManagerDriver(api = {}) {
     useRef: initial => { const at = cursor++; return slots[at] ??= { current: initial }; },
     useState: initial => {
       const at = cursor++;
-      if (!(at in slots)) slots[at] = initial;
+      if (!(at in slots)) slots[at] = typeof initial === 'function' ? initial() : initial;
       return [slots[at], value => { slots[at] = typeof value === 'function' ? value(slots[at]) : value; }];
-    },
+    }, ...extra,
     useEffect: (effect, deps) => {
       const at = cursor++;
       const previous = slots[at];
@@ -378,4 +378,127 @@ test('both real SSH surfaces use the same application trust manager', () => {
   for (const file of ['components/settings/ConnectionsSettings.tsx', 'components/remote/RemoteSidebar.tsx']) {
     assert.match(readFileSync(path.join(root, file), 'utf8'), /<SshHostTrustManager\b/);
   }
+});
+
+test('connection confirmation APIs bind both server-generated IDs and never fake a browser connection', async () => {
+  for (const [name, command, args, expected] of [
+    ['sshBeginConnection', 'ssh_begin_connection', ['id'], {id:'id'}],
+    ['sshRespondHostKey', 'ssh_respond_host_key', ['id','attempt','challenge','once'], {id:'id',attemptId:'attempt',challengeId:'challenge',decision:'once'}],
+    ['sshCancelHostKey', 'ssh_cancel_host_key', ['id','attempt','challenge'], {id:'id',attemptId:'attempt',challengeId:'challenge'}],
+  ]) {
+    const calls=[];
+    await production('api.ts',name,{getInvoke:()=>async(command,args)=>calls.push({command,args})})(...args);
+    assert.equal(calls[0].command,command);
+    assert.deepEqual(JSON.parse(JSON.stringify(calls[0].args)),expected);
+    await assert.rejects(production('api.ts',name,{getInvoke:()=>null})(...args),/desktop app/);
+  }
+});
+
+function confirmationFlow(api, now = () => 1) {
+  const states=[];
+  const create = production('components/remote/SshConnectionFlow.ts','createSshConnectionFlow',{console});
+  const flow = create(state=>states.push(state),api,now);
+  flow.activate();
+  return {flow,states};
+}
+function unknownChallenge(id='id') { return {connection_id:id,attempt_id:`attempt-${id}`,challenge_id:`challenge-${id}`,host:'fixture.invalid',port:22,username:'fixture',role:'target',route:'direct',kind:'unknown_host',algorithm:'ssh-ed25519',fingerprint:'SHA256:fixture',expires_at_ms:1000,can_save:true}; }
+
+test('unknown connection waits for an explicit decision and duplicate clicks never authenticate twice', async () => {
+  const challenge=unknownChallenge(); const calls=[]; let complete;
+  const {flow,states}=confirmationFlow({begin:async()=>({status:'confirmation_required',challenge}),respond:async(...args)=>{calls.push(args);await new Promise(resolve=>complete=resolve);},cancel:async()=>{}});
+  const connecting=flow.connect('id'); await flushManager();
+  assert.equal(calls.length,0);
+  assert.equal(states.at(-1).challenge.fingerprint,challenge.fingerprint);
+  const pending=flow.respond('once'); await flow.respond('save');
+  assert.equal(calls.length,1);
+  assert.deepEqual(calls[0],['id',challenge.attempt_id,challenge.challenge_id,'once']);
+  assert.equal(states.at(-1).busy,true);
+  complete();await pending;assert.equal(await connecting,true);
+});
+
+test('cancelled, superseded and unmounted prompts never submit a trust response', async () => {
+  let resolveOld; const cancelled=[]; const responded=[];
+  const {flow}=confirmationFlow({begin:id=>id==='old'?new Promise(resolve=>resolveOld=resolve):Promise.resolve({status:'confirmation_required',challenge:unknownChallenge(id)}),respond:async(...args)=>responded.push(args),cancel:async(...args)=>cancelled.push(args)});
+  const old=flow.connect('old'); const current=flow.connect('new'); await flushManager();
+  resolveOld({status:'confirmation_required',challenge:unknownChallenge('old')});await flushManager();
+  assert.equal(await old,false);
+  await flow.cancel();assert.equal(await current,false);
+  const disposed=flow.connect('disposed');await flushManager();flow.dispose();await flushManager();
+  assert.equal(await disposed,false);
+  assert.equal(responded.length,0);
+  assert.equal(cancelled.length,3);
+});
+
+test('expired or non-saveable challenges cannot be accepted by a stale UI callback', async () => {
+  const challenge={...unknownChallenge(),can_save:false};let now=1;const responded=[];
+  const {flow}=confirmationFlow({begin:async()=>({status:'confirmation_required',challenge}),respond:async(...args)=>responded.push(args),cancel:async()=>{}},()=>now);
+  const first=flow.connect('id');await flushManager();
+  await flow.respond('save');assert.equal(responded.length,0);
+  now=1001;await flow.respond('once');assert.equal(responded.length,0);
+  await flow.cancel();assert.equal(await first,false);
+});
+
+test('backend confirmation failure rejects the connection and never reports success', async () => {
+  const {flow,states}=confirmationFlow({begin:async()=>({status:'confirmation_required',challenge:unknownChallenge()}),respond:async()=>{throw Error('changed before authentication');},cancel:async()=>{}});
+  const connecting=flow.connect('id');const failed=assert.rejects(connecting,/changed before authentication/);
+  await flushManager();await flow.respond('once');await failed;
+  assert.equal(states.at(-1).challenge,null);
+});
+
+test('both actual SSH surfaces use the shared confirmation hook rather than a bare connect', () => {
+  const settings=readFileSync(path.join(root,'components/settings/ConnectionsSettings.tsx'),'utf8');
+  const remote=readFileSync(path.join(root,'components/remote/RemoteSidebar.tsx'),'utf8');
+  for (const source of [settings,remote]) {
+    assert.match(source,/useSshConnectionConfirmation\(\)/);
+    assert.match(source,/confirmation\.connect\(/);
+    assert.match(source,/\{confirmation\.prompt\}/);
+  }
+  assert.doesNotMatch(remote,/await sshConnect\(/);
+  assert.match(settings,/await sshExec\(id, "echo ok"\)/,'connection test exercises the same accepted live client');
+});
+
+test('actual prompt requires verification, honors expiry and locks submitted decisions', async () => {
+  const text=key=>translate(`settings.connections.hostChallenge.${key}`);
+  const create=()=>trustManagerDriver({},'components/remote/SshHostKeyPrompt.tsx','SshHostKeyPrompt', { window:{setTimeout:()=>1,clearTimeout() {}} });
+  const driver=create();const decisions=[];let cancellations=0;
+  const props={challenge:{...unknownChallenge(),expires_at_ms:Date.now()+60000},busy:false,onRespond:async decision=>decisions.push(decision),onCancel:async()=>cancellations++};
+  let view=driver.render(props);
+  assert.ok(view.text.includes(props.challenge.fingerprint));
+  assert.equal(view.button(text('once')).props.disabled,true);
+  assert.equal(view.button(text('save')).props.disabled,true);
+  view.nodes.find(node=>node.type==='fixture-checkbox').props.onCheckedChange(true);
+  view=driver.render(props);
+  assert.equal(view.button(text('once')).props.disabled,false);
+  await view.button(text('once')).props.onClick();assert.deepEqual(decisions,['once']);
+  view=driver.render({...props,busy:true});
+  assert.equal(view.button(text('once')).props.disabled,true);
+  assert.equal(view.button(text('cancel')).props.disabled,true);
+  const expired=create().render({...props,challenge:{...props.challenge,expires_at_ms:1,can_save:false}});
+  assert.ok(expired.text.includes(text('expired')));
+  assert.equal(expired.button(text('once')).props.disabled,true);
+  assert.equal(expired.button(text('save')),undefined);
+  await expired.button(text('cancel')).props.onClick();assert.equal(cancellations,1);
+});
+
+test('settings tests only the same accepted live connection and never execute after cancellation', async () => {
+  for (const accepted of [true,false]) {
+    const calls=[];const noop=()=>{};
+    const handler=production('components/settings/ConnectionsSettings.tsx','handleTest',{
+      setTestingId:noop,setConnections:noop,setTestResult:noop,
+      confirmation:{connect:async id=>{calls.push(['connect',id]);return accepted;}},
+      sshExec:async(id,command)=>{calls.push(['exec',id,command]);return {exit_code:0,stdout:'ok\n',stderr:'',duration_ms:3};},
+      normalizeSshError:error=>error??'',t:translate,message:{success:noop,error:error=>{throw Error(error);}},
+    });
+    await handler('id');
+    assert.deepEqual(calls,accepted?[['connect','id'],['exec','id','echo ok']]:[['connect','id']]);
+  }
+});
+
+test('remote directory loading reflects actual work, never an undefined tree after rejecting trust', () => {
+  for (const [connectingId, loadingDir, expected] of [[null,null,false],['id',null,true],[null,'/',true],['other',null,false]]) {
+    const pending=production('components/remote/RemoteSidebar.tsx','showDirectoryLoading',{selected:{id:'id'},connectingId,loadingDir});
+    assert.equal(pending,expected);
+  }
+  const source=readFileSync(path.join(root,'components/remote/RemoteSidebar.tsx'),'utf8');
+  assert.match(source,/showDirectoryLoading \? "settings.connections.checking" : "remote.notConnected"/);
 });

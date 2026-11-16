@@ -1,5 +1,6 @@
 import { SshHostTrustField } from "../remote/SshHostTrustField";
 import { SshHostTrustManager } from "../remote/SshHostTrustManager";
+import { useSshConnectionConfirmation } from "../remote/SshHostKeyPrompt";
 import { Button } from "../shadcn/button";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useEffect, useState } from "react";
@@ -11,7 +12,7 @@ import {
   sshCreateConnection,
   sshListConnections,
   sshRemoveConnection,
-  sshTestConnection,
+  sshExec,
   sshUpdateConnection,
   type SshConnection,
   type SshTestResult,
@@ -101,6 +102,7 @@ export function normalizeSshError(
 export function ConnectionsSettings() {
   const { t } = useTranslation();
   const [connections, setConnections] = useState<SshConnection[]>([]);
+  const confirmation = useSshConnectionConfirmation();
   const [trustConnection, setTrustConnection] = useState<SshConnection | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -210,7 +212,14 @@ export function ConnectionsSettings() {
     );
 
     try {
-      const result = await sshTestConnection(id);
+      if (!(await confirmation.connect(id))) {
+        setConnections((prev) => prev.map((conn) => conn.id === id ? { ...conn, status: "disconnected" } : conn));
+        return;
+      }
+      // Test the same accepted live connection: Once must not open a second,
+      // unapproved transport through the legacy standalone test command.
+      const output = await sshExec(id, "echo ok");
+      const result: SshTestResult = { ok: output.exit_code === 0, latency_ms: output.duration_ms, error: output.exit_code === 0 ? undefined : output.stderr };
       const displayError = normalizeSshError(result.error, t);
       const displayResult = result.ok
         ? result
@@ -315,6 +324,7 @@ export function ConnectionsSettings() {
 
   return (
     <>
+      {confirmation.prompt}
       <div className="mb-8">
         <h1 className="text-2xl font-semibold text-text-base">
           {t("settings.connections.title")}

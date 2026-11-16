@@ -35,6 +35,7 @@ pub(crate) struct HostTrust {
     keys: Vec<(usize, PublicKey)>,
     application: Option<StoreSnapshot>,
     revoked: Vec<PublicKey>,
+    confirmed_key: Option<PublicKey>,
 }
 
 impl HostTrust {
@@ -47,19 +48,20 @@ impl HostTrust {
         store: Option<Arc<SshHostKeyStore>>,
     ) -> SshResult<Self> {
         let config = config.clone();
-        tokio::task::spawn_blocking(move || Self::read_with_store(&config, store.as_deref()))
+        tokio::task::spawn_blocking(move || Self::read_with_store(&config, store.as_deref(), false))
             .await
             .map_err(|error| SshError::Internal(format!("SSH trust reader failed: {error}")))?
     }
 
     #[cfg(test)]
     fn read(config: &SshConnectionConfig) -> SshResult<Self> {
-        Self::read_with_store(config, None)
+        Self::read_with_store(config, None, false)
     }
 
     fn read_with_store(
         config: &SshConnectionConfig,
         store: Option<&SshHostKeyStore>,
+        allow_unknown: bool,
     ) -> SshResult<Self> {
         let identity = SshHostIdentity::direct(&config.host, config.port)?;
         let application = store.map(|store| store.snapshot(&identity)).transpose()?;
@@ -75,7 +77,8 @@ impl HostTrust {
         let bytes = match std::fs::read(path) {
             Ok(bytes) => Some(bytes),
             Err(error)
-                if error.kind() == std::io::ErrorKind::NotFound && !application_keys.is_empty() =>
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && (allow_unknown || !application_keys.is_empty()) =>
             {
                 None
             }
@@ -122,7 +125,7 @@ impl HostTrust {
                 keys.push((0, key)); // Application records have no file line number.
             }
         }
-        if keys.is_empty() {
+        if keys.is_empty() && (!allow_unknown || !revoked.is_empty()) {
             return Err(Self::error(
                 config,
                 if revoked.is_empty() {
@@ -138,7 +141,45 @@ impl HostTrust {
             keys,
             application,
             revoked,
+            confirmed_key: None,
         })
+    }
+
+    pub(crate) async fn capture(
+        config: &SshConnectionConfig,
+        store: Option<Arc<SshHostKeyStore>>,
+    ) -> SshResult<Self> {
+        let config = config.clone();
+        tokio::task::spawn_blocking(move || Self::read_with_store(&config, store.as_deref(), true))
+            .await
+            .map_err(|error| SshError::Internal(format!("SSH trust capture task: {error}")))?
+    }
+
+    pub(crate) async fn reload(
+        &self,
+        config: &SshConnectionConfig,
+        store: Option<Arc<SshHostKeyStore>>,
+    ) -> SshResult<Self> {
+        let mut current = if self.confirmed_key.is_some() {
+            Self::capture(config, store).await?
+        } else {
+            Self::load_with_store(config, store).await?
+        };
+        current.confirmed_key = self.confirmed_key.clone();
+        Ok(current)
+    }
+
+    pub(crate) fn is_unknown(&self) -> bool {
+        self.keys.is_empty() && self.revoked.is_empty()
+    }
+
+    pub(crate) fn confirm_key(mut self, key: PublicKey) -> Self {
+        self.confirmed_key = Some(key);
+        self
+    }
+
+    pub(crate) fn same_file(&self, other: &Self) -> bool {
+        self.path == other.path && self.digest == other.digest
     }
 
     pub(crate) fn inspection(self, config: &SshConnectionConfig) -> SshHostTrustInspection {
@@ -176,6 +217,14 @@ impl HostTrust {
     pub(crate) fn accepts(&self, presented: &PublicKey) -> bool {
         // Preserve the existing russh 0.55 fail-closed semantics for conflicting
         // same-algorithm entries, but compare the captured keys, never reopen a path.
+        if let Some(confirmed) = &self.confirmed_key {
+            if presented != confirmed {
+                return false;
+            }
+            if self.is_unknown() {
+                return true;
+            }
+        }
         !self.revoked.iter().any(|key| key == presented)
             && self.keys.iter().any(|(_, key)| key == presented)
             && self

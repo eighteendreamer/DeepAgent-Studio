@@ -44,6 +44,46 @@ pub struct SshCommandOutput {
 }
 
 impl SshClient {
+    /// Strictly reject the key to end a pre-auth probe. Never authenticates or keeps a client.
+    pub(crate) async fn probe_host_key(
+        config: &SshConnectionConfig,
+        trust: &HostTrust,
+    ) -> SshResult<PublicKey> {
+        if !trust.is_unknown() {
+            return Err(HostTrust::error(
+                config,
+                "only an unknown endpoint may be probed for confirmation",
+            ));
+        }
+        let observed = Arc::new(Mutex::new(None));
+        let result = client::connect(
+            Arc::new(client::Config::default()),
+            (config.host.as_str(), config.port),
+            IdentityHandler {
+                trust: trust.clone(),
+                rejected: observed.clone(),
+            },
+        )
+        .await;
+        let failure = match result {
+            Ok(handle) => {
+                let _ = handle.disconnect(Disconnect::ByApplication, "", "en").await;
+                return Err(HostTrust::error(
+                    config,
+                    "host-key probe unexpectedly accepted a key",
+                ));
+            }
+            Err(error) => error,
+        };
+        let key = observed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        match key {
+            Some(key) => Ok(key),
+            None => Err(protocol_error("SSH host-key probe", failure)),
+        }
+    }
     pub(crate) async fn connect(
         config: &SshConnectionConfig,
         trust: &HostTrust,
@@ -76,7 +116,7 @@ impl SshClient {
         })?;
 
         let authentication = async {
-            if &HostTrust::load_with_store(config, store).await? != trust {
+            if &trust.reload(config, store).await? != trust {
                 return Err(HostTrust::error(
                     config,
                     "trust source changed before authentication",

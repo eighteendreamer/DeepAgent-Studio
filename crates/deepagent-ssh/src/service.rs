@@ -75,11 +75,12 @@ impl SshConfigStore for JsonFileSshConfigStore {
 
 pub struct SshServiceImpl {
     // Config identity changes cannot race publication of a verified connection.
-    lifecycle: RwLock<()>,
+    pub(super) lifecycle: RwLock<()>,
     configs: RwLock<HashMap<String, SshConnectionConfig>>,
     sessions: RwLock<HashMap<String, Arc<SshSession>>>,
     config_store: Arc<dyn SshConfigStore>,
     pub(super) host_key_store: Option<Arc<crate::SshHostKeyStore>>,
+    pub(super) host_challenges: crate::connection_challenge::HostKeyChallenges,
     data_root: PathBuf,
     loaded: AtomicBool,
 }
@@ -100,6 +101,7 @@ impl SshServiceImpl {
             sessions: RwLock::new(HashMap::new()),
             config_store,
             host_key_store: None,
+            host_challenges: Default::default(),
             data_root: app_data.join("deepagent-ssh"),
             loaded: AtomicBool::new(false),
         }
@@ -107,6 +109,7 @@ impl SshServiceImpl {
 
     pub async fn load(&self) -> SshResult<()> {
         let _lifecycle = self.lifecycle.write().await;
+        self.host_challenges.clear();
         let configs = self
             .config_store
             .load()
@@ -250,7 +253,7 @@ impl SshServiceImpl {
         self.disconnect(id).await
     }
 
-    fn application_trust_store(&self) -> SshResult<Arc<crate::SshHostKeyStore>> {
+    pub(super) fn application_trust_store(&self) -> SshResult<Arc<crate::SshHostKeyStore>> {
         self.host_key_store.clone().ok_or_else(|| {
             SshError::InvalidConfig("SSH application trust store is not configured".into())
         })
@@ -359,7 +362,16 @@ impl SshServiceImpl {
         self.ensure_loaded().await;
         let _lifecycle = self.lifecycle.read().await;
         let cfg = self.config_for(id).await?;
-        if let Some((session, _client)) = self.reusable_client(&cfg).await? {
+        self.connect_config(&cfg, None).await
+    }
+
+    pub(super) async fn connect_config(
+        &self,
+        cfg: &SshConnectionConfig,
+        confirmed: Option<HostTrust>,
+    ) -> SshResult<SshServiceHandle> {
+        let id = cfg.id.as_str();
+        if let Some((session, _client)) = self.reusable_client(cfg).await? {
             session.set_status(SshStatus::Connected, None).await;
             session.touch_keepalive();
             let _ = self
@@ -373,7 +385,7 @@ impl SshServiceImpl {
         let started = std::time::Instant::now();
         let (client, trust) = match timeout(
             Duration::from_secs(20),
-            connect_client(&cfg, self.host_key_store.clone()),
+            connect_client(cfg, self.host_key_store.clone(), confirmed),
         )
         .await
         {
@@ -703,6 +715,7 @@ impl SshServiceImpl {
     }
 
     pub async fn disconnect(&self, id: &str) -> SshResult<()> {
+        self.host_challenges.invalidate(id);
         let sessions = self.sessions.read().await;
         if let Some(session) = sessions.get(id) {
             session.replace_pty(None).await;
@@ -770,7 +783,7 @@ impl SshServiceImpl {
         cfg.known_hosts_path = Some(self.resolve_known_hosts(cfg.known_hosts_path.as_deref())?);
         let start = std::time::Instant::now();
         let result = match timeout(Duration::from_secs(20), async {
-            let (client, _) = connect_client(&cfg, self.host_key_store.clone()).await?;
+            let (client, _) = connect_client(&cfg, self.host_key_store.clone(), None).await?;
             let output = client.execute("echo ok").await?;
             let _ = client.disconnect().await;
             Ok::<_, SshError>(output)
@@ -1193,7 +1206,7 @@ impl SshServiceImpl {
         })
     }
 
-    async fn config_for(&self, id: &str) -> SshResult<SshConnectionConfig> {
+    pub(super) async fn config_for(&self, id: &str) -> SshResult<SshConnectionConfig> {
         self.ensure_loaded().await;
         let configs = self.configs.read().await;
         configs
@@ -1224,7 +1237,7 @@ impl SshServiceImpl {
             .map_err(|_| SshError::InvalidConfig("known_hosts path must be valid Unicode".into()))
     }
 
-    async fn reusable_client(
+    pub(super) async fn reusable_client(
         &self,
         cfg: &SshConnectionConfig,
     ) -> SshResult<Option<(Arc<SshSession>, Client)>> {
@@ -1250,7 +1263,12 @@ impl SshServiceImpl {
             self.disconnect(&cfg.id).await?;
             return Ok(None);
         }
-        match HostTrust::load_with_store(cfg, self.host_key_store.clone()).await {
+        let previous = session.host_trust.read().await.clone();
+        let current = match &previous {
+            Some(previous) => previous.reload(cfg, self.host_key_store.clone()).await,
+            None => HostTrust::load_with_store(cfg, self.host_key_store.clone()).await,
+        };
+        match current {
             Ok(trust) if session.host_trust.read().await.as_ref() == Some(&trust) => {
                 Ok(Some((session, client)))
             }
@@ -1291,7 +1309,7 @@ impl SshServiceImpl {
             .ok_or_else(|| SshError::NotFound(id.to_string()))
     }
 
-    async fn ensure_loaded(&self) {
+    pub(super) async fn ensure_loaded(&self) {
         if !self.loaded.load(Ordering::Relaxed) {
             let _ = self.load().await;
             self.loaded.store(true, Ordering::Relaxed);
@@ -1384,7 +1402,7 @@ impl SshServiceImpl {
 
         let started = std::time::Instant::now();
         let outcome = timeout(Duration::from_secs(STATUS_REFRESH_TIMEOUT_SECS), async {
-            let (client, _) = connect_client(cfg, self.host_key_store.clone()).await?;
+            let (client, _) = connect_client(cfg, self.host_key_store.clone(), None).await?;
             execute_health_check(&client).await?;
             let _ = client.disconnect().await;
             Ok::<(), SshError>(())
@@ -1505,15 +1523,27 @@ async fn execute_health_check(client: &Client) -> SshResult<()> {
 async fn connect_client(
     config: &SshConnectionConfig,
     store: Option<Arc<crate::SshHostKeyStore>>,
+    confirmed: Option<HostTrust>,
 ) -> SshResult<(Client, HostTrust)> {
     validate_config(
         config,
         config.key_path.as_deref(),
         config.password.as_deref(),
     )?;
-    let trust = HostTrust::load_with_store(config, store.clone()).await?;
+    let trust = match confirmed {
+        Some(trust) => {
+            if trust.reload(config, store.clone()).await? != trust {
+                return Err(HostTrust::error(
+                    config,
+                    "confirmed trust changed before handshake",
+                ));
+            }
+            trust
+        }
+        None => HostTrust::load_with_store(config, store.clone()).await?,
+    };
     let client = Client::connect(config, &trust, store.clone()).await?;
-    match HostTrust::load_with_store(config, store).await {
+    match trust.reload(config, store).await {
         Ok(current) if current == trust => Ok((client, trust)),
         result => {
             let _ = client.disconnect().await;
