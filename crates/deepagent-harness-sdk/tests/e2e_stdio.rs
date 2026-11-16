@@ -38,13 +38,11 @@ fn temp_workspace(tag: &str) -> PathBuf {
     dir
 }
 
-async fn spawn_server(tag: &str) -> (HarnessProcess, deepagent_harness_sdk::HarnessClient) {
-    let bin = cli_binary();
-    assert!(
-        bin.exists(),
-        "cli binary not built: {} (run `cargo build -p deepagent-cli` first)",
-        bin.display()
-    );
+async fn spawn_server(
+    test_name: &str,
+    tag: &str,
+) -> Option<(HarnessProcess, deepagent_harness_sdk::HarnessClient)> {
+    let bin = isolated_cli(test_name, tag).await?;
     let process = HarnessProcess::spawn(&bin, &temp_workspace(tag))
         .await
         .expect("spawn cli server");
@@ -61,7 +59,7 @@ async fn spawn_server(tag: &str) -> (HarnessProcess, deepagent_harness_sdk::Harn
     );
     assert!(!identity.server_version.trim().is_empty());
     assert!(identity.capabilities.thread_lifecycle && identity.capabilities.streaming);
-    (process, client)
+    Some((process, client))
 }
 
 #[tokio::test]
@@ -515,7 +513,14 @@ async fn h215_real_archive_unarchive_is_durable_and_restored_thread_requires_exp
 
 #[tokio::test]
 async fn initialize_then_thread_start_streams_thread_started_event() {
-    let (_process, client) = spawn_server("thread-event").await;
+    let Some((process, client)) = spawn_server(
+        "initialize_then_thread_start_streams_thread_started_event",
+        "thread-event",
+    )
+    .await
+    else {
+        return;
+    };
 
     let mut events = client.subscribe();
 
@@ -547,6 +552,7 @@ async fn initialize_then_thread_start_streams_thread_started_event() {
         is_match,
         "expected thread.started for {thread_id}, got {event:?}"
     );
+    assert!(process.wait().await.unwrap().success());
 }
 
 #[tokio::test]
@@ -674,11 +680,17 @@ async fn isolated_cli(test_name: &str, tag: &str) -> Option<PathBuf> {
         // Isolate the whole test process, not global env shared by parallel
         // Rust tests. A regular cargo test must never use a user's provider.
         let root = temp_workspace(tag);
+        let source = cli_binary();
+        assert!(
+            source.exists(),
+            "cli binary not built: {} (run `cargo build -p deepagent-cli` first)",
+            source.display()
+        );
         // Exercise the identical CLI bytes in an empty installation, not all
         // bundled plugin discovery/preparation and its unrelated shutdown work.
-        let bin = root.join(cli_binary().file_name().unwrap());
-        std::fs::copy(cli_binary(), &bin).unwrap();
-        assert!(std::fs::read(cli_binary()).unwrap() == std::fs::read(&bin).unwrap());
+        let bin = root.join(source.file_name().unwrap());
+        std::fs::copy(&source, &bin).unwrap();
+        assert!(std::fs::read(&source).unwrap() == std::fs::read(&bin).unwrap());
         let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
         command.args(["--exact", test_name, "--nocapture"]);
         for (name, _) in std::env::vars_os() {
@@ -905,7 +917,14 @@ async fn h214_owned_real_cli_failure_is_unique_and_durable_after_reopen() {
 
 #[tokio::test]
 async fn introspection_methods_round_trip_without_a_model() {
-    let (_process, client) = spawn_server("introspect").await;
+    let Some((process, client)) = spawn_server(
+        "introspection_methods_round_trip_without_a_model",
+        "introspect",
+    )
+    .await
+    else {
+        return;
+    };
 
     let tools = client.tool_list().await.expect("tool/list");
     assert!(tools.result().is_object(), "tool/list returns an object");
@@ -916,6 +935,9 @@ async fn introspection_methods_round_trip_without_a_model() {
     assert_eq!(config.result()["resolutionStatus"], "uninitialized");
     assert_eq!(config.result()["credentialChecked"], false);
     assert_eq!(config.result()["provider"], "deepseek-official");
+    assert!(config.result()["model"].is_null());
+    let second_config = client.config_read().await.expect("second config/read");
+    assert_eq!(second_config.result(), config.result());
 
     let sandbox = client.sandbox_status().await.expect("sandbox/status");
     assert!(
@@ -949,6 +971,9 @@ async fn introspection_methods_round_trip_without_a_model() {
     assert!(scoped.is_success());
     assert_eq!(scoped.result()["scope"]["threadId"], thread_id);
     assert_eq!(scoped.result()["configSnapshotVersion"], 1);
+    assert_eq!(scoped.result()["resolutionStatus"], "uninitialized");
+    assert_eq!(scoped.result()["credentialChecked"], false);
+    assert!(scoped.result()["model"].is_null());
 
     let read = client
         .thread_read(ThreadReadRequest {
@@ -978,11 +1003,16 @@ async fn introspection_methods_round_trip_without_a_model() {
         ),
         "unemitted connection sequence must be rejected through the real SDK"
     );
+    assert!(process.wait().await.unwrap().success());
 }
 
 #[tokio::test]
 async fn interrupt_unknown_turn_surfaces_rpc_error() {
-    let (_process, client) = spawn_server("interrupt").await;
+    let Some((process, client)) =
+        spawn_server("interrupt_unknown_turn_surfaces_rpc_error", "interrupt").await
+    else {
+        return;
+    };
 
     let thread = client
         .thread_start(ThreadStartRequest {
@@ -1011,11 +1041,14 @@ async fn interrupt_unknown_turn_surfaces_rpc_error() {
         matches!(error, SdkError::Rpc { code, .. } if code == -32004),
         "expected ERR_INVALID_TURN for unknown turn, got {error:?}"
     );
+    assert!(process.wait().await.unwrap().success());
 }
 
 #[tokio::test]
 async fn request_before_initialize_is_rejected() {
-    let bin = cli_binary();
+    let Some(bin) = isolated_cli("request_before_initialize_is_rejected", "no-init").await else {
+        return;
+    };
     let process = HarnessProcess::spawn(&bin, &temp_workspace("no-init"))
         .await
         .expect("spawn cli server");
@@ -1036,11 +1069,14 @@ async fn request_before_initialize_is_rejected() {
         matches!(error, SdkError::NotInitialized),
         "expected NotInitialized, got {error:?}"
     );
+    assert!(process.wait().await.unwrap().success());
 }
 
 #[tokio::test]
 async fn process_exits_when_stdin_closes() {
-    let bin = cli_binary();
+    let Some(bin) = isolated_cli("process_exits_when_stdin_closes", "shutdown").await else {
+        return;
+    };
     let process = HarnessProcess::spawn(&bin, &temp_workspace("shutdown"))
         .await
         .expect("spawn cli server");
