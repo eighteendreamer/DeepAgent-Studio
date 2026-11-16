@@ -99,6 +99,14 @@ pnpm tauri dev      # 编译 Rust 外壳 + 打开桌面窗口
 > 原生选择文件夹对话框、API Key 校验等桌面特性，只在 Tauri 窗口
 > （`pnpm tauri dev`）中生效，纯 `pnpm dev` 的浏览器预览下不可用。
 
+### 配置来源
+
+模型选择使用本系统保存的设置，以及显式指定的 `.deepagent/settings.json`、
+`.deepagent/settings.local.json`、运行参数和 DeepAgent 管理员策略。
+运行时只自动加载本系统的配置；用户目录和项目目录中的其他客户端配置不参与解析，
+不提供第三方模型别名兼容或配置导入开关。指令使用 `AGENTS.md` 和 `.deepagent/rules/`，
+命令使用本系统命令目录。
+
 ## 目录结构
 
 ```text

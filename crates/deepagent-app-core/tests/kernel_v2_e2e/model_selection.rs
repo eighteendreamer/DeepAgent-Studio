@@ -120,15 +120,17 @@ async fn observe_selection_with_files(
 }
 
 #[tokio::test]
-async fn h89_unknown_explicit_and_blank_models_fail_without_provider_dispatch_even_over_claude_alias(
-) {
+async fn h89_unknown_explicit_and_blank_models_fail_over_native_defaults() {
     for id in ["deepseek-audit-not-in-catalog", "sonnet", "opus", "", "   "] {
         let outcome = observe_selection_with_files(
             HarnessRunOverrides {
                 model: Some(id.into()),
                 ..Default::default()
             },
-            &[(".claude/settings.json", r#"{"model":"sonnet"}"#)],
+            &[(
+                ".deepagent/settings.json",
+                r#"{"model":"deepseek-v4-flash"}"#,
+            )],
         )
         .await;
         assert_eq!(outcome.config["resolutionStatus"], "invalid", "{id}");
@@ -146,26 +148,23 @@ async fn h89_unknown_explicit_and_blank_models_fail_without_provider_dispatch_ev
 }
 
 #[tokio::test]
-async fn h89_compatibility_aliases_are_scoped_to_claude_files_not_deepagent_settings() {
+async fn native_settings_model_selection_is_exact() {
     for (path, model, expected) in [
-        (".claude/settings.json", "sonnet", Some(DEFAULT_MODEL)),
-        (".claude/settings.local.json", "opus", Some(DEFAULT_MODEL)),
-        (".claude/settings.json", "haiku", Some(DEFAULT_MODEL)),
-        (
-            ".claude/settings.json",
-            KNOWN_OVERRIDE,
-            Some(KNOWN_OVERRIDE),
-        ),
         (
             ".deepagent/settings.json",
             KNOWN_OVERRIDE,
             Some(KNOWN_OVERRIDE),
         ),
-        (".deepagent/settings.json", "sonnet", None),
         (
-            ".claude/settings.json",
-            "unrecognized-synthetic-model",
-            None,
+            ".deepagent/settings.json",
+            DEFAULT_MODEL,
+            Some(DEFAULT_MODEL),
+        ),
+        (".deepagent/settings.json", "unknown-native-model", None),
+        (
+            ".deepagent/settings.local.json",
+            KNOWN_OVERRIDE,
+            Some(KNOWN_OVERRIDE),
         ),
     ] {
         let body = serde_json::json!({"model":model}).to_string();

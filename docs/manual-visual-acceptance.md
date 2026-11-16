@@ -377,10 +377,10 @@
 
 ## 四、上下文（阶段 C）
 
-### M-10 嵌套 CLAUDE.md 动态发现
-- **流程**：a) 建 `src/api/CLAUDE.md`，内容：`回答本目录相关问题时，第一行必须是【嵌套规则已生效】`；b) 建 `src/api/handler.txt` 随意内容；c) **新会话**先问一个无关问题（预期不受影响），再输入 `读取 src/api/handler.txt 并解释`
+### M-10 嵌套 AGENTS.md 动态发现
+- **流程**：a) 建 `src/api/AGENTS.md`，内容：`回答本目录相关问题时，第一行必须是【嵌套规则已生效】`；b) 建 `src/api/handler.txt` 随意内容；c) **新会话**先问一个无关问题（预期不受影响），再输入 `读取 src/api/handler.txt 并解释`
 - **预期**：第一问**不带**标记；读取该目录文件后的回答**以【嵌套规则已生效】开头**（规则被懒加载注入）；同会话再次触达不重复注入
-- **日志**：`runtime_logs`: `nested instructions discovered`（tracing）或 Hook 事件 `instructions_loaded`（paths 含 src/api/CLAUDE.md）
+- **日志**：`runtime_logs`: `nested instructions discovered`（tracing）或 Hook 事件 `instructions_loaded`（paths 含 src/api/AGENTS.md）
 - **结果**：☐通过 ☐失败　备注：___________
 
 ### M-11 Skills 懒加载（名称常驻 / 正文按需）

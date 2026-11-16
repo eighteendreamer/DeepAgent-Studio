@@ -70,7 +70,7 @@ pub(crate) struct DirectorySnapshot {
 /// its file tools). Aligned with Claude Code's sensitive-file list (§6.2):
 /// this system DENIES outright rather than approval-gating — stricter is the
 /// safe direction for credentials, and consistent with the existing guard.
-/// Host services (McpService / SettingsService / DualConfigLoader) read their
+/// Host services (McpService / SettingsService / ConfigLoader) read their
 /// own config through dedicated code paths, never through these model tools,
 /// so denying the model here does not break legitimate host access.
 const SENSITIVE_NAMES: &[&str] = &[

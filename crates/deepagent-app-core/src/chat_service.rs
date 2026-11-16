@@ -2590,9 +2590,13 @@ mod tests {
     }
 
     fn mcp_schema_audit_payload() -> serde_json::Value {
+        // PreToolUse carries the tool call id, so the settings-page probe's
+        // payload must model it too — otherwise the fixture asserts a shape
+        // the hook runtime stopped producing.
         serde_json::json!({
             "session_id":deepagent_core::id::SessionId::nil().to_string(),
             "hook_event_name":"PreToolUse",
+            "tool_use_id":"call_test",
             "tool_name":"bash",
             "tool_input":{"command":"echo hook-test"}
         })
@@ -3153,17 +3157,13 @@ mod tests {
     }
 
     #[cfg(windows)]
-    fn project_hook_test_sources() -> [(&'static str, Option<&'static str>); 9] {
+    fn project_hook_test_sources() -> [(&'static str, Option<&'static str>); 5] {
         [
             (".deepagent/hooks.json", None),
             (".deepagent/settings.json", None),
             (".deepagent/settings.local.json", None),
-            (".claude/settings.json", None),
-            (".claude/settings.local.json", None),
             (".deepagent/settings.json", Some("hooks_json")),
             (".deepagent/settings.local.json", Some("hooksJson")),
-            (".claude/settings.json", Some("hooks_json")),
-            (".claude/settings.local.json", Some("hooksJson")),
         ]
     }
 
@@ -3330,12 +3330,9 @@ mod tests {
     async fn check_instruction_hook_file_metadata(prepared_first_turn: bool) {
         let (db, settings, dir) = seeded().await;
         let root = dir.path().join("workspace");
-        std::fs::create_dir_all(root.join(".deepagent")).unwrap();
-        std::fs::write(
-            root.join("CLAUDE.md"),
-            "Use the audit fixture instructions.\n",
-        )
-        .unwrap();
+        let rule_path = root.join(".deepagent").join("rules").join("runtime.md");
+        std::fs::create_dir_all(rule_path.parent().unwrap()).unwrap();
+        std::fs::write(&rule_path, "Use the audit fixture instructions.\n").unwrap();
         std::fs::write(
             root.join("AGENTS.md"),
             "Use the native audit instructions.\n",
@@ -3419,7 +3416,7 @@ mod tests {
             "one hook call is expected per loaded file"
         );
         let expected_paths = [
-            root.join("CLAUDE.md").to_string_lossy().into_owned(),
+            rule_path.to_string_lossy().into_owned(),
             root.join("AGENTS.md").to_string_lossy().into_owned(),
         ]
         .into_iter()
@@ -3958,12 +3955,7 @@ mod tests {
 
     #[tokio::test]
     async fn permission_project_sources_and_explicit_run_grants_gate_actual_writes() {
-        for source in [
-            ".deepagent/settings.json",
-            ".deepagent/settings.local.json",
-            ".claude/settings.json",
-            ".claude/settings.local.json",
-        ] {
+        for source in [".deepagent/settings.json", ".deepagent/settings.local.json"] {
             let (db, settings, dir) = seeded().await;
             settings.set_sandbox_mode(SandboxMode::ReadOnly).unwrap();
             settings

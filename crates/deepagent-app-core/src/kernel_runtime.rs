@@ -22,7 +22,7 @@ pub(crate) struct KernelRuntimeConfigRequest<'a> {
     pub(crate) granted: deepagent_tools::PermissionSet,
     pub(crate) verification_context: VerificationCommandContext,
     /// Nested-instruction discovery (kernel-refactor Phase C): injects
-    /// not-yet-loaded `CLAUDE.md`/`AGENTS.md` when tools touch their
+    /// not-yet-loaded `AGENTS.md` when tools touch their
     /// directories. `None` for callers without a hook registry (tests).
     pub(crate) nested_instructions:
         Option<Arc<crate::nested_instructions::NestedInstructionsDecorator>>,

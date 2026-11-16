@@ -20,12 +20,6 @@ impl Drop for ChildGuard {
 fn h89_real_stdio_unknown_selection_fails_before_credentials_and_survives_cold_resume() {
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(root.path().join("data")).unwrap();
-    std::fs::create_dir_all(root.path().join(".claude")).unwrap();
-    std::fs::write(
-        root.path().join(".claude/settings.json"),
-        r#"{"model":"sonnet"}"#,
-    )
-    .unwrap();
     let path = root.path().join("data/state.sqlite");
     {
         // Non-secret catalog only. No encrypted secret record or keychain entry
@@ -214,7 +208,7 @@ fn h89_real_stdio_unknown_selection_fails_before_credentials_and_survives_cold_r
             );
             previous.push((id, events));
         }
-        eprintln!("H89 real stdio pass {pass}: invalid unknown, exact known plan then missing-key failure, imported alias, unique terminal; no provider dispatch");
+        eprintln!("H89 real stdio pass {pass}: invalid unknown, exact known plan then missing-key failure, native catalog default, unique terminal; no provider dispatch");
     }
 }
 

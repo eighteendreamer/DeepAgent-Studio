@@ -45,10 +45,9 @@ pub use compaction::{
     CompactionPolicy, CompactionResult, Compactor, HeuristicSummarizer, Summarizer, TaskSummary,
 };
 pub use config_overlay::{
-    default_managed_dir, ConfigLayer, ConfigOverlay, ConfigScope, ConfigSource, DualConfigLoader,
-    MANAGED_PRECEDENCE, PLUGIN_PRECEDENCE, PROJECT_CLAUDE_PRECEDENCE, PROJECT_DEEPAGENT_PRECEDENCE,
-    PROJECT_LOCAL_CLAUDE_PRECEDENCE, PROJECT_LOCAL_DEEPAGENT_PRECEDENCE, RUN_PRECEDENCE,
-    USER_CLAUDE_PRECEDENCE, USER_DEEPAGENT_PRECEDENCE,
+    default_managed_dir, ConfigLayer, ConfigLoader, ConfigOverlay, ConfigScope, ConfigSource,
+    MANAGED_PRECEDENCE, PLUGIN_PRECEDENCE, PROJECT_DEEPAGENT_PRECEDENCE,
+    PROJECT_LOCAL_DEEPAGENT_PRECEDENCE, RUN_PRECEDENCE, USER_DEEPAGENT_PRECEDENCE,
 };
 pub use meter::{
     measure_response_request, measure_response_surface, measure_response_surface_for_route,

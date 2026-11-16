@@ -251,7 +251,7 @@ fn sample_hook_data(event: HookEvent, matcher: Option<&str>) -> HookData {
             notification_type: NotificationType::SubagentFinished,
         },
         HookEvent::InstructionsLoaded => HookData::InstructionsLoaded {
-            file_path: "CLAUDE.md".to_string(),
+            file_path: "AGENTS.md".to_string(),
             memory_type: deepagent_hooks::InstructionMemoryType::Project,
             load_reason: deepagent_hooks::InstructionLoadReason::SessionStart,
         },

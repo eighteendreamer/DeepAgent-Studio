@@ -270,12 +270,6 @@ async fn h221_admitted_snapshot_is_consumed_by_real_provider_after_settings_chan
     });
     let fixture = Fixture::with_transport(transport.clone()).await;
     std::fs::write(fixture.workspace.join("h221.txt"), "synthetic normal read").unwrap();
-    std::fs::create_dir(fixture.workspace.join(".claude")).unwrap();
-    std::fs::write(
-        fixture.workspace.join(".claude/settings.json"),
-        r#"{"model":"sonnet"}"#,
-    )
-    .unwrap();
     fixture
         .settings
         .set_reasoning_effort(deepagent_models::ReasoningEffort::Low)

@@ -158,11 +158,11 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let admin = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join(".deepagent")).unwrap();
-        std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+        std::fs::create_dir_all(home.path().join(".deepagent")).unwrap();
         std::fs::create_dir_all(admin.path().join("managed-settings.d")).unwrap();
         let full = r#"{"permission_preset":"full_access","sandbox_mode":"full_access","approval_policy":"full_access"}"#;
         std::fs::write(root.path().join(".deepagent/settings.json"), full).unwrap();
-        std::fs::write(home.path().join(".claude/settings.json"), full).unwrap();
+        std::fs::write(home.path().join(".deepagent/settings.json"), full).unwrap();
         std::fs::write(
             admin.path().join("managed-settings.json"),
             r#"{"sandboxMode":"read_only"}"#,
@@ -174,7 +174,7 @@ mod tests {
         )
         .unwrap();
         for managed in [false, true] {
-            let loaded = deepagent_context::DualConfigLoader::new(root.path())
+            let loaded = deepagent_context::ConfigLoader::new(root.path())
                 .with_user_home(Some(home.path().to_owned()))
                 .with_managed_dir(managed.then(|| admin.path().to_owned()))
                 .with_run_overrides(serde_json::json!({"permission_profile":"full_access"}))

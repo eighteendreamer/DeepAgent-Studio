@@ -1,10 +1,9 @@
 //! Nested instruction discovery (kernel-refactor Phase C).
 //!
-//! Claude Code loads `CLAUDE.md` files lazily: the root file is part of the
-//! initial context, while nested ones are discovered when the agent actually
-//! touches a subdirectory. This module implements the same behavior for
-//! DeepAgent as a [`ToolResultDecorator`]: after a file tool reports a
-//! `path`, every not-yet-loaded `CLAUDE.md` / `AGENTS.md` on the directory
+//! Root `AGENTS.md` instructions are part of the initial context; nested
+//! instructions are discovered when the agent touches a subdirectory.
+//! As a [`ToolResultDecorator`], after a file tool reports a
+//! `path`, every not-yet-loaded `AGENTS.md` on the directory
 //! chain between that path and the workspace root is injected into the tool
 //! result inside a `<system-reminder>` envelope, and an
 //! [`HookPoint::InstructionsLoaded`] dispatch announces the newly loaded
@@ -39,10 +38,8 @@ const TRIGGER_TOOLS: &[&str] = &[
     "list_dir",
 ];
 
-/// Instruction file names discovered per directory, in injection order.
-/// `.deepagent`'s native name wins ties by being listed last (later block
-/// appears later in the reminder, closest to the model's attention).
-const INSTRUCTION_FILE_NAMES: &[&str] = &["CLAUDE.md", "AGENTS.md"];
+/// Native instruction file names discovered per directory.
+const INSTRUCTION_FILE_NAMES: &[&str] = &["AGENTS.md"];
 
 /// Hard cap per instruction file; anything longer is truncated with a note.
 const MAX_FILE_BYTES: usize = 24 * 1024;
@@ -50,7 +47,7 @@ const MAX_FILE_BYTES: usize = 24 * 1024;
 /// are deferred to the next trigger).
 const MAX_FILES_PER_CALL: usize = 3;
 
-/// Discovers nested `CLAUDE.md` / `AGENTS.md` files when tools touch a
+/// Discovers nested `AGENTS.md` files when tools touch a
 /// directory, injects them as tool-result system reminders, and fires the
 /// `InstructionsLoaded` hook for each newly announced batch.
 pub struct NestedInstructionsDecorator {
@@ -292,7 +289,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let nested = tmp.path().join("src").join("api");
         std::fs::create_dir_all(&nested).unwrap();
-        std::fs::write(nested.join("CLAUDE.md"), "api rules").unwrap();
+        std::fs::write(nested.join("AGENTS.md"), "api rules").unwrap();
         std::fs::write(tmp.path().join("src").join("AGENTS.md"), "src agent rules").unwrap();
 
         let decorator = decorator(tmp.path(), Vec::new());
@@ -302,7 +299,7 @@ mod tests {
         let mut output = output_with_path(target.to_string_lossy().as_ref());
         decorator.decorate("read_file", &mut output).await;
         let reminder = output.value["_system_reminder"].as_str().unwrap();
-        // Shallow (src/AGENTS.md) before deep (src/api/CLAUDE.md).
+        // Shallow (src/AGENTS.md) before deep (src/api/AGENTS.md).
         let src_pos = reminder.find("src agent rules").unwrap();
         let api_pos = reminder.find("api rules").unwrap();
         assert!(src_pos < api_pos);
@@ -318,7 +315,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let sub = tmp.path().join("docs");
         std::fs::create_dir_all(&sub).unwrap();
-        let preloaded = sub.join("CLAUDE.md");
+        let preloaded = sub.join("AGENTS.md");
         std::fs::write(&preloaded, "docs rules").unwrap();
 
         let decorator = decorator(tmp.path(), vec![preloaded.clone()]);
@@ -330,7 +327,7 @@ mod tests {
     #[tokio::test]
     async fn workspace_root_files_and_failed_tools_are_ignored() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join("CLAUDE.md"), "root rules").unwrap();
+        std::fs::write(tmp.path().join("AGENTS.md"), "root rules").unwrap();
         let decorator = decorator(tmp.path(), Vec::new());
 
         // Root-level instruction files belong to the root manifest, not to
@@ -364,7 +361,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let sub = tmp.path().join("pkg");
         std::fs::create_dir_all(&sub).unwrap();
-        std::fs::write(sub.join("CLAUDE.md"), "pkg rules").unwrap();
+        std::fs::write(sub.join("AGENTS.md"), "pkg rules").unwrap();
 
         let decorator = decorator(tmp.path(), Vec::new());
         let mut output = output_with_path("pkg/lib.rs");
@@ -376,9 +373,10 @@ mod tests {
     #[tokio::test]
     async fn nested_instructions_dispatch_one_project_event_per_new_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let nested = tmp.path().join("src");
+        let parent = tmp.path().join("src");
+        let nested = parent.join("api");
         std::fs::create_dir_all(&nested).unwrap();
-        std::fs::write(nested.join("CLAUDE.md"), "claude rules").unwrap();
+        std::fs::write(parent.join("AGENTS.md"), "parent rules").unwrap();
         std::fs::write(nested.join("AGENTS.md"), "native rules").unwrap();
         let calls = Arc::new(Mutex::new(Vec::new()));
         let mut hooks = HookRegistry::new();
@@ -423,8 +421,8 @@ mod tests {
         assert_eq!(
             paths,
             vec![
+                parent.join("AGENTS.md").display().to_string(),
                 nested.join("AGENTS.md").display().to_string(),
-                nested.join("CLAUDE.md").display().to_string(),
             ]
         );
 

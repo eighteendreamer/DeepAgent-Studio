@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use deepagent_context::{ConfigLayer, ConfigScope, ConfigSource, DualConfigLoader};
+use deepagent_context::{ConfigLayer, ConfigLoader, ConfigScope, ConfigSource};
 use deepagent_core::error::{CoreError, Result};
 use deepagent_hooks::{HookDefinitions, PermissionRules};
 
@@ -27,7 +27,7 @@ pub(crate) struct RunHookDefinitions {
 
 impl RunConfigOverlay {
     pub(crate) fn load(root: &Path, run_overrides: serde_json::Value) -> Self {
-        let overlay = DualConfigLoader::new(root)
+        let overlay = ConfigLoader::new(root)
             .with_run_overrides(run_overrides)
             .load();
         Self {
@@ -203,34 +203,7 @@ impl RunConfigOverlay {
     /// Scalar `model` override resolved through the standard precedence
     /// chain (managed > run > local > project > user > plugin).
     pub(crate) fn model_override(&self) -> Option<&str> {
-        let model = string_field(&self.value, &["model"])?.trim();
-        // Local import compatibility, not a provider model alias or a claim
-        // about Opus/1M capabilities: preserve the old catalog-role default
-        // only for recognized aliases from the loader's Claude file tiers.
-        // Equal text from a higher run/managed/DeepAgent source is still exact.
-        let imported = self
-            .layers
-            .iter()
-            .rev()
-            .find(|layer| layer.value.get("model").is_some())
-            .is_some_and(|layer| {
-                matches!(
-                    layer.precedence,
-                    deepagent_context::USER_CLAUDE_PRECEDENCE
-                        | deepagent_context::PROJECT_CLAUDE_PRECEDENCE
-                        | deepagent_context::PROJECT_LOCAL_CLAUDE_PRECEDENCE
-                )
-            });
-        let normalized = model.to_ascii_lowercase();
-        let alias = normalized
-            .strip_suffix("[1m]")
-            .unwrap_or(&normalized)
-            .trim();
-        if imported && matches!(alias, "sonnet" | "opus" | "haiku" | "opusplan" | "best") {
-            tracing::info!("using catalog role default for imported Claude model alias");
-            return None;
-        }
-        Some(model)
+        string_field(&self.value, &["model"]).map(str::trim)
     }
 
     pub(crate) fn provider_override(&self) -> Option<&str> {
@@ -429,10 +402,7 @@ mod tests {
 
     #[test]
     fn permission_project_sources_cannot_expand_host_ceiling() {
-        use deepagent_context::{
-            PROJECT_CLAUDE_PRECEDENCE, PROJECT_LOCAL_CLAUDE_PRECEDENCE,
-            PROJECT_LOCAL_DEEPAGENT_PRECEDENCE,
-        };
+        use deepagent_context::PROJECT_LOCAL_DEEPAGENT_PRECEDENCE;
         let payloads = [
             serde_json::json!({"permission_profile":"full_access"}),
             serde_json::json!({"permissionProfile":"full_access"}),
@@ -466,9 +436,7 @@ mod tests {
         })
         .collect::<Vec<_>>();
         for precedence in [
-            PROJECT_CLAUDE_PRECEDENCE,
             PROJECT_DEEPAGENT_PRECEDENCE,
-            PROJECT_LOCAL_CLAUDE_PRECEDENCE,
             PROJECT_LOCAL_DEEPAGENT_PRECEDENCE,
         ] {
             for payload in &payloads {
@@ -721,26 +689,24 @@ mod tests {
     #[test]
     fn project_hook_scope_matrix_keeps_host_sources_and_skips_unknown() {
         use deepagent_context::{
-            MANAGED_PRECEDENCE, PLUGIN_PRECEDENCE, PROJECT_CLAUDE_PRECEDENCE,
-            PROJECT_LOCAL_CLAUDE_PRECEDENCE, PROJECT_LOCAL_DEEPAGENT_PRECEDENCE,
-            USER_CLAUDE_PRECEDENCE,
+            MANAGED_PRECEDENCE, PLUGIN_PRECEDENCE, PROJECT_LOCAL_DEEPAGENT_PRECEDENCE,
         };
         let hook = serde_json::json!({"hooks": {"SessionEnd": [{"hooks": [
             {"type":"command", "command":"fixture"}
         ]}]}});
         let scopes = [
             PLUGIN_PRECEDENCE,
-            USER_CLAUDE_PRECEDENCE,
             USER_DEEPAGENT_PRECEDENCE,
-            PROJECT_CLAUDE_PRECEDENCE,
             PROJECT_DEEPAGENT_PRECEDENCE,
-            PROJECT_LOCAL_CLAUDE_PRECEDENCE,
             PROJECT_LOCAL_DEEPAGENT_PRECEDENCE,
             RUN_PRECEDENCE,
             MANAGED_PRECEDENCE,
             MANAGED_PRECEDENCE + 1,
             u16::MAX,
-            0, // Unknown origin must not be promoted to a trusted source.
+            0,   // Unknown origin must not be promoted to a trusted source.
+            200, // Retired third-party source precedences remain unknown.
+            300,
+            400,
         ];
         let overlay = RunConfigOverlay::from_layers(
             scopes
@@ -750,8 +716,8 @@ mod tests {
         );
         for trusted in [false, true] {
             let defs = overlay.hook_definitions(trusted).unwrap();
-            assert_eq!(defs.host.action_count(), 7);
-            assert_eq!(defs.project.action_count(), if trusted { 4 } else { 0 });
+            assert_eq!(defs.host.action_count(), 6);
+            assert_eq!(defs.project.action_count(), if trusted { 2 } else { 0 });
         }
         let untrusted_invalid = RunConfigOverlay::from_layers(vec![
             layer("user", USER_DEEPAGENT_PRECEDENCE, hook),
@@ -850,47 +816,23 @@ mod tests {
     }
 
     #[test]
-    fn h89_alias_compatibility_requires_the_winning_claude_source_even_for_equal_values() {
-        use deepagent_context::{
-            MANAGED_PRECEDENCE, PROJECT_CLAUDE_PRECEDENCE, PROJECT_LOCAL_CLAUDE_PRECEDENCE,
-            USER_CLAUDE_PRECEDENCE,
-        };
+    fn native_model_selections_are_exact_at_every_configuration_scope() {
+        use deepagent_context::{MANAGED_PRECEDENCE, PROJECT_LOCAL_DEEPAGENT_PRECEDENCE};
         for precedence in [
-            USER_CLAUDE_PRECEDENCE,
-            PROJECT_CLAUDE_PRECEDENCE,
-            PROJECT_LOCAL_CLAUDE_PRECEDENCE,
+            USER_DEEPAGENT_PRECEDENCE,
+            PROJECT_DEEPAGENT_PRECEDENCE,
+            PROJECT_LOCAL_DEEPAGENT_PRECEDENCE,
+            RUN_PRECEDENCE,
+            MANAGED_PRECEDENCE,
         ] {
-            for alias in [
-                "sonnet",
-                "opus",
-                "haiku",
-                "opusplan",
-                "best",
-                " Sonnet[1M] ",
-            ] {
-                let imported = layer(
-                    "claude fixture",
+            for model in ["deepseek-flash", "unknown-native-model", "", "   "] {
+                let overlay = RunConfigOverlay::from_layers(vec![layer(
+                    "native fixture",
                     precedence,
-                    serde_json::json!({"model":alias}),
-                );
-                let overlay = RunConfigOverlay::from_layers(vec![imported.clone()]);
-                assert_eq!(overlay.model_override(), None);
-                for higher in [RUN_PRECEDENCE, MANAGED_PRECEDENCE] {
-                    let overlay = RunConfigOverlay::from_layers(vec![
-                        imported.clone(),
-                        layer("explicit", higher, serde_json::json!({"model":alias})),
-                    ]);
-                    assert_eq!(
-                        overlay.model_override(),
-                        Some(alias.trim()),
-                        "identical merged text must not inherit lower-source compatibility"
-                    );
-                }
+                    serde_json::json!({"model":model}),
+                )]);
+                assert_eq!(overlay.model_override(), Some(model.trim()));
             }
-        }
-        for value in ["", "   ", "future-model", "sonnet"] {
-            let overlay = RunConfigOverlay::from_value(serde_json::json!({"model":value}));
-            assert_eq!(overlay.model_override(), Some(value.trim()));
         }
     }
 

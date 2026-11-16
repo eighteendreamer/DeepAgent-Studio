@@ -1,11 +1,12 @@
-//! Deterministic `.claude` + `.deepagent` JSON settings overlay.
+//! Deterministic DeepAgent JSON settings overlay.
 //!
 //! Scalar precedence (low → high): plugin defaults → user → project →
-//! project-local → run overrides → managed policy. Within one scope the
-//! `.deepagent` file wins over the `.claude` file. Managed policy comes from
+//! project-local → run overrides → managed policy. Only `.deepagent`
+//! settings participate; other clients' configuration is never imported.
+//! Managed policy comes from
 //! the platform admin directory (`managed-settings.json` base + alphabetical
 //! `managed-settings.d/*.json` drop-ins) and can never be overridden by
-//! lower scopes — mirroring Claude Code's policySettings semantics.
+//! lower scopes.
 
 use std::path::{Path, PathBuf};
 
@@ -42,11 +43,9 @@ impl ConfigLayer {
     pub fn scope(&self) -> ConfigScope {
         match self.precedence {
             PLUGIN_PRECEDENCE => ConfigScope::Plugin,
-            USER_CLAUDE_PRECEDENCE | USER_DEEPAGENT_PRECEDENCE => ConfigScope::User,
-            PROJECT_CLAUDE_PRECEDENCE | PROJECT_DEEPAGENT_PRECEDENCE => ConfigScope::Project,
-            PROJECT_LOCAL_CLAUDE_PRECEDENCE | PROJECT_LOCAL_DEEPAGENT_PRECEDENCE => {
-                ConfigScope::ProjectLocal
-            }
+            USER_DEEPAGENT_PRECEDENCE => ConfigScope::User,
+            PROJECT_DEEPAGENT_PRECEDENCE => ConfigScope::Project,
+            PROJECT_LOCAL_DEEPAGENT_PRECEDENCE => ConfigScope::ProjectLocal,
             RUN_PRECEDENCE => ConfigScope::Run,
             precedence if precedence >= MANAGED_PRECEDENCE => ConfigScope::Managed,
             _ => ConfigScope::Unknown,
@@ -77,11 +76,8 @@ pub enum ConfigScope {
 }
 
 pub const PLUGIN_PRECEDENCE: u16 = 100;
-pub const USER_CLAUDE_PRECEDENCE: u16 = 200;
 pub const USER_DEEPAGENT_PRECEDENCE: u16 = 210;
-pub const PROJECT_CLAUDE_PRECEDENCE: u16 = 300;
 pub const PROJECT_DEEPAGENT_PRECEDENCE: u16 = 310;
-pub const PROJECT_LOCAL_CLAUDE_PRECEDENCE: u16 = 400;
 pub const PROJECT_LOCAL_DEEPAGENT_PRECEDENCE: u16 = 410;
 pub const RUN_PRECEDENCE: u16 = 500;
 /// Precedence at or above which a layer counts as managed policy.
@@ -98,7 +94,7 @@ pub struct ConfigOverlay {
     pub errors: Vec<String>,
 }
 
-pub struct DualConfigLoader {
+pub struct ConfigLoader {
     workspace: PathBuf,
     user_home: Option<PathBuf>,
     managed_dir: Option<PathBuf>,
@@ -107,7 +103,7 @@ pub struct DualConfigLoader {
     managed: serde_json::Value,
 }
 
-impl DualConfigLoader {
+impl ConfigLoader {
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         Self {
             workspace: workspace.into(),
@@ -167,14 +163,6 @@ impl DualConfigLoader {
                 &mut sources,
                 &mut layers,
                 &mut errors,
-                &home.join(".claude/settings.json"),
-                USER_CLAUDE_PRECEDENCE,
-            );
-            load_path(
-                &mut value,
-                &mut sources,
-                &mut layers,
-                &mut errors,
                 &home.join(".deepagent/settings.json"),
                 USER_DEEPAGENT_PRECEDENCE,
             );
@@ -184,24 +172,8 @@ impl DualConfigLoader {
             &mut sources,
             &mut layers,
             &mut errors,
-            &self.workspace.join(".claude/settings.json"),
-            PROJECT_CLAUDE_PRECEDENCE,
-        );
-        load_path(
-            &mut value,
-            &mut sources,
-            &mut layers,
-            &mut errors,
             &self.workspace.join(".deepagent/settings.json"),
             PROJECT_DEEPAGENT_PRECEDENCE,
-        );
-        load_path(
-            &mut value,
-            &mut sources,
-            &mut layers,
-            &mut errors,
-            &self.workspace.join(".claude/settings.local.json"),
-            PROJECT_LOCAL_CLAUDE_PRECEDENCE,
         );
         load_path(
             &mut value,
@@ -223,7 +195,7 @@ impl DualConfigLoader {
 
         // Managed policy: managed-settings.json is the base, then
         // managed-settings.d/*.json drop-ins merge on top in alphabetical
-        // order (later files win) — Claude Code's managed layout.
+        // order (later files win), under DeepAgent's own admin directory.
         if let Some(dir) = &self.managed_dir {
             load_path(
                 &mut value,
@@ -275,10 +247,8 @@ impl DualConfigLoader {
     }
 }
 
-/// Platform admin directory holding `managed-settings.json` (Claude Code
-/// parity: `C:\Program Files\ClaudeCode` / `/Library/Application Support/
-/// ClaudeCode` / `/etc/claude-code`). `DEEPAGENT_MANAGED_SETTINGS_DIR`
-/// overrides for tests and hosted deployments.
+/// DeepAgent's platform admin directory holding `managed-settings.json`.
+/// `DEEPAGENT_MANAGED_SETTINGS_DIR` overrides for tests and hosted deployments.
 pub fn default_managed_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("DEEPAGENT_MANAGED_SETTINGS_DIR") {
         let dir = PathBuf::from(dir);
@@ -365,6 +335,77 @@ mod tests {
     use super::*;
 
     #[test]
+    fn loads_only_native_configuration_sources() {
+        let root = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        for base in [home.path(), root.path()] {
+            std::fs::create_dir_all(base.join(".deepagent")).unwrap();
+            std::fs::write(
+                base.join(".deepagent/settings.json"),
+                r#"{"model":"deepseek-flash","native":true}"#,
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            root.path().join(".deepagent/settings.local.json"),
+            r#"{"local":true}"#,
+        )
+        .unwrap();
+        let overlay = ConfigLoader::new(root.path())
+            .with_user_home(Some(home.path().to_owned()))
+            .with_managed_dir(None)
+            .load();
+        assert!(overlay.errors.is_empty());
+        assert_eq!(overlay.value["native"], true);
+        assert_eq!(overlay.value["model"], "deepseek-flash");
+        assert_eq!(overlay.value["local"], true);
+        let sources: Vec<_> = overlay
+            .sources
+            .iter()
+            .map(|source| source.path.clone())
+            .collect();
+        assert_eq!(
+            sources,
+            vec![
+                "plugin_defaults".to_owned(),
+                home.path()
+                    .join(".deepagent/settings.json")
+                    .display()
+                    .to_string(),
+                root.path()
+                    .join(".deepagent/settings.json")
+                    .display()
+                    .to_string(),
+                root.path()
+                    .join(".deepagent/settings.local.json")
+                    .display()
+                    .to_string(),
+                "run_overrides".to_owned(),
+                "managed".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn malformed_native_settings_report_their_source() {
+        let root = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        for base in [home.path(), root.path()] {
+            std::fs::create_dir_all(base.join(".deepagent")).unwrap();
+            std::fs::write(base.join(".deepagent/settings.json"), "not JSON").unwrap();
+        }
+        let overlay = ConfigLoader::new(root.path())
+            .with_user_home(Some(home.path().to_owned()))
+            .with_managed_dir(None)
+            .load();
+        assert_eq!(overlay.errors.len(), 2);
+        assert!(overlay
+            .errors
+            .iter()
+            .all(|error| error.contains(".deepagent")));
+    }
+
+    #[test]
     fn config_layer_scope_preserves_trust_origin() {
         let cases = [
             (PLUGIN_PRECEDENCE, ConfigScope::Plugin, false),
@@ -377,6 +418,9 @@ mod tests {
             ),
             (RUN_PRECEDENCE, ConfigScope::Run, false),
             (MANAGED_PRECEDENCE, ConfigScope::Managed, false),
+            (200, ConfigScope::Unknown, false),
+            (300, ConfigScope::Unknown, false),
+            (400, ConfigScope::Unknown, false),
         ];
         for (precedence, scope, project_scoped) in cases {
             let layer = ConfigLayer {
@@ -390,28 +434,22 @@ mod tests {
     }
 
     #[test]
-    fn native_file_wins_at_same_scope_and_managed_wins_last() {
+    fn native_settings_and_explicit_overrides_keep_their_precedence() {
         let root = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(root.path().join(".claude")).unwrap();
         std::fs::create_dir_all(root.path().join(".deepagent")).unwrap();
-        std::fs::write(
-            root.path().join(".claude/settings.json"),
-            r#"{"model":"claude","nested":{"a":1}}"#,
-        )
-        .unwrap();
         std::fs::write(
             root.path().join(".deepagent/settings.json"),
             r#"{"model":"deep","nested":{"b":2}}"#,
         )
         .unwrap();
-        let overlay = DualConfigLoader::new(root.path())
+        let overlay = ConfigLoader::new(root.path())
             .with_user_home(None)
             .with_managed_dir(None)
             .with_run_overrides(serde_json::json!({"mode":"run"}))
             .with_managed(serde_json::json!({"mode":"managed"}))
             .load();
         assert_eq!(overlay.value["model"], "deep");
-        assert_eq!(overlay.value["nested"], serde_json::json!({"a":1,"b":2}));
+        assert_eq!(overlay.value["nested"], serde_json::json!({"b":2}));
         assert_eq!(overlay.value["mode"], "managed");
     }
 
@@ -437,7 +475,7 @@ mod tests {
         )
         .unwrap();
 
-        let overlay = DualConfigLoader::new(root.path())
+        let overlay = ConfigLoader::new(root.path())
             .with_user_home(None)
             .with_managed_dir(Some(managed.path().to_path_buf()))
             .load();

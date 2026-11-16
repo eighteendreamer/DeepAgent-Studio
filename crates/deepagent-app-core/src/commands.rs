@@ -200,7 +200,6 @@ pub(crate) fn command_dirs(roots: impl IntoIterator<Item = PathBuf>) -> Vec<Path
         for dir in [
             root.join("commands"),
             root.join(".deepagent").join("commands"),
-            root.join(".claude").join("commands"),
         ] {
             let key = normalize_for_dedupe(&dir);
             if seen.insert(key) {
@@ -312,6 +311,15 @@ mod tests {
                 && c.title == "/triage"
                 && c.description == "Triage GitHub issues"
         }));
+    }
+
+    #[test]
+    fn command_directory_sources_are_native_and_deduplicated() {
+        let root = PathBuf::from("native-project");
+        assert_eq!(
+            command_dirs([root.clone(), root.clone()]),
+            vec![root.join("commands"), root.join(".deepagent/commands")]
+        );
     }
 
     #[test]

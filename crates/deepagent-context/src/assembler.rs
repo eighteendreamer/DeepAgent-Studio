@@ -1,4 +1,4 @@
-//! Source-aware context assembly compatible with DeepAgent and Claude layouts.
+//! Source-aware context assembly using DeepAgent instruction sources.
 
 use std::path::{Path, PathBuf};
 
@@ -139,9 +139,9 @@ impl ContextAssembler {
             })
             .collect::<Vec<_>>();
 
-        // Canonical source order, then lower-precedence sources before native
-        // DeepAgent entries at the same scope. Higher priority survives budget
-        // pressure, but rendering remains deterministic.
+        // Canonical source order, then ascending priority and origin.
+        // Higher priority survives budget pressure, while rendering remains
+        // deterministic.
         entries.sort_by(|a, b| {
             source_rank(a.source)
                 .cmp(&source_rank(b.source))
@@ -198,56 +198,31 @@ impl ContextAssembler {
         loaded_instructions: &mut Vec<LoadedInstruction>,
     ) {
         if let Some(home) = self.user_home.clone() {
-            for path in [
-                home.join(".claude").join("CLAUDE.md"),
-                home.join(".deepagent").join("AGENTS.md"),
-            ] {
-                self.load_file(
-                    &path,
-                    ContextSourceKind::UserInstructions,
-                    if path.to_string_lossy().contains(".deepagent") {
-                        410
-                    } else {
-                        400
-                    },
-                    loaded_paths,
-                    loaded_instructions,
-                );
-            }
-        }
-
-        for path in [
-            self.workspace.join("CLAUDE.md"),
-            self.workspace.join("AGENTS.md"),
-        ] {
             self.load_file(
-                &path,
-                ContextSourceKind::ProjectInstructions,
-                if path.ends_with("AGENTS.md") {
-                    610
-                } else {
-                    600
-                },
+                &home.join(".deepagent").join("AGENTS.md"),
+                ContextSourceKind::UserInstructions,
+                410,
                 loaded_paths,
                 loaded_instructions,
             );
         }
 
-        // Claude rules load first; native DeepAgent rules at the same scope
-        // receive higher priority and therefore win under budget pressure.
-        for (dir, priority) in [
-            (self.workspace.join(".claude").join("rules"), 620),
-            (self.workspace.join(".deepagent").join("rules"), 630),
-        ] {
-            for path in markdown_files(&dir) {
-                self.load_file(
-                    &path,
-                    ContextSourceKind::ProjectInstructions,
-                    priority,
-                    loaded_paths,
-                    loaded_instructions,
-                );
-            }
+        self.load_file(
+            &self.workspace.join("AGENTS.md"),
+            ContextSourceKind::ProjectInstructions,
+            610,
+            loaded_paths,
+            loaded_instructions,
+        );
+
+        for path in markdown_files(&self.workspace.join(".deepagent").join("rules")) {
+            self.load_file(
+                &path,
+                ContextSourceKind::ProjectInstructions,
+                630,
+                loaded_paths,
+                loaded_instructions,
+            );
         }
     }
 
@@ -342,20 +317,19 @@ mod tests {
     use crate::tokenizer::HeuristicTokenizer;
 
     #[test]
-    fn loads_both_layouts_and_native_has_higher_priority() {
+    fn loads_native_project_instructions() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("CLAUDE.md"), "claude rule").unwrap();
         std::fs::write(dir.path().join("AGENTS.md"), "deepagent rule").unwrap();
         let manifest = ContextAssembler::new(dir.path())
             .with_user_home(None)
             .assemble(&HeuristicTokenizer::new(), 10_000);
-        assert_eq!(manifest.loaded_paths.len(), 2);
+        assert_eq!(manifest.loaded_paths.len(), 1);
         let priorities = manifest
             .entries
             .iter()
             .map(|entry| entry.priority)
             .collect::<Vec<_>>();
-        assert_eq!(priorities, vec![600, 610]);
+        assert_eq!(priorities, vec![610]);
         assert!(manifest.entries.iter().all(|entry| {
             entry.source == ContextSourceKind::ProjectInstructions
                 && manifest
@@ -363,7 +337,6 @@ mod tests {
                     .iter()
                     .any(|path| entry.origin == path.to_string_lossy())
         }));
-        assert!(manifest.render().contains("claude rule"));
         assert!(manifest.render().contains("deepagent rule"));
     }
 
@@ -371,9 +344,9 @@ mod tests {
     fn records_user_instruction_source_separately_from_project_files() {
         let workspace = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
-        std::fs::write(workspace.path().join("CLAUDE.md"), "project rules").unwrap();
-        std::fs::create_dir_all(home.path().join(".claude")).unwrap();
-        std::fs::write(home.path().join(".claude/CLAUDE.md"), "user rules").unwrap();
+        std::fs::write(workspace.path().join("AGENTS.md"), "project rules").unwrap();
+        std::fs::create_dir_all(home.path().join(".deepagent")).unwrap();
+        std::fs::write(home.path().join(".deepagent/AGENTS.md"), "user rules").unwrap();
 
         let manifest = ContextAssembler::new(workspace.path())
             .with_user_home(Some(home.path().to_path_buf()))
@@ -388,14 +361,14 @@ mod tests {
             vec![
                 (
                     home.path()
-                        .join(".claude")
-                        .join("CLAUDE.md")
+                        .join(".deepagent")
+                        .join("AGENTS.md")
                         .to_str()
                         .unwrap(),
                     ContextSourceKind::UserInstructions,
                 ),
                 (
-                    workspace.path().join("CLAUDE.md").to_str().unwrap(),
+                    workspace.path().join("AGENTS.md").to_str().unwrap(),
                     ContextSourceKind::ProjectInstructions,
                 ),
             ]
@@ -405,13 +378,13 @@ mod tests {
     #[test]
     fn instruction_source_metadata_survives_prompt_budget_drops() {
         let workspace = tempfile::tempdir().unwrap();
-        std::fs::write(workspace.path().join("CLAUDE.md"), "project rules").unwrap();
+        std::fs::write(workspace.path().join("AGENTS.md"), "project rules").unwrap();
         let (manifest, loaded) = ContextAssembler::new(workspace.path())
             .with_user_home(None)
             .assemble_with_instruction_sources(&HeuristicTokenizer::new(), 0);
         assert!(manifest.entries.is_empty());
         assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].path, workspace.path().join("CLAUDE.md"));
+        assert_eq!(loaded[0].path, workspace.path().join("AGENTS.md"));
         assert_eq!(loaded[0].source, ContextSourceKind::ProjectInstructions);
     }
 
