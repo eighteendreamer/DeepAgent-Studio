@@ -434,18 +434,60 @@ export function Composer({
     const textarea = textareaRef.current;
     if (!textarea) return;
 
-    textarea.style.height = "auto";
+    // An empty draft is always exactly the minimum. Going through a
+    // measurement here is what let a stale read persist as an oversized box
+    // that only shrank once the user typed again.
+    if (!textarea.value) {
+      textarea.style.height = `${COMPOSER_TEXTAREA_MIN_HEIGHT}px`;
+      textarea.style.overflowY = "hidden";
+      return;
+    }
+
+    // Measure the mirror, not the textarea. The mirror is the real layout layer
+    // — same width, same font, same wrapping — and it is absolutely positioned,
+    // so its scrollHeight describes the content alone instead of depending on
+    // the height we are about to write. Reading the textarea's own scrollHeight
+    // made height and scrollHeight feed each other.
+    const mirror = mirrorRef.current;
+    const measured = mirror ? mirror.scrollHeight : textarea.scrollHeight;
     const nextHeight = Math.min(
-      Math.max(textarea.scrollHeight, COMPOSER_TEXTAREA_MIN_HEIGHT),
+      Math.max(measured, COMPOSER_TEXTAREA_MIN_HEIGHT),
       textareaMaxHeight,
     );
     textarea.style.height = `${nextHeight}px`;
-    textarea.style.overflowY = textarea.scrollHeight > textareaMaxHeight ? "auto" : "hidden";
+    textarea.style.overflowY = measured > textareaMaxHeight ? "auto" : "hidden";
   }, [textareaMaxHeight]);
 
   useLayoutEffect(() => {
     resizeTextarea();
   }, [draftValue, resizeTextarea]);
+
+  // Width is the other input to the measurement, and it changes without
+  // touching the draft: window resize, sidebar toggle, moving the window to a
+  // display with a different scale factor. Recompute on width only — observing
+  // the height we just wrote would loop — and wait a frame so a transition in
+  // flight is not what gets measured.
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+
+    let frame: number | null = null;
+    let lastWidth = textarea.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (textarea.clientWidth === lastWidth) return;
+      lastWidth = textarea.clientWidth;
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        resizeTextarea();
+      });
+    });
+    observer.observe(textarea);
+    return () => {
+      observer.disconnect();
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+  }, [resizeTextarea]);
 
   useEffect(() => {
     if (draftValue.startsWith("/")) {
