@@ -203,13 +203,7 @@ impl HostTrust {
         config: &SshConnectionConfig,
         replacement: &PublicKey,
     ) -> SshResult<Vec<(usize, PublicKey)>> {
-        if self.is_unknown()
-            || self.revoked.contains(replacement)
-            || self
-                .keys
-                .iter()
-                .any(|(_, key)| key == replacement && !self.revoked.contains(key))
-        {
+        if self.is_unknown() || self.revoked.contains(replacement) || self.accepts(replacement) {
             return Err(Self::error(
                 config,
                 "rotation requires an existing identity and a changed, never-revoked replacement",
@@ -217,7 +211,16 @@ impl HostTrust {
         }
         let mut previous = Vec::new();
         for (line, key) in &self.keys {
-            if !self.revoked.contains(key) && !previous.iter().any(|(_, prior)| prior == key) {
+            if key != replacement
+                && !self.revoked.contains(key)
+                && !previous.iter().any(|(_, prior)| prior == key)
+            {
+                if previous.len() >= crate::host_key_store::MAX_KEYS - 1 {
+                    return Err(Self::error(
+                        config,
+                        "rotation exceeds the application key capacity; no trust was changed",
+                    ));
+                }
                 previous.push((*line, key.clone()));
             }
         }
@@ -344,6 +347,37 @@ mod tests {
     use super::*;
     use crate::SshAuthType;
     use russh::keys::{ssh_key::rand_core::OsRng, Algorithm, PrivateKey};
+
+    #[test]
+    fn rotation_preview_bounds_active_file_keys_before_presenting_an_impossible_plan() {
+        let key = || {
+            PrivateKey::random(&mut OsRng, Algorithm::Ed25519)
+                .unwrap()
+                .public_key()
+                .clone()
+        };
+        let trust = HostTrust {
+            path: "fixture".into(),
+            digest: None,
+            application: None,
+            confirmed_key: None,
+            keys: (0..crate::host_key_store::MAX_KEYS)
+                .map(|line| (line + 1, key()))
+                .collect(),
+            revoked: Vec::new(),
+        };
+        let cfg = SshConnectionConfig::new(
+            "fixture",
+            "fixture.invalid",
+            22,
+            "fixture",
+            SshAuthType::Agent,
+        );
+        assert!(
+            trust.rotation_previous(&cfg, &key()).is_err(),
+            "32 active old keys plus a replacement cannot fit; do not present an unbounded list"
+        );
+    }
 
     #[test]
     fn rotation_tombstone_disables_old_file_key_without_disabling_its_replacement() {

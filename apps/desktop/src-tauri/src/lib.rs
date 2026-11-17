@@ -5353,6 +5353,18 @@ async fn ssh_begin_host_key_rotation(
 }
 
 #[tauri::command]
+async fn ssh_host_trust_audit(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<deepagent_ssh::SshHostTrustAudit, String> {
+    state
+        .ssh
+        .host_trust_audit(&id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn ssh_confirm_host_key_rotation(
     state: State<'_, AppState>,
     id: String,
@@ -7818,6 +7830,7 @@ pub fn run() {
             ssh_import_known_hosts,
             ssh_revoke_host_key,
             ssh_begin_host_key_rotation,
+            ssh_host_trust_audit,
             ssh_confirm_host_key_rotation,
             ssh_create_connection,
             ssh_update_connection,

@@ -778,14 +778,23 @@
       "hostRotation": {
         "unexpected": "Rotation response does not match this target and was rejected. Start verification again.",
         "title": "Host key rotation management", "direct": "Direct target", "probe": "Probe replacement without authentication", "back": "Back to trust list", "confirm": "Revoke old keys and save replacement",
-        "warning": "Use only after a trusted administrator confirms a server key change. Probes and confirmation perform an SSH handshake only: no password, identity authentication or command execution. Confirmation retires ALL old active keys listed below, including file entries, atomically saves the replacement and rotation record, and closes every connection to this host/port. known_hosts is not modified and no login is performed. Revocation tombstones remain and cannot be revived here. Closing cannot undo a submitted write.",
-        "previous": "Old active keys to retire", "replacement": "Replacement requiring independent verification", "alreadyRevoked": "All old keys are already revoked; existing tombstones will be retained.",
+        "warning": "Use after independent administrator confirmation, including reconciliation of conflicting file/application trust. Probes only handshake: no password, user identity authentication or commands. Confirmation retires ALL old active keys listed below inside this application, atomically saves trust/audit, and closes this application's connections to the host/port. The selected replacement is not revoked; existing provenance and enrollment time remain. known_hosts and other SSH clients are not changed, and no login occurs. Tombstones are never revived. Closing cannot undo a submitted write.",
+        "previous": "Old active keys to retire", "replacement": "Replacement to verify (may already exist in a trust source)", "alreadyRevoked": "All old keys are already revoked; existing tombstones will be retained.",
         "acknowledge": "I independently verified the replacement fingerprint with a trusted administrator and approve retiring ALL old active keys listed for this target.",
         "expires": "Verification expires", "expired": "Verification expired. Probe and independently verify again.", "busy": "Working; each probe takes at most 20 seconds and never authenticates…",
         "committed": "Rotation committed: revocation tombstones, replacement trust and audit were saved atomically. Reconnect manually; no login was performed here.", "revision": "Trust revision",
         "cleanupFailed": "Rotation committed, but cleanup failed for these connections; disconnect manually:"
       },
+      "trustAudit": {
+        "title": "Host trust audit", "direct": "Direct target", "back": "Back to trust list", "refresh": "Refresh audit", "previous": "Previous", "next": "Next",
+        "help": "Read-only application-local trust changes: no SSH connection or command execution. This is not a remote login log. Limit: 256 events per endpoint, 10 per page, newest revision first. Missing pre-upgrade operations are not invented; legacy rotation history is retained. New mutations fail explicitly when capacity is full; history is never silently pruned.",
+        "revision": "Snapshot trust revision", "count": "Events", "busy": "Reading local trust history…", "empty": "No trust history available. This does not mean the endpoint was never used or changed.",
+        "unexpected": "Audit response does not match this endpoint or supported capacity. Refresh connection configuration and retry.",
+        "trusted": "New active trust", "revoked": "New revocations", "replacement": "Explicitly selected rotation replacement",
+        "action": { "trust_verified": "Independently verified enrollment", "accept_new": "Explicit AcceptNew enrollment", "known_hosts_import": "Whole-file known_hosts import", "revoke": "Host key revocation", "explicit_host_key_rotation": "Explicitly verified rotation / reconciliation" }
+      },
       "trustManager": {
+        "audit": "View host trust audit",
         "rotation": "Manage host key rotation",
         "previewFile": "Preview the entire known_hosts file", "fileReport": "Whole-file import report",
         "importable": "Importable", "imported": "Imported", "skipped": "Skipped", "trustLine": "Line", "previousPage": "Previous", "nextPage": "Next",

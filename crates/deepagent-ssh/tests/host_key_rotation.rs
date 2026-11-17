@@ -7,6 +7,127 @@ use std::sync::Arc;
 use support::SshServer;
 
 #[tokio::test]
+async fn rotation_reconciles_updated_file_without_revoking_the_replacement() {
+    let server = SshServer::start("127.0.0.1").await;
+    let data = tempfile::tempdir().unwrap();
+    let path = data.path().join("known_hosts");
+    let store = Arc::new(SshHostKeyStore::new(Arc::new(
+        Database::open_in_memory().unwrap(),
+    )));
+    let service = SshService::new(data.path().into()).with_host_key_store(store.clone());
+    let c = server.create(&service, Some(&path)).await;
+    let identity = SshHostIdentity::direct(&c.host, c.port).unwrap();
+    let old = server.key.read().unwrap().public_key().clone();
+    store
+        .trust_verified(&identity, &old, "original app trust")
+        .unwrap();
+    *server.key.write().unwrap() = support::random_key();
+    server.write_trust(&path); // Administrator has already updated the file.
+    let bytes = std::fs::read(&path).unwrap();
+    let new = server.key.read().unwrap().public_key().clone();
+    assert!(
+        service.connect(&c.id).await.is_err(),
+        "conflicting sources stay fail-closed"
+    );
+    let p = service.begin_host_key_rotation(&c.id).await.unwrap();
+    assert_eq!(
+        p.previous_keys
+            .iter()
+            .map(|k| k.fingerprint.clone())
+            .collect::<Vec<_>>(),
+        vec![old.fingerprint(HashAlg::Sha256).to_string()]
+    );
+    let receipt = service
+        .confirm_host_key_rotation(&c.id, &p.challenge.attempt_id, &p.challenge.challenge_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        receipt.audit.retired_fingerprints,
+        vec![old.fingerprint(HashAlg::Sha256).to_string()]
+    );
+    assert_eq!(server.auth_count(), 0);
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    let keys = store.list(&identity).unwrap();
+    assert!(keys
+        .iter()
+        .any(|k| k.fingerprint == new.fingerprint(HashAlg::Sha256).to_string() && !k.revoked));
+    service.connect(&c.id).await.unwrap();
+    service.disconnect(&c.id).await.unwrap();
+}
+
+#[tokio::test]
+async fn rotation_reconciles_stale_file_and_retains_existing_replacement_provenance() {
+    let server = SshServer::start("127.0.0.1").await;
+    let data = tempfile::tempdir().unwrap();
+    let path = data.path().join("known_hosts");
+    server.write_trust(&path);
+    let original_file = std::fs::read(&path).unwrap();
+    *server.key.write().unwrap() = support::random_key();
+    let new = server.key.read().unwrap().public_key().clone();
+    let store = Arc::new(SshHostKeyStore::new(Arc::new(
+        Database::open_in_memory().unwrap(),
+    )));
+    let service = SshService::new(data.path().into()).with_host_key_store(store.clone());
+    let c = server.create(&service, Some(&path)).await;
+    let identity = SshHostIdentity::direct(&c.host, c.port).unwrap();
+    store
+        .trust_verified(&identity, &new, "previous independent verification")
+        .unwrap();
+    let original_record = store.list(&identity).unwrap().remove(0);
+    assert!(service.connect(&c.id).await.is_err());
+    let p = service.begin_host_key_rotation(&c.id).await.unwrap();
+    assert_eq!(p.previous_keys.len(), 1);
+    service
+        .confirm_host_key_rotation(&c.id, &p.challenge.attempt_id, &p.challenge.challenge_id)
+        .await
+        .unwrap();
+    let keys = store.list(&identity).unwrap();
+    assert_eq!(keys.len(), 2);
+    assert!(
+        keys.contains(&original_record),
+        "retained key metadata must not be rewritten"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), original_file);
+    assert_eq!(server.auth_count(), 0);
+    service.connect(&c.id).await.unwrap();
+    service.disconnect(&c.id).await.unwrap();
+}
+
+#[tokio::test]
+async fn file_only_rotation_creates_a_durable_tombstone_before_reconnection() {
+    let server = SshServer::start("127.0.0.1").await;
+    let old = server.key.read().unwrap().clone();
+    let data = tempfile::tempdir().unwrap();
+    let path = data.path().join("known_hosts");
+    server.write_trust(&path);
+    let db_path = data.path().join("app.sqlite");
+    let store = Arc::new(SshHostKeyStore::new(Arc::new(
+        Database::open(&db_path).unwrap(),
+    )));
+    let service = SshService::new(data.path().into()).with_host_key_store(store);
+    let c = server.create(&service, Some(&path)).await;
+    *server.key.write().unwrap() = support::random_key();
+    let p = service.begin_host_key_rotation(&c.id).await.unwrap();
+    service
+        .confirm_host_key_rotation(&c.id, &p.challenge.attempt_id, &p.challenge.challenge_id)
+        .await
+        .unwrap();
+    let reopened = SshHostKeyStore::new(Arc::new(Database::open(&db_path).unwrap()));
+    let keys = reopened
+        .list(&SshHostIdentity::direct(&c.host, c.port).unwrap())
+        .unwrap();
+    assert_eq!(keys.len(), 2);
+    assert!(keys.iter().any(|k| k.fingerprint
+        == old.public_key().fingerprint(HashAlg::Sha256).to_string()
+        && k.revoked));
+    service.connect(&c.id).await.unwrap();
+    service.disconnect(&c.id).await.unwrap();
+    *server.key.write().unwrap() = old;
+    assert!(service.connect(&c.id).await.is_err());
+    assert_eq!(server.auth_count(), 1);
+}
+
+#[tokio::test]
 async fn explicit_rotation_retires_file_and_app_keys_atomically_without_authenticating() {
     let server = SshServer::start("127.0.0.1").await;
     let data = tempfile::tempdir().unwrap();

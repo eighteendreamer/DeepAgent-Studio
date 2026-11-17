@@ -3959,6 +3959,22 @@ export interface SshHostKeyRotationRecord {
   revision: number; at_ms: number; algorithm: string; fingerprint: string;
   retired_fingerprints: string[];
 }
+
+export type SshHostTrustAction = "trust_verified" | "revoke" | "accept_new" | "known_hosts_import" | "explicit_host_key_rotation";
+export interface SshHostTrustAuditRecord {
+  revision: number; at_ms: number; action: SshHostTrustAction;
+  trusted_fingerprints: string[]; revoked_fingerprints: string[];
+  replacement?: { algorithm: string; fingerprint: string };
+}
+export interface SshHostTrustAudit {
+  connection_id: string; host: string; port: number; route: "direct";
+  revision: number; records: SshHostTrustAuditRecord[];
+}
+export async function sshHostTrustAudit(id: string): Promise<SshHostTrustAudit> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("SSH trust audit requires the desktop app");
+  return invoke<SshHostTrustAudit>("ssh_host_trust_audit", { id });
+}
 export interface SshHostKeyRotationPreview {
   challenge: SshHostKeyChallenge;
   previous_keys: SshHostTrustInspection["keys"];

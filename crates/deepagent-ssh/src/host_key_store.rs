@@ -12,11 +12,15 @@ use russh::keys::{HashAlg, PublicKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::host_trust_audit::{
+    valid_history, SshHostKeyFingerprint, SshHostTrustAction, SshHostTrustAuditRecord,
+    TrustMutation, MAX_AUDIT_RECORDS,
+};
 use crate::{SshError, SshResult};
 
 const COLLECTION: &str = "ssh_host_trust_v1";
 const MAX_BODY: usize = 256 * 1024;
-const MAX_KEYS: usize = 32;
+pub(crate) const MAX_KEYS: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -102,6 +106,8 @@ struct TrustDocument {
     keys: Vec<KeyRecord>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     rotations: Vec<SshHostKeyRotationRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    audit: Vec<SshHostTrustAuditRecord>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -112,17 +118,31 @@ pub(crate) struct StoreSnapshot {
 
 impl StoreSnapshot {
     pub(crate) fn keys(&self) -> SshResult<Vec<(PublicKey, bool)>> {
-        self.document
-            .keys
-            .iter()
-            .map(|key| {
-                let mut public =
-                    PublicKey::from_openssh(&key.public_key).map_err(|_| invalid_document())?;
-                public.set_comment("");
-                Ok((public, key.revoked_at_ms.is_some()))
-            })
-            .collect()
+        parse_keys(&self.document.keys)
     }
+
+    fn prior_keys(&self) -> SshResult<Vec<(PublicKey, bool)>> {
+        match &self.body {
+            Some(body) => {
+                let prior: TrustDocument =
+                    serde_json::from_str(body).map_err(|_| invalid_document())?;
+                parse_keys(&prior.keys)
+            }
+            None => Ok(Vec::new()),
+        }
+    }
+}
+
+fn parse_keys(records: &[KeyRecord]) -> SshResult<Vec<(PublicKey, bool)>> {
+    records
+        .iter()
+        .map(|key| {
+            let mut public =
+                PublicKey::from_openssh(&key.public_key).map_err(|_| invalid_document())?;
+            public.set_comment("");
+            Ok((public, key.revoked_at_ms.is_some()))
+        })
+        .collect()
 }
 
 pub struct SshHostKeyStore {
@@ -142,17 +162,18 @@ impl SshHostKeyStore {
         let body = DocumentStore::new(&self.db)
             .get_body_bounded(COLLECTION, &identity.document_id()?, MAX_BODY)
             .map_err(storage_error)?;
-        let document: TrustDocument = match &body {
+        let mut document: TrustDocument = match &body {
             Some(body) => serde_json::from_str(body).map_err(|_| invalid_document())?,
             None => TrustDocument {
-                version: 1,
+                version: 2,
                 identity: identity.clone(),
                 revision: 0,
                 keys: Vec::new(),
                 rotations: Vec::new(),
+                audit: Vec::new(),
             },
         };
-        if document.version != 1
+        if !matches!(document.version, 1 | 2)
             || document.identity != *identity
             || document.keys.len() > MAX_KEYS
             || document.rotations.len() > MAX_KEYS
@@ -160,8 +181,26 @@ impl SshHostKeyStore {
         {
             return Err(invalid_document());
         }
+        if document.version == 1 {
+            if !document.audit.is_empty() {
+                return Err(invalid_document());
+            }
+            // Read-only projection. A real mutation later persists schema v2
+            // under the original raw-body CAS; listing never migrates SQLite.
+            document.audit = document
+                .rotations
+                .drain(..)
+                .map(SshHostTrustAuditRecord::from_legacy)
+                .collect();
+            document.version = 2;
+        } else if !document.rotations.is_empty() {
+            return Err(invalid_document());
+        }
         let snapshot = StoreSnapshot { body, document };
         let keys = snapshot.keys()?;
+        if !valid_history(&snapshot.document.audit, snapshot.document.revision, &keys) {
+            return Err(invalid_document());
+        }
         for (index, (key, _)) in keys.iter().enumerate() {
             if keys[..index].iter().any(|(prior, _)| prior == key) {
                 return Err(invalid_document());
@@ -241,7 +280,7 @@ impl SshHostKeyStore {
         if snapshot.document.keys.len() == original_count {
             return Ok(());
         }
-        self.commit(snapshot, "trust_verified")
+        self.commit(snapshot, TrustMutation::Verified).map(|_| ())
     }
 
     pub fn revoke(&self, identity: &SshHostIdentity, fingerprint: &str) -> SshResult<()> {
@@ -255,14 +294,35 @@ impl SshHostKeyStore {
             return Ok(());
         }
         snapshot.document.keys[index].revoked_at_ms = Some(SystemClock.now().as_millis());
-        self.commit(snapshot, "revoke")
+        self.commit(snapshot, TrustMutation::Revoke).map(|_| ())
     }
 
     pub fn rotation_history(
         &self,
         identity: &SshHostIdentity,
     ) -> SshResult<Vec<SshHostKeyRotationRecord>> {
-        Ok(self.snapshot(identity)?.document.rotations)
+        Ok(self
+            .snapshot(identity)?
+            .document
+            .audit
+            .iter()
+            .filter_map(SshHostTrustAuditRecord::rotation)
+            .collect())
+    }
+
+    pub fn audit_history(
+        &self,
+        identity: &SshHostIdentity,
+    ) -> SshResult<Vec<SshHostTrustAuditRecord>> {
+        Ok(self.audit_snapshot(identity)?.1)
+    }
+
+    pub(crate) fn audit_snapshot(
+        &self,
+        identity: &SshHostIdentity,
+    ) -> SshResult<(u64, Vec<SshHostTrustAuditRecord>)> {
+        let snapshot = self.snapshot(identity)?;
+        Ok((snapshot.document.revision, snapshot.document.audit))
     }
 
     /// Management-only replacement. Retire every previously active identity,
@@ -275,10 +335,12 @@ impl SshHostKeyStore {
         replacement: &PublicKey,
     ) -> SshResult<SshHostKeyRotationRecord> {
         let keys = expected.keys()?;
-        if keys.iter().any(|(key, _)| key == replacement)
+        if keys
+            .iter()
+            .any(|(key, revoked)| key == replacement && *revoked)
             || keys
                 .iter()
-                .any(|(key, revoked)| !revoked && !previous.contains(key))
+                .any(|(key, revoked)| !revoked && key != replacement && !previous.contains(key))
             || previous.iter().any(|key| key == replacement)
         {
             return Err(SshError::InvalidConfig(
@@ -308,30 +370,31 @@ impl SshHostKeyStore {
                 expected.document.keys.push(retired);
             }
         }
-        expected
-            .document
-            .keys
-            .push(trusted_record(replacement, "explicit_host_key_rotation")?);
-        if expected.document.keys.len() > MAX_KEYS || expected.document.rotations.len() >= MAX_KEYS
+        if !keys.iter().any(|(key, _)| key == replacement) {
+            expected
+                .document
+                .keys
+                .push(trusted_record(replacement, "explicit_host_key_rotation")?);
+        }
+        if expected.document.keys.len() > MAX_KEYS
+            || expected
+                .document
+                .audit
+                .iter()
+                .filter(|event| event.action == SshHostTrustAction::ExplicitHostKeyRotation)
+                .count()
+                >= MAX_KEYS
         {
             return Err(SshError::InvalidConfig(
                 "SSH rotation key/history capacity reached; no tombstones were removed".into(),
             ));
         }
-        let audit = SshHostKeyRotationRecord {
-            revision: expected
-                .document
-                .revision
-                .checked_add(1)
-                .ok_or_else(invalid_document)?,
-            at_ms,
-            algorithm: replacement.algorithm().as_str().into(),
-            fingerprint: replacement.fingerprint(HashAlg::Sha256).to_string(),
-            retired_fingerprints,
-        };
-        expected.document.rotations.push(audit.clone());
-        self.commit(expected, "explicit_host_key_rotation")?;
-        Ok(audit)
+        self.commit(
+            expected,
+            TrustMutation::Rotation(SshHostKeyFingerprint::from(replacement)),
+        )?
+        .rotation()
+        .ok_or_else(invalid_document)
     }
 
     /// Commit against the snapshot taken BEFORE probing. A competing first
@@ -352,11 +415,17 @@ impl SshHostKeyStore {
             .document
             .keys
             .push(trusted_record(&public, "accept_new")?);
-        self.commit(expected, "accept_new")
+        self.commit(expected, TrustMutation::AcceptNew).map(|_| ())
     }
 
-    fn commit(&self, snapshot: StoreSnapshot, action: &'static str) -> SshResult<()> {
-        self.commit_many(std::iter::once(snapshot).collect(), action)
+    fn commit(
+        &self,
+        snapshot: StoreSnapshot,
+        action: TrustMutation,
+    ) -> SshResult<SshHostTrustAuditRecord> {
+        self.commit_many(vec![snapshot], action)?
+            .pop()
+            .ok_or_else(invalid_document)
     }
 
     pub(crate) fn import_unknown_batch(
@@ -387,21 +456,37 @@ impl SshHostKeyStore {
             }
             snapshots.push(snapshot);
         }
-        self.commit_many(snapshots, "known_hosts_import")
+        self.commit_many(snapshots, TrustMutation::FileImport)
+            .map(|_| ())
     }
 
     fn commit_many(
         &self,
         mut snapshots: Vec<StoreSnapshot>,
-        action: &'static str,
-    ) -> SshResult<()> {
+        action: TrustMutation,
+    ) -> SshResult<Vec<SshHostTrustAuditRecord>> {
         let mut documents = Vec::new();
+        let mut receipts = Vec::new();
+        let now = SystemClock.now();
         for snapshot in &mut snapshots {
+            if snapshot.document.audit.len() >= MAX_AUDIT_RECORDS {
+                return Err(SshError::InvalidConfig(
+                    "SSH trust audit capacity reached; no history was removed".into(),
+                ));
+            }
             snapshot.document.revision = snapshot
                 .document
                 .revision
                 .checked_add(1)
                 .ok_or_else(invalid_document)?;
+            let event = action.record(
+                snapshot.document.revision,
+                now.as_millis(),
+                &snapshot.prior_keys()?,
+                &snapshot.keys()?,
+            );
+            snapshot.document.audit.push(event.clone());
+            receipts.push(event);
             let body = serde_json::to_string(&snapshot.document).map_err(|_| invalid_document())?;
             if body.len() > MAX_BODY {
                 return Err(invalid_document());
@@ -420,7 +505,7 @@ impl SshHostKeyStore {
             .collect::<Vec<_>>();
         let store = DocumentStore::new(&self.db);
         let committed = store
-            .compare_exchange_bodies(&changes, SystemClock.now())
+            .compare_exchange_bodies(&changes, now)
             .map_err(storage_error)?;
         if !committed {
             return Err(SshError::Persistence(
@@ -429,9 +514,9 @@ impl SshHostKeyStore {
         }
         for snapshot in snapshots {
             tracing::info!(target: "deepagent_ssh", host = snapshot.document.identity.host,
-            port = snapshot.document.identity.port, action, revision = snapshot.document.revision, "SSH application trust updated");
+            port = snapshot.document.identity.port, action = ?action.action(), revision = snapshot.document.revision, "SSH application trust updated");
         }
-        Ok(())
+        Ok(receipts)
     }
 }
 
@@ -463,6 +548,110 @@ mod tests {
             .unwrap()
             .public_key()
             .clone()
+    }
+
+    #[test]
+    fn legacy_rotation_history_is_projected_without_writing_and_migrates_under_cas() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.sqlite");
+        let db = Arc::new(Database::open(&path).unwrap());
+        let store = SshHostKeyStore::new(db.clone());
+        let identity = SshHostIdentity::direct("fixture.invalid", 22).unwrap();
+        let old = public();
+        let new = public();
+        store.trust_verified(&identity, &old, "fixture").unwrap();
+        let rotation = store
+            .rotate_verified(store.snapshot(&identity).unwrap(), &[old], &new)
+            .unwrap();
+        let mut document = store.snapshot(&identity).unwrap().document;
+        document.version = 1;
+        document.audit.clear();
+        document.rotations = vec![rotation.clone()];
+        let legacy = serde_json::to_string(&document).unwrap();
+        let documents = DocumentStore::new(&db);
+        let id = identity.document_id().unwrap();
+        documents
+            .put(COLLECTION, &id, &legacy, None, SystemClock.now())
+            .unwrap();
+        let events = store.audit_history(&identity).unwrap();
+        assert_eq!(
+            events.len(),
+            1,
+            "do not invent pre-upgrade import or revocation events"
+        );
+        assert_eq!(events[0].rotation(), Some(rotation.clone()));
+        assert_eq!(
+            documents.get(COLLECTION, &id).unwrap().unwrap().body,
+            legacy,
+            "reading is not a migration write"
+        );
+        let stale = store.snapshot(&identity).unwrap();
+        let other = SshHostKeyStore::new(Arc::new(Database::open(&path).unwrap()));
+        other
+            .revoke(&identity, &new.fingerprint(HashAlg::Sha256).to_string())
+            .unwrap();
+        assert!(
+            store.commit(stale, TrustMutation::Verified).is_err(),
+            "migration must not restore a stale key/history"
+        );
+        let body = documents.get(COLLECTION, &id).unwrap().unwrap().body;
+        let wire: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(wire["version"], 2);
+        assert!(
+            wire.get("rotations").is_none(),
+            "rotation is a projection of one audit stream, not a second persisted stream"
+        );
+        assert_eq!(wire["audit"].as_array().unwrap().len(), 2);
+        assert_eq!(other.rotation_history(&identity).unwrap(), vec![rotation]);
+        assert_eq!(
+            other.audit_history(&identity).unwrap()[1].action,
+            SshHostTrustAction::Revoke
+        );
+    }
+
+    #[test]
+    fn malformed_or_full_audit_fails_closed_without_discarding_history() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let store = SshHostKeyStore::new(db.clone());
+        let identity = SshHostIdentity::direct("fixture.invalid", 22).unwrap();
+        let key = public();
+        store.trust_verified(&identity, &key, "fixture").unwrap();
+        let mut document = store.snapshot(&identity).unwrap().document;
+        let id = identity.document_id().unwrap();
+        let documents = DocumentStore::new(&db);
+        let mut malformed = document.clone();
+        malformed.audit[0].trusted_fingerprints = vec!["SHA256:not-a-stored-key".into()];
+        documents
+            .put(
+                COLLECTION,
+                &id,
+                &serde_json::to_string(&malformed).unwrap(),
+                None,
+                SystemClock.now(),
+            )
+            .unwrap();
+        assert!(store.audit_history(&identity).is_err());
+        let template = document.audit[0].clone();
+        document.audit = (1..=MAX_AUDIT_RECORDS)
+            .map(|revision| {
+                let mut event = template.clone();
+                event.revision = revision as u64;
+                event
+            })
+            .collect();
+        document.revision = MAX_AUDIT_RECORDS as u64;
+        let full = serde_json::to_string(&document).unwrap();
+        documents
+            .put(COLLECTION, &id, &full, None, SystemClock.now())
+            .unwrap();
+        assert_eq!(
+            store.audit_history(&identity).unwrap().len(),
+            MAX_AUDIT_RECORDS
+        );
+        assert!(store
+            .revoke(&identity, &key.fingerprint(HashAlg::Sha256).to_string())
+            .is_err());
+        assert_eq!(documents.get(COLLECTION, &id).unwrap().unwrap().body, full);
     }
 
     #[test]
@@ -525,7 +714,7 @@ mod tests {
             .document
             .keys
             .push(trusted_record(&old, "fixture").unwrap());
-        store.commit(fixture, "fixture_capacity").unwrap();
+        store.commit(fixture, TrustMutation::Verified).unwrap();
         let before = store.snapshot(&identity).unwrap();
         assert!(store
             .rotate_verified(before.clone(), &[old], &public())
@@ -602,7 +791,7 @@ mod tests {
             .unwrap()
             .body;
         let mut wrong_version: serde_json::Value = serde_json::from_str(&original).unwrap();
-        wrong_version["version"] = serde_json::json!(2);
+        wrong_version["version"] = serde_json::json!(3);
         let mut wrong_identity: serde_json::Value = serde_json::from_str(&original).unwrap();
         wrong_identity["identity"]["port"] = serde_json::json!(2222);
         let mut invalid_key: serde_json::Value = serde_json::from_str(&original).unwrap();
@@ -637,7 +826,7 @@ mod tests {
         store
             .revoke(&identity, &key.fingerprint(HashAlg::Sha256).to_string())
             .unwrap();
-        assert!(store.commit(stale, "must_not_restore").is_err());
+        assert!(store.commit(stale, TrustMutation::Verified).is_err());
         assert!(store.list(&identity).unwrap()[0].revoked);
     }
 }

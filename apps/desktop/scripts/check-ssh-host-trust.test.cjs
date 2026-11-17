@@ -381,6 +381,75 @@ const managerText = key => translate(`settings.connections.trustManager.${key}`)
 const managerProps = () => ({ connection: { id: 'id', host: 'fixture.invalid', port: 2222, known_hosts_path: 'C:\\fixture' }, onClose() {}, onChanged() {} });
 const flushManager = () => new Promise(resolve => setImmediate(resolve));
 
+const auditText = key => translate(`settings.connections.trustAudit.${key}`);
+const auditView = (count=25) => ({connection_id:'id',host:'fixture.invalid',port:2222,route:'direct',revision:count,
+  records:Array.from({length:count},(_,i)=>({revision:i+1,at_ms:i+1,action:'trust_verified',trusted_fingerprints:[`SHA256:audit-${i+1}`],revoked_fingerprints:[]}))});
+const auditDriver = api => trustManagerDriver(api,'components/remote/SshHostTrustAuditDialog.tsx','SshHostTrustAuditDialog');
+
+test('read-only trust audit API uses the saved connection id and refuses browser mock success',async()=>{
+  const calls=[];const expected=auditView();
+  const fn=production('api.ts','sshHostTrustAudit',{getInvoke:()=>async(c,p)=>{calls.push([c,p]);return expected;}});
+  assert.equal(await fn('id'),expected);
+  assert.equal(calls[0][0],'ssh_host_trust_audit');
+  assert.deepEqual(JSON.parse(JSON.stringify(calls[0][1])),{id:'id'});
+  await assert.rejects(production('api.ts','sshHostTrustAudit',{getInvoke:()=>null})('id'),/desktop app/);
+  const rust=readFileSync(path.join(root,'../src-tauri/src/lib.rs'),'utf8');
+  assert.match(rust,/#\[tauri::command\]\s*async fn ssh_host_trust_audit\(/);
+  assert.match(rust,/generate_handler!\[[\s\S]*?\bssh_host_trust_audit,/);
+});
+
+test('audit UI reads only when opened and pages bounded records newest first',async()=>{
+  let calls=0;
+  const driver=auditDriver({sshHostTrustAudit:async()=>{calls++;return auditView();}});
+  const props={connection:managerProps().connection,onBack(){}};
+  let view=driver.render(props);await flushManager();view=driver.render(props);
+  assert.equal(calls,1);
+  let rows=view.nodes.filter(n=>n.props?.['data-audit-revision']);
+  assert.equal(rows.length,10);assert.equal(rows[0].props['data-audit-revision'],25);assert.equal(rows.at(-1).props['data-audit-revision'],16);
+  view.button(auditText('next')).props.onClick();view=driver.render(props);
+  rows=view.nodes.filter(n=>n.props?.['data-audit-revision']);assert.equal(rows[0].props['data-audit-revision'],15);
+  view.button(auditText('next')).props.onClick();view=driver.render(props);
+  assert.equal(view.nodes.filter(n=>n.props?.['data-audit-revision']).length,5);
+  assert.equal(view.button(auditText('next')).props.disabled,true);assert.equal(calls,1,'pagination is local, not another IPC read');
+});
+
+test('audit UI exposes loading/errors/empty state and single-flights refresh',async()=>{
+  let calls=0,resolve;
+  const driver=auditDriver({sshHostTrustAudit:()=>{calls++;return calls===1?Promise.reject(Error('fixture unavailable')):new Promise(r=>{resolve=r;});}});
+  const props={connection:managerProps().connection,onBack(){}};
+  driver.render(props);await flushManager();let view=driver.render(props);
+  assert.match(view.text,/fixture unavailable/);
+  const pending=view.button(auditText('refresh')).props.onClick();
+  await view.button(auditText('refresh')).props.onClick();
+  view=driver.render(props);assert.equal(calls,2);assert.ok(view.text.includes(auditText('busy')));
+  resolve(auditView(0));await pending;view=driver.render(props);
+  assert.ok(view.text.includes(auditText('empty')));
+});
+
+test('audit UI refuses foreign scope and late StrictMode responses cannot replace current history',async()=>{
+  const props={connection:managerProps().connection,onBack(){}};
+  for(const mismatch of [{host:'foreign.invalid'},{connection_id:'foreign'},{port:22},{route:'jump'},{records:auditView(257).records}]) {
+    const foreign=auditDriver({sshHostTrustAudit:async()=>({...auditView(),...mismatch})});
+    foreign.render(props);await flushManager();assert.ok(foreign.render(props).text.includes(auditText('unexpected')));
+  }
+  const waiting=[];const driver=auditDriver({sshHostTrustAudit:()=>new Promise(resolve=>waiting.push(resolve))});
+  driver.render(props);driver.replayEffects();assert.equal(waiting.length,2);
+  waiting[1](auditView(2));await flushManager();
+  waiting[0](auditView(25));await flushManager();
+  assert.equal(driver.render(props).nodes.filter(n=>n.props?.['data-audit-revision']).length,2);
+  driver.unmount();
+});
+
+test('shared manager exposes the same read-only audit surface to both existing entries',async()=>{
+  const driver=trustManagerDriver({SshHostTrustAuditDialog:'fixture-audit'});
+  const props=managerProps();driver.render(props);await flushManager();
+  driver.render(props).button(managerText('audit')).props.onClick();
+  const view=driver.render(props);const surface=view.nodes.find(n=>n.type==='fixture-audit');
+  assert.equal(surface.props.connection,props.connection);
+  surface.props.onBack();await flushManager();
+  assert.ok(driver.render(props).button(managerText('audit')));
+});
+
 test('rotation APIs use separate commands and do not accept client-supplied public keys', async () => {
   for (const [name, command, args, expected] of [
     ['sshBeginHostKeyRotation', 'ssh_begin_host_key_rotation', ['id'], { id:'id' }],

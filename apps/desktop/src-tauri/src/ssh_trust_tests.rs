@@ -116,3 +116,53 @@ async fn whole_file_import_round_trips_its_reviewed_dto_and_reopens_application_
         1
     );
 }
+
+#[tokio::test]
+async fn host_trust_audit_projects_v2_history_without_exporting_source_or_authentication_material()
+{
+    let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILFVCraC5ndXABfSOTg/2Bh+FzEW6t9pS09obPJduaMN";
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("app.sqlite");
+    let source = temp.path().join("known_hosts");
+    std::fs::write(&source, format!("fixture.invalid {key}\n")).unwrap();
+    let wrapping = Arc::new(deepagent_app_core::MemorySecretStore::new());
+    let id;
+    {
+        let app = AppService::open(&path).unwrap();
+        let configs = Arc::new(SqliteSshConfigStore {
+            secrets: Arc::new(SqliteSecretStore::new(
+                app.shared_database(),
+                wrapping.clone(),
+            )),
+            legacy_path: temp.path().join("absent.json"),
+        });
+        let ssh = SshService::with_config_store(temp.path().into(), configs).with_host_key_store(
+            Arc::new(deepagent_ssh::SshHostKeyStore::new(app.shared_database())),
+        );
+        let c = ssh.create_connection(serde_json::from_value(serde_json::json!({
+            "name":"fixture","host":"fixture.invalid","port":22,"username":"fixture","auth_type":"agent","known_hosts_path":source
+        })).unwrap()).await.unwrap();
+        let preview = ssh
+            .inspect_host_trust(&c.host, c.port, Some(source.to_str().unwrap()))
+            .await
+            .unwrap();
+        ssh.import_host_trust(&c.id, preview).await.unwrap();
+        id = c.id;
+    }
+    let app = AppService::open(&path).unwrap();
+    let configs = Arc::new(SqliteSshConfigStore {
+        secrets: Arc::new(SqliteSecretStore::new(app.shared_database(), wrapping)),
+        legacy_path: temp.path().join("absent.json"),
+    });
+    let ssh = SshService::with_config_store(temp.path().into(), configs).with_host_key_store(
+        Arc::new(deepagent_ssh::SshHostKeyStore::new(app.shared_database())),
+    );
+    let view = ssh.host_trust_audit(&id).await.unwrap();
+    let wire = serde_json::to_value(&view).unwrap();
+    assert_eq!(wire["revision"], 1);
+    assert_eq!(wire["records"][0]["action"], "trust_verified");
+    let text = serde_json::to_string(&view).unwrap();
+    assert!(!text.contains("known_hosts"));
+    assert!(!text.contains("public_key"));
+    assert!(!text.contains("password"));
+}

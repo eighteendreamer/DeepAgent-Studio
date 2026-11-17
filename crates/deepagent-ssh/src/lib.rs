@@ -32,6 +32,9 @@ pub use host_key_store::{
     SshHostIdentity, SshHostKeyRecord, SshHostKeyRotationRecord, SshHostKeyStore,
 };
 pub use host_trust::{SshHostTrustInspection, SshKnownHostKey};
+pub use host_trust_audit::{
+    SshHostKeyFingerprint, SshHostTrustAction, SshHostTrustAudit, SshHostTrustAuditRecord,
+};
 pub use known_hosts_import::{
     SshKnownHostsImportPreview, SshKnownHostsImportResult, SshKnownHostsImportRow,
     SshKnownHostsImportStatus,
@@ -55,6 +58,7 @@ mod error;
 mod host_key_rotation;
 mod host_key_store;
 mod host_trust;
+mod host_trust_audit;
 mod known_hosts_import;
 mod remote;
 mod service;
@@ -383,6 +387,10 @@ impl SshService {
 
     pub async fn begin_host_key_rotation(&self, id: &str) -> SshResult<SshHostKeyRotationPreview> {
         self.inner.begin_host_key_rotation(id).await
+    }
+
+    pub async fn host_trust_audit(&self, id: &str) -> SshResult<SshHostTrustAudit> {
+        self.inner.host_trust_audit(id).await
     }
 
     pub async fn confirm_host_key_rotation(
