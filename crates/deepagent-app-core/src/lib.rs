@@ -46,6 +46,7 @@ pub mod doctor;
 pub mod dto;
 pub mod file_preview_service;
 pub mod git_service;
+pub mod harness_model_service;
 pub mod hook_assembly;
 mod hook_input;
 pub mod hook_runtime;

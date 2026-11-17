@@ -22,7 +22,7 @@ pub mod cost_store;
 pub mod document_store;
 pub mod event_store;
 pub mod fs_commit;
-mod harness_registry;
+pub mod harness_registry;
 #[cfg(test)]
 mod harness_registry_store_tests;
 #[cfg(test)]

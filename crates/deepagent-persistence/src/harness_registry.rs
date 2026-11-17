@@ -251,6 +251,35 @@ impl Database {
         })
     }
 
+    /// Every model stored under one provider, activated or not, by model name.
+    pub fn list_harness_models(&self, provider_id: &str) -> Result<Vec<HarnessModel>> {
+        self.with_conn(|conn| {
+            let mut statement = conn
+                .prepare(
+                    "SELECT provider_id, model_name, display_name, protocol,
+                            context_window, output_limit, capabilities, status
+                     FROM harness_models WHERE provider_id = ?1 ORDER BY model_name",
+                )
+                .map_err(map_sqlite)?;
+            let rows = statement
+                .query_map([provider_id], |row| {
+                    Ok(HarnessModel {
+                        provider_id: row.get(0)?,
+                        model_name: row.get(1)?,
+                        display_name: row.get(2)?,
+                        protocol: row.get(3)?,
+                        context_window: row.get(4)?,
+                        output_limit: row.get(5)?,
+                        capabilities: row.get(6)?,
+                        active: row.get::<_, i64>(7)? != 0,
+                    })
+                })
+                .map_err(map_sqlite)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(map_sqlite)
+        })
+    }
+
     /// Models that may appear in the chat list: activated, under an enabled
     /// provider. Ordered by provider channel, then model name.
     pub fn active_harness_models(&self) -> Result<Vec<(HarnessProvider, HarnessModel)>> {

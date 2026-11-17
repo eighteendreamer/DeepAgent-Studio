@@ -390,7 +390,10 @@ struct AppState {
     canvas_artifacts: Arc<deepagent_app_core::canvas_artifact_service::CanvasArtifactService>,
     /// Canvas preference documents (snippets, creative library, output dirs).
     canvas_preferences: Arc<deepagent_app_core::canvas_preferences::CanvasPreferencesStore>,
+    /// Harness provider/model registry behind the main settings "模型" page.
+    harness_models: Arc<deepagent_app_core::harness_model_service::HarnessModelService>,
     knowledge: Arc<KnowledgeService>,
+
     cost: Arc<CostService>,
     runtime_logs: Arc<RuntimeLogStore>,
     archive: Arc<ArchiveService>,
@@ -2084,6 +2087,91 @@ struct CanvasCandidateDto {
     model_id: String,
     model_name: String,
     has_api_key: bool,
+}
+
+/// Harness "模型" page: every provider, with key presence only.
+#[tauri::command]
+fn harness_providers_list(
+    state: State<'_, AppState>,
+) -> Result<Vec<deepagent_app_core::harness_model_service::HarnessProviderView>, String> {
+    state
+        .harness_models
+        .list_providers()
+        .map_err(|e| e.to_string())
+}
+
+/// Create or update a harness provider. An absent `apiKey` keeps the stored key.
+#[tauri::command]
+fn harness_provider_save(
+    state: State<'_, AppState>,
+    provider: deepagent_app_core::harness_model_service::HarnessProviderInput,
+) -> Result<deepagent_app_core::harness_model_service::HarnessProviderView, String> {
+    state
+        .harness_models
+        .save_provider(provider)
+        .map_err(|e| e.to_string())
+}
+
+/// Remove a harness provider with its models and stored key.
+#[tauri::command]
+fn harness_provider_remove(
+    state: State<'_, AppState>,
+    provider_id: String,
+) -> Result<bool, String> {
+    state
+        .harness_models
+        .remove_provider(&provider_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Models stored under one provider, activated or not.
+#[tauri::command]
+fn harness_models_list(
+    state: State<'_, AppState>,
+    provider_id: String,
+) -> Result<Vec<deepagent_app_core::harness_model_service::HarnessModelView>, String> {
+    state
+        .harness_models
+        .list_models(&provider_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Pull `GET /models` for a provider with its stored key. New models start inactive.
+#[tauri::command]
+async fn harness_models_fetch(
+    state: State<'_, AppState>,
+    provider_id: String,
+) -> Result<Vec<deepagent_app_core::harness_model_service::HarnessModelView>, String> {
+    state
+        .harness_models
+        .fetch_models(&provider_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Toggle one model's activation (the chat model list shows activated models only).
+#[tauri::command]
+fn harness_model_set_active(
+    state: State<'_, AppState>,
+    provider_id: String,
+    model_name: String,
+    active: bool,
+) -> Result<bool, String> {
+    state
+        .harness_models
+        .set_model_active(&provider_id, &model_name, active)
+        .map_err(|e| e.to_string())
+}
+
+/// Activated models under enabled providers, for the chat window's model list.
+#[tauri::command]
+fn harness_active_models(
+    state: State<'_, AppState>,
+) -> Result<Vec<deepagent_app_core::harness_model_service::ActiveModelView>, String> {
+    state
+        .harness_models
+        .active_models()
+        .map_err(|e| e.to_string())
 }
 
 /// Read the full canvas model configuration: providers (with masked key
@@ -7352,6 +7440,13 @@ pub fn run() {
                     sqlite_secrets.clone(),
                 ),
             );
+            let harness_models = Arc::new(
+                deepagent_app_core::harness_model_service::HarnessModelService::new(
+                    service.shared_database(),
+                    sqlite_secrets.clone(),
+                    Arc::new(ReqwestTransport::new()),
+                ),
+            );
             let canvas_artifacts = Arc::new(
                 deepagent_app_core::canvas_artifact_service::CanvasArtifactService::new(
                     &artifacts_dir,
@@ -7609,6 +7704,7 @@ pub fn run() {
                 canvas_workflows,
                 canvas_artifacts,
                 canvas_preferences,
+                harness_models,
                 knowledge,
                 cost,
                 runtime_logs,
@@ -7742,6 +7838,13 @@ pub fn run() {
             canvas_secret_set,
             canvas_secret_clear,
             canvas_provider_test,
+            harness_providers_list,
+            harness_provider_save,
+            harness_provider_remove,
+            harness_models_list,
+            harness_models_fetch,
+            harness_model_set_active,
+            harness_active_models,
             canvas_models_discover,
             canvas_prompt_profiles_read,
             canvas_prompt_resolve,

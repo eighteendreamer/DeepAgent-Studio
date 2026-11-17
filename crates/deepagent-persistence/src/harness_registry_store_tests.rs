@@ -116,6 +116,28 @@ fn disabled_provider_hides_its_active_models() {
 }
 
 #[test]
+fn listing_one_providers_models_includes_inactive_ones_and_no_other_provider() {
+    let db = Database::open_in_memory().unwrap();
+    db.save_harness_provider(&provider("alpha", "responses"))
+        .unwrap();
+    db.save_harness_provider(&provider("beta", "responses"))
+        .unwrap();
+    db.save_harness_models("alpha", &[model("alpha", "a-one"), model("alpha", "a-two")])
+        .unwrap();
+    db.save_harness_models("beta", &[model("beta", "b-one")])
+        .unwrap();
+    db.set_harness_model_active("alpha", "a-two", true).unwrap();
+
+    let listed = db.list_harness_models("alpha").unwrap();
+
+    let names: Vec<(&str, bool)> = listed
+        .iter()
+        .map(|item| (item.model_name.as_str(), item.active))
+        .collect();
+    assert_eq!(names, vec![("a-one", false), ("a-two", true)]);
+}
+
+#[test]
 fn removing_a_provider_removes_its_models() {
     let db = Database::open_in_memory().unwrap();
     db.save_harness_provider(&provider("alpha", "responses"))
