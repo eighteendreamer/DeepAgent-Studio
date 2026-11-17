@@ -50,3 +50,41 @@ RED：先新增 3 个回归用例，使用 V24 真实导入行的字段形状和
 GREEN：`cargo test -q -p deepagent-app-core --test harness_model_service --offline -j 1`，
 11 passed / 0 failed / 0 ignored。修改文件经 rustfmt 格式化，提交前检查相关 diff。
 本提交只包含服务、其回归测试和本执行记录。
+
+## H002：过载零重试与移除备用模型（P3）
+
+RED：`cargo test -p deepagent-runtime --offline -j 1 --lib overload_fails_without_retry_with_the_default_attempt_budget`，
+0 passed / 1 failed。未指定 attempts=1，真实复现过载后的第二次请求返回成功。
+`cargo test -p deepagent-models --lib failure::tests --offline -j 1`，1 passed / 2 failed，
+复现统一分类仍把过载标记为可重试。
+
+修复：统一失败分类中的 Overloaded 不再可重试；显式过载的 HTTP 503 也保持过载分类。
+承接此前未提交的备用模型删除，保留既有取消、权限、工具与调用计费边界。
+同模型重试场景使用实际可重试的连接/服务故障，过载场景验证一次调用、工具 abort、usage 与失败终态。
+用量测试同时检查按模型合并的既有投影和按物理调用记录的 CallUsageSink，避免把两者混淆。
+
+阶段验证：models lib 240 passed；runtime lib 488 passed / 2 ignored；均 0 failed。
+继续执行内核、CLI、HTTP 和集成回归，尚未完成本轮提交。
+
+环境：另一会话占用默认 Cargo 缓存，本轮使用临时缓存副本并保持 `-j 1`。
+桌面构建要求的 Node 24.21.0 已按项目 runtime_service.rs 的固定 SHA-256 校验安装到托管目录，
+未改构建脚本或降低版本门禁。首次完整桌面构建在插件来源指纹检查处失败，见 E001。
+
+## E001：修复 Windows 检出导致的插件指纹不稳定
+
+RED：完整 `pnpm build` 在 `check-plugin-licenses` 失败；`wedecode` 实际目录指纹
+`96a656ad...` 与登记的 `7a1c4339...` 不一致。
+
+查证：逐文件比较 Git HEAD 的 5 个 blob 与工作目录；4 个文本文件只有 CRLF/LF 差异，
+`runtime.zip` 字节完全相同，无额外文件。历史提交 `c568f977` 曾仅更新登记值以解除同类阻塞，
+但未约束 Windows 检出的换行；现有 `.gitattributes` 已为 REA 和 Superpowers 固定 LF，遗漏 wedecode。
+4 个文本文件的所有 LF/CRLF 组合均不能复现旧登记值，说明登记值本身也已偏离受版本控制的源码。
+
+修复：沿用已有 `.gitattributes` 规则，固定 wedecode 文本 LF、ZIP 二进制。
+仅将确认与 HEAD 内容一致的文本恢复为规范换行；将清单与 notices 登记为规范 Git 源码的
+`sha256:a1552075c3f819c35653e9abd230009945fd1dd55ca01b0a5c67b26e5551fff4`。
+未改插件源码、版本、许可证、运行包或哈希检查算法。
+
+GREEN：`node apps/desktop/scripts/check-plugin-licenses.cjs`，10 个插件全部通过；
+`node --test apps/desktop/scripts/check-plugin-license-hash.test.cjs`，1 passed。
+完整桌面构建仍需在后续工程验收重跑；本项不等于 UI 或产品功能验收通过。

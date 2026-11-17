@@ -21,7 +21,7 @@ below. An unclassified plugin fails CI.
 | --- | --- | --- | --- | --- | --- |
 | `rea` | https://github.com/morluto/rea | Wrapper 0.1.0 / REA 6.4.0 | MIT runtime; Apache-2.0 wrapper | `resources/plugins/rea/LICENSE-REA`, `LICENSE` | `sha256:626043c621490efcaf9ca6fb90c5345cf6734ec819a47efdc73f93dc846aa9ec` |
 | `superpowers` | https://github.com/obra/superpowers | 5.1.3 | MIT | `resources/plugins/superpowers/LICENSE` | `sha256:185371a2eccc4d17f72186fa0bc339cd77318cdaf8eb84a990427055c2b73aa8` |
-| `wedecode` | https://gitee.com/xiaoshangongzuoshi/wxapkg | 0.9.1 | GPL-3.0-or-later | `resources/plugins/wedecode/LICENSE` | `sha256:7a1c433926537e561ff8300628e86f738f71c43ab47ed8b73e4d0fb102d0d9ac` |
+| `wedecode` | https://gitee.com/xiaoshangongzuoshi/wxapkg | 0.9.1 | GPL-3.0-or-later | `resources/plugins/wedecode/LICENSE` | `sha256:a1552075c3f819c35653e9abd230009945fd1dd55ca01b0a5c67b26e5551fff4` |
 
 The Superpowers composer icon was restored from the locally installed 5.0.7
 bundle under the same retained MIT license; its skills remain at 5.1.3.

@@ -3,3 +3,6 @@ apps/desktop/src-tauri/resources/plugins/rea/** text eol=lf
 apps/desktop/src-tauri/resources/plugins/rea/runtime.zip -text
 # Keep the restored Superpowers icon and source hash stable across checkouts too.
 apps/desktop/src-tauri/resources/plugins/superpowers/** text eol=lf
+# The wedecode bundle uses the same byte-for-byte source integrity gate.
+apps/desktop/src-tauri/resources/plugins/wedecode/** text eol=lf
+apps/desktop/src-tauri/resources/plugins/wedecode/runtime.zip -text
