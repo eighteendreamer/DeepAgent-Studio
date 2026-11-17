@@ -175,8 +175,14 @@ GREEN（本批相关回归）：
   事件来源及跨用户轮次模型切换断言。
 - `cargo test -p deepagent-models -p deepagent-runtime --lib --offline --jobs 1`：models 240、
   runtime 493 passed，runtime 2 ignored。
-- AppCore 单独复跑的媒体边界测试通过；整组低并发回归有 1718 passed、35 ignored、2 个既有
-  环境/状态相关失败，已单独记录，不能据此宣告 AppCore 全量通过。
+- AppCore 单独复跑的媒体边界测试通过；workspace 低并发回归的 AppCore lib 为 1718 passed、
+  44 ignored、2 failed。失败已单独复现：`max_reasoning_keeps_chat_model_without_inventing_output_limit`
+  仍断言不发送 `max_output_tokens`，与注册表输出上限接入后的行为冲突；
+  `project_runtime_wins_over_managed_fallback` 在当前机器 PATH 的 Node 24 满足条件时得到 `Local`，
+  而测试仍断言 `Managed`。两项均不是本批来源字段改动，workspace 门禁不能宣告通过。
+- `cargo clippy --all-targets --all-features --offline --jobs 1 -- -D warnings` 未通过：已有
+  `crates/deepagent-persistence/src/document_store.rs:280` 触发
+  `clippy::chunks_exact_to_as_chunks`；未修改该无关问题。
 
 边界：跨供应商回放时 `Thinking.signature` 是否需要降级为普通文本仍待真实 provider 实测；
 本批只保留签名和来源，不擅自改变协议语义。Messages codec、余额按供应商分发、会话选择器、
