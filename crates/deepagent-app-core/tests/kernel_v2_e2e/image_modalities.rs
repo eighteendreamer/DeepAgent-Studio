@@ -402,7 +402,7 @@ async fn h171_native_image_roles_survive_database_reopen_without_silent_relabeli
 }
 
 #[tokio::test]
-async fn h171_model_agent_role_policy_precedes_reads_retries_and_fallback() {
+async fn h171_model_agent_role_policy_precedes_reads_retries_and_overload() {
     use deepagent_core::response_item::ResponseInputItem;
     for mode in [WireMode::Responses, WireMode::ChatCompletions] {
         for role in ["user", "developer", "system", "assistant"] {
@@ -432,15 +432,21 @@ async fn h171_model_agent_role_policy_precedes_reads_retries_and_fallback() {
                     .with_response_history(vec![native])
                     .with_attachment_resolver(resolver.clone())
                     .with_max_model_attempts(3);
-                if status == 529 {
-                    agent = agent.with_fallback_model(Some("deepseek-flash".into()));
-                }
                 let result = agent.think(0, &[]).await;
                 if role == "user" || mode == WireMode::Responses && role == "developer" {
-                    result.unwrap();
+                    let expected_calls = if status == 529 {
+                        assert_eq!(
+                            deepagent_models::classify_model_error(&result.unwrap_err()),
+                            deepagent_models::ModelFailureKind::Overloaded
+                        );
+                        1
+                    } else {
+                        result.unwrap();
+                        2
+                    };
                     let requests = model.requests.lock().unwrap();
-                    assert_eq!(requests.len(), 2);
-                    assert_eq!(resolver.0.load(Ordering::SeqCst), 3);
+                    assert_eq!(requests.len(), expected_calls);
+                    assert_eq!(resolver.0.load(Ordering::SeqCst), expected_calls + 1);
                     for request in requests.iter() {
                         let messages = request[if mode == WireMode::Responses {
                             "input"
@@ -469,26 +475,17 @@ async fn h171_model_agent_role_policy_precedes_reads_retries_and_fallback() {
 }
 
 #[tokio::test]
-async fn effective_model_gate_precedes_resolver_and_survives_retry_fallback_cancel() {
+async fn effective_model_gate_precedes_resolver_and_survives_retry_overload_cancel() {
     for mode in [WireMode::Responses, WireMode::ChatCompletions] {
-        for scenario in [
-            "text",
-            "unknown",
-            "cancel",
-            "retry",
-            "fallback-text",
-            "fallback-vision",
-        ] {
+        for scenario in ["text", "unknown", "cancel", "retry", "overload"] {
             let root = tempfile::tempdir().unwrap();
             let dto = imported(root.path());
             let model = Arc::new(Model {
                 failure_status: match scenario {
                     "retry" => Some(503),
-                    "fallback-text" | "fallback-vision" => Some(529),
+                    "overload" => Some(529),
                     _ => None,
                 },
-                corrupt_after_first: (scenario == "fallback-text")
-                    .then(|| dto.original_path.as_ref().unwrap().into()),
                 ..Default::default()
             });
             let catalog = deepagent_models::ModelDiscovery::deepseek(model.clone())
@@ -516,12 +513,6 @@ async fn effective_model_gate_precedes_resolver_and_survives_retry_fallback_canc
             )
             .with_attachment_resolver(resolver.clone())
             .with_max_model_attempts(3);
-            if scenario == "fallback-text" {
-                agent = agent.with_fallback_model(Some("h71-text".into()));
-            }
-            if scenario == "fallback-vision" {
-                agent = agent.with_fallback_model(Some("deepseek-flash".into()));
-            }
             let result = agent
                 .think_cancelled(
                     0,
@@ -530,18 +521,18 @@ async fn effective_model_gate_precedes_resolver_and_survives_retry_fallback_canc
                 )
                 .await;
             match scenario {
-                "retry" | "fallback-vision" => {
+                "retry" => {
                     result.unwrap();
                     assert_eq!(model.requests.lock().unwrap().len(), 2);
                     // Existing runtime materializes its initial projection,
                     // then rebuilds the canonical Surface for each attempt.
                     assert_eq!(resolver.0.load(Ordering::SeqCst), 3);
                 }
-                "fallback-text" => {
-                    assert!(result
-                        .unwrap_err()
-                        .to_string()
-                        .contains("image_input_unsupported"));
+                "overload" => {
+                    assert_eq!(
+                        deepagent_models::classify_model_error(&result.unwrap_err()),
+                        deepagent_models::ModelFailureKind::Overloaded
+                    );
                     assert_eq!(model.requests.lock().unwrap().len(), 1);
                     assert_eq!(resolver.0.load(Ordering::SeqCst), 2);
                 }

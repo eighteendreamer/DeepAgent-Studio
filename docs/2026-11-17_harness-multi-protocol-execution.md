@@ -63,8 +63,17 @@ RED：`cargo test -p deepagent-runtime --offline -j 1 --lib overload_fails_witho
 同模型重试场景使用实际可重试的连接/服务故障，过载场景验证一次调用、工具 abort、usage 与失败终态。
 用量测试同时检查按模型合并的既有投影和按物理调用记录的 CallUsageSink，避免把两者混淆。
 
-阶段验证：models lib 240 passed；runtime lib 488 passed / 2 ignored；均 0 failed。
-继续执行内核、CLI、HTTP 和集成回归，尚未完成本轮提交。
+GREEN（均 0 failed）：models lib 240 passed；runtime lib 493 passed / 2 ignored；
+H55 双旧协议全部 effort/取消/过载适配 4 passed；AppCore H144 7 passed；
+settings 97 passed / 2 ignored；CLI `retry_producer` 2 passed。
+真实 Reqwest/TCP 过载（529 与明确 503，携带 Retry-After）1 passed，验证单次 HTTP 调用且不等待重试。
+内核串行采样 1、计费/预算 5、输出上限 1、图像模式 4、模型快照/重开 2 项全部通过；
+启用 `web,runtimes` 的过载/图像回归另有 3 passed。
+全仓内核并行跑法发生多项超时，本会话停止该次运行后以上串行相关回归通过；
+取消的那次整组运行不计为通过。完整 workspace 验收仍待后续工程门禁。
+
+格式：修改的 Rust 文件已 rustfmt；`git diff --check` 通过。
+全仓 `cargo fmt --all -- --check` 发现既有 `deepagent-core/src/id.rs` 的四处宏排版差异，尚未处理。
 
 环境：另一会话占用默认 Cargo 缓存，本轮使用临时缓存副本并保持 `-j 1`。
 桌面构建要求的 Node 24.21.0 已按项目 runtime_service.rs 的固定 SHA-256 校验安装到托管目录，

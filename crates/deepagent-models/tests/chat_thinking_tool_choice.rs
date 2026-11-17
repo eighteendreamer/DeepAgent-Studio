@@ -118,7 +118,6 @@ fn invalid(error: &CoreError) -> bool {
     matches!(error, CoreError::Invalid(_))
         && kind == ModelFailureKind::InvalidRequest
         && !kind.retryable()
-        && !kind.should_fallback()
         && !error.to_string().contains("lookup")
 }
 

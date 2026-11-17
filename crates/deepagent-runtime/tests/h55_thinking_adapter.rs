@@ -64,7 +64,7 @@ impl HttpTransport for ScriptedTransport {
                         }
                         .into(),
                     ),
-                    "H55 synthetic retry/fallback",
+                    "H55 synthetic retry",
                 ));
             }
         }
@@ -129,7 +129,7 @@ fn assert_wire(body: &Value, mode: WireMode, effort: ReasoningEffort) {
 }
 
 #[tokio::test]
-async fn h55_agent_preserves_all_efforts_across_normal_retry_and_fallback_entries() {
+async fn h55_agent_preserves_efforts_on_retries_and_surfaces_overload_without_retry() {
     for mode in [WireMode::Responses, WireMode::ChatCompletions] {
         for effort in [
             ReasoningEffort::None,
@@ -148,35 +148,33 @@ async fn h55_agent_preserves_all_efforts_across_normal_retry_and_fallback_entrie
                         vec![],
                     )
                     .with_reasoning_effort(effort)
-                    .with_fallback_model(Some("fallback".into()))
                     .with_max_model_attempts(3);
-                    let decision = if cancel_aware {
+                    let result = if cancel_aware {
                         agent
                             .think_cancelled(0, &[], Some(Arc::new(AtomicBool::new(false))))
                             .await
                     } else {
                         agent.think(0, &[]).await
-                    }
-                    .unwrap();
-                    let AgentDecision::CompleteItems { message, .. } = decision else {
-                        panic!("a completed synthetic reply must finish the agent");
                     };
-                    assert_eq!(message.content, "H55 complete");
+                    if first_error == Some(529) {
+                        assert_eq!(
+                            deepagent_models::classify_model_error(&result.unwrap_err()),
+                            deepagent_models::ModelFailureKind::Overloaded
+                        );
+                    } else {
+                        let AgentDecision::CompleteItems { message, .. } = result.unwrap() else {
+                            panic!("a completed synthetic reply must finish the agent");
+                        };
+                        assert_eq!(message.content, "H55 complete");
+                    }
                     let requests = transport.requests.lock().unwrap();
-                    assert_eq!(requests.len(), if first_error.is_some() { 2 } else { 1 });
+                    assert_eq!(requests.len(), if first_error == Some(429) { 2 } else { 1 });
                     for body in requests.iter() {
                         assert_wire(body, mode, effort);
                     }
                     assert_eq!(requests[0]["model"], "primary");
-                    if first_error.is_some() {
-                        assert_eq!(
-                            requests[1]["model"],
-                            if first_error == Some(529) {
-                                "fallback"
-                            } else {
-                                "primary"
-                            }
-                        );
+                    if first_error == Some(429) {
+                        assert_eq!(requests[1]["model"], "primary");
                     }
                 }
             }

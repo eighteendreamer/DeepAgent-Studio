@@ -105,8 +105,7 @@ async fn observe(sample: Option<Value>, filtered: bool) {
         vec![],
     )
     .with_call_usage_sink(booked.clone())
-    .with_max_model_attempts(3)
-    .with_fallback_model(Some("other-model".into()));
+    .with_max_model_attempts(3);
     let terminal = kernel
         .start(RunRequest::new(&mut session, task, &mut agent))
         .await

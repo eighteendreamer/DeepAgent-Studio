@@ -255,7 +255,7 @@ impl HttpTransport for RetryTransport {
 }
 
 #[tokio::test]
-async fn retry_fallback_and_cancel_reenter_the_same_final_wire_gate() {
+async fn retry_overload_and_cancel_share_the_same_final_wire_gate() {
     let root = tempfile::tempdir().unwrap();
     let source = large_png(root.path());
     let input = import(root.path(), &source, 1);
@@ -282,15 +282,7 @@ async fn retry_fallback_and_cancel_reenter_the_same_final_wire_gate() {
                 failure_status: status,
             });
             let make = |images| {
-                let mut config = ModelConfig::deepseek("synthetic").with_wire_mode(mode);
-                if status == 529 {
-                    // H-71 requires explicit vision capability for synthetic
-                    // model ids. Keep this H-69 probe about the final byte gate.
-                    let mut capability = deepagent_models::ModelCapabilityResolver::new()
-                        .resolve_model_id("f".repeat(LIMIT / 2));
-                    capability.input_modalities = Some(vec!["text".into(), "image".into()]);
-                    config.capabilities.push(capability);
-                }
+                let config = ModelConfig::deepseek("synthetic").with_wire_mode(mode);
                 ModelAgent::new_with_attachments(
                     Arc::new(ModelClient::new(transport.clone(), config)),
                     "deepseek-flash",
@@ -302,8 +294,7 @@ async fn retry_fallback_and_cancel_reenter_the_same_final_wire_gate() {
                 .with_attachment_resolver(Arc::new(FileAttachmentResolver))
                 .with_max_model_attempts(3)
             };
-            let mut oversized = make(vec![reference.clone(), reference.clone()])
-                .with_fallback_model(Some("h69-fallback".into()));
+            let mut oversized = make(vec![reference.clone(), reference.clone()]);
             too_large(oversized.think(0, &[]).await.unwrap_err());
             assert!(transport.sizes.lock().unwrap().is_empty());
             let mut cancelled = make(vec![reference.clone(), reference.clone()]);
@@ -316,10 +307,10 @@ async fn retry_fallback_and_cancel_reenter_the_same_final_wire_gate() {
             assert!(transport.sizes.lock().unwrap().is_empty());
             let mut valid = make(vec![reference.clone()]);
             if status == 529 {
-                // Fallback changes the final wire. Its model field alone may
-                // exceed the remaining budget; a cached primary size is unsafe.
-                valid = valid.with_fallback_model(Some("f".repeat(LIMIT / 2)));
-                too_large(valid.think(0, &[]).await.unwrap_err());
+                assert_eq!(
+                    deepagent_models::classify_model_error(&valid.think(0, &[]).await.unwrap_err()),
+                    deepagent_models::ModelFailureKind::Overloaded
+                );
                 assert_eq!(transport.sizes.lock().unwrap().len(), 1);
             } else {
                 let error = valid.think(0, &[]).await.unwrap_err();

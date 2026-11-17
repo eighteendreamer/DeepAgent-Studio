@@ -26,10 +26,7 @@ pub(super) fn responses_sampling_preview(settings: &AppSettings) -> Vec<Response
     };
     let top_p = settings.responses.effective_top_p();
     let choice = settings.responses.effective_tool_choice();
-    let mut models = vec![settings.catalog.chat_model.clone()];
-    if settings.catalog.reasoner_model != models[0] {
-        models.push(settings.catalog.reasoner_model.clone());
-    }
+    let models = vec![settings.catalog.chat_model.clone()];
     models
         .into_iter()
         .filter_map(|model| match config.effective_reasoning_effort(&model, None) {
@@ -111,9 +108,6 @@ mod tests {
             settings
                 .set_model(ModelRole::Chat, "deepseek-flash")
                 .unwrap();
-            settings
-                .set_model(ModelRole::Reasoner, "deepseek-v4-pro")
-                .unwrap();
             let view = settings
                 .set_responses_settings(ResponsesApiSettings {
                     top_p: Some(0.2),
@@ -122,7 +116,7 @@ mod tests {
                 })
                 .unwrap();
             assert_eq!(view.responses.top_p, Some(0.2));
-            assert_eq!(view.responses_sampling.len(), 4);
+            assert_eq!(view.responses_sampling.len(), 2);
             println!(
                 "H166_PREVIEW_JSON={}",
                 serde_json::to_string(&view.responses_sampling).unwrap()
@@ -143,8 +137,6 @@ mod tests {
                 [
                     ("deepseek-flash", false, Some(0.95)),
                     ("deepseek-flash", true, Some(0.95)),
-                    ("deepseek-v4-pro", false, Some(1.0)),
-                    ("deepseek-v4-pro", true, Some(0.95)),
                 ]
             );
             settings
@@ -162,7 +154,7 @@ mod tests {
         let settings = service(Arc::new(Database::open(&path).unwrap()), secrets);
         let view = settings.view().unwrap().unwrap();
         assert_eq!(view.responses.top_p, Some(0.2));
-        assert_eq!(view.responses_sampling.len(), 4);
+        assert_eq!(view.responses_sampling.len(), 2);
         for row in view.responses_sampling {
             assert_eq!(row.sampling.configured_top_p, Some(0.94));
             assert!(!row.sampling.thinking_enabled);

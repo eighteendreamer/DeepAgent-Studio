@@ -13,14 +13,12 @@ pub(crate) struct RunModelSelection {
     pub(crate) client: Arc<ModelClient>,
     pub(crate) model: String,
     pub(crate) reasoning_effort: ReasoningEffort,
-    pub(crate) fallback_model: Option<String>,
 }
 
 /// Credential-free selection; the admitted worker binds credentials at execution time.
 pub(crate) struct RunModelPlan {
     pub(crate) model: String,
     pub(crate) reasoning_effort: ReasoningEffort,
-    pub(crate) fallback_model: Option<String>,
     pub(crate) override_applied: bool,
     config: ModelConfig,
 }
@@ -42,7 +40,6 @@ impl RunModelPlan {
             ),
             model: self.model,
             reasoning_effort: self.reasoning_effort,
-            fallback_model: self.fallback_model,
         })
     }
 }
@@ -81,7 +78,6 @@ pub(crate) fn select_run_model(
     settings: &SettingsService,
     transport: Arc<dyn HttpTransport>,
     role: ModelRole,
-    fallback_role: ModelRole,
     provider_override: Option<&str>,
     model_override: Option<&str>,
     reasoning_effort_override: Option<&str>,
@@ -92,7 +88,6 @@ pub(crate) fn select_run_model(
     resolve_run_model(
         &loaded,
         role,
-        fallback_role,
         provider_override,
         model_override,
         reasoning_effort_override,
@@ -103,7 +98,6 @@ pub(crate) fn select_run_model(
 pub(crate) fn resolve_run_model(
     loaded: &crate::settings::AppSettings,
     role: ModelRole,
-    fallback_role: ModelRole,
     provider_override: Option<&str>,
     model_override: Option<&str>,
     reasoning_effort_override: Option<&str>,
@@ -117,8 +111,6 @@ pub(crate) fn resolve_run_model(
         }
         None => loaded.catalog.model_for(role).to_owned(),
     };
-    let fallback_model = Some(loaded.catalog.model_for(fallback_role).to_string())
-        .filter(|fallback| fallback != &model);
     if let Some(provider) = provider_override {
         if provider != DEEPSEEK_OFFICIAL_PROVIDER {
             return Err(CoreError::invalid(format!(
@@ -135,7 +127,6 @@ pub(crate) fn resolve_run_model(
         override_applied: model_override.is_some(),
         model,
         reasoning_effort,
-        fallback_model,
     })
 }
 
@@ -246,7 +237,6 @@ mod tests {
             super::resolve_run_model(
                 settings,
                 deepagent_models::ModelRole::Chat,
-                deepagent_models::ModelRole::Reasoner,
                 None,
                 None,
                 effort,
@@ -260,12 +250,6 @@ mod tests {
         let plan = resolve(&settings, None).unwrap();
         assert_eq!(plan.reasoning_effort, ReasoningEffort::Low);
         assert_eq!(plan.config.configured_reasoning_effort(), None);
-        assert_eq!(
-            plan.config
-                .effective_reasoning_effort("fallback", None)
-                .unwrap(),
-            Some(ReasoningEffort::High)
-        );
         assert!(resolve(&settings, Some("high")).is_err());
         assert_eq!(
             resolve(&settings, Some("none")).unwrap().reasoning_effort,

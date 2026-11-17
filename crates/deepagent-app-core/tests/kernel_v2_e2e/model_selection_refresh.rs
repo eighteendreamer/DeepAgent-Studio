@@ -82,9 +82,12 @@ async fn h223_refresh_selection_override_and_reopen_match_real_wire_and_durable_
     let chat = ChatService::new(db.clone(), settings.clone(), model.clone(), root.path());
     let first = prepared_run(&chat, "h223-selected", None, KNOWN_OVERRIDE).await;
     let second = prepared_run(&chat, "h223-override", Some(DEFAULT_MODEL), DEFAULT_MODEL).await;
-    assert_eq!(
-        chat.read_execution_config(&overrides(None)).unwrap()["fallbackModel"],
-        DEFAULT_MODEL
+    assert!(
+        chat.read_execution_config(&overrides(None))
+            .unwrap()
+            .get("fallbackModel")
+            .is_none(),
+        "overload fallback was removed; the snapshot must not publish a fallback model"
     );
     drop(chat);
     drop(settings);

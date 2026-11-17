@@ -96,7 +96,7 @@ fn rejected(error: CoreError) {
     );
     assert!(error.to_string().contains("message.role"), "{error}");
     let failure = deepagent_models::classify_model_error(&error);
-    assert!(!failure.retryable() && !failure.should_fallback());
+    assert!(!failure.retryable());
     assert!(matches!(error, CoreError::Provider {code:Some(code),..}
         if code=="malformed_response_message"));
 }

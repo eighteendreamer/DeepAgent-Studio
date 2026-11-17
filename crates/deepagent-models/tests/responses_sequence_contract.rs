@@ -69,7 +69,7 @@ fn delta(sequence: u64) -> Value {
 fn reject(error: CoreError) {
     assert!(!error.to_string().contains("PRIVATE"));
     let failure = deepagent_models::classify_model_error(&error);
-    assert!(!failure.retryable() && !failure.should_fallback());
+    assert!(!failure.retryable());
     assert!(matches!(error, CoreError::Provider {code:Some(code),..}
         if code=="invalid_response_sequence"));
 }

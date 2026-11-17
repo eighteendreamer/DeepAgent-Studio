@@ -111,3 +111,63 @@ async fn audit_rate_limit_retry_waits_for_provider_recovery() {
         "retry should respect the bounded provider delay instead of exhausting attempts before recovery"
     );
 }
+
+#[tokio::test]
+async fn reported_overload_sends_one_http_request_and_ignores_retry_after() {
+    for (status, body) in [
+        (
+            "529 Overloaded",
+            r#"{"error":{"type":"overloaded_error","message":"provider failure"}}"#,
+        ),
+        (
+            "503 Service Unavailable",
+            r#"{"error":{"message":"Server Overloaded"}}"#,
+        ),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stop, mut stopped) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let mut calls = 0;
+            loop {
+                let accepted = tokio::select! {
+                    accepted = listener.accept() => accepted.unwrap(),
+                    _ = &mut stopped => return calls,
+                };
+                let mut stream = accepted.0;
+                read_request(&mut stream).await;
+                calls += 1;
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nRetry-After: 2\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.shutdown().await.unwrap();
+            }
+        });
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        let mut config = ModelConfig::deepseek_chat("audit-placeholder");
+        config.base_url = format!("http://{address}/v1");
+        let mut agent = ModelAgent::new(
+            Arc::new(ModelClient::new(
+                Arc::new(ReqwestTransport::with_client(http)),
+                config,
+            )),
+            "primary",
+            "rules",
+            "synthetic",
+            vec![],
+        )
+        .with_max_model_attempts(3);
+        let result = tokio::time::timeout(Duration::from_secs(1), agent.think(0, &[])).await;
+        stop.send(()).unwrap();
+        let calls = server.await.unwrap();
+        let error = result
+            .expect("overload must return before Retry-After")
+            .unwrap_err();
+        assert_eq!(
+            deepagent_models::classify_model_error(&error),
+            deepagent_models::ModelFailureKind::Overloaded
+        );
+        assert_eq!(calls, 1);
+    }
+}

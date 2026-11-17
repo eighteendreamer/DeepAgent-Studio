@@ -1,4 +1,4 @@
-//! H166: real Kernel retry/fallback/tool continuation and durable sampling evidence.
+//! H166: real Kernel retry/tool continuation and durable sampling evidence.
 use super::*;
 use deepagent_app_core::{settings::ResponsesApiSettings, HarnessRunOverrides, RuntimeEvent};
 use deepagent_models::ModelRole;
@@ -18,9 +18,9 @@ impl HttpTransport for SamplingAttempts {
         let events = match attempt {
             1 => {
                 return Err(CoreError::provider(
-                    Some(529),
-                    Some("overloaded_error".into()),
-                    "H166 synthetic overload",
+                    Some(503),
+                    Some("service_unavailable".into()),
+                    "H166 synthetic transient failure",
                 ))
             }
             2 => response_function_call(
@@ -59,9 +59,6 @@ async fn h166_kernel_sampling_matches_wire_and_survives_sqlite_cold_reopen() {
             .unwrap();
         settings
             .set_model(ModelRole::Chat, "deepseek-flash")
-            .unwrap();
-        settings
-            .set_model(ModelRole::Reasoner, "deepseek-v4-pro")
             .unwrap();
         settings
             .set_responses_settings(ResponsesApiSettings {
@@ -112,7 +109,7 @@ async fn h166_kernel_sampling_matches_wire_and_survives_sqlite_cold_reopen() {
         assert_eq!(live_count, 3);
         let requests = transport.0.lock().unwrap();
         assert_eq!(requests.len(), 3);
-        for (index, expected) in [0.96_f32, 0.95, 0.95].into_iter().enumerate() {
+        for (index, expected) in [0.96_f32; 3].into_iter().enumerate() {
             let data = &resolved[index].data;
             assert_eq!(
                 data["sampling"]["configured_top_p"].as_f64().unwrap() as f32,
@@ -129,7 +126,9 @@ async fn h166_kernel_sampling_matches_wire_and_survives_sqlite_cold_reopen() {
             assert!(!data.to_string().contains("h166-synthetic-placeholder"));
         }
         assert_eq!(requests[0]["model"], "deepseek-flash");
-        assert_eq!(requests[1]["model"], "deepseek-v4-pro");
+        assert!(requests
+            .iter()
+            .all(|request| request["model"] == "deepseek-flash"));
         assert!(requests[2]["input"]
             .as_array()
             .unwrap()

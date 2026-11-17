@@ -18,7 +18,7 @@ use std::collections::VecDeque;
 enum Scenario {
     Abort,
     ResourceExhausted,
-    ResourceFallback,
+    TransportRetry,
     LocalCancel,
     RetryBudget,
     Normal,
@@ -28,19 +28,12 @@ impl Scenario {
     fn expected(self) -> (TerminalKind, usize, bool) {
         match self {
             Self::Abort => (TerminalKind::Failed, 1, false),
-            Self::ResourceExhausted => (TerminalKind::Failed, 2, false),
-            Self::ResourceFallback => (TerminalKind::Succeeded, 3, true),
+            Self::ResourceExhausted => (TerminalKind::Failed, 1, false),
+            Self::TransportRetry => (TerminalKind::Succeeded, 3, true),
             Self::LocalCancel => (TerminalKind::Cancelled, 1, false),
             Self::RetryBudget => (TerminalKind::BudgetExceeded, 1, false),
             Self::Normal => (TerminalKind::Succeeded, 2, true),
         }
-    }
-
-    fn fallback(self) -> bool {
-        matches!(
-            self,
-            Self::ResourceFallback | Self::RetryBudget | Self::Abort | Self::LocalCancel
-        )
     }
 
     fn program(self, sample: Option<Value>) -> VecDeque<Vec<String>> {
@@ -65,12 +58,24 @@ impl Scenario {
                 sample.clone(),
             )
         };
+        let interrupted = || {
+            let mut event: Value = serde_json::from_str(
+                &chunk(
+                    "tool_calls",
+                    Some(("rejected-call", "forbidden.txt")),
+                    sample.clone(),
+                )[0],
+            )
+            .unwrap();
+            event["choices"][0]["finish_reason"] = Value::Null;
+            vec![event.to_string(), "__CONNECTION_ERROR__".into()]
+        };
         let normal = || chunk("stop", None, sample.clone());
         match self {
             Self::Abort | Self::LocalCancel => vec![aborted(), normal()],
             Self::ResourceExhausted => vec![resource(), resource()],
-            Self::ResourceFallback => vec![resource(), approved(), normal()],
-            Self::RetryBudget => vec![resource(), normal()],
+            Self::TransportRetry => vec![interrupted(), approved(), normal()],
+            Self::RetryBudget => vec![interrupted(), normal()],
             Self::Normal => vec![approved(), normal()],
         }
         .into()
@@ -124,6 +129,10 @@ impl deepagent_models::HttpTransport for Transport {
             .expect("bounded synthetic program");
         let mut result = Ok(());
         for event in events {
+            if event == "__CONNECTION_ERROR__" {
+                result = Err(CoreError::other("synthetic connection interrupted"));
+                break;
+            }
             match sink.on_event(&event) {
                 Ok(true) => break,
                 Ok(false) => {}
@@ -239,8 +248,7 @@ async fn observe(scenario: Scenario, sample: Option<Value>) {
         schemas,
     )
     .with_call_usage_sink(booked.clone())
-    .with_max_model_attempts(2)
-    .with_fallback_model(scenario.fallback().then(|| "deepseek-v4-pro".into()));
+    .with_max_model_attempts(2);
     let terminal = tokio::time::timeout(
         std::time::Duration::from_secs(6),
         kernel.start(RunRequest::new(&mut session, task, &mut agent)),
@@ -319,25 +327,13 @@ async fn observe(scenario: Scenario, sample: Option<Value>) {
         .abs()
             < 1e-12
     );
-    let fallback_calls = if matches!(scenario, Scenario::ResourceFallback) {
-        2
-    } else {
-        0
-    };
-    assert_eq!(
+    assert!(
         receipts
             .iter()
-            .filter(|r| r.report["model_id"] == "deepseek-v4-pro")
-            .count(),
-        fallback_calls
+            .all(|r| r.report["model_id"] == "deepseek-flash"),
+        "overload must not route calls to another model"
     );
-    assert_eq!(
-        requests
-            .iter()
-            .filter(|r| r["model"] == "deepseek-v4-pro")
-            .count(),
-        fallback_calls
-    );
+    assert!(requests.iter().all(|r| r["model"] == "deepseek-flash"));
     assert!(!workspace.join("forbidden.txt").exists());
     assert_eq!(workspace.join("effect.txt").exists(), writes);
     if writes {
@@ -469,12 +465,12 @@ async fn h144_provider_abort_and_local_cancel_keep_distinct_durable_outcomes_and
 }
 
 #[tokio::test]
-async fn h144_resource_retry_fallback_budget_and_real_write_control_survive_reopen() {
+async fn h144_terminal_overload_transport_retry_budget_and_real_write_survive_reopen() {
     for sample in [Some(measured()), None, Some(Value::Null)] {
         observe(Scenario::ResourceExhausted, sample).await;
     }
     for scenario in [
-        Scenario::ResourceFallback,
+        Scenario::TransportRetry,
         Scenario::RetryBudget,
         Scenario::Normal,
     ] {

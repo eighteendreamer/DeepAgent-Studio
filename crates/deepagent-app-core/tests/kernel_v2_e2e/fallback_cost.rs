@@ -1,4 +1,4 @@
-//! Cost attribution must follow answered requests, not the run's initial model.
+//! Cost attribution and budget admission survive retries without model switching.
 
 use super::*;
 use deepagent_app_core::{BudgetConfig, CostSummary};
@@ -20,7 +20,7 @@ enum RouteBudget {
 
 #[derive(Debug)]
 struct RouteModel {
-    overload_at: Option<usize>,
+    retry_at: Option<usize>,
     tool_first: bool,
     requests: Mutex<Vec<String>>,
 }
@@ -35,13 +35,11 @@ impl HttpTransport for RouteModel {
             requests.push(body["model"].as_str().unwrap().to_string());
             call
         };
-        if self.overload_at == Some(call) {
-            // Exercise the system's existing classifier, not a claim that DeepSeek
-            // officially specifies this error code for its ordinary HTTP 503.
+        if self.retry_at == Some(call) {
             return Err(CoreError::provider(
                 Some(503),
-                Some("overloaded_error".into()),
-                "AUDIT_CONTROLLED_OVERLOAD",
+                Some("service_unavailable".into()),
+                "AUDIT_CONTROLLED_TRANSIENT_FAILURE",
             ));
         }
         let mut events = if call == 0 && self.tool_first {
@@ -91,11 +89,10 @@ struct RouteObservation {
 
 async fn observe_route(
     primary: &str,
-    switch: bool,
+    retry: bool,
     tool_first: bool,
     budget: RouteBudget,
 ) -> RouteObservation {
-    let fallback = if primary == FLASH { PRO } else { FLASH };
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("fixture.txt"), "AUDIT_LOCAL_COST_FIXTURE").unwrap();
     let db = Arc::new(Database::open(root.path().join("state.sqlite")).unwrap());
@@ -112,7 +109,6 @@ async fn observe_route(
         .await
         .unwrap();
     settings.set_model(ModelRole::Chat, primary).unwrap();
-    settings.set_model(ModelRole::Reasoner, fallback).unwrap();
     let prices = settings.load().unwrap().unwrap().pricing_catalog.models;
     assert_eq!(prices[FLASH].calculate(1000, 100, 800, 200), 0.000616);
     assert_eq!(prices[PRO].calculate(1000, 100, 800, 200), 0.002370);
@@ -135,7 +131,7 @@ async fn observe_route(
     })
     .unwrap();
     let model = Arc::new(RouteModel {
-        overload_at: switch.then_some(usize::from(tool_first)),
+        retry_at: retry.then_some(usize::from(tool_first)),
         tool_first,
         requests: Mutex::new(Vec::new()),
     });
@@ -185,12 +181,12 @@ async fn observe_route(
             if tool_first && !stop_after_first {
                 expected_models.push(primary.to_string());
             }
-            if switch && !stop_after_first {
-                expected_models.push(fallback.to_string());
+            if retry && !stop_after_first {
+                expected_models.push(primary.to_string());
             }
             assert_eq!(first_models, expected_models);
             // H-219: compare the recorder to actual physical transport routes,
-            // including the rejected primary and the successful fallback.
+            // including the rejected and successful attempts of the same model.
             let run_events = chat.run_events(&run_id, None).unwrap();
             let snapshot = run_events
                 .iter()
@@ -213,12 +209,7 @@ async fn observe_route(
                 wire_models, routes,
                 "persisted wire generations must follow real adapter dispatches"
             );
-            let answered = if switch && !stop_after_first {
-                fallback
-            } else {
-                primary
-            };
-            let expected_cost = prices[answered].calculate(1000, 100, 800, 200)
+            let expected_cost = prices[primary].calculate(1000, 100, 800, 200)
                 + if tool_first && !stop_after_first {
                     prices[primary].calculate(1000, 100, 800, 200)
                 } else {
@@ -356,7 +347,7 @@ async fn observe_route(
         second_error,
         second_dispatches,
     };
-    eprintln!("fallback cost audit: switch={switch} tool_first={tool_first} observed={observed:?}");
+    eprintln!("route cost audit: retry={retry} tool_first={tool_first} observed={observed:?}");
     observed
 }
 
@@ -423,34 +414,31 @@ async fn unchanged_models_book_single_and_multiple_answered_calls_correctly() {
 }
 
 #[tokio::test]
-async fn audit_fallback_to_pro_books_pro_cost_and_blocks_the_next_run() {
-    assert_route_cost(&observe_route(FLASH, true, false, RouteBudget::CompleteRoute).await);
+async fn transient_retry_keeps_each_selected_models_cost_and_next_run_admission() {
+    for primary in [FLASH, PRO] {
+        assert_route_cost(&observe_route(primary, true, false, RouteBudget::CompleteRoute).await);
+    }
 }
 
 #[tokio::test]
-async fn audit_fallback_to_flash_books_flash_cost_and_allows_the_next_run() {
-    assert_route_cost(&observe_route(PRO, true, false, RouteBudget::CompleteRoute).await);
-}
-
-#[tokio::test]
-async fn audit_mixed_model_run_preserves_each_answered_calls_cost_route() {
+async fn retry_and_tool_continuation_preserve_each_answered_calls_cost() {
     assert_route_cost(&observe_route(FLASH, true, true, RouteBudget::CompleteRoute).await);
     assert_route_cost(&observe_route(PRO, true, true, RouteBudget::CompleteRoute).await);
 }
 
 #[tokio::test]
-async fn original_low_budget_stops_before_another_primary_or_fallback_attempt() {
-    for switch in [false, true] {
-        assert_route_cost(&observe_route(PRO, switch, true, RouteBudget::OriginalLimit).await);
+async fn original_low_budget_stops_before_another_attempt() {
+    for retry in [false, true] {
+        assert_route_cost(&observe_route(PRO, retry, true, RouteBudget::OriginalLimit).await);
     }
 }
 
 #[tokio::test]
-async fn exact_first_call_budget_stops_before_another_primary_or_fallback_attempt() {
+async fn exact_first_call_budget_stops_before_another_attempt() {
     for primary in [FLASH, PRO] {
-        for switch in [false, true] {
+        for retry in [false, true] {
             assert_route_cost(
-                &observe_route(primary, switch, true, RouteBudget::ExactFirstCall).await,
+                &observe_route(primary, retry, true, RouteBudget::ExactFirstCall).await,
             );
         }
     }

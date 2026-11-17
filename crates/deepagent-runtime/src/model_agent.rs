@@ -42,7 +42,7 @@ use crate::usage::{
 /// Failure stops the request before any provider or tool dispatch.
 pub type ToolSchemaSource = Arc<dyn Fn() -> Result<Vec<ToolSchema>> + Send + Sync>;
 
-/// Runs before every physical attempt, including retries and model fallback.
+/// Runs before every physical attempt, including transient-failure retries.
 /// It receives only tool schemas, never the conversation or credentials.
 pub type ToolSchemaObserver =
     Arc<dyn Fn(&[ToolSchema], &deepagent_models::ProviderToolSchemas) -> Result<()> + Send + Sync>;
@@ -625,13 +625,10 @@ pub struct ModelAgent {
     /// DeepSeek Responses reasoning effort applied to every request.
     reasoning_effort: ReasoningEffort,
     /// Explicit selection, distinct from this attempt's resolved effort above.
-    /// None keeps model-default provenance across retries and fallback.
+    /// None keeps model-default provenance across retries.
     requested_reasoning_effort: Option<ReasoningEffort>,
     /// Provider attempts per turn for transient/empty-stream failures.
     max_model_attempts: usize,
-    /// Optional same-endpoint model used once when the primary deployment is
-    /// overloaded. Authentication/rate-limit errors do not trigger fallback.
-    fallback_model: Option<String>,
     reactive_compactor: Option<Arc<dyn ReactiveContextCompactor>>,
     /// Proactive auto-compact threshold in tokens (Claude Code
     /// `getAutoCompactThreshold`). `None` disables the per-turn check.
@@ -780,7 +777,6 @@ impl ModelAgent {
             reasoning_effort: ReasoningEffort::default(),
             requested_reasoning_effort,
             max_model_attempts: 3,
-            fallback_model: None,
             reactive_compactor: None,
             proactive_compaction_threshold: None,
             autocompact_consecutive_failures: 0,
@@ -1159,7 +1155,7 @@ impl ModelAgent {
         self
     }
 
-    /// Bound transient-failure attempts per think step, including fallback.
+    /// Bound transient-failure attempts per think step.
     /// Zero is clamped to one; Length/context recovery keep their own bounds.
     pub fn with_max_model_attempts(mut self, attempts: usize) -> Self {
         self.max_model_attempts = attempts.max(1);
@@ -1171,13 +1167,6 @@ impl ModelAgent {
     /// these receipts from an aggregate finalizer.
     pub fn with_call_usage_sink(mut self, sink: Arc<dyn CallUsageSink>) -> Self {
         self.call_usage_sink = Some(sink);
-        self
-    }
-
-    pub fn with_fallback_model(mut self, model: Option<String>) -> Self {
-        self.fallback_model = model
-            .map(|model| model.trim().to_string())
-            .filter(|model| !model.is_empty() && model != &self.model);
         self
     }
 
@@ -2590,7 +2579,6 @@ impl ModelAgent {
         // Stream the turn, forwarding token/reasoning deltas to the event sink
         // (if any) as they arrive.
         let mut attempt = 0usize;
-        let mut fallback_used = false;
         let mut max_output_escalated = false;
         let mut max_output_recoveries = 0usize;
         let mut rate_limited_failures = 0usize;
@@ -2679,7 +2667,7 @@ impl ModelAgent {
             tools = returned_tools;
             // All non-authorizing provider terminals use the existing error
             // policy. Account/anchor their measured context before deciding
-            // retry, fallback or failure; none may reach tool commit/Length.
+            // retry or failure; none may reach tool commit/Length.
             let result = result.and_then(|response| {
                 self.record_provider_response_usage(
                     &response,
@@ -2864,27 +2852,10 @@ impl ModelAgent {
                             }
                         }
                     }
-                    // Retry and fallback share this admission budget. A
-                    // fallback is not a bonus paid request after exhaustion.
+                    // Only classified retryable failures share the admission
+                    // budget. Overload is terminal on the first attempt.
                     if attempt >= self.max_model_attempts || !failure.retryable() {
                         return Err(error);
-                    }
-                    if failure.should_fallback() && !fallback_used {
-                        if let Some(fallback) = self.fallback_model.clone() {
-                            let primary = request.model.clone();
-                            request.model = fallback.clone();
-                            self.model = fallback.clone();
-                            fallback_used = true;
-                            emit_attempt_reset(
-                                self.events.as_ref(),
-                                step,
-                                attempt,
-                                format!(
-                                    "primary model '{primary}' overloaded; switched to fallback '{fallback}'"
-                                ),
-                            );
-                            continue;
-                        }
                     }
                     // Rate-limit low cap (Grok retry.rs RATE_LIMIT_RETRY_THRESHOLD):
                     // 429 waits can be long, so cap 429-driven attempts below
@@ -3155,7 +3126,7 @@ fn retry_delay_with_provider(
     }
 
     let base_ms = match failure {
-        ModelFailureKind::RateLimited | ModelFailureKind::Overloaded => 500,
+        ModelFailureKind::RateLimited => 500,
         ModelFailureKind::Server => 300,
         _ => 200,
     };
@@ -4175,14 +4146,23 @@ mod tests {
         .to_string()
     }
 
+    #[derive(Default)]
+    struct RecordedCallUsage(Mutex<Vec<CallUsageReport>>);
+
+    impl CallUsageSink for RecordedCallUsage {
+        fn record(&self, report: CallUsageReport) {
+            self.0.lock().unwrap().push(report);
+        }
+    }
+
     #[tokio::test]
-    async fn route_usage_keeps_latest_failed_chat_attempt_before_fallback() {
+    async fn route_usage_keeps_latest_failed_chat_attempt_before_retry() {
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
                 vec![
                     chat_usage_chunk(100, 10),
                     chat_usage_chunk(1000, 100),
-                    "__ERROR_OVERLOADED__".into(),
+                    "__ERROR_503__".into(),
                 ],
                 vec![
                     serde_json::json!({"choices":[{"index":0,"delta":{"content":"done"},
@@ -4198,15 +4178,18 @@ mod tests {
             transport.clone(),
             ModelConfig::deepseek_chat("test"),
         ));
+        let booked = Arc::new(RecordedCallUsage::default());
         let mut agent = ModelAgent::new(client, "primary", "sys", "prompt", vec![])
-            .with_fallback_model(Some("fallback".into()));
+            .with_call_usage_sink(booked.clone());
         agent.think(0, &[]).await.unwrap();
         let routes = agent.model_usage();
-        assert_eq!(routes.len(), 2);
-        assert_eq!(routes[0].model_id, "fallback");
-        assert_eq!(routes[0].usage.billed_prompt_tokens, 2000);
-        assert_eq!(routes[1].model_id, "primary");
-        assert_eq!(routes[1].usage.billed_prompt_tokens, 1000);
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].model_id, "primary");
+        assert_eq!(routes[0].usage.billed_prompt_tokens, 3000);
+        let calls = booked.0.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].usage.unwrap().prompt_tokens, 1000);
+        assert_eq!(calls[1].usage.unwrap().prompt_tokens, 2000);
         assert_eq!(agent.cumulative_usage().unwrap().billed_prompt_tokens, 3000);
         assert_eq!(agent.cumulative_usage().unwrap().completion_tokens, 300);
         assert_eq!(agent.take_pending_raw_usage().len(), 2);
@@ -4272,13 +4255,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_responses_usage_stays_on_its_attempt_when_falling_back() {
+    async fn failed_responses_usage_stays_on_its_attempt_when_retrying() {
         let raw = serde_json::json!({"input_tokens":9,"output_tokens":2,"total_tokens":11,
             "input_tokens_details":{"cached_tokens":4},
             "output_tokens_details":{"reasoning_tokens":1}});
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
-                vec![failed_response_with_usage(Some(raw), "overloaded_error")],
+                vec![failed_response_with_usage(Some(raw), "connection_error")],
                 response_text_completed_with_usage("done", 100, 10, 80),
             ])),
             requests: Mutex::new(Vec::new()),
@@ -4287,22 +4270,25 @@ mod tests {
             transport.clone(),
             ModelConfig::deepseek("test"),
         ));
+        let booked = Arc::new(RecordedCallUsage::default());
         let mut agent = ModelAgent::new(client, "primary", "sys", "prompt", vec![])
-            .with_fallback_model(Some("fallback".into()));
+            .with_call_usage_sink(booked.clone());
         agent.think(0, &[]).await.unwrap();
         let routes = agent.model_usage();
-        assert_eq!(routes.len(), 2);
-        assert_eq!(routes[0].model_id, "fallback");
-        assert_eq!(routes[0].usage.billed_prompt_tokens, 100);
-        assert_eq!(routes[1].model_id, "primary");
-        assert_eq!(routes[1].usage.billed_prompt_tokens, 9);
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].model_id, "primary");
+        assert_eq!(routes[0].usage.billed_prompt_tokens, 109);
+        let calls = booked.0.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].usage.unwrap().prompt_tokens, 9);
+        assert_eq!(calls[1].usage.unwrap().prompt_tokens, 100);
         assert_eq!(agent.cumulative_usage().unwrap().billed_prompt_tokens, 109);
         assert_eq!(agent.cumulative_usage().unwrap().completion_tokens, 12);
         assert_eq!(agent.take_pending_raw_usage().len(), 2);
         let requests = transport.requests.lock().unwrap();
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0]["model"], "primary");
-        assert_eq!(requests[1]["model"], "fallback");
+        assert_eq!(requests[1]["model"], "primary");
     }
 
     struct UsageThenWait {
@@ -4356,7 +4342,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn route_usage_preserves_paid_truncation_before_fallback() {
+    async fn route_usage_preserves_paid_truncation_before_retry() {
         let mut truncated = response_text_completed_with_usage("partial", 1000, 20, 800);
         let terminal = truncated.last_mut().unwrap();
         let mut event: serde_json::Value = serde_json::from_str(terminal).unwrap();
@@ -4367,7 +4353,7 @@ mod tests {
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
                 truncated,
-                vec!["__ERROR_OVERLOADED__".into()],
+                vec!["__ERROR_503__".into()],
                 response_text_completed_with_usage("done", 2000, 40, 1600),
             ])),
             requests: Mutex::new(Vec::new()),
@@ -4376,14 +4362,18 @@ mod tests {
             transport.clone(),
             ModelConfig::deepseek("test"),
         ));
+        let booked = Arc::new(RecordedCallUsage::default());
         let mut agent = ModelAgent::new(client, "primary", "sys", "prompt", vec![])
-            .with_fallback_model(Some("fallback".into()));
+            .with_call_usage_sink(booked.clone());
         agent.think(0, &[]).await.unwrap();
         let routes = agent.model_usage();
-        assert_eq!(routes.len(), 2);
-        assert_eq!(routes[0].model_id, "fallback");
-        assert_eq!(routes[0].usage.billed_prompt_tokens, 2000);
-        assert_eq!(routes[1].usage.billed_prompt_tokens, 1000);
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].model_id, "primary");
+        assert_eq!(routes[0].usage.billed_prompt_tokens, 3000);
+        let calls = booked.0.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].usage.unwrap().prompt_tokens, 1000);
+        assert_eq!(calls[1].usage.unwrap().prompt_tokens, 2000);
         assert_eq!(agent.cumulative_usage().unwrap().completion_tokens, 60);
         assert_eq!(transport.requests.lock().unwrap().len(), 3);
     }
@@ -5089,11 +5079,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn overload_switches_once_to_configured_fallback_model() {
+    async fn overload_fails_without_retry_with_the_default_attempt_budget() {
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
                 vec!["__ERROR_OVERLOADED__".to_string()],
-                response_text_completed("fallback ok"),
+                response_text_completed("must not be reached"),
             ])),
             requests: Mutex::new(Vec::new()),
         });
@@ -5101,12 +5091,11 @@ mod tests {
             transport.clone(),
             ModelConfig::deepseek("test"),
         ));
-        let mut agent = ModelAgent::new(client, "primary", "system", "prompt", vec![])
-            .with_fallback_model(Some("fallback".into()));
+        let mut agent = ModelAgent::new(client, "primary", "system", "prompt", vec![]);
 
-        let decision = agent.think(0, &[]).await.unwrap();
+        let result = agent.think(0, &[]).await;
 
-        let _ = complete_items(decision);
+        assert!(result.is_err(), "overload must surface as an error");
         let models = transport
             .requests
             .lock()
@@ -5114,14 +5103,14 @@ mod tests {
             .iter()
             .map(|request| request["model"].as_str().unwrap().to_string())
             .collect::<Vec<_>>();
-        assert_eq!(models, vec!["primary", "fallback"]);
+        assert_eq!(models, vec!["primary"]);
     }
 
     #[tokio::test]
-    async fn h168_fallback_preserves_ordered_snapshot_and_stable_rules() {
+    async fn h168_retry_preserves_ordered_snapshot_and_stable_rules() {
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
-                vec!["__ERROR_OVERLOADED__".to_string()],
+                vec!["__ERROR_503__".to_string()],
                 response_text_completed("done"),
             ])),
             requests: Mutex::new(Vec::new()),
@@ -5139,8 +5128,7 @@ mod tests {
         }
         .to_item();
         let mut agent = ModelAgent::new(client, "primary", "stable rules", "question", vec![])
-            .with_admitted_input_context(Some(item.clone()))
-            .with_fallback_model(Some("fallback".into()));
+            .with_admitted_input_context(Some(item.clone()));
         agent.think(0, &[]).await.unwrap();
         let requests = transport.requests.lock().unwrap();
         assert_eq!(requests.len(), 2);
@@ -5153,14 +5141,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn h166_fallback_recomputes_sampling_and_emits_each_attempt_without_mutating_defaults() {
-        for (primary, fallback, expected) in [
-            ("deepseek-flash", "deepseek-v4-pro", [0.96_f32, 0.95]),
-            ("deepseek-v4-pro", "deepseek-flash", [0.95_f32, 0.96]),
-        ] {
+    async fn h166_retry_recomputes_sampling_per_attempt_without_mutating_defaults() {
+        for (primary, expected) in [("deepseek-flash", 0.96_f32), ("deepseek-v4-pro", 0.95_f32)] {
             let transport = Arc::new(AttemptTransport {
                 attempts: Mutex::new(VecDeque::from([
-                    vec!["__ERROR_OVERLOADED__".into()],
+                    vec!["__ERROR_503__".into()],
                     response_text_completed("done"),
                 ])),
                 requests: Mutex::new(Vec::new()),
@@ -5186,7 +5171,6 @@ mod tests {
                     serde_json::json!({"type":"object"}),
                 )],
             )
-            .with_fallback_model(Some(fallback.into()))
             .with_events(Arc::new(sink));
             agent.think(0, &[]).await.unwrap();
             let requests = transport.requests.lock().unwrap();
@@ -5205,15 +5189,12 @@ mod tests {
                 })
                 .collect();
             assert_eq!(resolved.len(), 2);
-            for (index, model) in [primary, fallback].into_iter().enumerate() {
+            for index in 0..2 {
                 assert_eq!(resolved[index].0, index + 1);
-                assert_eq!(resolved[index].1, model);
+                assert_eq!(resolved[index].1, primary);
                 assert_eq!(resolved[index].2.configured_top_p, Some(0.96));
-                assert_eq!(resolved[index].2.effective_top_p, Some(expected[index]));
-                assert_eq!(
-                    requests[index]["top_p"].as_f64().unwrap() as f32,
-                    expected[index]
-                );
+                assert_eq!(resolved[index].2.effective_top_p, Some(expected));
+                assert_eq!(requests[index]["top_p"].as_f64().unwrap() as f32, expected);
                 assert!(requests[index].get("sampling").is_none());
             }
             assert_eq!(
@@ -5295,149 +5276,6 @@ mod tests {
                 assert_eq!(case["wire_effort"], case["selected_effort"]);
             }
         }
-    }
-
-    #[tokio::test]
-    async fn audit_fallback_rebuilds_output_limit_from_active_capability() {
-        struct CapabilityGate {
-            wire_mode: deepagent_models::WireMode,
-            fallback_limit: u32,
-            requests: Mutex<Vec<serde_json::Value>>,
-        }
-
-        #[async_trait]
-        impl HttpTransport for CapabilityGate {
-            async fn stream(
-                &self,
-                request: TransportRequest,
-                sink: &mut dyn EventSink,
-            ) -> Result<()> {
-                let body: serde_json::Value = serde_json::from_str(&request.body)?;
-                self.requests.lock().unwrap().push(body.clone());
-                if body["model"] == "audit-primary" {
-                    return Err(CoreError::provider(
-                        Some(529),
-                        Some("overloaded_error".into()),
-                        "audit primary overloaded",
-                    ));
-                }
-                let requested = body["max_output_tokens"]
-                    .as_u64()
-                    .or_else(|| body["max_tokens"].as_u64())
-                    .unwrap();
-                if requested > u64::from(self.fallback_limit) {
-                    return Err(CoreError::provider(
-                        Some(400),
-                        Some("invalid_request_error".into()),
-                        "audit output limit exceeds active model capability",
-                    ));
-                }
-                let events = match self.wire_mode {
-                    deepagent_models::WireMode::Responses => response_text_completed("recovered"),
-                    deepagent_models::WireMode::ChatCompletions => vec![
-                        serde_json::json!({"choices":[{"index":0,"delta":{"content":"recovered"},"finish_reason":"stop"}]}).to_string(),
-                        "[DONE]".into(),
-                    ],
-                };
-                for event in crate::test_sequence::numbered(events) {
-                    if sink.on_event(&event)? {
-                        break;
-                    }
-                }
-                Ok(())
-            }
-        }
-
-        let mut cases = Vec::new();
-        for wire_mode in [
-            deepagent_models::WireMode::Responses,
-            deepagent_models::WireMode::ChatCompletions,
-        ] {
-            for fallback_limit in [32_768, 8_192] {
-                let primary = deepagent_models::ModelCapability {
-                    input_modalities: None,
-                    effort: None,
-                    model_id: "audit-primary".into(),
-                    context_window: 1_000_000,
-                    max_output_tokens: 32_768,
-                    supports_tools: true,
-                    supports_thinking: true,
-                    supports_json_output: true,
-                    capability_source: deepagent_models::CapabilitySource::ProviderMetadata,
-                    fallback_reason: None,
-                };
-                let fallback = deepagent_models::ModelCapability {
-                    model_id: "audit-fallback".into(),
-                    context_window: 128_000,
-                    max_output_tokens: fallback_limit as usize,
-                    ..primary.clone()
-                };
-                let transport = Arc::new(CapabilityGate {
-                    wire_mode,
-                    fallback_limit,
-                    requests: Mutex::new(Vec::new()),
-                });
-                let mut config = ModelConfig::deepseek("test").with_wire_mode(wire_mode);
-                config.capabilities = vec![primary.clone(), fallback];
-                // Effort and output ceilings are independent (H-05/H-174).
-                // Reproduce H-49 with a real configured primary ceiling, not
-                // the retired assumption that Max effort invents one.
-                config.defaults.max_output_tokens = Some(32_768);
-                let client = Arc::new(ModelClient::new(transport.clone(), config));
-                let (sink, mut rx) = crate::events::ChannelSink::new();
-                let mut agent = ModelAgent::new(client, "audit-primary", "system", "goal", vec![])
-                    .with_reasoning_effort(ReasoningEffort::Max)
-                    .with_fallback_model(Some("audit-fallback".into()))
-                    .with_context_policy(
-                        deepagent_context::ContextPolicy::for_capability(
-                            &primary,
-                            ReasoningEffort::Max,
-                        ),
-                        None,
-                        None,
-                    )
-                    .with_events(Arc::new(sink))
-                    .with_context_snapshot(snapshot_estimating(1, 1_000_000));
-                let outcome = agent.think(0, &[]).await;
-                let snapshot = std::iter::from_fn(|| rx.try_recv().ok())
-                    .filter_map(|event| match event {
-                        RuntimeEvent::ContextUsage { snapshot } => Some(snapshot),
-                        _ => None,
-                    })
-                    .last()
-                    .unwrap();
-                let requests = transport.requests.lock().unwrap();
-                assert_eq!(
-                    requests.len(),
-                    2,
-                    "exactly one primary and one fallback attempt"
-                );
-                assert_eq!(requests[1]["model"], "audit-fallback");
-                assert_eq!(snapshot.model_id, "audit-fallback");
-                assert_eq!(snapshot.context_window, 128_000);
-                assert_eq!(snapshot.reserved_output_tokens, fallback_limit as usize);
-                let wire_limit = requests[1]["max_output_tokens"]
-                    .as_u64()
-                    .or_else(|| requests[1]["max_tokens"].as_u64())
-                    .unwrap();
-                cases.push(serde_json::json!({
-                    "wire": format!("{wire_mode:?}"),
-                    "fallback_limit": fallback_limit,
-                    "reserved_output": snapshot.reserved_output_tokens,
-                    "wire_limit": wire_limit,
-                    "completed": outcome.is_ok(),
-                    "failure": outcome.err().map(|error| error.to_string()),
-                }));
-            }
-        }
-        eprintln!("fallback capability audit: {}", serde_json::json!(cases));
-        assert!(
-            cases
-                .iter()
-                .all(|case| case["completed"] == true
-                    && case["wire_limit"] == case["fallback_limit"]),
-            "fallback must not retain the primary model's incompatible output limit"
-        );
     }
 
     #[tokio::test]
@@ -5983,22 +5821,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn h219_wire_observer_covers_fallback_and_failure_blocks_the_physical_attempt() {
+    async fn h219_wire_observer_covers_retry_and_failure_blocks_the_physical_attempt() {
         for mode in [
             deepagent_models::WireMode::Responses,
             deepagent_models::WireMode::ChatCompletions,
         ] {
-            for reject_fallback in [false, true] {
+            for reject_retry in [false, true] {
                 let done = if mode == deepagent_models::WireMode::Responses {
-                    response_text_completed("fallback ok")
+                    response_text_completed("retry ok")
                 } else {
-                    vec![r#"{"choices":[{"index":0,"delta":{"content":"fallback ok"},"finish_reason":"stop"}]}"#.into(), "[DONE]".into()]
+                    vec![r#"{"choices":[{"index":0,"delta":{"content":"retry ok"},"finish_reason":"stop"}]}"#.into(), "[DONE]".into()]
                 };
                 let transport = Arc::new(AttemptTransport {
-                    attempts: Mutex::new(VecDeque::from([
-                        vec!["__ERROR_OVERLOADED__".into()],
-                        done,
-                    ])),
+                    attempts: Mutex::new(VecDeque::from([vec!["__ERROR_503__".into()], done])),
                     requests: Mutex::new(Vec::new()),
                 });
                 let client = Arc::new(ModelClient::new(
@@ -6024,15 +5859,15 @@ mod tests {
                 let expected_tools = tools.clone();
                 let mut agent =
                     ModelAgent::new(client, "primary", "private prompt", "private input", tools)
-                        .with_fallback_model(Some("fallback".into()))
                         .with_tool_schema_observer(Arc::new(move |source, projection| {
                             assert_eq!(source, expected_tools);
                             assert_eq!(projection.wire_mode, mode);
-                            captured.lock().unwrap().push((
+                            let mut calls = captured.lock().unwrap();
+                            calls.push((
                                 projection.model.clone(),
                                 serde_json::json!(projection.tools),
                             ));
-                            if reject_fallback && projection.model == "fallback" {
+                            if reject_retry && calls.len() == 2 {
                                 return Err(CoreError::Persistence(
                                     "synthetic wire barrier rejection".into(),
                                 ));
@@ -6043,18 +5878,18 @@ mod tests {
                 let result = agent
                     .think_streaming_cancelled(0, &[], None, Some(&mut attempts))
                     .await;
-                if reject_fallback {
+                if reject_retry {
                     assert!(matches!(result, Err(CoreError::Persistence(_))));
                     assert!(!attempts.events.iter().any(|event| event == "begin:2"));
                 } else {
                     complete_items(result.unwrap());
                 }
                 let requests = transport.requests.lock().unwrap();
-                assert_eq!(requests.len(), if reject_fallback { 1 } else { 2 });
+                assert_eq!(requests.len(), if reject_retry { 1 } else { 2 });
                 let observed = observed.lock().unwrap();
                 assert_eq!(observed.len(), 2);
                 assert_eq!(observed[0].0, "primary");
-                assert_eq!(observed[1].0, "fallback");
+                assert_eq!(observed[1].0, "primary");
                 for (request, (model, tools)) in requests.iter().zip(observed.iter()) {
                     assert_eq!(request["model"], *model);
                     assert_eq!(request["tools"], *tools);
@@ -6135,8 +5970,7 @@ mod tests {
                 ModelConfig::deepseek("synthetic"),
             ));
             let mut agent = ModelAgent::new(client, "deepseek-flash", "rules", "synthetic", vec![])
-                .with_max_model_attempts(3)
-                .with_fallback_model(Some("deepseek-v4-pro".into()));
+                .with_max_model_attempts(3);
             let result = agent.think(0, &[]).await;
             if corrupt {
                 assert!(
@@ -6169,8 +6003,7 @@ mod tests {
             ModelConfig::deepseek("synthetic"),
         ));
         let mut agent = ModelAgent::new(client, "deepseek-flash", "rules", "synthetic", vec![])
-            .with_max_model_attempts(1)
-            .with_fallback_model(Some("deepseek-v4-pro".into()));
+            .with_max_model_attempts(1);
         let mut controller = RecordingToolAttempt::default();
         let error = agent
             .think_streaming_cancelled(0, &[], None, Some(&mut controller))
@@ -6179,7 +6012,7 @@ mod tests {
         assert!(matches!(&error, CoreError::Provider {code:Some(code),..}
             if code=="content_filter"));
         let failure = classify_model_error(&error);
-        assert!(!failure.retryable() && !failure.should_fallback());
+        assert!(!failure.retryable());
         assert_eq!(
             controller.events,
             ["begin:1", "prepare:filtered:add", "abort:1"]
@@ -6213,8 +6046,7 @@ mod tests {
                 ModelConfig::deepseek_chat("synthetic"),
             ));
             let mut agent = ModelAgent::new(client, "deepseek-flash", "rules", "synthetic", vec![])
-                .with_max_model_attempts(3)
-                .with_fallback_model(Some("fallback".into()));
+                .with_max_model_attempts(3);
             let mut controller = RecordingToolAttempt::default();
             let error = agent
                 .think_streaming_cancelled(0, &[], None, Some(&mut controller))
@@ -6240,7 +6072,6 @@ mod tests {
                 "{error}"
             );
             assert!(!classify_model_error(&error).retryable());
-            assert!(!classify_model_error(&error).should_fallback());
             assert_eq!(transport.requests.lock().unwrap().len(), 1);
             assert_eq!(controller.events, ["begin:1", "abort:1"]);
             assert!(controller.calls.is_empty());

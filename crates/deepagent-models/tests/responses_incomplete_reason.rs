@@ -254,7 +254,7 @@ async fn h82_public_response_entries_preserve_reason_and_usage_without_retry() {
             } else {
                 let error = result.unwrap_err();
                 let kind = deepagent_models::classify_model_error(&error);
-                assert!(!kind.retryable() && !kind.should_fallback());
+                assert!(!kind.retryable());
                 assert!(matches!(error, CoreError::Provider {code:Some(code),..}
                     if code=="incomplete_reason_unknown"));
             }

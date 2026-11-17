@@ -103,7 +103,7 @@ async fn h297_calibration_tracks_unicode_deltas_and_invalidates_changed_headers(
 }
 
 #[tokio::test]
-async fn h297_fallback_prices_the_actual_version_before_its_request() {
+async fn h297_selected_model_prices_the_actual_tokenizer_before_dispatch() {
     struct Pressure(std::sync::atomic::AtomicUsize);
     #[async_trait]
     impl ReactiveContextCompactor for Pressure {
@@ -119,52 +119,44 @@ async fn h297_fallback_prices_the_actual_version_before_its_request() {
     }
     let pressure = Arc::new(Pressure(std::sync::atomic::AtomicUsize::new(0)));
     let transport = Arc::new(AttemptTransport {
-        attempts: Mutex::new(VecDeque::from([
-            vec!["__ERROR_OVERLOADED__".into()],
-            response_text_completed("done"),
-        ])),
+        attempts: Mutex::new(VecDeque::from([response_text_completed("done")])),
         requests: Mutex::new(Vec::new()),
     });
     let mut config = ModelConfig::deepseek("synthetic");
     config.defaults.max_output_tokens = Some(8192);
-    let mut primary =
-        deepagent_models::ModelCapabilityResolver::new().resolve_model_id("deepseek-v4-pro");
-    primary.context_window = 1_000_000;
-    primary.max_output_tokens = 8192;
-    let mut fallback = primary.clone();
-    fallback.model_id = "deepseek-flash".into();
-    fallback.context_window = 128_000;
-    config.capabilities = vec![primary.clone(), fallback];
+    let mut selected =
+        deepagent_models::ModelCapabilityResolver::new().resolve_model_id("deepseek-flash");
+    selected.context_window = 128_000;
+    selected.max_output_tokens = 8192;
+    config.capabilities = vec![selected.clone()];
     let client = Arc::new(ModelClient::new(transport.clone(), config));
     let observed = pressure.clone();
     let mut agent = ModelAgent::new(
         client,
-        "deepseek-v4-pro",
+        "deepseek-flash",
         "rules",
         "🧪🔧📁✅".repeat(8000),
         vec![],
     )
     .with_reasoning_effort(ReasoningEffort::None)
     .with_context_policy(
-        deepagent_context::ContextPolicy::for_capability(&primary, ReasoningEffort::None),
+        deepagent_context::ContextPolicy::for_capability(&selected, ReasoningEffort::None),
         None,
         None,
     )
-    .with_fallback_model(Some("deepseek-flash".into()))
     .with_reactive_compactor(pressure.clone())
     .with_tool_schema_observer(Arc::new(move |_, schemas| {
-        let calls = observed.0.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(schemas.model, "deepseek-flash");
         assert_eq!(
-            calls,
-            usize::from(schemas.model == "deepseek-flash"),
+            observed.0.load(std::sync::atomic::Ordering::SeqCst),
+            1,
             "pressure must be handled before dispatch"
         );
         Ok(())
     }));
     agent.think(0, &[]).await.unwrap();
     let requests = transport.requests.lock().unwrap();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0]["model"], "deepseek-v4-pro");
-    assert_eq!(requests[1]["model"], "deepseek-flash");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["model"], "deepseek-flash");
     assert!(agent.context_measurement().1.source.contains(":v41:"));
 }

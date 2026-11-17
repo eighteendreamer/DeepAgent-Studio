@@ -24,12 +24,8 @@ impl ModelFailureKind {
     pub const fn retryable(self) -> bool {
         matches!(
             self,
-            Self::RateLimited | Self::Overloaded | Self::Server | Self::Timeout | Self::Transport
+            Self::RateLimited | Self::Server | Self::Timeout | Self::Transport
         )
-    }
-
-    pub const fn should_fallback(self) -> bool {
-        matches!(self, Self::Overloaded)
     }
 }
 
@@ -76,7 +72,7 @@ fn classify_provider(status: Option<u16>, code: Option<&str>, message: &str) -> 
             ModelFailureKind::RateLimited
         };
     }
-    if status == Some(529) || detail.contains("overloaded_error") {
+    if status == Some(529) || detail.contains("overload") || detail.contains("high demand") {
         return ModelFailureKind::Overloaded;
     }
     if status.is_some_and(|status| (500..=599).contains(&status)) {
@@ -185,6 +181,7 @@ mod tests {
         assert!(ModelFailureKind::Transport.retryable());
         assert!(!ModelFailureKind::ContextOverflow.retryable());
         assert!(!ModelFailureKind::Authentication.retryable());
+        assert!(!ModelFailureKind::Overloaded.retryable());
         assert_eq!(
             classify_model_error(&CoreError::other("model API returned HTTP 429")),
             ModelFailureKind::RateLimited
@@ -193,5 +190,29 @@ mod tests {
             classify_model_error(&CoreError::other("model API returned HTTP 503")),
             ModelFailureKind::Server
         );
+    }
+
+    #[test]
+    fn reported_overload_is_terminal_across_http_and_in_band_errors() {
+        for (status, code, message) in [
+            (Some(529), Some("overloaded_error"), "provider failure"),
+            (Some(503), None, "Server Overloaded"),
+            (Some(503), Some("server_overloaded"), "provider failure"),
+            (Some(429), None, "high demand"),
+            (None, Some("overloaded_error"), "provider failure"),
+            (
+                None,
+                Some("insufficient_system_resource"),
+                "provider failure",
+            ),
+        ] {
+            let error = CoreError::provider(status, code.map(str::to_owned), message);
+            let kind = classify_model_error(&error);
+            assert_eq!(kind, ModelFailureKind::Overloaded, "{error}");
+            assert!(
+                !kind.retryable(),
+                "overload must surface immediately: {error}"
+            );
+        }
     }
 }

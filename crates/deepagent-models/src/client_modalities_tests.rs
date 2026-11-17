@@ -155,7 +155,6 @@ fn rejected(error: CoreError) {
     let kind = crate::classify_model_error(&error);
     assert_eq!(kind, crate::ModelFailureKind::InvalidRequest);
     assert!(!kind.retryable());
-    assert!(!kind.should_fallback());
 }
 
 #[tokio::test]

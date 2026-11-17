@@ -103,7 +103,6 @@ fn invalid(error: CoreError) {
     let kind = crate::classify_model_error(&error);
     assert_eq!(kind, crate::ModelFailureKind::InvalidRequest);
     assert!(!kind.retryable());
-    assert!(!kind.should_fallback());
     let text = error.to_string();
     assert!(text.contains("request_body_too_large"), "{text}");
     assert!(text.contains("48 MiB"));

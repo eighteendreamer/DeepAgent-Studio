@@ -134,7 +134,6 @@ async fn h257_invalid_bytes_preserve_valid_prefix_and_absolute_offset_across_htt
                             ModelFailureKind::InvalidRequest
                         );
                         assert!(!classify_model_error(&error).retryable());
-                        assert!(!classify_model_error(&error).should_fallback());
                         assert_eq!(observed.text(), if before_delta { "before|" } else { "" });
                         observed.assert_no_terminal_or_usage();
                     }

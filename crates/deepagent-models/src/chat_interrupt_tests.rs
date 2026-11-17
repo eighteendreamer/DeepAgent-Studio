@@ -180,11 +180,7 @@ fn h144_interrupt_failure_classification_is_code_driven_not_local_cancellation()
                 deepagent_core::error::CoreError::provider(None, Some(code.into()), message);
             let kind = crate::classify_model_error(&error);
             assert_eq!(format!("{kind:?}"), expected);
-            assert_eq!(kind.retryable(), code == "insufficient_system_resource");
-            assert_eq!(
-                kind.should_fallback(),
-                code == "insufficient_system_resource"
-            );
+            assert!(!kind.retryable());
         }
         assert_eq!(
             crate::classify_model_error(&deepagent_core::error::CoreError::provider(

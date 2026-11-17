@@ -20,7 +20,6 @@ mod h49_tests {
     fn configured_agent(
         events: Vec<Vec<String>>,
         first_limit: usize,
-        fallback_limit: usize,
     ) -> (
         ModelAgent,
         Arc<AttemptTransport>,
@@ -29,10 +28,7 @@ mod h49_tests {
         let primary = capability("primary", 1_000_000, first_limit);
         let mut config = ModelConfig::deepseek("synthetic");
         config.defaults.max_output_tokens = Some(32_768.min(first_limit as u32));
-        config.capabilities = vec![
-            primary.clone(),
-            capability("fallback", 128_000, fallback_limit),
-        ];
+        config.capabilities = vec![primary.clone()];
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(events.into()),
             requests: Mutex::new(Vec::new()),
@@ -46,7 +42,6 @@ mod h49_tests {
             vec![],
         )
         .with_max_model_attempts(6)
-        .with_fallback_model(Some("fallback".into()))
         .with_context_policy(
             deepagent_context::ContextPolicy::for_capability(&primary, ReasoningEffort::Max),
             None,
@@ -58,72 +53,60 @@ mod h49_tests {
     }
 
     #[tokio::test]
-    async fn h49_fallback_and_next_step_share_wire_and_budget_ceiling() {
+    async fn h49_selected_model_retries_and_next_steps_share_wire_and_budget_ceiling() {
         let (mut agent, transport, mut rx) = configured_agent(
             vec![
-                vec!["__ERROR_OVERLOADED__".into()],
-                response_text_completed("fallback"),
+                vec!["__ERROR_503__".into()],
+                response_text_completed("recovered"),
                 response_text_completed("next"),
             ],
-            32_768,
             8_192,
         );
         agent.think(0, &[]).await.unwrap();
         agent.think(1, &[]).await.unwrap();
         let requests = transport.requests.lock().unwrap();
         assert_eq!(requests.len(), 3);
-        assert_eq!(requests[0]["max_output_tokens"], 32_768);
-        for body in &requests[1..] {
-            assert_eq!(body["model"], "fallback");
-            assert_eq!(body["max_output_tokens"], 8_192);
-        }
+        assert!(requests
+            .iter()
+            .all(|body| body["model"] == "primary" && body["max_output_tokens"] == 8_192));
         let snapshots: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
             .filter_map(|event| match event {
-                RuntimeEvent::ContextUsage { snapshot } if snapshot.model_id == "fallback" => {
-                    Some(snapshot)
-                }
+                RuntimeEvent::ContextUsage { snapshot } => Some(snapshot),
                 _ => None,
             })
             .collect();
         assert!(!snapshots.is_empty());
-        assert!(snapshots
-            .iter()
-            .all(|s| s.context_window == 128_000 && s.reserved_output_tokens == 8_192));
+        assert!(snapshots.iter().all(|s| s.model_id == "primary"
+            && s.context_window == 1_000_000
+            && s.reserved_output_tokens == 8_192));
     }
 
     #[tokio::test]
-    async fn h49_truncation_then_fallback_rebounds_escalation_without_committing_old_tools() {
+    async fn h49_overload_during_truncation_recovery_aborts_without_another_attempt() {
         let (mut agent, transport, _) = configured_agent(
             vec![
                 response_text_incomplete("partial"),
                 vec!["__ERROR_OVERLOADED__".into()],
-                response_text_incomplete("continuation"),
-                response_text_completed("done"),
+                response_text_completed("must not dispatch"),
             ],
             96_000,
-            8_192,
         );
         let mut tools = RecordingToolAttempt::default();
-        agent
+        let error = agent
             .think_streaming_cancelled(0, &[], None, Some(&mut tools))
             .await
-            .unwrap();
+            .unwrap_err();
+        assert_eq!(classify_model_error(&error), ModelFailureKind::Overloaded);
         let requests = transport.requests.lock().unwrap();
-        assert_eq!(requests.len(), 4);
+        assert_eq!(requests.len(), 2);
         assert_eq!(requests[0]["max_output_tokens"], 32_768);
         assert_eq!(requests[1]["max_output_tokens"], 65_536);
-        assert!(requests[2..]
+        assert!(tools
+            .events
             .iter()
-            .all(|r| r["model"] == "fallback" && r["max_output_tokens"] == 8_192));
-        assert_eq!(
-            tools
-                .events
-                .iter()
-                .filter(|e| e.starts_with("commit:"))
-                .count(),
-            1
-        );
-        assert_eq!(tools.events.last().unwrap(), "commit:4");
+            .all(|event| !event.starts_with("commit:")));
+        assert_eq!(tools.events.last().unwrap(), "abort:2");
+        assert_eq!(transport.attempts.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -134,7 +117,6 @@ mod h49_tests {
                 response_text_completed("done"),
             ],
             4_096,
-            8_192,
         );
         agent.think(0, &[]).await.unwrap();
         let requests = transport.requests.lock().unwrap();
@@ -149,7 +131,7 @@ mod h49_tests {
 
     #[test]
     fn h49_policy_cannot_replace_client_capability_with_a_second_model_limit() {
-        let (agent, _, _) = configured_agent(vec![], 8_192, 4_096);
+        let (agent, _, _) = configured_agent(vec![], 8_192);
         let stale = capability("primary", 2_000_000, 384_000);
         let agent = agent.with_context_policy(
             deepagent_context::ContextPolicy::for_capability(&stale, ReasoningEffort::Max),
@@ -164,7 +146,7 @@ mod h49_tests {
 
     #[test]
     fn h49_meter_fingerprint_uses_the_attempts_escalated_output_ceiling() {
-        let (mut agent, _, _) = configured_agent(vec![], 96_000, 8_192);
+        let (mut agent, _, _) = configured_agent(vec![], 96_000);
         agent.request_max_output_override = Some(65_536);
         let request = agent
             .response_history
@@ -191,20 +173,18 @@ mod h296_tests {
     use deepagent_models::discovery::{ModelCatalog, ModelInfo, ModelRole, DEEPSEEK_BASE_URL};
 
     #[tokio::test]
-    async fn h296_partial_fallback_metadata_reaches_wire_budget_and_next_step() {
+    async fn h296_selected_partial_metadata_reaches_wire_budget_and_next_step() {
         let models: Vec<ModelInfo> = serde_json::from_value(serde_json::json!([
-            {"id":"deepseek-flash","context_window":1_000_000},
             {"id":"audit-capacity-model","max_output_tokens":8_192}
         ]))
         .unwrap();
         let catalog = ModelCatalog::auto_select(DEEPSEEK_BASE_URL, models).unwrap();
         let mut config = ModelConfig::from_catalog("synthetic-h296", &catalog, ModelRole::Chat);
         config.defaults.max_output_tokens = Some(32_768);
-        let primary = config.capability("deepseek-flash");
+        let selected = config.capability("audit-capacity-model");
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
-                vec!["__ERROR_OVERLOADED__".into()],
-                response_text_completed("fallback"),
+                response_text_completed("selected"),
                 response_text_completed("next"),
             ])),
             requests: Mutex::new(Vec::new()),
@@ -212,41 +192,37 @@ mod h296_tests {
         let (sink, mut rx) = crate::events::ChannelSink::new();
         let mut agent = ModelAgent::new(
             Arc::new(ModelClient::new(transport.clone(), config)),
-            "deepseek-flash",
+            "audit-capacity-model",
             "synthetic",
             "synthetic",
             vec![],
         )
-        .with_fallback_model(Some("audit-capacity-model".into()))
         .with_context_policy(
-            deepagent_context::ContextPolicy::for_capability(&primary, ReasoningEffort::High),
+            deepagent_context::ContextPolicy::for_capability(&selected, ReasoningEffort::High),
             None,
             None,
         )
-        .with_context_snapshot(snapshot_estimating(1, primary.context_window))
+        .with_context_snapshot(snapshot_estimating(1, selected.context_window))
         .with_events(Arc::new(sink));
         agent.think(0, &[]).await.unwrap();
         agent.think(1, &[]).await.unwrap();
         let requests = transport.requests.lock().unwrap();
-        assert_eq!(requests.len(), 3);
-        assert_eq!(requests[0]["max_output_tokens"], 32_768);
-        assert!(requests[1..]
+        assert_eq!(requests.len(), 2);
+        assert!(requests
             .iter()
             .all(|body| body["model"] == "audit-capacity-model"
                 && body["max_output_tokens"] == 8_192));
         let snapshots: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
             .filter_map(|event| match event {
-                RuntimeEvent::ContextUsage { snapshot }
-                    if snapshot.model_id == "audit-capacity-model" =>
-                {
-                    Some(snapshot)
-                }
+                RuntimeEvent::ContextUsage { snapshot } => Some(snapshot),
                 _ => None,
             })
             .collect();
         assert!(!snapshots.is_empty());
         assert!(snapshots
             .iter()
-            .all(|s| s.context_window == 128_000 && s.reserved_output_tokens == 8_192));
+            .all(|s| s.model_id == "audit-capacity-model"
+                && s.context_window == 128_000
+                && s.reserved_output_tokens == 8_192));
     }
 }

@@ -196,7 +196,6 @@ async fn invalid_roles_fail_on_every_response_entry_before_chat_projection_or_tr
                                     && classify_model_error(&error)
                                         == ModelFailureKind::InvalidRequest
                                     && !classify_model_error(&error).retryable()
-                                    && !classify_model_error(&error).should_fallback()
                             }
                             Ok(_) => false,
                         };

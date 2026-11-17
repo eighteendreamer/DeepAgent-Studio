@@ -17,13 +17,6 @@ impl HttpTransport for CapabilityGate {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
         let body: serde_json::Value = serde_json::from_str(&request.body)?;
         self.requests.lock().unwrap().push(body.clone());
-        if body["model"] == PRIMARY {
-            return Err(CoreError::provider(
-                Some(529),
-                Some("overloaded_error".into()),
-                "synthetic overload",
-            ));
-        }
         assert_eq!(body["model"], FALLBACK);
         if body["max_output_tokens"].as_u64().unwrap() > u64::from(self.fallback_limit) {
             return Err(CoreError::provider(
@@ -41,7 +34,7 @@ impl HttpTransport for CapabilityGate {
 }
 
 #[tokio::test]
-async fn h49_saved_catalog_fallback_matches_wire_context_and_reopened_terminals() {
+async fn h49_selected_model_matches_wire_context_and_reopened_terminals() {
     for limit in [8_192, 32_768] {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("synthetic.sqlite");
@@ -56,8 +49,7 @@ async fn h49_saved_catalog_fallback_matches_wire_context_and_reopened_terminals(
             Arc::new(MemorySecretStore::new()),
         ));
         settings.initialize("h49-synthetic-control").await.unwrap();
-        settings.set_model(ModelRole::Chat, PRIMARY).unwrap();
-        settings.set_model(ModelRole::Reasoner, FALLBACK).unwrap();
+        settings.set_model(ModelRole::Chat, FALLBACK).unwrap();
         settings
             .set_responses_settings(ResponsesApiSettings {
                 max_output_tokens: Some(32_768),
@@ -101,12 +93,10 @@ async fn h49_saved_catalog_fallback_matches_wire_context_and_reopened_terminals(
             assert_eq!(fallback.reserved_output_tokens, limit as usize);
         }
         let calls = transport.requests.lock().unwrap().clone();
-        assert_eq!(calls.len(), 4);
-        for pair in calls.chunks_exact(2) {
-            assert_eq!(pair[0]["model"], PRIMARY);
-            assert_eq!(pair[0]["max_output_tokens"], 32_768);
-            assert_eq!(pair[1]["model"], FALLBACK);
-            assert_eq!(pair[1]["max_output_tokens"], limit);
+        assert_eq!(calls.len(), 2);
+        for call in calls {
+            assert_eq!(call["model"], FALLBACK);
+            assert_eq!(call["max_output_tokens"], limit);
         }
         drop(chat);
         drop(settings);
@@ -131,7 +121,7 @@ async fn h49_saved_catalog_fallback_matches_wire_context_and_reopened_terminals(
         }
         assert_eq!(
             transport.requests.lock().unwrap().len(),
-            4,
+            2,
             "reopen/read must not dispatch again"
         );
     }

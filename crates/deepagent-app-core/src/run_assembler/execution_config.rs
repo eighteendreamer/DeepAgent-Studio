@@ -96,7 +96,6 @@ impl RunAssembler<'_> {
                 resolve_run_model(
                     loaded,
                     ModelRole::Chat,
-                    ModelRole::Reasoner,
                     config.provider_override(),
                     config.model_override(),
                     config.reasoning_effort_override(),
@@ -153,7 +152,6 @@ impl RunAssembler<'_> {
             "provider":(status != "invalid").then_some(deepagent_models::DEEPSEEK_OFFICIAL_PROVIDER),
             "model":model.map(|plan| &plan.model),
             "reasoningEffort":model.map(|plan| plan.reasoning_effort),
-            "fallbackModel":model.and_then(|plan| plan.fallback_model.as_ref()),
             "modelOverrideApplied":model.map(|plan| plan.override_applied),
             "permissionProfile":{
                 "approvalPolicy":profile.approval_policy.label(),

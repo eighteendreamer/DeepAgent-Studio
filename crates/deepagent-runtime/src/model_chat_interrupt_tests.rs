@@ -16,7 +16,7 @@ fn h144_events(reason: &str, with_tool: bool) -> Vec<String> {
     vec![serde_json::json!({"choices":[{"index":0,"delta":delta,"finish_reason":reason}],"usage":h144_usage()}).to_string(),"[DONE]".into()]
 }
 
-fn h144_agent(attempts: Vec<Vec<String>>, fallback: bool) -> (ModelAgent, Arc<AttemptTransport>) {
+fn h144_agent(attempts: Vec<Vec<String>>) -> (ModelAgent, Arc<AttemptTransport>) {
     let transport = Arc::new(AttemptTransport {
         attempts: Mutex::new(attempts.into()),
         requests: Mutex::new(Vec::new()),
@@ -26,9 +26,7 @@ fn h144_agent(attempts: Vec<Vec<String>>, fallback: bool) -> (ModelAgent, Arc<At
         ModelConfig::deepseek_chat("synthetic"),
     ));
     (
-        ModelAgent::new(client, "primary", "rules", "synthetic", vec![])
-            .with_max_model_attempts(3)
-            .with_fallback_model(fallback.then(|| "fallback".into())),
+        ModelAgent::new(client, "primary", "rules", "synthetic", vec![]).with_max_model_attempts(3),
         transport,
     )
 }
@@ -36,13 +34,10 @@ fn h144_agent(attempts: Vec<Vec<String>>, fallback: bool) -> (ModelAgent, Arc<At
 #[tokio::test]
 async fn h144_provider_abort_preserves_cause_aborts_tools_and_never_retries_or_falls_back() {
     for with_tool in [false, true] {
-        let (mut agent, transport) = h144_agent(
-            vec![
-                h144_events("aborted", with_tool),
-                h144_events("stop", false),
-            ],
-            true,
-        );
+        let (mut agent, transport) = h144_agent(vec![
+            h144_events("aborted", with_tool),
+            h144_events("stop", false),
+        ]);
         let mut tools = RecordingToolAttempt::default();
         let error = agent
             .think_streaming_cancelled(0, &[], None, Some(&mut tools))
@@ -76,87 +71,49 @@ async fn h144_provider_abort_preserves_cause_aborts_tools_and_never_retries_or_f
 }
 
 #[tokio::test]
-async fn h144_resource_failure_uses_existing_fallback_without_replaying_partial_calls_or_length_recovery(
-) {
-    let (mut agent, transport) = h144_agent(
-        vec![
-            h144_events("insufficient_system_resource", true),
-            h144_events("stop", false),
-        ],
-        true,
-    );
-    let mut tools = RecordingToolAttempt::default();
-    let decision = agent
-        .think_streaming_cancelled(0, &[], None, Some(&mut tools))
-        .await
-        .unwrap();
-    let (message, _) = complete_items(decision);
-    assert_eq!(message.content, "normal answer");
-    assert_eq!(tools.events, ["begin:1", "abort:1", "begin:2", "commit:2"]);
-    assert!(tools.calls.is_empty());
-    let requests = transport.requests.lock().unwrap();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0]["model"], "primary");
-    assert_eq!(requests[1]["model"], "fallback");
-    assert_eq!(requests[0]["messages"], requests[1]["messages"]);
-    assert_eq!(requests[0]["max_tokens"], requests[1]["max_tokens"]);
-    let routes = agent.model_usage();
-    assert_eq!(routes.len(), 2);
-    assert!(routes
-        .iter()
-        .all(|route| route.usage.billed_prompt_tokens == 9));
-    assert_eq!(agent.cumulative_usage().unwrap().billed_prompt_tokens, 18);
-}
-
-#[tokio::test]
-async fn h144_resource_retry_and_fallback_exhaustion_stay_bounded_and_bill_every_attempt_once() {
-    for fallback in [false, true] {
-        let (mut agent, transport) = h144_agent(
-            vec![h144_events("insufficient_system_resource", true); 3],
-            fallback,
-        );
-        let mut tools = RecordingToolAttempt::default();
-        let error = agent
-            .think_streaming_cancelled(0, &[], None, Some(&mut tools))
-            .await
-            .unwrap_err();
-        let requests = transport.requests.lock().unwrap();
-        assert_eq!(requests.len(), 3, "{error}");
-        assert_eq!(classify_model_error(&error), ModelFailureKind::Overloaded);
-        assert!(
-            matches!(&error,CoreError::Provider{code:Some(code),..} if code=="insufficient_system_resource")
-        );
-        let expected = if fallback {
-            ["primary", "fallback", "fallback"]
-        } else {
-            ["primary"; 3]
-        };
-        for (request, model) in requests.iter().zip(expected) {
-            assert_eq!(request["model"], model);
+async fn h144_resource_failure_aborts_partial_tools_and_bills_once_at_every_attempt_budget() {
+    for with_tool in [false, true] {
+        for limit in [0, 1, 2, 3] {
+            let (agent, transport) = h144_agent(vec![
+                h144_events("insufficient_system_resource", with_tool),
+                h144_events("stop", false),
+            ]);
+            let mut agent = agent.with_max_model_attempts(limit);
+            let mut tools = RecordingToolAttempt::default();
+            let error = agent
+                .think_streaming_cancelled(0, &[], None, Some(&mut tools))
+                .await
+                .unwrap_err();
+            assert_eq!(classify_model_error(&error), ModelFailureKind::Overloaded);
+            assert!(
+                matches!(&error, CoreError::Provider { code: Some(code), .. }
+                if code == "insufficient_system_resource")
+            );
+            let requests = transport.requests.lock().unwrap();
+            assert_eq!(requests.len(), 1, "limit={limit}: {error}");
+            assert_eq!(requests[0]["model"], "primary");
+            assert_eq!(tools.events, ["begin:1", "abort:1"]);
+            assert!(tools.calls.is_empty());
+            let routes = agent.model_usage();
+            assert_eq!(routes.len(), 1);
+            let usage = agent.cumulative_usage().unwrap();
+            assert_eq!(
+                (
+                    usage.billed_prompt_tokens,
+                    usage.completion_tokens,
+                    usage.billed_cache_hit_tokens,
+                    usage.billed_cache_miss_tokens,
+                    usage.reasoning_tokens
+                ),
+                (9, 2, 4, 5, 1)
+            );
+            assert_eq!(agent.take_pending_raw_usage(), [h144_usage()]);
         }
-        assert!(requests
-            .windows(2)
-            .all(|pair| pair[0]["messages"] == pair[1]["messages"]
-                && pair[0]["max_tokens"] == pair[1]["max_tokens"]));
-        assert_eq!(
-            tools.events,
-            ["begin:1", "abort:1", "begin:2", "abort:2", "begin:3", "abort:3"]
-        );
-        assert!(tools.calls.is_empty());
-        let usage = agent.cumulative_usage().unwrap();
-        assert_eq!(
-            (
-                usage.billed_prompt_tokens,
-                usage.completion_tokens,
-                usage.billed_cache_hit_tokens
-            ),
-            (27, 6, 12)
-        );
     }
 }
 
 #[tokio::test]
-async fn h144_local_cancel_interrupts_resource_backoff_without_a_second_physical_call() {
+async fn h144_local_cancel_interrupts_transport_backoff_without_a_second_physical_call() {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     struct Ready {
         calls: AtomicUsize,
@@ -171,12 +128,8 @@ async fn h144_local_cancel_interrupts_resource_backoff_without_a_second_physical
                 "no request after local cancel"
             );
             self.ready.add_permits(1);
-            for event in h144_events("insufficient_system_resource", false) {
-                if sink.on_event(&event)? {
-                    break;
-                }
-            }
-            Ok(())
+            sink.on_event(&chat_usage_chunk(9, 2))?;
+            Err(CoreError::other("synthetic connection interrupted"))
         }
     }
     let transport = Arc::new(Ready {
@@ -214,24 +167,28 @@ async fn h144_local_cancel_interrupts_resource_backoff_without_a_second_physical
 }
 
 #[tokio::test]
-async fn h144_attempt_budget_is_shared_by_retry_and_fallback_including_zero_and_one() {
-    for overload_control in [false, true] {
+async fn h144_attempt_budget_is_shared_by_retry_including_zero_and_one() {
+    for server_control in [false, true] {
         for limit in [0, 1, 2, 3] {
-            let fail = if overload_control {
-                vec!["__ERROR_OVERLOADED__".into()]
+            let fail = if server_control {
+                vec!["__ERROR_503__".into()]
             } else {
-                h144_events("insufficient_system_resource", false)
+                vec!["__ERROR_EOF__".into()]
             };
             let (mut agent, transport) =
-                h144_agent(vec![fail.clone(), fail, h144_events("stop", false)], true);
+                h144_agent(vec![fail.clone(), fail, h144_events("stop", false)]);
             agent = agent.with_max_model_attempts(limit);
             let result = agent.think(0, &[]).await;
             let requests = transport.requests.lock().unwrap();
-            assert_eq!(requests.len(),limit.max(1),"fallback is not an extra attempt beyond the shared budget; limit={limit}, control={overload_control}");
+            assert_eq!(requests.len(),limit.max(1),"retry is not an extra attempt beyond the shared budget; limit={limit}, server={server_control}");
             if limit < 3 {
                 assert_eq!(
                     classify_model_error(&result.unwrap_err()),
-                    ModelFailureKind::Overloaded
+                    if server_control {
+                        ModelFailureKind::Server
+                    } else {
+                        ModelFailureKind::Transport
+                    }
                 );
             } else {
                 assert_eq!(complete_items(result.unwrap()).0.content, "normal answer");
@@ -241,7 +198,7 @@ async fn h144_attempt_budget_is_shared_by_retry_and_fallback_including_zero_and_
 }
 
 #[tokio::test]
-async fn h144_local_cancel_blocks_selected_fallback_before_physical_dispatch() {
+async fn h144_local_cancel_blocks_the_retry_before_physical_dispatch() {
     use std::sync::atomic::{AtomicBool, Ordering};
     struct CancelOnReset(Arc<AtomicBool>);
     impl RuntimeEventSink for CancelOnReset {
@@ -252,13 +209,10 @@ async fn h144_local_cancel_blocks_selected_fallback_before_physical_dispatch() {
         }
     }
     let cancel = Arc::new(AtomicBool::new(false));
-    let (agent, transport) = h144_agent(
-        vec![
-            h144_events("insufficient_system_resource", true),
-            h144_events("stop", false),
-        ],
-        true,
-    );
+    let (agent, transport) = h144_agent(vec![
+        vec![chat_usage_chunk(9, 2), "__ERROR_EOF__".into()],
+        h144_events("stop", false),
+    ]);
     let mut agent = agent.with_events(Arc::new(CancelOnReset(cancel.clone())));
     let mut tools = RecordingToolAttempt::default();
     let error = agent

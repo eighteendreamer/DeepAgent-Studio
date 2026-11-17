@@ -1476,9 +1476,9 @@ impl ChatService {
     /// fragment streamed by the provider is forwarded through `on_token`; the
     /// fully assembled assistant text is returned at the end.
     ///
-    /// Reuses [`ChatService::build_model`] so model selection (incl. Deep
-    /// thinking → reasoner role), API-key resolution, and the persisted
-    /// `ReasoningEffort` profile stay consistent with the regular chat run.
+    /// Reuses [`ChatService::build_model`] so model selection (the active chat
+    /// model), API-key resolution, and the persisted `ReasoningEffort` profile
+    /// stay consistent with the regular chat run.
     pub async fn run_oneshot_streaming<F>(
         &self,
         system_prompt: &str,

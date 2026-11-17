@@ -1,4 +1,4 @@
-//! Real ModelAgent retry/fallback/length/cancel producers -> the TUI consumer.
+//! Real ModelAgent retry/length/cancel producers -> the TUI consumer.
 use super::*;
 use deepagent_core::error::{CoreError, Result};
 use deepagent_models::{
@@ -111,7 +111,7 @@ impl RuntimeEventSink for ViewSink {
 
 async fn exercise(mode: WireMode, ends: Vec<End>, success: bool, resets: usize) {
     let calls = ends.len();
-    let fallback = ends.iter().any(|end| matches!(end, End::Overload));
+    let overload = ends.iter().any(|end| matches!(end, End::Overload));
     let length = ends.iter().any(|end| matches!(end, End::Length));
     let cancel = Arc::new(AtomicBool::new(false));
     let transport = Arc::new(Script {
@@ -130,8 +130,7 @@ async fn exercise(mode: WireMode, ends: Vec<End>, success: bool, resets: usize) 
     ));
     let mut agent = ModelAgent::new(client, "primary", "synthetic", "synthetic", vec![])
         .with_events(view.clone())
-        .with_max_model_attempts(3)
-        .with_fallback_model(Some("fallback".into()));
+        .with_max_model_attempts(3);
     let result = tokio::time::timeout(
         Duration::from_secs(6),
         agent.think_cancelled(0, &[], Some(cancel.clone())),
@@ -158,8 +157,10 @@ async fn exercise(mode: WireMode, ends: Vec<End>, success: bool, resets: usize) 
     }
     let requests = transport.requests.lock().unwrap();
     assert_eq!(requests.len(), calls);
-    if fallback {
-        assert_eq!(requests.last().unwrap()["model"], "fallback");
+    if overload {
+        for request in requests.iter() {
+            assert_eq!(request["model"], "primary");
+        }
     }
     if length {
         let key = if mode == WireMode::Responses {
@@ -199,12 +200,11 @@ async fn exercise(mode: WireMode, ends: Vec<End>, success: bool, resets: usize) 
 }
 
 #[tokio::test]
-async fn h258_actual_producer_retries_falls_back_and_escalates_before_committing_either_protocol() {
+async fn h258_actual_producer_retries_and_escalates_before_committing_either_protocol() {
     for mode in [WireMode::Responses, WireMode::ChatCompletions] {
         for (ends, resets) in [
             (vec![End::Stop], 0),
             (vec![End::Disconnect, End::Disconnect, End::Stop], 2),
-            (vec![End::Overload, End::Stop], 1),
             (vec![End::Length, End::Stop], 1),
         ] {
             exercise(mode, ends, true, resets).await;
@@ -216,6 +216,7 @@ async fn h258_actual_producer_retries_falls_back_and_escalates_before_committing
 async fn h258_actual_producer_exhaustion_and_true_cancellation_never_commit_speculative_text() {
     for mode in [WireMode::Responses, WireMode::ChatCompletions] {
         for (ends, resets) in [
+            (vec![End::Overload], 0),
             (vec![End::Disconnect, End::Disconnect, End::Disconnect], 2),
             (vec![End::Cancel], 0),
             (vec![End::Disconnect, End::Cancel], 1),

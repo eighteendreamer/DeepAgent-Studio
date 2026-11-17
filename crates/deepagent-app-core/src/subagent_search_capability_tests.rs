@@ -62,7 +62,6 @@ async fn h66_tracked_child_override_uses_its_own_search_capability_and_respects_
         &settings,
         transport.clone(),
         ModelRole::Chat,
-        ModelRole::Reasoner,
         None,
         None,
         None,

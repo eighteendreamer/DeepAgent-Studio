@@ -1,7 +1,7 @@
 # Harness 多协议与模型注册表改造方案
 
 日期：2026-11-17
-状态：待评审
+状态：开发中；完成状态以执行记录和实际验证为准
 基线：HEAD `738fa508`
 
 ## 0. 目标
@@ -28,6 +28,11 @@
    - 现有 `deepseek_api_key` 迁移为一个 provider 条目（§3.1），密钥不重新导出。
 5. **删除设置页"系统视觉的大模型接入"**（`VisionSettings` 的设置 UI 与配置项）。注意：该配置还被图片准备、`VisionMode` 的路径引用，删除后向非视觉模型发送图片的行为需用户确认（见 §10-8）。
 6. 方案 §3（`harness_providers` / `harness_models` 两张表）保留，它与画布注册表无关，是 harness 唯一的模型注册表。
+7. **单一激活模型，取消 Chat / Reasoner 双角色**（2026-11-17，用户确认）。
+   - 旧代码里的 `reasoner_model` 不是“开启思考时切换的模型”：思考强度按模型取值（`effective_reasoning_effort(&model)`），与角色无关。它唯一的运行时作用是主模型返回 `Overloaded` 时一次性切换到 reasoner（`model_agent.rs` 的 `fallback_model`）。
+   - 决定：**删除过载自动切换备用模型**。过载立即以错误返回，零自动重试，也不换模型（2026-11-17 再次确认）。`ModelResolver` 只解析一个激活模型；不保留 `fallback_model` 字段、`ModelRole::Reasoner` 与 `with_fallback_model` 的运行时调用路径；旧数据字段只用于兼容读取。
+   - 代价：失去过载兜底。变更说明须写明该行为变化；若后续需要兜底，按显式设置重新设计，不沿用 reasoner 角色。
+   - 旧 `settings.catalog` 的种子导入只激活旧 `chat_model`，`reasoner_model` 不导入（见 §3.1）。
 
 ---
 
@@ -192,21 +197,17 @@ CREATE INDEX idx_harness_models_provider ON harness_models(provider_id, status);
 
 迁移：现有 `deepseek_api_key` 生成一个默认 provider 行，`api_key_ref = 'deepseek_api_key'`，不重新导出密钥。
 
+种子模型：旧 `settings.catalog.chat_model` 作为一条 `harness_models` 记录导入并**直接激活**；`reasoner_model` 不导入（见 §0.1-7）。
+
 ### 3.2 `max_tokens` 的语义
 
 **它是单次请求的输出上限，不是整个会话。**
 
 一次请求里模型最多生成这么多 token 就停（`stop_reason: max_tokens`），下一轮是新计数。但它通过历史间接影响会话占用 —— 128K 输出跑 3 轮，下一轮输入就多了 384K。
 
-所以压缩必须按**输入预算**算：
-
-```
-inputBudget = context_window − output_limit
-compact     = 0.78 × inputBudget
-ceiling     = 0.95 × inputBudget
-```
-
-默认值代入：`1M − 128K = 896K`，`compact ≈ 699K`，`ceiling ≈ 851K`。
+压缩沿用现有 `deepagent-context/src/policy.rs` 的 `autocompact_threshold_tokens`
+（见 §10-9 已确认决策），由选中模型提供 `context_window` / `output_limit`。
+早期 0.78/0.95 比例公式作废，不新增第二套压缩阈值。
 
 注意 Anthropic 的 `max_tokens` 是**必填**字段，无默认值 —— 这个 128K 不是可选项，每次请求都得带。
 
@@ -366,7 +367,7 @@ pub trait WireCodec: Send + Sync {
 | `cache_control` 断点 | Messages 最多 4 个：system 尾、工具定义尾、历史最后一条 |
 | DeepSeek 自动缓存 | 不配 `cache_control`，但前缀必须稳定 |
 | 压缩时机 | 只在 turn 边界压，不中途压 |
-| 压缩阈值 | 比例化，见 §3.2 |
+| 压缩阈值 | 沿用现有 `autocompact_threshold_tokens`，见 §3.2 |
 
 **唯一诊断信号**：`cache_read_input_tokens` 长期为 0，说明有东西在抖。这个值要进 UI。
 
@@ -421,6 +422,8 @@ pub struct BalanceAmount {
 
 要改的是 `bind()`：从「读 settings 的 `deepseek_api_key`」改成「读 model 行的 `provider_id` → provider 行的 `api_key_ref`」。
 
+`bind()` 只解析一个激活模型，不解析备用模型。主模型返回 `Overloaded` 时直接报错，不切换模型（见 §0.1-7）。
+
 切换时必须发生：
 - 余额按新 provider 重查
 - 缓存前缀必然失效（新模型新前缀），这是预期行为
@@ -435,13 +438,13 @@ pub struct BalanceAmount {
 | **P0 可测性验证** | 两个 SDK 能否注入本系统 `HttpTransport`；不能则定替代方案 | 1 |
 | **P1 中性内容层** | `ContentBlock` + `Thinking.signature`；`ThinkingLevel` 5 档 + 映射表 | 2 |
 | **P2 协议表 + 工厂** | `Protocol` 枚举、`WireCodec` trait、`match` 收口一处 | 2 |
-| **P3 数据模型** | 两张新表 + 迁移；`ModelResolver` 单点解析 | 3 |
+| **P3 数据模型** | 两张新表 + 迁移；`ModelResolver` 单点解析（单一激活模型，无 Reasoner 角色，见 §0.1-7） | 3 |
 | **P3b 会话 JSONL 承载模型输出** | `signature` / `origin` 可选字段；旧 JSONL 回放测试；中途切换供应商的整文件回放测试；不新增表 | 2 |
 | **P4 Responses codec** | async-openai 接入，替换手写实现 | 4 |
 | **P5 Messages codec** | anthropic-sdk-rs + 手写缺口（§4.4） | 4 |
 | **P6 设置页** | 供应商 CRUD（协议 / logo / 余额类型）+ 模型列表 + 连通性测试 | 4 |
 | **P7 余额适配** | `BalanceKind` 五值分发 + `Auto` 探测链 | 2 |
-| **P8 缓存治理** | 前缀稳定性；`cache_control` 断点；比例化阈值 | 3 |
+| **P8 缓存治理** | 前缀稳定性；`cache_control` 断点；复用既有压缩阈值 | 3 |
 | **P9 输入框思考档位** | 5 档下拉，按模型 `thinking_levels` 置灰 | 2 |
 | **P10 模型列表与切换** | 按 provider 分组；运行时切换下次生效 + 余额重查 | 2 |
 | **P11 双协议验收** | 同一套行为用例跑两个协议 | 3 |
@@ -456,19 +459,25 @@ pub struct BalanceAmount {
 
 | 批次 | 状态 | 证据 / 与原计划的偏差 |
 |---|---|---|
-| G0 收口在途改动 | 部分完成 | `f1434b1c` 修复 `canvas.rs` clippy；R012 远程终端改动未提交（执行记录无 R012 章节，无 RED/GREEN 证据）。AppCore 有 5 处既有 clippy 告警未处理 |
-| P0 可测性验证 | 完成，采用 (a) | §10-1 有实测结论；async-openai 注入点的 `HttpRequestFactory` 为私有类型 |
-| P1 中性内容层 + 五档映射 | 完成 | `b6774635`。`ThinkingLevel` 与 §1.3 全部 45 个单元格有测试；`map_thinking` 为唯一真源。**偏差**：未新增 `ContentBlock` 枚举，而是在现有 `ResponseItem::Reasoning` 上增加 `signature: Option<String>`（`serde(default)`，旧记录兼容）。`ReasoningEffort` 旧类型保留到 P9。**待实测**：§1.3 脚注 ³ 的理解为"照送原值"，需用真实供应商确认 |
-| P2 协议表 + 工厂 | 部分完成 | `8376e0be`。`protocol::codec_for(WireMode)` 为唯一生产分发点，收口请求体编码与工具投影；审计测试约束 `client.rs` 生产段不再含 `WireMode::<variant> =>` 分支。**偏差**：现有协议是 `Responses` 与 `ChatCompletions`（生产中用于 DeepSeek chat 路径），而非方案写的 `Responses/Messages`；`Messages` 随 P5 加入。**残留分支**：`tokenizer.rs:91,96`（count_wire）、`client.rs` 的 `WireMode::validate_image_role` 内部 `match (self, role)`、若干 `!=` 判断（`client.rs`、`client/files.rs`），后续批次收口 |
-| P3 数据模型 + 迁移 | 部分完成 | `549a82ba` V24 表结构与旧密钥导入。`32d1ff15` provider 保存（协议校验、revision 递增）、列出、删除（级联模型）、模型批量保存（重新拉取时保留激活状态）、激活开关、激活列表（需模型与 provider 同时启用）；10 项 RED→GREEN。未提交：`HarnessModelView` DTO（`fetch_models` / `list_models` 返回视图，持久层 `HarnessModel` 不跨 Tauri 边界）；Tauri 命令 7 个（`harness_providers_list` / `harness_provider_save` / `harness_provider_remove` / `harness_models_list` / `harness_models_fetch` / `harness_model_set_active` / `harness_active_models`）已注册到 `generate_handler!`。验证：`deepagent-app-core` 的 `harness_model_service` 8 项测试通过；`deepagent-persistence` 全部测试通过（221 + 9 + 5）；`cargo fmt --check` 通过；`src-tauri` `cargo check` 通过；app-core 与 persistence 的 lib clippy `-D warnings` 通过。**未做**：前端类型与设置页 UI、`ModelResolver`、旧 `settings.catalog` 的种子导入、视觉接入删除、替换写死的 DeepSeek 逻辑 |
-| P3b 会话 JSONL 的 `origin` | 未开始 | — |
-| F0 协议层盘点 | 完成（只读） | 见 9.2 |
-| F1+ 协议层补齐 | 未开始 | 待 9.2 清单拆分 |
+| G0 工程门禁 | 部分通过 | Node 24.21.0 已按项目固定 SHA-256 校验；`9772de6e` 固定插件文本 LF 并对齐规范源码指纹，完整 `pnpm build` 通过。全仓 fmt 检查仍发现既有 `deepagent-core/src/id.rs` 排版差异；完整 workspace 与 clippy 尚未取得本轮通过结论。远程连接由另一会话负责，不纳入本模块完成度。 |
+| P0 可测性验证 | 已记录结论，采用 (a) | §10-1；后续 SDK 只承担类型与序列化，复用现有 HTTP/SSE/取消/预算边界。两个 SDK 尚未进入生产依赖，不能据此宣称双协议可用。 |
+| P1 中性内容层 + 五档映射 | 类型和映射已实现；运行链未完成 | `b6774635` 增加 `ThinkingLevel` / `map_thinking` 和 `ResponseItem::Reasoning.signature` 可选字段。运行时与 UI 仍使用旧 `ReasoningEffort`；五档尚未接入真实请求。 |
+| P2 协议表 + 工厂 | 部分完成 | `8376e0be` 的 `protocol::codec_for` 收口请求体编码与工具投影；现有 codec 为 Responses / ChatCompletions。Messages codec 和统一解码边界待 P5。 |
+| P3 数据模型 + 迁移 | 部分完成 | V24 表、CRUD、激活列表、AppCore DTO、7 个 Tauri command 与 TS API 均已落地。`9c9046be` 修复迁移供应商真实密钥引用，服务 11 项测试通过。首次登录与旧 Chat 种子新增用例先取得 4 failed / 1 passed，原子迁移实现后 5 passed；额外凭据失败关闭与用户编辑保护回归正在验证。注册表尚未接入会话运行链。 |
+| P3c 过载与备用模型删除 | 实现完成，相关验证中 | 过载统一不可重试，明确 503 过载也立即报错；删除运行时 fallback 路径。models lib 240 passed；runtime lib 493 passed / 2 ignored；H55 4 passed；内核 H144 7 passed；采样、计费/预算、输出上限、图像模式及模型快照串行回归通过。真实 HTTP 与 CLI 验证待结论，未提交此批次。独立 resolver 尚无生产调用方，Messages 明确拒绝。 |
+| P3b 会话 JSONL 的 `origin` | 未开始 | `signature` 字段已有；来源字段、跨供应商签名回放策略与整文件回放待实现。 |
+| P4 / P5 SDK 与双协议 codec | 未开始 | 尚未接入 async-openai / anthropic-sdk；Messages 暂不可运行。 |
+| P6 设置页 | 后端基础已实现；UI 待完成 | 尚无完整供应商/模型管理界面验收。 |
+| P7 余额 | 未完成 | 注册表保存 `balance_kind`；实际查询仍为 DeepSeek 固定路径。 |
+| P8 缓存 / P9 思考 / P10 选择切换 | 未完成 | 会话 Composer 仍读取旧 settings；激活模型列表尚未消费，五档思考、供应商切换与余额联动未闭环。 |
+| P11 产品验收 | 未开始 | 真实 API、首次登录和双协议 UI 流程及性能数据尚未取得，不能宣告可交付。 |
+| F0 协议层盘点 | 已有只读盘点；需按当前代码复核 | 见 9.2；用户已确认不新增 `turn/stream`。 |
+| F1+ 协议层补齐 | 未开始 | 复用现有 app-server 与 SDK；按实际缺口补齐。 |
 
 ### 9.2 F0 盘点结论
 
 - **已有 stdio JSON-RPC 服务**（`apps/cli/src/app_server.rs`，dispatcher 在 `:273-303`）。`thread/start`、`thread/resume`、`thread/read`、`thread/fork`、`thread/list`、`turn/start`、`turn/interrupt`、`turn/steer`、`approval/respond`、`tool/list`、`config/read` 均已实现并有测试。
-- **缺口 1**：`turn/stream` 不是独立方法。流式输出通过 `turn/start` 之后的通知推送（`event_outbox.rs:115-118`）。AGENTS §5.1 列出了该方法名，需决定：补为方法，或在文档中明确为通知。
+- **决策 1（2026-11-17 用户确认）**：流式输出统一沿用 `turn/start` 之后的通知推送（`event_outbox.rs:115-118`），共用内部请求、响应和事件契约，不新增独立 `turn/stream` 方法。F0 仍须验证通知和 replay 的契约。
 - **缺口 2**：`sandbox/status` 没有专门的单元测试，仅在 `method_routing_tests.rs` 中校验方法名存在；线上覆盖来自 `crates/deepagent-harness-sdk/tests/e2e_stdio.rs`。
 - **缺口 3**：TypeScript SDK（`packages/sdk`）未封装 `thread/fork`、`sandbox/status`、`event/ack`。Rust 客户端（`crates/deepagent-harness-sdk/src/client.rs`）已封装全部方法。
 - **缺口 4**：没有实时 replay。`event/ack` 只是连接内回执，不是持久游标；持久回放依赖 `thread/read` 的 `afterSequence` / `runAfterSequence`。
@@ -503,6 +512,7 @@ pub struct BalanceAmount {
 7. **JSONL 是否默认压缩**：本系统默认 zstd，Codex 与 Claude Code 为纯文本。建议保持 zstd 为默认，增加 `compression: none` 配置项供外部读取。请确认。
 8. **删除"系统视觉的大模型接入"后，图片的处理方式**（已决定）：`VisionSettings` 整体删除（设置页、配置项、`VisionMode` 与图片准备中的视觉模型路径）。不再为无视觉模型做降级。当前模型不支持图片时，用户发送图片后直接回复"当前模型不支持视觉"，不做任何模型侧的图片转述。
 9. **压缩阈值公式**（已决定）：保留 `deepagent-context/src/policy.rs` 的 `autocompact_threshold_tokens`，不引入 §3.2 的 0.78/0.95 比例公式；每个模型的 `context_window` / `output_limit` 作为输入传入。
+10. **过载兜底与 Reasoner 角色**（已决定：A，删除）：删除过载自动切换备用模型，过载直接报错；取消 `ModelRole::Reasoner` 在运行时的使用。依据与影响见 §0.1-7。
 
 ---
 
