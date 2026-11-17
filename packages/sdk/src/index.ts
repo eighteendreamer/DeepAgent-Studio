@@ -345,6 +345,46 @@ export interface TurnInterruptResult {
   status: string;
 }
 
+export interface ThreadForkOptions {
+  atSequence?: number;
+}
+
+export interface ThreadForkResult {
+  threadId: string;
+  sourceThreadId: string;
+  forkedAt: number;
+  restoredPaths: string[];
+}
+
+export interface EventAckResult {
+  acknowledgedEventSequence: number;
+  status: "accepted";
+}
+
+/** Host capabilities only; this read does not grant execution permissions. */
+export interface SandboxStatus {
+  kind: "direct" | "sandboxie" | "windows_sandbox";
+  available: boolean;
+  supports_one_shot: boolean;
+  supports_interactive_pty: boolean;
+  supports_network_toggle: boolean;
+  supports_readonly_mapping: boolean;
+  message: string;
+  coordinator?: {
+    ready: boolean;
+    activeRuns: number;
+    pendingApprovals: number;
+    runningActions: number;
+    expiredLeases: number;
+  };
+}
+
+function requireSafeSequence(value: number): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new HarnessTransportError("event sequence must be a safe unsigned integer");
+  }
+}
+
 export class HarnessRpcError extends Error {
   readonly code: number;
   readonly data: unknown;
@@ -780,6 +820,22 @@ export class DeepAgent {
     }
     const result = (await this.request("thread/resume", { threadId })) as ThreadStartResult;
     return new Thread(this, threadId, result.configuration);
+  }
+
+  /** One deliberate fork; returned identity is ready for turn/start. */
+  async forkThread(threadId: string, options: ThreadForkOptions = {}): Promise<ThreadForkResult> {
+    if (options.atSequence !== undefined) requireSafeSequence(options.atSequence);
+    return await this.request("thread/fork", { ...options, threadId }) as ThreadForkResult;
+  }
+
+  /** Connection receipt only; use readThreadPage cursors for durable replay. */
+  async acknowledgeEvents(eventSequence: number): Promise<EventAckResult> {
+    requireSafeSequence(eventSequence);
+    return await this.request("event/ack", { eventSequence }) as EventAckResult;
+  }
+
+  async sandboxStatus(): Promise<SandboxStatus> {
+    return await this.request("sandbox/status", {}) as SandboxStatus;
   }
 
   /** Compatibility: returns only the first page, never the entire catalog.

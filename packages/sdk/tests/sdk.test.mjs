@@ -18,6 +18,46 @@ function createAgent(options = {}) {
   });
 }
 
+test("public fork wrapper preserves the existing request and receipt", async () => {
+  const agent = createAgent();
+  try {
+    const thread = await agent.startThread();
+    const receipt = await agent.forkThread(thread.id, { atSequence: 0 });
+    assert.equal(receipt.sourceThreadId, thread.id);
+    assert.equal(receipt.threadId, "thread-forked");
+    assert.equal(receipt.forkedAt, 0);
+    assert.deepEqual(receipt.restoredPaths, []);
+    assert.deepEqual(receipt.request, { threadId: thread.id, atSequence: 0 });
+    const latest = await agent.forkThread(thread.id);
+    assert.deepEqual(latest.request, { threadId: thread.id });
+  } finally { await agent.close(); }
+});
+
+test("public sandbox wrapper reads capabilities through the existing transport", async () => {
+  const agent = createAgent();
+  try {
+    const status = await agent.sandboxStatus();
+    assert.equal(status.kind, "direct");
+    assert.equal(status.available, true);
+    assert.equal(status.supports_readonly_mapping, false);
+    assert.equal(status.coordinator.ready, true);
+    assert.deepEqual(status.request, {});
+  } finally { await agent.close(); }
+});
+
+test("public ACK wrapper preserves the receipt and rejects lossy local sequences", async () => {
+  const agent = createAgent();
+  try {
+    assert.deepEqual(await agent.acknowledgeEvents(7), {
+      acknowledgedEventSequence: 7, status: "accepted"
+    });
+    for (const sequence of [-1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+      await assert.rejects(() => agent.acknowledgeEvents(sequence), /safe unsigned integer/u);
+      await assert.rejects(() => agent.forkThread("thread-mock", { atSequence: sequence }), /safe unsigned integer/u);
+    }
+  } finally { await agent.close(); }
+});
+
 test("H127 preserves ordered tool image refs from the real Rust protocol fixture", async () => {
   const fixture = JSON.parse(readFileSync(new URL("../../../crates/deepagent-harness-protocol/tests/fixtures/tool-image-result-v1.json", import.meta.url), "utf8"));
   const agent = createAgent();

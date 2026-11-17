@@ -72,6 +72,22 @@ input.on("line", (line) => {
         configuration: configurations.get(request.params.threadId) ?? null
       });
       break;
+    case "thread/fork": {
+      const threadId = "thread-forked";
+      threads.add(threadId);
+      response(request.id, { threadId, sourceThreadId: request.params.threadId,
+        forkedAt: request.params.atSequence ?? 0, restoredPaths: [], request: request.params });
+      break;
+    }
+    case "sandbox/status":
+      response(request.id, {kind:"direct", available:true, supports_one_shot:true,
+        supports_interactive_pty:true, supports_network_toggle:false, supports_readonly_mapping:false,
+        message:"Synthetic capabilities", coordinator:{ready:true,activeRuns:0,pendingApprovals:0,
+          runningActions:0,expiredLeases:0}, request:request.params});
+      break;
+    case "event/ack":
+      response(request.id, {acknowledgedEventSequence:request.params.eventSequence,status:"accepted"});
+      break;
     case "thread/read": {
       if (request.params.threadId === "legacy-history") {
         response(request.id, { threadId: "legacy-history", events: [], runEvents: [] });

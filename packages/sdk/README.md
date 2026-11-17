@@ -130,7 +130,14 @@ A successful v1 `thread/fork` response makes its returned `threadId` immediately
 usable by `turn/start` on that connection, including when the source was not
 loaded after a server restart. No child `thread/resume` is required before its
 first turn. The source is not implicitly loaded and no turn is automatically run.
-The Rust SDK's existing `thread_fork` uses this same contract.
+The TypeScript `forkThread(threadId, { atSequence })` and Rust SDK's existing
+`thread_fork` use this same contract. TypeScript returns the complete fork receipt;
+use its `threadId` to resume or start a turn. The wrapper does not retry a fork.
+
+`sandboxStatus()` reads the host's existing sandbox capabilities and coordinator
+readiness. It grants no permissions. `acknowledgeEvents(eventSequence)` sends an
+advisory receipt for the current connection; it is not a durable replay cursor.
+Both ACK sequences and fork `atSequence` must be safe unsigned JavaScript integers.
 
 Fork and resume materialize the same durable workspace and explicit configuration;
 fork does not inherit a stale loaded source view. Absent legacy header overrides

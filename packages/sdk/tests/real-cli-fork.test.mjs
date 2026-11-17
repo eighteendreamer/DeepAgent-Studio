@@ -49,7 +49,7 @@ test("H216 native cold forks are immediately addressable with durable scope; ind
     const cold = await open(secondHost);
     const before = await read(cold, parent.id); assert.equal(before.hasMore, false);
     assert.deepEqual(before.runEvents, []);
-    const forks = await Promise.all([0, 1].map(() => cold.requestForTest("thread/fork", { threadId: parent.id, atSequence: 0 })));
+    const forks = await Promise.all([0, 1].map(() => cold.forkThread(parent.id, { atSequence: 0 })));
     const ids = forks.map((fork) => fork.threadId);
     assert.equal(new Set([parent.id, ...ids]).size, 3);
     assert.equal((await cold.listThreads()).length, 3);

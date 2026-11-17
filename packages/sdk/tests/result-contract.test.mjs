@@ -23,6 +23,27 @@ function invalidResults(c){
   return values;
 }
 function peer(c,replies){return new DeepAgent({command:process.execPath,args:[fixture,JSON.stringify(replies),JSON.stringify(c.result)]});}
+
+test("public fork and ACK wrappers keep receipt validation, RPC causes and local sequence precision", async () => {
+  for (const method of ["thread/fork", "event/ack"]) {
+    const c = cases.find(value => value.method === method);
+    const agent = peer(c, [{}, {error:{code:-32602,message:"synthetic rejection"}}, c.result]);
+    const call = () => method === "thread/fork"
+      ? agent.forkThread(c.params.threadId, {atSequence:c.params.atSequence})
+      : agent.acknowledgeEvents(c.params.eventSequence);
+    try {
+      await assert.rejects(call, HarnessResultError);
+      await assert.rejects(call, error => error instanceof HarnessRpcError && error.code === -32602);
+      assert.deepEqual(await call(), c.result);
+      for (const sequence of [-1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+        await assert.rejects(() => method === "thread/fork"
+          ? agent.forkThread(c.params.threadId, {atSequence:sequence})
+          : agent.acknowledgeEvents(sequence), /safe unsigned integer/u);
+      }
+      assert.deepEqual(await agent.requestForTest("audit/count", {}), {calls:3});
+    } finally { await agent.close(); }
+  }
+});
 for(const c of cases){
   test(`H207 ${c.method} rejects invalid receipts without retry or value disclosure`,{timeout:10000},async()=>{
     const invalid=invalidResults(c),agent=peer(c,invalid);
