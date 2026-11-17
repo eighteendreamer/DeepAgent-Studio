@@ -462,17 +462,19 @@ pub struct BalanceAmount {
 
 | 批次 | 状态 | 证据 / 与原计划的偏差 |
 |---|---|---|
-| G0 工程门禁 | 部分通过 | Node 24.21.0 已按项目固定 SHA-256 校验；`9772de6e` 固定插件文本 LF 并对齐规范源码指纹，完整 `pnpm build` 通过。全仓 fmt 检查仍发现既有 `deepagent-core/src/id.rs` 排版差异；完整 workspace 与 clippy 尚未取得本轮通过结论。远程连接由另一会话负责，不纳入本模块完成度。 |
-| P0 可测性验证 | 已记录结论，采用 (a) | §10-1；后续 SDK 只承担类型与序列化，复用现有 HTTP/SSE/取消/预算边界。两个 SDK 尚未进入生产依赖，不能据此宣称双协议可用。 |
-| P1 中性内容层 + 五档映射 | 类型和映射已实现；运行链未完成 | `b6774635` 增加 `ThinkingLevel` / `map_thinking` 和 `ResponseItem::Reasoning.signature` 可选字段。运行时与 UI 仍使用旧 `ReasoningEffort`；五档尚未接入真实请求。 |
-| P2 协议表 + 工厂 | 部分完成 | `8376e0be` 的 `protocol::codec_for` 收口请求体编码与工具投影；现有 codec 为 Responses / ChatCompletions。Messages codec 和统一解码边界待 P5。 |
-| P3 数据模型 + 迁移 | 运行链已接入，消费方回归中 | V24 表、CRUD、激活列表、AppCore DTO、7 个 Tauri command 与 TS API 均已落地。`9c9046be` 修复密钥引用；`b1de6059` 完成一次性 Chat 种子迁移。H004 将 admission、执行绑定、工具续写、技能审查和标题调用接入注册表；解析 11 项、真实运行链 7 项、内核相关 29 项、persistence 235 项通过。默认选择仍暂取旧 Chat 字段，UI 选择与新默认持久化待 P10。 |
-| P3c 过载与备用模型删除 | 已提交，相关回归通过 | `10234777`：过载统一不可重试，明确 503 过载也立即报错；删除运行时 fallback 路径。models lib 240 passed；runtime lib 493 passed / 2 ignored；H55 4 passed；内核 H144 7 passed；采样、计费/预算、输出上限、图像模式及模型快照串行回归通过；真实 HTTP 1 项、CLI 2 项通过。H004 已接入单一 resolver；Messages 仍因缺少 codec 明确拒绝。 |
+| G0 工程门禁 | 未通过 | 本轮完整 `pnpm build` 通过；models lib 249、Messages 集成 12、AppCore 注册表专项 30、persistence 237 项通过。`cargo test --workspace --offline -j 1` 编译失败：runtime 的 `h55_thinking_adapter.rs` 三处匹配未覆盖新增 `WireMode::Messages`；CLI 两处同类遗漏已补齐。全仓 fmt 受既有 `deepagent-core/src/id.rs` 四处排版差异阻塞；clippy 受既有 `deepagent-persistence/src/document_store.rs:280` 阻塞。远程连接由另一会话负责，不纳入本模块完成度。 |
+| P0 可测性验证 | 已记录结论，采用 (a) | §10-1；SDK 只承担类型与序列化，复用现有 HTTP/SSE/取消/预算边界。anthropic-sdk 已进入生产依赖；async-openai 尚未接入。 |
+| P1 中性内容层 + 五档映射 | 类型和 UI 已实现；运行链仍有兼容映射 | `b6774635` 增加 `ThinkingLevel` / `map_thinking` 和 `ResponseItem::Reasoning.signature` 可选字段。Composer 已收敛 `off/low/medium/high/max`；Rust 运行链仍兼容旧 `ReasoningEffort`，`medium` 暂映射为 `high`，需后续统一中性档位到 provider adapter。 |
+| P2 协议表 + 工厂 | 部分完成 | `protocol::codec_for` 已收口 Responses / Chat Completions / Messages 的请求体与工具投影；Messages 请求、流式解码、usage、签名、错误和工具结果顺序已接入 ModelClient。统一 codec 流式边界和 Responses SDK 类型层仍需继续收敛。 |
+| P3 数据模型 + 迁移 | 运行链已接入，消费方回归中 | V24 表、CRUD、激活列表、AppCore DTO、7 个 Tauri command 与 TS API 均已落地。`9c9046be` 修复密钥引用；`b1de6059` 完成一次性 Chat 种子迁移。H004 将 admission、执行绑定、工具续写、技能审查和标题调用接入注册表；解析、真实运行链、内核相关和 persistence 回归均通过。模型选择已持久化并由下一轮 admission 读取，旧 Chat 字段仅作迁移/兼容回退。 |
+| P3c 过载与备用模型删除 | 已提交，相关回归通过 | `10234777`：过载统一不可重试，明确 503 过载也立即报错；删除运行时 fallback 路径。models lib 240 passed；runtime lib 493 passed / 2 ignored；H55 4 passed；内核 H144 7 passed；采样、计费/预算、输出上限、图像模式及模型快照串行回归通过；真实 HTTP 1 项、CLI 2 项通过。H004 已接入单一 resolver。 |
 | P3b 会话 JSONL 的 `origin` | 已实现，回归通过 | `ResponseItemAppended.origin` 为可选 `ModelOrigin`，由真实模型运行链写入；旧 JSONL 无 `origin` 仍可读。core 往返 2 项、persistence 来源回放 1 项、persistence 全量 221 项、session 27 项、AppCore 注册表真实运行 7 项通过。跨供应商思考签名是否需要降级仍待实测，当前只保留签名与来源，不擅自改变回放语义。 |
-| P4 / P5 SDK 与双协议 codec | 未开始 | 尚未接入 async-openai / anthropic-sdk；Messages 暂不可运行。 |
+| P4 / P5 SDK 与双协议 codec | Messages 投影/解析已接入；真实传输未闭环 | anthropic-sdk-rs 固定提交用于类型与序列化；Messages 请求/流式解码复用现有 HttpTransport、取消、预算和事件链。传输层仍仅发送 Bearer 认证，尚未对齐 SDK 的 `anthropic-version` / `x-api-key` 请求头；工具结果重复 ID 校验有遗漏。async-openai 尚未进入生产依赖；Messages 图片与缓存断点待后续补齐。 |
 | P6 设置页 | 基础界面与后端已实现；流程待验收 | `ModelsSettings.tsx` 已接供应商 CRUD、协议/余额类型配置、模型拉取与激活；尚无完整供应商/模型管理流程的实际 UI 验收。 |
-| P7 余额 | 未完成 | 注册表保存 `balance_kind`；实际查询仍为 DeepSeek 固定路径。 |
-| P8 缓存 / P9 思考 / P10 选择切换 | 未完成 | 会话 Composer 仍读取旧 settings；激活模型列表尚未消费，五档思考、供应商切换与余额联动未闭环。 |
+| P7 余额 | 分发已接入；仍有行为缺口 | `BalanceKind` 已支持 `none/auto/official/new_api/sub2api`；`Auto` 按 new_api → sub2api 探测，模型 crate 余额回归通过。静态复核发现 UI 在 harness 查询失败后仍回退旧 DeepSeek 入口，且会话用量栏把余额按人民币展示；未知 new_api 形状还可能被当作无限额度。详见 H007，真实外部 API 待验收。 |
+| P8 缓存 | 未完成 | 尚未新增稳定前缀治理或 Messages `cache_control` 断点；继续复用现有上下文压缩阈值。 |
+| P9 输入框思考档位 | UI 五档已显示；端到端未完成 | Composer 已显示五档并读取模型能力置灰；当前 `medium` 通过旧设置接口映射为 `high`。能力投影读取 `/effort/supported_levels` 而非方案的 `thinking_levels`，且 `thinking_disable` 的 UI 禁用条件与 §1.4 语义相反，仍需统一契约和真实 provider 验收。 |
+| P10 模型列表与切换 | 已接入；桌面手动验收待完成 | Composer 消费激活模型，按 provider 分组；选择写入 harness 注册表，跨供应商触发余额刷新；当前 turn 冻结旧模型，工具续写保持旧模型，下一轮用户消息重新 admission。 |
 | P11 产品验收 | 未开始 | 真实 API、首次登录和双协议 UI 流程及性能数据尚未取得，不能宣告可交付。 |
 | F0 协议层盘点 | 已有只读盘点；需按当前代码复核 | 见 9.2；用户已确认不新增 `turn/stream`。 |
 | F1+ 协议层补齐 | 未开始 | 复用现有 app-server 与 SDK；按实际缺口补齐。 |

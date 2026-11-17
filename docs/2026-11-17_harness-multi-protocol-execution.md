@@ -187,3 +187,70 @@ GREEN（本批相关回归）：
 边界：跨供应商回放时 `Thinking.signature` 是否需要降级为普通文本仍待真实 provider 实测；
 本批只保留签名和来源，不擅自改变协议语义。Messages codec、余额按供应商分发、会话选择器、
 桌面 UI 流程和真实外部 API 验收仍未完成。
+
+## H006：Messages codec 与 SDK DTO 接入（P4/P5，2026-11-18）
+
+RED：新增 Messages 请求、流式生命周期、thinking/signature、工具参数、usage、错误、取消和截断
+夹具；此前 `wire_mode_for_protocol("messages")` 明确返回无 codec 错误。
+
+查证：`借鉴/anthropic-sdk-rs` 固定提交 `16dc3e424e7c5041bcc952ebb54d9ec4b2b1ced7`，SDK 仅
+承担类型与序列化参考；其网络客户端使用 reqwest 0.13，不能注入本仓库 reqwest 0.12 的
+`HttpTransport`，因此 HTTP、SSE、取消、预算和错误边界继续由本仓库负责。该提交为 MIT 许可。
+
+修复：新增 `WireMode::Messages`、Messages 请求投影和流式 accumulator；供应商系统提示放入顶层
+`system`，工具 schema 映射为 `input_schema`，`tool_use`/`tool_result` 保持中性工具调用顺序，
+thinking 的签名和 `output_tokens_details.thinking_tokens` 保留；响应通过现有 `Response`、
+`DeltaObserver` 和模型来源事件进入运行链。Messages 图片、主机 discovery item 和工具结果图片
+当前显式报错，避免静默丢失数据。
+
+GREEN：
+- `cargo test -q -p deepagent-models --test messages_client --test messages_stream --test messages_usage --offline -j 1`：1 + 10 + 1 passed。
+- `cargo test -q -p deepagent-app-core --test harness_model_resolver --test harness_registry_run --offline -j 1`：11 + 7 passed。
+- `git diff --check`：通过。
+
+本批仍未完成余额按供应商分发、五档思考 UI/真实请求、会话模型选择器和真实外部 API/UI 验收；
+Messages 的图片与缓存断点也需在后续 provider 验收中补齐。完整 workspace 测试、fmt 和 clippy
+仍需按工程门禁复跑。
+
+## H007：余额适配、Composer 五档思考与模型切换（P7/P9/P10，2026-11-18）
+
+RED：现有余额入口固定调用 DeepSeek 官方接口；Composer 只读旧 settings 的模型列表和推理档位，
+不会消费 harness 激活模型，也不能按供应商切换或在切换后刷新余额。
+
+修复：新增 `BalanceKind` 的 `none/auto/official/new_api/sub2api` 分发，`Auto` 按 new_api → sub2api
+探测并统一余额结果，错误中不回显密钥。Composer 改为消费激活 harness 模型，按供应商分组；
+思考档位收敛为 `off/low/medium/high/max`，按模型能力置灰；模型选择持久化到 harness 注册表，
+跨供应商切换触发余额刷新。当前 turn 继续使用冻结的模型和 client，工具续写保持旧模型，下一轮用户消息
+才重新 admission。为兼容现有 Rust `ReasoningEffort` 接口，`medium` 暂映射为 `high`。
+
+GREEN（均 0 failed）：
+- `cargo test -q -p deepagent-models --lib --offline -j 1`：249 passed，包含余额适配、Messages 和既有模型回归。
+- `cargo test -q -p deepagent-models --test messages_client --test messages_stream --test messages_usage --offline -j 1`：1 + 10 + 1 passed。
+- `cargo test -q -p deepagent-app-core --test harness_model_resolver --test harness_model_service --test harness_registry_run --offline -j 1`：11 + 12 + 7 passed。
+- `cargo test -q -p deepagent-persistence --offline -j 1`：222 + 1 + 9 + 5 passed。
+- `cd apps/desktop && pnpm build`：前置脚本、TypeScript、Vite 构建全部通过；Composer 专项 31 项通过。
+
+边界：P8 缓存治理仍未实现；真实余额 provider API、完整模型设置页和 Composer 的桌面手动验收仍未完成。
+全仓 fmt 仍受既有 `deepagent-core/src/id.rs` 排版差异影响；全仓 clippy 仍受既有
+`deepagent-persistence/src/document_store.rs:280` 的 `chunks_exact_to_as_chunks` 影响。
+
+本轮状态复核补充（静态核对，尚未修复，不能计为验收完成）：
+- P7：`BalanceChip` 与 `SessionUsageBar` 捕获所有 harness 余额错误后回退旧 DeepSeek 入口，
+  可能掩盖当前供应商故障；会话用量栏仍将任意余额单位当人民币格式化，无限额度字符串也进入数值解析。
+- P7：new_api 在缺少 limit 时默认 `unlimited = true`，未知响应形状可能被当作无限额度，
+  与方案“未知形状显式失败”不一致；已有 fixture 不覆盖此场景。
+- P9：`medium` 写入后变为 `high`；能力投影读取 `/effort/supported_levels`，
+  尚未落实方案的 `thinking_levels` / `thinking_distinct`。UI 在 `thinking_disable = true` 时禁用 off，
+  与方案 §1.4 中 false 表示不能关闭的语义相反。
+- P5：工具结果校验目前只检查数量和已知 ID；两个 tool_use 对应两个同 ID 的 tool_result 时，
+  仍可能通过校验而遗漏另一调用。已有顺序用例和未知 ID 用例不覆盖此重复场景。
+- P5：现有 `TransportRequest` 仅携带 URL、Bearer Key 与 JSON body，`ReqwestTransport` 尚未构造
+  Messages 专用请求头。仓库 SDK 的 `client.rs` 会构造 `anthropic-version` / `x-api-key`；
+  当前 mock 用例只验证 body/endpoint，不能据此认定官方 Messages HTTP 接入已经可用。
+
+workspace 首次复跑在编译 CLI 时发现两处 `WireMode::Messages` 非穷举匹配；
+已在旧双协议 retry producer 的测试夹具中显式拒绝未实现的 Messages fixture，保留其原有双协议测试范围。
+再次完整执行 `cargo test --workspace --offline -j 1`，在
+`crates/deepagent-runtime/tests/h55_thinking_adapter.rs:45`、`:75`、`:112` 的三处匹配编译失败，
+均为新增 `WireMode::Messages` 未覆盖。此项为本轮协议扩展的消费方迁移遗漏，尚未修复；
+不能算作历史环境问题，也未取得本轮 workspace 测试通过结论。
