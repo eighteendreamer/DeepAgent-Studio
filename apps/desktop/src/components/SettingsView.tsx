@@ -5,6 +5,7 @@ import { prefersReducedMotion } from "./ui/springMotion";
 const GeneralSettings = lazy(() => import("./settings/GeneralSettings").then((m) => ({ default: m.GeneralSettings })));
 const AppearanceSettings = lazy(() => import("./settings/AppearanceSettings").then((m) => ({ default: m.AppearanceSettings })));
 const ConfigSettings = lazy(() => import("./settings/ConfigSettings").then((m) => ({ default: m.ConfigSettings })));
+const ModelsSettings = lazy(() => import("./settings/ModelsSettings").then((m) => ({ default: m.ModelsSettings })));
 const PersonalizeSettings = lazy(() => import("./settings/PersonalizeSettings").then((m) => ({ default: m.PersonalizeSettings })));
 const ShortcutsSettings = lazy(() => import("./settings/ShortcutsSettings").then((m) => ({ default: m.ShortcutsSettings })));
 const MCPSettings = lazy(() => import("./settings/MCPSettings").then((m) => ({ default: m.MCPSettings })));
@@ -37,6 +38,7 @@ export function SettingsView({ activeCategoryId }: Props) {
       case "general": return <GeneralSettings />;
       case "appearance": return <AppearanceSettings />;
       case "config": return <ConfigSettings />;
+      case "models": return <ModelsSettings />;
       case "personalize": return <PersonalizeSettings />;
       case "shortcuts": return <ShortcutsSettings />;
       case "mcp": return <MCPSettings />;
