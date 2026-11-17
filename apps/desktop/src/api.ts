@@ -3852,6 +3852,28 @@ export interface SshDirListing {
   entries: SshDirEntry[];
 }
 
+/** Exact SFTP metadata. Decimal size avoids rounding u64 through JavaScript number. */
+export interface RemoteFileMetadata {
+  connection_id: string;
+  path: string;
+  followed_symlinks: boolean;
+  kind: "file" | "directory" | "symlink" | "other" | "unknown";
+  size_bytes: string | null;
+  permissions: number | null;
+  uid: number | null;
+  gid: number | null;
+  user: string | null;
+  group: string | null;
+  accessed_ms: number | null;
+  modified_ms: number | null;
+}
+
+export interface RemoteRealpath {
+  connection_id: string;
+  path: string;
+  canonical_path: string;
+}
+
 export interface SshTestResult {
   ok: boolean;
   latency_ms?: number;
@@ -4248,6 +4270,22 @@ export async function sshListDir(
     canonical_path: path,
     entries: [],
   };
+}
+
+export async function sshFileMetadata(
+  connectionId: string,
+  path: string,
+  followSymlinks = false,
+): Promise<RemoteFileMetadata> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("remote file metadata requires the desktop app");
+  return invoke<RemoteFileMetadata>("ssh_file_metadata", { connectionId, path, followSymlinks });
+}
+
+export async function sshRealpath(connectionId: string, path: string): Promise<RemoteRealpath> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("remote path resolution requires the desktop app");
+  return invoke<RemoteRealpath>("ssh_realpath", { connectionId, path });
 }
 
 export async function sshRemoteProbe(

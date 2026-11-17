@@ -1,6 +1,7 @@
 import { SshAuthenticationFields, type SshFormAuthType } from "./SshAuthenticationFields";
 import { SshHostTrustField } from "./SshHostTrustField";
 import { SshHostTrustManager } from "./SshHostTrustManager";
+import { RemoteFileProperties } from "./RemoteFileProperties";
 import { useSshConnectionConfirmation } from "./SshHostKeyPrompt";
 import { HoverInfo } from "../ui/HoverInfo";
 import {
@@ -200,6 +201,9 @@ export function RemoteSidebar({
   const [inlineEdit, setInlineEdit] = useState<InlineEdit | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   const [editingConn, setEditingConn] = useState<SshConnection | null>(null);
+  const [properties, setProperties] = useState<{ connectionId: string; path: string } | null>(null);
+
+  useEffect(() => { setProperties(null); }, [selected?.id]);
 
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
@@ -649,6 +653,7 @@ export function RemoteSidebar({
         {t("remote.treeRename")}
       </ContextMenuItem>
       <ContextMenuSeparator />
+      {propertiesMenuItem(entry)}
       {deleteMenuItem(entry, true)}
     </>
   );
@@ -660,9 +665,16 @@ export function RemoteSidebar({
         {t("remote.treeRename")}
       </ContextMenuItem>
       <ContextMenuSeparator />
+      {propertiesMenuItem(entry)}
       {deleteMenuItem(entry, false)}
     </>
   );
+
+  function propertiesMenuItem(entry: SshDirEntry) {
+    return <ContextMenuItem onSelect={() => {
+      if (selected) setProperties({ connectionId: selected.id, path: entry.path });
+    }}>{t("remote.properties.title")}</ContextMenuItem>;
+  }
 
   const renderRows = (entries: SshDirEntry[], depth: number) => (
     <>
@@ -692,9 +704,10 @@ export function RemoteSidebar({
                     if (!open) setConfirmingDelete(null);
                   }}
                 >
-                  <ContextMenuTrigger asChild>
-                    <HoverInfo content={entry.path}><button
+                  <HoverInfo content={entry.path}><ContextMenuTrigger asChild>
+                    <button
                       type="button"
+                      aria-label={entry.path}
                       className={rowClassName}
                       style={{ paddingLeft: 4 + depth * 12 }}
 
@@ -715,8 +728,8 @@ export function RemoteSidebar({
                       {loadingDir === entry.path && (
                         <Loader2 className="h-3 w-3 shrink-0 animate-spin text-text-secondary" />
                       )}
-                    </button></HoverInfo>
-                  </ContextMenuTrigger>
+                    </button>
+                  </ContextMenuTrigger></HoverInfo>
                   <ContextMenuContent
                     onCloseAutoFocus={(event) => event.preventDefault()}
                   >
@@ -755,9 +768,10 @@ export function RemoteSidebar({
                   if (!open) setConfirmingDelete(null);
                 }}
               >
-                <ContextMenuTrigger asChild>
-                  <HoverInfo content={entry.path}><button
+                <HoverInfo content={entry.path}><ContextMenuTrigger asChild>
+                  <button
                     type="button"
+                    aria-label={entry.path}
                     className="flex w-full items-center gap-1 rounded-md py-1 pr-1.5 pl-0 text-left text-[12px] text-text-base hover:bg-black/5"
                     style={{ paddingLeft: 4 + depth * 12 }}
 
@@ -766,8 +780,8 @@ export function RemoteSidebar({
                     <span className="w-3 shrink-0" />
                     <FileIcon className="h-3.5 w-3.5 shrink-0 text-text-secondary" />
                     <span className="truncate">{entry.name}</span>
-                  </button></HoverInfo>
-                </ContextMenuTrigger>
+                  </button>
+                </ContextMenuTrigger></HoverInfo>
                 <ContextMenuContent
                   onCloseAutoFocus={(event) => event.preventDefault()}
                 >
@@ -1220,6 +1234,12 @@ export function RemoteSidebar({
           </div>,
           document.body,
         )}
+      {properties && <RemoteFileProperties
+        key={JSON.stringify([properties.connectionId, properties.path])}
+        connectionId={properties.connectionId}
+        path={properties.path}
+        onClose={() => setProperties(null)}
+      />}
     </aside>
   );
 }

@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use russh_sftp::protocol::{FileAttributes, Handle, OpenFlags, Status, StatusCode};
+use russh_sftp::protocol::{
+    Attrs, File, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode,
+};
 
 pub struct MemoryFiles {
     files: Arc<RwLock<HashMap<String, Vec<u8>>>>,
@@ -35,6 +37,64 @@ impl russh_sftp::server::Handler for MemoryFiles {
 
     fn unimplemented(&self) -> Self::Error {
         StatusCode::OpUnsupported
+    }
+
+    async fn lstat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
+        let attrs = match path.as_str() {
+            "/denied" => return Err(StatusCode::PermissionDenied),
+            "/unknown" => FileAttributes::empty(),
+            "/huge" => FileAttributes {
+                size: Some(u64::MAX),
+                permissions: Some(0o100644),
+                ..Default::default()
+            },
+            "/link" => FileAttributes {
+                size: Some(22),
+                permissions: Some(0o120777),
+                uid: Some(1001),
+                gid: Some(1002),
+                ..Default::default()
+            },
+            _ => {
+                let files = self.files.read().unwrap();
+                let bytes = files.get(&path).ok_or(StatusCode::NoSuchFile)?;
+                FileAttributes {
+                    size: Some(bytes.len() as u64),
+                    permissions: Some(0o100640),
+                    uid: Some(1001),
+                    gid: Some(1002),
+                    mtime: Some(1_700_000_000),
+                    ..Default::default()
+                }
+            }
+        };
+        Ok(Attrs { id, attrs })
+    }
+
+    async fn stat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
+        self.lstat(
+            id,
+            if path == "/link" {
+                "/home/fixture/file.txt".into()
+            } else {
+                path
+            },
+        )
+        .await
+    }
+
+    async fn realpath(&mut self, id: u32, path: String) -> Result<Name, Self::Error> {
+        if path != "./file.txt" {
+            return Err(StatusCode::NoSuchFile);
+        }
+        Ok(Name {
+            id,
+            files: vec![File {
+                filename: "/home/fixture/file.txt".into(),
+                longname: String::new(),
+                attrs: FileAttributes::default(),
+            }],
+        })
     }
 
     async fn open(
