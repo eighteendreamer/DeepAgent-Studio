@@ -51,6 +51,7 @@ async fn observe_direct_output(rows: usize) -> ReadObservation {
     .unwrap();
     let (session, lease) = backend
         .open(TerminalOpenRequest {
+            target: Default::default(),
             run_id: "audit-terminal-read".into(),
             cwd: temp.path().to_string_lossy().into_owned(),
             cols: 120,

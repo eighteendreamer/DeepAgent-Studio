@@ -1,4 +1,7 @@
 {
+  "terminalSession": {
+    "starting": "正在启动终端…", "exited": "终端已退出", "error": "终端操作失败", "retry": "重新打开", "historyGap": "输出历史已截断，显示状态已重置"
+  },
   "sidebar": {
     "home": "首页",
     "recent": "最近",

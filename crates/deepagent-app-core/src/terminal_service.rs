@@ -34,7 +34,7 @@ use crate::settings::TerminalShell;
 use crate::terminal_lease::SqliteTerminalLeaseStore;
 use deepagent_persistence::Database;
 
-const DEFAULT_TERMINAL_LEASE_TTL_MS: i64 = 30 * 60 * 1_000;
+pub const DEFAULT_TERMINAL_LEASE_TTL_MS: i64 = 30 * 60 * 1_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalPtyHandle {
@@ -481,6 +481,24 @@ impl TerminalService {
         })
     }
 
+    async fn pty_output_finished(
+        &self,
+        id: &str,
+        cursor: u64,
+    ) -> deepagent_terminal::TerminalResult<bool> {
+        let state = self
+            .ptys
+            .read()
+            .await
+            .get(id)
+            .cloned()
+            .ok_or_else(|| TerminalError::SessionNotFound(id.into()))?;
+        let reader = state.reader.lock().await;
+        Ok(reader.is_closed()
+            && reader.is_empty()
+            && cursor >= state.output_cursor.load(Ordering::Acquire))
+    }
+
     pub async fn pty_resize(&self, handle: &LocalPtyHandle, cols: u16, rows: u16) -> Result<()> {
         self.with_pty_control(&handle.pty_id, PtyOwner::Legacy, move |state, control| {
             control.ensure_live()?;
@@ -556,6 +574,12 @@ impl TerminalSessionBackend for DirectTerminalSessionBackend {
         &self,
         request: TerminalOpenRequest,
     ) -> deepagent_terminal::TerminalResult<(TerminalSession, TerminalInputLease)> {
+        if !matches!(request.target, deepagent_terminal::TerminalTarget::Local) {
+            return Err(TerminalError::UnsupportedCapability {
+                backend: "direct".into(),
+                capability: "ssh_target".into(),
+            });
+        }
         let session = TerminalSession {
             session_id: self.service.allocate_pty_id(),
             run_id: request.run_id,
@@ -637,12 +661,18 @@ impl TerminalSessionBackend for DirectTerminalSessionBackend {
             )
             .await
             .map_err(pty_error)?;
-        self.leases
-            .record_cursor(&session.session_id, chunk.cursor)?;
+        if chunk.cursor != after_cursor {
+            self.leases
+                .record_cursor(&session.session_id, chunk.cursor)?;
+        }
         Ok(TerminalReadChunk {
             cursor: chunk.cursor,
             data: chunk.data,
             truncated: chunk.truncated,
+            eof: self
+                .service
+                .pty_output_finished(&session.session_id, chunk.cursor)
+                .await?,
         })
     }
 
@@ -1220,6 +1250,7 @@ mod tests {
         ));
         let (session, lease) = backend
             .open(TerminalOpenRequest {
+                target: Default::default(),
                 run_id: "h293-shared".into(),
                 cwd: dir.path().to_string_lossy().into_owned(),
                 cols: 80,
@@ -1386,6 +1417,7 @@ mod tests {
         );
         let error = backend
             .open(TerminalOpenRequest {
+                target: Default::default(),
                 run_id: "h293-open".into(),
                 cwd: dir
                     .path()
@@ -1427,6 +1459,7 @@ mod tests {
         // this is an actual native PTY creation error before any shell exists.
         assert!(backend
             .open(TerminalOpenRequest {
+                target: Default::default(),
                 run_id: "h293-open".into(),
                 cwd: dir
                     .path()

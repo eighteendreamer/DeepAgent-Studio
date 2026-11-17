@@ -94,25 +94,27 @@ export function RemoteView({ connection, openFile }: RemoteViewProps) {
     setFileStates({});
     setActiveKey("terminal-1");
     terminalCounter.current = 1;
-  }, [connectionId, t]);
+  }, [connectionId]);
+
+  useEffect(() => {
+    setTerminalTabs(previous => previous.map(tab => ({
+      ...tab, name: tab.id === "terminal-1" ? t("remote.tabTerminal") : `${t("remote.tabTerminal")} ${tab.id.slice("terminal-".length)}`,
+    })));
+  }, [t]);
 
   const addTerminalTab = () => {
-    setTerminalTabs((prev) => {
-      terminalCounter.current += 1;
-      const nextId = `terminal-${terminalCounter.current}`;
-      const newTab = { id: nextId, name: `${t("remote.tabTerminal")} ${terminalCounter.current}` };
-      setActiveKey(nextId);
-      return [...prev, newTab];
-    });
+    terminalCounter.current += 1;
+    const id = `terminal-${terminalCounter.current}`;
+    const tab = { id, name: `${t("remote.tabTerminal")} ${terminalCounter.current}` };
+    setTerminalTabs(previous => [...previous, tab]);
+    setActiveKey(id);
   };
 
   const closeTerminalTab = (id: string) => {
-    setTerminalTabs((prev) => {
-      if (prev.length === 1) return prev; // 至少保留一个
-      const next = prev.filter((tab) => tab.id !== id);
-      setActiveKey((prevKey) => (prevKey === id ? next[0].id : prevKey));
-      return next;
-    });
+    if (terminalTabs.length === 1) return;
+    const next = terminalTabs.filter(tab => tab.id !== id);
+    setTerminalTabs(next);
+    setActiveKey(previous => previous === id ? next[0].id : previous);
   };
 
   const isTerminalTab = (key: string) => key.startsWith("terminal-");
@@ -244,8 +246,6 @@ export function RemoteView({ connection, openFile }: RemoteViewProps) {
         : "text-text-secondary hover:bg-black/5 hover:text-text-base"
     }`;
 
-  const activeTerminalTab = terminalTabs.find((tab) => tab.id === activeKey) ?? null;
-
   return (
     <div className="flex h-full w-full flex-col">
       <div
@@ -292,7 +292,7 @@ export function RemoteView({ connection, openFile }: RemoteViewProps) {
           type="button"
           className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-black/5 hover:text-text-base"
           onClick={addTerminalTab}
-
+          aria-label={t("remote.tabNewTerminal")}
         >
           <Plus className="h-3.5 w-3.5" />
         </button></HoverInfo>
@@ -330,11 +330,12 @@ export function RemoteView({ connection, openFile }: RemoteViewProps) {
         ))}
       </div>
       <div className="min-h-0 flex-1">
-        {activeTerminalTab && (
-          <div className="h-full">
-            <TerminalPlugin key={activeTerminalTab.id} mode="remote" connectionId={connection.id} />
+        {terminalTabs.map(tab => (
+          <div key={`${connection.id}:${tab.id}`} hidden={activeKey !== tab.id}
+            className="h-full" style={{ display: activeKey === tab.id ? undefined : "none" }}>
+            <TerminalPlugin mode="remote" connectionId={connection.id} active={activeKey === tab.id} />
           </div>
-        )}
+        ))}
         {activeTab && !isTerminalTab(activeKey) && (
           <div className="flex h-full flex-col overflow-hidden">
             {activeState?.status === "loading" && (

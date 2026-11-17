@@ -19,17 +19,22 @@ async fn session_with_output(bytes: &[u8]) -> Arc<SshSession> {
     }
     drop(output);
     session
-        .replace_pty(Some(PtyState {
-            stdin,
-            commands,
-            stdout: Mutex::new(stdout),
-            join: tokio::spawn(async {}),
-            cols: 120,
-            rows: 30,
-            output_cursor: AtomicU64::new(0),
-            history: Mutex::new(VecDeque::new()),
-            history_bytes: Mutex::new(0),
-        }))
+        .insert_pty(
+            "fixture-pty".into(),
+            PtyState {
+                stdin,
+                commands,
+                stdout: Mutex::new(stdout),
+                join: tokio::spawn(async {}),
+                channel: None,
+                cols: 120,
+                rows: 30,
+                output_cursor: AtomicU64::new(0),
+                history: Mutex::new(VecDeque::new()),
+                history_bytes: Mutex::new(0),
+            },
+            false,
+        )
         .await;
     session
 }
@@ -38,23 +43,32 @@ async fn session_with_output(bytes: &[u8]) -> Arc<SshSession> {
 async fn audit_ssh_terminal_cursor_preserves_unreturned_output() {
     let small_payload = vec![b's'; 16 * 1024];
     let small = session_with_output(&small_payload).await;
-    let first = small.pty_read_with_cursor(0).await.unwrap();
-    let next = small.pty_read_with_cursor(first.cursor).await.unwrap();
+    let first = small.pty_read_with_cursor("fixture-pty", 0).await.unwrap();
+    let next = small
+        .pty_read_with_cursor("fixture-pty", first.cursor)
+        .await
+        .unwrap();
     assert_eq!(first.data, small_payload, "small-output control");
     assert_eq!(first.cursor, small_payload.len() as u64);
     assert!(!first.truncated);
     assert!(next.data.is_empty());
-    small.replace_pty(None).await;
+    small.close_all_ptys().await;
 
     let payload: Vec<_> = (0..96 * 1024).map(|n| b'a' + (n % 26) as u8).collect();
     let session = session_with_output(&payload).await;
-    let first = session.pty_read_with_cursor(0).await.unwrap();
-    let next = session.pty_read_with_cursor(first.cursor).await.unwrap();
-    let suffix = session
-        .pty_read_with_cursor(first.data.len() as u64)
+    let first = session
+        .pty_read_with_cursor("fixture-pty", 0)
         .await
         .unwrap();
-    session.replace_pty(None).await;
+    let next = session
+        .pty_read_with_cursor("fixture-pty", first.cursor)
+        .await
+        .unwrap();
+    let suffix = session
+        .pty_read_with_cursor("fixture-pty", first.data.len() as u64)
+        .await
+        .unwrap();
+    session.close_all_ptys().await;
     eprintln!(
         "SSH cursor audit: source={} first={} cursor={} next={} suffix={} truncated={}",
         payload.len(),

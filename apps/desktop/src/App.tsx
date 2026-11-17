@@ -2834,7 +2834,7 @@ export function App() {
             )}
             {view === "remote" && (
               <div key={viewFrameKey} className="view-frame">
-                <RemoteView connection={remoteConnection} openFile={remoteOpenFile} />
+                <RemoteView key={remoteConnection?.id ?? "unselected"} connection={remoteConnection} openFile={remoteOpenFile} />
               </div>
             )}
             {view === "settings" && (

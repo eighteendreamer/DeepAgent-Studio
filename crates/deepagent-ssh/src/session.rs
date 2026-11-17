@@ -4,7 +4,7 @@ use super::config::{SshConnectionConfig, SshStatus};
 use super::transport::SshClient as Client;
 use deepagent_terminal::TerminalReadChunk;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, RwLock};
@@ -102,6 +102,7 @@ pub struct PtyState {
     pub commands: mpsc::UnboundedSender<PtyCommand>,
     pub stdout: Mutex<mpsc::Receiver<Vec<u8>>>,
     pub join: JoinHandle<()>,
+    pub channel: Option<Arc<russh::ChannelWriteHalf<russh::client::Msg>>>,
     pub cols: u16,
     pub rows: u16,
     pub output_cursor: AtomicU64,
@@ -113,7 +114,8 @@ pub struct SshSession {
     pub(crate) host_trust: RwLock<Option<super::host_trust::HostTrust>>,
     config: SshConnectionConfig,
     client: RwLock<Option<Client>>,
-    pty: RwLock<Option<PtyState>>,
+    ptys: RwLock<HashMap<String, Arc<PtyState>>>,
+    legacy_pty: RwLock<Option<String>>,
     status: RwLock<SshStatus>,
     last_error: RwLock<Option<String>>,
     keepalive_running: AtomicBool,
@@ -126,7 +128,8 @@ impl SshSession {
             host_trust: RwLock::new(None),
             config,
             client: RwLock::new(None),
-            pty: RwLock::new(None),
+            ptys: RwLock::new(HashMap::new()),
+            legacy_pty: RwLock::new(None),
             status: RwLock::new(SshStatus::Disconnected),
             last_error: RwLock::new(None),
             keepalive_running: AtomicBool::new(false),
@@ -177,24 +180,64 @@ impl SshSession {
         self.keepalive_running.store(running, Ordering::Relaxed);
     }
 
-    pub async fn replace_pty(&self, next: Option<PtyState>) {
-        let mut guard = self.pty.write().await;
-        if let Some(old) = std::mem::replace(&mut *guard, next) {
-            old.join.abort();
+    pub async fn insert_pty(&self, token: String, next: PtyState, legacy: bool) {
+        self.ptys
+            .write()
+            .await
+            .insert(token.clone(), Arc::new(next));
+        if legacy {
+            *self.legacy_pty.write().await = Some(token);
         }
     }
 
-    pub async fn pty_write(&self, data: Vec<u8>) -> bool {
-        let pty = self.pty.read().await;
-        let Some(pty) = pty.as_ref() else {
+    async fn pty(&self, token: &str) -> Option<Arc<PtyState>> {
+        let alias = if token == self.config.id {
+            self.legacy_pty.read().await.clone()
+        } else {
+            None
+        };
+        self.ptys
+            .read()
+            .await
+            .get(alias.as_deref().unwrap_or(token))
+            .cloned()
+    }
+
+    pub(super) async fn pty_running(&self, token: &str) -> bool {
+        self.pty(token)
+            .await
+            .is_some_and(|pty| !pty.join.is_finished())
+    }
+
+    pub async fn close_pty(&self, token: &str) -> crate::SshResult<()> {
+        let Some(state) = self.pty(token).await else {
+            return Ok(());
+        };
+        if let Some(channel) = &state.channel {
+            tokio::time::timeout(std::time::Duration::from_secs(3), channel.close())
+                .await
+                .map_err(|_| crate::SshError::Pty("closing PTY channel timed out".into()))?
+                .map_err(|error| crate::SshError::Pty(format!("close PTY channel: {error}")))?;
+        }
+        let mut ptys = self.ptys.write().await;
+        ptys.retain(|_, value| !Arc::ptr_eq(value, &state));
+        Ok(())
+    }
+
+    pub async fn close_all_ptys(&self) {
+        self.ptys.write().await.clear();
+        *self.legacy_pty.write().await = None;
+    }
+
+    pub async fn pty_write(&self, token: &str, data: Vec<u8>) -> bool {
+        let Some(pty) = self.pty(token).await else {
             return false;
         };
         pty.stdin.send(data).await.is_ok()
     }
 
-    pub async fn pty_read_available(&self) -> Option<Vec<u8>> {
-        let pty = self.pty.read().await;
-        let pty = pty.as_ref()?;
+    pub async fn pty_read_available(&self, token: &str) -> Option<Vec<u8>> {
+        let pty = self.pty(token).await?;
         let mut rx = pty.stdout.lock().await;
         let mut out = Vec::new();
         while let Ok(chunk) = rx.try_recv() {
@@ -206,9 +249,12 @@ impl SshSession {
         Some(out)
     }
 
-    pub async fn pty_read_with_cursor(&self, after_cursor: u64) -> Option<TerminalReadChunk> {
-        let pty = self.pty.read().await;
-        let pty = pty.as_ref()?;
+    pub async fn pty_read_with_cursor(
+        &self,
+        token: &str,
+        after_cursor: u64,
+    ) -> Option<TerminalReadChunk> {
+        let pty = self.pty(token).await?;
         let mut rx = pty.stdout.lock().await;
         let mut history = pty.history.lock().await;
         let mut history_bytes = pty.history_bytes.lock().await;
@@ -250,7 +296,9 @@ impl SshSession {
                 break;
             }
         }
+        let eof = rx.is_closed() && rx.is_empty() && next_cursor >= current;
         Some(TerminalReadChunk {
+            eof,
             cursor: if data.is_empty() {
                 current
             } else {
@@ -261,22 +309,29 @@ impl SshSession {
         })
     }
 
-    pub async fn pty_resize(&self, cols: u16, rows: u16) -> bool {
-        let mut pty = self.pty.write().await;
-        let Some(pty) = pty.as_mut() else {
+    pub async fn pty_resize(&self, token: &str, cols: u16, rows: u16) -> bool {
+        let Some(pty) = self.pty(token).await else {
             return false;
         };
-        pty.cols = cols;
-        pty.rows = rows;
-        // Shell task 已结束时发送失败属预期（PTY 通道随之关闭），不改变返回语义。
-        let _ = pty.commands.send(PtyCommand::Resize {
-            cols: pty.cols,
-            rows: pty.rows,
-        });
-        true
+        pty.commands.send(PtyCommand::Resize { cols, rows }).is_ok()
     }
 
     pub fn config(&self) -> &SshConnectionConfig {
         &self.config
+    }
+}
+
+// A cancelled open or a disconnected owner must not leave a detached shell task.
+// russh 0.55 dropping Channel alone does not send SSH_MSG_CHANNEL_CLOSE.
+impl Drop for PtyState {
+    fn drop(&mut self) {
+        self.join.abort();
+        if let (Some(channel), Ok(runtime)) =
+            (self.channel.clone(), tokio::runtime::Handle::try_current())
+        {
+            runtime.spawn(async move {
+                let _ = channel.close().await;
+            });
+        }
     }
 }

@@ -10,25 +10,24 @@ use super::remote::{
     RemotePushFileResult, RemoteRequireRequest, RemoteRequireResult, RemoteVerifyMode,
 };
 use super::session::{
-    PtyCommand, PtyState, SshDirEntry, SshDirListing, SshExecResult, SshFileBinary, SshFileContent,
-    SshSession, SshStatusSnapshot, SshTestResult,
+    SshDirEntry, SshDirListing, SshExecResult, SshFileBinary, SshFileContent, SshSession,
+    SshStatusSnapshot, SshTestResult,
 };
 use super::transport::SshClient as Client;
 use super::{SshConfigStore, SshServiceHandle};
 use async_trait::async_trait;
 use base64::Engine;
-use russh::ChannelMsg;
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
 use sha2::Digest;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
 
 struct JsonFileSshConfigStore {
@@ -77,7 +76,7 @@ pub struct SshServiceImpl {
     // Config identity changes cannot race publication of a verified connection.
     pub(super) lifecycle: RwLock<()>,
     configs: RwLock<HashMap<String, SshConnectionConfig>>,
-    sessions: RwLock<HashMap<String, Arc<SshSession>>>,
+    pub(super) sessions: RwLock<HashMap<String, Arc<SshSession>>>,
     config_store: Arc<dyn SshConfigStore>,
     pub(super) host_key_store: Option<Arc<crate::SshHostKeyStore>>,
     pub(super) host_challenges: crate::connection_challenge::HostKeyChallenges,
@@ -572,113 +571,37 @@ impl SshServiceImpl {
         cols: u16,
         rows: u16,
     ) -> SshResult<SshServiceHandle> {
+        self.spawn_pty(handle, cols, rows, uuid::Uuid::new_v4().to_string(), true)
+            .await
+    }
+
+    pub(super) async fn spawn_pty(
+        &self,
+        handle: &SshServiceHandle,
+        cols: u16,
+        rows: u16,
+        token: String,
+        legacy: bool,
+    ) -> SshResult<SshServiceHandle> {
         let session = self.connected_session(&handle.connection_id).await?;
         let client = session
             .client()
             .await
             .ok_or_else(|| SshError::ConnectionLost(handle.connection_id.clone()))?;
 
-        // 协议级 PTY + shell（与 OpenSSH 客户端同路径）。不走 execute_io：
-        // 它只能 exec 一条命令，且把 PTY 尺寸硬编码为 80x24、无法转发 resize。
-        let channel = client
-            .get_channel()
-            .await
-            .map_err(|err| SshError::Pty(format!("open shell channel failed: {err}")))?;
-        channel
-            .request_pty(
-                false,
-                "xterm-256color",
-                u32::from(cols),
-                u32::from(rows),
-                0,
-                0,
-                &[],
-            )
-            .await
-            .map_err(|err| SshError::Pty(format!("request pty failed: {err}")))?;
-        channel
-            .request_shell(false)
-            .await
-            .map_err(|err| SshError::Pty(format!("request shell failed: {err}")))?;
-
-        let (stdin_tx, mut stdin_rx) = mpsc::channel::<Vec<u8>>(128);
-        let (stdout_tx, stdout_rx) = mpsc::channel::<Vec<u8>>(256);
-        let (command_tx, mut command_rx) = mpsc::unbounded_channel::<PtyCommand>();
-        let connection_id = handle.connection_id.clone();
-        let join = tokio::spawn(async move {
-            let (mut channel_rx, channel_tx) = channel.split();
-            loop {
-                tokio::select! {
-                    msg = channel_rx.wait() => match msg {
-                        Some(ChannelMsg::Data { data })
-                        | Some(ChannelMsg::ExtendedData { data, .. }) => {
-                            if stdout_tx.send(data.to_vec()).await.is_err() {
-                                break;
-                            }
-                        }
-                        Some(ChannelMsg::ExitStatus { exit_status }) => {
-                            tracing::debug!(target: "deepagent_ssh", connection_id, exit_status, "remote shell exited");
-                        }
-                        Some(ChannelMsg::Failure) => {
-                            tracing::warn!(target: "deepagent_ssh", connection_id, "remote rejected a channel request");
-                        }
-                        // russh 会把 WINDOW_ADJUST / CHANNEL_SUCCESS / CHANNEL_EOF 等消息
-                        // 一律投递进 wait() 队列（encrypted.rs:555/:605/:375），交互式 shell
-                        // 期间它们会频繁到达；只有 Close/None（通道关闭，客户端侧 CHANNEL_CLOSE
-                        // 由 russh 直接移除 channel 不入队）才代表通道终止。
-                        Some(ChannelMsg::Close) => break,
-                        Some(_) => {}
-                        None => break,
-                    },
-                    input = stdin_rx.recv() => match input {
-                        Some(chunk) if !chunk.is_empty() => {
-                            if channel_tx.data(&chunk[..]).await.is_err() {
-                                break;
-                            }
-                        }
-                        Some(_) => {}
-                        None => break,
-                    },
-                    command = command_rx.recv() => match command {
-                        Some(PtyCommand::Resize { cols, rows }) => {
-                            if channel_tx
-                                .window_change(u32::from(cols), u32::from(rows), 0, 0)
-                                .await
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                        None => break,
-                    },
-                }
-            }
-            tracing::debug!(target: "deepagent_ssh", connection_id, "ssh shell channel task ended");
-        });
-        session
-            .replace_pty(Some(PtyState {
-                stdin: stdin_tx,
-                commands: command_tx,
-                stdout: tokio::sync::Mutex::new(stdout_rx),
-                join,
-                cols,
-                rows,
-                output_cursor: AtomicU64::new(0),
-                history: tokio::sync::Mutex::new(std::collections::VecDeque::new()),
-                history_bytes: tokio::sync::Mutex::new(0),
-            }))
-            .await;
+        let pty = crate::pty::open(&client, &handle.connection_id, cols, rows).await?;
+        session.insert_pty(token.clone(), pty, legacy).await;
         Ok(SshServiceHandle::new(
             handle.connection_id.clone(),
-            handle.token.clone(),
+            token,
             cols,
             rows,
         ))
     }
 
     pub async fn pty_write(&self, handle: &SshServiceHandle, data: &[u8]) -> SshResult<()> {
-        let session = self.connected_session(&handle.connection_id).await?;
-        if session.pty_write(data.to_vec()).await {
+        let session = self.active_pty_connection(&handle.connection_id).await?;
+        if session.pty_write(&handle.token, data.to_vec()).await {
             Ok(())
         } else {
             Err(SshError::Pty("no active PTY session".into()))
@@ -686,9 +609,9 @@ impl SshServiceImpl {
     }
 
     pub async fn pty_read(&self, handle: &SshServiceHandle) -> SshResult<Vec<u8>> {
-        let session = self.connected_session(&handle.connection_id).await?;
+        let session = self.active_pty_connection(&handle.connection_id).await?;
         session
-            .pty_read_available()
+            .pty_read_available(&handle.token)
             .await
             .ok_or_else(|| SshError::Pty("no active PTY session".into()))
     }
@@ -698,9 +621,9 @@ impl SshServiceImpl {
         handle: &SshServiceHandle,
         after_cursor: u64,
     ) -> SshResult<deepagent_terminal::TerminalReadChunk> {
-        let session = self.connected_session(&handle.connection_id).await?;
+        let session = self.active_pty_connection(&handle.connection_id).await?;
         session
-            .pty_read_with_cursor(after_cursor)
+            .pty_read_with_cursor(&handle.token, after_cursor)
             .await
             .ok_or_else(|| SshError::Pty("no active PTY session".into()))
     }
@@ -711,12 +634,37 @@ impl SshServiceImpl {
         cols: u16,
         rows: u16,
     ) -> SshResult<()> {
-        let session = self.connected_session(&handle.connection_id).await?;
-        if session.pty_resize(cols, rows).await {
+        let session = self.active_pty_connection(&handle.connection_id).await?;
+        if session.pty_resize(&handle.token, cols, rows).await {
             Ok(())
         } else {
             Err(SshError::Pty("no active PTY session".into()))
         }
+    }
+
+    pub async fn pty_close(&self, handle: &SshServiceHandle) -> SshResult<()> {
+        let session = self
+            .sessions
+            .read()
+            .await
+            .get(&handle.connection_id)
+            .cloned();
+        match session {
+            Some(session) => session.close_pty(&handle.token).await,
+            None => Ok(()),
+        }
+    }
+
+    async fn active_pty_connection(&self, id: &str) -> SshResult<Arc<SshSession>> {
+        let config = self.config_for(id).await?;
+        self.reusable_client(&config)
+            .await?
+            .map(|(session, _)| session)
+            .ok_or_else(|| {
+                SshError::Pty(
+                    "PTY connection is no longer active; open a new terminal explicitly".into(),
+                )
+            })
     }
 
     pub async fn disconnect(&self, id: &str) -> SshResult<()> {
@@ -724,7 +672,7 @@ impl SshServiceImpl {
         let sessions = self.sessions.read().await;
         let mut disconnected = Ok(());
         if let Some(session) = sessions.get(id) {
-            session.replace_pty(None).await;
+            session.close_all_ptys().await;
             if let Some(client) = session.client().await {
                 disconnected = client.disconnect().await;
             }
@@ -1377,7 +1325,7 @@ impl SshServiceImpl {
                 Ok(Err(err)) => {
                     let msg = err.to_string();
                     let _ = client.disconnect().await;
-                    session.replace_pty(None).await;
+                    session.close_all_ptys().await;
                     session.set_client(None).await;
                     session
                         .set_status(SshStatus::Error, Some(msg.clone()))
@@ -1394,7 +1342,7 @@ impl SshServiceImpl {
                 Err(_) => {
                     let err = SshError::Timeout(Duration::from_secs(STATUS_REFRESH_TIMEOUT_SECS));
                     let _ = client.disconnect().await;
-                    session.replace_pty(None).await;
+                    session.close_all_ptys().await;
                     session.set_client(None).await;
                     session
                         .set_status(SshStatus::Error, Some(err.to_string()))

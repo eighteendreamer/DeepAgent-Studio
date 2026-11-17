@@ -21,6 +21,7 @@ pub struct Counts {
     pub public_key_offers: AtomicUsize,
     pub commands: AtomicUsize,
     pub closed_channels: AtomicUsize,
+    pub reject_shell: AtomicBool,
     pub pty_size: RwLock<Option<(u32, u32)>>,
     pub files: Arc<RwLock<HashMap<String, Vec<u8>>>>,
 }
@@ -82,16 +83,17 @@ impl server::Handler for Handler {
 
     async fn pty_request(
         &mut self,
-        _: ChannelId,
+        channel: ChannelId,
         _: &str,
         cols: u32,
         rows: u32,
         _: u32,
         _: u32,
         _: &[(russh::Pty, u32)],
-        _: &mut Session,
+        session: &mut Session,
     ) -> Result<(), Self::Error> {
         *self.counts.pty_size.write().unwrap() = Some((cols, rows));
+        session.channel_success(channel)?;
         Ok(())
     }
 
@@ -100,6 +102,11 @@ impl server::Handler for Handler {
         channel: ChannelId,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if self.counts.reject_shell.load(Ordering::SeqCst) {
+            session.channel_failure(channel)?;
+            return Ok(());
+        }
+        session.channel_success(channel)?;
         session.data(channel, CryptoVec::from_slice(b"fixture$ "))?;
         Ok(())
     }
@@ -123,6 +130,13 @@ impl server::Handler for Handler {
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if data == b"fixture-exit" {
+            session.data(channel, CryptoVec::from_slice("尾部".as_bytes()))?;
+            session.exit_status_request(channel, 0)?;
+            session.eof(channel)?;
+            session.close(channel)?;
+            return Ok(());
+        }
         session.data(channel, CryptoVec::from_slice(data))?;
         Ok(())
     }

@@ -56,6 +56,7 @@ async fn observe(renew: bool, protocol: bool) -> Observation {
     );
     let (session, lease) = backend
         .open(TerminalOpenRequest {
+            target: Default::default(),
             run_id: "terminal-lease-liveness-audit".to_owned(),
             cwd: dir.path().to_string_lossy().into_owned(),
             cols: 100,
@@ -335,6 +336,7 @@ async fn h293_shared_owner_blocks_legacy_control_and_wrong_run_takeover() {
     );
     let (session, _) = backend
         .open(TerminalOpenRequest {
+            target: Default::default(),
             run_id: "h293-owner".into(),
             cwd: dir.path().to_string_lossy().into_owned(),
             cols: 80,

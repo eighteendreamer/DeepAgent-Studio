@@ -65,6 +65,7 @@ mod host_key_store;
 mod host_trust;
 mod host_trust_audit;
 mod known_hosts_import;
+mod pty;
 mod remote;
 mod service;
 mod session;
@@ -74,7 +75,7 @@ use async_trait::async_trait;
 use deepagent_terminal::{
     TerminalError, TerminalInputHolder, TerminalInputLease, TerminalLeasePersistence,
     TerminalLeaseRegistry, TerminalOpenRequest, TerminalReadChunk, TerminalSession,
-    TerminalSessionBackend, TerminalSignal,
+    TerminalSessionBackend, TerminalSignal, TerminalTarget,
 };
 use service::SshServiceImpl;
 use std::sync::Arc;
@@ -92,9 +93,24 @@ pub trait SshConfigStore: Send + Sync {
 /// scope, cursor and input-lease validation.
 pub struct SshTerminalSessionBackend {
     service: Arc<SshService>,
-    connection_id: String,
-    token: String,
+    default_connection: Option<(String, String)>,
     leases: TerminalLeaseRegistry,
+    controls: std::sync::Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+}
+
+struct PendingTerminalLease<'a> {
+    registry: &'a TerminalLeaseRegistry,
+    lease: Option<TerminalInputLease>,
+}
+
+impl Drop for PendingTerminalLease<'_> {
+    fn drop(&mut self) {
+        if let Some(lease) = self.lease.take() {
+            if let Err(error) = self.registry.remove(&lease) {
+                tracing::warn!(target:"deepagent_ssh", %error, "failed to revoke unpublished terminal lease");
+            }
+        }
+    }
 }
 
 impl SshTerminalSessionBackend {
@@ -116,8 +132,23 @@ impl SshTerminalSessionBackend {
     ) -> Self {
         Self {
             service,
-            connection_id: connection_id.into(),
-            token: token.into(),
+            default_connection: Some((connection_id.into(), token.into())),
+            controls: std::sync::Mutex::new(HashMap::new()),
+            leases: persistence
+                .map(TerminalLeaseRegistry::with_persistence)
+                .unwrap_or_default(),
+        }
+    }
+
+    /// One SSH adapter for the desktop coordinator; target selection stays explicit.
+    pub fn for_service(
+        service: Arc<SshService>,
+        persistence: Option<Arc<dyn TerminalLeasePersistence>>,
+    ) -> Self {
+        Self {
+            service,
+            default_connection: None,
+            controls: std::sync::Mutex::new(HashMap::new()),
             leases: persistence
                 .map(TerminalLeaseRegistry::with_persistence)
                 .unwrap_or_default(),
@@ -130,15 +161,68 @@ impl SshTerminalSessionBackend {
         self.leases.last_cursor(session_id)
     }
 
+    pub async fn recovery_status(
+        &self,
+        session_id: &str,
+    ) -> deepagent_terminal::TerminalResult<deepagent_terminal::TerminalRecoveryStatus> {
+        let cursor = self.leases.last_cursor(session_id)?;
+        let target = session_id
+            .strip_prefix("ssh:")
+            .and_then(|id| id.rsplit_once(':'));
+        let available = if let Some((connection, token)) = target {
+            let session = self
+                .service
+                .inner
+                .sessions
+                .read()
+                .await
+                .get(connection)
+                .cloned();
+            match session {
+                Some(session) => session.pty_running(token).await,
+                None => false,
+            }
+        } else {
+            false
+        };
+        Ok(deepagent_terminal::TerminalRecoveryStatus {
+            cursor,
+            available,
+            control_available: available && self.leases.control_available(session_id)?,
+        })
+    }
+
+    // Only overlapping operations share a gate; idle/closed sessions keep no lock owner.
+    // A stalled open or write on one tab cannot block controls on another tab.
+    fn input_gate(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut gates = self
+            .controls
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        gates.retain(|_, gate| gate.strong_count() > 0);
+        if let Some(gate) = gates.get(id).and_then(std::sync::Weak::upgrade) {
+            return gate;
+        }
+        let gate = Arc::new(tokio::sync::Mutex::new(()));
+        gates.insert(id.to_owned(), Arc::downgrade(&gate));
+        gate
+    }
+
     fn handle(&self, session: &TerminalSession) -> Result<SshServiceHandle, TerminalError> {
         if session.backend != self.backend_kind() || !session.session_id.starts_with("ssh:") {
             return Err(TerminalError::SessionNotFound(session.session_id.clone()));
         }
         self.leases
             .validate_scope(&session.session_id, &session.run_id)?;
+        let (connection_id, token) = session
+            .session_id
+            .strip_prefix("ssh:")
+            .and_then(|id| id.rsplit_once(':'))
+            .filter(|(connection, token)| !connection.is_empty() && !token.is_empty())
+            .ok_or(TerminalError::InvalidLease)?;
         Ok(SshServiceHandle::new(
-            self.connection_id.clone(),
-            self.token.clone(),
+            connection_id,
+            token,
             session.cols,
             session.rows,
         ))
@@ -166,23 +250,43 @@ impl TerminalSessionBackend for SshTerminalSessionBackend {
         &self,
         request: TerminalOpenRequest,
     ) -> deepagent_terminal::TerminalResult<(TerminalSession, TerminalInputLease)> {
-        let base =
-            SshServiceHandle::new(&self.connection_id, &self.token, request.cols, request.rows);
-        let handle = self
-            .service
-            .pty_spawn(&base, request.cols, request.rows)
-            .await
-            .map_err(|e| TerminalError::Backend(e.to_string()))?;
+        let connection_id = match &request.target {
+            TerminalTarget::Ssh { connection_id } => connection_id.clone(),
+            TerminalTarget::Local => self
+                .default_connection
+                .as_ref()
+                .map(|(id, _)| id.clone())
+                .ok_or_else(|| TerminalError::UnsupportedCapability {
+                    backend: "ssh".into(),
+                    capability: "explicit_ssh_target_required".into(),
+                })?,
+        };
+        let token = uuid::Uuid::new_v4().to_string();
         let session = TerminalSession {
-            session_id: format!("ssh:{}:{}", self.connection_id, handle.token),
+            session_id: format!("ssh:{connection_id}:{token}"),
             run_id: request.run_id,
-            backend: self.backend_kind().to_string(),
+            backend: self.backend_kind().into(),
             cols: request.cols,
             rows: request.rows,
         };
         let lease =
             self.leases
                 .register(&session.session_id, &session.run_id, request.initial_holder)?;
+        let mut pending = PendingTerminalLease {
+            registry: &self.leases,
+            lease: Some(lease.clone()),
+        };
+        let base =
+            SshServiceHandle::new(&connection_id, &connection_id, request.cols, request.rows);
+        if let Err(error) = self
+            .service
+            .inner
+            .spawn_pty(&base, request.cols, request.rows, token, false)
+            .await
+        {
+            return Err(TerminalError::Backend(error.to_string()));
+        }
+        pending.lease = None;
         Ok((session, lease))
     }
 
@@ -192,6 +296,8 @@ impl TerminalSessionBackend for SshTerminalSessionBackend {
         lease: &TerminalInputLease,
         data: &[u8],
     ) -> deepagent_terminal::TerminalResult<()> {
+        let gate = self.input_gate(&session.session_id);
+        let _control = gate.lock().await;
         self.validate(session, lease)?;
         let handle = self.handle(session)?;
         self.service
@@ -206,6 +312,8 @@ impl TerminalSessionBackend for SshTerminalSessionBackend {
         lease: &TerminalInputLease,
     ) -> deepagent_terminal::TerminalResult<()> {
         self.handle(session)?;
+        let gate = self.input_gate(&session.session_id);
+        let _control = gate.lock().await;
         self.validate(session, lease)?;
         self.leases.renew(lease)
     }
@@ -224,8 +332,10 @@ impl TerminalSessionBackend for SshTerminalSessionBackend {
         // Keep SSH and Direct backends on the same durable cursor contract.
         // The cursor is an acknowledgement point only; the PTY history remains
         // owned by the SSH service and may still be unavailable after restart.
-        self.leases
-            .record_cursor(&session.session_id, chunk.cursor)?;
+        if chunk.cursor != after_cursor {
+            self.leases
+                .record_cursor(&session.session_id, chunk.cursor)?;
+        }
         Ok(chunk)
     }
 
@@ -236,6 +346,8 @@ impl TerminalSessionBackend for SshTerminalSessionBackend {
         cols: u16,
         rows: u16,
     ) -> deepagent_terminal::TerminalResult<()> {
+        let gate = self.input_gate(&session.session_id);
+        let _control = gate.lock().await;
         self.validate(session, lease)?;
         let handle = self.handle(session)?;
         self.service
@@ -250,11 +362,17 @@ impl TerminalSessionBackend for SshTerminalSessionBackend {
         lease: &TerminalInputLease,
         signal: TerminalSignal,
     ) -> deepagent_terminal::TerminalResult<()> {
+        let gate = self.input_gate(&session.session_id);
+        let _control = gate.lock().await;
         self.validate(session, lease)?;
         let data = match signal {
             TerminalSignal::Interrupt => vec![3],
-            TerminalSignal::Terminate => vec![28],
-            TerminalSignal::Kill => vec![4],
+            TerminalSignal::Terminate | TerminalSignal::Kill => {
+                return Err(TerminalError::UnsupportedCapability {
+                    backend: "ssh".into(),
+                    capability: "reliable_remote_process_termination".into(),
+                })
+            }
         };
         let handle = self.handle(session)?;
         self.service
@@ -268,6 +386,8 @@ impl TerminalSessionBackend for SshTerminalSessionBackend {
         session: &TerminalSession,
         holder: TerminalInputHolder,
     ) -> deepagent_terminal::TerminalResult<TerminalInputLease> {
+        let gate = self.input_gate(&session.session_id);
+        let _control = gate.lock().await;
         self.handle(session)?;
         self.leases.takeover(&session.session_id, holder)
     }
@@ -278,6 +398,8 @@ impl TerminalSessionBackend for SshTerminalSessionBackend {
         lease: &TerminalInputLease,
         next_holder: TerminalInputHolder,
     ) -> deepagent_terminal::TerminalResult<TerminalInputLease> {
+        let gate = self.input_gate(&session.session_id);
+        let _control = gate.lock().await;
         self.validate(session, lease)?;
         self.leases.release(lease, next_holder)
     }
@@ -287,9 +409,12 @@ impl TerminalSessionBackend for SshTerminalSessionBackend {
         session: &TerminalSession,
         lease: &TerminalInputLease,
     ) -> deepagent_terminal::TerminalResult<()> {
+        let gate = self.input_gate(&session.session_id);
+        let _control = gate.lock().await;
         self.validate(session, lease)?;
+        let handle = self.handle(session)?;
         self.service
-            .disconnect(&self.connection_id)
+            .pty_close(&handle)
             .await
             .map_err(|e| TerminalError::Backend(e.to_string()))?;
         self.leases.remove(lease)
@@ -534,6 +659,10 @@ impl SshService {
         self.inner.pty_read_with_cursor(handle, after_cursor).await
     }
 
+    pub async fn pty_close(&self, handle: &SshServiceHandle) -> SshResult<()> {
+        self.inner.pty_close(handle).await
+    }
+
     pub async fn pty_resize(
         &self,
         handle: &SshServiceHandle,
@@ -679,6 +808,33 @@ mod tests {
         backend.renew(&session, &next).await.unwrap();
         backend.leases.remove(&next).unwrap();
         // No SSH connection, agent, socket or remote process was opened.
+    }
+
+    #[tokio::test]
+    async fn unpublished_lease_is_revoked_on_drop_and_control_gates_are_per_session() {
+        let leases = TerminalLeaseRegistry::default();
+        let lease = leases
+            .register("unpublished", "fixture", TerminalInputHolder::User)
+            .unwrap();
+        {
+            let _pending = PendingTerminalLease {
+                registry: &leases,
+                lease: Some(lease.clone()),
+            };
+            assert!(leases.validate(&lease).is_ok());
+        }
+        assert!(leases.validate(&lease).is_err());
+        let data = tempfile::tempdir().unwrap();
+        let backend = SshTerminalSessionBackend::for_service(
+            Arc::new(SshService::new(data.path().to_path_buf())),
+            None,
+        );
+        let first = backend.input_gate("first");
+        let held = first.lock().await;
+        assert!(backend.input_gate("first").try_lock().is_err());
+        assert!(backend.input_gate("second").try_lock().is_ok());
+        drop(held);
+        assert!(backend.input_gate("first").try_lock().is_ok());
     }
 
     #[tokio::test]

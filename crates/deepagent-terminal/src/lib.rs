@@ -45,9 +45,22 @@ pub enum TerminalSignal {
     Kill,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TerminalTarget {
+    #[default]
+    Local,
+    Ssh {
+        #[serde(rename = "connectionId")]
+        connection_id: String,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalOpenRequest {
+    #[serde(default)]
+    pub target: TerminalTarget,
     pub run_id: String,
     pub cwd: String,
     pub cols: u16,
@@ -84,6 +97,9 @@ pub struct TerminalReadChunk {
     pub data: Vec<u8>,
     /// The requested cursor was older than the retained history.
     pub truncated: bool,
+    /// True only after the producer ended and this response drained the final bytes.
+    #[serde(default)]
+    pub eof: bool,
 }
 
 /// State returned when a client asks whether a persisted cursor can still be
@@ -413,6 +429,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn legacy_terminal_open_defaults_to_local_and_ssh_target_is_explicit() {
+        let mut wire = serde_json::json!({"runId":"fixture", "cwd":"", "cols":80, "rows":24, "initialHolder":"user"});
+        let legacy: TerminalOpenRequest = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(legacy.target, TerminalTarget::Local);
+        wire["target"] = serde_json::json!({"kind":"ssh", "connectionId":"fixture-connection"});
+        let remote: TerminalOpenRequest = serde_json::from_value(wire).unwrap();
+        assert_eq!(
+            remote.target,
+            TerminalTarget::Ssh {
+                connection_id: "fixture-connection".into()
+            }
+        );
+        let old: TerminalReadChunk =
+            serde_json::from_value(serde_json::json!({"cursor":0,"data":[],"truncated":false}))
+                .unwrap();
+        assert!(!old.eof);
+    }
+
+    #[test]
     fn h293_concurrent_old_release_and_remove_cannot_replace_a_successor() {
         let registry = Arc::new(TerminalLeaseRegistry::default());
         let old = registry
@@ -481,6 +516,7 @@ mod tests {
     #[test]
     fn wire_contract_is_camel_case() {
         let request = TerminalOpenRequest {
+            target: Default::default(),
             run_id: "run-1".into(),
             cwd: "C:/workspace".into(),
             cols: 80,

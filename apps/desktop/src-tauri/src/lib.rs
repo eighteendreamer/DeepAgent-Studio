@@ -402,6 +402,7 @@ struct AppState {
     /// Shared session/lease backend for the gradual Terminal protocol
     /// migration. Legacy `local_pty_*` commands remain available below.
     terminal_sessions: Arc<DirectTerminalSessionBackend>,
+    ssh_terminal_sessions: Arc<deepagent_ssh::SshTerminalSessionBackend>,
     git: Arc<GitService>,
     /// File preview for the desktop "File Preview" panel (office-agent).
     preview: Arc<FilePreviewService>,
@@ -5027,16 +5028,33 @@ async fn local_pty_close(state: State<'_, AppState>, pty_id: String) -> Result<(
 
 // ---- shared terminal-session protocol (gradual migration) ----------------
 
+fn terminal_backend<'a>(
+    state: &'a AppState,
+    backend: &str,
+) -> Result<&'a dyn TerminalSessionBackend, String> {
+    match backend {
+        "direct" => Ok(state.terminal_sessions.as_ref()),
+        "ssh" => Ok(state.ssh_terminal_sessions.as_ref()),
+        _ => Err(format!("Unsupported terminal backend: {backend}")),
+    }
+}
+
 #[tauri::command]
 async fn terminal_session_open(
     state: State<'_, AppState>,
     run_id: String,
     cols: u16,
     rows: u16,
+    target: Option<deepagent_terminal::TerminalTarget>,
 ) -> Result<(TerminalSession, TerminalInputLease), String> {
-    state
-        .terminal_sessions
+    let target = target.unwrap_or_default();
+    let backend = match &target {
+        deepagent_terminal::TerminalTarget::Local => "direct",
+        deepagent_terminal::TerminalTarget::Ssh { .. } => "ssh",
+    };
+    terminal_backend(&state, backend)?
         .open(TerminalOpenRequest {
+            target,
             run_id,
             cwd: state.terminal.current_dir(),
             cols,
@@ -5064,8 +5082,7 @@ async fn terminal_session_write(
     lease: TerminalInputLease,
     data: String,
 ) -> Result<(), String> {
-    state
-        .terminal_sessions
+    terminal_backend(&state, &session.backend)?
         .write(&session, &lease, data.as_bytes())
         .await
         .map_err(|error| error.to_string())
@@ -5077,8 +5094,7 @@ async fn terminal_session_renew(
     session: TerminalSession,
     lease: TerminalInputLease,
 ) -> Result<(), String> {
-    state
-        .terminal_sessions
+    terminal_backend(&state, &session.backend)?
         .renew(&session, &lease)
         .await
         .map_err(|error| error.to_string())
@@ -5090,8 +5106,7 @@ async fn terminal_session_read(
     session: TerminalSession,
     after_cursor: u64,
 ) -> Result<TerminalReadChunk, String> {
-    state
-        .terminal_sessions
+    terminal_backend(&state, &session.backend)?
         .read(&session, after_cursor)
         .await
         .map_err(|error| error.to_string())
@@ -5102,6 +5117,12 @@ fn terminal_session_last_cursor(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<u64, String> {
+    if session_id.starts_with("ssh:") {
+        return state
+            .ssh_terminal_sessions
+            .last_cursor(&session_id)
+            .map_err(|error| error.to_string());
+    }
     state
         .terminal_sessions
         .last_cursor(&session_id)
@@ -5113,6 +5134,13 @@ async fn terminal_session_recovery_status(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<TerminalRecoveryStatus, String> {
+    if session_id.starts_with("ssh:") {
+        return state
+            .ssh_terminal_sessions
+            .recovery_status(&session_id)
+            .await
+            .map_err(|error| error.to_string());
+    }
     state
         .terminal_sessions
         .recovery_status(&session_id)
@@ -5128,8 +5156,7 @@ async fn terminal_session_resize(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    state
-        .terminal_sessions
+    terminal_backend(&state, &session.backend)?
         .resize(&session, &lease, cols, rows)
         .await
         .map_err(|error| error.to_string())
@@ -5141,8 +5168,7 @@ async fn terminal_session_takeover(
     session: TerminalSession,
     holder: TerminalInputHolder,
 ) -> Result<TerminalInputLease, String> {
-    state
-        .terminal_sessions
+    terminal_backend(&state, &session.backend)?
         .takeover(&session, holder)
         .await
         .map_err(|error| error.to_string())
@@ -5155,8 +5181,7 @@ async fn terminal_session_release(
     lease: TerminalInputLease,
     next_holder: TerminalInputHolder,
 ) -> Result<TerminalInputLease, String> {
-    state
-        .terminal_sessions
+    terminal_backend(&state, &session.backend)?
         .release(&session, &lease, next_holder)
         .await
         .map_err(|error| error.to_string())
@@ -5168,8 +5193,7 @@ async fn terminal_session_close(
     session: TerminalSession,
     lease: TerminalInputLease,
 ) -> Result<(), String> {
-    state
-        .terminal_sessions
+    terminal_backend(&state, &session.backend)?
         .close(&session, &lease)
         .await
         .map_err(|error| error.to_string())
@@ -7284,6 +7308,11 @@ pub fn run() {
                 SshService::with_config_store(paths.root.clone(), ssh_store)
                     .with_host_key_store(host_keys),
             );
+            let ssh_terminal_sessions = Arc::new(deepagent_ssh::SshTerminalSessionBackend::for_service(
+                ssh.clone(), Some(Arc::new(deepagent_app_core::SqliteTerminalLeaseStore::new(
+                    service.shared_database(), deepagent_app_core::terminal_service::DEFAULT_TERMINAL_LEASE_TTL_MS,
+                ).map_err(|error| format!("initialize SSH terminal leases: {error}"))?)),
+            ));
             {
                 let ssh_monitor = ssh.clone();
                 tauri::async_runtime::spawn(async move {
@@ -7573,6 +7602,7 @@ pub fn run() {
                 workspace,
                 terminal,
                 terminal_sessions,
+                ssh_terminal_sessions,
                 git,
                 preview,
                 attachments,

@@ -1,4 +1,7 @@
 {
+  "terminalSession": {
+    "starting": "Starting terminal…", "exited": "Terminal exited", "error": "Terminal operation failed", "retry": "Open again", "historyGap": "Output history was truncated; display state was reset"
+  },
   "sidebar": {
     "home": "Home",
     "recent": "Recent",

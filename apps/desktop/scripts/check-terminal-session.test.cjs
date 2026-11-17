@@ -20,6 +20,16 @@ function production(name, invoke) {
 const session = { sessionId: 'synthetic-pty', runId: 'synthetic-run', backend: 'direct', cols: 80, rows: 24 };
 const lease = { sessionId: session.sessionId, runId: session.runId, leaseId: 'synthetic-lease', epoch: 2, holder: 'user' };
 
+test('shared terminal open carries an explicit SSH target and old callers remain local', async () => {
+  const calls = [];
+  const open = production('terminalSessionOpen', async (...args) => { calls.push(args); return [session, lease]; });
+  await open('fixture', 80, 24);
+  assert.equal(calls[0][1].target.kind, 'local');
+  const target = { kind: 'ssh', connectionId: 'remote-fixture' };
+  await open('remote', 120, 32, target);
+  assert.equal(calls[1][1].target, target);
+});
+
 test('terminal renewal invokes the registered command with the complete generation', async () => {
   const calls = [];
   const fn = production('terminalSessionRenew', async (command, args) => { calls.push({ command, args }); });

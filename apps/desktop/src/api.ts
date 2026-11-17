@@ -2806,6 +2806,8 @@ export interface PtyReadChunk {
   truncated: boolean;
 }
 
+export type TerminalTarget = { kind: "local" } | { kind: "ssh"; connectionId: string };
+
 export type TerminalInputHolder = "runtime" | "user" | "remote_viewer";
 
 export interface TerminalSession {
@@ -2828,6 +2830,7 @@ export interface TerminalReadChunk {
   cursor: number;
   data: number[];
   truncated: boolean;
+  eof?: boolean;
 }
 
 export interface TerminalRecoveryStatus {
@@ -2843,6 +2846,7 @@ export async function terminalSessionOpen(
   runId: string,
   cols: number,
   rows: number,
+  target: TerminalTarget = { kind: "local" },
 ): Promise<[TerminalSession, TerminalInputLease]> {
   const invoke = getInvoke();
   if (!invoke) throw new Error("terminal sessions require the desktop app");
@@ -2850,6 +2854,7 @@ export async function terminalSessionOpen(
     runId,
     cols,
     rows,
+    target,
   });
 }
 
