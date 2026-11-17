@@ -11,6 +11,7 @@ pub struct MemoryFiles {
     counts: Arc<super::Counts>,
     files: Arc<RwLock<HashMap<String, Vec<u8>>>>,
     handles: HashMap<String, String>,
+    directories: HashMap<String, std::collections::VecDeque<File>>,
     next_handle: usize,
 }
 
@@ -20,6 +21,7 @@ impl MemoryFiles {
             files: counts.files.clone(),
             counts,
             handles: HashMap::new(),
+            directories: HashMap::new(),
             next_handle: 0,
         }
     }
@@ -42,6 +44,16 @@ impl russh_sftp::server::Handler for MemoryFiles {
     }
 
     async fn lstat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
+        if let Some(attrs) = self
+            .counts
+            .file_attributes
+            .read()
+            .unwrap()
+            .get(&path)
+            .cloned()
+        {
+            return Ok(Attrs { id, attrs });
+        }
         let attrs = match path.as_str() {
             "/denied" => return Err(StatusCode::PermissionDenied),
             "/unknown" => FileAttributes::empty(),
@@ -57,6 +69,12 @@ impl russh_sftp::server::Handler for MemoryFiles {
                 gid: Some(1002),
                 ..Default::default()
             },
+            _ if self.counts.directories.read().unwrap().contains(&path) || path == "/" => {
+                FileAttributes {
+                    permissions: Some(0o040750),
+                    ..Default::default()
+                }
+            }
             _ => {
                 let files = self.files.read().unwrap();
                 let bytes = files.get(&path).ok_or(StatusCode::NoSuchFile)?;
@@ -86,6 +104,18 @@ impl russh_sftp::server::Handler for MemoryFiles {
     }
 
     async fn realpath(&mut self, id: u32, path: String) -> Result<Name, Self::Error> {
+        if let Some(canonical) = self.counts.canonical_paths.read().unwrap().get(&path) {
+            return Ok(Name {
+                id,
+                files: vec![File::dummy(canonical)],
+            });
+        }
+        if path == "/" || self.counts.directories.read().unwrap().contains(&path) {
+            return Ok(Name {
+                id,
+                files: vec![File::dummy(path)],
+            });
+        }
         if path != "./file.txt" {
             return Err(StatusCode::NoSuchFile);
         }
@@ -212,7 +242,90 @@ impl russh_sftp::server::Handler for MemoryFiles {
     }
 
     async fn close(&mut self, id: u32, handle: String) -> Result<Status, Self::Error> {
+        if self.directories.remove(&handle).is_some() {
+            self.counts
+                .directory_closes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self
+                .counts
+                .reject_directory_close
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(StatusCode::Failure);
+            }
+            return Ok(success(id));
+        }
         self.handles.remove(&handle).ok_or(StatusCode::NoSuchFile)?;
         Ok(success(id))
+    }
+
+    async fn opendir(&mut self, id: u32, path: String) -> Result<Handle, Self::Error> {
+        if !self.lstat(id, path.clone()).await?.attrs.is_dir() {
+            return Err(StatusCode::NoSuchFile);
+        }
+        let override_entries = self
+            .counts
+            .directory_entries
+            .read()
+            .unwrap()
+            .get(&path)
+            .cloned();
+        let entries = if let Some(entries) = override_entries {
+            entries
+        } else {
+            let mut entries = std::collections::BTreeMap::new();
+            let prefix = format!("{}/", path.trim_end_matches('/'));
+            for file in self.files.read().unwrap().keys() {
+                if let Some(name) = file
+                    .strip_prefix(&prefix)
+                    .filter(|name| !name.contains('/'))
+                {
+                    entries.insert(name.to_string(), File::dummy(name));
+                }
+            }
+            for dir in self.counts.directories.read().unwrap().iter() {
+                if let Some(name) = dir
+                    .strip_prefix(&prefix)
+                    .filter(|name| !name.is_empty() && !name.contains('/'))
+                {
+                    entries.insert(name.to_string(), File::dummy(name));
+                }
+            }
+            entries.into_values().collect()
+        };
+        self.next_handle += 1;
+        let handle = format!("dir-{}", self.next_handle);
+        self.directories.insert(handle.clone(), entries.into());
+        Ok(Handle { id, handle })
+    }
+
+    async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, Self::Error> {
+        self.counts
+            .directory_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let gate = self.counts.directory_read_gate.read().unwrap().clone();
+        self.counts.directory_read_started.notify_one();
+        if let Some(gate) = gate {
+            gate.notified().await;
+        }
+        let entries = self
+            .directories
+            .get_mut(&handle)
+            .ok_or(StatusCode::NoSuchFile)?;
+        if entries.is_empty() {
+            return Err(StatusCode::Eof);
+        }
+        if self
+            .counts
+            .repeat_directory_page
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Ok(Name {
+                id,
+                files: entries.iter().take(2).cloned().collect(),
+            });
+        }
+        let files = entries.drain(..entries.len().min(2)).collect();
+        Ok(Name { id, files })
     }
 }

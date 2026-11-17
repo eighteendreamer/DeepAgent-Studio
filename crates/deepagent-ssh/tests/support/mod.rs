@@ -26,6 +26,16 @@ pub struct Counts {
     pub files: Arc<RwLock<HashMap<String, Vec<u8>>>>,
     pub stage_created: tokio::sync::Notify,
     pub stage_open_gate: RwLock<Option<Arc<tokio::sync::Notify>>>,
+    pub directories: Arc<RwLock<std::collections::HashSet<String>>>,
+    pub directory_entries: RwLock<HashMap<String, Vec<russh_sftp::protocol::File>>>,
+    pub directory_reads: AtomicUsize,
+    pub directory_closes: AtomicUsize,
+    pub directory_read_started: tokio::sync::Notify,
+    pub directory_read_gate: RwLock<Option<Arc<tokio::sync::Notify>>>,
+    pub file_attributes: RwLock<HashMap<String, russh_sftp::protocol::FileAttributes>>,
+    pub canonical_paths: RwLock<HashMap<String, String>>,
+    pub repeat_directory_page: AtomicBool,
+    pub reject_directory_close: AtomicBool,
 }
 
 struct Handler {

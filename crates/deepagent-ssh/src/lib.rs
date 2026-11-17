@@ -29,6 +29,7 @@ pub use config::{
     SshHostKeyPolicy, SshStatus, UpdateSshConnectionRequest,
 };
 pub use connection_challenge::{SshConnectionAttempt, SshHostKeyChallenge, SshHostKeyDecision};
+pub use directory_walk::{DirectoryWalkLimits, RemoteDirectoryEntry, RemoteDirectoryTree};
 pub use error::{SshError, SshResult};
 pub use file_transfer::{
     FileConflictPolicy, FileTransferDirection, FileTransferError, FileTransferProgress,
@@ -63,6 +64,7 @@ mod agent;
 mod config;
 mod connection_challenge;
 mod connection_flow;
+mod directory_walk;
 mod error;
 mod file_transfer;
 mod files;
@@ -76,6 +78,7 @@ mod pty;
 mod remote;
 mod service;
 mod session;
+mod sftp_packet_stream;
 mod transport;
 
 use async_trait::async_trait;

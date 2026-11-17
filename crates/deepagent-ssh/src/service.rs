@@ -554,13 +554,21 @@ impl SshServiceImpl {
         &self,
         connection_id: &str,
     ) -> SshResult<(Arc<SshSession>, SftpSession)> {
+        let (session, client) = self.file_client(connection_id).await?;
+        let sftp = sftp_open(&client, None).await?;
+        Ok((session, sftp))
+    }
+
+    pub(crate) async fn file_client(
+        &self,
+        connection_id: &str,
+    ) -> SshResult<(Arc<SshSession>, Client)> {
         let session = self.connected_session(connection_id).await?;
         let client = session
             .client()
             .await
             .ok_or_else(|| SshError::ConnectionLost(connection_id.into()))?;
-        let sftp = sftp_open(&client, None).await?;
-        Ok((session, sftp))
+        Ok((session, client))
     }
 
     pub async fn read_file_binary(
@@ -1794,9 +1802,15 @@ async fn sftp_open(client: &Client, timeout_seconds: Option<u64>) -> SshResult<S
         .request_subsystem(true, "sftp")
         .await
         .map_err(|err| SshError::Internal(err.to_string()))?;
-    SftpSession::new_opts(channel.into_stream(), timeout_seconds)
-        .await
-        .map_err(|err| SshError::Internal(err.to_string()))
+    SftpSession::new_opts(
+        crate::sftp_packet_stream::packet_stream(
+            channel.into_stream(),
+            crate::sftp_packet_stream::MAX_RECEIVE_PACKET_BYTES,
+        ),
+        timeout_seconds,
+    )
+    .await
+    .map_err(|err| SshError::Internal(err.to_string()))
 }
 
 async fn sftp_close_quiet(connection_id: &str, sftp: &SftpSession) {

@@ -91,7 +91,7 @@ async fn bounded<T, E: std::fmt::Display>(
         )),
     }
 }
-async fn operation<T, E: std::fmt::Display>(
+pub(super) async fn operation<T, E: std::fmt::Display>(
     cancel: &CancellationToken,
     work: impl Future<Output = std::result::Result<T, E>>,
 ) -> Result<T> {
