@@ -39,6 +39,7 @@ const MAX_INPUT_IMAGES: usize = 600;
 pub enum WireMode {
     Responses,
     ChatCompletions,
+    Messages,
 }
 
 impl WireMode {
@@ -53,6 +54,9 @@ impl WireMode {
             )),
             (Self::ChatCompletions, _) => Err(deepagent_core::error::CoreError::invalid(
                 "image_input_role_unsupported: Chat Completions images require a user message",
+            )),
+            (Self::Messages, _) => Err(deepagent_core::error::CoreError::invalid(
+                "image_input_role_unsupported: Messages image projection is not implemented",
             )),
         }
     }
@@ -207,6 +211,11 @@ impl ModelConfig {
     /// The fully-qualified DeepSeek Chat Completions endpoint.
     pub fn chat_endpoint(&self) -> String {
         format!("{}/chat/completions", self.base_url.trim_end_matches('/'))
+    }
+
+    /// Anthropic Messages-compatible endpoint.
+    pub fn messages_endpoint(&self) -> String {
+        format!("{}/messages", self.base_url.trim_end_matches('/'))
     }
 
     pub fn with_defaults(mut self, defaults: ResponseDefaults) -> Self {
@@ -401,6 +410,9 @@ impl ModelClient {
         mut request: ResponseRequest,
         observer: &mut dyn crate::stream::DeltaObserver,
     ) -> Result<Response> {
+        if self.config.wire_mode == WireMode::Messages {
+            return self.stream_messages_observed(request, observer).await;
+        }
         if matches!(self.config.wire_mode, WireMode::ChatCompletions) {
             self.validate_response_input_modalities(&request)?;
             return self
@@ -461,6 +473,11 @@ impl ModelClient {
         observer: &mut dyn crate::stream::DeltaObserver,
         cancel: Arc<AtomicBool>,
     ) -> Result<Response> {
+        if self.config.wire_mode == WireMode::Messages {
+            return self
+                .stream_messages_observed_cancelled(request, observer, cancel)
+                .await;
+        }
         if matches!(self.config.wire_mode, WireMode::ChatCompletions) {
             self.validate_response_input_modalities(&request)?;
             return self
@@ -505,6 +522,61 @@ impl ModelClient {
                 |data: &str| -> Result<bool> { acc.push_sse_data_observed(data, observer) };
             self.transport
                 .stream_cancelled(transport_req.clone(), &mut sink, cancel.clone())
+                .await?;
+        }
+        accumulator.finish()
+    }
+
+    async fn stream_messages_observed(
+        &self,
+        mut request: ResponseRequest,
+        observer: &mut dyn crate::stream::DeltaObserver,
+    ) -> Result<Response> {
+        request.stream = true;
+        self.prepare_response_sampling(&mut request)?;
+        request.validate()?;
+        self.validate_output_tokens(request.max_output_tokens)?;
+        self.validate_response_input_modalities(&request)?;
+        let body = crate::protocol::codec_for(WireMode::Messages).encode_body(self, request)?;
+        let transport_req = TransportRequest {
+            url: self.config.messages_endpoint(),
+            api_key: self.config.api_key.clone(),
+            body,
+        };
+        let mut accumulator = crate::messages::MessagesAccumulator::new();
+        {
+            let acc = &mut accumulator;
+            let mut sink =
+                |data: &str| -> Result<bool> { acc.push_sse_data_observed(data, observer) };
+            self.transport.stream(transport_req, &mut sink).await?;
+        }
+        accumulator.finish()
+    }
+
+    async fn stream_messages_observed_cancelled(
+        &self,
+        mut request: ResponseRequest,
+        observer: &mut dyn crate::stream::DeltaObserver,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<Response> {
+        request.stream = true;
+        self.prepare_response_sampling(&mut request)?;
+        request.validate()?;
+        self.validate_output_tokens(request.max_output_tokens)?;
+        self.validate_response_input_modalities(&request)?;
+        let body = crate::protocol::codec_for(WireMode::Messages).encode_body(self, request)?;
+        let transport_req = TransportRequest {
+            url: self.config.messages_endpoint(),
+            api_key: self.config.api_key.clone(),
+            body,
+        };
+        let mut accumulator = crate::messages::MessagesAccumulator::new();
+        {
+            let acc = &mut accumulator;
+            let mut sink =
+                |data: &str| -> Result<bool> { acc.push_sse_data_observed(data, observer) };
+            self.transport
+                .stream_cancelled(transport_req, &mut sink, cancel)
                 .await?;
         }
         accumulator.finish()

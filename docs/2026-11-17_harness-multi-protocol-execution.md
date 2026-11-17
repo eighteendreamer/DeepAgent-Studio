@@ -254,3 +254,97 @@ workspace 首次复跑在编译 CLI 时发现两处 `WireMode::Messages` 非穷�
 `crates/deepagent-runtime/tests/h55_thinking_adapter.rs:45`、`:75`、`:112` 的三处匹配编译失败，
 均为新增 `WireMode::Messages` 未覆盖。此项为本轮协议扩展的消费方迁移遗漏，尚未修复；
 不能算作历史环境问题，也未取得本轮 workspace 测试通过结论。
+
+## H008：Messages 请求契约与第三协议运行回归（2026-11-18）
+
+RED：新增三条真实失败输入，取得 3 passed / 3 failed：工具调用 a/b 的结果为 a/a 时漏验，
+中性 `required` 被原样写成 Messages 不支持的类型，关闭思考被写成 `output_config.effort=none`。
+
+修复：请求外层使用已固定版本的 SDK `MessageCreateParams`、`ToolChoice`、`ThinkingConfig` 和
+`OutputConfig`，由 SDK 负责字段序列化；中性 required 映射 Any，关闭使用 Disabled，开启使用
+Adaptive 加 effort。工具结果同时校验唯一 ID、集合和顺序，重复结果在发请求前失败。
+H55 补齐 Messages endpoint、真实生命周期 fixture、输出上限和请求断言；同组用例实际覆盖三协议的
+429 重试、503/529 过载零重试、思考默认/显式关闭以及调用前/调用中取消，没有 wildcard 跳过。
+
+查证纠正：DeepSeek 官方 `guides/anthropic_api` 明确支持 Bearer 或 x-api-key，忽略
+anthropic-version，adaptive 视为 enabled，支持 disabled。H007 关于缺少专用头的记录是
+原生 Anthropic 兼容性待办，不能据此判定本轮提供的 DeepSeek Messages 接口不可用。
+原生 Anthropic 请求头与真实 HTTP 验收仍需后续完成。
+
+GREEN：Messages 请求 6 passed；`cargo test -q -p deepagent-runtime --test h55_thinking_adapter
+--offline -j 1` 为 4 passed；models lib 完整回归 256 passed，Messages 集成 1 + 10 + 1 passed。
+
+## H009：余额语义与供应商查询边界（2026-11-18）
+
+RED：余额组 8 passed / 6 failed，复现空余额伪造零、未知 new_api 响应误判无限、缺用量时把额度
+当余额、total_usage 的分币单位错误、token display 金额/单位丢失，以及 DeepSeek Messages base
+错误拼接余额 endpoint。前端新增余额回归最初 0 passed / 7 failed。
+
+依据：`借鉴/cockpit-tools/.../codex_model_provider_commands.rs:1349-1409`：total_usage 除 100，
+token data.display 金额与单位整体使用，不与 billing 混用，不猜原始 token 额度换算倍数。
+本地设计：内部金额运算使用 checked micros；DTO 保留现有可选 amount，无金额/可用性继续为未知。
+
+修复：无限须显式标志或已核实的三个 sentinel 值；未知形状失败。缺 limit/used 时不计算余额。
+DeepSeek 官方账号余额固定使用同 host 的 /user/balance，兼容模型 base 的 /anthropic 路径。
+前端两处余额共用 getBalance，选中供应商失败直接呈现失败，不再查询另一个供应商；只在没有
+注册表选择时兼容旧入口。统一按货币/token/无限格式显示，未知不补零；快速切换的迟到结果丢弃。
+
+GREEN：models lib 256 passed，Messages 集成 12 passed；余额前端专项 9 passed（包括两处组件的
+迟到结果行为）。复跑 `pnpm test:session-usage` 为 25 passed（含余额专项），
+`pnpm test:number-format` 为 3 passed。完整前端构建和 AppCore resolver/service/registry_run
+专项通过，后者分别为 11 + 12 + 7 passed。
+全仓 fmt 仍仅报 deepagent-core/src/id.rs 既有四处格式差异；git diff --check 通过。
+
+本批尚无真实外部 API、完整首次登录/设置页/Composer 流程或性能验收证据。
+P4 Responses SDK、P8 缓存、P9 五档端到端、旧视觉路径删除、P11 与 F1+ 均未完成。
+
+## H010：统一三协议 HTTP 回归夹具（2026-11-18）
+
+RED：启用 http 的模型 all-targets clippy 在 `sse_http_framing.rs` 因新增 Messages 枚举
+未穷举而编译失败。全局检查另外找到 UTF-8、生命周期、内部 HTTP 审计和运行时测试的同类遗漏。
+
+根因：协议枚举扩展后，公共传输测试各自维护协议矩阵及生命周期，消费方迁移没有统一边界。
+本地设计：新增一个仅供测试的 `sse_protocol_fixture.rs`，集中三协议矩阵、endpoint、
+文本 start/delta/finish 和 SSE 编码，由模型 HTTP 测试、内部 UTF-8 审计及运行时测试共用。
+生产 HTTP、取消、预算与持久化没有新增第二条链路。
+
+扩展 UTF-8 逐字节、绝对偏移、CR/LF/CRLF、多行 data、末尾空行、活跃流、idle 和真实取消
+用例到三协议。Messages 输入用量在 message_start 已发生，因此错误断言保留该真实用量，
+只禁止伪造输出用量或完成事件；不套用旧协议“任何 usage 都不能出现”的断言。
+运行时思考与截断工具测试使用完整 Messages 生命周期，不通过 wildcard 跳过新协议。
+
+开发环境：`pnpm dev` 曾在 Windows 监听 `src-tauri/resources/skills/**` 时抛出 UNKNOWN watch。
+依据 `借鉴/cockpit-tools/vite.config.ts:82-84` 和当前 Vite WatchOptions，排除 Rust 资源及
+target 目录。复跑 dev 已启动（Vite ready 33145ms），浏览器看到首次登录页；尚不代表原生桌面
+登录和 API 对话验收通过。未操作或提交工作区中既有的资源文件删除。
+
+GREEN：
+- HTTP SSE framing / UTF-8 / lifecycle：2 + 5 + 3 passed，覆盖三协议。
+- `cargo test -q -p deepagent-models --features http --lib --offline -j 1`：279 passed。
+- `cargo test -q -p deepagent-runtime --lib --offline -j 1`：493 passed / 2 ignored；
+  截断工具审计必须在第三次完整响应恢复为 recovered，共调用三次，已实际通过。
+- `cargo check --workspace --all-targets --all-features --offline -j 1`：通过，耗时 15m05s。
+  首次因 installer/dist 不存在失败；先运行安装器真实前端构建（通过）再执行检查，没有伪造产物。
+- models/http/all-targets clippy：首次被既有测试的 manual_is_multiple_of lint 阻塞；
+  按当前工具链建议修改该一处测试表达式后复跑通过。
+- 桌面 `pnpm build`（含前置测试、tsc、Vite）通过；`git diff --check` 通过。
+
+这不代表完整 workspace 测试或全仓 fmt/clippy 通过；既有 AppCore 两项失败与全仓门禁问题仍待处理。
+
+## H011：补齐 TypeScript SDK 的既有方法入口（F1，2026-11-18）
+
+依据 F0 缺口 3、Rust requests/results 类型及 Rust SDK 的现有方法；不改服务端方法、协议版本、
+字段或权限。RED：三个公开入口用例为 0 passed / 3 failed，均因方法不存在而失败。
+
+修复：TypeScript SDK 增加 `forkThread`、`sandboxStatus`、`acknowledgeEvents`；复用既有
+stdio request、版本握手、错误与回执验证。fork 返回完整 receipt，不自动 resume 或重试。
+fork/ACK 的序号在发包前校验安全无符号整数，避免 JavaScript 精度丢失；不把 ACK 解释成持久游标。
+公开入口负例验证错误回执、原始 RPC 拒绝和非法序号零发包。原有真实 CLI fork 用例改走公开方法。
+
+验证：SDK TypeScript 构建通过。默认并行全测 201 passed / 2 failed；两个失败为 H266/H267
+子进程生命周期用例的 gate/时序超时。使用相同测试文件与断言、仅 `--test-concurrency=1`
+复跑 203 passed / 0 failed。随后新增回执负例和省略 atSequence 断言，相关两文件 38 passed。
+最终相同文件集合串行全测为 204 passed / 0 failed。真实 CLI cold fork 用例 1 passed，
+包含 4 个原生进程、3 个分支、4 次显式运行，使用公开 forkThread 方法；既有 CLI 二进制 SHA256 为
+`fcaa80efa5a49a8fece86091cd695a45e320f39460f74abfc8aeadc229e1983f`，本批未重新构建 CLI。
+默认并行失败保留为工程限制，不能记为默认全测通过。

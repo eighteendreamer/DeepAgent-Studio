@@ -98,6 +98,11 @@ impl DeepSeekTokenizer {
                     .map_err(CoreError::from)?
                     .convert(options)
             }
+            WireMode::Messages => {
+                return Err(CoreError::other(
+                    "offline_prompt_conversion: Messages tokenizer template is not available",
+                ))
+            }
         }
         .map_err(|error| CoreError::other(format!("offline_prompt_conversion: {error}")))?;
         let tokenizer = self.tokenizer()?;

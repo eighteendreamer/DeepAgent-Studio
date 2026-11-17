@@ -9,6 +9,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
+#[path = "sse_protocol_fixture.rs"]
+pub mod protocol;
+
 pub struct Fixture {
     pub base_url: String,
     stop: Option<oneshot::Sender<()>>,
@@ -88,6 +91,7 @@ impl Fixture {
     pub fn config(&self, mode: WireMode) -> ModelConfig {
         let mut config = ModelConfig::deepseek("h30-synthetic").with_wire_mode(mode);
         config.base_url = self.base_url.clone();
+        config.defaults.max_output_tokens = Some(32);
         config
     }
 
@@ -135,6 +139,7 @@ async fn read_request(socket: &mut TcpStream) -> Value {
             assert!(
                 headers.starts_with("POST /responses HTTP/1.1")
                     || headers.starts_with("POST /chat/completions HTTP/1.1")
+                    || headers.starts_with("POST /messages HTTP/1.1")
                     || headers.starts_with("GET /models HTTP/1.1")
             );
             if headers.starts_with("GET /models HTTP/1.1") {
@@ -156,6 +161,7 @@ async fn read_request(socket: &mut TcpStream) -> Value {
     }
 }
 
+#[allow(dead_code)] // Compatibility helper for the AppCore Responses-only fixtures.
 pub fn response_terminal() -> String {
     serde_json::json!({"type":"response.completed","sequence_number":0,"response":{
         "id":"h30-response","object":"response","created_at":1,"model":"deepseek-v4-flash",

@@ -31,46 +31,49 @@ impl Observed {
             .collect()
     }
 
-    fn assert_no_terminal_or_usage(&self) {
-        assert!(!self.0.iter().any(|event| matches!(
-            event,
-            ModelStreamEvent::Usage { .. } | ModelStreamEvent::Finished { .. }
-        )));
+    fn assert_no_terminal_or_generated_usage(&self, mode: WireMode) {
+        assert!(!self
+            .0
+            .iter()
+            .any(|event| matches!(event, ModelStreamEvent::Finished { .. })));
+        let usages: Vec<_> = self
+            .0
+            .iter()
+            .filter_map(|event| match event {
+                ModelStreamEvent::Usage { usage } => Some(usage),
+                _ => None,
+            })
+            .collect();
+        if mode == WireMode::Messages {
+            assert_eq!(
+                usages.len(),
+                1,
+                "message_start reports input usage before corruption"
+            );
+            assert_eq!(
+                (usages[0].prompt_tokens, usages[0].completion_tokens),
+                (9, 0)
+            );
+        } else {
+            assert!(usages.is_empty());
+        }
     }
 }
 
 fn delta(mode: WireMode, text: &str) -> Vec<u8> {
-    let payload = match mode {
-        WireMode::Responses => serde_json::json!({
-            "type":"response.output_text.delta","sequence_number":0,"item_id":"h257-output",
-            "output_index":0,"content_index":0,"delta":text}),
-        WireMode::ChatCompletions => serde_json::json!({"choices":[{
-            "index":0,"delta":{"content":text},"finish_reason":null}]}),
-    };
-    format!("data: {payload}\n\n").into_bytes()
+    fixture::protocol::encode([fixture::protocol::delta(mode, text, 0)])
 }
 
 fn terminal(mode: WireMode, text: &str) -> Vec<u8> {
-    match mode {
-        WireMode::Responses => {
-            let mut value: serde_json::Value =
-                serde_json::from_str(&fixture::response_terminal()).unwrap();
-            value["sequence_number"] = 1.into();
-            value["response"]["output"][0]["id"] = "h257-output".into();
-            value["response"]["output"][0]["content"][0]["text"] = text.into();
-            value["response"]["usage"] = serde_json::json!({
-                "input_tokens":9,"output_tokens":2,"total_tokens":11});
-            format!("data: {value}\n\n").into_bytes()
-        }
-        WireMode::ChatCompletions => b"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":2,\"total_tokens\":11}}\n\ndata: [DONE]\n\n".to_vec(),
-    }
+    fixture::protocol::encode(fixture::protocol::finish(mode, text, 1))
 }
 
 async fn observe(
     mode: WireMode,
     cancel_aware: bool,
-    chunks: Vec<Vec<u8>>,
+    mut chunks: Vec<Vec<u8>>,
 ) -> (deepagent_core::error::Result<Response>, Observed) {
+    chunks.insert(0, fixture::protocol::encode(fixture::protocol::start(mode)));
     let server = fixture::Fixture::start(chunks).await;
     let client = ModelClient::new(Arc::new(fixture::Fixture::transport()), server.config(mode));
     let request = ResponseRequest::new("deepseek-v4-flash", vec![Message::user("synthetic")]);
@@ -94,7 +97,7 @@ async fn observe(
 
 #[tokio::test]
 async fn h257_invalid_bytes_preserve_valid_prefix_and_absolute_offset_across_http_chunks() {
-    for mode in [WireMode::Responses, WireMode::ChatCompletions] {
+    for mode in fixture::protocol::MODES {
         for cancel_aware in [false, true] {
             for before_delta in [false, true] {
                 for invalid in [
@@ -106,7 +109,8 @@ async fn h257_invalid_bytes_preserve_valid_prefix_and_absolute_offset_across_htt
                     if before_delta {
                         prefix.extend(delta(mode, "before|"));
                     }
-                    let offset = prefix.len();
+                    let offset = fixture::protocol::encode(fixture::protocol::start(mode)).len()
+                        + prefix.len();
                     let mut wire = prefix.clone();
                     wire.extend(&invalid);
                     wire.extend(delta(mode, "after|"));
@@ -117,7 +121,7 @@ async fn h257_invalid_bytes_preserve_valid_prefix_and_absolute_offset_across_htt
                         vec![
                             prefix.clone(),
                             invalid[..1].to_vec(),
-                            wire[offset + 1..].to_vec(),
+                            wire[prefix.len() + 1..].to_vec(),
                         ],
                     ] {
                         let (result, observed) = observe(mode, cancel_aware, chunks).await;
@@ -135,7 +139,7 @@ async fn h257_invalid_bytes_preserve_valid_prefix_and_absolute_offset_across_htt
                         );
                         assert!(!classify_model_error(&error).retryable());
                         assert_eq!(observed.text(), if before_delta { "before|" } else { "" });
-                        observed.assert_no_terminal_or_usage();
+                        observed.assert_no_terminal_or_generated_usage(mode);
                     }
                 }
             }
@@ -145,7 +149,7 @@ async fn h257_invalid_bytes_preserve_valid_prefix_and_absolute_offset_across_htt
 
 #[tokio::test]
 async fn h257_eof_rejects_each_incomplete_tail_without_fabricating_a_terminal() {
-    for mode in [WireMode::Responses, WireMode::ChatCompletions] {
+    for mode in fixture::protocol::MODES {
         for cancel_aware in [false, true] {
             for tail in [vec![0xc3], vec![0xe2, 0x82], vec![0xf0, 0x9f, 0x99]] {
                 let mut wire = delta(mode, "before|é中🙂");
@@ -161,7 +165,7 @@ async fn h257_eof_rejects_each_incomplete_tail_without_fabricating_a_terminal() 
                     "{error}"
                 );
                 assert_eq!(observed.text(), "before|é中🙂");
-                observed.assert_no_terminal_or_usage();
+                observed.assert_no_terminal_or_generated_usage(mode);
             }
         }
     }
@@ -169,7 +173,7 @@ async fn h257_eof_rejects_each_incomplete_tail_without_fabricating_a_terminal() 
 
 #[tokio::test]
 async fn h257_complete_unicode_and_terminal_short_circuit_keep_the_existing_contract() {
-    for mode in [WireMode::Responses, WireMode::ChatCompletions] {
+    for mode in fixture::protocol::MODES {
         for cancel_aware in [false, true] {
             for extra_bytes_after_terminal in [false, true] {
                 let mut wire = delta(mode, "é中文🙂");

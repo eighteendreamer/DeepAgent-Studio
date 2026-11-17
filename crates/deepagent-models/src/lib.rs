@@ -37,6 +37,7 @@ pub mod discovery;
 pub mod failure;
 pub mod file_references;
 pub mod image_input;
+pub mod messages;
 mod protocol;
 mod provider_error;
 pub mod responses;
@@ -52,7 +53,10 @@ pub mod usage;
 #[cfg(feature = "http")]
 pub mod reqwest_transport;
 
-pub use balance::{fetch_balance, BalanceInfo, BalanceResponse, BALANCE_PATH};
+pub use balance::{
+    fetch_balance, fetch_balance_by_kind, BalanceAmount, BalanceInfo, BalanceKind, BalanceResponse,
+    BalanceSnapshot, BALANCE_PATH,
+};
 pub use capability::{CapabilitySource, ModelCapability, ModelCapabilityResolver};
 pub use chat::{
     FinishReason, FunctionSchema, ReasoningEffort, Response, ResponseRequest, ThinkingToggle,

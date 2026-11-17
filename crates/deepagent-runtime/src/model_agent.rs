@@ -16,6 +16,12 @@ use std::sync::Arc;
 #[path = "model_agent_modalities_tests.rs"]
 mod modalities_tests;
 
+#[cfg(test)]
+use deepagent_models::WireMode;
+#[cfg(test)]
+#[path = "../../deepagent-models/tests/support/sse_protocol_fixture.rs"]
+mod protocol_fixture;
+
 use async_trait::async_trait;
 
 use deepagent_core::error::{CoreError, Result};
@@ -5214,28 +5220,23 @@ mod tests {
     #[tokio::test]
     async fn reasoning_effort_none_maps_to_chat_thinking_disabled() {
         let mut results = Vec::new();
-        for wire_mode in [
-            deepagent_models::WireMode::Responses,
-            deepagent_models::WireMode::ChatCompletions,
-        ] {
+        for wire_mode in protocol_fixture::MODES {
             for effort in [
                 ReasoningEffort::None,
                 ReasoningEffort::Low,
                 ReasoningEffort::High,
                 ReasoningEffort::Max,
             ] {
-                let events = match wire_mode {
-                    deepagent_models::WireMode::Responses => response_text_completed("done"),
-                    deepagent_models::WireMode::ChatCompletions => vec![
-                        serde_json::json!({"choices":[{"index":0,"delta":{"content":"done"},"finish_reason":"stop"}]}).to_string(),
-                        "[DONE]".into(),
-                    ],
-                };
+                let mut events = protocol_fixture::start(wire_mode);
+                events.push(protocol_fixture::delta(wire_mode, "done", 0));
+                events.extend(protocol_fixture::finish(wire_mode, "done", 1));
                 let transport = Arc::new(AttemptTransport {
                     attempts: Mutex::new(VecDeque::from([events])),
                     requests: Mutex::new(Vec::new()),
                 });
-                let config = ModelConfig::deepseek("audit-placeholder").with_wire_mode(wire_mode);
+                let mut config =
+                    ModelConfig::deepseek("audit-placeholder").with_wire_mode(wire_mode);
+                config.defaults.max_output_tokens = Some(512);
                 let client = Arc::new(ModelClient::new(transport.clone(), config));
                 let mut agent =
                     ModelAgent::new(client, "deepseek-flash", "system", "hello", vec![])
@@ -5252,6 +5253,7 @@ mod tests {
                     "wire_effort": last.and_then(|body| {
                         body.get("reasoning_effort")
                             .or_else(|| body.get("reasoning"))
+                            .or_else(|| body.get("output_config"))
                     }),
                     "error": outcome.err().map(|error| error.to_string()),
                 }));
@@ -5272,6 +5274,9 @@ mod tests {
         for case in &results {
             if case["mode"] == "Responses" {
                 assert_eq!(case["wire_effort"]["effort"], case["selected_effort"]);
+            } else if case["mode"] == "Messages" && case["selected_effort"] != "none" {
+                assert_eq!(case["thinking"], serde_json::json!({"type":"adaptive"}));
+                assert_eq!(case["wire_effort"]["effort"], case["selected_effort"]);
             } else if case["selected_effort"] == "none" {
                 assert_eq!(case["thinking"], serde_json::json!({"type":"disabled"}));
                 assert!(case["wire_effort"].is_null());
@@ -5287,10 +5292,7 @@ mod tests {
     // the max-token recovery boundary cannot silently regress.
     async fn audit_output_limit_does_not_dispatch_unfinished_tool_calls() {
         let mut dispatched = Vec::new();
-        for wire_mode in [
-            deepagent_models::WireMode::ChatCompletions,
-            deepagent_models::WireMode::Responses,
-        ] {
+        for wire_mode in protocol_fixture::MODES {
             for arguments in ["", r#"{"value":"#] {
                 let events = match wire_mode {
                     deepagent_models::WireMode::ChatCompletions => vec![
@@ -5309,20 +5311,31 @@ mod tests {
                         }}).to_string(),
                         response_incomplete(serde_json::json!([])),
                     ],
+                    deepagent_models::WireMode::Messages => {
+                        let mut events = vec![protocol_fixture::message_start()];
+                        events.extend([
+                            serde_json::json!({"type":"content_block_start","index":0,
+                                "content_block":{"type":"tool_use","id":"truncated-call",
+                                    "name":"audit_default","input":{}}}).to_string(),
+                            serde_json::json!({"type":"content_block_delta","index":0,
+                                "delta":{"type":"input_json_delta","partial_json":arguments}}).to_string(),
+                            serde_json::json!({"type":"message_delta","delta":{
+                                "stop_reason":"max_tokens","stop_sequence":null},"usage":{"output_tokens":512}}).to_string(),
+                            serde_json::json!({"type":"message_stop"}).to_string(),
+                        ]);
+                        events
+                    },
                 };
-                let success = match wire_mode {
-                    deepagent_models::WireMode::ChatCompletions => vec![
-                        serde_json::json!({"choices":[{"index":0,"delta":{"content":"recovered"},"finish_reason":"stop"}]}).to_string(),
-                        "[DONE]".into(),
-                    ],
-                    deepagent_models::WireMode::Responses => response_text_completed("recovered"),
-                };
+                let mut success = protocol_fixture::start(wire_mode);
+                success.push(protocol_fixture::delta(wire_mode, "recovered", 0));
+                success.extend(protocol_fixture::finish(wire_mode, "recovered", 1));
                 let transport = Arc::new(AttemptTransport {
                     attempts: Mutex::new(VecDeque::from([events.clone(), events, success])),
                     requests: Mutex::new(Vec::new()),
                 });
                 let mut config = ModelConfig::deepseek("audit-placeholder");
                 config.wire_mode = wire_mode;
+                config.defaults.max_output_tokens = Some(512);
                 let mut agent = ModelAgent::new(
                     Arc::new(ModelClient::new(transport.clone(), config)),
                     "deepseek-flash", "system", "inspect", vec![ToolSchema::function(
@@ -5343,6 +5356,11 @@ mod tests {
                 )).count();
                 eprintln!("audit truncated tool: route={wire_mode:?}, raw={arguments:?}, requests={}, attempt_events={:?}, native_calls={native_calls}, decision={decision:?}",
                     transport.requests.lock().unwrap().len(), attempt.events);
+                assert!(
+                    matches!(&decision, Ok(AgentDecision::CompleteItems { message, .. }) if message.content == "recovered"),
+                    "truncated tools must recover through the next complete attempt: {decision:?}"
+                );
+                assert_eq!(transport.requests.lock().unwrap().len(), 3);
                 dispatched.push(is_call || native_calls > 0);
             }
         }

@@ -115,6 +115,7 @@ async fn complex_function_schema_is_preserved_on_both_wires() {
             let parameters = match wire_mode {
                 WireMode::Responses => &requests[0]["tools"][0]["parameters"],
                 WireMode::ChatCompletions => &requests[0]["tools"][0]["function"]["parameters"],
+                WireMode::Messages => unreachable!("Messages is not part of this legacy fixture"),
             };
             assert_eq!(parameters, &schema);
         }

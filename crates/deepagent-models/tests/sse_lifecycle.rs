@@ -28,43 +28,29 @@ fn timeouts() -> TransportTimeouts {
 }
 
 fn delta(mode: WireMode, index: usize) -> Vec<u8> {
-    let payload = match mode {
-        WireMode::Responses => serde_json::json!({"type":"response.output_text.delta",
-            "sequence_number":index,"item_id":"h30-output","output_index":0,"content_index":0,
-            "delta":index.to_string()}),
-        WireMode::ChatCompletions => serde_json::json!({"choices":[{
-            "index":0,"delta":{"content":index.to_string()},"finish_reason":null}]}),
+    let mut events = if index == 0 {
+        fixture::protocol::start(mode)
+    } else {
+        vec![]
     };
-    format!("data: {payload}\n\n").into_bytes()
+    events.push(fixture::protocol::delta(mode, &index.to_string(), index));
+    fixture::protocol::encode(events)
 }
 
 fn active_chunks(mode: WireMode) -> Vec<(Duration, Vec<u8>)> {
     let mut chunks: Vec<_> = (0..6)
         .map(|index| (Duration::from_millis(60), delta(mode, index)))
         .collect();
-    match mode {
-        WireMode::Responses => {
-            let mut terminal: serde_json::Value =
-                serde_json::from_str(&fixture::response_terminal()).unwrap();
-            terminal["sequence_number"] = 6.into();
-            terminal["response"]["output"][0]["content"][0]["text"] = "012345".into();
-            terminal["response"]["usage"] =
-                serde_json::json!({"input_tokens":9,"output_tokens":2,"total_tokens":11});
-            chunks.push((
-                Duration::from_millis(60),
-                format!("data: {terminal}\n\n").into_bytes(),
-            ));
-        }
-        WireMode::ChatCompletions => {
-            chunks.push((
-                Duration::from_millis(60),
-                b"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
-                    .to_vec(),
-            ));
-            chunks.push((Duration::from_millis(60), b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":2,\"total_tokens\":11}}\n\n".to_vec()));
-            chunks.push((Duration::from_millis(60), b"data: [DONE]\n\n".to_vec()));
-        }
-    }
+    chunks.extend(
+        fixture::protocol::finish(mode, "012345", 6)
+            .into_iter()
+            .map(|event| {
+                (
+                    Duration::from_millis(60),
+                    fixture::protocol::encode([event]),
+                )
+            }),
+    );
     chunks
 }
 
@@ -106,8 +92,8 @@ async fn response(
 }
 
 #[tokio::test]
-async fn h131_active_stream_keeps_text_usage_and_terminal_in_both_protocols_and_entries() {
-    for mode in [WireMode::Responses, WireMode::ChatCompletions] {
+async fn h131_active_stream_keeps_text_usage_and_terminal_in_all_protocols_and_entries() {
+    for mode in fixture::protocol::MODES {
         for cancel_aware in [false, true] {
             let server =
                 fixture::Fixture::start_timed(active_chunks(mode), Duration::ZERO, 200).await;
@@ -135,7 +121,7 @@ async fn h131_active_stream_keeps_text_usage_and_terminal_in_both_protocols_and_
 
 #[tokio::test]
 async fn h131_idle_still_interrupts_after_progress_has_already_outlived_total() {
-    for mode in [WireMode::Responses, WireMode::ChatCompletions] {
+    for mode in fixture::protocol::MODES {
         for cancel_aware in [false, true] {
             let mut chunks = active_chunks(mode);
             chunks[6].0 = Duration::from_millis(600);
@@ -161,7 +147,7 @@ async fn h131_idle_still_interrupts_after_progress_has_already_outlived_total() 
 
 #[tokio::test]
 async fn h131_true_cancellation_interrupts_an_active_stream_after_its_old_total_budget() {
-    for mode in [WireMode::Responses, WireMode::ChatCompletions] {
+    for mode in fixture::protocol::MODES {
         let chunks = (0..30)
             .map(|index| (Duration::from_millis(60), delta(mode, index)))
             .collect();

@@ -160,6 +160,7 @@ async fn h169_both_protocols_keep_all_four_real_original_formats() {
                 WireMode::ChatCompletions => {
                     &requests[0]["messages"][0]["content"][1]["image_url"]["url"]
                 }
+                WireMode::Messages => panic!("Messages image projection is not part of this audit"),
             };
             assert_eq!(sent, &serde_json::json!(url));
         }

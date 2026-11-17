@@ -16,6 +16,9 @@ default = []
 http = ["dep:reqwest", "dep:time"]
 
 [dependencies]
+# Plan P0/P5: SDK DTOs only; HttpTransport owns networking and cancellation.
+# This SDK version is not published on crates.io. Pin its audited MIT source.
+anthropic-sdk = { git = "https://github.com/Haleclipse/anthropic-sdk-rs.git", rev = "16dc3e424e7c5041bcc952ebb54d9ec4b2b1ced7" }
 deepagent-core.workspace = true
 deepagent-tools.workspace = true
 async-trait.workspace = true

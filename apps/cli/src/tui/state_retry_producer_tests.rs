@@ -55,6 +55,11 @@ impl HttpTransport for Script {
             ],
             WireMode::ChatCompletions => vec![json!({"choices":[{"index":0,
                 "delta":{"content":text,"reasoning_content":thought},"finish_reason":null}]})],
+            WireMode::Messages => {
+                return Err(CoreError::other(
+                    "synthetic retry producer does not implement Messages fixtures",
+                ))
+            }
         };
         if matches!(end, End::Stop | End::Length) {
             let length = matches!(end, End::Length);
@@ -70,6 +75,11 @@ impl HttpTransport for Script {
                 }
                 WireMode::ChatCompletions => json!({"choices":[{"index":0,"delta":{},
                     "finish_reason":if length { "length" } else { "stop" }}]}),
+                WireMode::Messages => {
+                    return Err(CoreError::other(
+                        "synthetic retry producer does not implement Messages fixtures",
+                    ))
+                }
             });
         }
         for event in events {

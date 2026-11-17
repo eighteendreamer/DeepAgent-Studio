@@ -57,8 +57,31 @@ impl WireCodec for ChatCompletionsCodec {
     }
 }
 
+struct MessagesCodec;
+
+impl WireCodec for MessagesCodec {
+    fn name(&self) -> &'static str {
+        "messages"
+    }
+
+    fn project_tools(&self, tools: &[ToolSchema]) -> Vec<serde_json::Value> {
+        crate::messages::project_tools(tools)
+    }
+
+    fn encode_body(&self, client: &ModelClient, request: ResponseRequest) -> Result<String> {
+        let request = client.prepare_response_request(request);
+        let max_tokens = request.max_output_tokens.ok_or_else(|| {
+            deepagent_core::error::CoreError::invalid(
+                "Messages requests require a positive max_output_tokens value",
+            )
+        })?;
+        crate::messages::encode_request(&request, max_tokens)
+    }
+}
+
 static RESPONSES: ResponsesCodec = ResponsesCodec;
 static CHAT_COMPLETIONS: ChatCompletionsCodec = ChatCompletionsCodec;
+static MESSAGES: MessagesCodec = MessagesCodec;
 
 /// The one production match on wire protocol. Add a protocol here and nowhere
 /// else in the client path.
@@ -66,6 +89,7 @@ pub(crate) fn codec_for(mode: WireMode) -> &'static dyn WireCodec {
     match mode {
         WireMode::Responses => &RESPONSES,
         WireMode::ChatCompletions => &CHAT_COMPLETIONS,
+        WireMode::Messages => &MESSAGES,
     }
 }
 
@@ -82,6 +106,7 @@ mod tests {
             codec_for(WireMode::ChatCompletions).name(),
             "chat_completions"
         );
+        assert_eq!(codec_for(WireMode::Messages).name(), "messages");
     }
 
     #[test]

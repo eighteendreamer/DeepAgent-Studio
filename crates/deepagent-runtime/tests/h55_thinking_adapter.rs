@@ -45,6 +45,7 @@ impl HttpTransport for ScriptedTransport {
         let suffix = match self.mode {
             WireMode::Responses => "/responses",
             WireMode::ChatCompletions => "/chat/completions",
+            WireMode::Messages => "/messages",
         };
         assert!(request.url.ends_with(suffix));
         let attempt = {
@@ -88,6 +89,22 @@ impl HttpTransport for ScriptedTransport {
                 .to_string(),
                 "[DONE]".into(),
             ],
+            WireMode::Messages => [
+                json!({"type":"message_start","message":{"id":"h55-fixture","type":"message",
+                    "role":"assistant","model":"primary","content":[],"stop_reason":null,
+                    "stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}),
+                json!({"type":"content_block_start","index":0,
+                    "content_block":{"type":"text","text":""}}),
+                json!({"type":"content_block_delta","index":0,
+                    "delta":{"type":"text_delta","text":"H55 complete"}}),
+                json!({"type":"content_block_stop","index":0}),
+                json!({"type":"message_delta","delta":{"stop_reason":"end_turn",
+                    "stop_sequence":null},"usage":{"output_tokens":2}}),
+                json!({"type":"message_stop"}),
+            ]
+            .into_iter()
+            .map(|event| event.to_string())
+            .collect(),
         };
         for event in events {
             if sink.on_event(&event)? {
@@ -103,6 +120,7 @@ fn client(transport: Arc<ScriptedTransport>) -> Arc<ModelClient> {
         .with_wire_mode(transport.mode)
         .with_defaults(ResponseDefaults {
             reasoning_effort: Some(ReasoningEffort::High),
+            max_output_tokens: Some(1024),
             ..Default::default()
         });
     Arc::new(ModelClient::new(transport, config))
@@ -125,19 +143,35 @@ fn assert_wire(body: &Value, mode: WireMode, effort: ReasoningEffort) {
                 assert_eq!(body["reasoning_effort"], effort.label());
             }
         }
+        WireMode::Messages => {
+            assert!(body.get("reasoning").is_none());
+            assert!(body.get("reasoning_effort").is_none());
+            assert_eq!(body["max_tokens"], 1024);
+            if effort == ReasoningEffort::None {
+                assert_eq!(body["thinking"], json!({"type":"disabled"}));
+                assert!(body.get("output_config").is_none());
+            } else {
+                assert_eq!(body["thinking"], json!({"type":"adaptive"}));
+                assert_eq!(body["output_config"]["effort"], effort.label());
+            }
+        }
     }
 }
 
 #[tokio::test]
 async fn h55_agent_preserves_efforts_on_retries_and_surfaces_overload_without_retry() {
-    for mode in [WireMode::Responses, WireMode::ChatCompletions] {
+    for mode in [
+        WireMode::Responses,
+        WireMode::ChatCompletions,
+        WireMode::Messages,
+    ] {
         for effort in [
             ReasoningEffort::None,
             ReasoningEffort::Low,
             ReasoningEffort::High,
             ReasoningEffort::Max,
         ] {
-            for first_error in [None, Some(429), Some(529)] {
+            for first_error in [None, Some(429), Some(503), Some(529)] {
                 for cancel_aware in [false, true] {
                     let transport = Arc::new(ScriptedTransport::new(mode, first_error, false));
                     let mut agent = ModelAgent::new(
@@ -156,7 +190,7 @@ async fn h55_agent_preserves_efforts_on_retries_and_surfaces_overload_without_re
                     } else {
                         agent.think(0, &[]).await
                     };
-                    if first_error == Some(529) {
+                    if matches!(first_error, Some(503 | 529)) {
                         assert_eq!(
                             deepagent_models::classify_model_error(&result.unwrap_err()),
                             deepagent_models::ModelFailureKind::Overloaded
@@ -183,8 +217,12 @@ async fn h55_agent_preserves_efforts_on_retries_and_surfaces_overload_without_re
 }
 
 #[tokio::test]
-async fn h55_omission_and_explicit_none_are_distinct_on_both_public_response_entries() {
-    for mode in [WireMode::Responses, WireMode::ChatCompletions] {
+async fn h55_omission_and_explicit_none_are_distinct_on_all_public_response_entries() {
+    for mode in [
+        WireMode::Responses,
+        WireMode::ChatCompletions,
+        WireMode::Messages,
+    ] {
         for explicit in [None, Some(ReasoningEffort::None)] {
             for cancel_aware in [false, true] {
                 let transport = Arc::new(ScriptedTransport::new(mode, None, false));
@@ -254,7 +292,11 @@ async fn h55_direct_chat_toggle_and_none_survive_high_defaults() {
 
 #[tokio::test]
 async fn h55_none_effort_cancels_before_and_during_each_adapter_without_retry() {
-    for mode in [WireMode::Responses, WireMode::ChatCompletions] {
+    for mode in [
+        WireMode::Responses,
+        WireMode::ChatCompletions,
+        WireMode::Messages,
+    ] {
         let transport = Arc::new(ScriptedTransport::new(mode, None, true));
         let mut agent = ModelAgent::new(
             client(transport.clone()),

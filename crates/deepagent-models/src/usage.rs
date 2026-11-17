@@ -33,7 +33,10 @@ pub fn sanitized_provider_usage(value: &Value) -> Value {
         ("prompt_tokens_details", &["cached_tokens"][..]),
         ("completion_tokens_details", &["reasoning_tokens"][..]),
         ("input_tokens_details", &["cached_tokens"][..]),
-        ("output_tokens_details", &["reasoning_tokens"][..]),
+        (
+            "output_tokens_details",
+            &["reasoning_tokens", "thinking_tokens"][..],
+        ),
         (
             "cache_creation",
             &["ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens"][..],

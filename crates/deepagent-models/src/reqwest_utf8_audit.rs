@@ -9,7 +9,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 
-const TERMINAL: &[u8] = b"event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":3,\"response\":{\"id\":\"resp_audit\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"deepseek-flash\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n";
+#[path = "../tests/support/sse_protocol_fixture.rs"]
+mod protocol_fixture;
 
 async fn write_chunk(socket: &mut TcpStream, bytes: &[u8]) -> bool {
     socket
@@ -21,22 +22,7 @@ async fn write_chunk(socket: &mut TcpStream, bytes: &[u8]) -> bool {
 }
 
 fn delta(text: &str, sequence: u32, mode: WireMode) -> Vec<u8> {
-    if mode == WireMode::ChatCompletions {
-        return format!(
-            "data: {}\n\n",
-            serde_json::json!({"choices":[{"index":0,"delta":{"content":text},"finish_reason":null}]})
-        )
-        .into_bytes();
-    }
-    format!(
-        "event: response.output_text.delta\ndata: {}\n\n",
-        serde_json::json!({
-            "type": "response.output_text.delta", "sequence_number": sequence,
-            "item_id": "msg_audit", "output_index": 0, "content_index": 0,
-            "delta": text,
-        })
-    )
-    .into_bytes()
+    protocol_fixture::encode([protocol_fixture::delta(mode, text, sequence as usize)])
 }
 
 struct Observer {
@@ -85,10 +71,7 @@ async fn observe_http(fault: InputFault, cancel_aware: bool, mode: WireMode) -> 
             request.extend_from_slice(&buffer[..count]);
             if let Some(header_end) = request.windows(4).position(|p| p == b"\r\n\r\n") {
                 let headers = std::str::from_utf8(&request[..header_end]).unwrap();
-                let endpoint = match mode {
-                    WireMode::Responses => "/responses",
-                    WireMode::ChatCompletions => "/chat/completions",
-                };
+                let endpoint = protocol_fixture::endpoint(mode);
                 assert!(headers.starts_with(&format!("POST {endpoint} HTTP/1.1")));
                 let length = headers
                     .lines()
@@ -112,7 +95,8 @@ async fn observe_http(fault: InputFault, cancel_aware: bool, mode: WireMode) -> 
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
             .await
             .unwrap();
-        let first = delta("before|", 1, mode);
+        let mut first = protocol_fixture::encode(protocol_fixture::start(mode));
+        first.extend(delta("before|", 1, mode));
         assert!(write_chunk(&mut socket, &first).await);
         // A semantic observer acknowledgment proves the production reader is active.
         first_seen_rx.await.unwrap();
@@ -160,11 +144,9 @@ async fn observe_http(fault: InputFault, cancel_aware: bool, mode: WireMode) -> 
         ) {
             let _ = socket.write_all(b"0\r\n\r\n").await;
         } else {
-            let terminal = match mode {
-                WireMode::Responses => TERMINAL,
-                WireMode::ChatCompletions => b"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".as_slice(),
-            };
-            let _ = write_chunk(&mut socket, terminal).await;
+            let terminal =
+                protocol_fixture::encode(protocol_fixture::finish(mode, "before|中文🙂|", 3));
+            let _ = write_chunk(&mut socket, &terminal).await;
             let _ = socket.write_all(b"0\r\n\r\n").await;
         }
     });
@@ -178,6 +160,7 @@ async fn observe_http(fault: InputFault, cancel_aware: bool, mode: WireMode) -> 
             });
     let mut config = ModelConfig::deepseek("synthetic-audit-placeholder").with_wire_mode(mode);
     config.base_url = format!("http://{address}");
+    config.defaults.max_output_tokens = Some(32);
     let client = ModelClient::new(Arc::new(transport), config);
     let text = Arc::new(Mutex::new(String::new()));
     let mut observer = Observer {
@@ -364,8 +347,8 @@ async fn incomplete_utf8_at_eof_is_reported_as_truncation_not_missing_terminal()
 }
 
 #[tokio::test]
-async fn incomplete_utf8_wait_remains_actually_cancellable_in_both_protocols() {
-    for mode in [WireMode::Responses, WireMode::ChatCompletions] {
+async fn incomplete_utf8_wait_remains_actually_cancellable_in_all_protocols() {
+    for mode in protocol_fixture::MODES {
         let observation = observe_http(InputFault::CancelIncomplete, true, mode).await;
         let error = observation.result.unwrap_err();
         assert!(observation.settled_before_eof, "{mode:?}: {error}");

@@ -466,7 +466,7 @@ fn h80_histories(
     );
     if shape >= 2 {
         valid.insert(
-            if shape % 2 == 0 { 3 } else { 2 },
+            if shape.is_multiple_of(2) { 3 } else { 2 },
             ResponseInputItem::Message {
                 role: "assistant".into(),
                 content: "Tool narration.".into(),
