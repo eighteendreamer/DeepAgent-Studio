@@ -722,6 +722,7 @@ fn h261_histories(
         ResponseInputItem::Reasoning {
             id: Some("h261-reasoning".into()),
             content: "Reasoning.".into(),
+            signature: None,
         },
         ResponseInputItem::WebSearchCall {
             id: "h261-search".into(),

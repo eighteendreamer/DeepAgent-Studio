@@ -625,6 +625,7 @@ fn legacy_native_first_history_recovers_but_ambiguous_ownership_is_rejected() {
             item: ResponseItem::Reasoning {
                 id: Some("provider-reasoning-id".into()),
                 content: "legacy reasoning".into(),
+                signature: None,
             },
         },
         EventPayload::ResponseItemAppended {
@@ -726,6 +727,7 @@ fn incomplete_legacy_projection_fails_without_mutating_raw_history() {
                 item: ResponseItem::Reasoning {
                     id: None,
                     content: "retained reasoning".into(),
+                    signature: None,
                 },
             },
             clock.now(),

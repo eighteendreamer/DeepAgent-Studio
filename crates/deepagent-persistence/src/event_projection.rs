@@ -238,6 +238,7 @@ fn project_payload(
                 items.push(ResponseItem::Reasoning {
                     id: None,
                     content: reasoning.to_string(),
+                    signature: None,
                 });
             }
             items.extend(

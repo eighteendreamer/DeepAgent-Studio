@@ -219,6 +219,7 @@ fn project_messages(
                     items.push(ResponseItem::Reasoning {
                         id: None,
                         content: reasoning.to_string(),
+                        signature: None,
                     });
                 }
                 items.extend(message.tool_calls.iter().map(&call_item));
@@ -733,6 +734,7 @@ mod tests {
             ResponseItem::Reasoning {
                 id: Some("rs_1".into()),
                 content: "call both tools".into(),
+                signature: None,
             },
             ResponseItem::FunctionCall {
                 call_id: "call-1".into(),
@@ -804,6 +806,7 @@ mod tests {
             ResponseItem::Reasoning {
                 id: Some("r1".into()),
                 content: "thinking".into(),
+                signature: None,
             },
             ResponseItem::FunctionCall {
                 call_id: "call-1".into(),

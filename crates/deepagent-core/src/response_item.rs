@@ -57,6 +57,11 @@ pub enum ResponseItem {
         id: Option<String>,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         content: String,
+        /// Provider-issued thinking signature (Anthropic Messages `signature`).
+        /// Replay needs it to restore the model's own reasoning; `None` for
+        /// Responses items and for every record written before this field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
     },
     FunctionCall {
         call_id: String,

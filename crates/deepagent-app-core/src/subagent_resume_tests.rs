@@ -368,6 +368,7 @@ fn h242_saved_surface_uses_existing_compaction_replacement_and_native_item_proje
         .append_response_item(ResponseInputItem::Reasoning {
             id: Some("reasoning-242".into()),
             content: "NATIVE_REASONING".into(),
+            signature: None,
         })
         .unwrap()
         .sequence;

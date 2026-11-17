@@ -1709,10 +1709,12 @@ mod tests {
                 ResponseInputItem::Reasoning {
                     id: Some("reasoning-1".into()),
                     content: "first ".into(),
+                    signature: None,
                 },
                 ResponseInputItem::Reasoning {
                     id: Some("reasoning-2".into()),
                     content: "second".into(),
+                    signature: None,
                 },
                 ResponseInputItem::Message {
                     role: "assistant".into(),
@@ -1793,10 +1795,12 @@ mod tests {
                 ResponseInputItem::Reasoning {
                     id: Some("reasoning-1".into()),
                     content: "inspect ".into(),
+                    signature: None,
                 },
                 ResponseInputItem::Reasoning {
                     id: Some("reasoning-2".into()),
                     content: "both files".into(),
+                    signature: None,
                 },
                 ResponseInputItem::FunctionCall {
                     call_id: "call-a".into(),

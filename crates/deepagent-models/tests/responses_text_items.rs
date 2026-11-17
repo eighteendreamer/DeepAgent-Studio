@@ -290,7 +290,8 @@ fn h81_legacy_reasoning_still_precedes_its_uncompleted_text_fallback() {
         vec![
             ResponseOutputItem::Reasoning {
                 id: None,
-                content: "think first".into()
+                content: "think first".into(),
+                signature: None,
             },
             ResponseOutputItem::Message {
                 role: "assistant".into(),

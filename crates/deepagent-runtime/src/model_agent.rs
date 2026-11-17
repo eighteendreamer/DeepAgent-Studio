@@ -541,6 +541,7 @@ impl ResponseHistory {
                     self.items.push(ResponseInputItem::Reasoning {
                         id: None,
                         content: reasoning.to_string(),
+                        signature: None,
                     });
                 }
                 self.items.extend(
@@ -3673,6 +3674,7 @@ mod tests {
             ResponseInputItem::Reasoning {
                 id: Some("r1".into()),
                 content: "parent reasoning".into(),
+                signature: None,
             },
             ResponseInputItem::FunctionCall {
                 call_id: "call-parent".into(),

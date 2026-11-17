@@ -2467,6 +2467,7 @@ mod tests {
                     item: ResponseItem::Reasoning {
                         id: None,
                         content: "need a file read".into(),
+                        signature: None,
                     },
                 },
             ),

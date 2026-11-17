@@ -681,6 +681,7 @@ impl ChatCompletionAccumulator {
             output_items.push(ResponseOutputItem::Reasoning {
                 id: None,
                 content: self.reasoning,
+                signature: None,
             });
         }
         // There is no explicit tool-call completion event in this protocol.

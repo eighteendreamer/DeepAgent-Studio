@@ -3308,6 +3308,7 @@ mod tests {
                 ResponseOutputItem::Reasoning {
                     id: Some("rs_1".into()),
                     content: "checking".into(),
+                    signature: None,
                 },
                 ResponseOutputItem::FunctionCall {
                     call_id: "native-call".into(),
@@ -3319,6 +3320,7 @@ mod tests {
                 ResponseOutputItem::Reasoning {
                     id: Some("rs_final".into()),
                     content: "final check".into(),
+                    signature: None,
                 },
                 ResponseOutputItem::Message {
                     role: "assistant".into(),

@@ -392,6 +392,7 @@ fn official_prompt_counts_native_reasoning_calls_long_outputs_and_response_schem
             ResponseInputItem::Reasoning {
                 id: None,
                 content: "synthetic reasoning, not a user control token <think>".into(),
+                signature: None,
             },
             ResponseInputItem::FunctionCall {
                 call_id: "c1".into(),

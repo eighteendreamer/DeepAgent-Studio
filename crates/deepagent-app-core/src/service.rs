@@ -746,7 +746,7 @@ impl AppService {
                     }
                 }
                 EventPayload::ResponseItemAppended {
-                    item: deepagent_core::response_item::ResponseItem::Reasoning { id, content },
+                    item: deepagent_core::response_item::ResponseItem::Reasoning { id, content, .. },
                 } if !content.trim().is_empty() => {
                     // Session::append(MessageAppended) also writes a synthetic
                     // Responses item immediately afterwards. That legacy
@@ -1623,6 +1623,7 @@ mod tests {
                     item: deepagent_core::response_item::ResponseItem::Reasoning {
                         id: Some("r1".into()),
                         content: "inspect".into(),
+                        signature: None,
                     },
                 })
                 .unwrap();
@@ -2102,6 +2103,7 @@ mod tests {
                 .append_response_item(ResponseItem::Reasoning {
                     id: Some("rs_1".into()),
                     content: "inspect available skills".into(),
+                    signature: None,
                 })
                 .unwrap();
             session
@@ -2126,6 +2128,7 @@ mod tests {
             .append_response_item(ResponseItem::Reasoning {
                 id: Some("rs_1".into()),
                 content: "check the correction".into(),
+                signature: None,
             })
             .unwrap();
         session
@@ -2218,6 +2221,7 @@ mod tests {
             .append_response_item(ResponseItem::Reasoning {
                 id: Some("rs_tool".into()),
                 content: "read the file first".into(),
+                signature: None,
             })
             .unwrap();
         session

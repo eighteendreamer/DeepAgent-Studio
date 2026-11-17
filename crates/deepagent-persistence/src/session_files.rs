@@ -1268,6 +1268,7 @@ mod tests {
             ResponseItem::Reasoning {
                 id: None,
                 content: "whole reasoning".into(),
+                signature: None,
             },
             ResponseItem::Message {
                 role: "assistant".into(),

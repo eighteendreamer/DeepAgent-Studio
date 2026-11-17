@@ -308,7 +308,7 @@ fn response_input_items_to_wire(
                 } => {
                     response_input_message_to_wire(role, content, attachments, data_urls, file_ids)?
                 }
-                ResponseInputItem::Reasoning { id, content } => {
+                ResponseInputItem::Reasoning { id, content, .. } => {
                     let mut value = serde_json::json!({
                         "type": "reasoning",
                         "content": [{
@@ -1321,6 +1321,7 @@ mod tests {
                 ResponseInputItem::Reasoning {
                     id: Some("rs_1".into()),
                     content: "The prior assistant thought privately.".into(),
+                    signature: None,
                 },
                 ResponseInputItem::Message {
                     role: "assistant".into(),

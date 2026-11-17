@@ -528,6 +528,7 @@ impl ResponseAccumulator {
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_string),
                 content: reasoning_text_from_item(item).unwrap_or_default(),
+                signature: None,
             }),
             "function_call" | "custom_tool_call" => {
                 call_index.map(|index| self.tool_calls[index].output_item())
@@ -610,6 +611,7 @@ impl ResponseAccumulator {
                 let reasoning = ResponseOutputItem::Reasoning {
                     id: None,
                     content: self.reasoning.clone(),
+                    signature: None,
                 };
                 // Legacy reasoning deltas still precede their text fallback.
                 // Completed native items keep their existing relative order.
@@ -645,12 +647,13 @@ fn response_item_already_present(
         // Messages are reconciled by provider identity, never text equality.
         // InputMessage is input-only and is never produced as a model output.
         ResponseOutputItem::Message { .. } | ResponseOutputItem::InputMessage { .. } => false,
-        ResponseOutputItem::Reasoning { id, content } => items.iter().any(|item| {
+        ResponseOutputItem::Reasoning { id, content, .. } => items.iter().any(|item| {
             matches!(
                 item,
                 ResponseOutputItem::Reasoning {
                     id: existing_id,
                     content: existing_content,
+                    ..
                 } if existing_id == id && existing_content == content
             )
         }),
@@ -1187,7 +1190,7 @@ mod tests {
             .output_items
             .iter()
             .filter_map(|item| match item {
-                ResponseOutputItem::Reasoning { id, content } => {
+                ResponseOutputItem::Reasoning { id, content, .. } => {
                     Some((id.as_deref(), content.as_str()))
                 }
                 _ => None,
@@ -1238,7 +1241,7 @@ mod tests {
             .output_items
             .iter()
             .filter_map(|item| match item {
-                ResponseOutputItem::Reasoning { id, content } => {
+                ResponseOutputItem::Reasoning { id, content, .. } => {
                     Some((id.as_deref(), content.as_str()))
                 }
                 _ => None,
