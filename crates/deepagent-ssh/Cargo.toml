@@ -30,6 +30,10 @@ flate2 = "1"
 tokio-util = { version = "0.7", features = ["rt"] }
 tempfile = "3.8"
 
+[target.'cfg(windows)'.dependencies]
+# Already locked Win32 bindings; ordinal comparison follows the host name rules.
+windows-sys = { version = "0.59", features = ["Win32_Globalization", "Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 # Independent historical handshake control; not used by production transport.
 async-ssh2-tokio = "0.12.2"

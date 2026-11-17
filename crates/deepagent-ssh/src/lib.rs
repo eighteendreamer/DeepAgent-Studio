@@ -29,6 +29,7 @@ pub use config::{
     SshHostKeyPolicy, SshStatus, UpdateSshConnectionRequest,
 };
 pub use connection_challenge::{SshConnectionAttempt, SshHostKeyChallenge, SshHostKeyDecision};
+pub use directory_plan::{DirectoryTransferEntry, DirectoryTransferPlan};
 pub use directory_walk::{DirectoryWalkLimits, RemoteDirectoryEntry, RemoteDirectoryTree};
 pub use error::{SshError, SshResult};
 pub use file_transfer::{
@@ -64,6 +65,7 @@ mod agent;
 mod config;
 mod connection_challenge;
 mod connection_flow;
+mod directory_plan;
 mod directory_walk;
 mod error;
 mod file_transfer;

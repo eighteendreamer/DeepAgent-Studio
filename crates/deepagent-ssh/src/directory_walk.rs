@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, time::Duration};
 use tokio_util::sync::CancellationToken;
 
+pub(super) const MAX_METADATA_BYTES: usize = 8 * 1024 * 1024;
+
 #[derive(Debug, Clone, Copy)]
 pub struct DirectoryWalkLimits {
     pub max_entries: u32,
@@ -21,6 +23,15 @@ impl Default for DirectoryWalkLimits {
             max_entries: 10_000,
             max_depth: 64,
         }
+    }
+}
+
+impl DirectoryWalkLimits {
+    pub(super) fn validate(self) -> Result<(), FileTransferError> {
+        if self.max_entries == 0 || self.max_entries > 100_000 || self.max_depth > 128 {
+            return Err(failure("invalid", "directory limits exceed local bounds"));
+        }
+        Ok(())
     }
 }
 
@@ -55,9 +66,7 @@ impl SshService {
         let root = root.trim_end_matches('/');
         let root = if root.is_empty() { "/" } else { root };
         validate_root(root)?;
-        if limits.max_entries == 0 || limits.max_entries > 100_000 || limits.max_depth > 128 {
-            return Err(failure("invalid", "directory limits exceed local bounds"));
-        }
+        limits.validate()?;
         let (owner, client) = operation(&cancel, self.inner.file_client(connection_id)).await?;
         let channel = operation(&cancel, client.get_channel()).await?;
         if let Err(error) = operation(&cancel, channel.request_subsystem(true, "sftp")).await {
@@ -115,7 +124,7 @@ fn failure(code: &str, message: &str) -> FileTransferError {
     FileTransferError::new(code, message)
 }
 
-fn validate_root(root: &str) -> Result<(), FileTransferError> {
+pub(super) fn validate_root(root: &str) -> Result<(), FileTransferError> {
     crate::files::validate_path(root)
         .map_err(|_| failure("invalid", "invalid remote directory path"))?;
     if !root.starts_with('/')
@@ -274,7 +283,7 @@ impl Walker<'_> {
                     + metadata.user.as_ref().map_or(0, String::len)
                     + metadata.group.as_ref().map_or(0, String::len)
                     + 512;
-                if self.metadata_bytes > 8 * 1024 * 1024 {
+                if self.metadata_bytes > MAX_METADATA_BYTES {
                     return Err(failure(
                         "limit",
                         "directory metadata exceeds 8 MiB local budget",
