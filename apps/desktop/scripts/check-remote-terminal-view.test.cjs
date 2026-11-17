@@ -27,7 +27,7 @@ test('inactive terminal tabs stay mounted even when a file preview is selected',
       React, useState: () => [states[index++], () => {}], useRef: () => ({ current: 1 }), useEffect() {}, useTranslation: () => ({ t: key => key }),
       HoverInfo: pass, ContextMenu: pass, ContextMenuTrigger: pass, ContextMenuContent: pass, ContextMenuItem: pass,
       TerminalPlugin: ({ connectionId, active }) => React.createElement('output', { 'data-connection': connectionId, 'data-active': active }, 'terminal fixture'),
-      FloatingChat: () => null, SyntaxHighlightedCode: () => null, PreviewBody: () => null, languageForFile: () => 'text',
+      FloatingChat: () => null, RemoteTransfersPanel: () => null, SyntaxHighlightedCode: () => null, PreviewBody: () => null, languageForFile: () => 'text',
     };
     for (const name of ['Server', 'Terminal', 'Plus', 'X', 'FileText', 'Loader2']) context[name] = () => null;
     const View = production('RemoteView', context);

@@ -550,7 +550,10 @@ impl SshServiceImpl {
         })
     }
 
-    async fn file_session(&self, connection_id: &str) -> SshResult<(Arc<SshSession>, SftpSession)> {
+    pub(crate) async fn file_session(
+        &self,
+        connection_id: &str,
+    ) -> SshResult<(Arc<SshSession>, SftpSession)> {
         let session = self.connected_session(connection_id).await?;
         let client = session
             .client()

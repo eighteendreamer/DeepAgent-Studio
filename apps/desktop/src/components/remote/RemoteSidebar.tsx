@@ -1,12 +1,12 @@
 import { SshAuthenticationFields, type SshFormAuthType } from "./SshAuthenticationFields";
 import { SshHostTrustField } from "./SshHostTrustField";
 import { SshHostTrustManager } from "./SshHostTrustManager";
+import { remoteTransferSubmit } from "../../remoteTransfersApi";
 import { RemoteFileProperties } from "./RemoteFileProperties";
 import { useSshConnectionConfirmation } from "./SshHostKeyPrompt";
 import { HoverInfo } from "../ui/HoverInfo";
 import {
   ArrowLeft,
-  Check,
   ChevronDown,
   ChevronRight,
   File as FileIcon,
@@ -21,8 +21,6 @@ import {
   Search,
   Server,
   Trash2,
-  Upload,
-  X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -43,7 +41,6 @@ import {
   sshCreateFile,
   sshListConnections,
   sshListDir,
-  sshPushFile,
   sshRemoveConnection,
   sshRemovePath,
   sshRenamePath,
@@ -190,14 +187,6 @@ export function RemoteSidebar({
   const [loadingDir, setLoadingDir] = useState<string | null>(null);
   const showDirectoryLoading = connectingId === selected?.id || loadingDir !== null;
   const [dirError, setDirError] = useState<string | null>(null);
-  const [uploads, setUploads] = useState<
-    Array<{
-      id: string;
-      name: string;
-      status: "uploading" | "success" | "error";
-      error?: string;
-    }>
-  >([]);
   const [inlineEdit, setInlineEdit] = useState<InlineEdit | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   const [editingConn, setEditingConn] = useState<SshConnection | null>(null);
@@ -250,80 +239,27 @@ export function RemoteSidebar({
 
           const targetDir = resolveDropTarget(event.payload.position);
 
-          const newUploads = paths.map((filePath) => {
-            const fileName = filePath.split(/[\\/]/).pop() || filePath;
-            return {
-              id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-              name: fileName,
-              status: "uploading" as const,
-            };
-          });
-
-          setUploads((prev) => [...prev, ...newUploads]);
-
           let successCount = 0;
           let errorCount = 0;
-
-          for (const upload of newUploads) {
-            const localPath = paths.find((p) =>
-              p.split(/[\\/]/).pop() === upload.name,
-            );
-            if (!localPath) {
-              setUploads((prev) =>
-                prev.map((u) =>
-                  u.id === upload.id
-                    ? { ...u, status: "error" as const, error: "无法获取文件路径" }
-                    : u,
-                ),
-              );
-              errorCount++;
-              continue;
-            }
-
-            const remotePath = targetDir.endsWith("/")
-              ? `${targetDir}${upload.name}`
-              : `${targetDir}/${upload.name}`;
-
+          for (const localPath of paths) {
+            const name = localPath.split(/[\\/]/).pop();
+            if (!name) { errorCount++; continue; }
             try {
-              await sshPushFile(conn.id, {
-                local_path: localPath,
-                remote_path: remotePath,
-                create_parent: true,
-                overwrite: true,
-                verify_mode: "size",
-              });
-              setUploads((prev) =>
-                prev.map((u) =>
-                  u.id === upload.id ? { ...u, status: "success" as const } : u,
-                ),
-              );
+              await remoteTransferSubmit(conn.id, { direction: "upload", localPath,
+                remotePath: targetDir.endsWith("/") ? `${targetDir}${name}` : `${targetDir}/${name}` });
               successCount++;
-            } catch (error) {
-              const errorMsg =
-                error instanceof Error ? error.message : String(error);
-              setUploads((prev) =>
-                prev.map((u) =>
-                  u.id === upload.id
-                    ? { ...u, status: "error" as const, error: errorMsg }
-                    : u,
-                ),
-              );
-              errorCount++;
-            }
+            } catch { errorCount++; }
           }
 
           await loadDir(conn.id, targetDir);
 
           if (successCount > 0) {
-            message.success(`已上传 ${successCount} 个文件到 ${targetDir}`);
+            message.success(t("remote.transfers.enqueued", { count: successCount }));
           }
           if (errorCount > 0) {
-            message.error(`${errorCount} 个文件上传失败`);
+            message.error(t("remote.transfers.enqueueFailed", { count: errorCount }));
           }
 
-          setTimeout(() => {
-            setUploads((prev) => prev.filter((u) => u.status === "uploading"));
-          }, 10000);
         }
       });
       if (disposed) {
@@ -1037,40 +973,6 @@ export function RemoteSidebar({
         </div>
       </div>
 
-      {uploads.length > 0 && (
-        <div className="mx-3 mt-2 border-t border-border-theme pt-2">
-          <div className="mb-1.5 flex items-center gap-1.5 px-2.5 text-[11px] font-medium text-text-secondary">
-            <Upload className="h-3 w-3" />
-            {t("remote.uploads")} ({uploads.length})
-          </div>
-          <div className="max-h-[120px] space-y-1 overflow-y-auto">
-            {uploads.map((upload) => (
-              <div
-                key={upload.id}
-                className="flex items-center gap-2 rounded-md px-2.5 py-1 text-[11px]"
-              >
-                {upload.status === "uploading" && (
-                  <Loader2 className="h-3 w-3 shrink-0 animate-spin text-blue-500" />
-                )}
-                {upload.status === "success" && (
-                  <Check className="h-3 w-3 shrink-0 text-green-500" />
-                )}
-                {upload.status === "error" && (
-                  <X className="h-3 w-3 shrink-0 text-red-500" />
-                )}
-                <span className="min-w-0 flex-1 truncate text-text-base">
-                  {upload.name}
-                </span>
-                {upload.status === "error" && upload.error && (
-                  <HoverInfo content={upload.error}><span className="shrink-0 text-[10px] text-red-400" >
-                    失败
-                  </span></HoverInfo>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {managerOpen &&
         createPortal(

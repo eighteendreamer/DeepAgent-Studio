@@ -192,7 +192,7 @@ function promptMayChangeSettings(prompt: string): boolean {
   return /^\/(model|thinking|effort)(?:\s|$)/.test(normalized);
 }
 
-function getInvoke(): InvokeFn | null {
+export function getInvoke(): InvokeFn | null {
   // Tauri injects __TAURI_INTERNALS__ / the api module at runtime.
   const w = window as unknown as { __TAURI_INTERNALS__?: unknown };
   if (typeof window !== "undefined" && w.__TAURI_INTERNALS__) {

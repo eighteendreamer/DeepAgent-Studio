@@ -30,6 +30,10 @@ pub use config::{
 };
 pub use connection_challenge::{SshConnectionAttempt, SshHostKeyChallenge, SshHostKeyDecision};
 pub use error::{SshError, SshResult};
+pub use file_transfer::{
+    FileConflictPolicy, FileTransferDirection, FileTransferError, FileTransferProgress,
+    FileTransferReceipt, FileTransferRequest,
+};
 pub use files::{RemoteFileKind, RemoteFileMetadata, RemoteRealpath};
 pub use host_key_rotation::{SshHostKeyRotationPreview, SshHostKeyRotationResult};
 pub use host_key_store::{
@@ -60,6 +64,7 @@ mod config;
 mod connection_challenge;
 mod connection_flow;
 mod error;
+mod file_transfer;
 mod files;
 mod host_key_activity;
 mod host_key_rotation;

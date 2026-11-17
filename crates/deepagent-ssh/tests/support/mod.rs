@@ -24,6 +24,8 @@ pub struct Counts {
     pub reject_shell: AtomicBool,
     pub pty_size: RwLock<Option<(u32, u32)>>,
     pub files: Arc<RwLock<HashMap<String, Vec<u8>>>>,
+    pub stage_created: tokio::sync::Notify,
+    pub stage_open_gate: RwLock<Option<Arc<tokio::sync::Notify>>>,
 }
 
 struct Handler {
@@ -156,9 +158,9 @@ impl server::Handler for Handler {
             .channels
             .remove(&channel)
             .expect("fixture SFTP channel");
-        let files = self.counts.files.clone();
+        let counts = self.counts.clone();
         self.tasks.spawn(async move {
-            russh_sftp::server::run(channel.into_stream(), sftp::MemoryFiles::new(files)).await;
+            russh_sftp::server::run(channel.into_stream(), sftp::MemoryFiles::new(counts)).await;
         });
         Ok(())
     }
