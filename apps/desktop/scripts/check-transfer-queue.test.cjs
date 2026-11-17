@@ -12,27 +12,30 @@ test('new transfers explicitly default to ask; no credential or overwrite boolea
 test('terminal state UI shows exact byte values and conflict actions without saying cancellation is finished early', () => { const file = 'src/components/remote/RemoteTransfersPanel.tsx'; const fn = production(file, 'TransferTaskBody'); const task = { id: 'x', state: 'cancelling', bytes: '18446744073709551614', total: '18446744073709551615', attempt: 2, request: { transfer: { direction: 'download', remotePath: '/file', localPath: 'C:/out' } }, error: null }; const html = renderToStaticMarkup(React.createElement(fn, { task, label: k => k })); assert.match(html, /cancelling/); assert.match(html, /18446744073709551614/); assert.doesNotMatch(html, /18446744073709552000|NaN/); });
 test('native drag files are submitted by exact path through the same queue and never forced overwrite', () => { const file = readFileSync(path.join(root, 'src/components/remote/RemoteSidebar.tsx'), 'utf8'); assert.ok(!/await sshPushFile\(conn\.id/.test(file), 'drag must not use old destructive upload'); assert.ok(file.includes('remoteTransferSubmit(conn.id'), 'drag enters queue'); assert.ok(!/paths\.find\(/.test(file), 'same basename cannot select the wrong local file'); });
 
-test('effect refresh shares an in-flight snapshot and fences late writes after cleanup', async () => {
+test('panel consumes the shared observer and unmount only unsubscribes', async () => {
   const file = 'src/components/remote/RemoteTransfersPanel.tsx';
   const source = readFileSync(path.join(root, file), 'utf8');
-  const effects = []; const updates = []; const refs = []; let refIndex = 0; let reply; let requests = 0;
-  const pending = new Promise(resolve => { reply = resolve; });
+  const effects = []; const updates = []; const listeners = new Set(); let subscriptions = 0;
   const hooks = { ...React, useEffect: effect => effects.push(effect),
-    useRef: value => { const i = refIndex++; return refs[i] ??= {current:value}; },
     useState: value => [value, next => updates.push(next)] };
-  const api = {remoteTransfersSnapshot: async () => {requests++; return pending;}};
+  const observer = {observeRemoteTransfers: listener => {
+    subscriptions++; listeners.add(listener); return () => listeners.delete(listener);
+  }};
   const module = {exports:{}};
   vm.runInNewContext(ts.transpileModule(source, {compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText, {
     exports:module.exports,module,setTimeout:()=>1,clearTimeout:()=>{},
-    require: name => name === 'react' ? hooks : name === 'react/jsx-runtime' ? require('react/jsx-runtime') : name === 'react-i18next' ? {useTranslation:()=>({t:k=>k})} : name.includes('remoteTransfersApi') ? api : new Proxy({}, {get:()=>()=>null}),
+    require: name => name === 'react' ? hooks : name === 'react/jsx-runtime' ? require('react/jsx-runtime') : name === 'react-i18next' ? {useTranslation:()=>({t:k=>k})} : name.includes('remoteTransferObserver') ? observer : new Proxy({}, {get:()=>()=>null}),
   });
   module.exports.RemoteTransfersPanel({connectionId:'fixture'});
   const close = effects[0]();
-  close(); refIndex = 0;
+  close();
   module.exports.RemoteTransfersPanel({connectionId:'fixture'});
   const cleanup = effects[1]();
-  assert.equal(requests,1,'refresh must not overlap the previous pending IPC');
+  assert.equal(subscriptions,2); assert.equal(listeners.size,1,'old component unsubscribes');
+  for (const listener of listeners) listener.next({revision:'1',tasks:[]});
+  assert.ok(updates.length>0);
   cleanup(); const before = updates.length;
-  reply([]); await new Promise(setImmediate);
+  for (const listener of listeners) listener.next({revision:'2',tasks:[]});
+  await new Promise(setImmediate);
   assert.equal(updates.length,before,'disposed effects cannot update UI');
 });

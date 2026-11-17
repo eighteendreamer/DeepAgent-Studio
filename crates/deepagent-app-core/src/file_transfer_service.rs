@@ -15,7 +15,7 @@ use std::{
     collections::HashMap,
     sync::{Arc, Mutex, Weak},
 };
-use tokio::sync::Semaphore;
+use tokio::sync::{watch, Semaphore};
 
 const COLLECTION: &str = "remote_transfers_v1";
 const LIMIT: usize = 128;
@@ -53,6 +53,13 @@ pub struct TransferTask {
     pub updated_ms: i64,
     pub receipt: Option<FileTransferReceipt>,
     pub error: Option<FileTransferError>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferSnapshot {
+    /// Opaque host-generation/revision cursor; never a JavaScript number.
+    pub revision: String,
+    pub tasks: Vec<TransferTask>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Document {
@@ -95,6 +102,8 @@ struct Inner {
     state: Mutex<State>,
     global: Arc<Semaphore>,
     root: CancellationTree,
+    generation: String,
+    changes: watch::Sender<u64>,
 }
 struct Owner(CancellationTree);
 impl Drop for Owner {
@@ -161,6 +170,8 @@ impl TransferCoordinator {
                 }),
                 global: Arc::new(Semaphore::new(4)),
                 root,
+                generation: uuid::Uuid::new_v4().to_string(),
+                changes: watch::channel(0).0,
             }),
             _owner: owner,
         };
@@ -178,6 +189,32 @@ impl TransferCoordinator {
         let state = self.inner.state.lock().unwrap_or_else(|p| p.into_inner());
         healthy(&state)?;
         Ok(state.document.tasks.clone())
+    }
+    /// Subscribe before reading the snapshot so mutations cannot fall in a gap.
+    /// A dropped/expired wait owns no worker and never cancels a transfer.
+    pub async fn watch(
+        &self,
+        after_revision: Option<&str>,
+        max_wait: std::time::Duration,
+    ) -> Result<TransferSnapshot> {
+        let mut changes = self.inner.changes.subscribe();
+        let wait = async {
+            loop {
+                changes.borrow_and_update();
+                let snapshot = self.inner.current_snapshot()?;
+                if after_revision != Some(snapshot.revision.as_str()) {
+                    return Ok(snapshot);
+                }
+                changes
+                    .changed()
+                    .await
+                    .map_err(|_| invalid("transfer host stopped"))?;
+            }
+        };
+        match tokio::time::timeout(max_wait, wait).await {
+            Ok(result) => result,
+            Err(_) => self.inner.current_snapshot(),
+        }
     }
     pub async fn submit(&self, mut request: TransferRequest) -> Result<TransferTask> {
         if request.connection_id.is_empty()
@@ -379,6 +416,7 @@ impl TransferCoordinator {
                         t.total = progress.total.map(|v| v.to_string());
                         t.revision += 1;
                         t.updated_ms = SystemClock.now().as_millis();
+                        inner.notify();
                     }
                 }
             });
@@ -412,6 +450,18 @@ impl TransferCoordinator {
     }
 }
 impl Inner {
+    fn notify(&self) {
+        self.changes
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
+    fn current_snapshot(&self) -> Result<TransferSnapshot> {
+        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        healthy(&state)?;
+        Ok(TransferSnapshot {
+            revision: format!("{}:{}", self.generation, *self.changes.borrow()),
+            tasks: state.document.tasks.clone(),
+        })
+    }
     fn persist(&self, state: &mut State) -> Result<()> {
         let body = serde_json::to_string(&state.document)
             .map_err(|_| invalid("transfer serialization failed"))?;
@@ -435,6 +485,7 @@ impl Inner {
             ));
         }
         state.body = Some(body);
+        self.notify();
         Ok(())
     }
     fn transition(
@@ -474,6 +525,7 @@ impl Inner {
             // Network outcome may already be committed. Never show a fake running
             // task or admit more work after losing its durable terminal record.
             state.recovery_required = true;
+            self.notify();
             return Err(e);
         }
         if next.terminal() {

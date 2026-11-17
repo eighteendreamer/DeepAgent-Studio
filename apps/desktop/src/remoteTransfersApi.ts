@@ -27,6 +27,18 @@ export interface TransferTask {
   } | null;
 }
 
+export interface TransferSnapshot {
+  /** Queue-local readiness cursor, kept exact across the Rust/JavaScript boundary. */
+  revision: string;
+  tasks: TransferTask[];
+}
+
+export async function remoteTransfersWatch(afterRevision?: string): Promise<TransferSnapshot> {
+  const invoke = getInvoke();
+  if (!invoke) throw Error("transfers require the desktop app");
+  return invoke("remote_transfer_watch", { afterRevision: afterRevision ?? null });
+}
+
 export async function remoteTransferSubmit(connectionId: string, transfer: TransferInput): Promise<TransferTask> {
   const invoke = getInvoke();
   if (!invoke) throw Error("transfers require the desktop app");

@@ -2,6 +2,7 @@ import { SshAuthenticationFields, type SshFormAuthType } from "./SshAuthenticati
 import { SshHostTrustField } from "./SshHostTrustField";
 import { SshHostTrustManager } from "./SshHostTrustManager";
 import { remoteTransferSubmit } from "../../remoteTransfersApi";
+import { createUploadInvalidator, observeRemoteTransfers } from "../../remoteTransferObserver";
 import { RemoteFileProperties } from "./RemoteFileProperties";
 import { useSshConnectionConfirmation } from "./SshHostKeyPrompt";
 import { HoverInfo } from "../ui/HoverInfo";
@@ -182,7 +183,15 @@ export function RemoteSidebar({
   const [managerMode, setManagerMode] = useState<ManagerMode>("list");
   const [form, setForm] = useState<ConnectionForm>(emptyForm);
   const [filter, setFilter] = useState("");
-  const [tree, setTree] = useState<Record<string, SshDirEntry[]>>({});
+  const [directoryTree, setDirectoryTree] = useState<{
+    connectionId?: string; entries: Record<string, SshDirEntry[]>;
+  }>({ connectionId: selected?.id, entries: {} });
+  const tree = directoryTree.connectionId === selected?.id ? directoryTree.entries : {};
+  const setTree = (update: Record<string, SshDirEntry[]> | ((previous: Record<string, SshDirEntry[]>) => Record<string, SshDirEntry[]>)) => {
+    const connectionId = selected?.id;
+    setDirectoryTree(previous => ({ connectionId, entries: typeof update === "function"
+      ? update(previous.connectionId === connectionId ? previous.entries : {}) : update }));
+  };
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [loadingDir, setLoadingDir] = useState<string | null>(null);
   const showDirectoryLoading = connectingId === selected?.id || loadingDir !== null;
@@ -196,6 +205,13 @@ export function RemoteSidebar({
 
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
+  const treeRef = useRef(tree);
+  treeRef.current = tree;
+  const directoryScope = useRef({ connectionId: selected?.id, requests: new Map<string, symbol>() });
+  if (directoryScope.current.connectionId !== selected?.id) {
+    directoryScope.current = { connectionId: selected?.id, requests: new Map() };
+  }
+  useEffect(() => () => { directoryScope.current.requests.clear(); }, []);
 
   const loadConnections = () => {
     sshListConnections()
@@ -278,12 +294,19 @@ export function RemoteSidebar({
   }, [t]);
 
   const loadDir = async (connectionId: string, path: string) => {
+    const scope = directoryScope.current;
+    const request = Symbol();
+    scope.requests.set(path, request);
+    const current = () => directoryScope.current === scope
+      && selectedRef.current?.id === connectionId && scope.requests.get(path) === request;
     setLoadingDir(path);
     try {
       const listing = await sshListDir(connectionId, path);
+      if (!current()) return;
       setTree((prev) => ({ ...prev, [path]: listing.entries }));
       setDirError(null);
     } catch (error) {
+      if (!current()) return;
       setDirError(
         normalizeSshError(
           error instanceof Error ? error.message : String(error),
@@ -291,14 +314,29 @@ export function RemoteSidebar({
         ),
       );
     } finally {
-      setLoadingDir(null);
+      if (current()) {
+        scope.requests.delete(path);
+        setLoadingDir(null);
+      }
     }
   };
+
+  useEffect(() => {
+    const id = selected?.id;
+    if (!id || selected.status !== "connected") return;
+    void loadDir(id, "/");
+    const next = createUploadInvalidator(id, paths => {
+      // Root plus loaded parents; multiple completions in one notice share refreshes.
+      const visible = new Set(["/", ...[...paths].filter(path => treeRef.current[path])]);
+      for (const path of visible) void loadDir(id, path);
+    });
+    return observeRemoteTransfers({ next, error: error => setDirError(String(error)) });
+  }, [selected?.id, selected?.status]);
 
   const handleSelect = async (conn: SshConnection) => {
     setManagerOpen(false);
     onSelect(conn);
-    setTree({});
+    setDirectoryTree({ connectionId: conn.id, entries: {} });
     setExpanded(new Set());
     setDirError(null);
     setFilter("");
@@ -325,7 +363,6 @@ export function RemoteSidebar({
       }
       if (current.status !== "connected") return;
     }
-    await loadDir(current.id, "/");
   };
 
   // 重进远程视图时本组件重挂载、目录树状态已丢失，而 selected 是 App 级

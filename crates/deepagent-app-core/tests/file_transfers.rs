@@ -45,6 +45,109 @@ fn request(id: &str, name: &str) -> TransferRequest {
         },
     }
 }
+
+#[tokio::test]
+async fn watch_closes_snapshot_subscribe_gap_and_coalesces_without_losing_terminal_state() {
+    let executor = Arc::new(Executor::default());
+    let service = TransferCoordinator::new(
+        Arc::new(Database::open_in_memory().unwrap()),
+        executor.clone(),
+    )
+    .unwrap();
+    let initial = service
+        .watch(None, std::time::Duration::ZERO)
+        .await
+        .unwrap();
+    assert!(initial.revision.ends_with(":0"));
+    assert!(initial.tasks.is_empty());
+    let first = service.submit(request("a", "watch-gap")).await.unwrap();
+    state(&service, &first.id, TransferState::Running).await;
+    // Deliberately subscribe AFTER mutations; the old cursor must return immediately.
+    let running = tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        service.watch(Some(&initial.revision), std::time::Duration::from_secs(5)),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_ne!(running.revision, initial.revision);
+    assert_eq!(running.tasks[0].bytes, "3");
+    let pending = service.watch(Some(&running.revision), std::time::Duration::from_secs(5));
+    tokio::pin!(pending);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), &mut pending)
+            .await
+            .is_err()
+    );
+    executor.release.notify_one();
+    let finished = tokio::time::timeout(std::time::Duration::from_millis(250), pending)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(finished.tasks[0].state, TransferState::Completed);
+    assert_eq!(finished.tasks[0].bytes, "10");
+    service.clear_finished().await.unwrap();
+    let cleared = service
+        .watch(Some(&finished.revision), std::time::Duration::ZERO)
+        .await
+        .unwrap();
+    assert!(cleared.tasks.is_empty());
+    assert_ne!(cleared.revision, finished.revision);
+}
+
+#[tokio::test]
+async fn watch_timeout_and_dropped_waiter_leave_queue_usable() {
+    let service = TransferCoordinator::new(
+        Arc::new(Database::open_in_memory().unwrap()),
+        Arc::new(Executor::default()),
+    )
+    .unwrap();
+    let initial = service
+        .watch(None, std::time::Duration::ZERO)
+        .await
+        .unwrap();
+    assert!(tokio::time::timeout(
+        std::time::Duration::from_millis(20),
+        service.watch(Some(&initial.revision), std::time::Duration::from_secs(5)),
+    )
+    .await
+    .is_err());
+    let unchanged = service
+        .watch(
+            Some(&initial.revision),
+            std::time::Duration::from_millis(10),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unchanged.revision, initial.revision);
+    let first = service.submit(request("a", "watch-drop")).await.unwrap();
+    state(&service, &first.id, TransferState::Running).await;
+    service.cancel(&first.id).await.unwrap();
+    state(&service, &first.id, TransferState::Cancelled).await;
+    let result = service
+        .watch(Some(&initial.revision), std::time::Duration::ZERO)
+        .await
+        .unwrap();
+    assert_eq!(result.tasks[0].state, TransferState::Cancelled);
+}
+
+#[tokio::test]
+async fn watch_cursor_is_scoped_to_host_generation_even_when_both_queues_have_revision_zero() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let first = TransferCoordinator::new(db.clone(), Arc::new(Executor::default())).unwrap();
+    let previous = first.watch(None, std::time::Duration::ZERO).await.unwrap();
+    drop(first);
+    let next = TransferCoordinator::new(db, Arc::new(Executor::default())).unwrap();
+    let current = tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        next.watch(Some(&previous.revision), std::time::Duration::from_secs(5)),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(current.revision.ends_with(":0"));
+    assert_ne!(current.revision, previous.revision);
+}
 async fn state(service: &TransferCoordinator, id: &str, expected: TransferState) {
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
@@ -293,17 +396,18 @@ async fn terminal_persistence_failure_is_visible_and_blocks_new_work_until_host_
         c.execute_batch("CREATE TRIGGER reject_terminal BEFORE UPDATE ON documents WHEN NEW.collection='remote_transfers_v1' BEGIN SELECT RAISE(FAIL,'fixture terminal persistence failure'); END;").unwrap();
         Ok(())
     }).unwrap();
+    let previous = service
+        .watch(None, std::time::Duration::ZERO)
+        .await
+        .unwrap();
     executor.release.notify_one();
-    let error = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            if let Err(error) = service.snapshot().await {
-                break error;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
+    let error = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        service.watch(Some(&previous.revision), std::time::Duration::from_secs(5)),
+    )
     .await
-    .expect("snapshot must not silently remain running after terminal save failed");
+    .expect("failed terminal persistence must wake the observer immediately")
+    .unwrap_err();
     assert!(error.to_string().contains("reload"));
     assert!(service.submit(request("b", "not-admitted")).await.is_err());
     assert_eq!(executor.started.load(Ordering::SeqCst), 1);

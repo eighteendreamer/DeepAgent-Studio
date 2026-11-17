@@ -5805,6 +5805,23 @@ async fn remote_transfer_snapshot(
     state.transfers.snapshot().await.map_err(|e| e.to_string())
 }
 #[tauri::command]
+async fn remote_transfer_watch(
+    state: State<'_, AppState>,
+    after_revision: Option<String>,
+) -> Result<deepagent_app_core::file_transfer_service::TransferSnapshot, String> {
+    if after_revision
+        .as_ref()
+        .is_some_and(|cursor| cursor.len() > 128)
+    {
+        return Err("invalid transfer watch cursor".into());
+    }
+    state
+        .transfers
+        .watch(after_revision.as_deref(), std::time::Duration::from_secs(5))
+        .await
+        .map_err(|error| error.to_string())
+}
+#[tauri::command]
 async fn remote_transfer_cancel(
     state: State<'_, AppState>,
     id: String,
@@ -8079,6 +8096,7 @@ pub fn run() {
             ssh_file_metadata,
             remote_transfer_submit,
             remote_transfer_snapshot,
+            remote_transfer_watch,
             remote_transfer_cancel,
             remote_transfer_retry,
             remote_transfer_clear,

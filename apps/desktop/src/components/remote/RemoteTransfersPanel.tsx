@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../shadcn/button";
 import { Input } from "../shadcn/input";
@@ -7,9 +7,10 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "../shadcn/dialog";
 import {
-  remoteTransferSubmit, remoteTransfersSnapshot, remoteTransferCancel,
+  remoteTransferSubmit, remoteTransferCancel,
   remoteTransferRetry, remoteTransfersClear, type TransferTask, type TransferDirection,
 } from "../../remoteTransfersApi";
+import { observeRemoteTransfers } from "../../remoteTransferObserver";
 
 type Labeler = (key: string) => string;
 
@@ -33,7 +34,8 @@ export function TransferTaskBody({ task, label }: { task: TransferTask; label: L
 export function RemoteTransfersPanel({ connectionId }: { connectionId: string }) {
   const { t } = useTranslation();
   const label: Labeler = key => t(`remote.transfers.${key}`);
-  const [tasks, setTasks] = useState<TransferTask[]>([]);
+  const [allTasks, setTasks] = useState<TransferTask[]>([]);
+  const tasks = allTasks.filter(task => task.request.connectionId === connectionId);
   const [error, setError] = useState("");
   const [expanded, setExpanded] = useState(false);
   const [form, setForm] = useState<TransferDirection | null>(null);
@@ -41,35 +43,12 @@ export function RemoteTransfersPanel({ connectionId }: { connectionId: string })
   const [remote, setRemote] = useState("");
   const [busy, setBusy] = useState(false);
   const [replace, setReplace] = useState<string | null>(null);
-  const [refresh, setRefresh] = useState(0);
-  const pendingSnapshot = useRef<Promise<TransferTask[]> | null>(null);
   const replacement = tasks.find(task => task.id === replace)?.request.transfer;
 
-  useEffect(() => {
-    let disposed = false;
-    let timer: ReturnType<typeof setTimeout>;
-    async function load() {
-      // Effect restarts (actions, connection changes, StrictMode) reuse pending IPC.
-      const request = pendingSnapshot.current ??= remoteTransfersSnapshot();
-      try {
-        const all = await request;
-        if (disposed) return;
-        setTasks(all.filter(task => task.request.connectionId === connectionId));
-        setError("");
-        const active = all.some(task => ["queued", "running", "cancelling"].includes(task.state));
-        timer = setTimeout(load, active ? 500 : 2000);
-      } catch (e) {
-        if (!disposed) {
-          setError(String(e));
-          timer = setTimeout(load, 3000);
-        }
-      } finally {
-        if (pendingSnapshot.current === request) pendingSnapshot.current = null;
-      }
-    }
-    void load();
-    return () => { disposed = true; clearTimeout(timer); };
-  }, [connectionId, refresh]);
+  useEffect(() => observeRemoteTransfers({
+    next: snapshot => { setTasks(snapshot.tasks); setError(""); },
+    error: error => setError(String(error)),
+  }), []);
 
   async function act(work: () => Promise<unknown>) {
     if (busy) return;
@@ -77,7 +56,6 @@ export function RemoteTransfersPanel({ connectionId }: { connectionId: string })
     setError("");
     try {
       await work();
-      setRefresh(value => value + 1);
     } catch (e) {
       setError(String(e));
     } finally {
