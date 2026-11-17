@@ -22,17 +22,12 @@ use std::sync::Arc;
 /// Creative nodes use the versioned backend prompt catalog. Professional nodes
 /// own their system prompt in the workflow config and must not be looked up in
 /// that creative catalog by accident.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CanvasPromptPolicy {
+    #[default]
     CreativeProfile,
     Professional,
-}
-
-impl Default for CanvasPromptPolicy {
-    fn default() -> Self {
-        Self::CreativeProfile
-    }
 }
 
 /// A text (or vision) completion request for one canvas node.
