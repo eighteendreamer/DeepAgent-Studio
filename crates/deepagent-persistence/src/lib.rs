@@ -24,6 +24,8 @@ pub mod event_store;
 pub mod fs_commit;
 mod harness_registry;
 #[cfg(test)]
+mod harness_registry_store_tests;
+#[cfg(test)]
 mod harness_registry_tests;
 pub mod managed_file_store;
 pub mod migrations;
