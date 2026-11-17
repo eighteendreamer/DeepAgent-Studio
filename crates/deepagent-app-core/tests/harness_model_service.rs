@@ -8,6 +8,7 @@ use deepagent_app_core::harness_model_service::{
 };
 use deepagent_app_core::{MemorySecretStore, SecretStore};
 use deepagent_models::transport::{HttpTransport, MockTransport};
+use deepagent_persistence::harness_registry::HarnessProvider;
 use deepagent_persistence::Database;
 
 fn service_with_models_response(body: &str) -> (HarnessModelService, Arc<MemorySecretStore>) {
@@ -29,6 +30,99 @@ fn input(id: &str, api_key: Option<&str>) -> HarnessProviderInput {
         enabled: true,
         api_key: api_key.map(str::to_string),
     }
+}
+
+// V24 imports the existing key by reference rather than copying its plaintext.
+fn legacy_provider_service() -> (HarnessModelService, Arc<MemorySecretStore>, Arc<Database>) {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    db.save_harness_provider(&HarnessProvider {
+        id: "deepseek".into(),
+        channel: "DeepSeek".into(),
+        logo: String::new(),
+        model_url: "https://api.deepseek.com".into(),
+        protocol: "responses".into(),
+        api_key_ref: "deepseek_api_key".into(),
+        balance_kind: "official".into(),
+        enabled: true,
+        revision: 0,
+    })
+    .unwrap();
+    let secrets = Arc::new(MemorySecretStore::new());
+    secrets.set("deepseek_api_key", "test-legacy-key").unwrap();
+    let transport = Arc::new(MockTransport::with_get_json(
+        "{\"data\":[{\"id\":\"deepseek-flash\"}]}",
+    ));
+    (
+        HarnessModelService::new(db.clone(), secrets.clone(), transport),
+        secrets,
+        db,
+    )
+}
+
+#[test]
+fn legacy_provider_metadata_edits_keep_the_imported_key_reference() {
+    let (service, secrets, db) = legacy_provider_service();
+    assert!(service.list_providers().unwrap()[0].has_api_key);
+
+    for key in [None, Some("   ")] {
+        let saved = service.save_provider(input("deepseek", key)).unwrap();
+        assert!(
+            saved.has_api_key,
+            "metadata edits must retain the imported key"
+        );
+        assert_eq!(
+            db.list_harness_providers().unwrap()[0].api_key_ref,
+            "deepseek_api_key"
+        );
+        assert_eq!(
+            futures_block_on(service.fetch_models("deepseek"))
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+    assert_eq!(
+        secrets.get("deepseek_api_key").unwrap().as_deref(),
+        Some("test-legacy-key")
+    );
+    assert!(secrets.get("harness_provider:deepseek").unwrap().is_none());
+}
+
+#[test]
+fn legacy_provider_key_rotation_updates_the_referenced_secret_without_copying_it() {
+    let (service, secrets, db) = legacy_provider_service();
+
+    let saved = service
+        .save_provider(input("deepseek", Some("test-rotated-key")))
+        .unwrap();
+
+    assert!(saved.has_api_key);
+    assert_eq!(
+        db.list_harness_providers().unwrap()[0].api_key_ref,
+        "deepseek_api_key"
+    );
+    assert_eq!(
+        secrets.get("deepseek_api_key").unwrap().as_deref(),
+        Some("test-rotated-key")
+    );
+    assert!(secrets.get("harness_provider:deepseek").unwrap().is_none());
+}
+
+#[test]
+fn legacy_provider_removal_deletes_its_referenced_secret() {
+    let (service, secrets, _db) = legacy_provider_service();
+    secrets
+        .set("another-provider-key", "test-unrelated-key")
+        .unwrap();
+
+    assert!(service.remove_provider("deepseek").unwrap());
+
+    assert!(secrets.get("deepseek_api_key").unwrap().is_none());
+    assert_eq!(
+        secrets.get("another-provider-key").unwrap().as_deref(),
+        Some("test-unrelated-key")
+    );
+    assert!(service.list_providers().unwrap().is_empty());
 }
 
 #[test]

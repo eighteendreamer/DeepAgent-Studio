@@ -141,7 +141,10 @@ impl HarnessModelService {
             .filter(|id| !id.is_empty())
             .map(str::to_string)
             .unwrap_or_else(|| format!("prov-{}", uuid::Uuid::new_v4()));
-        let api_key_ref = secret_name(&id);
+        let api_key_ref = self
+            .provider(&id)?
+            .map(|provider| provider.api_key_ref)
+            .unwrap_or_else(|| secret_name(&id));
         if let Some(key) = input
             .api_key
             .as_deref()
@@ -163,32 +166,29 @@ impl HarnessModelService {
         };
         self.db.save_harness_provider(&provider)?;
         let saved = self
-            .db
-            .list_harness_providers()?
-            .into_iter()
-            .find(|stored| stored.id == id)
+            .provider(&id)?
             .ok_or_else(|| CoreError::Persistence(format!("provider `{id}` not stored")))?;
         self.view(saved)
     }
 
     /// Remove a provider, its models and its stored key.
     pub fn remove_provider(&self, provider_id: &str) -> Result<bool> {
+        let Some(provider) = self.provider(provider_id)? else {
+            return Ok(false);
+        };
         let removed = self.db.remove_harness_provider(provider_id)?;
-        self.secrets.delete(&secret_name(provider_id))?;
+        if removed {
+            self.secrets.delete(&provider.api_key_ref)?;
+        }
         Ok(removed)
     }
 
     /// Fetch the provider's `GET /models` with its stored key and store the
     /// result. New models start inactive; existing activation is kept.
     pub async fn fetch_models(&self, provider_id: &str) -> Result<Vec<HarnessModelView>> {
-        let provider = self
-            .db
-            .list_harness_providers()?
-            .into_iter()
-            .find(|stored| stored.id == provider_id)
-            .ok_or_else(|| {
-                CoreError::Persistence(format!("unknown harness provider `{provider_id}`"))
-            })?;
+        let provider = self.provider(provider_id)?.ok_or_else(|| {
+            CoreError::Persistence(format!("unknown harness provider `{provider_id}`"))
+        })?;
         let key = self.secrets.get(&provider.api_key_ref)?.ok_or_else(|| {
             CoreError::Persistence(format!("provider `{provider_id}` has no API key"))
         })?;
@@ -250,6 +250,14 @@ impl HarnessModelService {
                 output_limit: model.output_limit,
             })
             .collect())
+    }
+
+    fn provider(&self, provider_id: &str) -> Result<Option<HarnessProvider>> {
+        Ok(self
+            .db
+            .list_harness_providers()?
+            .into_iter()
+            .find(|provider| provider.id == provider_id))
     }
 
     fn view(&self, provider: HarnessProvider) -> Result<HarnessProviderView> {
