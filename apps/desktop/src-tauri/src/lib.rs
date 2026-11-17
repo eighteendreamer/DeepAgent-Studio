@@ -5681,6 +5681,37 @@ async fn ssh_read_file(
 }
 
 #[tauri::command]
+async fn ssh_file_metadata(
+    state: State<'_, AppState>,
+    connection_id: String,
+    path: String,
+    follow_symlinks: Option<bool>,
+) -> Result<deepagent_ssh::RemoteFileMetadata, String> {
+    state
+        .ssh
+        .file_metadata(
+            &ssh_handle(&connection_id),
+            &path,
+            follow_symlinks.unwrap_or(false),
+        )
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn ssh_realpath(
+    state: State<'_, AppState>,
+    connection_id: String,
+    path: String,
+) -> Result<deepagent_ssh::RemoteRealpath, String> {
+    state
+        .ssh
+        .realpath(&ssh_handle(&connection_id), &path)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn ssh_read_file_base64(
     state: State<'_, AppState>,
     connection_id: String,
@@ -7894,6 +7925,8 @@ pub fn run() {
             ssh_test_connection,
             ssh_exec,
             ssh_list_dir,
+            ssh_file_metadata,
+            ssh_realpath,
             ssh_read_file,
             ssh_read_file_base64,
             ssh_create_dir,
