@@ -73,6 +73,17 @@ pub struct SshHostKeyRecord {
     pub revoked: bool,
 }
 
+/// Public metadata only. Committed in the same CAS as keys and revocation tombstones.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SshHostKeyRotationRecord {
+    pub revision: u64,
+    pub at_ms: i64,
+    pub algorithm: String,
+    pub fingerprint: String,
+    pub retired_fingerprints: Vec<String>,
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct KeyRecord {
@@ -89,6 +100,8 @@ struct TrustDocument {
     identity: SshHostIdentity,
     revision: u64,
     keys: Vec<KeyRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    rotations: Vec<SshHostKeyRotationRecord>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -136,11 +149,13 @@ impl SshHostKeyStore {
                 identity: identity.clone(),
                 revision: 0,
                 keys: Vec::new(),
+                rotations: Vec::new(),
             },
         };
         if document.version != 1
             || document.identity != *identity
             || document.keys.len() > MAX_KEYS
+            || document.rotations.len() > MAX_KEYS
             || (body.is_some() && document.revision == 0)
         {
             return Err(invalid_document());
@@ -241,6 +256,82 @@ impl SshHostKeyStore {
         }
         snapshot.document.keys[index].revoked_at_ms = Some(SystemClock.now().as_millis());
         self.commit(snapshot, "revoke")
+    }
+
+    pub fn rotation_history(
+        &self,
+        identity: &SshHostIdentity,
+    ) -> SshResult<Vec<SshHostKeyRotationRecord>> {
+        Ok(self.snapshot(identity)?.document.rotations)
+    }
+
+    /// Management-only replacement. Retire every previously active identity,
+    /// including file keys, so an unchanged source file cannot revive an old key.
+    /// A stale snapshot, revoked replacement or capacity error writes nothing.
+    pub(crate) fn rotate_verified(
+        &self,
+        mut expected: StoreSnapshot,
+        previous: &[PublicKey],
+        replacement: &PublicKey,
+    ) -> SshResult<SshHostKeyRotationRecord> {
+        let keys = expected.keys()?;
+        if keys.iter().any(|(key, _)| key == replacement)
+            || keys
+                .iter()
+                .any(|(key, revoked)| !revoked && !previous.contains(key))
+            || previous.iter().any(|key| key == replacement)
+        {
+            return Err(SshError::InvalidConfig(
+                "invalid or revoked SSH rotation replacement".into(),
+            ));
+        }
+        let at_ms = SystemClock.now().as_millis();
+        let mut retired_fingerprints = Vec::new();
+        for key in previous {
+            let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
+            if retired_fingerprints.contains(&fingerprint) {
+                continue;
+            }
+            retired_fingerprints.push(fingerprint);
+            if let Some(index) = expected
+                .keys()?
+                .iter()
+                .position(|(existing, _)| existing == key)
+            {
+                // Never alter an existing revocation's timestamp or provenance.
+                expected.document.keys[index]
+                    .revoked_at_ms
+                    .get_or_insert(at_ms);
+            } else {
+                let mut retired = trusted_record(key, "rotation_retired_known_hosts")?;
+                retired.revoked_at_ms = Some(at_ms);
+                expected.document.keys.push(retired);
+            }
+        }
+        expected
+            .document
+            .keys
+            .push(trusted_record(replacement, "explicit_host_key_rotation")?);
+        if expected.document.keys.len() > MAX_KEYS || expected.document.rotations.len() >= MAX_KEYS
+        {
+            return Err(SshError::InvalidConfig(
+                "SSH rotation key/history capacity reached; no tombstones were removed".into(),
+            ));
+        }
+        let audit = SshHostKeyRotationRecord {
+            revision: expected
+                .document
+                .revision
+                .checked_add(1)
+                .ok_or_else(invalid_document)?,
+            at_ms,
+            algorithm: replacement.algorithm().as_str().into(),
+            fingerprint: replacement.fingerprint(HashAlg::Sha256).to_string(),
+            retired_fingerprints,
+        };
+        expected.document.rotations.push(audit.clone());
+        self.commit(expected, "explicit_host_key_rotation")?;
+        Ok(audit)
     }
 
     /// Commit against the snapshot taken BEFORE probing. A competing first
@@ -372,6 +463,74 @@ mod tests {
             .unwrap()
             .public_key()
             .clone()
+    }
+
+    #[test]
+    fn rotation_commit_failure_preserves_keys_tombstones_and_audit() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let store = SshHostKeyStore::new(db.clone());
+        let identity = SshHostIdentity::direct("fixture.invalid", 22).unwrap();
+        let old = public();
+        store.trust_verified(&identity, &old, "fixture").unwrap();
+        let before = store.snapshot(&identity).unwrap();
+        db.with_conn(|c| c.execute_batch("CREATE TRIGGER fixture_rotation_failure BEFORE UPDATE ON documents WHEN NEW.collection='ssh_host_trust_v1' BEGIN SELECT RAISE(FAIL, 'fixture rotation failure'); END;")
+            .map_err(|error|deepagent_core::error::CoreError::Persistence(error.to_string()))).unwrap();
+        assert!(store
+            .rotate_verified(before.clone(), &[old], &public())
+            .is_err());
+        assert!(store.snapshot(&identity).unwrap() == before);
+        assert!(store.rotation_history(&identity).unwrap().is_empty());
+    }
+
+    #[test]
+    fn competing_rotation_cas_cannot_restore_retired_keys_or_duplicate_audit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.sqlite");
+        let one = SshHostKeyStore::new(Arc::new(Database::open(&path).unwrap()));
+        let two = SshHostKeyStore::new(Arc::new(Database::open(&path).unwrap()));
+        let identity = SshHostIdentity::direct("fixture.invalid", 22).unwrap();
+        let old = public();
+        one.trust_verified(&identity, &old, "fixture").unwrap();
+        let stale = two.snapshot(&identity).unwrap();
+        one.rotate_verified(
+            one.snapshot(&identity).unwrap(),
+            std::slice::from_ref(&old),
+            &public(),
+        )
+        .unwrap();
+        assert!(two.rotate_verified(stale, &[old], &public()).is_err());
+        assert_eq!(two.rotation_history(&identity).unwrap().len(), 1);
+        assert_eq!(
+            two.list(&identity)
+                .unwrap()
+                .iter()
+                .filter(|key| key.revoked)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn rotation_capacity_never_discards_tombstones() {
+        let store = SshHostKeyStore::new(Arc::new(Database::open_in_memory().unwrap()));
+        let identity = SshHostIdentity::direct("fixture.invalid", 22).unwrap();
+        let old = public();
+        let mut fixture = store.snapshot(&identity).unwrap();
+        for _ in 0..MAX_KEYS - 1 {
+            let mut record = trusted_record(&public(), "fixture retired key").unwrap();
+            record.revoked_at_ms = Some(1);
+            fixture.document.keys.push(record);
+        }
+        fixture
+            .document
+            .keys
+            .push(trusted_record(&old, "fixture").unwrap());
+        store.commit(fixture, "fixture_capacity").unwrap();
+        let before = store.snapshot(&identity).unwrap();
+        assert!(store
+            .rotate_verified(before.clone(), &[old], &public())
+            .is_err());
+        assert!(store.snapshot(&identity).unwrap() == before);
     }
 
     #[test]

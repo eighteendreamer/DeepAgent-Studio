@@ -2,7 +2,7 @@
 
 use tokio::time::{timeout, Duration};
 
-use crate::connection_challenge::config_proof;
+use crate::connection_challenge::{config_proof, HostKeyPurpose};
 use crate::host_trust::HostTrust;
 use crate::service::SshServiceImpl;
 use crate::{
@@ -52,7 +52,7 @@ impl SshServiceImpl {
             if HostTrust::capture(&cfg, self.host_key_store.clone()).await? != trust {
                 return Err(HostTrust::error(&cfg, "trust changed during host-key probe; retry after verification"));
             }
-            let challenge = self.host_challenges.present(&cfg, &attempt_id, trust, key, self.host_key_store.is_some())?;
+            let challenge = self.host_challenges.present(&cfg, &attempt_id, trust, key, HostKeyPurpose::Enrollment { can_save: self.host_key_store.is_some() })?;
             tracing::info!(target: "deepagent_ssh", connection_id = id, attempt_id, "SSH unknown host awaits explicit verification");
             Ok(SshConnectionAttempt::ConfirmationRequired { challenge: Box::new(challenge) })
         }.await;
@@ -77,6 +77,11 @@ impl SshServiceImpl {
         // concurrent responses serialize only during the bounded resume phase.
         let _lifecycle = self.lifecycle.write().await;
         let pending = self.host_challenges.take(id, attempt_id, challenge_id)?;
+        if pending.challenge.kind != "unknown_host" {
+            return Err(SshError::InvalidConfig(
+                "SSH rotation requires the separate management action".into(),
+            ));
+        }
         let cfg = self.config_for(id).await?;
         if config_proof(&cfg)? != pending.config_proof
             || HostTrust::capture(&cfg, self.host_key_store.clone()).await? != pending.trust

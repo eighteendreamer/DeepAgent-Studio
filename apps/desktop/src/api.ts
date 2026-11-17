@@ -3955,6 +3955,29 @@ export async function sshRevokeHostKey(id: string, fingerprint: string): Promise
   return invoke<void>("ssh_revoke_host_key", { id, fingerprint });
 }
 
+export interface SshHostKeyRotationRecord {
+  revision: number; at_ms: number; algorithm: string; fingerprint: string;
+  retired_fingerprints: string[];
+}
+export interface SshHostKeyRotationPreview {
+  challenge: SshHostKeyChallenge;
+  previous_keys: SshHostTrustInspection["keys"];
+}
+export interface SshHostKeyRotationResult {
+  audit: SshHostKeyRotationRecord;
+  disconnect_failed_ids: string[];
+}
+export async function sshBeginHostKeyRotation(id: string): Promise<SshHostKeyRotationPreview> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("SSH key rotation requires the desktop app");
+  return invoke<SshHostKeyRotationPreview>("ssh_begin_host_key_rotation", { id });
+}
+export async function sshConfirmHostKeyRotation(id: string, attemptId: string, challengeId: string): Promise<SshHostKeyRotationResult> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("SSH key rotation requires the desktop app");
+  return invoke<SshHostKeyRotationResult>("ssh_confirm_host_key_rotation", { id, attemptId, challengeId });
+}
+
 export type SshKnownHostsImportStatus = "ready" | "duplicate" | "existing_trust" | "malformed" | "hashed_host" | "unsupported_pattern" | "cert_authority" | "revoked_marker" | "revoked_source_key" | "source_conflict" | "invalid_endpoint";
 export interface SshKnownHostsImportRow {
   line_number: number; host: string | null; port: number | null;
@@ -4081,7 +4104,7 @@ export interface SshHostKeyChallenge {
   username: string;
   role: "target";
   route: "direct";
-  kind: "unknown_host";
+  kind: "unknown_host" | "key_rotation";
   algorithm: string;
   fingerprint: string;
   expires_at_ms: number;

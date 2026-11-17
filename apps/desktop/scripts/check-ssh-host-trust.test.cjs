@@ -381,6 +381,101 @@ const managerText = key => translate(`settings.connections.trustManager.${key}`)
 const managerProps = () => ({ connection: { id: 'id', host: 'fixture.invalid', port: 2222, known_hosts_path: 'C:\\fixture' }, onClose() {}, onChanged() {} });
 const flushManager = () => new Promise(resolve => setImmediate(resolve));
 
+test('rotation APIs use separate commands and do not accept client-supplied public keys', async () => {
+  for (const [name, command, args, expected] of [
+    ['sshBeginHostKeyRotation', 'ssh_begin_host_key_rotation', ['id'], { id:'id' }],
+    ['sshConfirmHostKeyRotation', 'ssh_confirm_host_key_rotation', ['id','attempt','challenge'], { id:'id', attemptId:'attempt', challengeId:'challenge' }],
+  ]) {
+    const calls=[];
+    const fn=production('api.ts',name,{getInvoke:()=>async(c,input)=>{calls.push([c,input]);return 'receipt';}});
+    assert.equal(await fn(...args),'receipt');
+    assert.equal(calls[0][0],command);
+    assert.deepEqual(JSON.parse(JSON.stringify(calls[0][1])),expected);
+    await assert.rejects(production('api.ts',name,{getInvoke:()=>null})(...args),/desktop app/);
+    const rust=readFileSync(path.join(root,'../src-tauri/src/lib.rs'),'utf8');
+    assert.match(rust,new RegExp(`#\\[tauri::command\\]\\s*async fn ${command}\\(`));
+    assert.match(rust,new RegExp(`generate_handler!\\[[\\s\\S]*?\\b${command},`));
+  }
+});
+
+const rotationText=key=>translate(`settings.connections.hostRotation.${key}`);
+const rotationPreview=()=>({challenge:{connection_id:'id',attempt_id:'attempt',challenge_id:'challenge',host:'fixture.invalid',port:2222,username:'fixture',role:'target',route:'direct',kind:'key_rotation',algorithm:'ssh-ed25519',fingerprint:'SHA256:new-fixture',expires_at_ms:Date.now()+120000},previous_keys:[{line_number:1,algorithm:'ssh-ed25519',fingerprint:'SHA256:old-fixture'}]});
+function rotationDriver(api={}) {
+  return trustManagerDriver(api,'components/remote/SshHostKeyRotationDialog.tsx','SshHostKeyRotationDialog',{window:{setTimeout:()=>1,clearTimeout(){}}});
+}
+
+test('rotation UI requires explicit probing and independent verification, single-flights and retains the receipt',async()=>{
+  let probes=0,writes=0,complete;
+  const driver=rotationDriver({sshBeginHostKeyRotation:async()=>{probes++;return rotationPreview();},sshConfirmHostKeyRotation:async()=>{writes++;return new Promise(resolve=>{complete=resolve;});}});
+  const props={connection:managerProps().connection,onBack(){},onCommitted(){}};
+  let view=driver.render(props);
+  assert.equal(probes,0,'mount never contacts the server');
+  await view.button(rotationText('probe')).props.onClick();
+  view=driver.render(props);
+  assert.match(view.text,/SHA256:old-fixture/);assert.match(view.text,/SHA256:new-fixture/);
+  assert.equal(view.button(rotationText('confirm')).props.disabled,true);
+  view.nodes.find(n=>n.type==='fixture-checkbox').props.onCheckedChange(true);
+  view=driver.render(props);
+  const first=view.button(rotationText('confirm')).props.onClick();
+  await view.button(rotationText('confirm')).props.onClick();
+  assert.equal(writes,1);
+  complete({audit:{revision:2,at_ms:1,algorithm:'ssh-ed25519',fingerprint:'SHA256:new-fixture',retired_fingerprints:['SHA256:old-fixture']},disconnect_failed_ids:['alias']});
+  await first; view=driver.render(props);
+  assert.ok(view.text.includes(rotationText('committed')));
+  assert.match(view.text,/alias/);
+  assert.equal(view.button(rotationText('confirm')),undefined,'no repeat write after committed receipt');
+});
+
+test('rotation UI requires a new probe after consumed/stale response and blocks expired confirmation',async()=>{
+  const driver=rotationDriver({sshBeginHostKeyRotation:async()=>rotationPreview(),sshConfirmHostKeyRotation:async()=>{throw Error('stale fixture');}});
+  const props={connection:managerProps().connection,onBack(){},onCommitted(){}};
+  await driver.render(props).button(rotationText('probe')).props.onClick();
+  driver.render(props).nodes.find(n=>n.type==='fixture-checkbox').props.onCheckedChange(true);
+  await driver.render(props).button(rotationText('confirm')).props.onClick();
+  let view=driver.render(props);
+  assert.match(view.text,/stale fixture/);assert.equal(view.button(rotationText('confirm')),undefined);
+  const expired=rotationDriver({sshBeginHostKeyRotation:async()=>{const p=rotationPreview();p.challenge.expires_at_ms=0;return p;}});
+  await expired.render(props).button(rotationText('probe')).props.onClick();
+  view=expired.render(props);
+  assert.equal(view.button(rotationText('confirm')).props.disabled,true);
+  assert.ok(view.text.includes(rotationText('expired')));
+});
+
+test('rotation UI cancels late probes after unmount and cancelled prompts never submit',async()=>{
+  let complete,cancels=0,backs=0;
+  const driver=rotationDriver({sshBeginHostKeyRotation:()=>new Promise(resolve=>{complete=resolve;}),sshCancelHostKey:async()=>{cancels++;}});
+  const props={connection:managerProps().connection,onBack(){backs++;},onCommitted(){}};
+  const probe=driver.render(props).button(rotationText('probe')).props.onClick();
+  driver.unmount();complete(rotationPreview());await probe;
+  assert.equal(cancels,1);
+  const next=rotationDriver({sshBeginHostKeyRotation:async()=>rotationPreview(),sshCancelHostKey:async()=>{cancels++;}});
+  await next.render(props).button(rotationText('probe')).props.onClick();
+  await next.render(props).button(rotationText('back')).props.onClick();
+  assert.equal(cancels,2);assert.equal(backs,1);
+});
+
+test('rotation UI rejects a response for another endpoint or a normal enrollment challenge',async()=>{
+  for(const mismatch of [{connection_id:'foreign'},{host:'other.invalid'},{port:22},{kind:'unknown_host'},{route:'jump'},{role:'jump'}]) {
+    let cancelled=0;
+    const driver=rotationDriver({sshBeginHostKeyRotation:async()=>{const p=rotationPreview();Object.assign(p.challenge,mismatch);return p;},sshCancelHostKey:async()=>{cancelled++;}});
+    const props={connection:managerProps().connection,onBack(){},onCommitted(){}};
+    await driver.render(props).button(rotationText('probe')).props.onClick();
+    const view=driver.render(props);
+    assert.equal(cancelled,1);assert.equal(view.button(rotationText('confirm')),undefined);
+  }
+});
+
+test('shared trust manager opens the separate rotation surface and reloads when returning',async()=>{
+  const driver=trustManagerDriver({SshHostKeyRotationDialog:'fixture-rotation'});
+  const props=managerProps();driver.render(props);await flushManager();
+  let view=driver.render(props);
+  view.button(managerText('rotation')).props.onClick();view=driver.render(props);
+  const surface=view.nodes.find(n=>n.type==='fixture-rotation');
+  assert.equal(surface.props.connection,props.connection);
+  surface.props.onBack();await flushManager();
+  assert.ok(driver.render(props).button(managerText('rotation')));
+});
+
 const fileImportPreview = () => ({ connection_id:'id', host:'fixture.invalid', port:2222, known_hosts_path:'C:\\fixture', source_sha256:'fixture-digest', importable:1, skipped:1, rows:[
   {line_number:1,host:'other.invalid',port:22,algorithm:'ssh-ed25519',fingerprint:'SHA256:public-fixture',status:'ready'},
   {line_number:2,host:null,port:null,algorithm:null,fingerprint:null,status:'hashed_host'},

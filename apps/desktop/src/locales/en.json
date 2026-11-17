@@ -775,7 +775,18 @@
         "acknowledge": "I independently verified the host fingerprint for this endpoint.", "scope": "Once authorizes only this attempt and its live connection; reconnecting requires confirmation again. Save and connect stores the public key in application trust. Submitting starts authentication; closing a view cannot undo submitted trust.",
         "once": "Connect once", "save": "Save and connect", "cancel": "Reject and cancel", "expires": "This challenge expires at", "expired": "This challenge expired. Cancel and start a new connection attempt.", "connecting": "Verifying the confirmed key and connecting…"
       },
+      "hostRotation": {
+        "unexpected": "Rotation response does not match this target and was rejected. Start verification again.",
+        "title": "Host key rotation management", "direct": "Direct target", "probe": "Probe replacement without authentication", "back": "Back to trust list", "confirm": "Revoke old keys and save replacement",
+        "warning": "Use only after a trusted administrator confirms a server key change. Probes and confirmation perform an SSH handshake only: no password, identity authentication or command execution. Confirmation retires ALL old active keys listed below, including file entries, atomically saves the replacement and rotation record, and closes every connection to this host/port. known_hosts is not modified and no login is performed. Revocation tombstones remain and cannot be revived here. Closing cannot undo a submitted write.",
+        "previous": "Old active keys to retire", "replacement": "Replacement requiring independent verification", "alreadyRevoked": "All old keys are already revoked; existing tombstones will be retained.",
+        "acknowledge": "I independently verified the replacement fingerprint with a trusted administrator and approve retiring ALL old active keys listed for this target.",
+        "expires": "Verification expires", "expired": "Verification expired. Probe and independently verify again.", "busy": "Working; each probe takes at most 20 seconds and never authenticates…",
+        "committed": "Rotation committed: revocation tombstones, replacement trust and audit were saved atomically. Reconnect manually; no login was performed here.", "revision": "Trust revision",
+        "cleanupFailed": "Rotation committed, but cleanup failed for these connections; disconnect manually:"
+      },
       "trustManager": {
+        "rotation": "Manage host key rotation",
         "previewFile": "Preview the entire known_hosts file", "fileReport": "Whole-file import report",
         "importable": "Importable", "imported": "Imported", "skipped": "Skipped", "trustLine": "Line", "previousPage": "Previous", "nextPage": "Next",
         "fileWarning": "This covers every plain endpoint in this connection's configured source, not just the selected server, and may affect other connections. Independently verify every eligible endpoint and fingerprint. Direct identities only; existing trust and revocations are never overwritten. Limits: 1 MiB, 4096 expanded entries, 100 rows per page. Skipping import does not bypass connection-time revocation or unsupported-marker checks. The source is not modified.",

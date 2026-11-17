@@ -5341,6 +5341,32 @@ async fn ssh_revoke_host_key(
 }
 
 #[tauri::command]
+async fn ssh_begin_host_key_rotation(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<deepagent_ssh::SshHostKeyRotationPreview, String> {
+    state
+        .ssh
+        .begin_host_key_rotation(&id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn ssh_confirm_host_key_rotation(
+    state: State<'_, AppState>,
+    id: String,
+    attempt_id: String,
+    challenge_id: String,
+) -> Result<deepagent_ssh::SshHostKeyRotationResult, String> {
+    state
+        .ssh
+        .confirm_host_key_rotation(&id, &attempt_id, &challenge_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn ssh_list_connections(
     state: State<'_, AppState>,
 ) -> Result<Vec<SshConnectionFrontendDto>, String> {
@@ -7791,6 +7817,8 @@ pub fn run() {
             ssh_preview_known_hosts_import,
             ssh_import_known_hosts,
             ssh_revoke_host_key,
+            ssh_begin_host_key_rotation,
+            ssh_confirm_host_key_rotation,
             ssh_create_connection,
             ssh_update_connection,
             ssh_remove_connection,

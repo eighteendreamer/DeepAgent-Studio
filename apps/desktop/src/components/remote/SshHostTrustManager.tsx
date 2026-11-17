@@ -7,6 +7,7 @@ import {
   type SshConnection, type SshHostKeyRecord, type SshHostTrustInspection,
 } from "../../api";
 import { KnownHostsImportReport } from "./KnownHostsImportReport";
+import { SshHostKeyRotationDialog } from "./SshHostKeyRotationDialog";
 import { Button } from "../shadcn/button";
 import { Checkbox } from "../shadcn/checkbox";
 import { Label } from "../shadcn/label";
@@ -37,6 +38,7 @@ function HostTrustPanel({ connection, onClose, onChanged }: Props & { connection
   const [revoking, setRevoking] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [showRotation, setShowRotation] = useState(false);
   const generation = useRef(0);
   const pending = useRef(false);
   const label = (key: string) => t(`settings.connections.trustManager.${key}`);
@@ -103,6 +105,7 @@ function HostTrustPanel({ connection, onClose, onChanged }: Props & { connection
   }, []);
 
   const acknowledgementId = `ssh-trust-ack-${connection.id}`;
+  if (showRotation) return <SshHostKeyRotationDialog connection={connection} onCommitted={onChanged} onBack={() => { setShowRotation(false); void run("load"); }} />;
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent className="flex max-h-[85vh] w-[min(620px,calc(100vw-32px))] flex-col overflow-hidden" aria-label={label("title")}>
@@ -169,6 +172,7 @@ function HostTrustPanel({ connection, onClose, onChanged }: Props & { connection
             </section>
           )}
           <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => setShowRotation(true)}>{label("rotation")}</Button>
             <Button size="sm" variant="outline" disabled={busy} onClick={() => run("preview")}>{label("preview")}</Button>
             <Button size="sm" variant="outline" disabled={busy} onClick={() => run("preview_file")}>{label("previewFile")}</Button>
             <Button size="sm" variant="ghost" disabled={busy} onClick={() => run("load")}>{label("refresh")}</Button>

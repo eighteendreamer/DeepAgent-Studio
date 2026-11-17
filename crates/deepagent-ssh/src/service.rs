@@ -720,17 +720,23 @@ impl SshServiceImpl {
     pub async fn disconnect(&self, id: &str) -> SshResult<()> {
         self.host_challenges.invalidate(id);
         let sessions = self.sessions.read().await;
+        let mut disconnected = Ok(());
         if let Some(session) = sessions.get(id) {
             session.replace_pty(None).await;
             if let Some(client) = session.client().await {
-                let _ = client.disconnect().await;
+                disconnected = client.disconnect().await;
             }
             session.set_client(None).await;
             session.set_status(SshStatus::Disconnected, None).await;
         }
         drop(sessions);
         self.sessions.write().await.remove(id);
-        Ok(())
+        // A removed live session must not fall back to a stale Connected cache.
+        // Always clear runtime/cache state, but do not swallow transport failures.
+        let cached = self
+            .update_cached_status(id, SshStatus::Disconnected, None, None)
+            .await;
+        disconnected.and(cached)
     }
 
     pub async fn status(&self, id: &str) -> SshResult<SshStatusSnapshot> {

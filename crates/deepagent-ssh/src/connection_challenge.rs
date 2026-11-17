@@ -56,6 +56,11 @@ pub(crate) struct PendingHostKey {
     pub config_proof: [u8; 32],
 }
 
+pub(crate) enum HostKeyPurpose {
+    Enrollment { can_save: bool },
+    Rotation,
+}
+
 struct Attempt {
     id: String,
     deadline: Instant,
@@ -92,13 +97,17 @@ impl HostKeyChallenges {
         attempt_id: &str,
         trust: HostTrust,
         key: PublicKey,
-        can_save: bool,
+        purpose: HostKeyPurpose,
     ) -> SshResult<SshHostKeyChallenge> {
         let mut attempts = self.0.lock().map_err(|_| stale())?;
         let attempt = attempts
             .get_mut(&cfg.id)
             .filter(|attempt| attempt.id == attempt_id && attempt.deadline > Instant::now())
             .ok_or_else(stale)?;
+        let (kind, can_save) = match purpose {
+            HostKeyPurpose::Enrollment { can_save } => ("unknown_host", can_save),
+            HostKeyPurpose::Rotation => ("key_rotation", true),
+        };
         let challenge = SshHostKeyChallenge {
             connection_id: cfg.id.clone(),
             attempt_id: attempt_id.into(),
@@ -108,7 +117,7 @@ impl HostKeyChallenges {
             username: cfg.username.clone(),
             role: "target",
             route: "direct",
-            kind: "unknown_host",
+            kind,
             algorithm: key.algorithm().as_str().into(),
             fingerprint: key.fingerprint(HashAlg::Sha256).to_string(),
             expires_at_ms: SystemClock.now().as_millis()

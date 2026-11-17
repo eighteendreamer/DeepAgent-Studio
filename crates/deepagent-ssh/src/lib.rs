@@ -27,7 +27,10 @@ pub use config::{
 };
 pub use connection_challenge::{SshConnectionAttempt, SshHostKeyChallenge, SshHostKeyDecision};
 pub use error::{SshError, SshResult};
-pub use host_key_store::{SshHostIdentity, SshHostKeyRecord, SshHostKeyStore};
+pub use host_key_rotation::{SshHostKeyRotationPreview, SshHostKeyRotationResult};
+pub use host_key_store::{
+    SshHostIdentity, SshHostKeyRecord, SshHostKeyRotationRecord, SshHostKeyStore,
+};
 pub use host_trust::{SshHostTrustInspection, SshKnownHostKey};
 pub use known_hosts_import::{
     SshKnownHostsImportPreview, SshKnownHostsImportResult, SshKnownHostsImportRow,
@@ -49,6 +52,7 @@ mod config;
 mod connection_challenge;
 mod connection_flow;
 mod error;
+mod host_key_rotation;
 mod host_key_store;
 mod host_trust;
 mod known_hosts_import;
@@ -375,6 +379,21 @@ impl SshService {
 
     pub async fn list_host_keys(&self, id: &str) -> SshResult<Vec<SshHostKeyRecord>> {
         self.inner.list_host_keys(id).await
+    }
+
+    pub async fn begin_host_key_rotation(&self, id: &str) -> SshResult<SshHostKeyRotationPreview> {
+        self.inner.begin_host_key_rotation(id).await
+    }
+
+    pub async fn confirm_host_key_rotation(
+        &self,
+        id: &str,
+        attempt_id: &str,
+        challenge_id: &str,
+    ) -> SshResult<SshHostKeyRotationResult> {
+        self.inner
+            .confirm_host_key_rotation(id, attempt_id, challenge_id)
+            .await
     }
 
     pub async fn import_host_trust(

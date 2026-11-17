@@ -38,6 +38,13 @@ pub(crate) struct HostTrust {
     confirmed_key: Option<PublicKey>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TrustRead {
+    Strict,
+    Enrollment,
+    Rotation,
+}
+
 impl HostTrust {
     pub(crate) async fn load(config: &SshConnectionConfig) -> SshResult<Self> {
         Self::load_with_store(config, None).await
@@ -48,20 +55,22 @@ impl HostTrust {
         store: Option<Arc<SshHostKeyStore>>,
     ) -> SshResult<Self> {
         let config = config.clone();
-        tokio::task::spawn_blocking(move || Self::read_with_store(&config, store.as_deref(), false))
-            .await
-            .map_err(|error| SshError::Internal(format!("SSH trust reader failed: {error}")))?
+        tokio::task::spawn_blocking(move || {
+            Self::read_with_store(&config, store.as_deref(), TrustRead::Strict)
+        })
+        .await
+        .map_err(|error| SshError::Internal(format!("SSH trust reader failed: {error}")))?
     }
 
     #[cfg(test)]
     fn read(config: &SshConnectionConfig) -> SshResult<Self> {
-        Self::read_with_store(config, None, false)
+        Self::read_with_store(config, None, TrustRead::Strict)
     }
 
     fn read_with_store(
         config: &SshConnectionConfig,
         store: Option<&SshHostKeyStore>,
-        allow_unknown: bool,
+        mode: TrustRead,
     ) -> SshResult<Self> {
         let identity = SshHostIdentity::direct(&config.host, config.port)?;
         let application = store.map(|store| store.snapshot(&identity)).transpose()?;
@@ -78,7 +87,7 @@ impl HostTrust {
             Ok(bytes) => Some(bytes),
             Err(error)
                 if error.kind() == std::io::ErrorKind::NotFound
-                    && (allow_unknown || !application_keys.is_empty()) =>
+                    && (mode != TrustRead::Strict || !application_keys.is_empty()) =>
             {
                 None
             }
@@ -143,7 +152,9 @@ impl HostTrust {
                 keys.push((0, key)); // Application records have no file line number.
             }
         }
-        if keys.is_empty() && (!allow_unknown || !revoked.is_empty()) {
+        if keys.is_empty()
+            && (mode == TrustRead::Strict || (mode == TrustRead::Enrollment && !revoked.is_empty()))
+        {
             return Err(Self::error(
                 config,
                 if revoked.is_empty() {
@@ -168,9 +179,55 @@ impl HostTrust {
         store: Option<Arc<SshHostKeyStore>>,
     ) -> SshResult<Self> {
         let config = config.clone();
-        tokio::task::spawn_blocking(move || Self::read_with_store(&config, store.as_deref(), true))
-            .await
-            .map_err(|error| SshError::Internal(format!("SSH trust capture task: {error}")))?
+        tokio::task::spawn_blocking(move || {
+            Self::read_with_store(&config, store.as_deref(), TrustRead::Enrollment)
+        })
+        .await
+        .map_err(|error| SshError::Internal(format!("SSH trust capture task: {error}")))?
+    }
+
+    pub(crate) async fn capture_rotation(
+        config: &SshConnectionConfig,
+        store: Arc<SshHostKeyStore>,
+    ) -> SshResult<Self> {
+        let config = config.clone();
+        tokio::task::spawn_blocking(move || {
+            Self::read_with_store(&config, Some(&store), TrustRead::Rotation)
+        })
+        .await
+        .map_err(|error| SshError::Internal(format!("SSH rotation trust reader: {error}")))?
+    }
+
+    pub(crate) fn rotation_previous(
+        &self,
+        config: &SshConnectionConfig,
+        replacement: &PublicKey,
+    ) -> SshResult<Vec<(usize, PublicKey)>> {
+        if self.is_unknown()
+            || self.revoked.contains(replacement)
+            || self
+                .keys
+                .iter()
+                .any(|(_, key)| key == replacement && !self.revoked.contains(key))
+        {
+            return Err(Self::error(
+                config,
+                "rotation requires an existing identity and a changed, never-revoked replacement",
+            ));
+        }
+        let mut previous = Vec::new();
+        for (line, key) in &self.keys {
+            if !self.revoked.contains(key) && !previous.iter().any(|(_, prior)| prior == key) {
+                previous.push((*line, key.clone()));
+            }
+        }
+        Ok(previous)
+    }
+
+    pub(crate) fn store_snapshot(&self) -> SshResult<StoreSnapshot> {
+        self.application.clone().ok_or_else(|| {
+            SshError::InvalidConfig("SSH rotation requires application trust".into())
+        })
     }
 
     pub(crate) async fn reload(
@@ -274,10 +331,11 @@ impl HostTrust {
         }
         !self.revoked.iter().any(|key| key == presented)
             && self.keys.iter().any(|(_, key)| key == presented)
-            && self
-                .keys
-                .iter()
-                .all(|(_, key)| key.algorithm() != presented.algorithm() || key == presented)
+            && self.keys.iter().all(|(_, key)| {
+                key.algorithm() != presented.algorithm()
+                    || key == presented
+                    || self.revoked.contains(key)
+            })
     }
 }
 
@@ -286,6 +344,39 @@ mod tests {
     use super::*;
     use crate::SshAuthType;
     use russh::keys::{ssh_key::rand_core::OsRng, Algorithm, PrivateKey};
+
+    #[test]
+    fn rotation_tombstone_disables_old_file_key_without_disabling_its_replacement() {
+        let old = PrivateKey::random(&mut OsRng, Algorithm::Ed25519)
+            .unwrap()
+            .public_key()
+            .clone();
+        let new = PrivateKey::random(&mut OsRng, Algorithm::Ed25519)
+            .unwrap()
+            .public_key()
+            .clone();
+        let mut trust = HostTrust {
+            path: "fixture".into(),
+            digest: None,
+            application: None,
+            confirmed_key: None,
+            keys: vec![(1, old.clone()), (0, new.clone())],
+            revoked: vec![old.clone()],
+        };
+        assert!(
+            !trust.accepts(&old),
+            "the retired file entry must remain revoked"
+        );
+        assert!(
+            trust.accepts(&new),
+            "explicit rotation must not require editing the source file"
+        );
+        trust.revoked.clear();
+        assert!(
+            !trust.accepts(&new),
+            "unrevoked conflicting file keys still fail closed"
+        );
+    }
 
     #[test]
     fn h125_known_hosts_hash_port_and_marker_contracts() {

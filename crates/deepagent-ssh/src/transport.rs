@@ -11,7 +11,8 @@ use russh::{Channel, ChannelMsg, Disconnect};
 use std::sync::{Arc, Mutex};
 
 struct IdentityHandler {
-    trust: HostTrust,
+    // None is a probe that unconditionally rejects every key before authentication.
+    trust: Option<HostTrust>,
     rejected: Arc<Mutex<Option<PublicKey>>>,
 }
 
@@ -19,7 +20,10 @@ impl client::Handler for IdentityHandler {
     type Error = russh::Error;
 
     async fn check_server_key(&mut self, presented: &PublicKey) -> Result<bool, Self::Error> {
-        let accepted = self.trust.accepts(presented);
+        let accepted = self
+            .trust
+            .as_ref()
+            .is_some_and(|trust| trust.accepts(presented));
         if !accepted {
             *self
                 .rejected
@@ -55,12 +59,17 @@ impl SshClient {
                 "only an unknown endpoint may be probed for confirmation",
             ));
         }
+        Self::observe_host_key(config).await
+    }
+
+    /// Management probe: also rejects unchanged/known keys, never offers credentials.
+    pub(crate) async fn observe_host_key(config: &SshConnectionConfig) -> SshResult<PublicKey> {
         let observed = Arc::new(Mutex::new(None));
         let result = client::connect(
             Arc::new(client::Config::default()),
             (config.host.as_str(), config.port),
             IdentityHandler {
-                trust: trust.clone(),
+                trust: None,
                 rejected: observed.clone(),
             },
         )
@@ -91,7 +100,7 @@ impl SshClient {
     ) -> SshResult<Self> {
         let rejected = Arc::new(Mutex::new(None));
         let handler = IdentityHandler {
-            trust: trust.clone(),
+            trust: Some(trust.clone()),
             rejected: rejected.clone(),
         };
         let mut handle = client::connect(
