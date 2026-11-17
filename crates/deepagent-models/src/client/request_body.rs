@@ -7,7 +7,7 @@ use std::io::{self, Write};
 // Applies to the complete JSON body, including inline base64, on both routes.
 const MAX_REQUEST_BYTES: usize = 48 * 1024 * 1024;
 
-pub(super) fn encode(request: &impl Serialize) -> Result<String> {
+pub(crate) fn encode(request: &impl Serialize) -> Result<String> {
     encode_with_limit(request, MAX_REQUEST_BYTES)
 }
 

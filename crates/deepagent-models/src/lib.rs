@@ -37,6 +37,7 @@ pub mod discovery;
 pub mod failure;
 pub mod file_references;
 pub mod image_input;
+mod protocol;
 mod provider_error;
 pub mod responses;
 pub mod sampling;

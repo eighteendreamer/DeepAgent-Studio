@@ -17,7 +17,7 @@ use crate::stream::ResponseAccumulator;
 use crate::transport::{HttpTransport, TransportRequest};
 
 mod files;
-mod request_body;
+pub(crate) mod request_body;
 use files::ImageRequest;
 
 #[cfg(test)]
@@ -655,15 +655,9 @@ impl ModelClient {
                 .attachment_data_urls
                 .insert(image.id.clone(), "data:image/png;base64,AA==".into());
         }
-        match self.config.wire_mode {
-            WireMode::Responses => request_body::encode(&self.prepare_response_request(request)),
-            WireMode::ChatCompletions => {
-                let mut chat = response_to_chat_completion(request)?;
-                chat.stream = true;
-                self.apply_chat_defaults(&mut chat)?;
-                request_body::encode(&chat)
-            }
-        }
+        let codec = crate::protocol::codec_for(self.config.wire_mode);
+        tracing::debug!(protocol = codec.name(), "encoding provider request body");
+        codec.encode_body(self, request)
     }
 
     /// Read-only evidence using the final model, defaults and tool face. Hosts
@@ -710,10 +704,7 @@ impl ModelClient {
         _model: &str,
         tools: &[crate::ToolSchema],
     ) -> ProviderToolSchemas {
-        let tools = match self.config.wire_mode {
-            WireMode::Responses => crate::chat::response_tools_to_wire(tools),
-            WireMode::ChatCompletions => crate::chat_completions::chat_tools_to_wire(tools),
-        };
+        let tools = crate::protocol::codec_for(self.config.wire_mode).project_tools(tools);
         ProviderToolSchemas {
             model: _model.to_owned(),
             wire_mode: self.config.wire_mode,
@@ -780,7 +771,7 @@ impl ModelClient {
             })
     }
 
-    fn apply_chat_defaults(&self, request: &mut ChatCompletionRequest) -> Result<()> {
+    pub(crate) fn apply_chat_defaults(&self, request: &mut ChatCompletionRequest) -> Result<()> {
         if self.config.defaults.top_logprobs.is_some() {
             return Err(deepagent_core::error::CoreError::invalid(
                 "top_logprobs is not supported by DeepSeek Chat Completions",
@@ -883,7 +874,9 @@ fn log_response_input_pairs(request: &ResponseRequest) {
     }
 }
 
-fn response_to_chat_completion(request: ResponseRequest) -> Result<ChatCompletionRequest> {
+pub(crate) fn response_to_chat_completion(
+    request: ResponseRequest,
+) -> Result<ChatCompletionRequest> {
     request.validate_input_presence()?;
     request.validate_image_roles(WireMode::ChatCompletions)?;
     request.validate_message_roles()?;
