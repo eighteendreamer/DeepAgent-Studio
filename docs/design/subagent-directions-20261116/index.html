@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>子代理协作 · 三种展示方向 | DeepAgent Studio</title>
+  <style>
+    :root {
+      --ink:#111827; --text:#1f2937; --muted:#6b7280; --faint:#9ca3af;
+      --line:#e5e7eb; --soft:#f7f8fa; --green:#15805d; --green-bg:#eef8f3;
+      --blue:#3664a4; --blue-bg:#edf3fc; --red:#b04444; --red-bg:#fcf0f0;
+      --radius:16px; font-family:Inter,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+      color:var(--text); background:#fff; font-synthesis:none;
+    }
+    * { box-sizing:border-box; }
+    body { margin:0; font-size:14px; line-height:1.6; }
+    button,select { font:inherit; }
+    button { cursor:pointer; color:inherit; }
+    button:disabled { cursor:default; opacity:.45; }
+    button:focus-visible,select:focus-visible,summary:focus-visible {
+      outline:2px solid #8da5c8; outline-offset:3px;
+    }
+    button svg { pointer-events:none; }
+    .icon { display:inline-block; flex-shrink:0; vertical-align:middle; }
+    .muted { color:var(--muted); }
+    .mono { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:12px; }
+    .topbar { border-bottom:1px solid var(--line); background:#fff; }
+    .topbar-inner { max-width:1200px; margin:auto; padding:18px 32px; display:flex; align-items:center; gap:12px; }
+    .brand { display:flex; align-items:center; gap:9px; font-size:13px; font-weight:600; letter-spacing:-.2px; }
+    .top-divider { width:1px; height:16px; background:var(--line); margin:0 5px; }
+    .prototype-label { color:var(--muted); font-size:12px; }
+    .prototype-label:last-child { margin-left:auto; }
+    main { max-width:1120px; margin:0 auto; padding:36px 32px 48px; }
+    .intro { display:flex; align-items:flex-end; justify-content:space-between; gap:28px; margin-bottom:27px; }
+    .eyebrow { margin:0 0 6px; font-size:11px; font-weight:600; color:var(--muted); letter-spacing:1.4px; }
+    h1 { margin:0; font-size:26px; line-height:1.4; letter-spacing:-.8px; font-weight:600; }
+    .intro p:last-child { margin:9px 0 0; color:var(--muted); font-size:13px; }
+    .demo-badge { white-space:nowrap; color:var(--muted); display:flex; align-items:center; gap:7px; font-size:11px; }
+    .direction-tabs { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+    .direction-tab {
+      position:relative; display:flex; align-items:center; gap:12px; padding:14px 16px; text-align:left;
+      background:#fff; border:1px solid var(--line); border-radius:13px; transition:border-color 220ms,background 220ms;
+    }
+    .direction-tab:hover { background:var(--soft); }
+    .direction-tab[aria-selected="true"] { background:#f7f8fa; border-color:#8a929e; }
+    .letter { width:30px; height:30px; border-radius:8px; background:#f0f1f3; color:var(--muted); display:grid; place-items:center; font-size:12px; font-weight:600; }
+    .direction-tab[aria-selected="true"] .letter { background:var(--ink); color:#fff; }
+    .tab-title { display:block; font-size:13px; font-weight:600; }
+    .tab-subtitle { display:block; font-size:11px; color:var(--muted); margin-top:2px; }
+    .recommend { font-size:10px; font-weight:400; margin-left:5px; color:var(--green); }
+    .design-note { display:flex; align-items:center; gap:8px; color:var(--muted); margin:16px 0 24px; font-size:12px; min-height:20px; }
+    .design-note .icon { color:#7a8492; }
+    .preview { border:1px solid var(--line); border-radius:20px; overflow:hidden; background:#fff; }
+    .preview-toolbar { min-height:54px; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; padding:12px 20px; border-bottom:1px solid #eef0f2; }
+    .breadcrumb { display:flex; align-items:center; gap:7px; color:var(--muted); font-size:11px; }
+    .breadcrumb strong { font-weight:500; color:var(--text); }
+    .scenario-controls { display:flex; align-items:center; gap:10px; }
+    .scenario-controls label { font-size:11px; color:var(--muted); }
+    select { border:1px solid var(--line); border-radius:7px; color:var(--text); background:#fff; padding:4px 8px; font-size:11px; min-height:29px; }
+    .button { display:inline-flex; align-items:center; justify-content:center; gap:6px; border:1px solid var(--line); border-radius:8px; background:#fff; padding:5px 10px; font-size:11px; line-height:1.6; min-height:29px; transition:background 200ms,transform 200ms; }
+    .button:hover { background:#f3f4f6; }
+    .button:active { transform:scale(.97); }
+    .button.primary { background:var(--ink); border-color:var(--ink); color:#fff; }
+    .button.primary:hover { background:#000; }
+    .button.ghost { border-color:transparent; background:transparent; color:var(--muted); }
+    .button.ghost:hover { background:#f3f4f6; color:var(--text); }
+    .conversation { padding:28px 38px 32px; min-height:435px; }
+    .user-message { max-width:540px; width:fit-content; margin:0 0 23px auto; padding:10px 15px; background:#f3f4f6; border-radius:17px 17px 5px 17px; font-size:13px; }
+    .assistant-message { font-size:13px; margin:0 0 16px; }
+    .previous-tool { display:flex; align-items:center; gap:7px; color:var(--faint); font-size:11px; margin-bottom:22px; }
+    .previous-tool code { color:var(--muted); }
+    #component { scroll-margin-top:24px; }
+    .surface-enter { animation:surface-in 280ms cubic-bezier(.2,.8,.2,1); }
+    .team-heading { display:flex; align-items:center; gap:10px; min-width:0; }
+    .team-emblem { width:32px; height:32px; display:grid; place-items:center; border:1px solid var(--line); border-radius:10px; background:#fff; color:#5b6675; flex-shrink:0; }
+    .heading-copy { min-width:0; flex:1; }
+    .heading-copy h2 { margin:0; font-size:14px; font-weight:600; letter-spacing:-.15px; }
+    .heading-copy p { margin:2px 0 0; font-size:11px; color:var(--muted); }
+    .status { display:inline-flex; align-items:center; gap:5px; white-space:nowrap; font-size:11px; font-weight:400; }
+    .status .icon { width:13px; height:13px; }
+    .status.done { color:var(--green); }
+    .status.running { color:var(--blue); }
+    .status.failed { color:var(--red); }
+    .status.pending { color:var(--faint); }
+    .spin { animation:spin 1.6s linear infinite; }
+    .section-label { display:flex; align-items:center; gap:7px; color:var(--muted); font-size:10px; letter-spacing:.3px; }
+    .section-label .line { height:1px; background:var(--line); flex:1; }
+    .output-text { color:var(--muted); font-size:12px; line-height:1.75; overflow-wrap:anywhere; }
+    .count { font-size:11px; font-variant-numeric:tabular-nums; color:var(--muted); }
+    .quiet-footer { padding-top:13px; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; font-size:10px; color:var(--muted); }
+    .footer-note { display:flex; align-items:center; gap:6px; }
+    .phase-path { display:flex; flex-wrap:wrap; align-items:center; gap:8px; font-size:10px; color:var(--faint); }
+    .phase-path .complete { color:var(--green); }
+    .phase-path .active { color:var(--text); }
+    .phase-path .icon { width:12px; height:12px; }
+    .a-shell { padding:18px 20px 14px; border:1px solid var(--line); border-radius:var(--radius); }
+    .a-header { display:flex; align-items:center; gap:12px; width:100%; padding:0; border:0; background:transparent; text-align:left; }
+    .a-header .team-heading { flex:1; }
+    .collapse-chevron { transition:transform 320ms; color:var(--faint); margin-left:8px; }
+    .a-shell:not(.expanded) .collapse-chevron { transform:rotate(-90deg); }
+    .disclosure { display:grid; grid-template-rows:0fr; opacity:0; transition:grid-template-rows 320ms cubic-bezier(.2,.8,.2,1),opacity 250ms; }
+    .expanded .disclosure { grid-template-rows:1fr; opacity:1; }
+    .disclosure-inner { min-height:0; overflow:hidden; }
+    .a-list { padding-top:17px; }
+    .agent-row { display:flex; width:100%; align-items:center; gap:12px; padding:12px 7px; border:0; border-bottom:1px solid #f0f1f3; background:#fff; text-align:left; border-radius:7px; transition:background 180ms; }
+    .agent-row:hover,.agent-row.selected { background:#f7f8fa; }
+    .role-icon { flex-shrink:0; width:30px; height:30px; display:grid; place-items:center; border-radius:9px; background:#f3f4f6; color:#687280; }
+    .row-copy { min-width:0; flex:1; }
+    .row-title { display:block; font-size:12px; font-weight:500; }
+    .row-summary { display:block; margin-top:3px; font-size:11px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .row-meta { display:flex; align-items:center; gap:13px; }
+    .row-meta>.icon { color:var(--faint); width:14px; height:14px; }
+    .inline-detail { margin:10px 0 2px; padding:16px 17px; background:var(--soft); border-radius:10px; }
+    .inline-detail .detail-title { font-size:12px; }
+    .b-header { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:0 1px 19px; }
+    .b-stage { padding:12px 0; display:flex; align-items:center; gap:10px; border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
+    .b-stage .stage-copy { flex:1; font-size:12px; }
+    .b-stage .stage-copy small { color:var(--muted); margin-left:9px; font-size:10px; }
+    .parallel-label { display:flex; align-items:center; gap:7px; color:var(--muted); font-size:10px; padding:17px 0 12px; }
+    .lanes { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); }
+    .lane { padding:2px 18px 18px; min-width:0; border-left:1px solid var(--line); }
+    .lane:first-child { padding-left:0; border-left:0; }
+    .lane:last-child { padding-right:0; }
+    .lane-heading { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+    .lane-heading h3 { flex:1; margin:0; font-size:13px; font-weight:600; }
+    .lane-role { margin:0 0 13px; color:var(--faint); font-size:10px; }
+    .lane-goal { min-height:44px; margin:0 0 15px; font-size:12px; line-height:1.8; }
+    .lane-caption { font-size:10px; color:var(--faint); margin:0 0 4px; }
+    .lane-output { min-height:48px; margin-bottom:14px; }
+    .lane .button { padding:4px 0; }
+    .b-verify { margin-top:2px; }
+    .c-shell { border:1px solid var(--line); border-radius:var(--radius); overflow:hidden; }
+    .c-header { padding:17px 20px; display:flex; align-items:center; justify-content:space-between; gap:12px; border-bottom:1px solid var(--line); }
+    .c-body { display:grid; grid-template-columns:265px minmax(0,1fr); min-height:296px; }
+    .c-list { padding:9px; border-right:1px solid var(--line); background:#fcfcfd; }
+    .c-row { display:flex; align-items:center; gap:9px; width:100%; padding:10px; background:transparent; border:1px solid transparent; text-align:left; border-radius:9px; transition:background 180ms,border-color 180ms; margin:2px 0; }
+    .c-row:hover { background:#f3f4f6; }
+    .c-row[aria-pressed="true"] { background:#fff; border-color:var(--line); box-shadow:0 1px 2px #00000004; }
+    .c-row .row-title { font-size:12px; }
+    .c-row .row-summary { font-size:10px; }
+    .c-row>.status { margin-left:auto; }
+    .c-detail { padding:21px 24px; min-width:0; }
+    .detail-heading { display:flex; align-items:center; gap:9px; }
+    .detail-title { font-size:14px; font-weight:600; margin:0; flex:1; }
+    .detail-subtitle { font-size:11px; color:var(--muted); margin:5px 0 17px; }
+    .detail-tabs { display:flex; gap:18px; border-bottom:1px solid var(--line); margin-bottom:16px; }
+    .detail-tab { border:0; background:transparent; padding:0 0 8px; color:var(--muted); font-size:11px; border-bottom:1px solid transparent; }
+    .detail-tab[aria-selected="true"] { color:var(--text); border-bottom-color:var(--ink); }
+    .detail-copy { margin:0 0 15px; font-size:12px; line-height:1.85; overflow-wrap:anywhere; }
+    .detail-info { margin:0; display:grid; grid-template-columns:64px 1fr; gap:9px 12px; font-size:11px; }
+    .detail-info dt { color:var(--muted); }
+    .detail-info dd { margin:0; overflow-wrap:anywhere; }
+    .dependency-item { display:flex; align-items:center; gap:8px; padding:9px 0; font-size:12px; border-bottom:1px solid #edf0f3; }
+    .dependency-item .status { margin-left:auto; }
+    .error-message { display:flex; align-items:flex-start; gap:8px; padding:10px 12px; font-size:11px; line-height:1.8; color:var(--red); background:var(--red-bg); border-radius:8px; margin:12px 0; }
+    .error-message .icon { margin-top:3px; }
+    .metadata { margin-top:15px; font-size:10px; color:var(--muted); }
+    .metadata summary { cursor:pointer; width:fit-content; }
+    .metadata pre { font-size:10px; white-space:pre-wrap; overflow-wrap:anywhere; padding:10px 0; color:var(--muted); max-height:180px; overflow:auto; }
+    .c-footer { display:flex; align-items:center; justify-content:space-between; padding:10px 19px; border-top:1px solid var(--line); font-size:10px; color:var(--muted); background:#fcfcfd; }
+    .result-note { display:flex; gap:8px; margin:20px 0 0; padding:11px 0 0; color:var(--muted); font-size:12px; line-height:1.8; }
+    .result-note .icon { color:var(--green); margin-top:4px; }
+    .preview-footer { display:flex; align-items:center; gap:6px; padding:10px 20px; border-top:1px solid #eef0f2; font-size:10px; color:var(--faint); background:#fcfcfd; }
+    .rationale { display:grid; grid-template-columns:1fr 1fr 1fr; gap:25px; margin-top:25px; }
+    .rationale h3 { margin:0 0 5px; font-size:11px; font-weight:500; color:var(--text); }
+    .rationale p { margin:0; font-size:11px; line-height:1.9; color:var(--muted); }
+    .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    @keyframes surface-in { from { opacity:0; transform:translateY(5px); } to { opacity:1; transform:translateY(0); } }
+    @media (max-width:760px) {
+      main { padding:23px 16px 30px; }
+      .topbar-inner { padding:14px 16px; }
+      .prototype-label:last-child { display:none; }
+      .intro { align-items:flex-start; gap:12px; }
+      h1 { font-size:22px; }
+      .intro .demo-badge { display:none; }
+      .direction-tabs { gap:7px; }
+      .direction-tab { padding:11px 9px; gap:7px; }
+      .letter { width:24px; height:26px; }
+      .tab-title { font-size:11px; }
+      .tab-subtitle,.recommend { display:none; }
+      .conversation { padding:22px 18px 25px; }
+      .preview-toolbar { padding:10px 14px; }
+      .scenario-controls { gap:7px; width:100%; justify-content:space-between; }
+      .lanes { grid-template-columns:1fr; }
+      .lane,.lane:first-child,.lane:last-child { padding:14px 0; border-left:0; border-bottom:1px solid var(--line); }
+      .lane-goal,.lane-output { min-height:0; }
+      .lane-heading { margin-bottom:5px; }
+      .lane-role { margin-bottom:8px; }
+      .c-body { grid-template-columns:1fr; }
+      .c-list { border-right:0; border-bottom:1px solid var(--line); display:grid; grid-template-columns:1fr 1fr; }
+      .c-row { gap:7px; padding:8px; }
+      .c-row .status { font-size:0; gap:0; }
+      .c-detail { padding:19px 16px; }
+      .rationale { grid-template-columns:1fr; gap:14px; }
+      .a-shell { padding:15px 12px 12px; }
+      .row-meta { gap:5px; }
+      .row-meta>.icon { display:none; }
+      .a-header>.count { display:none; }
+      .heading-copy h2 { font-size:13px; }
+      .b-stage .stage-copy small { display:block; margin:2px 0 0; }
+    }
+    @media (prefers-reduced-motion:reduce) {
+      *,*::before,*::after { animation:none!important; transition:none!important; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <span class="brand"><span data-icon="Waypoints"></span>DeepAgent Studio</span>
+      <span class="top-divider"></span><span class="prototype-label">子代理 · 设计探索</span>
+      <span class="prototype-label">离线 HTML / 不改正式界面</span>
+    </div>
+  </header>
+  <main>
+    <div class="intro">
+      <div><p class="eyebrow">AGENT COLLABORATION</p><h1>让协作可见，而不是把节点堆出来。</h1><p>同一组子任务，三种信息组织方式。点击代理查看详情，切换状态比较不同场景。</p></div>
+      <span class="demo-badge"><span data-icon="FlaskConical"></span>全部为演示数据</span>
+    </div>
+    <nav class="direction-tabs" role="tablist" aria-label="设计方向">
+      <button class="direction-tab" id="tab-a" role="tab" aria-selected="true" aria-controls="design-panel" data-direction="a"><span class="letter">A</span><span><span class="tab-title">对话内联<span class="recommend">推荐</span></span><span class="tab-subtitle">轻量摘要 · 按需展开</span></span></button>
+      <button class="direction-tab" id="tab-b" role="tab" aria-selected="false" aria-controls="design-panel" data-direction="b" tabindex="-1"><span class="letter">B</span><span><span class="tab-title">并行泳道</span><span class="tab-subtitle">角色分工 · 并行关系</span></span></button>
+      <button class="direction-tab" id="tab-c" role="tab" aria-selected="false" aria-controls="design-panel" data-direction="c" tabindex="-1"><span class="letter">C</span><span><span class="tab-title">执行账本</span><span class="tab-subtitle">任务列表 · 常驻详情</span></span></button>
+    </nav>
+    <p id="design-note" class="design-note"></p>
+    <section class="preview" id="design-panel" role="tabpanel" aria-labelledby="tab-a">
+      <div class="preview-toolbar">
+        <span class="breadcrumb"><span data-icon="MessageSquare"></span>对话内预览<span>/</span><strong>登录模块重构</strong></span>
+        <div class="scenario-controls">
+          <label for="scenario">演示状态</label>
+          <select id="scenario"><option value="running">运行中</option><option value="done">全部完成</option><option value="failed">失败阻断</option></select>
+          <button class="button" id="replay"><span data-icon="RotateCcw"></span><span>重放演示</span></button>
+        </div>
+      </div>
+      <div class="conversation">
+        <p class="user-message">把登录模块拆成可单测的模块，并补充测试和文档。</p>
+        <p class="assistant-message">我会先明确模块边界，再并行处理实现、测试和文档，最后统一验证。</p>
+        <div class="previous-tool"><span data-icon="Check"></span>已读取 <code class="mono">src/auth/login.ts</code><span>·</span>已确认依赖关系</div>
+        <div id="component"></div>
+        <p id="result-note" class="result-note"></p>
+      </div>
+      <footer class="preview-footer"><span data-icon="Info"></span>交互原型：所有状态和结果均为模拟，未启动子代理，未连接模型或原生工具。</footer>
+    </section>
+    <section class="rationale" aria-label="当前方向设计说明" id="rationale"></section>
+    <p class="sr-only" id="announcer" aria-live="polite"></p>
+  </main>
+  <script type="application/json" id="icon-data">{"Waypoints":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-waypoints icon\" aria-hidden=\"true\">\u003cpath d=\"m10.586 5.414-5.172 5.172\">\u003c/path>\u003cpath d=\"m18.586 13.414-5.172 5.172\">\u003c/path>\u003cpath d=\"M6 12h12\">\u003c/path>\u003ccircle cx=\"12\" cy=\"20\" r=\"2\">\u003c/circle>\u003ccircle cx=\"12\" cy=\"4\" r=\"2\">\u003c/circle>\u003ccircle cx=\"20\" cy=\"12\" r=\"2\">\u003c/circle>\u003ccircle cx=\"4\" cy=\"12\" r=\"2\">\u003c/circle>\u003c/svg>","FlaskConical":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-flask-conical icon\" aria-hidden=\"true\">\u003cpath d=\"M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2\">\u003c/path>\u003cpath d=\"M6.453 15h11.094\">\u003c/path>\u003cpath d=\"M8.5 2h7\">\u003c/path>\u003c/svg>","MessageSquare":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-message-square icon\" aria-hidden=\"true\">\u003cpath d=\"M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z\">\u003c/path>\u003c/svg>","RotateCcw":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-rotate-ccw icon\" aria-hidden=\"true\">\u003cpath d=\"M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8\">\u003c/path>\u003cpath d=\"M3 3v5h5\">\u003c/path>\u003c/svg>","Info":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-info icon\" aria-hidden=\"true\">\u003ccircle cx=\"12\" cy=\"12\" r=\"10\">\u003c/circle>\u003cpath d=\"M12 16v-4\">\u003c/path>\u003cpath d=\"M12 8h.01\">\u003c/path>\u003c/svg>","ScanLine":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-scan-line icon\" aria-hidden=\"true\">\u003cpath d=\"M3 7V5a2 2 0 0 1 2-2h2\">\u003c/path>\u003cpath d=\"M17 3h2a2 2 0 0 1 2 2v2\">\u003c/path>\u003cpath d=\"M21 17v2a2 2 0 0 1-2 2h-2\">\u003c/path>\u003cpath d=\"M7 21H5a2 2 0 0 1-2-2v-2\">\u003c/path>\u003cpath d=\"M7 12h10\">\u003c/path>\u003c/svg>","Code2":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-code-xml lucide-code-2 icon\" aria-hidden=\"true\">\u003cpath d=\"m18 16 4-4-4-4\">\u003c/path>\u003cpath d=\"m6 8-4 4 4 4\">\u003c/path>\u003cpath d=\"m14.5 4-5 16\">\u003c/path>\u003c/svg>","FileText":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-file-text icon\" aria-hidden=\"true\">\u003cpath d=\"M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z\">\u003c/path>\u003cpath d=\"M14 2v5a1 1 0 0 0 1 1h5\">\u003c/path>\u003cpath d=\"M10 9H8\">\u003c/path>\u003cpath d=\"M16 13H8\">\u003c/path>\u003cpath d=\"M16 17H8\">\u003c/path>\u003c/svg>","ShieldCheck":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-shield-check icon\" aria-hidden=\"true\">\u003cpath d=\"M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z\">\u003c/path>\u003cpath d=\"m9 12 2 2 4-4\">\u003c/path>\u003c/svg>","CircleCheck":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-circle-check lucide-check-circle-2 icon\" aria-hidden=\"true\">\u003ccircle cx=\"12\" cy=\"12\" r=\"10\">\u003c/circle>\u003cpath d=\"m16 9-5.5 5.5L8 12\">\u003c/path>\u003c/svg>","LoaderCircle":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-loader-circle lucide-loader-2 icon\" aria-hidden=\"true\">\u003cpath d=\"M21 12a9 9 0 1 1-6.219-8.56\">\u003c/path>\u003c/svg>","CircleAlert":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-circle-alert lucide-alert-circle icon\" aria-hidden=\"true\">\u003ccircle cx=\"12\" cy=\"12\" r=\"10\">\u003c/circle>\u003cline x1=\"12\" x2=\"12\" y1=\"8\" y2=\"12\">\u003c/line>\u003cline x1=\"12\" x2=\"12.01\" y1=\"16\" y2=\"16\">\u003c/line>\u003c/svg>","Clock3":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-clock-3 icon\" aria-hidden=\"true\">\u003ccircle cx=\"12\" cy=\"12\" r=\"10\">\u003c/circle>\u003cpath d=\"M12 6v6h4\">\u003c/path>\u003c/svg>","ChevronRight":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-chevron-right icon\" aria-hidden=\"true\">\u003cpath d=\"m9 18 6-6-6-6\">\u003c/path>\u003c/svg>","ChevronDown":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-chevron-down icon\" aria-hidden=\"true\">\u003cpath d=\"m6 9 6 6 6-6\">\u003c/path>\u003c/svg>","X":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-x icon\" aria-hidden=\"true\">\u003cpath d=\"M18 6 6 18\">\u003c/path>\u003cpath d=\"m6 6 12 12\">\u003c/path>\u003c/svg>","GitBranch":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-git-branch icon\" aria-hidden=\"true\">\u003cpath d=\"M15 6a9 9 0 0 0-9 9V3\">\u003c/path>\u003ccircle cx=\"18\" cy=\"6\" r=\"3\">\u003c/circle>\u003ccircle cx=\"6\" cy=\"18\" r=\"3\">\u003c/circle>\u003c/svg>","ArrowUpRight":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-arrow-up-right icon\" aria-hidden=\"true\">\u003cpath d=\"M7 7h10v10\">\u003c/path>\u003cpath d=\"M7 17 17 7\">\u003c/path>\u003c/svg>","Pause":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-pause icon\" aria-hidden=\"true\">\u003crect x=\"14\" y=\"3\" width=\"5\" height=\"18\" rx=\"1\">\u003c/rect>\u003crect x=\"5\" y=\"3\" width=\"5\" height=\"18\" rx=\"1\">\u003c/rect>\u003c/svg>","Check":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-check icon\" aria-hidden=\"true\">\u003cpath d=\"M20 6 9 17l-5-5\">\u003c/path>\u003c/svg>","GitMerge":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-git-merge icon\" aria-hidden=\"true\">\u003ccircle cx=\"18\" cy=\"18\" r=\"3\">\u003c/circle>\u003ccircle cx=\"6\" cy=\"6\" r=\"3\">\u003c/circle>\u003cpath d=\"M6 21V9a9 9 0 0 0 9 9\">\u003c/path>\u003c/svg>"}</script>
+  <script type="text/plain" id="icon-license">ISC License
+
+Copyright (c) 2026 Lucide Icons and Contributors
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+---
+
+The following Lucide icons are derived from the Feather project:
+
+airplay, alert-circle, alert-octagon, alert-triangle, aperture, arrow-down-circle, arrow-down-left, arrow-down-right, arrow-down, arrow-left-circle, arrow-left, arrow-right-circle, arrow-right, arrow-up-circle, arrow-up-left, arrow-up-right, arrow-up, at-sign, calendar, cast, check, chevron-down, chevron-left, chevron-right, chevron-up, chevrons-down, chevrons-left, chevrons-right, chevrons-up, circle, clipboard, clock, code, columns, command, compass, corner-down-left, corner-down-right, corner-left-down, corner-left-up, corner-right-down, corner-right-up, corner-up-left, corner-up-right, crosshair, database, divide-circle, divide-square, dollar-sign, download, external-link, feather, frown, hash, headphones, help-circle, info, italic, key, layout, life-buoy, link-2, link, loader, lock, log-in, log-out, maximize, meh, minimize, minimize-2, minus-circle, minus-square, minus, monitor, moon, more-horizontal, more-vertical, move, music, navigation-2, navigation, octagon, pause-circle, percent, plus-circle, plus-square, plus, power, radio, rss, search, server, share, shopping-bag, sidebar, smartphone, smile, square, table-2, tablet, target, terminal, trash-2, trash, triangle, tv, type, upload, x-circle, x-octagon, x-square, x, zoom-in, zoom-out
+
+The MIT License (MIT) (for the icons listed above)
+
+Copyright (c) 2013-present Cole Bemis
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+</script>
+  <script>
+    "use strict";
+    const icons = JSON.parse(document.getElementById("icon-data").textContent);
+    const ui = { direction:"a", scenario:"running", expanded:true, selected:"refactor", detail:false, detailTab:"output", replayStep:null, playing:false };
+    let replayTimer = null;
+    const definitions = [
+      { id:"plan", name:"任务规划", role:"planner", phase:"规划", icon:"ScanLine", goal:"明确模块边界，拆分可并行的子任务。", dependsOn:[], summary:"已拆分为实现、测试、文档三个独立子任务。" },
+      { id:"refactor", name:"实现代理", role:"implementer", phase:"执行", icon:"Code2", goal:"提取表单校验与 Token 存储，保持登录入口清晰。", dependsOn:["plan"], summary:"已提取 validators 与 tokenStorage，保留 login.ts 作为调用入口。", current:"正在拆分校验逻辑，整理模块之间的依赖。" },
+      { id:"tests", name:"测试代理", role:"tester", phase:"执行", icon:"FlaskConical", goal:"补充输入校验、Token 过期和登录异常的单元测试。", dependsOn:["plan"], summary:"已补充 15 个测试用例，覆盖边界输入与异常路径。", current:"正在检查无效输入与 Token 过期的测试覆盖。" },
+      { id:"docs", name:"文档代理", role:"documenter", phase:"执行", icon:"FileText", goal:"说明新模块边界与使用方式，补充测试运行指引。", dependsOn:["plan"], summary:"已整理 src/auth/README.md 的模块说明与测试指引。", current:"正在更新模块说明与测试运行指引。" },
+      { id:"verify", name:"汇总验证", role:"reviewer", phase:"验证", icon:"ShieldCheck", goal:"收集三个子任务的结果，统一检查接口与测试。", dependsOn:["refactor","tests","docs"], summary:"三个子任务结果已汇总，15 个测试用例全部通过。" }
+    ];
+    const directions = {
+      a:{ note:"适合日常对话：先看协作摘要，再按需查看单个代理；完成后可以收起，不抢占回答空间。",
+        points:[["层级","先交代协作状态，再展示代理分工，不让 plan_execute 和节点 ID 占据主标题。"],["交互","展开 / 收起整体；点击一名代理查看目标、产出与依赖。"],["适用","对话优先。推荐作为默认样式，既看得到协作，也不打断阅读。"]] },
+      b:{ note:"适合强调并行：把实现、测试、文档排成三条泳道，规划与汇总放在共同的上下游。",
+        points:[["层级","用空间分组呈现并行，不再依赖一根进度条解释三个代理的工作。"],["交互","逐个查看代理产出；失败留在所属泳道，汇总验证保持等待。"],["适用","少量代理的并行协作。窄屏自动转为纵向排列。"]] },
+      c:{ note:"适合执行排查：左侧稳定保留任务列表，右侧查看结果、依赖与结构化字段，避免反复展开长列表。",
+        points:[["层级","状态与任务索引始终可见，详情只占用同一块区域。"],["交互","切换节点，查看结果或依赖；失败原因就地展示。"],["适用","复杂任务、失败诊断与历史复查；可作为详细模式。"]] }
+    };
+    function esc(value) { return String(value ?? "").replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch])); }
+    function icon(name, extra="") { return (icons[name] || icons.Info).replace('class="icon"', `class="icon ${extra}"`); }
+    function nodes() {
+      return definitions.map((definition, index) => {
+        let status = "pending", blocked = false;
+        if (ui.replayStep !== null) {
+          const step = ui.replayStep;
+          status = step === 0 ? (index === 0 ? "running" : "pending")
+            : index === 0 ? "done"
+            : index === 4 ? (step >= 5 ? "done" : step === 4 ? "running" : "pending")
+            : step >= 4 || (step >= 2 && index === 3) || (step >= 3 && index === 1) ? "done" : "running";
+        } else if (ui.scenario === "done") status = "done";
+        else if (ui.scenario === "failed") {
+          status = index === 2 ? "failed" : index === 4 ? "pending" : "done";
+          blocked = index === 4;
+        } else status = index === 0 || index === 3 ? "done" : index === 4 ? "pending" : "running";
+        return { ...definition, status, blocked,
+          output:status === "done" ? definition.summary : status === "running" ? definition.current || "正在处理当前子任务。"
+            : status === "failed" ? "邮箱校验的边界用例未通过，等待主代理处理。"
+            : blocked ? "测试子任务未通过，汇总验证尚未开始。" : "等待上游任务完成后开始。",
+          error:status === "failed" ? "断言失败：无效邮箱输入应返回 false，当前结果为 true。" : null };
+      });
+    }
+    function status(node) {
+      const label = node.status === "done" ? "已完成" : node.status === "running" ? "进行中" : node.status === "failed" ? "失败" : node.blocked ? "依赖未满足" : "等待中";
+      const symbol = node.status === "done" ? "CircleCheck" : node.status === "running" ? "LoaderCircle" : node.status === "failed" ? "CircleAlert" : "Clock3";
+      return `<span class="status ${node.status}">${icon(symbol,node.status === "running" ? "spin" : "")}${label}</span>`;
+    }
+    function overall(list) {
+      const failed = list.some(n=>n.status==="failed"), done = list.filter(n=>n.status==="done").length;
+      return { done, label:failed ? "需要处理" : done === list.length ? "协作已完成" : "正在协作",
+        state:failed ? "failed" : done === list.length ? "done" : "running" };
+    }
+    function heading(list) {
+      const all = overall(list);
+      return `<div class="team-heading"><span class="team-emblem">${icon("Waypoints")}</span><div class="heading-copy"><h2>${all.label}<span class="muted" style="font-weight:400"> · 登录模块重构</span></h2><p>5 个子任务 · 实现、测试、文档并行</p></div></div>`;
+    }
+    function phasePath(list) {
+      const parallel = list.slice(1,4), stage = id => list.find(n=>n.id===id);
+      const phaseClass = node => node.status === "done" ? "complete" : node.status === "running" ? "active" : "";
+      return `<div class="phase-path"><span class="${phaseClass(stage("plan"))}">规划</span>${icon("ChevronRight")}<span class="${parallel.some(n=>n.status==="running") ? "active" : parallel.every(n=>n.status==="done") ? "complete" : ""}">并行执行 ${parallel.filter(n=>n.status==="done").length}/3</span>${icon("ChevronRight")}<span class="${phaseClass(stage("verify"))}">汇总验证</span></div>`;
+    }
+    function detail(node, list, inline=false) {
+      const upstream = list.filter(n=>node.dependsOn.includes(n.id));
+      const output = `<p class="detail-copy">${esc(node.output)}</p>${node.error ? `<div class="error-message">${icon("CircleAlert")}<span>${esc(node.error)}</span></div>` : ""}
+        <dl class="detail-info"><dt>任务目标</dt><dd>${esc(node.goal)}</dd><dt>角色</dt><dd class="mono">${esc(node.role)}</dd><dt>节点</dt><dd class="mono">${esc(node.id)}</dd><dt>阶段</dt><dd>${esc(node.phase)}</dd></dl>`;
+      const dependencies = upstream.length ? `<p class="detail-copy muted">该任务依赖以下上游结果：</p>${upstream.map(n=>`<div class="dependency-item">${icon(n.icon)}<span>${esc(n.name)}</span>${status(n)}</div>`).join("")}`
+        : `<p class="detail-copy muted">无上游依赖，可以直接开始。</p>`;
+      return `<div class="${inline ? "inline-detail surface-enter" : ""}"><div class="detail-heading"><h3 class="detail-title">${esc(node.name)}</h3>${status(node)}${inline ? `<button class="button ghost" data-close-detail aria-label="关闭任务详情">${icon("X")}</button>` : ""}</div>
+        <p class="detail-subtitle">${esc(node.role)} · ${esc(node.phase)}阶段</p>
+        <div class="detail-tabs" role="tablist" aria-label="任务详情"><button class="detail-tab" data-detail-tab="output" role="tab" aria-selected="${ui.detailTab==="output"}">任务结果</button><button class="detail-tab" data-detail-tab="dependencies" role="tab" aria-selected="${ui.detailTab==="dependencies"}">上游依赖${upstream.length ? ` · ${upstream.length}` : ""}</button></div>
+        <div role="tabpanel">${ui.detailTab === "output" ? output : dependencies}</div>
+        <details class="metadata"><summary>查看演示数据字段</summary><pre>${esc(JSON.stringify({id:node.id,goal:node.goal,role:node.role,phase:node.phase,status:node.status,depends_on:node.dependsOn,summary:node.output,error:node.error},null,2))}</pre></details></div>`;
+    }
+    function renderA(list) {
+      const all = overall(list);
+      return `<section class="a-shell ${ui.expanded ? "expanded" : ""} surface-enter" aria-label="对话内联方案"><button class="a-header" data-collapse aria-expanded="${ui.expanded}" aria-controls="agent-disclosure">${heading(list)}<span class="count">${all.done}/5 已完成</span>${icon("ChevronDown","collapse-chevron")}</button>
+        <div class="disclosure" id="agent-disclosure"><div class="disclosure-inner"><div class="a-list">${list.slice(1,4).map(n=>`<button class="agent-row ${ui.detail&&ui.selected===n.id ? "selected" : ""}" data-node="${n.id}" aria-expanded="${ui.detail&&ui.selected===n.id}"><span class="role-icon">${icon(n.icon)}</span><span class="row-copy"><span class="row-title">${n.name}<span class="muted" style="font-weight:400"> · ${n.role}</span></span><span class="row-summary">${esc(n.output)}</span></span><span class="row-meta">${status(n)}${icon("ChevronRight")}</span></button>`).join("")}
+          ${ui.detail ? detail(list.find(n=>n.id===ui.selected),list,true) : ""}<div class="quiet-footer">${phasePath(list)}<span class="mono">plan_execute</span></div></div></div></div></section>`;
+    }
+    function renderB(list) {
+      const plan = list[0], verify = list[4];
+      return `<section class="surface-enter" aria-label="并行泳道方案"><header class="b-header">${heading(list)}<span class="count">${overall(list).done}/5 已完成</span></header>
+        <div class="b-stage">${icon("ScanLine")}<span class="stage-copy">任务规划<small>${esc(plan.output)}</small></span>${status(plan)}</div>
+        <div class="parallel-label">${icon("GitBranch")}共同依赖规划结果，以下三个子任务可并行</div>
+        <div class="lanes">${list.slice(1,4).map(n=>`<section class="lane"><div class="lane-heading">${icon(n.icon)}<h3>${n.name}</h3></div><p class="lane-role">${n.role} / ${n.id}</p>${status(n)}<p class="lane-goal" style="margin-top:12px">${esc(n.goal)}</p><p class="lane-caption">当前进展</p><div class="output-text lane-output">${esc(n.output)}</div><button class="button ghost" data-node="${n.id}" aria-expanded="${ui.detail&&ui.selected===n.id}">查看任务${icon("ArrowUpRight")}</button></section>`).join("")}</div>
+        <div class="b-stage b-verify">${icon("ShieldCheck")}<span class="stage-copy">汇总验证<small>${esc(verify.output)}</small></span>${status(verify)}</div>
+        ${ui.detail ? detail(list.find(n=>n.id===ui.selected),list,true) : ""}</section>`;
+    }
+    function renderC(list) {
+      const node = list.find(n=>n.id===ui.selected);
+      return `<section class="c-shell surface-enter" aria-label="执行账本方案"><header class="c-header">${heading(list)}<span class="count">${overall(list).done}/5 已完成</span></header>
+        <div class="c-body"><div class="c-list" aria-label="任务列表">${list.map(n=>`<button class="c-row" data-node="${n.id}" aria-pressed="${n.id===ui.selected}">${icon(n.icon)}<span class="row-copy"><span class="row-title">${n.name}</span><span class="row-summary">${n.phase} · ${n.id}</span></span>${status(n)}</button>`).join("")}</div><div class="c-detail">${detail(node,list)}</div></div>
+        <footer class="c-footer"><span>单个任务的结果不等于整次任务通过</span><span class="mono">plan_execute</span></footer></section>`;
+    }
+    function hydrateIcons(root=document) { root.querySelectorAll("[data-icon]").forEach(el=>{el.innerHTML=icon(el.dataset.icon);el.removeAttribute("data-icon");}); }
+    function render() {
+      const list = nodes(), all = overall(list), spec = directions[ui.direction];
+      document.querySelectorAll("[data-direction]").forEach(button=>{
+        const active = button.dataset.direction === ui.direction;
+        button.setAttribute("aria-selected",String(active)); button.tabIndex=active?0:-1;
+      });
+      document.getElementById("design-panel").setAttribute("aria-labelledby",`tab-${ui.direction}`);
+      document.getElementById("design-note").innerHTML=icon("Info")+spec.note;
+      document.getElementById("rationale").innerHTML=spec.points.map(([title,copy])=>`<div><h3>${title}</h3><p>${copy}</p></div>`).join("");
+      document.getElementById("component").innerHTML=({a:renderA,b:renderB,c:renderC}[ui.direction])(list);
+      const note = all.state === "done" ? "子任务已完成并汇总。本示例中的验证结果为演示数据，不代表项目实际测试结果。"
+        : all.state === "failed" ? "测试子任务遇到失败。其余子任务的产出保留，汇总验证不会显示为成功。"
+        : "子任务仍在执行。主代理会在依赖就绪后统一汇总，而不是把每一步都当成最终回答。";
+      document.getElementById("result-note").innerHTML=icon(all.state==="failed" ? "CircleAlert" : all.state==="done" ? "CircleCheck" : "GitMerge")+`<span>${note}</span>`;
+      document.getElementById("scenario").value=ui.scenario;
+      document.getElementById("scenario").disabled=ui.playing;
+      document.getElementById("replay").innerHTML=icon(ui.playing?"Pause":"RotateCcw")+`<span>${ui.playing?"停止演示":"重放演示"}</span>`;
+      document.getElementById("announcer").textContent=`方向 ${ui.direction.toUpperCase()}，${all.label}，${all.done}/5 个子任务完成。`;
+    }
+    function changeDirection(direction) { ui.direction=direction; ui.detail=false; render(); }
+    function stopReplay() { clearTimeout(replayTimer); replayTimer=null; ui.playing=false; ui.replayStep=null; }
+    document.querySelector(".direction-tabs").addEventListener("click",event=>{
+      const button=event.target.closest("[data-direction]"); if(button) changeDirection(button.dataset.direction);
+    });
+    document.querySelector(".direction-tabs").addEventListener("keydown",event=>{
+      if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key)) return;
+      event.preventDefault(); const order=["a","b","c"],index=order.indexOf(ui.direction);
+      const next=event.key==="Home"?0:event.key==="End"?2:(index+(event.key==="ArrowRight"?1:2))%3;
+      changeDirection(order[next]); document.getElementById(`tab-${order[next]}`).focus();
+    });
+    document.getElementById("scenario").addEventListener("change",event=>{stopReplay();ui.scenario=event.target.value;render();});
+    document.getElementById("replay").addEventListener("click",()=>{
+      if(ui.playing) {stopReplay();render();return;}
+      ui.playing=true;ui.scenario="running";ui.replayStep=0;ui.expanded=true;render();
+      function next() {
+        if(!ui.playing) return;
+        ui.replayStep++;
+        if(ui.replayStep===5) {stopReplay();ui.scenario="done";render();return;}
+        render(); replayTimer=setTimeout(next,1400);
+      }
+      replayTimer=setTimeout(next,1400);
+    });
+    document.getElementById("component").addEventListener("click",event=>{
+      const collapse=event.target.closest("[data-collapse]");
+      if(collapse) {
+        ui.expanded=!ui.expanded; collapse.setAttribute("aria-expanded",String(ui.expanded));
+        const shell=collapse.closest(".a-shell"),body=shell.querySelector(".disclosure-inner");
+        shell.classList.toggle("expanded",ui.expanded); body.inert=!ui.expanded; return;
+      }
+      const node=event.target.closest("[data-node]");
+      if(node) {
+        ui.detail=ui.direction==="c"?true:!(ui.detail&&ui.selected===node.dataset.node);
+        ui.selected=node.dataset.node;ui.detailTab="output";render();
+        document.querySelector(`[data-node="${ui.selected}"]`)?.focus({preventScroll:true});return;
+      }
+      if(event.target.closest("[data-close-detail]")) {ui.detail=false;render();document.querySelector(`[data-node="${ui.selected}"]`)?.focus({preventScroll:true});return;}
+      const detailTab=event.target.closest("[data-detail-tab]");
+      if(detailTab) {ui.detailTab=detailTab.dataset.detailTab;render();document.querySelector(`[data-detail-tab="${ui.detailTab}"]`)?.focus({preventScroll:true});}
+    });
+    window.addEventListener("pagehide",()=>clearTimeout(replayTimer));
+    hydrateIcons(); render();
+  </script>
+</body>
+</html>
