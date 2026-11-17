@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { TerminalPlugin } from "../plugins/TerminalPlugin";
 import { PreviewBody } from "../plugins/FilePreviewPlugin";
 import { FloatingChat } from "./FloatingChat";
+import { RemoteTransfersPanel } from "./RemoteTransfersPanel";
 import { SyntaxHighlightedCode } from "../SyntaxHighlightedCode";
 import {
   ContextMenu,
@@ -388,6 +389,7 @@ export function RemoteView({ connection, openFile }: RemoteViewProps) {
         )}
       </div>
       <FloatingChat connectionId={connection.id} connected={connected} />
+      <RemoteTransfersPanel connectionId={connection.id}/>
     </div>
   );
 }

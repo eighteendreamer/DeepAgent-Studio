@@ -406,6 +406,7 @@ struct AppState {
     /// migration. Legacy `local_pty_*` commands remain available below.
     terminal_sessions: Arc<DirectTerminalSessionBackend>,
     ssh_terminal_sessions: Arc<deepagent_ssh::SshTerminalSessionBackend>,
+    transfers: deepagent_app_core::file_transfer_service::TransferCoordinator,
     git: Arc<GitService>,
     /// File preview for the desktop "File Preview" panel (office-agent).
     preview: Arc<FilePreviewService>,
@@ -5769,6 +5770,82 @@ async fn ssh_read_file(
 }
 
 #[tauri::command]
+async fn ssh_file_metadata(
+    state: State<'_, AppState>,
+    connection_id: String,
+    path: String,
+    follow_symlinks: Option<bool>,
+) -> Result<deepagent_ssh::RemoteFileMetadata, String> {
+    state
+        .ssh
+        .file_metadata(
+            &ssh_handle(&connection_id),
+            &path,
+            follow_symlinks.unwrap_or(false),
+        )
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn remote_transfer_submit(
+    state: State<'_, AppState>,
+    request: deepagent_app_core::file_transfer_service::TransferRequest,
+) -> Result<deepagent_app_core::file_transfer_service::TransferTask, String> {
+    state
+        .transfers
+        .submit(request)
+        .await
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn remote_transfer_snapshot(
+    state: State<'_, AppState>,
+) -> Result<Vec<deepagent_app_core::file_transfer_service::TransferTask>, String> {
+    state.transfers.snapshot().await.map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn remote_transfer_cancel(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<deepagent_app_core::file_transfer_service::TransferTask, String> {
+    state.transfers.cancel(&id).await.map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn remote_transfer_retry(
+    state: State<'_, AppState>,
+    id: String,
+    conflict: deepagent_ssh::FileConflictPolicy,
+) -> Result<deepagent_app_core::file_transfer_service::TransferTask, String> {
+    state
+        .transfers
+        .retry(&id, conflict)
+        .await
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn remote_transfer_clear(state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .transfers
+        .clear_finished()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ssh_realpath(
+    state: State<'_, AppState>,
+    connection_id: String,
+    path: String,
+) -> Result<deepagent_ssh::RemoteRealpath, String> {
+    state
+        .ssh
+        .realpath(&ssh_handle(&connection_id), &path)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn ssh_read_file_base64(
     state: State<'_, AppState>,
     connection_id: String,
@@ -7418,6 +7495,7 @@ pub fn run() {
                     service.shared_database(), deepagent_app_core::terminal_service::DEFAULT_TERMINAL_LEASE_TTL_MS,
                 ).map_err(|error| format!("initialize SSH terminal leases: {error}"))?)),
             ));
+            let transfers=deepagent_app_core::file_transfer_service::TransferCoordinator::new(service.shared_database(),ssh.clone()).map_err(|error|format!("initialize file transfer queue: {error}"))?;
             {
                 let ssh_monitor = ssh.clone();
                 tauri::async_runtime::spawn(async move {
@@ -7716,6 +7794,7 @@ pub fn run() {
                 terminal,
                 terminal_sessions,
                 ssh_terminal_sessions,
+                transfers,
                 git,
                 preview,
                 attachments,
@@ -7997,6 +8076,13 @@ pub fn run() {
             ssh_test_connection,
             ssh_exec,
             ssh_list_dir,
+            ssh_file_metadata,
+            remote_transfer_submit,
+            remote_transfer_snapshot,
+            remote_transfer_cancel,
+            remote_transfer_retry,
+            remote_transfer_clear,
+            ssh_realpath,
             ssh_read_file,
             ssh_read_file_base64,
             ssh_create_dir,

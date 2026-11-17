@@ -30,6 +30,11 @@ pub use config::{
 };
 pub use connection_challenge::{SshConnectionAttempt, SshHostKeyChallenge, SshHostKeyDecision};
 pub use error::{SshError, SshResult};
+pub use file_transfer::{
+    FileConflictPolicy, FileTransferDirection, FileTransferError, FileTransferProgress,
+    FileTransferReceipt, FileTransferRequest,
+};
+pub use files::{RemoteFileKind, RemoteFileMetadata, RemoteRealpath};
 pub use host_key_rotation::{SshHostKeyRotationPreview, SshHostKeyRotationResult};
 pub use host_key_store::{
     SshHostIdentity, SshHostKeyRecord, SshHostKeyRotationRecord, SshHostKeyStore,
@@ -59,6 +64,8 @@ mod config;
 mod connection_challenge;
 mod connection_flow;
 mod error;
+mod file_transfer;
+mod files;
 mod host_key_activity;
 mod host_key_rotation;
 mod host_key_store;
@@ -615,6 +622,26 @@ impl SshService {
         path: &str,
     ) -> SshResult<SshFileContent> {
         self.inner.read_file(handle, path).await
+    }
+
+    /// lstat by default at the UI boundary. Following links must be explicit.
+    pub async fn file_metadata(
+        &self,
+        handle: &SshServiceHandle,
+        path: &str,
+        follow_symlinks: bool,
+    ) -> SshResult<RemoteFileMetadata> {
+        self.inner
+            .file_metadata(handle, path, follow_symlinks)
+            .await
+    }
+
+    pub async fn realpath(
+        &self,
+        handle: &SshServiceHandle,
+        path: &str,
+    ) -> SshResult<RemoteRealpath> {
+        self.inner.realpath(handle, path).await
     }
 
     pub async fn read_file_binary(

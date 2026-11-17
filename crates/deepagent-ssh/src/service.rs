@@ -501,6 +501,68 @@ impl SshServiceImpl {
         Ok(content)
     }
 
+    pub async fn file_metadata(
+        &self,
+        handle: &SshServiceHandle,
+        path: &str,
+        follow_symlinks: bool,
+    ) -> SshResult<crate::RemoteFileMetadata> {
+        crate::files::validate_path(path)?;
+        let (session, sftp) = self.file_session(&handle.connection_id).await?;
+        let attrs = if follow_symlinks {
+            sftp.metadata(path).await
+        } else {
+            sftp.symlink_metadata(path).await
+        };
+        sftp_close_quiet(&handle.connection_id, &sftp).await;
+        let attrs = attrs.map_err(|error| {
+            SshError::Internal(format!(
+                "SFTP {}: {error}",
+                if follow_symlinks { "stat" } else { "lstat" }
+            ))
+        })?;
+        session.touch_keepalive();
+        Ok(crate::files::metadata(
+            &handle.connection_id,
+            path,
+            follow_symlinks,
+            attrs,
+        ))
+    }
+
+    pub async fn realpath(
+        &self,
+        handle: &SshServiceHandle,
+        path: &str,
+    ) -> SshResult<crate::RemoteRealpath> {
+        crate::files::validate_path(path)?;
+        let (session, sftp) = self.file_session(&handle.connection_id).await?;
+        let canonical_path = sftp.canonicalize(path).await;
+        sftp_close_quiet(&handle.connection_id, &sftp).await;
+        let canonical_path = canonical_path
+            .map_err(|error| SshError::Internal(format!("SFTP realpath: {error}")))?;
+        crate::files::validate_path(&canonical_path)?;
+        session.touch_keepalive();
+        Ok(crate::RemoteRealpath {
+            connection_id: handle.connection_id.clone(),
+            path: path.into(),
+            canonical_path,
+        })
+    }
+
+    pub(crate) async fn file_session(
+        &self,
+        connection_id: &str,
+    ) -> SshResult<(Arc<SshSession>, SftpSession)> {
+        let session = self.connected_session(connection_id).await?;
+        let client = session
+            .client()
+            .await
+            .ok_or_else(|| SshError::ConnectionLost(connection_id.into()))?;
+        let sftp = sftp_open(&client, None).await?;
+        Ok((session, sftp))
+    }
+
     pub async fn read_file_binary(
         &self,
         handle: &SshServiceHandle,
