@@ -15,13 +15,16 @@ import { observeRemoteTransfers } from "../../remoteTransferObserver";
 type Labeler = (key: string) => string;
 
 export function TransferTaskBody({ task, label }: { task: TransferTask; label: Labeler }) {
+  const live = task.state === "running" || task.state === "cancelling";
   const warnings = [
     ...(task.error?.cleanupWarnings ?? []), ...(task.receipt?.cleanupWarnings ?? []),
   ];
   return <div className="min-w-0 flex-1 space-y-1 text-[12px]">
     <p className="break-all">{label(task.request.transfer.direction)} · {task.request.transfer.remotePath}</p>
     <p className="break-all text-text-secondary">{task.request.transfer.localPath}</p>
-    <p>{label(task.state)} · {task.bytes} / {task.total ?? "?"} B · {label("attempt")} {task.attempt}</p>
+    <p className="break-all">{label(task.state)} · {task.bytes} / {task.total ?? "?"} B · {label("averageSpeed")} {live ? task.speedBps ?? "?" : "—"} B/s · {label("attempt")} {task.attempt}</p>
+    <p>{label("files")} {task.completedFiles ?? "?"} / {task.totalFiles ?? "?"}</p>
+    {task.currentFile && <p className="break-all text-text-secondary">{label("currentFile")} · {task.currentFile}</p>}
     {task.error && <p role="alert" className="break-words text-red-500">{task.error.code}: {task.error.message}</p>}
     {task.receipt && <p className="break-all text-text-secondary">
       {task.receipt.skipped ? label("skipped") : task.receipt.publishStrategy} {task.receipt.sha256}

@@ -16,6 +16,7 @@ use std::sync::{
 struct Executor {
     started: AtomicUsize,
     release: tokio::sync::Notify,
+    skipped: bool,
 }
 #[async_trait::async_trait]
 impl TransferExecutor for Executor {
@@ -31,7 +32,7 @@ impl TransferExecutor for Executor {
             bytes: 3,
             total: Some(10),
         });
-        tokio::select! {_ = self.release.notified()=>Ok(FileTransferReceipt{bytes:"10".into(),sha256:"fixture".into(),skipped:false,publish_strategy:"created".into(),cleanup_warnings:vec![]}),_ = cancel.cancelled()=>Err(FileTransferError{code:"cancelled".into(),message:"cancelled after stream cleanup".into(),cleanup_warnings:vec![]})}
+        tokio::select! {_ = self.release.notified()=>Ok(FileTransferReceipt{bytes:if self.skipped { "0" } else { "10" }.into(),sha256:"fixture".into(),skipped:self.skipped,publish_strategy:"created".into(),cleanup_warnings:vec![]}),_ = cancel.cancelled()=>Err(FileTransferError{code:"cancelled".into(),message:"cancelled after stream cleanup".into(),cleanup_warnings:vec![]})}
     }
 }
 fn request(id: &str, name: &str) -> TransferRequest {
@@ -129,6 +130,183 @@ async fn watch_timeout_and_dropped_waiter_leave_queue_usable() {
         .await
         .unwrap();
     assert_eq!(result.tasks[0].state, TransferState::Cancelled);
+}
+
+#[tokio::test]
+async fn progress_snapshot_exposes_speed_and_single_file_counts() {
+    let executor = Arc::new(Executor::default());
+    let service = TransferCoordinator::new(
+        Arc::new(Database::open_in_memory().unwrap()),
+        executor.clone(),
+    )
+    .unwrap();
+    let task = service
+        .submit(request("a", "progress-fields"))
+        .await
+        .unwrap();
+    state(&service, &task.id, TransferState::Running).await;
+    let running = service
+        .snapshot()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|item| item.id == task.id)
+        .unwrap();
+    assert_eq!(running.current_file.as_deref(), Some("/progress-fields"));
+    assert_eq!(running.total_files, Some(1));
+    assert_eq!(running.completed_files, 0);
+    assert!(
+        running.speed_bps.is_some(),
+        "running progress must expose a rate"
+    );
+    executor.release.notify_one();
+    state(&service, &task.id, TransferState::Completed).await;
+    let finished = service
+        .snapshot()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|item| item.id == task.id)
+        .unwrap();
+    assert_eq!(finished.completed_files, 1);
+    assert_eq!(
+        finished.speed_bps, None,
+        "terminal task cannot advertise a live rate"
+    );
+    let wire = serde_json::to_value(&finished).unwrap();
+    assert_eq!(wire["completedFiles"], 1);
+    assert_eq!(wire["totalFiles"], 1);
+    assert!(wire.get("startedMs").is_none());
+    assert!(wire.get("startedAt").is_none());
+}
+
+#[tokio::test]
+async fn retry_resets_live_metrics_after_cancellation() {
+    let executor = Arc::new(Executor {
+        skipped: true,
+        ..Default::default()
+    });
+    let service = TransferCoordinator::new(
+        Arc::new(Database::open_in_memory().unwrap()),
+        executor.clone(),
+    )
+    .unwrap();
+    let task = service.submit(request("a", "progress-skip")).await.unwrap();
+    state(&service, &task.id, TransferState::Running).await;
+    service.cancel(&task.id).await.unwrap();
+    state(&service, &task.id, TransferState::Cancelled).await;
+    let cancelled = service.snapshot().await.unwrap().remove(0);
+    assert_eq!(cancelled.speed_bps, None);
+    assert_eq!(cancelled.completed_files, 0);
+    let retry = service
+        .retry(&task.id, FileConflictPolicy::Skip)
+        .await
+        .unwrap();
+    assert_eq!(retry.attempt, 2);
+    assert_eq!(retry.bytes, "0");
+    assert_eq!(retry.total, None);
+    assert_eq!(retry.speed_bps, None);
+    assert_eq!(retry.completed_files, 0);
+    assert_eq!(retry.total_files, Some(1));
+    state(&service, &task.id, TransferState::Running).await;
+    executor.release.notify_one();
+    state(&service, &task.id, TransferState::Completed).await;
+    let skipped = service.snapshot().await.unwrap().remove(0);
+    assert!(skipped.receipt.as_ref().unwrap().skipped);
+    assert_eq!(skipped.bytes, "0");
+    assert_eq!(skipped.completed_files, 0);
+    assert_eq!(skipped.speed_bps, None);
+}
+
+#[tokio::test]
+async fn skipped_file_is_not_counted_as_transferred() {
+    let executor = Arc::new(Executor {
+        skipped: true,
+        ..Default::default()
+    });
+    let service = TransferCoordinator::new(
+        Arc::new(Database::open_in_memory().unwrap()),
+        executor.clone(),
+    )
+    .unwrap();
+    let task = service
+        .submit(request("a", "progress-skipped-count"))
+        .await
+        .unwrap();
+    state(&service, &task.id, TransferState::Running).await;
+    executor.release.notify_one();
+    state(&service, &task.id, TransferState::Completed).await;
+    let skipped = service.snapshot().await.unwrap().remove(0);
+    assert!(skipped.receipt.as_ref().unwrap().skipped);
+    assert_eq!(
+        skipped.completed_files, 0,
+        "skipping does not transfer a file"
+    );
+}
+
+#[tokio::test]
+async fn recovered_task_clears_live_speed_and_legacy_retry_initializes_file_counts() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let executor = Arc::new(Executor::default());
+    let service = TransferCoordinator::new(db.clone(), executor).unwrap();
+    let task = service
+        .submit(request("a", "progress-recovery"))
+        .await
+        .unwrap();
+    state(&service, &task.id, TransferState::Running).await;
+    let mut saved = serde_json::to_value(service.snapshot().await.unwrap()).unwrap();
+    saved[0]["speedBps"] = serde_json::json!("9007199254740993");
+    drop(service);
+    let store = deepagent_persistence::document_store::DocumentStore::new(&db);
+    store
+        .put(
+            "remote_transfers_v1",
+            "queue",
+            &serde_json::json!({
+                "version": 1, "tasks": saved,
+            })
+            .to_string(),
+            None,
+            deepagent_core::clock::Timestamp::EPOCH,
+        )
+        .unwrap();
+    let restored = TransferCoordinator::new(db.clone(), Arc::new(Executor::default())).unwrap();
+    let recovered = restored.snapshot().await.unwrap().remove(0);
+    assert_eq!(recovered.state, TransferState::Failed);
+    assert_eq!(
+        recovered.speed_bps, None,
+        "recovered interrupted history has no live rate"
+    );
+    drop(restored);
+    let row = saved[0].as_object_mut().unwrap();
+    row.insert("state".into(), serde_json::json!("failed"));
+    for key in ["currentFile", "totalFiles", "completedFiles", "speedBps"] {
+        row.remove(key);
+    }
+    store
+        .put(
+            "remote_transfers_v1",
+            "queue",
+            &serde_json::json!({
+                "version": 1, "tasks": saved,
+            })
+            .to_string(),
+            None,
+            deepagent_core::clock::Timestamp::EPOCH,
+        )
+        .unwrap();
+    let legacy = TransferCoordinator::new(db, Arc::new(Executor::default())).unwrap();
+    let old = legacy.snapshot().await.unwrap().remove(0);
+    assert_eq!(old.total_files, None);
+    assert_eq!(old.current_file, None);
+    let retry = legacy
+        .retry(&task.id, FileConflictPolicy::Ask)
+        .await
+        .unwrap();
+    assert_eq!(retry.total_files, Some(1));
+    assert_eq!(retry.completed_files, 0);
+    assert_eq!(retry.current_file.as_deref(), Some("/progress-recovery"));
+    assert_eq!(retry.speed_bps, None);
 }
 
 #[tokio::test]

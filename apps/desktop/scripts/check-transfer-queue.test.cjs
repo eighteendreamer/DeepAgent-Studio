@@ -10,6 +10,27 @@ const root = path.resolve(__dirname, '..');
 function production(file, name, context = {}) { const s = readFileSync(path.join(root, file), 'utf8'); const ast = ts.createSourceFile(file, s, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX); const fn = ast.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === name); assert.ok(fn, name); return vm.runInNewContext(ts.transpileModule(fn.getText(ast).replace(/^export /, '') + '\n' + name + ';', { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React } }).outputText, { React, ...context }); }
 test('new transfers explicitly default to ask; no credential or overwrite boolean is sent', async () => { const calls = []; const fn = production('src/remoteTransfersApi.ts', 'remoteTransferSubmit', { getInvoke: () => async (cmd, args) => { calls.push({ cmd, args }); return { id: 'fixture' }; } }); await fn('a', { direction: 'upload', localPath: 'C:/fixture.bin', remotePath: '/fixture.bin' }); assert.equal(calls[0].cmd, 'remote_transfer_submit'); assert.equal(calls[0].args.request.connectionId, 'a'); assert.equal(calls[0].args.request.transfer.conflict, 'ask'); assert.equal('overwrite' in calls[0].args.request.transfer, false); });
 test('terminal state UI shows exact byte values and conflict actions without saying cancellation is finished early', () => { const file = 'src/components/remote/RemoteTransfersPanel.tsx'; const fn = production(file, 'TransferTaskBody'); const task = { id: 'x', state: 'cancelling', bytes: '18446744073709551614', total: '18446744073709551615', attempt: 2, request: { transfer: { direction: 'download', remotePath: '/file', localPath: 'C:/out' } }, error: null }; const html = renderToStaticMarkup(React.createElement(fn, { task, label: k => k })); assert.match(html, /cancelling/); assert.match(html, /18446744073709551614/); assert.doesNotMatch(html, /18446744073709552000|NaN/); });
+test('progress UI labels exact backend average speed, current file and file counts', () => {
+  const fn = production('src/components/remote/RemoteTransfersPanel.tsx', 'TransferTaskBody');
+  const task = { state: 'running', bytes: '18446744073709551614', total: '18446744073709551615',
+    speedBps: '9007199254740993', currentFile: '/目录/<file>.bin', totalFiles: 7, completedFiles: 2,
+    attempt: 1, request: { transfer: { direction: 'upload', remotePath: '/batch', localPath: 'C:/out' } } };
+  const html = renderToStaticMarkup(React.createElement(fn, { task, label: k => k }));
+  assert.match(html, /averageSpeed 9007199254740993 B\/s/);
+  assert.match(html, /currentFile.*目录\/&lt;file&gt;\.bin/);
+  assert.match(html, /files 2 \/ 7/);
+  assert.match(html, /18446744073709551614/);
+  assert.doesNotMatch(html, /9007199254740992|NaN|<file>/);
+});
+test('legacy unknown totals stay unknown and terminal rows hide stale live speed', () => {
+  const fn = production('src/components/remote/RemoteTransfersPanel.tsx', 'TransferTaskBody');
+  const task = { state: 'completed', bytes: '0', total: null, attempt: 1, speedBps: '123456789',
+    request: { transfer: { direction: 'download', remotePath: '/file', localPath: 'C:/out' } } };
+  const html = renderToStaticMarkup(React.createElement(fn, { task, label: k => k }));
+  assert.match(html, /files \? \/ \?/);
+  assert.match(html, /averageSpeed — B\/s/);
+  assert.doesNotMatch(html, /123456789|undefined|NaN|100%/);
+});
 test('native drag files are submitted by exact path through the same queue and never forced overwrite', () => { const file = readFileSync(path.join(root, 'src/components/remote/RemoteSidebar.tsx'), 'utf8'); assert.ok(!/await sshPushFile\(conn\.id/.test(file), 'drag must not use old destructive upload'); assert.ok(file.includes('remoteTransferSubmit(conn.id'), 'drag enters queue'); assert.ok(!/paths\.find\(/.test(file), 'same basename cannot select the wrong local file'); });
 
 test('panel consumes the shared observer and unmount only unsubscribes', async () => {

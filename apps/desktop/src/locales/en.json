@@ -101,6 +101,9 @@
       "enqueue": "Enqueue",
       "close": "Close",
       "attempt": "Attempt",
+      "averageSpeed": "Average speed",
+      "files": "Transferred files",
+      "currentFile": "Current file",
       "skipped": "Skipped",
       "enqueued": "Enqueued {{count}} transfers; check the queue",
       "enqueueFailed": "Could not enqueue {{count}} tasks"

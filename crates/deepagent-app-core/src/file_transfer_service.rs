@@ -11,6 +11,7 @@ use deepagent_ssh::{
     FileTransferRequest, SshService,
 };
 use serde::{Deserialize, Serialize};
+use std::time::Instant;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, Weak},
@@ -51,6 +52,20 @@ pub struct TransferTask {
     pub total: Option<String>,
     pub revision: u64,
     pub updated_ms: i64,
+    /// Remote path represented by this single-file task; absent in old history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_file: Option<String>,
+    /// Known file count for this task; single-file transfers are always 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_files: Option<u32>,
+    #[serde(default)]
+    pub completed_files: u32,
+    /// Average payload bytes per second since Running, excluding queue wait.
+    /// Kept exact across IPC and cleared when the task reaches a terminal state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed_bps: Option<String>,
+    #[serde(skip)]
+    started_at: Option<Instant>,
     pub receipt: Option<FileTransferReceipt>,
     pub error: Option<FileTransferError>,
 }
@@ -145,12 +160,16 @@ impl TransferCoordinator {
         }
         let mut changed = false;
         for task in &mut document.tasks {
-            if !task.state.terminal() {
+            let interrupted = !task.state.terminal();
+            let had_live_speed = task.speed_bps.take().is_some();
+            if interrupted {
                 task.state = TransferState::Failed;
                 task.error = Some(FileTransferError::new(
                     "interrupted",
                     "host stopped; retry explicitly after reviewing destination",
                 ));
+            }
+            if interrupted || had_live_speed {
                 task.revision += 1;
                 changed = true;
             }
@@ -257,6 +276,7 @@ impl TransferCoordinator {
             if state.document.tasks.len() >= LIMIT {
                 return Err(invalid("transfer history is full; clear finished tasks"));
             }
+            let current_file = Some(request.transfer.remote_path.clone());
             let task = TransferTask {
                 id: uuid::Uuid::new_v4().to_string(),
                 request,
@@ -266,6 +286,11 @@ impl TransferCoordinator {
                 total: None,
                 revision: 1,
                 updated_ms: SystemClock.now().as_millis(),
+                current_file,
+                total_files: Some(1),
+                completed_files: 0,
+                speed_bps: None,
+                started_at: None,
                 receipt: None,
                 error: None,
             };
@@ -340,6 +365,11 @@ impl TransferCoordinator {
             task.receipt = None;
             task.bytes = "0".into();
             task.total = None;
+            task.completed_files = 0;
+            task.current_file = Some(task.request.transfer.remote_path.clone());
+            task.total_files = Some(1);
+            task.speed_bps = None;
+            task.started_at = None;
             task.revision += 1;
             let result = task.clone();
             if let Err(e) = self.inner.persist(&mut state) {
@@ -414,8 +444,11 @@ impl TransferCoordinator {
                     {
                         t.bytes = progress.bytes.to_string();
                         t.total = progress.total.map(|v| v.to_string());
+                        let now = SystemClock.now().as_millis();
+                        let started = t.started_at.get_or_insert_with(Instant::now);
+                        t.speed_bps = Some(average_speed(progress.bytes, started.elapsed()));
                         t.revision += 1;
-                        t.updated_ms = SystemClock.now().as_millis();
+                        t.updated_ms = now;
                         inner.notify();
                     }
                 }
@@ -517,8 +550,20 @@ impl Inner {
         task.error = error;
         task.revision += 1;
         task.updated_ms = SystemClock.now().as_millis();
+        if next == TransferState::Running {
+            task.started_at = Some(Instant::now());
+            task.speed_bps = None;
+            task.completed_files = 0;
+        }
         if let Some(receipt) = &task.receipt {
             task.bytes = receipt.bytes.clone();
+            if next == TransferState::Completed && !receipt.skipped {
+                task.completed_files = task.total_files.unwrap_or(1);
+            }
+        }
+        if next.terminal() {
+            task.started_at = None;
+            task.speed_bps = None;
         }
         if let Err(e) = self.persist(&mut state) {
             state.document = before;
@@ -532,5 +577,31 @@ impl Inner {
             state.tokens.remove(id);
         }
         Ok(())
+    }
+}
+
+fn average_speed(bytes: u64, elapsed: std::time::Duration) -> String {
+    // u128 handles u64::MAX * 1000 without saturation or floating-point loss.
+    // The one millisecond floor bounds the first/submillisecond estimate.
+    (u128::from(bytes) * 1_000 / elapsed.as_millis().max(1)).to_string()
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn average_speed_preserves_large_byte_counts_and_bounds_submillisecond_samples() {
+        assert_eq!(
+            average_speed(u64::MAX, Duration::from_secs(2)),
+            "9223372036854775807"
+        );
+        assert_eq!(
+            average_speed(u64::MAX, Duration::from_millis(1)),
+            "18446744073709551615000"
+        );
+        assert_eq!(average_speed(3, Duration::ZERO), "3000");
+        assert_eq!(average_speed(0, Duration::from_secs(1)), "0");
     }
 }

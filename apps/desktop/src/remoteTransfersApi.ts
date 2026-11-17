@@ -15,6 +15,10 @@ export interface TransferTask {
   state: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled";
   bytes: string;
   total: string | null;
+  currentFile?: string | null;
+  totalFiles?: number | null;
+  completedFiles: number;
+  speedBps?: string | null;
   revision: number;
   updatedMs: number;
   error: { code: string; message: string; cleanupWarnings: string[] } | null;
