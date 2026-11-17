@@ -499,6 +499,43 @@ const MIGRATIONS: &[&str] = &[
         UPDATE session_catalog_state SET revision=revision+1 WHERE singleton=1;
     END;
     "#,
+    // V24: harness model registry (docs/2026-11-17_harness-multi-protocol-plan.md §3).
+    // Independent of the canvas provider registry. `status` is the activation
+    // flag: 1 means the model appears in the chat model list. Credentials are
+    // referenced through `api_key_ref`, never stored here. Declared with
+    // IF NOT EXISTS because replay tests lower `user_version` and re-apply
+    // later migrations (see the V23 note).
+    r#"
+    CREATE TABLE IF NOT EXISTS harness_providers (
+        id            TEXT PRIMARY KEY NOT NULL,
+        channel       TEXT NOT NULL,
+        logo          TEXT NOT NULL DEFAULT '',
+        model_url     TEXT NOT NULL,
+        protocol      TEXT NOT NULL,
+        api_key_ref   TEXT NOT NULL,
+        balance_kind  TEXT NOT NULL DEFAULT 'auto',
+        status        INTEGER NOT NULL DEFAULT 1,
+        revision      INTEGER NOT NULL DEFAULT 1,
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS harness_models (
+        id              TEXT PRIMARY KEY NOT NULL,
+        provider_id     TEXT NOT NULL REFERENCES harness_providers(id) ON DELETE CASCADE,
+        model_name      TEXT NOT NULL,
+        display_name    TEXT NOT NULL,
+        protocol        TEXT,
+        context_window  INTEGER NOT NULL DEFAULT 1000000,
+        output_limit    INTEGER NOT NULL DEFAULT 131072,
+        capabilities    TEXT NOT NULL DEFAULT '{}',
+        status          INTEGER NOT NULL DEFAULT 1,
+        updated_at      INTEGER NOT NULL,
+        UNIQUE (provider_id, model_name)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_harness_models_provider ON harness_models(provider_id, status);
+    "#,
 ];
 
 /// The highest schema version defined by this build.

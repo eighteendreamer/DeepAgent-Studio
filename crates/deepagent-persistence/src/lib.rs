@@ -22,6 +22,9 @@ pub mod cost_store;
 pub mod document_store;
 pub mod event_store;
 pub mod fs_commit;
+mod harness_registry;
+#[cfg(test)]
+mod harness_registry_tests;
 pub mod managed_file_store;
 pub mod migrations;
 pub mod run_control;
@@ -96,6 +99,7 @@ impl Database {
     ) -> Result<Self> {
         configure_pragmas(&conn)?;
         migrations::run(&conn)?;
+        harness_registry::import_legacy_deepseek_provider(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
             data_root,
