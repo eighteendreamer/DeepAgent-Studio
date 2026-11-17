@@ -5,15 +5,27 @@
 
 use crate::host_trust::HostTrust;
 use crate::{SshAuthType, SshConnectionConfig, SshError, SshHostKeyStore, SshResult};
+use deepagent_core::clock::{Clock, SystemClock};
 use russh::client::{self, Handle, Msg};
 use russh::keys::{self, HashAlg, PrivateKeyWithHashAlg, PublicKey};
 use russh::{Channel, ChannelMsg, Disconnect};
 use std::sync::{Arc, Mutex};
 
-struct IdentityHandler {
+pub(crate) struct IdentityHandler {
     // None is a probe that unconditionally rejects every key before authentication.
     trust: Option<HostTrust>,
     rejected: Arc<Mutex<Option<PublicKey>>>,
+    accepted: Arc<Mutex<Option<PublicKey>>>,
+}
+
+impl IdentityHandler {
+    pub(crate) fn verified(trust: HostTrust) -> Self {
+        Self {
+            trust: Some(trust),
+            rejected: Arc::new(Mutex::new(None)),
+            accepted: Arc::new(Mutex::new(None)),
+        }
+    }
 }
 
 impl client::Handler for IdentityHandler {
@@ -24,12 +36,14 @@ impl client::Handler for IdentityHandler {
             .trust
             .as_ref()
             .is_some_and(|trust| trust.accepts(presented));
-        if !accepted {
-            *self
-                .rejected
-                .lock()
-                .unwrap_or_else(|error| error.into_inner()) = Some(presented.clone());
-        }
+        let observation = if accepted {
+            &self.accepted
+        } else {
+            &self.rejected
+        };
+        *observation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(presented.clone());
         Ok(accepted)
     }
 }
@@ -71,6 +85,7 @@ impl SshClient {
             IdentityHandler {
                 trust: None,
                 rejected: observed.clone(),
+                accepted: Arc::new(Mutex::new(None)),
             },
         )
         .await;
@@ -98,11 +113,9 @@ impl SshClient {
         trust: &HostTrust,
         store: Option<Arc<SshHostKeyStore>>,
     ) -> SshResult<Self> {
-        let rejected = Arc::new(Mutex::new(None));
-        let handler = IdentityHandler {
-            trust: Some(trust.clone()),
-            rejected: rejected.clone(),
-        };
+        let handler = IdentityHandler::verified(trust.clone());
+        let rejected = handler.rejected.clone();
+        let accepted = handler.accepted.clone();
         let mut handle = client::connect(
             Arc::new(client::Config::default()),
             (config.host.as_str(), config.port),
@@ -124,8 +137,15 @@ impl SshClient {
             }
         })?;
 
+        let key = accepted
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+            .ok_or_else(|| {
+                HostTrust::error(config, "handshake did not retain a verified server key")
+            })?;
         let authentication = async {
-            if &trust.reload(config, store).await? != trust {
+            if &trust.reload(config, store.clone()).await? != trust {
                 return Err(HostTrust::error(
                     config,
                     "trust source changed before authentication",
@@ -137,6 +157,19 @@ impl SshClient {
         if let Err(error) = authentication {
             let _ = handle.disconnect(Disconnect::ByApplication, "", "en").await;
             return Err(error);
+        }
+        if let Some(store) = store {
+            let identity = crate::SshHostIdentity::direct(&config.host, config.port)?;
+            let now = SystemClock.now();
+            let result = tokio::task::spawn_blocking(move || {
+                store.record_authentication(&identity, &key, now)
+            })
+            .await
+            .map_err(|error| SshError::Internal(format!("SSH host activity task: {error}")))
+            .and_then(|result| result);
+            if let Err(error) = result {
+                tracing::warn!(target:"deepagent_ssh", %error, "SSH authenticated but last-used metadata was not saved; trust enforcement is unaffected");
+            }
         }
         Ok(Self {
             handle: Arc::new(handle),
@@ -249,7 +282,14 @@ async fn authenticate(
                 )
                 .await
         }
-        SshAuthType::Agent => return authenticate_agent(handle, &config.username).await,
+        SshAuthType::Agent | SshAuthType::OpenSshAgent | SshAuthType::Pageant => {
+            let provider = match config.auth_type {
+                SshAuthType::Pageant => crate::SshAgentProvider::Pageant,
+                SshAuthType::OpenSshAgent => crate::SshAgentProvider::OpenSsh,
+                _ => crate::SshAgentProvider::Auto,
+            };
+            return crate::agent::authenticate(handle, &config.username, provider).await;
+        }
     }
     .map_err(|error| protocol_error("SSH authentication", error))?;
     if !result.success() {
@@ -259,43 +299,4 @@ async fn authenticate(
         ));
     }
     Ok(())
-}
-
-#[cfg(unix)]
-async fn authenticate_agent(handle: &mut Handle<IdentityHandler>, username: &str) -> SshResult<()> {
-    let failure = |error: String| SshError::AuthFailed(username.to_owned(), error);
-    let mut agent = keys::agent::client::AgentClient::connect_env()
-        .await
-        .map_err(|error| failure(format!("connect SSH Agent: {error}")))?;
-    let identities = agent
-        .request_identities()
-        .await
-        .map_err(|error| failure(format!("list SSH Agent identities: {error}")))?;
-    if identities.is_empty() {
-        return Err(failure("SSH Agent has no identities".into()));
-    }
-    let hash = handle
-        .best_supported_rsa_hash()
-        .await
-        .map_err(|error| protocol_error("SSH Agent RSA negotiation", error))?
-        .flatten();
-    let mut reason = "server rejected SSH Agent identities".to_owned();
-    for identity in identities {
-        match handle
-            .authenticate_publickey_with(username, identity, hash, &mut agent)
-            .await
-        {
-            Ok(result) if result.success() => return Ok(()),
-            Ok(_) => {}
-            Err(error) => reason = format!("SSH Agent authentication: {error}"),
-        }
-    }
-    Err(failure(reason))
-}
-
-#[cfg(not(unix))]
-async fn authenticate_agent(_: &mut Handle<IdentityHandler>, _: &str) -> SshResult<()> {
-    Err(SshError::InvalidConfig(
-        "SSH Agent is not enabled on this platform; use password or key file authentication".into(),
-    ))
 }

@@ -62,7 +62,7 @@ impl SshHostIdentity {
         })
     }
 
-    fn document_id(&self) -> SshResult<String> {
+    pub(crate) fn document_id(&self) -> SshResult<String> {
         let bytes = serde_json::to_vec(self).map_err(|_| invalid_document())?;
         Ok(format!("{:x}", Sha256::digest(bytes)))
     }
@@ -75,6 +75,8 @@ pub struct SshHostKeyRecord {
     pub source: String,
     pub trusted_at_ms: i64,
     pub revoked: bool,
+    #[serde(default)]
+    pub last_used_at_ms: Option<i64>,
 }
 
 /// Public metadata only. Committed in the same CAS as keys and revocation tombstones.
@@ -211,6 +213,10 @@ impl SshHostKeyStore {
 
     pub fn list(&self, identity: &SshHostIdentity) -> SshResult<Vec<SshHostKeyRecord>> {
         let snapshot = self.snapshot(identity)?;
+        let activity = self.activity(identity).unwrap_or_else(|error| {
+            tracing::warn!(target:"deepagent_ssh", %error, "SSH host activity unavailable; returning trust records without usage timestamps");
+            Default::default()
+        });
         snapshot
             .document
             .keys
@@ -224,9 +230,28 @@ impl SshHostKeyStore {
                     source: record.source.clone(),
                     trusted_at_ms: record.trusted_at_ms,
                     revoked: record.revoked_at_ms.is_some(),
+                    last_used_at_ms: activity
+                        .get(&key.fingerprint(HashAlg::Sha256).to_string())
+                        .copied(),
                 })
             })
             .collect()
+    }
+
+    pub(crate) fn record_authentication(
+        &self,
+        identity: &SshHostIdentity,
+        key: &PublicKey,
+        now: deepagent_core::clock::Timestamp,
+    ) -> SshResult<()> {
+        crate::host_key_activity::record(&self.db, identity, key, now)
+    }
+
+    pub(crate) fn activity(
+        &self,
+        identity: &SshHostIdentity,
+    ) -> SshResult<std::collections::BTreeMap<String, i64>> {
+        crate::host_key_activity::list(&self.db, identity)
     }
 
     /// Called only after independent verification or an explicit host-key decision.

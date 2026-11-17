@@ -130,6 +130,7 @@ function HostTrustPanel({ connection, onClose, onChanged }: Props & { connection
               <p className="break-all font-mono">{record.fingerprint}</p>
               <p className="break-all text-text-secondary">{record.source}</p>
               <p className="text-text-secondary">{new Date(record.trusted_at_ms).toLocaleString()}</p>
+              <p className="text-text-secondary">{label("lastUsed")} {record.last_used_at_ms == null ? label("usageUnknown") : new Date(record.last_used_at_ms).toLocaleString()}</p>
             </section>
           ))}
           {preview && (

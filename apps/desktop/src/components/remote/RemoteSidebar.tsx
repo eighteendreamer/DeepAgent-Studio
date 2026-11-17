@@ -1,3 +1,4 @@
+import { SshAuthenticationFields, type SshFormAuthType } from "./SshAuthenticationFields";
 import { SshHostTrustField } from "./SshHostTrustField";
 import { SshHostTrustManager } from "./SshHostTrustManager";
 import { useSshConnectionConfirmation } from "./SshHostKeyPrompt";
@@ -51,7 +52,7 @@ import {
   type SshDirEntry,
 } from "../../api";
 
-type AuthType = "password" | "file";
+type AuthType = SshFormAuthType;
 
 type ManagerMode = "list" | "create" | "edit";
 
@@ -516,7 +517,7 @@ export function RemoteSidebar({
   const handleSave = async () => {
     if (!form.name || !form.host || !form.username) return;
     const isEditing = managerMode === "edit";
-    const authType = form.authType === "file" ? "key_file" : "password";
+    const authType = form.authType === "file" ? "key_file" : form.authType;
     const keyPath = form.authType === "file" ? form.keyPath : undefined;
     const password = form.authType === "password" ? form.password : undefined;
     try {
@@ -570,7 +571,7 @@ export function RemoteSidebar({
       host: conn.host,
       port: String(conn.port),
       username: conn.username,
-      authType: conn.key_path ? "file" : "password",
+      authType: conn.auth_type === "key_file" ? "file" : conn.auth_type ?? (conn.key_path ? "file" : "password"),
       keyPath: conn.key_path || "",
       knownHostsPath: conn.known_hosts_path || "",
       hostKeyPolicy: conn.host_key_policy ?? "strict",
@@ -1192,76 +1193,9 @@ export function RemoteSidebar({
                         onPolicyChange={(hostKeyPolicy) => setForm({ ...form, hostKeyPolicy })}
                         onChange={(knownHostsPath) => setForm({ ...form, knownHostsPath })}
                       />
-                      <section className="space-y-2.5 border-t border-border-theme pt-3">
-                        <div className="flex items-center gap-4 text-[12px]">
-                          <label className="flex items-center gap-1.5">
-                            <input
-                              type="radio"
-                              name="remote-auth"
-                              checked={form.authType === "password"}
-                              onChange={() =>
-                                setForm({ ...form, authType: "password" })
-                              }
-                            />
-                            {t("settings.connections.password")}
-                          </label>
-                          <label className="flex items-center gap-1.5">
-                            <input
-                              type="radio"
-                              name="remote-auth"
-                              checked={form.authType === "file"}
-                              onChange={() =>
-                                setForm({ ...form, authType: "file" })
-                              }
-                            />
-                            {t("settings.connections.identityFile")}
-                          </label>
-                        </div>
-
-                        {form.authType === "password" ? (
-                          <div>
-                            <label className="mb-1.5 block text-[11px] font-medium text-text-base">
-                              {t("settings.connections.password")}
-                            </label>
-                            <input
-                              type="password"
-                              value={form.password}
-                              onChange={(event) =>
-                                setForm({ ...form, password: event.target.value })
-                              }
-                              placeholder={
-                                managerMode === "edit"
-                                  ? t("remote.editPasswordHint")
-                                  : undefined
-                              }
-                              className="h-[34px] w-full rounded-[14px] border border-border-theme bg-white px-3 text-[13px] text-text-base outline-none transition-colors focus:border-blue-500"
-                            />
-                          </div>
-                        ) : (
-                          <div>
-                            <label className="mb-1.5 block text-[11px] font-medium text-text-base">
-                              {t("settings.connections.identityFilePath")}
-                            </label>
-                            <div className="flex gap-2">
-                              <input
-                                type="text"
-                                value={form.keyPath}
-                                onChange={(event) =>
-                                  setForm({ ...form, keyPath: event.target.value })
-                                }
-                                className="h-[34px] min-w-0 flex-1 rounded-[14px] border border-border-theme bg-white px-3 text-[13px] text-text-base outline-none transition-colors focus:border-blue-500"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => void handlePickKeyFile()}
-                                className="h-[34px] shrink-0 rounded-[14px] bg-black/5 px-3 text-[12px] text-text-base transition-colors hover:bg-black/10"
-                              >
-                                {t("settings.connections.browse")}
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                      </section>
+                      <section className="border-t border-border-theme pt-3">
+                    <SshAuthenticationFields value={form} onChange={(change) => setForm((previous) => ({ ...previous, ...change }))} onPickKeyFile={() => void handlePickKeyFile()} />
+                  </section>
                     </div>
                     <div className="flex justify-between border-t border-border-theme px-5 py-3">
                       <button

@@ -9,6 +9,9 @@ use uuid::Uuid;
 pub enum SshAuthType {
     #[default]
     Agent,
+    #[serde(rename = "openssh_agent")]
+    OpenSshAgent,
+    Pageant,
     KeyFile,
     Password,
 }
@@ -115,6 +118,16 @@ pub struct UpdateSshConnectionRequest {
 }
 
 impl SshConnectionConfig {
+    pub(crate) fn discard_agent_credentials(&mut self) {
+        if matches!(
+            self.auth_type,
+            SshAuthType::Agent | SshAuthType::OpenSshAgent | SshAuthType::Pageant
+        ) {
+            self.key_path = None;
+            self.password = None;
+        }
+    }
+
     pub fn new(
         name: impl Into<String>,
         host: impl Into<String>,

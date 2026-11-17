@@ -2,6 +2,61 @@
 use super::*;
 
 #[tokio::test]
+async fn agent_providers_survive_encrypted_store_reopen_and_frontend_projection() {
+    let data = tempfile::tempdir().unwrap();
+    let file = data.path().join("fixture.db");
+    let wrapping = Arc::new(deepagent_app_core::MemorySecretStore::new());
+    for auth in [
+        DtoSshAuthType::Agent,
+        DtoSshAuthType::OpenSshAgent,
+        DtoSshAuthType::Pageant,
+    ] {
+        let app = AppService::open(&file).unwrap();
+        let secrets = Arc::new(SqliteSecretStore::new(
+            app.shared_database(),
+            wrapping.clone(),
+        ));
+        let store = Arc::new(SqliteSshConfigStore {
+            secrets,
+            legacy_path: data.path().join("absent.json"),
+        });
+        let ssh = SshService::with_config_store(data.path().to_path_buf(), store);
+        let saved = ssh
+            .create_connection(DtoCreateSshConnectionRequest {
+                name: to_dto_auth_type(auth).into(),
+                host: "agent.invalid".into(),
+                port: 2222,
+                username: "fixture".into(),
+                auth_type: auth,
+                key_path: Some("must-not-retain-unused-key".into()),
+                password: Some("must-not-retain-unused-secret".into()),
+                known_hosts_path: None,
+                host_key_policy: deepagent_ssh::SshHostKeyPolicy::Strict,
+            })
+            .await
+            .unwrap();
+        let dto = serde_json::to_value(SshConnectionFrontendDto::from(saved)).unwrap();
+        assert_eq!(dto["auth_type"], to_dto_auth_type(auth));
+        assert!(dto["key_path"].is_null());
+        assert!(dto.get("password").is_none());
+    }
+    let app = AppService::open(&file).unwrap();
+    let secrets = Arc::new(SqliteSecretStore::new(app.shared_database(), wrapping));
+    let store = Arc::new(SqliteSshConfigStore {
+        secrets,
+        legacy_path: data.path().join("absent.json"),
+    });
+    let ssh = SshService::with_config_store(data.path().to_path_buf(), store);
+    ssh.load().await.unwrap();
+    let connections = ssh.list_connections().await;
+    assert_eq!(connections.len(), 3);
+    for connection in connections {
+        assert_eq!(connection.name, to_dto_auth_type(connection.auth_type));
+        assert!(connection.key_path.is_none());
+    }
+}
+
+#[tokio::test]
 async fn h125_ssh_trust_survives_encrypted_store_reopen_and_frontend_projection() {
     let data = tempfile::tempdir().unwrap();
     let file = data.path().join("fixture.db");
@@ -161,6 +216,13 @@ async fn host_trust_audit_projects_v2_history_without_exporting_source_or_authen
     let wire = serde_json::to_value(&view).unwrap();
     assert_eq!(wire["revision"], 1);
     assert_eq!(wire["records"][0]["action"], "trust_verified");
+    assert!(
+        wire.get("last_used_at_ms").unwrap().is_null(),
+        "import is not successful user authentication"
+    );
+    assert!(wire.get("activity_error").unwrap().is_null());
+    let keys = serde_json::to_value(ssh.list_host_keys(&id).await.unwrap()).unwrap();
+    assert!(keys[0].get("last_used_at_ms").unwrap().is_null());
     let text = serde_json::to_string(&view).unwrap();
     assert!(!text.contains("known_hosts"));
     assert!(!text.contains("public_key"));

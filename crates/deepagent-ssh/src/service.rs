@@ -282,6 +282,7 @@ impl SshServiceImpl {
         )?;
         config.key_path = request.key_path.clone();
         config.password = request.password;
+        config.discard_agent_credentials();
         let id = config.id.clone();
         let mut configs = self.configs.write().await;
         if configs.contains_key(&id) {
@@ -308,7 +309,7 @@ impl SshServiceImpl {
         let cfg = configs
             .get_mut(&request.id)
             .ok_or_else(|| SshError::NotFound(request.id.clone()))?;
-        let candidate = SshConnectionConfig {
+        let mut candidate = SshConnectionConfig {
             id: cfg.id.clone(),
             name: request.name,
             host: request.host,
@@ -338,6 +339,7 @@ impl SshServiceImpl {
             candidate.key_path.as_deref(),
             candidate.password.as_deref(),
         )?;
+        candidate.discard_agent_credentials();
         *cfg = candidate.clone();
         drop(configs);
         let _ = self.disconnect(&request.id).await;

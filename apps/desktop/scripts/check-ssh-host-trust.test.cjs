@@ -386,6 +386,27 @@ const auditView = (count=25) => ({connection_id:'id',host:'fixture.invalid',port
   records:Array.from({length:count},(_,i)=>({revision:i+1,at_ms:i+1,action:'trust_verified',trusted_fingerprints:[`SHA256:audit-${i+1}`],revoked_fingerprints:[]}))});
 const auditDriver = api => trustManagerDriver(api,'components/remote/SshHostTrustAuditDialog.tsx','SshHostTrustAuditDialog');
 
+test('audit UI distinguishes successful authentication time, unknown history and metadata errors',async()=>{
+  const props={connection:managerProps().connection,onBack(){}};
+  for(const value of [undefined,null,1000]) {
+    const driver=auditDriver({sshHostTrustAudit:async()=>({...auditView(0),last_used_at_ms:value,activity_error:null})});
+    driver.render(props);await flushManager();const text=driver.render(props).text;
+    assert.ok(text.includes(auditText('lastUsed')));
+    assert.ok(text.includes(value == null ? auditText('usageUnknown') : new Date(value).toLocaleString()));
+    assert.ok(!text.includes('Invalid Date'));
+  }
+  const driver=auditDriver({sshHostTrustAudit:async()=>({...auditView(0),last_used_at_ms:null,activity_error:'fixture metadata invalid'})});
+  driver.render(props);await flushManager();assert.match(driver.render(props).text,/fixture metadata invalid/);
+});
+
+test('shared trust records show per-key usage without substituting the enrollment timestamp',async()=>{
+  const record={algorithm:'ssh-ed25519',fingerprint:'SHA256:fixture',source:'fixture',trusted_at_ms:1,revoked:false,last_used_at_ms:1000};
+  const driver=trustManagerDriver({sshListHostKeys:async()=>[record]});
+  const props=managerProps();driver.render(props);await flushManager();let view=driver.render(props);
+  assert.ok(view.text.includes(managerText('lastUsed')));
+  assert.ok(view.text.includes(new Date(1000).toLocaleString()));
+});
+
 test('read-only trust audit API uses the saved connection id and refuses browser mock success',async()=>{
   const calls=[];const expected=auditView();
   const fn=production('api.ts','sshHostTrustAudit',{getInvoke:()=>async(c,p)=>{calls.push([c,p]);return expected;}});

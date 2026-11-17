@@ -1,3 +1,4 @@
+import { SshAuthenticationFields, type SshFormAuthType } from "../remote/SshAuthenticationFields";
 import { SshHostTrustField } from "../remote/SshHostTrustField";
 import { SshHostTrustManager } from "../remote/SshHostTrustManager";
 import { useSshConnectionConfirmation } from "../remote/SshHostKeyPrompt";
@@ -19,7 +20,7 @@ import {
   type SshTestResult,
 } from "../../api";
 
-type AuthType = "password" | "file";
+type AuthType = SshFormAuthType;
 
 interface FormData {
   name: string;
@@ -135,7 +136,7 @@ export function ConnectionsSettings() {
       host: conn.host,
       port: String(conn.port),
       username: conn.username,
-      authType: conn.key_path ? "file" : "password",
+      authType: conn.auth_type === "key_file" ? "file" : conn.auth_type ?? (conn.key_path ? "file" : "password"),
       keyPath: conn.key_path || "",
       knownHostsPath: conn.known_hosts_path || "",
       hostKeyPolicy: conn.host_key_policy ?? "strict",
@@ -156,7 +157,7 @@ export function ConnectionsSettings() {
     if (!form.name || !form.host || !form.username) return;
 
     const port = parseInt(form.port, 10) || 22;
-    const authType = form.authType === "file" ? "key_file" : "password";
+    const authType = form.authType === "file" ? "key_file" : form.authType;
     const keyPath = form.authType === "file" ? form.keyPath : undefined;
     const password = form.authType === "password" ? form.password : undefined;
 
@@ -545,73 +546,9 @@ export function ConnectionsSettings() {
                   </div>
                 </section>
 
-                <section className="space-y-2.5 border-t border-border-theme pt-3">
-                  <div className="text-[11px] font-medium text-text-secondary">
-                    SSH
-                  </div>
-
-                  {form.authType === "password" ? (
-                    <div>
-                      <label className="mb-1.5 block text-[11px] font-medium text-text-base">
-                        {t("settings.connections.password")}
-                      </label>
-                      <input
-                        type="password"
-                        value={form.password}
-                        onChange={(e) => setForm({ ...form, password: e.target.value })}
-                        className="h-[34px] w-full rounded-[14px] border border-border-theme bg-white px-3 text-[13px] text-text-base outline-none transition-colors focus:border-blue-500"
-                      />
-                    </div>
-                  ) : (
-                    <div>
-                      <label className="mb-1.5 block text-[11px] font-medium text-text-base">
-                        {t("settings.connections.identityFilePath")}
-                      </label>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="text"
-                          value={form.keyPath}
-                          readOnly
-                          placeholder={t("settings.connections.selectIdentityFile")}
-                          className="h-[34px] min-w-0 flex-1 rounded-[14px] border border-border-theme bg-white px-3 text-[13px] text-text-base outline-none transition-colors focus:border-blue-500"
-                        />
-                        <button
-                          type="button"
-                          className="inline-flex h-[34px] shrink-0 items-center rounded-[14px] bg-black/5 px-3 text-[12px] font-medium text-text-base transition-colors hover:bg-black/5"
-                          onClick={() => void handlePickKeyFile()}
-                        >
-                          <FontAwesomeIcon icon={["fas", "folder-open"]} className="mr-1.5 text-[11px] text-text-secondary" />
-                          {t("settings.connections.browse")}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="flex overflow-hidden rounded-full bg-black/5 p-0.5">
-                    <button
-                      type="button"
-                      className={`flex h-[28px] flex-1 items-center justify-center rounded-full px-3 text-[12px] font-medium transition-colors ${
-                        form.authType === "password"
-                          ? "bg-white text-text-base shadow-sm"
-                          : "text-text-secondary hover:text-text-base"
-                      }`}
-                      onClick={() => setForm({ ...form, authType: "password" })}
-                    >
-                      {t("settings.connections.password")}
-                    </button>
-                    <button
-                      type="button"
-                      className={`flex h-[28px] flex-1 items-center justify-center rounded-full px-3 text-[12px] font-medium transition-colors ${
-                        form.authType === "file"
-                          ? "bg-white text-text-base shadow-sm"
-                          : "text-text-secondary hover:text-text-base"
-                      }`}
-                      onClick={() => setForm({ ...form, authType: "file" })}
-                    >
-                      {t("settings.connections.identityFile")}
-                    </button>
-                  </div>
-                </section>
+                <section className="border-t border-border-theme pt-3">
+                    <SshAuthenticationFields value={form} onChange={(change) => setForm((previous) => ({ ...previous, ...change }))} onPickKeyFile={() => void handlePickKeyFile()} />
+                  </section>
               </div>
 
               <div className="flex items-center justify-end gap-2.5 border-t border-border-theme bg-black/5 px-5 py-2.5">

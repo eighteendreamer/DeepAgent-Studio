@@ -21,6 +21,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+pub use agent::{
+    probe_ssh_agent, SshAgentIdentity, SshAgentProbe, SshAgentProvider, SshAgentState,
+};
 pub use config::{
     CreateSshConnectionRequest, SshAuthType, SshConnectionConfig, SshConnectionDto,
     SshHostKeyPolicy, SshStatus, UpdateSshConnectionRequest,
@@ -51,10 +54,12 @@ pub use session::{
 };
 pub use transport::{SshClient, SshCommandOutput};
 
+mod agent;
 mod config;
 mod connection_challenge;
 mod connection_flow;
 mod error;
+mod host_key_activity;
 mod host_key_rotation;
 mod host_key_store;
 mod host_trust;

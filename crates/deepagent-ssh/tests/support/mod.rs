@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
 use deepagent_ssh::{CreateSshConnectionRequest, SshConnectionDto, SshService};
@@ -12,6 +12,7 @@ use tokio::task::{JoinHandle, JoinSet};
 
 #[derive(Default)]
 pub struct Counts {
+    pub reject_password: AtomicBool,
     pub accept_gate: RwLock<Option<Arc<tokio::sync::Notify>>>,
     pub auth_gate: RwLock<Option<Arc<tokio::sync::Notify>>>,
     pub connections: AtomicUsize,
@@ -39,7 +40,11 @@ impl server::Handler for Handler {
         if let Some(gate) = gate {
             gate.notified().await;
         }
-        Ok(Auth::Accept)
+        Ok(if self.counts.reject_password.load(Ordering::SeqCst) {
+            Auth::reject()
+        } else {
+            Auth::Accept
+        })
     }
 
     async fn auth_publickey(&mut self, _: &str, _: &PublicKey) -> Result<Auth, Self::Error> {

@@ -729,6 +729,22 @@
       "noAllowed": "无允许域名"
     },
     "connections": {
+      "agent": {
+        "authentication": "认证方式",
+        "provider": "本机 Agent 提供方",
+        "auto": "自动检测（OpenSSH 优先）",
+        "help": "仅读取本机 Agent 的公钥身份；应用不读取私钥，不自动启用 Agent Forwarding。自动模式仅在不可用或无身份时尝试下一提供方，签名或服务器拒绝后不切换凭据。",
+        "checking": "正在检查本机 Agent…",
+        "refresh": "重新检测",
+        "states": {
+          "available": "可用（不代表服务器已接受）",
+          "empty": "Agent 可用，但没有身份",
+          "unavailable": "Agent 未运行或无法连接",
+          "unsupported": "当前平台不支持此提供方",
+          "timed_out": "检测超时",
+          "error": "检测失败"
+        }
+      },
       "title": "连接",
       "desc1": "将 Codex 连接到外部服务。",
       "desc2": "了解更多。",
@@ -785,6 +801,8 @@
         "cleanupFailed": "轮换已提交，但这些连接清理失败，请手动断开："
       },
       "trustAudit": {
+        "lastUsed": "最近成功认证：", "usageUnknown": "暂无可用记录（不代表从未连接）", "usageError": "最近使用记录读取失败，主机信任校验不受影响：",
+        "usageHelp": "这里只记录本应用验证主机密钥后完成用户认证的时间，包含测试连接及“仅本次”会话。指纹/时间保存在本地，不代表对该主机持久授信；不记录命令正文。探测、取消、失败认证、PTY 读取及已有连接复用不更新时间；这不是最近键盘输入时间，也不是服务端登录审计。",
         "title": "主机信任审计", "direct": "直连目标", "back": "返回信任列表", "refresh": "刷新审计", "previous": "上一页", "next": "下一页",
         "help": "只读本应用的本地信任变更，不连接服务器、不执行命令；这不是远端登录日志。每个目标最多 256 条事件，每页 10 条，按修订号从新到旧显示。升级前没有记录的操作不补造；旧版轮换记录会保留。历史已满时新变更会明确失败，不静默删除历史。",
         "revision": "本次快照信任修订", "count": "事件数", "busy": "正在读取本地信任审计…", "empty": "没有可用的信任变更历史；这不代表从未连接或从未变更。",
@@ -793,6 +811,7 @@
         "action": { "trust_verified": "独立核验后登记", "accept_new": "显式 AcceptNew 首次登记", "known_hosts_import": "全文件 known_hosts 导入", "revoke": "撤销主机密钥", "explicit_host_key_rotation": "明确核验后轮换 / 协调信任" }
       },
       "trustManager": {
+        "lastUsed": "最近成功认证：", "usageUnknown": "暂无可用记录（不代表从未连接）",
         "audit": "查看主机信任审计",
         "rotation": "管理主机密钥轮换",
         "previewFile": "批量预览整个 known_hosts 文件", "fileReport": "全文件导入报告",

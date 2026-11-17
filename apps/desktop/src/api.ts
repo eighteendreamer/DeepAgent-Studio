@@ -3764,13 +3764,29 @@ function mockDiff(oldText: string, newText: string): DiffResult {
 
 export type SshHostKeyPolicy = "strict" | "accept_new";
 
+export type SshAgentProvider = "auto" | "open_ssh" | "pageant";
+export interface SshAgentProbe {
+  provider: Exclude<SshAgentProvider, "auto">;
+  state: "available" | "empty" | "unavailable" | "unsupported" | "timed_out" | "error";
+  identities: { algorithm: string; fingerprint: string }[];
+  reason?: string | null;
+}
+
+/** Read-only local Agent inspection: never requests a signature or contacts a host. */
+export async function sshProbeAgent(provider: SshAgentProvider): Promise<SshAgentProbe[]> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("SSH Agent inspection requires the desktop application.");
+  return invoke<SshAgentProbe[]>("ssh_probe_agent", { provider });
+}
+
+
 export interface SshConnection {
   id: string;
   name: string;
   host: string;
   port: number;
   username: string;
-  auth_type: "agent" | "key_file" | "password";
+  auth_type: "agent" | "openssh_agent" | "pageant" | "key_file" | "password";
   key_path?: string;
   known_hosts_path?: string;
   host_key_policy?: SshHostKeyPolicy;
@@ -3935,6 +3951,7 @@ export interface SshHostKeyRecord {
   source: string;
   trusted_at_ms: number;
   revoked: boolean;
+  last_used_at_ms?: number | null;
 }
 
 export async function sshListHostKeys(id: string): Promise<SshHostKeyRecord[]> {
@@ -3969,6 +3986,8 @@ export interface SshHostTrustAuditRecord {
 export interface SshHostTrustAudit {
   connection_id: string; host: string; port: number; route: "direct";
   revision: number; records: SshHostTrustAuditRecord[];
+  last_used_at_ms?: number | null;
+  activity_error?: string | null;
 }
 export async function sshHostTrustAudit(id: string): Promise<SshHostTrustAudit> {
   const invoke = getInvoke();
@@ -4050,7 +4069,7 @@ export async function sshCreateConnection(
   host: string,
   port: number,
   username: string,
-  authType: "agent" | "key_file" | "password",
+  authType: SshConnection["auth_type"],
   keyPath?: string,
   password?: string,
   knownHostsPath?: string,
@@ -4078,7 +4097,7 @@ export async function sshUpdateConnection(
   host: string,
   port: number,
   username: string,
-  authType: "agent" | "key_file" | "password",
+  authType: SshConnection["auth_type"],
   keyPath?: string,
   password?: string,
   knownHostsPath?: string,

@@ -183,6 +183,8 @@ pub struct SshHostTrustAudit {
     pub route: &'static str,
     pub revision: u64,
     pub records: Vec<SshHostTrustAuditRecord>,
+    pub last_used_at_ms: Option<i64>,
+    pub activity_error: Option<String>,
 }
 
 impl SshServiceImpl {
@@ -192,12 +194,17 @@ impl SshServiceImpl {
         let config = self.config_for(id).await?;
         let store = self.application_trust_store()?;
         let identity = SshHostIdentity::direct(&config.host, config.port)?;
-        let (revision, records) =
-            tokio::task::spawn_blocking(move || store.audit_snapshot(&identity))
-                .await
-                .map_err(|error| {
-                    SshError::Internal(format!("SSH trust audit reader: {error}"))
-                })??;
+        let (revision, records, last_used_at_ms, activity_error) =
+            tokio::task::spawn_blocking(move || {
+                let (revision, records) = store.audit_snapshot(&identity)?;
+                let (last_used_at_ms, activity_error) = match store.activity(&identity) {
+                    Ok(used) => (used.values().copied().max(), None),
+                    Err(error) => (None, Some(error.to_string())),
+                };
+                Ok::<_, SshError>((revision, records, last_used_at_ms, activity_error))
+            })
+            .await
+            .map_err(|error| SshError::Internal(format!("SSH trust audit reader: {error}")))??;
         Ok(SshHostTrustAudit {
             connection_id: config.id,
             host: config.host,
@@ -205,6 +212,8 @@ impl SshServiceImpl {
             route: "direct",
             revision,
             records,
+            last_used_at_ms,
+            activity_error,
         })
     }
 }

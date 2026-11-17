@@ -729,6 +729,22 @@
       "noAllowed": "No allowed domains"
     },
     "connections": {
+      "agent": {
+        "authentication": "Authentication",
+        "provider": "Local Agent provider",
+        "auto": "Auto detect (OpenSSH first)",
+        "help": "Lists public identities only; private keys are not read and Agent Forwarding stays off. Auto falls back only when a provider is unavailable or empty, never after a signature or server rejection.",
+        "checking": "Checking local Agent…",
+        "refresh": "Check again",
+        "states": {
+          "available": "Available (server acceptance not tested)",
+          "empty": "Available, but no identities",
+          "unavailable": "Not running or unreachable",
+          "unsupported": "Not supported on this platform",
+          "timed_out": "Inspection timed out",
+          "error": "Inspection failed"
+        }
+      },
       "title": "Connections",
       "desc1": "Connect Codex to external services.",
       "desc2": "Learn more.",
@@ -786,6 +802,8 @@
         "cleanupFailed": "Rotation committed, but cleanup failed for these connections; disconnect manually:"
       },
       "trustAudit": {
+        "lastUsed": "Last successful authentication:", "usageUnknown": "No available record (not proof of no prior connection)", "usageError": "Usage metadata could not be read; host verification is unaffected:",
+        "usageHelp": "Records successful user authentication after this application verifies the host, including connection tests and accepted-once sessions. Fingerprints/times are local metadata, not persistent trust; commands are not recorded. Probes, cancellation, failed authentication, PTY reads and live connection reuse do not update the time. This is neither last keyboard activity nor a server login audit.",
         "title": "Host trust audit", "direct": "Direct target", "back": "Back to trust list", "refresh": "Refresh audit", "previous": "Previous", "next": "Next",
         "help": "Read-only application-local trust changes: no SSH connection or command execution. This is not a remote login log. Limit: 256 events per endpoint, 10 per page, newest revision first. Missing pre-upgrade operations are not invented; legacy rotation history is retained. New mutations fail explicitly when capacity is full; history is never silently pruned.",
         "revision": "Snapshot trust revision", "count": "Events", "busy": "Reading local trust history…", "empty": "No trust history available. This does not mean the endpoint was never used or changed.",
@@ -794,6 +812,7 @@
         "action": { "trust_verified": "Independently verified enrollment", "accept_new": "Explicit AcceptNew enrollment", "known_hosts_import": "Whole-file known_hosts import", "revoke": "Host key revocation", "explicit_host_key_rotation": "Explicitly verified rotation / reconciliation" }
       },
       "trustManager": {
+        "lastUsed": "Last successful authentication:", "usageUnknown": "No available record (not proof of no prior connection)",
         "audit": "View host trust audit",
         "rotation": "Manage host key rotation",
         "previewFile": "Preview the entire known_hosts file", "fileReport": "Whole-file import report",

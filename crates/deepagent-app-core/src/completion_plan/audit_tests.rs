@@ -56,6 +56,8 @@ async fn audit_real_build(interruption: Interruption) -> (bool, bool) {
         r#"use std::{fs, path::Path, thread, time::{Duration, Instant}};
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=DEEPAGENT_H64_DISCOVERED_PREPARE");
+    if std::env::var_os("DEEPAGENT_H64_DISCOVERED_PREPARE").is_some() { return; }
     fs::write("build-started", std::process::id().to_string()).unwrap();
     let began = Instant::now();
     while !Path::new("release-build").exists() {
@@ -88,6 +90,52 @@ fn main() {
             .to_string_lossy()
             .into_owned(),
     ]);
+
+    // Like the existing verification_build fixture, compile the helper outside
+    // the unchanged readiness/Kernel deadlines. Only this native child receives
+    // the preparation flag. Removing it makes Cargo execute the actual gate on
+    // the original discovered command; no runner or Kernel path is mocked.
+    const PREPARE: &str = "DEEPAGENT_H64_DISCOVERED_PREPARE";
+    assert!(std::env::var_os(PREPARE).is_none());
+    let began = Instant::now();
+    let command = &plan.steps[0].command;
+    let mut prepare = tokio::process::Command::new(&command.program);
+    prepare
+        .args(&command.args)
+        .current_dir(&root)
+        .env(PREPARE, "1")
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    prepare.creation_flags(0x08000000); // CREATE_NO_WINDOW, same as SystemCommandRunner.
+    let prepared = tokio::time::timeout(Duration::from_secs(60), prepare.output())
+        .await
+        .expect("fixture compiler preparation must finish")
+        .expect("spawn fixture compiler preparation");
+    assert!(
+        prepared.status.success(),
+        "fixture preparation failed: {}",
+        String::from_utf8_lossy(&prepared.stderr)
+    );
+    assert!(
+        !started_path.exists(),
+        "preparation must not enter the build gate"
+    );
+    assert!(
+        !late_path.exists(),
+        "preparation must not create measured side effects"
+    );
+    assert!(
+        !release_path.exists(),
+        "preparation must not release the measured build"
+    );
+    assert!(
+        std::env::var_os(PREPARE).is_none(),
+        "preparation must not mutate the parent environment"
+    );
+    eprintln!(
+        "discovered-build compiler preparation elapsed_ms={}",
+        began.elapsed().as_millis()
+    );
 
     let db = Arc::new(Database::open_in_memory().unwrap());
     let clock = FixedClock::new(1);

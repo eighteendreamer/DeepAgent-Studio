@@ -5194,6 +5194,8 @@ use deepagent_ssh::{
 fn to_dto_auth_type(t: DtoSshAuthType) -> &'static str {
     match t {
         DtoSshAuthType::Agent => "agent",
+        DtoSshAuthType::OpenSshAgent => "openssh_agent",
+        DtoSshAuthType::Pageant => "pageant",
         DtoSshAuthType::KeyFile => "key_file",
         DtoSshAuthType::Password => "password",
     }
@@ -5379,6 +5381,13 @@ async fn ssh_confirm_host_key_rotation(
 }
 
 #[tauri::command]
+async fn ssh_probe_agent(
+    provider: deepagent_ssh::SshAgentProvider,
+) -> Vec<deepagent_ssh::SshAgentProbe> {
+    deepagent_ssh::probe_ssh_agent(provider).await
+}
+
+#[tauri::command]
 async fn ssh_list_connections(
     state: State<'_, AppState>,
 ) -> Result<Vec<SshConnectionFrontendDto>, String> {
@@ -5402,12 +5411,8 @@ async fn ssh_create_connection(
     host_key_policy: Option<deepagent_ssh::SshHostKeyPolicy>,
 ) -> Result<SshConnectionFrontendDto, String> {
     let ssh = state.ssh.clone();
-    let auth = match auth_type.as_str() {
-        "agent" => DtoSshAuthType::Agent,
-        "key_file" => DtoSshAuthType::KeyFile,
-        "password" => DtoSshAuthType::Password,
-        _ => DtoSshAuthType::Agent,
-    };
+    let auth: DtoSshAuthType = serde_json::from_value(serde_json::Value::String(auth_type))
+        .map_err(|error| format!("Invalid SSH authentication method: {error}"))?;
     ssh.create_connection(DtoCreateSshConnectionRequest {
         name,
         host,
@@ -5440,12 +5445,8 @@ async fn ssh_update_connection(
     host_key_policy: Option<deepagent_ssh::SshHostKeyPolicy>,
 ) -> Result<SshConnectionFrontendDto, String> {
     let ssh = state.ssh.clone();
-    let auth = match auth_type.as_str() {
-        "agent" => DtoSshAuthType::Agent,
-        "key_file" => DtoSshAuthType::KeyFile,
-        "password" => DtoSshAuthType::Password,
-        _ => DtoSshAuthType::Agent,
-    };
+    let auth: DtoSshAuthType = serde_json::from_value(serde_json::Value::String(auth_type))
+        .map_err(|error| format!("Invalid SSH authentication method: {error}"))?;
     ssh.update_connection(DtoUpdateSshConnectionRequest {
         id,
         name,
@@ -7823,6 +7824,7 @@ pub fn run() {
             terminal_session_release,
             terminal_session_close,
             ssh_list_connections,
+            ssh_probe_agent,
             ssh_inspect_host_trust,
             ssh_list_host_keys,
             ssh_import_host_trust,
