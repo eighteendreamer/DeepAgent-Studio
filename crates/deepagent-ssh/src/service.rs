@@ -616,6 +616,17 @@ impl SshServiceImpl {
             .ok_or_else(|| SshError::Pty("no active PTY session".into()))
     }
 
+    pub(super) async fn pty_subscribe_output(
+        &self,
+        handle: &SshServiceHandle,
+    ) -> SshResult<deepagent_terminal::TerminalOutputSubscription> {
+        let session = self.active_pty_connection(&handle.connection_id).await?;
+        session
+            .subscribe_output(&handle.token)
+            .await
+            .ok_or_else(|| SshError::Pty("no active PTY session".into()))
+    }
+
     pub async fn pty_read_with_cursor(
         &self,
         handle: &SshServiceHandle,

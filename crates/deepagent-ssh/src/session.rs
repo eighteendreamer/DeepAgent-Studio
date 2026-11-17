@@ -98,6 +98,7 @@ pub enum PtyCommand {
 }
 
 pub struct PtyState {
+    pub output_signal: deepagent_terminal::TerminalOutputSignal,
     pub stdin: mpsc::Sender<Vec<u8>>,
     pub commands: mpsc::UnboundedSender<PtyCommand>,
     pub stdout: Mutex<mpsc::Receiver<Vec<u8>>>,
@@ -207,6 +208,13 @@ impl SshSession {
         self.pty(token)
             .await
             .is_some_and(|pty| !pty.join.is_finished())
+    }
+
+    pub(super) async fn subscribe_output(
+        &self,
+        token: &str,
+    ) -> Option<deepagent_terminal::TerminalOutputSubscription> {
+        Some(self.pty(token).await?.output_signal.subscribe())
     }
 
     pub async fn close_pty(&self, token: &str) -> crate::SshResult<()> {

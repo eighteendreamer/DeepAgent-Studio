@@ -78,13 +78,14 @@ impl PtyControl {
 }
 
 struct LocalPtyState {
+    output_signal: deepagent_terminal::TerminalOutputSignal,
     // One gate covers authorization, the actual blocking operation and cleanup.
     // Its guard lives in the worker, so dropping the awaiting future cannot
     // release ownership while that operation is still running.
     control: std::sync::Mutex<PtyControl>,
     writer: Mutex<Box<dyn Write + Send>>,
     reader: Mutex<mpsc::Receiver<Vec<u8>>>,
-    master: std::sync::Mutex<Box<dyn portable_pty::MasterPty + Send>>,
+    master: std::sync::Mutex<Option<Box<dyn portable_pty::MasterPty + Send>>>,
     child: std::sync::Mutex<Box<dyn portable_pty::Child + Send>>,
     output_cursor: AtomicU64,
     history: Mutex<VecDeque<(u64, Vec<u8>)>>,
@@ -570,6 +571,18 @@ impl TerminalSessionBackend for DirectTerminalSessionBackend {
         "direct"
     }
 
+    async fn subscribe_output(
+        &self,
+        session: &TerminalSession,
+    ) -> deepagent_terminal::TerminalResult<deepagent_terminal::TerminalOutputSubscription> {
+        let owner = self.owner(session)?;
+        self.service
+            .with_pty_control(&session.session_id, owner, |state, _| {
+                Ok(state.output_signal.subscribe())
+            })
+            .await
+    }
+
     async fn open(
         &self,
         request: TerminalOpenRequest,
@@ -647,7 +660,9 @@ impl TerminalSessionBackend for DirectTerminalSessionBackend {
         // Read does not require input ownership, but still belongs to this host/run.
         let owner = self.owner(session)?;
         self.service
-            .with_pty_control(&session.session_id, owner, |_, _| Ok(()))
+            .with_pty_control(&session.session_id, owner, |state, _| {
+                state.finish_exited_output()
+            })
             .await?;
         let chunk = self
             .service
@@ -774,6 +789,8 @@ impl LocalPtyState {
         self.master
             .lock()
             .map_err(pty_error)?
+            .as_ref()
+            .ok_or_else(|| pty_error("PTY output is closing after process exit"))?
             .resize(PtySize {
                 rows,
                 cols,
@@ -781,6 +798,26 @@ impl LocalPtyState {
                 pixel_height: 0,
             })
             .map_err(pty_error)
+    }
+
+    fn finish_exited_output(&self) -> deepagent_terminal::TerminalResult<()> {
+        if self
+            .child
+            .lock()
+            .map_err(pty_error)?
+            .try_wait()
+            .map_err(pty_error)?
+            .is_some()
+        {
+            if let Some(master) = self.master.lock().map_err(pty_error)?.take() {
+                // portable-pty 0.8 ConPTY keeps its output pipe open until the
+                // pseudoconsole is closed, even after cmd.exe has exited.
+                // ClosePseudoConsole can wait for output to drain: never hold
+                // the input gate or stop the reader while dropping it.
+                tokio::task::spawn_blocking(move || drop(master));
+            }
+        }
+        Ok(())
     }
 
     fn kill(&self) -> deepagent_terminal::TerminalResult<()> {
@@ -862,6 +899,8 @@ fn spawn_local_pty(
     };
 
     let (stdout_tx, stdout_rx) = mpsc::channel::<Vec<u8>>(256);
+    let output_signal = deepagent_terminal::TerminalOutputSignal::default();
+    let activity = output_signal.clone();
     std::thread::spawn(move || {
         let mut reader = reader;
         let mut buf = [0u8; 4096];
@@ -872,20 +911,24 @@ fn spawn_local_pty(
                     if stdout_tx.blocking_send(buf[..n].to_vec()).is_err() {
                         break;
                     }
+                    activity.notify();
                 }
                 Err(_) => break,
             }
         }
+        drop(stdout_tx);
+        activity.notify();
     });
 
     Ok(LocalPtyState {
+        output_signal,
         control: std::sync::Mutex::new(PtyControl {
             owner,
             reaped: false,
         }),
         writer: Mutex::new(writer),
         reader: Mutex::new(stdout_rx),
-        master: std::sync::Mutex::new(pair.master),
+        master: std::sync::Mutex::new(Some(pair.master)),
         child: std::sync::Mutex::new(child),
         output_cursor: AtomicU64::new(0),
         history: Mutex::new(VecDeque::new()),
@@ -1260,6 +1303,63 @@ mod tests {
             .await
             .unwrap();
         (dir, svc, backend, session, lease)
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn output_notifications_wake_real_local_pty_without_consuming_cursor_data() {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let (_dir, _svc, backend, session, lease) = h293_shared_fixture().await;
+            let mut notices = backend.subscribe_output(&session).await.unwrap();
+            let mut forged = session.clone();
+            forged.run_id = "wrong-run".into();
+            assert!(backend.subscribe_output(&forged).await.is_err());
+            backend
+                .write(&session, &lease, b"echo notification-ready\r\n")
+                .await
+                .unwrap();
+            let mut revision = 0;
+            let mut cursor = 0;
+            let mut bytes = Vec::new();
+            // ConPTY can replace CR/LF with VT cursor movement; require both
+            // echoed command and executed result rather than assuming wire EOLs.
+            while String::from_utf8_lossy(&bytes)
+                .matches("notification-ready")
+                .count()
+                < 2
+            {
+                let notice = notices
+                    .wait_after(revision, std::time::Duration::from_secs(1))
+                    .await;
+                revision = notice.revision;
+                let chunk = backend.read(&session, cursor).await.unwrap();
+                assert!(backend
+                    .read(&session, cursor)
+                    .await
+                    .unwrap()
+                    .data
+                    .starts_with(&chunk.data));
+                cursor = chunk.cursor;
+                bytes.extend(chunk.data);
+            }
+            eprintln!("local notification output observed: {} bytes", bytes.len());
+            backend.write(&session, &lease, b"exit\r\n").await.unwrap();
+            loop {
+                let notice = notices
+                    .wait_after(revision, std::time::Duration::from_secs(1))
+                    .await;
+                revision = notice.revision;
+                let chunk = backend.read(&session, cursor).await.unwrap();
+                cursor = chunk.cursor;
+                if chunk.eof {
+                    break;
+                }
+            }
+            backend.close(&session, &lease).await.unwrap();
+            assert!(backend.subscribe_output(&session).await.is_err());
+        })
+        .await
+        .expect("native notification and EOF must settle");
     }
 
     #[cfg(windows)]

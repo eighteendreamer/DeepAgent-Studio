@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+mod output;
+pub use output::{TerminalOutputNotice, TerminalOutputSignal, TerminalOutputSubscription};
+
 #[derive(Debug, Error)]
 pub enum TerminalError {
     #[error("terminal session {0} was not found")]
@@ -357,6 +360,18 @@ fn new_lease(
 #[async_trait]
 pub trait TerminalSessionBackend: Send + Sync {
     fn backend_kind(&self) -> &'static str;
+
+    /// Subscribe before the first cursor read. Notices contain no output and
+    /// cannot consume history or grant input ownership.
+    async fn subscribe_output(
+        &self,
+        _session: &TerminalSession,
+    ) -> TerminalResult<TerminalOutputSubscription> {
+        Err(TerminalError::UnsupportedCapability {
+            backend: self.backend_kind().into(),
+            capability: "output_notification".into(),
+        })
+    }
 
     async fn open(
         &self,

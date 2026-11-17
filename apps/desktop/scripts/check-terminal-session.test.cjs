@@ -74,3 +74,42 @@ test('explicit takeover supplies the new generation to subsequent shared close',
   assert.equal(calls[1].args.lease, next);
   assert.notEqual(calls[1].args.lease.leaseId, lease.leaseId);
 });
+
+test('readiness subscription has one pending wait, advances the notice revision, and disposes late responses', async () => {
+  const calls = []; const replies = []; let wakeups = 0; let failures = 0;
+  const subscribe = production('terminalSessionSubscribe', (command, args) => {
+    calls.push({ command, args });
+    return new Promise(resolve => replies.push(resolve));
+  });
+  const stop = await subscribe(session, () => { wakeups++; }, () => { failures++; });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, 'terminal_session_wait');
+  assert.equal(calls[0].args.session, session);
+  assert.equal(calls[0].args.afterRevision, 0);
+  replies[0]({ revision: 7, closed: false });
+  await new Promise(setImmediate);
+  assert.equal(wakeups, 1);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].args.afterRevision, 7);
+  stop(); stop();
+  replies[1]({ revision: 8, closed: false });
+  await new Promise(setImmediate);
+  assert.equal(wakeups, 1);
+  assert.equal(calls.length, 2);
+  assert.equal(failures, 0);
+  const rust = readFileSync(path.join(__dirname, '../src-tauri/src/lib.rs'), 'utf8');
+  assert.match(rust, /#\[tauri::command\]\s*async fn terminal_session_wait\(/);
+  assert.match(rust, /generate_handler!\[[\s\S]*?\bterminal_session_wait,/);
+});
+
+test('notification transport closure drains once, rejection is visible, and neither loops or reconnects', async () => {
+  let wakes = 0; let calls = 0; const errors = [];
+  await production('terminalSessionSubscribe', async () => { calls++; return { revision: 0, closed: true }; })(session, () => { wakes++; }, error => errors.push(error));
+  await new Promise(setImmediate);
+  assert.equal(wakes, 1); assert.equal(calls, 1);
+  const error = Error('notification transport failed');
+  await production('terminalSessionSubscribe', async () => { throw error; })(session, () => { wakes++; }, value => errors.push(value));
+  await new Promise(setImmediate);
+  assert.equal(errors[0], error);
+  await assert.rejects(production('terminalSessionSubscribe', null)(session, () => {}, () => {}), /desktop app/);
+});

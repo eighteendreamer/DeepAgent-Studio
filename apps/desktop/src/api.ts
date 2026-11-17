@@ -2888,6 +2888,35 @@ export async function terminalSessionRead(
   return invoke<TerminalReadChunk>("terminal_session_read", { session, afterCursor });
 }
 
+/** Readiness only: output is still read exactly once through the byte cursor API.
+ * One bounded, server-notified wait is in flight. Its timeout also resynchronizes
+ * missed notices without a frequent idle poll or an unbounded webview event queue.
+ */
+export async function terminalSessionSubscribe(
+  session: TerminalSession,
+  onWake: () => void,
+  onError: (error: unknown) => void,
+): Promise<() => void> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("terminal sessions require the desktop app");
+  let stopped = false;
+  void (async () => {
+    let afterRevision = 0;
+    try {
+      while (!stopped) {
+        const notice = await invoke<{ revision: number; closed: boolean }>("terminal_session_wait", { session, afterRevision });
+        if (stopped) return;
+        afterRevision = notice.revision;
+        onWake();
+        if (notice.closed) return;
+      }
+    } catch (error) {
+      if (!stopped) onError(error);
+    }
+  })();
+  return () => { stopped = true; };
+}
+
 export async function terminalSessionLastCursor(sessionId: string): Promise<number> {
   const invoke = getInvoke();
   if (!invoke) return 0;

@@ -226,3 +226,86 @@ async fn idle_pty_reads_never_rewrite_connection_configuration() {
     assert_eq!(store.writes.load(Ordering::SeqCst), 0);
     service.disconnect(&connection.id).await.unwrap();
 }
+
+#[tokio::test]
+async fn output_notifications_are_per_pty_non_destructive_and_include_final_eof() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let server = support::SshServer::start("127.0.0.1").await;
+        let data = tempfile::tempdir().unwrap();
+        let trust = data.path().join("known_hosts");
+        server.write_trust(&trust);
+        let service = Arc::new(SshService::new(data.path().to_path_buf()));
+        let connection = server.create(&service, Some(&trust)).await;
+        let backend = SshTerminalSessionBackend::for_service(service.clone(), None);
+        let request = || TerminalOpenRequest {
+            target: deepagent_terminal::TerminalTarget::Ssh {
+                connection_id: connection.id.clone(),
+            },
+            run_id: "fixture-notification".into(),
+            cwd: String::new(),
+            cols: 80,
+            rows: 24,
+            initial_holder: TerminalInputHolder::User,
+        };
+        let (first, first_lease) = backend.open(request()).await.unwrap();
+        let (second, second_lease) = backend.open(request()).await.unwrap();
+        let mut notice = backend.subscribe_output(&first).await.unwrap();
+        let initial = notice.wait_after(0, Duration::from_secs(1)).await;
+        assert!(initial.revision > 0);
+        let prompt = backend.read(&first, 0).await.unwrap();
+        assert_eq!(prompt.data, b"fixture$ ");
+        backend
+            .write(&second, &second_lease, b"second-only")
+            .await
+            .unwrap();
+        let quiet = notice
+            .wait_after(initial.revision, Duration::from_millis(30))
+            .await;
+        assert_eq!(
+            quiet.revision, initial.revision,
+            "other PTY cannot wake this one"
+        );
+        backend
+            .write(&first, &first_lease, b"first-only")
+            .await
+            .unwrap();
+        let next = notice
+            .wait_after(quiet.revision, Duration::from_secs(1))
+            .await;
+        assert_ne!(next.revision, quiet.revision);
+        let echoed = backend.read(&first, prompt.cursor).await.unwrap();
+        assert_eq!(echoed.data, b"first-only");
+        assert_eq!(
+            backend.read(&first, prompt.cursor).await.unwrap().data,
+            echoed.data
+        );
+        backend
+            .write(&first, &first_lease, b"fixture-exit")
+            .await
+            .unwrap();
+        let mut revision = next.revision;
+        let mut cursor = echoed.cursor;
+        let mut tail = Vec::new();
+        loop {
+            let changed = notice.wait_after(revision, Duration::from_secs(1)).await;
+            revision = changed.revision;
+            let chunk = backend.read(&first, cursor).await.unwrap();
+            cursor = chunk.cursor;
+            tail.extend(chunk.data);
+            if chunk.eof {
+                break;
+            }
+        }
+        assert_eq!(tail, "尾部".as_bytes());
+        let mut forged = first.clone();
+        forged.run_id = "another-run".into();
+        assert!(backend.subscribe_output(&forged).await.is_err());
+        backend.close(&first, &first_lease).await.unwrap();
+        assert!(backend.subscribe_output(&first).await.is_err());
+        backend.close(&second, &second_lease).await.unwrap();
+        service.disconnect(&connection.id).await.unwrap();
+        assert_eq!(server.auth_count(), 1);
+    })
+    .await
+    .expect("loopback notification flow must settle");
+}

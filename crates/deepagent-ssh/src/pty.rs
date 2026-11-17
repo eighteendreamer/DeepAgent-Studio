@@ -77,6 +77,8 @@ pub(super) async fn open(
     let (stdin, mut input) = mpsc::channel::<Vec<u8>>(128);
     let (output, stdout) = mpsc::channel::<Vec<u8>>(256);
     let (commands, mut command) = mpsc::unbounded_channel::<PtyCommand>();
+    let output_signal = deepagent_terminal::TerminalOutputSignal::default();
+    let activity = output_signal.clone();
     let channel = writer.clone();
     let connection_id = connection_id.to_owned();
     let join = tokio::spawn(async move {
@@ -85,12 +87,14 @@ pub(super) async fn open(
                 let _ = writer.close().await;
                 return;
             }
+            activity.notify();
         }
         loop {
             tokio::select! {
                 message = reader.wait() => match message {
                     Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
                         if output.send(data.to_vec()).await.is_err() { break; }
+                        activity.notify();
                     }
                     Some(ChannelMsg::ExitStatus { exit_status }) => tracing::debug!(target:"deepagent_ssh", connection_id, exit_status, "remote shell exited"),
                     Some(ChannelMsg::Close) | None => break,
@@ -109,10 +113,15 @@ pub(super) async fn open(
                 },
             }
         }
+        // Publish EOF only after dropping the byte producer. A wakeup cannot
+        // race ahead of the receiver's closed state and strand its final read.
+        drop(output);
+        activity.notify();
         let _ = writer.close().await;
         tracing::debug!(target:"deepagent_ssh", connection_id, "SSH PTY actor ended");
     });
     let state = PtyState {
+        output_signal,
         stdin,
         commands,
         stdout: Mutex::new(stdout),

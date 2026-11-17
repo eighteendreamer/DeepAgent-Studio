@@ -246,6 +246,18 @@ impl TerminalSessionBackend for SshTerminalSessionBackend {
         "ssh"
     }
 
+    async fn subscribe_output(
+        &self,
+        session: &TerminalSession,
+    ) -> deepagent_terminal::TerminalResult<deepagent_terminal::TerminalOutputSubscription> {
+        let handle = self.handle(session)?;
+        self.service
+            .inner
+            .pty_subscribe_output(&handle)
+            .await
+            .map_err(|error| TerminalError::Backend(error.to_string()))
+    }
+
     async fn open(
         &self,
         request: TerminalOpenRequest,

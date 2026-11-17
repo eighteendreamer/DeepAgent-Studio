@@ -1,6 +1,6 @@
 import {
   terminalSessionOpen, terminalSessionRead, terminalSessionWrite, terminalSessionResize,
-  terminalSessionRenew, terminalSessionClose,
+  terminalSessionRenew, terminalSessionClose, terminalSessionSubscribe,
   type TerminalSession, type TerminalInputLease, type TerminalTarget,
 } from "../../api";
 
@@ -23,7 +23,9 @@ export class TerminalSessionController {
   private decoder = new TextDecoder("utf-8");
   private readTimer: ReturnType<typeof setTimeout> | null = null;
   private renewTimer: ReturnType<typeof setTimeout> | null = null;
-  private idleDelay = 30;
+  private unsubscribe: (() => void) | null = null;
+  private reading = false;
+  private readRequested = false;
   private inputs: Promise<void> = Promise.resolve();
   private lastSize: { cols: number; rows: number } | null = null;
 
@@ -45,8 +47,17 @@ export class TerminalSessionController {
       }
       this.current = current;
       this.lastSize = { cols, rows };
+      const unsubscribe = await terminalSessionSubscribe(current[0], () => this.requestRead(), error => {
+        if (!this.disposed) this.fail(error);
+      });
+      if (this.disposed || this.stopped) {
+        unsubscribe();
+        return;
+      }
+      this.unsubscribe = unsubscribe;
       this.sink.state("running");
-      this.scheduleRead(0);
+      // Subscribe before draining: output arriving in either window must be read.
+      this.requestRead();
       this.scheduleRenewal();
     } catch (error) {
       if (!this.disposed) this.fail(error);
@@ -54,15 +65,18 @@ export class TerminalSessionController {
     }
   }
 
-  private scheduleRead(delay: number) {
+  private requestRead() {
     if (this.disposed || this.stopped) return;
-    this.readTimer = setTimeout(() => this.read(), delay);
+    if (this.reading) { this.readRequested = true; return; }
+    if (this.readTimer === null) this.readTimer = setTimeout(() => this.read(), 0);
   }
 
   private async read(): Promise<void> {
     this.readTimer = null;
     const current = this.current;
-    if (!current || this.disposed || this.stopped) return;
+    if (!current || this.disposed || this.stopped || this.reading) return;
+    this.reading = true;
+    this.readRequested = false;
     try {
       const chunk = await terminalSessionRead(current[0], this.cursor);
       if (this.disposed || this.stopped || this.current !== current) return;
@@ -79,10 +93,13 @@ export class TerminalSessionController {
         this.sink.state("exited");
         return;
       }
-      this.idleDelay = chunk.data.length ? 0 : Math.min(180, this.idleDelay + 30);
-      this.scheduleRead(document.hidden ? 750 : this.idleDelay);
+      // A capped response can leave bytes ready; keep draining after parser ACK.
+      this.readRequested ||= chunk.data.length > 0;
     } catch (error) {
       if (!this.disposed) this.fail(error);
+    } finally {
+      this.reading = false;
+      if (this.readRequested) this.requestRead();
     }
   }
 
@@ -133,6 +150,8 @@ export class TerminalSessionController {
     if (this.readTimer !== null) clearTimeout(this.readTimer);
     if (this.renewTimer !== null) clearTimeout(this.renewTimer);
     this.readTimer = this.renewTimer = null;
+    this.unsubscribe?.();
+    this.unsubscribe = null;
   }
 
   private fail(error: unknown) {

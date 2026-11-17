@@ -5113,6 +5113,23 @@ async fn terminal_session_read(
 }
 
 #[tauri::command]
+async fn terminal_session_wait(
+    state: State<'_, AppState>,
+    session: TerminalSession,
+    after_revision: u64,
+) -> Result<deepagent_terminal::TerminalOutputNotice, String> {
+    let mut subscription = terminal_backend(&state, &session.backend)?
+        .subscribe_output(&session)
+        .await
+        .map_err(|error| error.to_string())?;
+    // No detached worker, persisted subscription, output copy or global event
+    // broadcast. Dropped UI waits expire, while session close wakes them early.
+    Ok(subscription
+        .wait_after(after_revision, std::time::Duration::from_secs(5))
+        .await)
+}
+
+#[tauri::command]
 fn terminal_session_last_cursor(
     state: State<'_, AppState>,
     session_id: String,
@@ -7847,6 +7864,7 @@ pub fn run() {
             terminal_session_write,
             terminal_session_renew,
             terminal_session_read,
+            terminal_session_wait,
             terminal_session_last_cursor,
             terminal_session_recovery_status,
             terminal_session_resize,
