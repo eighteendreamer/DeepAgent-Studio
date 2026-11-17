@@ -22,6 +22,8 @@ const LEGACY_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
 /// Legacy secret name written by the old settings page.
 const LEGACY_DEEPSEEK_KEY_NAME: &str = "deepseek_api_key";
 
+const LEGACY_SEED_ID: &str = "harness_registry_seed_v1";
+
 /// One provider entry. The API key is referenced by `api_key_ref`, never held here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HarnessProvider {
@@ -62,8 +64,13 @@ pub(crate) fn import_legacy_deepseek_provider(conn: &Connection) -> Result<()> {
          SELECT 'deepseek', 'DeepSeek', '', ?1, 'responses', name, 'auto',
                 1, 1, updated_at, updated_at
          FROM secret_records
-         WHERE name = ?2",
-        [LEGACY_DEEPSEEK_BASE_URL, LEGACY_DEEPSEEK_KEY_NAME],
+         WHERE name = ?2
+           AND NOT EXISTS (SELECT 1 FROM documents WHERE collection = 'migrations' AND id = ?3)",
+        [
+            LEGACY_DEEPSEEK_BASE_URL,
+            LEGACY_DEEPSEEK_KEY_NAME,
+            LEGACY_SEED_ID,
+        ],
     )
     .map_err(map_sqlite)?;
     Ok(())
@@ -104,6 +111,52 @@ const PROVIDER_COLUMNS: &str = "id, channel, logo, model_url, protocol, api_key_
     balance_kind, status, revision";
 
 impl Database {
+    /// Publish the old chat selection once, together with a durable migration
+    /// marker. Existing provider/model edits win; later deletion stays deleted.
+    pub fn seed_legacy_harness_model(&self, base_url: &str, model: &HarnessModel) -> Result<()> {
+        if model.provider_id != "deepseek" || model.model_name.trim().is_empty() {
+            return Err(CoreError::invalid("invalid legacy harness model"));
+        }
+        let now = now_millis();
+        self.with_conn(|conn| {
+            let migrated: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM documents WHERE collection = 'migrations' AND id = ?1)",
+                [LEGACY_SEED_ID], |row| row.get(0),
+            ).map_err(map_sqlite)?;
+            if migrated {
+                return Ok(());
+            }
+            let transaction = conn.unchecked_transaction().map_err(map_sqlite)?;
+            let inserted = transaction.execute(
+                "INSERT INTO documents (collection, id, body, created_at, updated_at)
+                 VALUES ('migrations', ?1, '{\"version\":1}', ?2, ?2)
+                 ON CONFLICT(collection, id) DO NOTHING",
+                params![LEGACY_SEED_ID, now],
+            ).map_err(map_sqlite)?;
+            if inserted != 0 {
+                transaction.execute(
+                    "INSERT INTO harness_providers
+                        (id, channel, logo, model_url, protocol, api_key_ref, balance_kind,
+                         status, revision, created_at, updated_at)
+                     VALUES ('deepseek', 'DeepSeek', '', ?1, 'responses', ?2, 'official', 1, 1, ?3, ?3)
+                     ON CONFLICT(id) DO NOTHING",
+                    params![base_url, LEGACY_DEEPSEEK_KEY_NAME, now],
+                ).map_err(map_sqlite)?;
+                transaction.execute(
+                    "INSERT INTO harness_models
+                        (id, provider_id, model_name, display_name, protocol, context_window,
+                         output_limit, capabilities, status, updated_at)
+                     VALUES (?1, 'deepseek', ?2, ?3, NULL, ?4, ?5, ?6, 1, ?7)
+                     ON CONFLICT(provider_id, model_name) DO NOTHING",
+                    params![format!("deepseek:{}", model.model_name), model.model_name,
+                        model.display_name, model.context_window, model.output_limit,
+                        model.capabilities, now],
+                ).map_err(map_sqlite)?;
+            }
+            transaction.commit().map_err(map_sqlite)
+        })
+    }
+
     /// Insert or replace a provider. Revision increments on every save; the
     /// creation time is kept from the first save.
     pub fn save_harness_provider(&self, provider: &HarnessProvider) -> Result<()> {

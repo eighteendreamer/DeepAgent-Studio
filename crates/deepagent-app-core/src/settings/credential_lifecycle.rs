@@ -150,7 +150,9 @@ impl SettingsService {
             return Err(superseded());
         }
         let settings = self.commit_credential(&current, generation, Some(key), || {
-            self.merge_discovered_catalog(catalog, CatalogUpdate::Initialize)
+            let settings = self.merge_discovered_catalog(catalog, CatalogUpdate::Initialize)?;
+            self.seed_harness_registry(&settings)?;
+            Ok(settings)
         })?;
         tracing::info!("credential initialization committed");
         self.view_with_key(Some(key), &settings)

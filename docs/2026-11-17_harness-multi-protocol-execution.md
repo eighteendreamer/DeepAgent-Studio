@@ -12,6 +12,7 @@
 - “小字”指多余的解释性内容；本轮 UI 去掉冗余说明，保留必要状态和可操作错误。
 - 流式能力沿用现有 `turn/start` 后的通知，统一内部契约，不新增独立 `turn/stream` 入口。
 - 切换模型时仅在供应商同时改变的情况下重新查询余额。
+- 模型切换从下一轮用户消息生效；当前 turn 的工具调用与续写始终使用 admission 冻结的模型。
 - 每轮先运行失败测试，再修复并运行回归；记录真实结果，不能改写验收标准或绕过步骤。
 - 测试凭据仅用于用户授权的接口验收，不进入代码、命令输出、截图明文或本记录。
 
@@ -96,4 +97,20 @@ RED：完整 `pnpm build` 在 `check-plugin-licenses` 失败；`wedecode` 实际
 
 GREEN：`node apps/desktop/scripts/check-plugin-licenses.cjs`，10 个插件全部通过；
 `node --test apps/desktop/scripts/check-plugin-license-hash.test.cjs`，1 passed。
-完整桌面构建仍需在后续工程验收重跑；本项不等于 UI 或产品功能验收通过。
+完整 `pnpm build` 已通过（包括前置脚本、tsc 和 Vite）；本项不等于 UI 或产品功能验收通过。
+
+## H003：首次登录与旧 Chat 模型的一次性种子迁移（P3）
+
+RED：`cargo test -q -p deepagent-app-core --test harness_registry_seed --offline -j 1`，
+4 failed / 1 passed，复现登录和旧配置未激活模型、迁移写入缺少事务边界等问题。
+
+修复：首次登录发布和旧配置读取共用一次性种子迁移，只导入旧 Chat 选择。
+供应商、模型和迁移标记在同一 SQLite 事务提交；密钥沿用 `deepseek_api_key` 引用。
+已有编辑与停用状态优先，迁移完成后删除供应商不会在冷重开时复活。
+登录迁移失败沿用既有凭据 Committing 状态，显式重新登录成功后才恢复可用。
+
+GREEN：种子迁移最终 7 passed，覆盖容量/模态保留、无配置、重复加载、删除后冷重开、
+写入失败原子回滚、凭据失败关闭与恢复、已有用户编辑保护。
+`cargo test -q -p deepagent-persistence --offline -j 1` 全部通过：221 + 9 + 5 项，0 failed。
+settings lib 97 passed / 2 ignored。修改文件已 rustfmt；提交前检查 diff。
+本批只完成注册表初始化，生产运行链仍待 H004 接入。

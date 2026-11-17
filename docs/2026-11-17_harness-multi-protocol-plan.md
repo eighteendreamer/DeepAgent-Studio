@@ -13,7 +13,7 @@
 5. 提升缓存命中率：稳定前缀设计。
 6. 余额查询改为按供应商类型分发，不再写死 DeepSeek 官方接口。
 7. 设置页可自行添加供应商、选协议、拉取模型入库；对话窗口按供应商分组选模型。
-8. 运行中切换模型/供应商，在下一次请求生效，不打断当前输出。
+8. 运行中切换模型/供应商，在下一轮用户消息生效；当前 turn 的工具调用与续写保持原模型。
 9. harness 协议层统一收敛到现有 `apps/cli/src/app_server.rs`（stdio JSON-RPC）与 `jsonl.rs`，不新建第二套协议引擎（F 批次，见 §9）。
 
 ### 0.1 架构修正（2026-11-17，用户确认）
@@ -417,12 +417,15 @@ pub struct BalanceAmount {
               ↓
 当前 turn 继续用已冻结快照（不打断）
               ↓
-下一次 prepareCall → resolver 重读 → 新 provider + 新 model + 新 key
+下一轮用户消息 admission → resolver 重读 → 新 provider + 新 model + 新 key
 ```
 
 要改的是 `bind()`：从「读 settings 的 `deepseek_api_key`」改成「读 model 行的 `provider_id` → provider 行的 `api_key_ref`」。
 
 `bind()` 只解析一个激活模型，不解析备用模型。主模型返回 `Overloaded` 时直接报错，不切换模型（见 §0.1-7）。
+
+生效边界（2026-11-17 用户确认）：同一个 turn 内的工具调用、重试和模型续写保持冻结快照；
+不能在每次工具续写的 prepareCall 重读选择。下一轮用户消息才解析新选择。
 
 切换时必须发生：
 - 余额按新 provider 重查
@@ -463,8 +466,8 @@ pub struct BalanceAmount {
 | P0 可测性验证 | 已记录结论，采用 (a) | §10-1；后续 SDK 只承担类型与序列化，复用现有 HTTP/SSE/取消/预算边界。两个 SDK 尚未进入生产依赖，不能据此宣称双协议可用。 |
 | P1 中性内容层 + 五档映射 | 类型和映射已实现；运行链未完成 | `b6774635` 增加 `ThinkingLevel` / `map_thinking` 和 `ResponseItem::Reasoning.signature` 可选字段。运行时与 UI 仍使用旧 `ReasoningEffort`；五档尚未接入真实请求。 |
 | P2 协议表 + 工厂 | 部分完成 | `8376e0be` 的 `protocol::codec_for` 收口请求体编码与工具投影；现有 codec 为 Responses / ChatCompletions。Messages codec 和统一解码边界待 P5。 |
-| P3 数据模型 + 迁移 | 部分完成 | V24 表、CRUD、激活列表、AppCore DTO、7 个 Tauri command 与 TS API 均已落地。`9c9046be` 修复迁移供应商真实密钥引用，服务 11 项测试通过。首次登录与旧 Chat 种子新增用例先取得 4 failed / 1 passed，原子迁移实现后 5 passed；额外凭据失败关闭与用户编辑保护回归正在验证。注册表尚未接入会话运行链。 |
-| P3c 过载与备用模型删除 | 实现完成，相关验证中 | 过载统一不可重试，明确 503 过载也立即报错；删除运行时 fallback 路径。models lib 240 passed；runtime lib 493 passed / 2 ignored；H55 4 passed；内核 H144 7 passed；采样、计费/预算、输出上限、图像模式及模型快照串行回归通过。真实 HTTP 与 CLI 验证待结论，未提交此批次。独立 resolver 尚无生产调用方，Messages 明确拒绝。 |
+| P3 数据模型 + 迁移 | 部分完成 | V24 表、CRUD、激活列表、AppCore DTO、7 个 Tauri command 与 TS API 均已落地。`9c9046be` 修复迁移供应商真实密钥引用，服务 11 项测试通过。H003 一次性 Chat 种子迁移先取得 4 failed / 1 passed，最终 7 passed；persistence 全部 235 项、settings 97 项通过。注册表尚未接入会话运行链。 |
+| P3c 过载与备用模型删除 | 已提交，相关回归通过 | `10234777`：过载统一不可重试，明确 503 过载也立即报错；删除运行时 fallback 路径。models lib 240 passed；runtime lib 493 passed / 2 ignored；H55 4 passed；内核 H144 7 passed；采样、计费/预算、输出上限、图像模式及模型快照串行回归通过；真实 HTTP 1 项、CLI 2 项通过。独立 resolver 尚无生产调用方，Messages 明确拒绝。 |
 | P3b 会话 JSONL 的 `origin` | 未开始 | `signature` 字段已有；来源字段、跨供应商签名回放策略与整文件回放待实现。 |
 | P4 / P5 SDK 与双协议 codec | 未开始 | 尚未接入 async-openai / anthropic-sdk；Messages 暂不可运行。 |
 | P6 设置页 | 后端基础已实现；UI 待完成 | 尚无完整供应商/模型管理界面验收。 |

@@ -1529,7 +1529,11 @@ impl SettingsService {
 
     /// Load the public settings (catalog) from the database.
     pub fn load(&self) -> Result<Option<AppSettings>> {
-        self.load_current_settings()
+        let settings = self.load_current_settings()?;
+        if let Some(settings) = &settings {
+            self.seed_harness_registry(settings)?;
+        }
+        Ok(settings)
     }
 
     /// Read the persisted welcome name. An empty value means the UI should use
@@ -2349,6 +2353,9 @@ mod persistence;
 
 #[path = "settings/credential_lifecycle.rs"]
 mod credential_lifecycle;
+
+#[path = "settings/harness_registry.rs"]
+mod harness_registry;
 
 mod sampling;
 use sampling::responses_sampling_preview;
