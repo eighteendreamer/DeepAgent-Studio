@@ -178,6 +178,9 @@ export interface ExecutionConfigSnapshot {
   credentialChecked: false;
   scope: { kind: "global" | "thread" | "cwd"; requiresThreadScope: boolean; threadId?: string };
   provider: string | null;
+  protocol: "responses" | "chat_completions" | "messages" | null;
+  providerRevision: number | null;
+  modelConfigHash: string | null;
   model: string | null;
   reasoningEffort: string | null;
   permissionProfile: { approvalPolicy: string; sandboxMode: string; localExecutionMode: string; networkAlwaysAsk: boolean };

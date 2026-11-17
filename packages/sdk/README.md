@@ -45,15 +45,19 @@ overrides) fails before publishing a run; read again rather than retrying blindl
 Builtin slash controls have no model configuration snapshot: omit this guard.
 Accepted normal chat consumes the frozen model defaults and policy, even if
 settings change before the worker starts. Credentials are bound only at execution
-and are never frozen or exposed. This is not an all-settings/MVCC transaction or
+and are never frozen or exposed. The admitted route retains its credential reference;
+tool continuations keep the same provider, protocol and model. A changed selection
+applies to the next user turn. This is not an all-settings/MVCC transaction or
 an authorization token. Config load warnings are counts, never raw diagnostics;
-unknown model overrides retain the existing catalog fallback and report whether
-the override applied. Cold reads do not resume, admit, refresh plugins or start MCP;
+an unknown or inactive registry model reports an invalid plan and fails before
+dispatching a provider request. Cold reads do not resume, admit, refresh plugins or start MCP;
 legacy settings normalization remains owned by the existing Settings service.
 MCP publication identity changes across host restarts, so read a fresh snapshot
 after reconnecting; unchanged model/policy values alone do not preserve its ID.
-Uninitialized settings retain the existing `deepseek-official` provider banner
-but have null model/reasoning; invalid model configuration explicitly reports
+Resolved settings report the registry provider ID, protocol, provider revision and
+model configuration hash. The legacy request ID `deepseek-official` resolves to
+the migrated `deepseek` provider. Uninitialized settings have null provider,
+protocol, model and reasoning; invalid model configuration explicitly reports
 `resolutionStatus: "invalid"` and null provider/model rather than a usable plan.
 Rust callers retain `config_read()` and gain `config_read_scoped(ConfigReadRequest)`;
 request wire fields are additive, while Rust `TurnStartRequest` literals need the new

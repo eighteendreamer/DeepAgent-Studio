@@ -1,6 +1,6 @@
 # Harness 多协议开发与验收记录
 
-日期：2026-11-17。起始提交：`805d5090`。
+日期：2026-11-17；更新：2026-11-18。起始提交：`805d5090`。
 
 范围依据：`2026-11-17_harness-multi-protocol-plan.md`、项目 `AGENTS.md` 与当前会话的用户要求。
 本记录只覆盖 harness、模型注册表、模型适配及其桌面入口。远程连接由另一会话负责。
@@ -114,3 +114,44 @@ GREEN：种子迁移最终 7 passed，覆盖容量/模态保留、无配置、�
 `cargo test -q -p deepagent-persistence --offline -j 1` 全部通过：221 + 9 + 5 项，0 failed。
 settings lib 97 passed / 2 ignored。修改文件已 rustfmt；提交前检查 diff。
 本批只完成注册表初始化，生产运行链仍待 H004 接入。
+
+## H004：注册表接入真实运行链与冻结模型（P3，2026-11-18）
+
+RED：新增 `harness_registry_run` 先取得 0 passed / 5 failed：注册表中非旧 catalog
+模型被拒绝、停用旧模型仍可请求、快照缺少真实 provider、未绑定对应供应商密钥。
+随后技能审查/标题回归 0 passed / 1 failed，复现辅助调用仍走旧固定地址。
+
+修复：数据库用一个 JOIN 读取选中供应商和模型；统一 resolver 校验激活、协议与能力，
+模型身份和容量以注册表列为准。admission 冻结地址、协议、模型、能力、版本及密钥引用，
+执行时精确绑定该引用，当前 turn 的工具续写复用同一 client；下一轮才解析新选择。
+迁移密钥继续经过既有凭据生命周期 gate。能力 JSON 损坏会失败，错误不回显原文。
+技能审查与标题也使用同一 resolver，保留原有输出上限、预算和计费边界。
+旧请求 provider alias `deepseek-official` 兼容映射到 `deepseek`；机器快照报告真实注册表身份。
+未初始化快照的 provider/protocol 等路由字段为 null，SDK 类型与说明同步。
+
+测试夹具按新契约明确预置并激活其需要的模型；生产不会因发现模型就全部激活。
+CLI 原配置回归先取得 8 passed / 1 failed，修正夹具后配置组 15 passed。
+真实 SDK/CLI 先复现旧 provider banner 断言失败，更新为空路由的真实语义；
+所有真实 CLI 测试统一支持既有 `DEEPAGENT_TEST_BINARY` 选择，使用本轮新构建及字节哈希，未跳过。
+
+GREEN（均 0 failed）：
+- `cargo test -p deepagent-app-core --test harness_model_resolver`：11 passed。
+- `cargo test -p deepagent-app-core --test harness_registry_run`：7 passed。
+- 注册表服务 11 passed；种子迁移 7 passed；settings lib 102 passed / 2 ignored。
+- 内核串行：model_selection 8、output_limit 1、reasoning_capability 2、session_title_usage 16、
+  credential_lifecycle 1、sampling 1，共 29 passed；model_runtime lib 另有 2 passed。
+- persistence 全部 235 passed；CLI configuration_tests 15 passed；CLI build 通过。
+- SDK `pnpm test`：200 passed；`test:stdio` 6 passed；`test:jsonl` 1 passed；含 TypeScript 构建。
+- `web,runtimes` 的 `h66_tracked_child`：1 passed；首次链接触及 MSVC PDB LIMIT (12)，
+  仅通过本次命令的 `profile.test.package.deepagent-app-core.debug=1` 降低调试符号后通过，
+  未改功能、测试、仓库 profile 或断言。
+
+格式与工程门禁：相关修改已 rustfmt，`git diff --check` 通过。
+全仓 fmt 仍受既有 `deepagent-core/src/id.rs` 四处宏排版阻塞。
+全仓 all-features clippy 已实际执行，离线依赖缺少 `alloc-no-stdlib v2.0.4`，未通过；
+随后 `cargo fetch --locked` 已补齐锁定依赖，未改 Cargo.lock，clippy 等待重跑。
+完整 workspace 测试与后续工程门禁仍待执行，不能据局部回归宣告全部完成。
+
+边界：Messages codec 尚不存在，选择 Messages 仍明确失败。默认模型暂从旧 Chat 字段取值，
+新默认/会话选择、辅助调用与父 turn 的显式供应商选择绑定待 P10；独立视觉路径待后续删除。
+尚未做本批真实外部 API、桌面 UI 或性能验收。

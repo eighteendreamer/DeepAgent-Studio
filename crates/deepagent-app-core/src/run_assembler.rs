@@ -26,7 +26,6 @@ use deepagent_hooks::{Hook, HookDefinitions, HookPoint, HookRegistry};
 use deepagent_models::transport::HttpTransport;
 #[cfg(test)]
 use deepagent_models::ModelClient;
-use deepagent_models::ModelRole;
 use deepagent_persistence::event_store::EventStore;
 use deepagent_persistence::runtime_log_store::{NewRuntimeLogEntry, RuntimeLogStore};
 use deepagent_persistence::Database;
@@ -1633,15 +1632,8 @@ impl<'a> RunAssembler<'a> {
         .with_cancel(cancellation.flag())
         .with_call_usage_sink(main_usage.clone());
 
-        let run_model = select_run_model(
-            self.settings,
-            self.transport.clone(),
-            ModelRole::Chat,
-            None,
-            None,
-            None,
-        )
-        .ok();
+        let run_model =
+            select_run_model(self.settings, self.transport.clone(), None, None, None).ok();
         let wf_client = run_model.as_ref().map(|rm| rm.client.clone());
         let wf_model_name = run_model.as_ref().map(|rm| rm.model.clone());
 

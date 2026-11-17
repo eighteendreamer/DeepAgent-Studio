@@ -9,7 +9,7 @@ import test from "node:test";
 import { DeepAgent } from "../dist/index.js";
 
 test("real CLI early failure is delivered once and reconciles after reconnect with durable cursors", { timeout: 30000 }, async () => {
-  const bin = fileURLToPath(new URL(`../../../target/debug/deepagent${process.platform === "win32" ? ".exe" : ""}`, import.meta.url));
+  const bin = process.env.DEEPAGENT_TEST_BINARY ?? fileURLToPath(new URL(`../../../target/debug/deepagent${process.platform === "win32" ? ".exe" : ""}`, import.meta.url));
   assert.ok(existsSync(bin), "run cargo build -p deepagent-cli first");
   const root = mkdtempSync(path.join(os.tmpdir(), "deepagent-h214-real-cli-"));
   // Keep real executable bytes but no ambient bundled plugin/MCP preparation.
@@ -39,7 +39,10 @@ test("real CLI early failure is delivered once and reconciles after reconnect wi
     assert.equal(config.configSnapshotVersion, 1);
     assert.equal(config.resolutionStatus, "uninitialized");
     assert.equal(config.credentialChecked, false);
-    assert.equal(config.provider, "deepseek-official");
+    assert.equal(config.provider, null);
+    assert.equal(config.protocol, null);
+    assert.equal(config.providerRevision, null);
+    assert.equal(config.modelConfigHash, null);
     assert.equal(config.permissionProfile.sandboxMode, "read_only");
     assert.equal(config.sandboxBackend, "direct");
     await assert.rejects(() => thread.run("reject stale config", {expectedConfigSnapshotId: "stale-config"}), /stale execution configuration/u);

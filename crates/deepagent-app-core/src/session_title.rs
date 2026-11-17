@@ -12,7 +12,7 @@ use deepagent_core::error::{CoreError, Result};
 use deepagent_core::id::SessionId;
 use deepagent_core::message::Role;
 use deepagent_models::transport::HttpTransport;
-use deepagent_models::{ModelClient, ModelConfig, ModelRole, ReasoningEffort};
+use deepagent_models::ReasoningEffort;
 use deepagent_persistence::event_store::EventStore;
 use deepagent_persistence::run_store::RunStore;
 use deepagent_persistence::Database;
@@ -142,25 +142,15 @@ pub async fn generate_session_title(
         events: Arc::downgrade(&events),
     };
 
-    let settings = settings_svc
-        .load()?
-        .ok_or_else(|| CoreError::invalid("project not initialized: set an API key first"))?;
-    let api_key = settings_svc
-        .api_key()?
-        .ok_or_else(|| CoreError::invalid("API key not set: initialize the project first"))?;
-    let model = settings.catalog.model_for(ModelRole::Chat).to_string();
-    let config = ModelConfig::from_catalog(api_key, &settings.catalog, ModelRole::Chat)
-        .with_defaults(deepagent_models::ResponseDefaults {
-            temperature: settings.responses.effective_temperature(),
-            top_p: settings.responses.effective_top_p(),
-            max_output_tokens: settings.responses.effective_max_output_tokens(),
-            top_logprobs: settings.responses.effective_top_logprobs(),
-            reasoning_effort: settings.responses.effective_reasoning_effort(),
-            text: settings.responses.effective_text(),
-            tool_choice: settings.responses.effective_tool_choice(),
-            user: settings.responses.effective_user(),
-        });
-    let client = Arc::new(ModelClient::new(transport, config));
+    let selection = crate::model_runtime::select_run_model(
+        settings_svc,
+        transport,
+        None,
+        None,
+        Some(ReasoningEffort::None.label()),
+    )?;
+    let client = selection.client;
+    let model = selection.model;
 
     let request = deepagent_models::chat::ResponseRequest::with_instructions_and_user_input(
         model.clone(),

@@ -458,7 +458,7 @@ pub struct BalanceAmount {
 
 ---
 
-### 9.1 执行状态（截至 2026-11-17）
+### 9.1 执行状态（截至 2026-11-18）
 
 | 批次 | 状态 | 证据 / 与原计划的偏差 |
 |---|---|---|
@@ -466,8 +466,8 @@ pub struct BalanceAmount {
 | P0 可测性验证 | 已记录结论，采用 (a) | §10-1；后续 SDK 只承担类型与序列化，复用现有 HTTP/SSE/取消/预算边界。两个 SDK 尚未进入生产依赖，不能据此宣称双协议可用。 |
 | P1 中性内容层 + 五档映射 | 类型和映射已实现；运行链未完成 | `b6774635` 增加 `ThinkingLevel` / `map_thinking` 和 `ResponseItem::Reasoning.signature` 可选字段。运行时与 UI 仍使用旧 `ReasoningEffort`；五档尚未接入真实请求。 |
 | P2 协议表 + 工厂 | 部分完成 | `8376e0be` 的 `protocol::codec_for` 收口请求体编码与工具投影；现有 codec 为 Responses / ChatCompletions。Messages codec 和统一解码边界待 P5。 |
-| P3 数据模型 + 迁移 | 部分完成 | V24 表、CRUD、激活列表、AppCore DTO、7 个 Tauri command 与 TS API 均已落地。`9c9046be` 修复迁移供应商真实密钥引用，服务 11 项测试通过。H003 一次性 Chat 种子迁移先取得 4 failed / 1 passed，最终 7 passed；persistence 全部 235 项、settings 97 项通过。注册表尚未接入会话运行链。 |
-| P3c 过载与备用模型删除 | 已提交，相关回归通过 | `10234777`：过载统一不可重试，明确 503 过载也立即报错；删除运行时 fallback 路径。models lib 240 passed；runtime lib 493 passed / 2 ignored；H55 4 passed；内核 H144 7 passed；采样、计费/预算、输出上限、图像模式及模型快照串行回归通过；真实 HTTP 1 项、CLI 2 项通过。独立 resolver 尚无生产调用方，Messages 明确拒绝。 |
+| P3 数据模型 + 迁移 | 运行链已接入，消费方回归中 | V24 表、CRUD、激活列表、AppCore DTO、7 个 Tauri command 与 TS API 均已落地。`9c9046be` 修复密钥引用；`b1de6059` 完成一次性 Chat 种子迁移。H004 将 admission、执行绑定、工具续写、技能审查和标题调用接入注册表；解析 11 项、真实运行链 7 项、内核相关 29 项、persistence 235 项通过。默认选择仍暂取旧 Chat 字段，UI 选择与新默认持久化待 P10。 |
+| P3c 过载与备用模型删除 | 已提交，相关回归通过 | `10234777`：过载统一不可重试，明确 503 过载也立即报错；删除运行时 fallback 路径。models lib 240 passed；runtime lib 493 passed / 2 ignored；H55 4 passed；内核 H144 7 passed；采样、计费/预算、输出上限、图像模式及模型快照串行回归通过；真实 HTTP 1 项、CLI 2 项通过。H004 已接入单一 resolver；Messages 仍因缺少 codec 明确拒绝。 |
 | P3b 会话 JSONL 的 `origin` | 未开始 | `signature` 字段已有；来源字段、跨供应商签名回放策略与整文件回放待实现。 |
 | P4 / P5 SDK 与双协议 codec | 未开始 | 尚未接入 async-openai / anthropic-sdk；Messages 暂不可运行。 |
 | P6 设置页 | 后端基础已实现；UI 待完成 | 尚无完整供应商/模型管理界面验收。 |

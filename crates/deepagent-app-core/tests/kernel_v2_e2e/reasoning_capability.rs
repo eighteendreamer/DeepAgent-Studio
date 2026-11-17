@@ -89,6 +89,9 @@ async fn h157_kernel_default_selection_survives_reopen_without_pinning_the_old_e
         deepagent_models::ReasoningEffort::Low
     );
     settings.refresh_models().await.unwrap();
+    // Registry model edits, rather than automatic legacy discovery, publish the
+    // new capability used by the next turn.
+    model_selection::activate_selection_model(&db, &settings, "deepseek-flash");
     assert!(!settings.load().unwrap().unwrap().reasoning_effort_explicit);
     let transport = Arc::new(Recorder::default());
     let chat = ChatService::new(db, settings, transport.clone(), &workspace);

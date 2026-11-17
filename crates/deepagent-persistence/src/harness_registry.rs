@@ -111,6 +111,29 @@ const PROVIDER_COLUMNS: &str = "id, channel, logo, model_url, protocol, api_key_
     balance_kind, status, revision";
 
 impl Database {
+    /// Read a provider and its selected model in one SQLite statement. Keep
+    /// inactive rows so admission can explain why an exact selection is invalid.
+    pub fn harness_model_route(
+        &self,
+        provider_id: &str,
+        model_name: &str,
+    ) -> Result<Option<(HarnessProvider, HarnessModel)>> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                "SELECT p.id, p.channel, p.logo, p.model_url, p.protocol, p.api_key_ref,
+                        p.balance_kind, p.status, p.revision,
+                        m.provider_id, m.model_name, m.display_name, m.protocol,
+                        m.context_window, m.output_limit, m.capabilities, m.status
+                 FROM harness_models m JOIN harness_providers p ON p.id = m.provider_id
+                 WHERE p.id = ?1 AND m.model_name = ?2",
+                params![provider_id, model_name],
+                route_from_row,
+            )
+            .optional()
+            .map_err(map_sqlite)
+        })
+    }
+
     /// Publish the old chat selection once, together with a durable migration
     /// marker. Existing provider/model edits win; later deletion stays deleted.
     pub fn seed_legacy_harness_model(&self, base_url: &str, model: &HarnessModel) -> Result<()> {
@@ -342,7 +365,7 @@ impl Database {
                     "SELECT p.id, p.channel, p.logo, p.model_url, p.protocol, p.api_key_ref,
                             p.balance_kind, p.status, p.revision,
                             m.provider_id, m.model_name, m.display_name, m.protocol,
-                            m.context_window, m.output_limit, m.capabilities
+                            m.context_window, m.output_limit, m.capabilities, m.status
                      FROM harness_models m
                      JOIN harness_providers p ON p.id = m.provider_id
                      WHERE m.status = 1 AND p.status = 1
@@ -350,33 +373,26 @@ impl Database {
                 )
                 .map_err(map_sqlite)?;
             let rows = statement
-                .query_map([], |row| {
-                    let provider = HarnessProvider {
-                        id: row.get(0)?,
-                        channel: row.get(1)?,
-                        logo: row.get(2)?,
-                        model_url: row.get(3)?,
-                        protocol: row.get(4)?,
-                        api_key_ref: row.get(5)?,
-                        balance_kind: row.get(6)?,
-                        enabled: row.get::<_, i64>(7)? != 0,
-                        revision: row.get(8)?,
-                    };
-                    let model = HarnessModel {
-                        provider_id: row.get(9)?,
-                        model_name: row.get(10)?,
-                        display_name: row.get(11)?,
-                        protocol: row.get(12)?,
-                        context_window: row.get(13)?,
-                        output_limit: row.get(14)?,
-                        capabilities: row.get(15)?,
-                        active: true,
-                    };
-                    Ok((provider, model))
-                })
+                .query_map([], route_from_row)
                 .map_err(map_sqlite)?;
             rows.collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(map_sqlite)
         })
     }
+}
+
+fn route_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(HarnessProvider, HarnessModel)> {
+    Ok((
+        provider_from_row(row)?,
+        HarnessModel {
+            provider_id: row.get(9)?,
+            model_name: row.get(10)?,
+            display_name: row.get(11)?,
+            protocol: row.get(12)?,
+            context_window: row.get(13)?,
+            output_limit: row.get(14)?,
+            capabilities: row.get(15)?,
+            active: row.get::<_, i64>(16)? != 0,
+        },
+    ))
 }

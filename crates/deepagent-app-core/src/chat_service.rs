@@ -25,8 +25,10 @@ use deepagent_hooks::Hook;
 use deepagent_hooks::{HookPoint, HookRegistry, PermissionRulesHook};
 use deepagent_models::transport::HttpTransport;
 #[cfg(test)]
+use deepagent_models::ModelConfig;
+#[cfg(test)]
 use deepagent_models::ToolSchema;
-use deepagent_models::{ModelClient, ModelConfig, ModelRole, ReasoningEffort};
+use deepagent_models::{ModelClient, ReasoningEffort};
 use deepagent_persistence::runtime_log_store::{NewRuntimeLogEntry, RuntimeLogStore};
 use deepagent_persistence::Database;
 #[cfg(test)]
@@ -1460,11 +1462,9 @@ impl ChatService {
         register_skill_tool(registry, self.skills.as_ref()).map(|_| ())
     }
 
-    /// Build a model client for the given role from persisted settings + the
-    /// stored API key. Thinking depth is a request-parameter concern only; it
-    /// does not implicitly swap the selected model role.
-    fn build_model(&self, role: ModelRole) -> Result<(Arc<ModelClient>, String, ReasoningEffort)> {
-        build_model_client(&self.settings, self.transport.clone(), role)
+    /// Build the selected active registry model with its provider credential.
+    fn build_model(&self) -> Result<(Arc<ModelClient>, String, ReasoningEffort)> {
+        build_model_client(&self.settings, self.transport.clone())
     }
 
     /// Run a single non-session, non-tool, streaming LLM completion.
@@ -1488,7 +1488,7 @@ impl ChatService {
     where
         F: FnMut(&str) + Send + 'static,
     {
-        let (client, model, reasoning_effort) = self.build_model(ModelRole::Chat)?;
+        let (client, model, reasoning_effort) = self.build_model()?;
         let request = deepagent_models::chat::ResponseRequest::with_instructions_and_user_input(
             model,
             system_prompt,
@@ -1522,13 +1522,9 @@ impl ChatService {
     /// budgets and Reasoner-model swaps are wasted overhead for what is
     /// essentially a yes/no security classification):
     ///
-    /// 1. **Model selection respects the user's `skill_install_ai_review_model`
-    ///    override** (already a public R10.4 setting). When that's `None`
-    ///    the call falls back to the catalog's chat model (Flash by
-    ///    default) — never the Reasoner. The Deep-thinking → Reasoner
-    ///    swap that [`Self::build_model`] applies for normal chat is
-    ///    intentionally skipped here because skill audits don't benefit
-    ///    from that role change.
+    /// 1. **Model selection respects `skill_install_ai_review_model`** when
+    ///    configured, otherwise it uses the selected Chat model. Both resolve
+    ///    through the same active harness registry and provider credential.
     /// 2. **Caller picks the [`ReasoningEffort`]** explicitly (typically
     ///    `None` for the install-dialog initial pass and `High` for an
     ///    explicit re-review). The user's persisted global thinking depth
@@ -1549,36 +1545,19 @@ impl ChatService {
     where
         F: FnMut(&str) + Send + 'static,
     {
-        let settings = self
-            .settings
-            .load()?
-            .ok_or_else(|| CoreError::invalid("project not initialized: set an API key first"))?;
-        let api_key = self
-            .settings
-            .api_key()?
-            .ok_or_else(|| CoreError::invalid("API key not set: initialize the project first"))?;
-
-        // Model resolution: user override > catalog chat model. Never
-        // promote to the Reasoner — skill review is a structured task, not a
-        // long-form reasoning workload.
         let configured = self.settings.skill_install_ai_review_model()?;
-        let chat_model = settings.catalog.model_for(ModelRole::Chat).to_string();
-        let review_model = configured
-            .filter(|m| !m.trim().is_empty())
-            .unwrap_or(chat_model);
-
-        let config = ModelConfig::from_catalog(api_key, &settings.catalog, ModelRole::Chat)
-            .with_defaults(deepagent_models::ResponseDefaults {
-                temperature: settings.responses.effective_temperature(),
-                top_p: settings.responses.effective_top_p(),
-                max_output_tokens: settings.responses.effective_max_output_tokens(),
-                top_logprobs: settings.responses.effective_top_logprobs(),
-                reasoning_effort: settings.responses.effective_reasoning_effort(),
-                text: settings.responses.effective_text(),
-                tool_choice: settings.responses.effective_tool_choice(),
-                user: settings.responses.effective_user(),
-            });
-        let client = Arc::new(ModelClient::new(self.transport.clone(), config));
+        let selection = crate::model_runtime::select_run_model(
+            &self.settings,
+            self.transport.clone(),
+            None,
+            configured
+                .as_deref()
+                .map(str::trim)
+                .filter(|model| !model.is_empty()),
+            Some(reasoning_effort.label()),
+        )?;
+        let client = selection.client;
+        let review_model = selection.model;
 
         // Output limits and reasoning effort are independent Responses controls.
         let request = deepagent_models::chat::ResponseRequest::with_instructions_and_user_input(

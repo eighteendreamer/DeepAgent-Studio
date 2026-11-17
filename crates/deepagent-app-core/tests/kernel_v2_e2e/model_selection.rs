@@ -6,6 +6,33 @@ use deepagent_app_core::HarnessRunOverrides;
 const DEFAULT_MODEL: &str = "deepseek-v4-flash";
 const KNOWN_OVERRIDE: &str = "deepseek-v4-pro";
 
+// Selection tests exercise preconfigured, activated routes. Discovery alone no
+// longer activates every returned model; onboarding imports only the Chat row.
+pub(super) fn activate_selection_model(db: &Database, settings: &SettingsService, id: &str) {
+    let settings = settings.load().unwrap().unwrap();
+    let info = settings
+        .catalog
+        .available
+        .iter()
+        .find(|model| model.id == id)
+        .unwrap();
+    let capability = deepagent_models::ModelCapabilityResolver::new().resolve_model(info);
+    db.save_harness_models(
+        "deepseek",
+        &[deepagent_persistence::harness_registry::HarnessModel {
+            provider_id: "deepseek".into(),
+            model_name: id.into(),
+            display_name: id.into(),
+            protocol: None,
+            context_window: capability.context_window as i64,
+            output_limit: capability.max_output_tokens as i64,
+            capabilities: serde_json::to_string(&capability).unwrap(),
+            active: true,
+        }],
+    )
+    .unwrap();
+}
+
 #[path = "model_selection_refresh.rs"]
 mod refresh;
 
@@ -62,6 +89,7 @@ async fn observe_selection_with_files(
         settings.load().unwrap().unwrap().catalog.chat_model,
         DEFAULT_MODEL
     );
+    activate_selection_model(&db, &settings, KNOWN_OVERRIDE);
     let model = Arc::new(SelectionModel::default());
     let chat = ChatService::new(db, settings, model.clone(), root.path());
     let config = chat.read_execution_config(&overrides).unwrap();
@@ -209,7 +237,7 @@ async fn unsupported_explicit_provider_fails_before_any_model_request() {
     assert!(outcome
         .error
         .as_deref()
-        .is_some_and(|error| error.contains("unsupported provider")));
+        .is_some_and(|error| error.contains("provider `audit-unsupported-provider`")));
     assert!(outcome.requested_models.is_empty());
     assert_eq!(outcome.terminal_kind, "failed");
 }
@@ -234,6 +262,7 @@ async fn audit_catalog_refresh_preserves_selected_model_on_provider_wire() {
             .initialize("offline-audit-placeholder")
             .await
             .unwrap();
+        activate_selection_model(&db, &settings, KNOWN_OVERRIDE);
         let expected = if explicit_selection {
             settings
                 .set_model(deepagent_models::ModelRole::Chat, KNOWN_OVERRIDE)

@@ -44,6 +44,22 @@ async fn h66_tracked_child_override_uses_its_own_search_capability_and_respects_
     settings
         .set_model(ModelRole::Chat, "deepseek-v4-pro")
         .unwrap();
+    let capability =
+        deepagent_models::ModelCapabilityResolver::new().resolve_model_id("deepseek-v4-pro");
+    db.save_harness_models(
+        "deepseek",
+        &[deepagent_persistence::harness_registry::HarnessModel {
+            provider_id: "deepseek".into(),
+            model_name: "deepseek-v4-pro".into(),
+            display_name: "deepseek-v4-pro".into(),
+            protocol: None,
+            context_window: capability.context_window as i64,
+            output_limit: capability.max_output_tokens as i64,
+            capabilities: serde_json::to_string(&capability).unwrap(),
+            active: true,
+        }],
+    )
+    .unwrap();
     let transport = Arc::new(Capture::default());
     let host = ChatService::new(db.clone(), settings.clone(), transport.clone(), root.path());
     let (registry, _) = host
@@ -58,16 +74,10 @@ async fn h66_tracked_child_override_uses_its_own_search_capability_and_respects_
         .unwrap();
     let mut runner =
         super::tests::audit_child_runner_with_db(root.path(), transport.clone(), db.clone());
-    runner.client = crate::model_runtime::select_run_model(
-        &settings,
-        transport.clone(),
-        ModelRole::Chat,
-        None,
-        None,
-        None,
-    )
-    .unwrap()
-    .client;
+    runner.client =
+        crate::model_runtime::select_run_model(&settings, transport.clone(), None, None, None)
+            .unwrap()
+            .client;
     runner.model = "deepseek-v4-pro".into();
     runner.registry = Arc::new(registry);
     runner.host = host;

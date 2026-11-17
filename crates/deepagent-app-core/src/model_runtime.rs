@@ -17,10 +17,15 @@ pub(crate) struct RunModelSelection {
 
 /// Credential-free selection; the admitted worker binds credentials at execution time.
 pub(crate) struct RunModelPlan {
+    pub(crate) provider_id: String,
+    pub(crate) protocol: String,
+    pub(crate) provider_revision: i64,
+    pub(crate) config_hash: String,
     pub(crate) model: String,
     pub(crate) reasoning_effort: ReasoningEffort,
     pub(crate) override_applied: bool,
     config: ModelConfig,
+    api_key_ref: String,
 }
 
 impl RunModelPlan {
@@ -31,8 +36,11 @@ impl RunModelPlan {
     ) -> Result<RunModelSelection> {
         let mut config = self.config;
         config.api_key = settings
-            .api_key()?
-            .ok_or_else(|| CoreError::invalid("API key not set: initialize the project first"))?;
+            .harness_api_key(&self.api_key_ref)?
+            .filter(|key| !key.trim().is_empty())
+            .ok_or_else(|| {
+                CoreError::invalid(format!("provider `{}` has no API key", self.provider_id))
+            })?;
         Ok(RunModelSelection {
             client: Arc::new(
                 ModelClient::new(transport, config)
@@ -47,37 +55,21 @@ impl RunModelPlan {
 pub(crate) fn build_model_client(
     settings: &SettingsService,
     transport: Arc<dyn HttpTransport>,
-    role: ModelRole,
 ) -> Result<(Arc<ModelClient>, String, ReasoningEffort)> {
-    let loaded = settings
-        .load()?
-        .ok_or_else(|| CoreError::invalid("project not initialized: set an API key first"))?;
-    let api_key = settings
-        .api_key()?
-        .ok_or_else(|| CoreError::invalid("API key not set: initialize the project first"))?;
-    let model = loaded.catalog.model_for(role).to_string();
-    let mut config = model_config(&loaded, role, None)?;
-    let reasoning_effort = config
-        .effective_reasoning_effort(&model, None)?
-        .unwrap_or_default();
-    config.api_key = api_key;
-    let client = Arc::new(
-        ModelClient::new(transport, config).with_image_file_cache(settings.image_file_cache()),
-    );
-    Ok((client, model, reasoning_effort))
+    let selected = select_run_model(settings, transport, None, None, None)?;
+    Ok((selected.client, selected.model, selected.reasoning_effort))
 }
 
 pub fn build_chat_model_client(
     settings: &SettingsService,
     transport: Arc<dyn HttpTransport>,
 ) -> Result<(Arc<ModelClient>, String, ReasoningEffort)> {
-    build_model_client(settings, transport, ModelRole::Chat)
+    build_model_client(settings, transport)
 }
 
 pub(crate) fn select_run_model(
     settings: &SettingsService,
     transport: Arc<dyn HttpTransport>,
-    role: ModelRole,
     provider_override: Option<&str>,
     model_override: Option<&str>,
     reasoning_effort_override: Option<&str>,
@@ -86,8 +78,8 @@ pub(crate) fn select_run_model(
         .load()?
         .ok_or_else(|| CoreError::invalid("project not initialized: set an API key first"))?;
     resolve_run_model(
+        settings.database(),
         &loaded,
-        role,
         provider_override,
         model_override,
         reasoning_effort_override,
@@ -96,48 +88,76 @@ pub(crate) fn select_run_model(
 }
 
 pub(crate) fn resolve_run_model(
+    db: &deepagent_persistence::Database,
     loaded: &crate::settings::AppSettings,
-    role: ModelRole,
     provider_override: Option<&str>,
     model_override: Option<&str>,
     reasoning_effort_override: Option<&str>,
 ) -> Result<RunModelPlan> {
-    let model = match model_override {
-        Some(id) if loaded.catalog.has_model(id) => id.to_owned(),
-        Some(id) => {
-            return Err(CoreError::invalid(format!(
-                "unknown model '{id}'; select a model from the configured catalog"
-            )))
-        }
-        None => loaded.catalog.model_for(role).to_owned(),
+    // Preserve the old public provider id as an alias for its migrated row.
+    // Selection and validation still go through the registry exactly once.
+    let provider = match provider_override {
+        None | Some(DEEPSEEK_OFFICIAL_PROVIDER) => "deepseek",
+        Some(id) => id,
     };
-    if let Some(provider) = provider_override {
-        if provider != DEEPSEEK_OFFICIAL_PROVIDER {
-            return Err(CoreError::invalid(format!(
-                "unsupported provider: {provider}"
-            )));
-        }
-    }
-    let config = model_config(loaded, role, reasoning_effort_override)?;
+    let model = model_override.unwrap_or(&loaded.catalog.chat_model);
+    let route = crate::harness_model_resolver::resolve_active_model(db, provider, model)?;
+    let requested = resolve_reasoning_effort(loaded, reasoning_effort_override)?;
+    let mut defaults = response_defaults(loaded, requested);
+    defaults.max_output_tokens = defaults
+        .max_output_tokens
+        .or(Some(u32::try_from(route.output_limit).map_err(|_| {
+            CoreError::invalid("registry output limit exceeds request capacity")
+        })?));
+    let config_hash = crate::run_capabilities::capability_hash(&serde_json::json!({
+        "provider":route.provider_id, "revision":route.provider_revision,
+        "baseUrl":route.base_url, "protocol":route.protocol, "keyRef":route.api_key_ref,
+        "capability":route.capability,
+    }))?;
+    let config = ModelConfig {
+        base_url: route.base_url,
+        api_key: String::new(),
+        defaults,
+        wire_mode: route.wire_mode,
+        capabilities: vec![route.capability],
+        prefer_model_reasoning_default: requested.is_none(),
+    };
     let reasoning_effort = config
         .effective_reasoning_effort(&model, None)?
         .unwrap_or_default();
     Ok(RunModelPlan {
         config,
+        api_key_ref: route.api_key_ref,
+        provider_id: route.provider_id,
+        protocol: route.protocol,
+        provider_revision: route.provider_revision,
+        config_hash,
         override_applied: model_override.is_some(),
-        model,
+        model: model.to_owned(),
         reasoning_effort,
     })
 }
 
-/// One credential-free settings projection for admission, runtime and preview.
+/// Compatibility projection for the legacy settings view and sampling preview.
+/// Runtime routing always uses the harness registry through resolve_run_model.
 pub(crate) fn model_config(
     settings: &crate::settings::AppSettings,
     role: ModelRole,
     run_override: Option<&str>,
 ) -> Result<ModelConfig> {
     let requested = resolve_reasoning_effort(settings, run_override)?;
-    let defaults = ResponseDefaults {
+    let defaults = response_defaults(settings, requested);
+    Ok(ModelConfig::from_catalog("", &settings.catalog, role)
+        .with_defaults(defaults)
+        .with_model_reasoning_defaults(requested.is_none())
+        .with_wire_mode(WireMode::Responses))
+}
+
+fn response_defaults(
+    settings: &crate::settings::AppSettings,
+    requested: Option<ReasoningEffort>,
+) -> ResponseDefaults {
+    ResponseDefaults {
         temperature: settings.responses.effective_temperature(),
         top_p: settings.responses.effective_top_p(),
         max_output_tokens: settings.responses.effective_max_output_tokens(),
@@ -148,11 +168,7 @@ pub(crate) fn model_config(
         text: settings.responses.effective_text(),
         tool_choice: settings.responses.effective_tool_choice(),
         user: settings.responses.effective_user(),
-    };
-    Ok(ModelConfig::from_catalog("", &settings.catalog, role)
-        .with_defaults(defaults)
-        .with_model_reasoning_defaults(requested.is_none())
-        .with_wire_mode(WireMode::Responses))
+    }
 }
 
 pub(crate) fn resolve_reasoning_effort(
@@ -233,14 +249,25 @@ mod tests {
             "discovered_at":0, "sandbox_mode":"workspace_write"
         }))
         .unwrap();
+        let db = deepagent_persistence::Database::open_in_memory().unwrap();
+        let capability = deepagent_models::ModelCapabilityResolver::new()
+            .resolve_model(&settings.catalog.available[0]);
+        db.seed_legacy_harness_model(
+            &settings.catalog.base_url,
+            &deepagent_persistence::harness_registry::HarnessModel {
+                provider_id: "deepseek".into(),
+                model_name: "primary".into(),
+                display_name: "primary".into(),
+                protocol: None,
+                context_window: capability.context_window as i64,
+                output_limit: capability.max_output_tokens as i64,
+                capabilities: serde_json::to_string(&capability).unwrap(),
+                active: true,
+            },
+        )
+        .unwrap();
         let resolve = |settings: &AppSettings, effort| {
-            super::resolve_run_model(
-                settings,
-                deepagent_models::ModelRole::Chat,
-                None,
-                None,
-                effort,
-            )
+            super::resolve_run_model(&db, settings, None, None, effort)
         };
         // An old document's retained global high must not be silently downgraded.
         assert!(settings.reasoning_effort_explicit);

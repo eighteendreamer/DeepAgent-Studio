@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { DeepAgent, HarnessTransportError } from "../dist/index.js";
 
 test("H266/H267 real CLI exit results, owned drain and durable reopen do not redispatch or invent cancellation", { timeout: 30000 }, async () => {
-  const source = fileURLToPath(new URL(`../../../target/debug/deepagent${process.platform === "win32" ? ".exe" : ""}`, import.meta.url));
+  const source = process.env.DEEPAGENT_TEST_BINARY ?? fileURLToPath(new URL(`../../../target/debug/deepagent${process.platform === "win32" ? ".exe" : ""}`, import.meta.url));
   assert.ok(existsSync(source), "build the current real CLI first; no skipped fallback");
   const root = mkdtempSync(path.join(os.tmpdir(), "deepagent-h267-real-cli-"));
   const binary = path.join(root, path.basename(source));

@@ -73,6 +73,7 @@ async fn h223_refresh_selection_override_and_reopen_match_real_wire_and_durable_
         secrets.clone(),
     ));
     settings.initialize("h223-synthetic-control").await.unwrap();
+    activate_selection_model(&db, &settings, KNOWN_OVERRIDE);
     settings.set_model(ModelRole::Chat, KNOWN_OVERRIDE).unwrap();
     settings
         .set_model(ModelRole::Reasoner, DEFAULT_MODEL)
@@ -163,6 +164,7 @@ async fn h223_refresh_does_not_retarget_an_admitted_run_but_next_admission_uses_
     let secrets = Arc::new(MemorySecretStore::new());
     let settings = Arc::new(SettingsService::new(db.clone(), discovery, secrets));
     settings.initialize("h223-synthetic-control").await.unwrap();
+    activate_selection_model(&db, &settings, KNOWN_OVERRIDE);
     settings.set_model(ModelRole::Chat, KNOWN_OVERRIDE).unwrap();
     let model = Arc::new(SelectionModel::default());
     let chat = ChatService::new(db, settings.clone(), model.clone(), root.path());

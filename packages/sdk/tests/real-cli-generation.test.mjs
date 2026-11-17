@@ -10,7 +10,7 @@ import test from "node:test";
 import { DeepAgent, HarnessRpcError, HarnessTransportError } from "../dist/index.js";
 
 test("H265 real CLI failure stays failed; explicit fresh handshake/resume preserves one durable run",{timeout:30000},async()=>{
- const source=fileURLToPath(new URL(`../../../target/debug/deepagent${process.platform==="win32"?".exe":""}`,import.meta.url));
+ const source=process.env.DEEPAGENT_TEST_BINARY ?? fileURLToPath(new URL(`../../../target/debug/deepagent${process.platform==="win32"?".exe":""}`,import.meta.url));
  assert.ok(existsSync(source),"build the current CLI first; no skipped fallback");
  const root=mkdtempSync(path.join(os.tmpdir(),"h265-real-cli-"));const binary=path.join(root,path.basename(source));
  copyFileSync(source,binary);const hash=p=>createHash("sha256").update(readFileSync(p)).digest("hex");assert.equal(hash(binary),hash(source));

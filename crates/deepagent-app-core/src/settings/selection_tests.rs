@@ -314,15 +314,40 @@ async fn h223_refresh_can_create_a_missing_catalog_without_rewriting_legacy_key(
 }
 
 #[tokio::test]
-async fn h223_both_role_consumers_send_the_preserved_id_on_real_model_client_wire() {
+async fn h223_single_chat_consumer_preserves_selection_independently_of_legacy_reasoner() {
     let f = Fixture::new().await;
     f.swapped();
     f.first.refresh_models().await.unwrap();
-    for (role, expected) in [(ModelRole::Chat, PRO), (ModelRole::Reasoner, FLASH)] {
+    let settings = f.first.load().unwrap().unwrap();
+    let capability = ModelCapabilityResolver::new().resolve_model(
+        settings
+            .catalog
+            .available
+            .iter()
+            .find(|model| model.id == PRO)
+            .unwrap(),
+    );
+    f.first
+        .db
+        .save_harness_models(
+            "deepseek",
+            &[deepagent_persistence::harness_registry::HarnessModel {
+                provider_id: "deepseek".into(),
+                model_name: PRO.into(),
+                display_name: PRO.into(),
+                protocol: None,
+                context_window: capability.context_window as i64,
+                output_limit: capability.max_output_tokens as i64,
+                capabilities: serde_json::to_string(&capability).unwrap(),
+                active: true,
+            }],
+        )
+        .unwrap();
+    for reasoner in [FLASH, PRO] {
+        f.second.set_model(ModelRole::Reasoner, reasoner).unwrap();
         let (client, selected, _) =
-            crate::model_runtime::build_model_client(&f.reopen(), f.discovery.clone(), role)
-                .unwrap();
-        assert_eq!(selected, expected);
+            crate::model_runtime::build_model_client(&f.reopen(), f.discovery.clone()).unwrap();
+        assert_eq!(selected, PRO);
         client
             .stream_response(ResponseRequest::new(
                 selected,
@@ -333,5 +358,5 @@ async fn h223_both_role_consumers_send_the_preserved_id_on_real_model_client_wir
             .await
             .unwrap();
     }
-    assert_eq!(*f.discovery.wire.lock().unwrap(), [PRO, FLASH]);
+    assert_eq!(*f.discovery.wire.lock().unwrap(), [PRO, PRO]);
 }

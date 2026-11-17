@@ -94,8 +94,8 @@ impl RunAssembler<'_> {
             .as_ref()
             .map(|loaded| {
                 resolve_run_model(
+                    self.db,
                     loaded,
-                    ModelRole::Chat,
                     config.provider_override(),
                     config.model_override(),
                     config.reasoning_effort_override(),
@@ -149,7 +149,10 @@ impl RunAssembler<'_> {
         let snapshot = json!({
             "configSnapshotVersion":1, "resolutionStatus":status,
             "credentialChecked":false, "inputHash":input_hash,
-            "provider":(status != "invalid").then_some(deepagent_models::DEEPSEEK_OFFICIAL_PROVIDER),
+            "provider":model.map(|plan| &plan.provider_id),
+            "protocol":model.map(|plan| &plan.protocol),
+            "providerRevision":model.map(|plan| plan.provider_revision),
+            "modelConfigHash":model.map(|plan| &plan.config_hash),
             "model":model.map(|plan| &plan.model),
             "reasoningEffort":model.map(|plan| plan.reasoning_effort),
             "modelOverrideApplied":model.map(|plan| plan.override_applied),

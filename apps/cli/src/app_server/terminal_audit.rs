@@ -167,6 +167,25 @@ impl Fixture {
         for role in [ModelRole::Chat, ModelRole::Reasoner] {
             settings.set_model(role, "deepseek-flash").unwrap();
         }
+        // These dispatcher fixtures explicitly allow selecting a second model.
+        // Onboarding itself activates only Chat; discovery is not activation.
+        let capability =
+            deepagent_models::ModelCapabilityResolver::new().resolve_model_id("deepseek-pro");
+        database
+            .save_harness_models(
+                "deepseek",
+                &[deepagent_persistence::harness_registry::HarnessModel {
+                    provider_id: "deepseek".into(),
+                    model_name: "deepseek-pro".into(),
+                    display_name: "deepseek-pro".into(),
+                    protocol: None,
+                    context_window: capability.context_window as i64,
+                    output_limit: capability.max_output_tokens as i64,
+                    capabilities: serde_json::to_string(&capability).unwrap(),
+                    active: true,
+                }],
+            )
+            .unwrap();
         let chat = ChatService::new(database, settings.clone(), transport, workspace.clone());
         let mut state = ServerState::new(
             chat,

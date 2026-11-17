@@ -49,6 +49,7 @@ async fn h49_selected_model_matches_wire_context_and_reopened_terminals() {
             Arc::new(MemorySecretStore::new()),
         ));
         settings.initialize("h49-synthetic-control").await.unwrap();
+        model_selection::activate_selection_model(&db, &settings, FALLBACK);
         settings.set_model(ModelRole::Chat, FALLBACK).unwrap();
         settings
             .set_responses_settings(ResponsesApiSettings {

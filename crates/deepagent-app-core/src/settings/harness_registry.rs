@@ -4,6 +4,20 @@ use super::*;
 use deepagent_persistence::harness_registry::HarnessModel;
 
 impl SettingsService {
+    pub(crate) fn database(&self) -> &Database {
+        &self.db
+    }
+
+    /// Bind an admitted route's reference, retaining the durable sign-in gate
+    /// for migrated credentials. This never substitutes another provider key.
+    pub(crate) fn harness_api_key(&self, key_ref: &str) -> Result<Option<String>> {
+        if key_ref == API_KEY_NAME {
+            self.api_key()
+        } else {
+            self.secrets.get(key_ref)
+        }
+    }
+
     pub(super) fn seed_harness_registry(&self, settings: &AppSettings) -> Result<()> {
         let resolver = ModelCapabilityResolver::new();
         let capability = settings

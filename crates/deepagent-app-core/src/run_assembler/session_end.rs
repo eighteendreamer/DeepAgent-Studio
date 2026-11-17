@@ -250,11 +250,8 @@ impl RunAssembler<'_> {
             &mut prepared,
         )?;
         let environment = &prepared.configuration.environment;
-        let (client, model, reasoning_effort) = crate::model_runtime::build_model_client(
-            self.settings,
-            self.transport.clone(),
-            ModelRole::Chat,
-        )?;
+        let (client, model, reasoning_effort) =
+            crate::model_runtime::build_model_client(self.settings, self.transport.clone())?;
         let usage_owner = Some(crate::call_usage::RunCallUsageOwner {
             db: self.db.clone(),
             cost: self.cost.clone(),
