@@ -203,7 +203,19 @@ impl<'db, C: Clock> Session<'db, C> {
     /// Persist one provider-native Responses item exactly as returned by the
     /// model stream.
     pub fn append_response_item(&mut self, item: ResponseItem) -> Result<Event> {
-        self.append_with_response_projection(EventPayload::ResponseItemAppended { item }, false)
+        self.append_model_response_item(item, None)
+    }
+
+    /// Persist a model item and its attribution together in the existing event frame.
+    pub fn append_model_response_item(
+        &mut self,
+        item: ResponseItem,
+        origin: Option<deepagent_core::event::ModelOrigin>,
+    ) -> Result<Event> {
+        self.append_with_response_projection(
+            EventPayload::ResponseItemAppended { item, origin },
+            false,
+        )
     }
 
     /// A host-generated system context item is a complete commit group. It has
@@ -217,7 +229,7 @@ impl<'db, C: Clock> Session<'db, C> {
         }
         let events = EventStore::new(self.db).append_with_response_projection(
             self.id,
-            EventPayload::ResponseItemAppended { item },
+            EventPayload::ResponseItemAppended { origin: None, item },
             false,
             self.clock.now(),
         )?;
@@ -616,7 +628,7 @@ mod tests {
             .unwrap()
             .into_iter()
             .filter_map(|event| match event.payload {
-                EventPayload::ResponseItemAppended { item } => Some(item),
+                EventPayload::ResponseItemAppended { item, .. } => Some(item),
                 _ => None,
             })
             .collect();
@@ -661,7 +673,7 @@ mod tests {
             .unwrap()
             .into_iter()
             .filter_map(|event| match event.payload {
-                EventPayload::ResponseItemAppended { item } => Some(item),
+                EventPayload::ResponseItemAppended { item, .. } => Some(item),
                 _ => None,
             })
             .collect();

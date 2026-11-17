@@ -90,7 +90,7 @@ pub(crate) fn legacy_projection_matches(
     expected: &ResponseItem,
     event: &Event,
 ) -> bool {
-    let EventPayload::ResponseItemAppended { item } = &event.payload else {
+    let EventPayload::ResponseItemAppended { item, .. } = &event.payload else {
         return false;
     };
     if item == expected || item.is_legacy_text_projection_of(expected) {
@@ -153,7 +153,7 @@ pub(crate) fn has_native_source(
             if claimed.contains(&event.sequence) {
                 return None;
             }
-            let EventPayload::ResponseItemAppended { item } = &event.payload else {
+            let EventPayload::ResponseItemAppended { item, .. } = &event.payload else {
                 return None;
             };
             Some(item)
@@ -264,7 +264,7 @@ fn project_payload(
             if history.iter().any(|event| matches!(&event.payload,
                 EventPayload::ResponseItemAppended { item: ResponseItem::ToolSearchCall {
                     call_id: Some(id), execution: deepagent_core::response_item::ToolSearchExecution::Client, ..
-                }} if id == call_id)) {
+                }, .. } if id == call_id)) {
                 items.push(ResponseItem::native_tool_search_output(call_id.clone(), *ok, output, schema));
                 return Ok(items);
             }
@@ -276,9 +276,11 @@ fn project_payload(
                 .find_map(|event| match &event.payload {
                     EventPayload::ResponseItemAppended {
                         item: ResponseItem::CustomToolCall { call_id: id, .. },
+                        ..
                     } if id == call_id => Some(true),
                     EventPayload::ResponseItemAppended {
                         item: ResponseItem::FunctionCall { call_id: id, .. },
+                        ..
                     } if id == call_id => Some(false),
                     _ => None,
                 })
@@ -330,7 +332,7 @@ fn projected_call(
 ) -> ResponseItem {
     let function = ResponseItem::from_function_call(call);
     let native = history.iter().rev().find_map(|event| match &event.payload {
-        EventPayload::ResponseItemAppended { item }
+        EventPayload::ResponseItemAppended { item, .. }
             if item.client_tool_call_id() == Some(call.id.as_str()) =>
         {
             Some(item)

@@ -360,6 +360,7 @@ pub(crate) fn append_projection(
             sequence: event.sequence + index as u64 + 1,
             timestamp: event.timestamp,
             payload: deepagent_core::event::EventPayload::ResponseItemAppended {
+                origin: None,
                 item: item.clone(),
             },
         })
@@ -1282,7 +1283,7 @@ mod tests {
             session_id: id,
             sequence: index as u64 + 1,
             timestamp: source.timestamp,
-            payload: EventPayload::ResponseItemAppended { item },
+            payload: EventPayload::ResponseItemAppended { origin: None, item },
         })
         .collect();
         let frame = encode_records(&[StoredRecord::Projection {

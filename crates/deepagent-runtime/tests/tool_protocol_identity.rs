@@ -147,7 +147,7 @@ async fn h156_same_name_function_and_explicit_custom_execute_once_and_recover_na
         let items: Vec<_> = events
             .iter()
             .filter_map(|event| match &event.payload {
-                EventPayload::ResponseItemAppended { item } => Some(item.clone()),
+                EventPayload::ResponseItemAppended { item, .. } => Some(item.clone()),
                 _ => None,
             })
             .collect();

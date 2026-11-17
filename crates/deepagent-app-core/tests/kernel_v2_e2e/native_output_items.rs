@@ -198,6 +198,7 @@ async fn observe_native_text_completion(
             .filter_map(|event| match &event.payload {
                 EventPayload::ResponseItemAppended {
                     item: ResponseItem::Message { role, content },
+                    ..
                 } if role == "assistant" => Some(content.clone()),
                 _ => None,
             })

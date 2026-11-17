@@ -27,6 +27,7 @@ fn h53_replay_uses_visible_attachments_not_historical_injection_ids() {
             sid,
             1,
             EventPayload::ResponseItemAppended {
+                origin: None,
                 item: h53_attachment("old"),
             },
         ),
@@ -34,6 +35,7 @@ fn h53_replay_uses_visible_attachments_not_historical_injection_ids() {
             sid,
             2,
             EventPayload::ResponseItemAppended {
+                origin: None,
                 item: h53_attachment("kept"),
             },
         ),
@@ -63,15 +65,18 @@ fn h53_replay_snip_releases_removed_attachment_but_keeps_protected_tail() {
     let sid = SessionId::nil();
     let mut payloads = vec![
         EventPayload::ResponseItemAppended {
+            origin: None,
             item: ResponseInputItem::Message {
                 role: "user".into(),
                 content: "old task [id:u1]".into(),
             },
         },
         EventPayload::ResponseItemAppended {
+            origin: None,
             item: h53_attachment("old"),
         },
         EventPayload::ResponseItemAppended {
+            origin: None,
             item: ResponseInputItem::Message {
                 role: "user".into(),
                 content: "new task [id:u2]".into(),
@@ -79,12 +84,14 @@ fn h53_replay_snip_releases_removed_attachment_but_keeps_protected_tail() {
         },
     ];
     payloads.extend((0..10).map(|index| EventPayload::ResponseItemAppended {
+        origin: None,
         item: ResponseInputItem::Message {
             role: "assistant".into(),
             content: format!("tail {index}"),
         },
     }));
     payloads.push(EventPayload::ResponseItemAppended {
+        origin: None,
         item: h53_attachment("kept"),
     });
     payloads.push(EventPayload::ContextSnipped {

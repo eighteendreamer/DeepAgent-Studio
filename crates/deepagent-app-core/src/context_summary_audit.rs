@@ -112,7 +112,7 @@ async fn check_summary_adoption_for_fact(label: &str, model_summary: &str, fact:
             &event.payload,
             EventPayload::ResponseItemAppended {
                 item: ResponseInputItem::Message { content, .. }
-            } if content.starts_with(&format!("Created {fact}"))
+            , .. } if content.starts_with(&format!("Created {fact}"))
         )
     });
     let wire_fact = request.to_string().contains(fact);

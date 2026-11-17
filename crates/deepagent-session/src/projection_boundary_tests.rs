@@ -63,7 +63,7 @@ fn h156_new_function_and_native_custom_keep_identity_across_disk_reopen_and_fork
                 let items: Vec<_> = events
                     .iter()
                     .filter_map(|event| match &event.payload {
-                        EventPayload::ResponseItemAppended { item } => Some(item),
+                        EventPayload::ResponseItemAppended { item, .. } => Some(item),
                         _ => None,
                     })
                     .collect();
@@ -128,7 +128,10 @@ fn h156_legacy_source_first_and_native_first_records_keep_the_recorded_type() {
                 let source = EventPayload::MessageAppended {
                     message: Message::assistant("").with_tool_calls(vec![call]),
                 };
-                let native = EventPayload::ResponseItemAppended { item: native };
+                let native = EventPayload::ResponseItemAppended {
+                    origin: None,
+                    item: native,
+                };
                 let payloads = if source_first {
                     vec![source, native]
                 } else {
@@ -157,6 +160,7 @@ fn h156_legacy_source_first_and_native_first_records_keep_the_recorded_type() {
                     .append(
                         id,
                         EventPayload::ResponseItemAppended {
+                            origin: None,
                             item: if custom {
                                 ResponseItem::CustomToolCallOutput {
                                     call_id: "same-name".into(),
@@ -307,7 +311,7 @@ fn h152_native_discovery_completion_is_one_durable_projection_group() {
         let tail = events.last().unwrap();
         assert_eq!(tail.sequence, completion.sequence + 1);
         assert!(
-            matches!(&tail.payload, EventPayload::ResponseItemAppended { item: ResponseItem::ToolSearchOutput { tools, .. }} if tools == &vec![schema])
+            matches!(&tail.payload, EventPayload::ResponseItemAppended { item: ResponseItem::ToolSearchOutput { tools, .. }, .. } if tools == &vec![schema])
         );
         assert_eq!(
             store
@@ -353,7 +357,7 @@ fn h140_admitted_prompt_context_is_one_replay_branch_and_rewind_group() {
         anchor + 2
     );
     assert!(
-        matches!(&events.last().unwrap().payload,EventPayload::ResponseItemAppended {item} if *item==context)
+        matches!(&events.last().unwrap().payload,EventPayload::ResponseItemAppended {item, .. } if *item==context)
     );
     let child = SessionId::new();
     store.fork_session(id, child, anchor, clock.now()).unwrap();
@@ -411,6 +415,7 @@ fn admitted_images_keep_native_refs_and_legacy_mirror_branch_boundaries() {
                     .append(
                         source,
                         EventPayload::ResponseItemAppended {
+                            origin: None,
                             item: ResponseItem::Message {
                                 role: "user".into(),
                                 content: message.content.clone(),
@@ -433,7 +438,7 @@ fn admitted_images_keep_native_refs_and_legacy_mirror_branch_boundaries() {
         );
         if !legacy {
             assert!(matches!(&original.last().unwrap().payload,
-                EventPayload::ResponseItemAppended { item: ResponseItem::InputMessage { attachments, .. } }
+                EventPayload::ResponseItemAppended { item: ResponseItem::InputMessage { attachments, .. } , .. }
                     if attachments == &message.attachments));
         }
         let child = SessionId::new();
@@ -614,6 +619,7 @@ fn legacy_native_first_history_recovers_but_ambiguous_ownership_is_rejected() {
     };
     for payload in [
         EventPayload::ResponseItemAppended {
+            origin: None,
             item: ResponseItem::FunctionCall {
                 call_id: call.id.clone(),
                 name: call.name.clone(),
@@ -622,6 +628,7 @@ fn legacy_native_first_history_recovers_but_ambiguous_ownership_is_rejected() {
         },
         EventPayload::ToolCallRequested { call },
         EventPayload::ResponseItemAppended {
+            origin: None,
             item: ResponseItem::Reasoning {
                 id: Some("provider-reasoning-id".into()),
                 content: "legacy reasoning".into(),
@@ -629,6 +636,7 @@ fn legacy_native_first_history_recovers_but_ambiguous_ownership_is_rejected() {
             },
         },
         EventPayload::ResponseItemAppended {
+            origin: None,
             item: ResponseItem::Message {
                 role: "assistant".into(),
                 content: "legacy answer".into(),
@@ -647,6 +655,7 @@ fn legacy_native_first_history_recovers_but_ambiguous_ownership_is_rejected() {
     let ambiguous = Session::create(&db, &clock, None).unwrap().id();
     for payload in [
         EventPayload::ResponseItemAppended {
+            origin: None,
             item: ResponseItem::Message {
                 role: "user".into(),
                 content: "same".into(),
@@ -656,6 +665,7 @@ fn legacy_native_first_history_recovers_but_ambiguous_ownership_is_rejected() {
             message: Message::user("same"),
         },
         EventPayload::ResponseItemAppended {
+            origin: None,
             item: ResponseItem::Message {
                 role: "user".into(),
                 content: "same".into(),
@@ -724,6 +734,7 @@ fn incomplete_legacy_projection_fails_without_mutating_raw_history() {
         .append(
             partial,
             EventPayload::ResponseItemAppended {
+                origin: None,
                 item: ResponseItem::Reasoning {
                     id: None,
                     content: "retained reasoning".into(),
@@ -783,7 +794,7 @@ fn native_only_decision_and_custom_result_survive_recovery_and_branching() {
     let events = store.load_session(child.id()).unwrap();
     assert_eq!(events.last().unwrap().sequence, result.sequence + 1);
     assert!(
-        matches!(&events.last().unwrap().payload, EventPayload::ResponseItemAppended { item: ResponseItem::CustomToolCallOutput { call_id, .. } } if call_id == "patch-1")
+        matches!(&events.last().unwrap().payload, EventPayload::ResponseItemAppended { item: ResponseItem::CustomToolCallOutput { call_id, .. } , .. } if call_id == "patch-1")
     );
     assert_eq!(
         events
@@ -791,7 +802,8 @@ fn native_only_decision_and_custom_result_survive_recovery_and_branching() {
             .filter(|event| matches!(
                 event.payload,
                 EventPayload::ResponseItemAppended {
-                    item: ResponseItem::Message { .. }
+                    item: ResponseItem::Message { .. },
+                    ..
                 }
             ))
             .count(),

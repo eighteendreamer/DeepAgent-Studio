@@ -30,6 +30,14 @@ pub struct ToolResultReplacement {
     pub replacement_output: String,
 }
 
+/// Immutable attribution of a model-produced item. Contains no endpoint or secret.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelOrigin {
+    pub provider_id: String,
+    pub model_name: String,
+    pub protocol: String,
+}
+
 /// An immutable, append-only event.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
@@ -104,7 +112,11 @@ pub enum EventPayload {
 
     /// Provider-neutral Responses item persisted for exact model-context
     /// recovery. UI projections continue to use `MessageAppended`.
-    ResponseItemAppended { item: ResponseItem },
+    ResponseItemAppended {
+        item: ResponseItem,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<ModelOrigin>,
+    },
 
     /// The model requested a tool invocation.
     ToolCallRequested {

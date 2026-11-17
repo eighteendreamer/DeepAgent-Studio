@@ -201,6 +201,7 @@ pub(crate) async fn observe(first: FirstAttempt) -> Observation {
         .filter_map(|e| match &e.payload {
             EventPayload::ResponseItemAppended {
                 item: ResponseItem::Message { role, content },
+                ..
             } if role == "assistant" => Some(content.as_str()),
             _ => None,
         })

@@ -155,3 +155,29 @@ GREEN（均 0 failed）：
 边界：Messages codec 尚不存在，选择 Messages 仍明确失败。默认模型暂从旧 Chat 字段取值，
 新默认/会话选择、辅助调用与父 turn 的显式供应商选择绑定待 P10；独立视觉路径待后续删除。
 尚未做本批真实外部 API、桌面 UI 或性能验收。
+
+## H005：会话模型来源持久化（P3b，2026-11-18）
+
+目标：让每条模型产生的中性 `ResponseItemAppended` 同时保留供应商、模型和协议来源，
+不新增正文表，不改变现有 zstd JSONL、projection 或回放边界；旧记录缺少新字段时继续可读。
+
+修复：`ModelClient` 保存当前运行来源，真实注册表运行链在 `ModelAgent` 输出落盘时把来源传给
+现有 `Session` 事件；非模型事件和旧辅助构造保持 `origin: None`。`ModelOrigin` 只包含
+`provider_id`、`model_name`、`protocol`，不写 endpoint 或密钥。模型来源与当前 turn 的冻结 client
+一致，工具续写不会重新读取注册表。
+
+GREEN（本批相关回归）：
+- `cargo test -p deepagent-core --test harness_model_origin --offline`：2 passed。
+- `cargo test -p deepagent-persistence --test harness_model_origin --offline`：1 passed。
+- `cargo test -p deepagent-persistence -p deepagent-session --offline`：persistence 221 + 1 + 9 + 5，
+  session 27，全部通过。
+- `cargo test -p deepagent-app-core --test harness_registry_run --offline`：7 passed，包含真实运行
+  事件来源及跨用户轮次模型切换断言。
+- `cargo test -p deepagent-models -p deepagent-runtime --lib --offline --jobs 1`：models 240、
+  runtime 493 passed，runtime 2 ignored。
+- AppCore 单独复跑的媒体边界测试通过；整组低并发回归有 1718 passed、35 ignored、2 个既有
+  环境/状态相关失败，已单独记录，不能据此宣告 AppCore 全量通过。
+
+边界：跨供应商回放时 `Thinking.signature` 是否需要降级为普通文本仍待真实 provider 实测；
+本批只保留签名和来源，不擅自改变协议语义。Messages codec、余额按供应商分发、会话选择器、
+桌面 UI 流程和真实外部 API 验收仍未完成。

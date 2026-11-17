@@ -142,6 +142,7 @@ async fn sqlite_restart_preserves_digest_and_does_not_trust_rewritten_metadata()
                         }
                         EventPayload::ResponseItemAppended {
                             item: ResponseItem::InputMessage { attachments, .. },
+                            ..
                         } if native && !attachments.is_empty() => Some(attachments),
                         _ => None,
                     })

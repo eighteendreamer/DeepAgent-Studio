@@ -155,6 +155,7 @@ fn assert_stored_search(db: &Database, session: &str) {
         .filter_map(|event| match &event.payload {
             EventPayload::ResponseItemAppended {
                 item: ResponseItem::WebSearchCall { id, status, action },
+                ..
             } => Some(json!({"type":"web_search_call","id":id,"status":status,"action":action})),
             _ => None,
         })

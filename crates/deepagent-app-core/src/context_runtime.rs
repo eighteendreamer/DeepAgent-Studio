@@ -88,6 +88,7 @@ impl deepagent_runtime::ContextSurfacePersistence for SessionSurfaceStore {
                         item:
                             ResponseInputItem::FunctionCallOutput { call_id: id, .. }
                             | ResponseInputItem::CustomToolCallOutput { call_id: id, .. },
+                        ..
                     } if id == call_id => Some(event.sequence),
                     EventPayload::ToolCallCompleted { call_id: id, .. } if id == call_id => {
                         Some(event.sequence)
@@ -2647,7 +2648,7 @@ mod tests {
         assert!(events.iter().any(|event| matches!(&event.payload,
             EventPayload::ResponseItemAppended {
                 item: ResponseInputItem::Message { content, .. }
-            } if content.starts_with("unique turn 0:"))));
+            , .. } if content.starts_with("unique turn 0:"))));
         let replay = crate::input_runtime::response_items_from_events(&events);
         assert!(
             replay == sent,
@@ -2726,7 +2727,7 @@ mod tests {
         let events = deepagent_persistence::event_store::EventStore::new(&reopened)
             .load_session(sid)
             .unwrap();
-        assert!(events.iter().any(|event| matches!(&event.payload, EventPayload::ResponseItemAppended { item: ResponseInputItem::FunctionCallOutput { output, .. } } if output == &original.clone().into())), "raw event remains unchanged");
+        assert!(events.iter().any(|event| matches!(&event.payload, EventPayload::ResponseItemAppended { item: ResponseInputItem::FunctionCallOutput { output, .. } , .. } if output == &original.clone().into())), "raw event remains unchanged");
         assert!(events
             .iter()
             .any(|event| matches!(event.payload, EventPayload::ContextSurfacePatched { .. })));

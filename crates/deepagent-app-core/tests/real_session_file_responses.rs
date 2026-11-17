@@ -327,7 +327,9 @@ async fn run_real_responses_session(reasoning_effort: ReasoningEffort) {
                         deepagent_core::response_item::ResponseItem::Reasoning {
                             id: Some(id),
                             content,
+                            ..
                         },
+                    ..
                 } if !content.trim().is_empty() => Some(id.as_str()),
                 _ => None,
             })

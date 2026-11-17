@@ -98,6 +98,7 @@ fn native_contexts(events: &[deepagent_core::event::Event]) -> Vec<Value> {
         .filter_map(|event| match &event.payload {
             EventPayload::ResponseItemAppended {
                 item: ResponseItem::Message { role, content },
+                ..
             } => {
                 let content =
                     content.strip_prefix(deepagent_core::response_item::HOOK_CONTEXT_PREFIX)?;
@@ -329,7 +330,7 @@ async fn h140_block_or_ask_cannot_commit_another_handlers_context_or_call_the_mo
         assert!(native_contexts(&events).is_empty());
         assert!(!events.iter().any(|event| match &event.payload {
             EventPayload::MessageAppended { message } => message.content.contains(HIDDEN),
-            EventPayload::ResponseItemAppended { item } =>
+            EventPayload::ResponseItemAppended { item, .. } =>
                 serde_json::to_string(item).unwrap().contains(HIDDEN),
             _ => false,
         }));

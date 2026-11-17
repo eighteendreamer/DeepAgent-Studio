@@ -41,9 +41,15 @@ impl RunModelPlan {
             .ok_or_else(|| {
                 CoreError::invalid(format!("provider `{}` has no API key", self.provider_id))
             })?;
+        let origin = deepagent_core::event::ModelOrigin {
+            provider_id: self.provider_id,
+            model_name: self.model.clone(),
+            protocol: self.protocol,
+        };
         Ok(RunModelSelection {
             client: Arc::new(
                 ModelClient::new(transport, config)
+                    .with_model_origin(origin)
                     .with_image_file_cache(settings.image_file_cache()),
             ),
             model: self.model,

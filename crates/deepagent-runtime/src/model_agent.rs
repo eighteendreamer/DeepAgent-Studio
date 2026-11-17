@@ -2507,6 +2507,10 @@ impl Agent for ModelAgent {
         std::mem::take(&mut self.pending_response_items)
     }
 
+    fn model_origin(&self) -> Option<deepagent_core::event::ModelOrigin> {
+        self.client.model_origin(&self.model)
+    }
+
     fn take_pending_raw_usage(&mut self) -> Vec<serde_json::Value> {
         self.usage.take_raw()
     }

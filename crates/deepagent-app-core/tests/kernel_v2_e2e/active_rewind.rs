@@ -81,7 +81,7 @@ fn history_contains(db: &Database, session_id: &str, marker: &str) -> bool {
         .iter()
         .any(|event| match &event.payload {
             EventPayload::MessageAppended { message } => message.content.contains(marker),
-            EventPayload::ResponseItemAppended { item } => {
+            EventPayload::ResponseItemAppended { item, .. } => {
                 serde_json::to_string(item).unwrap().contains(marker)
             }
             _ => false,

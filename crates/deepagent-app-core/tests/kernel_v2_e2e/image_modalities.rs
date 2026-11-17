@@ -379,19 +379,18 @@ async fn h171_native_image_roles_survive_database_reopen_without_silent_relabeli
                 terminal(&db, &run_id, "failed");
                 assert!(model.requests.lock().unwrap().is_empty());
             }
-            let retained: Vec<_> = EventStore::new(&db)
-                .load_session(session.parse().unwrap())
-                .unwrap()
-                .into_iter()
-                .filter_map(|event| match event.payload {
-                    deepagent_core::event::EventPayload::ResponseItemAppended { item }
-                        if !item.image_attachments().is_empty() =>
-                    {
-                        Some(item)
-                    }
-                    _ => None,
-                })
-                .collect();
+            let retained: Vec<_> =
+                EventStore::new(&db)
+                    .load_session(session.parse().unwrap())
+                    .unwrap()
+                    .into_iter()
+                    .filter_map(|event| match event.payload {
+                        deepagent_core::event::EventPayload::ResponseItemAppended {
+                            item, ..
+                        } if !item.image_attachments().is_empty() => Some(item),
+                        _ => None,
+                    })
+                    .collect();
             assert_eq!(
                 retained.as_slice(),
                 std::slice::from_ref(&native),

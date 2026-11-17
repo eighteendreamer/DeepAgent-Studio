@@ -360,6 +360,7 @@ pub(crate) fn sequence_of_message(
         }
         EventPayload::ResponseItemAppended {
             item: deepagent_core::response_item::ResponseItem::Message { role, content },
+            ..
         } if !wanted_role.is_empty()
             && role == wanted_role
             && without_user_tag(content) == without_user_tag(&wanted.content) =>
@@ -382,7 +383,7 @@ pub(crate) fn indexed_response_items(
     let mut out = Vec::new();
     let mut custom_calls = std::collections::HashSet::new();
     for (index, event) in events.iter().enumerate() {
-        if let EventPayload::ResponseItemAppended { item } = &event.payload {
+        if let EventPayload::ResponseItemAppended { item, .. } = &event.payload {
             // Repair only an adjacent, matching old source-first text mirror.
             // Preserve the native event's sequence/ownership and leave the log
             // untouched; do not append a second copy of the admitted input.
@@ -412,7 +413,7 @@ pub(crate) fn indexed_response_items(
                 let item = events
                     .get(index + 1)
                     .and_then(|event| match &event.payload {
-                        EventPayload::ResponseItemAppended { item }
+                        EventPayload::ResponseItemAppended { item, .. }
                             if item.is_tool_call_projection_of(call) =>
                         {
                             Some(item.clone())
@@ -453,7 +454,7 @@ pub(crate) fn indexed_response_items(
         // Exclude that source only; all older legacy turns must survive migration.
         let echoed = index + 1 == first_native
             && events.get(first_native).is_some_and(|event| {
-                let EventPayload::ResponseItemAppended { item } = &event.payload else {
+                let EventPayload::ResponseItemAppended { item, .. } = &event.payload else {
                     return false;
                 };
                 generated.first().is_some_and(|generated| {
@@ -497,7 +498,7 @@ pub(crate) fn sequence_of_response_item(
         .find_map(|(sequence, item)| response_items_match(item, wanted).then_some(*sequence))
         .or_else(|| {
             events.iter().find_map(|event| match &event.payload {
-                EventPayload::ResponseItemAppended { item } if item == wanted => {
+                EventPayload::ResponseItemAppended { item, .. } if item == wanted => {
                     Some(event.sequence)
                 }
                 _ => None,
@@ -905,7 +906,7 @@ fn conversation_from_response_items(events: &[Event]) -> Vec<Message> {
     let mut out = Vec::new();
     let mut pending_reasoning: Option<String> = None;
     for event in events {
-        let EventPayload::ResponseItemAppended { item } = &event.payload else {
+        let EventPayload::ResponseItemAppended { item, .. } = &event.payload else {
             continue;
         };
         match item {
@@ -1161,6 +1162,7 @@ mod tests {
             SessionId::nil(),
             7,
             EventPayload::ResponseItemAppended {
+                origin: None,
                 item: current.clone(),
             },
         )];
@@ -1271,6 +1273,7 @@ mod tests {
                 };
                 let source = EventPayload::ToolCallRequested { call: call.clone() };
                 let native = EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: if kind == "function" {
                         ResponseInputItem::from_function_call(&call)
                     } else {
@@ -1294,6 +1297,7 @@ mod tests {
                 if kind != "legacy" {
                     let output = bounded_tool_result(true, &serde_json::json!({"value":8}));
                     payloads.push(EventPayload::ResponseItemAppended {
+                        origin: None,
                         item: if kind == "function" {
                             ResponseInputItem::FunctionCallOutput {
                                 call_id: call.id,
@@ -1343,6 +1347,7 @@ mod tests {
             let mut payloads = Vec::new();
             if native_prefix {
                 payloads.push(EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: ResponseInputItem::Message {
                         role: "assistant".into(),
                         content: "earlier native output".into(),
@@ -1354,6 +1359,7 @@ mod tests {
                     message: image.clone(),
                 },
                 EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: ResponseInputItem::Message {
                         role: "user".into(),
                         content: image.content.clone(),
@@ -1402,6 +1408,7 @@ mod tests {
                 sid,
                 3,
                 EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: ResponseInputItem::Message {
                         role: "user".into(),
                         content: "new question".into(),
@@ -1938,6 +1945,7 @@ mod tests {
             item_sid,
             7,
             EventPayload::ResponseItemAppended {
+                origin: None,
                 item: deepagent_core::response_item::ResponseItem::Message {
                     role: "user".to_string(),
                     content: "from the item log".to_string(),
@@ -2454,6 +2462,7 @@ mod tests {
                 sid,
                 0,
                 EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: ResponseItem::Message {
                         role: "user".into(),
                         content: "do it".into(),
@@ -2464,6 +2473,7 @@ mod tests {
                 sid,
                 1,
                 EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: ResponseItem::Reasoning {
                         id: None,
                         content: "need a file read".into(),
@@ -2475,6 +2485,7 @@ mod tests {
                 sid,
                 2,
                 EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: ResponseItem::FunctionCall {
                         call_id: "call-1".into(),
                         name: "read_file".into(),
@@ -2486,6 +2497,7 @@ mod tests {
                 sid,
                 3,
                 EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: ResponseItem::FunctionCallOutput {
                         call_id: "call-1".into(),
                         output: r#"{"status":"ok"}"#.into(),
@@ -2496,6 +2508,7 @@ mod tests {
                 sid,
                 4,
                 EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: ResponseItem::Message {
                         role: "assistant".into(),
                         content: "done".into(),
@@ -2525,6 +2538,7 @@ mod tests {
                 sid,
                 0,
                 EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: ResponseItem::Message {
                         role: "user".into(),
                         content: "search".into(),
@@ -2535,6 +2549,7 @@ mod tests {
                 sid,
                 1,
                 EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: ResponseItem::WebSearchCall {
                         id: "ws_1".into(),
                         status: "completed".into(),
@@ -2549,6 +2564,7 @@ mod tests {
                 sid,
                 2,
                 EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: ResponseItem::ToolSearchCall {
                         id: Some("tsc_1".into()),
                         call_id: Some("search_1".into()),
@@ -2562,6 +2578,7 @@ mod tests {
                 sid,
                 3,
                 EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: ResponseItem::ToolSearchOutput {
                         id: None,
                         call_id: Some("search_1".into()),
@@ -2578,6 +2595,7 @@ mod tests {
                 sid,
                 4,
                 EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: ResponseItem::Message {
                         role: "assistant".into(),
                         content: "found".into(),
@@ -2627,6 +2645,7 @@ mod tests {
                 sid,
                 0,
                 EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: ResponseItem::Message {
                         role: "user".into(),
                         content: "[id:u1] old".into(),
@@ -2637,6 +2656,7 @@ mod tests {
                 sid,
                 1,
                 EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: ResponseItem::FunctionCall {
                         call_id: "old".into(),
                         name: "read_file".into(),
@@ -2648,6 +2668,7 @@ mod tests {
                 sid,
                 2,
                 EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: ResponseItem::FunctionCallOutput {
                         call_id: "old".into(),
                         output: "old result".into(),
@@ -2658,6 +2679,7 @@ mod tests {
                 sid,
                 3,
                 EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: ResponseItem::Message {
                         role: "assistant".into(),
                         content: "old done".into(),
@@ -2668,6 +2690,7 @@ mod tests {
                 sid,
                 4,
                 EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: ResponseItem::Message {
                         role: "user".into(),
                         content: "[id:u2] live".into(),
@@ -2680,6 +2703,7 @@ mod tests {
                 sid,
                 index,
                 EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: ResponseItem::Message {
                         role: "assistant".into(),
                         content: format!("tail {index}"),
@@ -2714,6 +2738,7 @@ mod tests {
                 sid,
                 0,
                 EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: ResponseItem::FunctionCall {
                         call_id: "c1".into(),
                         name: "read_file".into(),
@@ -2725,6 +2750,7 @@ mod tests {
                 sid,
                 1,
                 EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: ResponseItem::FunctionCallOutput {
                         call_id: "c1".into(),
                         output: "full result".into(),

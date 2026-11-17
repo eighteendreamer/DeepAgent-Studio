@@ -962,6 +962,7 @@ mod tests {
             .append(
                 id,
                 EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: ResponseItem::Message {
                         role: "user".into(),
                         content: "legacy source".into(),
@@ -992,6 +993,7 @@ mod tests {
             .append(
                 id,
                 EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: ResponseItem::CustomToolCallOutput {
                         call_id: "custom-call".into(),
                         output: serde_json::json!({
@@ -1026,6 +1028,7 @@ mod tests {
             let content = format!("native-first-{index}");
             for payload in [
                 EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: ResponseItem::Message {
                         role: "assistant".into(),
                         content: content.clone(),

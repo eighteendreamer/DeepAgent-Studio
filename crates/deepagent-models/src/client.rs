@@ -225,6 +225,7 @@ pub struct ModelClient {
     transport: Arc<dyn HttpTransport>,
     config: ModelConfig,
     image_file_cache: Option<crate::file_references::DeepSeekImageFileCache>,
+    origin: Option<deepagent_core::event::ModelOrigin>,
 }
 
 impl ModelClient {
@@ -234,7 +235,21 @@ impl ModelClient {
             transport,
             config,
             image_file_cache: None,
+            origin: None,
         }
+    }
+
+    pub fn with_model_origin(mut self, origin: deepagent_core::event::ModelOrigin) -> Self {
+        self.origin = Some(origin);
+        self
+    }
+
+    /// Keep explicit child model overrides attributed to the model actually requested.
+    pub fn model_origin(&self, model: &str) -> Option<deepagent_core::event::ModelOrigin> {
+        self.origin.clone().map(|mut origin| {
+            origin.model_name = model.to_owned();
+            origin
+        })
     }
 
     pub fn with_image_file_cache(

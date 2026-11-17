@@ -747,6 +747,7 @@ impl AppService {
                 }
                 EventPayload::ResponseItemAppended {
                     item: deepagent_core::response_item::ResponseItem::Reasoning { id, content, .. },
+                    ..
                 } if !content.trim().is_empty() => {
                     // Session::append(MessageAppended) also writes a synthetic
                     // Responses item immediately afterwards. That legacy
@@ -771,6 +772,7 @@ impl AppService {
                 }
                 EventPayload::ResponseItemAppended {
                     item: deepagent_core::response_item::ResponseItem::Message { role, content },
+                    ..
                 } if role == "assistant" && !content.trim().is_empty() => {
                     // Narration the model emits before or between tool calls is
                     // ONLY persisted as a provider item — the assistant
@@ -1620,6 +1622,7 @@ mod tests {
                 .unwrap();
             session
                 .append(EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: deepagent_core::response_item::ResponseItem::Reasoning {
                         id: Some("r1".into()),
                         content: "inspect".into(),

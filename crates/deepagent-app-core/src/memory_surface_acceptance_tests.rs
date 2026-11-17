@@ -106,7 +106,7 @@ async fn h53_memory_body_is_durable_before_dispatch_and_reopens_with_compaction(
             surfaced_memory_ids(&crate::input_runtime::response_items_from_events(&after)),
             vec!["project:h53"]
         );
-        assert_eq!(after.iter().filter(|e| matches!(&e.payload, EventPayload::ResponseItemAppended { item: ResponseInputItem::Message { content, .. } } if content.contains("H53_REOPEN_EXCERPT"))).count(), if phase == 2 { 2 } else { 1 });
+        assert_eq!(after.iter().filter(|e| matches!(&e.payload, EventPayload::ResponseItemAppended { item: ResponseInputItem::Message { content, .. } , .. } if content.contains("H53_REOPEN_EXCERPT"))).count(), if phase == 2 { 2 } else { 1 });
         // No loop-finalizer telemetry is needed to recover complete content.
         assert!(!after
             .iter()

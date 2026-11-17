@@ -91,7 +91,7 @@ async fn observe_projected(items: Vec<ResponseItem>, reject: bool, expected: Vec
             store
                 .append(
                     session.parse().unwrap(),
-                    EventPayload::ResponseItemAppended { item },
+                    EventPayload::ResponseItemAppended { origin: None, item },
                     Timestamp::from_millis(1000),
                 )
                 .unwrap();
@@ -185,7 +185,8 @@ async fn observe_projected(items: Vec<ResponseItem>, reject: bool, expected: Vec
                     item: ResponseItem::FunctionCall { .. }
                         | ResponseItem::FunctionCallOutput { .. }
                         | ResponseItem::CustomToolCall { .. }
-                        | ResponseItem::CustomToolCallOutput { .. }
+                        | ResponseItem::CustomToolCallOutput { .. },
+                    ..
                 }
             ))
             .count(),

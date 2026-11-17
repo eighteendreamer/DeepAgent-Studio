@@ -250,6 +250,26 @@ async fn registry_route_drives_provider_protocol_override_capacities_and_key() {
         let public = serde_json::to_string(&events).unwrap();
         assert!(!public.contains("synthetic-alpha-key"));
         assert!(!public.contains("registry-alpha-key"));
+        let run = deepagent_persistence::run_store::RunStore::new(&f.db)
+            .get("registry-route")
+            .unwrap()
+            .unwrap();
+        let history = deepagent_persistence::event_store::EventStore::new(&f.db)
+            .load_session(run.session_id.parse().unwrap())
+            .unwrap();
+        let answer = history
+            .iter()
+            .find(|event| {
+                let payload = serde_json::to_value(&event.payload).unwrap();
+                payload["item"]["role"] == "assistant"
+                    && payload["type"] == "response_item_appended"
+            })
+            .expect("real model answer must be persisted");
+        assert_eq!(
+            serde_json::to_value(&answer.payload).unwrap()["origin"],
+            serde_json::json!({"provider_id":"alpha","model_name":MODEL,
+                "protocol":override_protocol.unwrap_or(protocol)})
+        );
         assert_eq!(f.contexts.lock().unwrap().last(), Some(&(64000, 4096)));
     }
 }
@@ -485,5 +505,35 @@ async fn registry_changes_during_tool_round_trip_apply_only_to_next_user_turn() 
         .unwrap()
         .iter()
         .any(|item| item["type"] == "function_call_output" && item["call_id"] == "registry-read"));
+    let cold = Database::open(&f.root.path().join("state.sqlite")).unwrap();
+    let history = deepagent_persistence::event_store::EventStore::new(&cold)
+        .load_session(session.parse().unwrap())
+        .unwrap();
+    let produced: Vec<_> = history
+        .iter()
+        .filter_map(|event| {
+            let payload = serde_json::to_value(&event.payload).unwrap();
+            (payload["type"] == "response_item_appended" && !payload["origin"].is_null())
+                .then(|| (payload["item"]["type"].clone(), payload["origin"].clone()))
+        })
+        .collect();
+    assert_eq!(
+        produced.len(),
+        3,
+        "one tool call and two answers retain their own origin"
+    );
+    assert_eq!(produced[0].0, "function_call");
+    for (_, origin) in &produced[..2] {
+        assert_eq!(
+            *origin,
+            serde_json::json!({
+            "provider_id":"alpha","model_name":MODEL,"protocol":"responses"})
+        );
+    }
+    assert_eq!(
+        produced[2].1,
+        serde_json::json!({"provider_id":"alpha",
+        "model_name":"registry-next-model","protocol":"chat_completions"})
+    );
     assert!(f.root.path().join("fixture.txt").exists());
 }

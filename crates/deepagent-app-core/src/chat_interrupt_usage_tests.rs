@@ -371,7 +371,7 @@ async fn observe(scenario: Scenario, sample: Option<Value>) {
     assert!(!serde_json::to_string(&history)
         .unwrap()
         .contains("rejected-call"));
-    assert_eq!(history.iter().filter(|e|matches!(&e.payload,EventPayload::ResponseItemAppended{item:ResponseItem::FunctionCall{call_id,..}}if call_id=="approved-call")).count(),usize::from(writes));
+    assert_eq!(history.iter().filter(|e|matches!(&e.payload,EventPayload::ResponseItemAppended{item:ResponseItem::FunctionCall{call_id,..}, .. }if call_id=="approved-call")).count(),usize::from(writes));
     assert_eq!(
         history
             .iter()

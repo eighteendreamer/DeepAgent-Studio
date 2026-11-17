@@ -361,7 +361,7 @@ async fn observe_imported_image(
         &event.payload,
         deepagent_core::event::EventPayload::ResponseItemAppended {
             item: deepagent_core::response_item::ResponseItem::InputMessage { attachments, .. }
-        } if attachments.iter().any(|attachment| attachment.id == imported.id)
+        , .. } if attachments.iter().any(|attachment| attachment.id == imported.id)
     )).count();
     assert_eq!(
         native_images, 1,

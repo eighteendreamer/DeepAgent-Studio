@@ -263,6 +263,7 @@ mod tests {
             .append(
                 session,
                 EventPayload::ResponseItemAppended {
+                    origin: None,
                     item: ResponseItem::FunctionCallOutput {
                         call_id: "call".into(),
                         output:

@@ -255,7 +255,8 @@ async fn observe(ending: Ending) {
         assert!(!history.iter().any(|event| matches!(
             &event.payload,
             EventPayload::ResponseItemAppended {
-                item: ResponseItem::FunctionCall { .. } | ResponseItem::FunctionCallOutput { .. }
+                item: ResponseItem::FunctionCall { .. } | ResponseItem::FunctionCallOutput { .. },
+                ..
             } | EventPayload::ToolCallRequested { .. }
                 | EventPayload::ToolCallCompleted { .. }
         )));
@@ -274,10 +275,10 @@ async fn observe(ending: Ending) {
             deepagent_persistence::run_control::RunActionState::Completed
         );
         assert_eq!(history.iter().filter(|event|matches!(&event.payload,
-            EventPayload::ResponseItemAppended {item:ResponseItem::FunctionCall {call_id,..}} if call_id==CALL
+            EventPayload::ResponseItemAppended {item:ResponseItem::FunctionCall {call_id,..}, .. } if call_id==CALL
         )).count(),1);
         assert_eq!(history.iter().filter(|event|matches!(&event.payload,
-            EventPayload::ResponseItemAppended {item:ResponseItem::FunctionCallOutput {call_id,..}} if call_id==CALL
+            EventPayload::ResponseItemAppended {item:ResponseItem::FunctionCallOutput {call_id,..}, .. } if call_id==CALL
         )).count(),1);
         assert_eq!(
             std::fs::read_to_string(workspace.join("effect.txt")).unwrap(),

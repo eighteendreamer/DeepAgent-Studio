@@ -468,9 +468,9 @@ pub struct BalanceAmount {
 | P2 协议表 + 工厂 | 部分完成 | `8376e0be` 的 `protocol::codec_for` 收口请求体编码与工具投影；现有 codec 为 Responses / ChatCompletions。Messages codec 和统一解码边界待 P5。 |
 | P3 数据模型 + 迁移 | 运行链已接入，消费方回归中 | V24 表、CRUD、激活列表、AppCore DTO、7 个 Tauri command 与 TS API 均已落地。`9c9046be` 修复密钥引用；`b1de6059` 完成一次性 Chat 种子迁移。H004 将 admission、执行绑定、工具续写、技能审查和标题调用接入注册表；解析 11 项、真实运行链 7 项、内核相关 29 项、persistence 235 项通过。默认选择仍暂取旧 Chat 字段，UI 选择与新默认持久化待 P10。 |
 | P3c 过载与备用模型删除 | 已提交，相关回归通过 | `10234777`：过载统一不可重试，明确 503 过载也立即报错；删除运行时 fallback 路径。models lib 240 passed；runtime lib 493 passed / 2 ignored；H55 4 passed；内核 H144 7 passed；采样、计费/预算、输出上限、图像模式及模型快照串行回归通过；真实 HTTP 1 项、CLI 2 项通过。H004 已接入单一 resolver；Messages 仍因缺少 codec 明确拒绝。 |
-| P3b 会话 JSONL 的 `origin` | 未开始 | `signature` 字段已有；来源字段、跨供应商签名回放策略与整文件回放待实现。 |
+| P3b 会话 JSONL 的 `origin` | 已实现，回归通过 | `ResponseItemAppended.origin` 为可选 `ModelOrigin`，由真实模型运行链写入；旧 JSONL 无 `origin` 仍可读。core 往返 2 项、persistence 来源回放 1 项、persistence 全量 221 项、session 27 项、AppCore 注册表真实运行 7 项通过。跨供应商思考签名是否需要降级仍待实测，当前只保留签名与来源，不擅自改变回放语义。 |
 | P4 / P5 SDK 与双协议 codec | 未开始 | 尚未接入 async-openai / anthropic-sdk；Messages 暂不可运行。 |
-| P6 设置页 | 后端基础已实现；UI 待完成 | 尚无完整供应商/模型管理界面验收。 |
+| P6 设置页 | 基础界面与后端已实现；流程待验收 | `ModelsSettings.tsx` 已接供应商 CRUD、协议/余额类型配置、模型拉取与激活；尚无完整供应商/模型管理流程的实际 UI 验收。 |
 | P7 余额 | 未完成 | 注册表保存 `balance_kind`；实际查询仍为 DeepSeek 固定路径。 |
 | P8 缓存 / P9 思考 / P10 选择切换 | 未完成 | 会话 Composer 仍读取旧 settings；激活模型列表尚未消费，五档思考、供应商切换与余额联动未闭环。 |
 | P11 产品验收 | 未开始 | 真实 API、首次登录和双协议 UI 流程及性能数据尚未取得，不能宣告可交付。 |

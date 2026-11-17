@@ -112,7 +112,7 @@ async fn h53_host_recovers_visible_memory_then_retrieves_again_after_boundary() 
         drop(requests);
         let sid: SessionId = id.parse().unwrap();
         let events = EventStore::new(&db).load_session(sid).unwrap();
-        assert_eq!(events.iter().filter(|event| matches!(&event.payload, EventPayload::ResponseItemAppended { item: ResponseInputItem::Message { content, .. } } if content.contains("<relevant-memories version="))).count(), if phase == 2 { 2 } else { 1 });
+        assert_eq!(events.iter().filter(|event| matches!(&event.payload, EventPayload::ResponseItemAppended { item: ResponseInputItem::Message { content, .. } , .. } if content.contains("<relevant-memories version="))).count(), if phase == 2 { 2 } else { 1 });
         let run = RunStore::new(&db)
             .get(&format!("h53-host-{phase}"))
             .unwrap()

@@ -202,6 +202,7 @@ async fn observe_write(
                             call_id,
                             output,
                         },
+                    ..
                 } if call_id == "audit-version-write" => {
                     Some(serde_json::from_str(&output.text()).unwrap())
                 }

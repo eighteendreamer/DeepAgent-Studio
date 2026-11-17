@@ -178,7 +178,8 @@ async fn observe(
                 item: ResponseItem::FunctionCall { .. }
                     | ResponseItem::FunctionCallOutput { .. }
                     | ResponseItem::CustomToolCall { .. }
-                    | ResponseItem::CustomToolCallOutput { .. }
+                    | ResponseItem::CustomToolCallOutput { .. },
+                ..
             } | EventPayload::ToolCallRequested { .. }
                 | EventPayload::ToolCallCompleted { .. }
         )));
@@ -243,6 +244,7 @@ async fn observe(
                         name,
                         arguments,
                     },
+                ..
             } if call_id == CALL => {
                 assert_eq!(name, "write_file");
                 Some(serde_json::from_str::<serde_json::Value>(arguments).unwrap())

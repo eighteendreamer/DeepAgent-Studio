@@ -280,6 +280,11 @@ pub trait Agent: Send + Sync {
         Vec::new()
     }
 
+    /// Attribution for the current model output; non-model agents have no origin.
+    fn model_origin(&self) -> Option<deepagent_core::event::ModelOrigin> {
+        None
+    }
+
     /// Drain raw provider Responses usage objects reported since the previous
     /// runtime checkpoint. Default empty for non-model agents.
     fn take_pending_raw_usage(&mut self) -> Vec<serde_json::Value> {

@@ -440,7 +440,7 @@ async fn production_replacement_and_cold_resume(reject_prune: bool) {
             );
         }
         assert!(events.iter().any(|event| matches!(&event.payload,
-            EventPayload::ResponseItemAppended { item: ResponseInputItem::FunctionCallOutput { call_id, output } }
+            EventPayload::ResponseItemAppended { item: ResponseInputItem::FunctionCallOutput { call_id, output } , .. }
                 if call_id == "first-read" && output.text().contains("H260 real production read"))));
         let replay = crate::input_runtime::response_items_from_events(&events);
         assert!(
@@ -457,7 +457,7 @@ async fn production_replacement_and_cold_resume(reject_prune: bool) {
             }
             "multi_edit" => {
                 let before_terminal_read = events.iter().rev().find(|event| matches!(&event.payload,
-                    EventPayload::ResponseItemAppended { item: ResponseInputItem::FunctionCallOutput { call_id, .. } }
+                    EventPayload::ResponseItemAppended { item: ResponseInputItem::FunctionCallOutput { call_id, .. } , .. }
                         if call_id == "after-reread")).unwrap().sequence;
                 assert!(session.rewind(before_terminal_read).unwrap() > 0);
             }

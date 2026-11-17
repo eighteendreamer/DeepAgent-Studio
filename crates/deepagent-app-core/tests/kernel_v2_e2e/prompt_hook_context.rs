@@ -163,7 +163,7 @@ async fn observe(mode: OutputMode) -> Observation {
         .iter()
         .any(|event| match &event.payload {
             EventPayload::MessageAppended { message } => message.content.contains(CONTEXT),
-            EventPayload::ResponseItemAppended { item } => {
+            EventPayload::ResponseItemAppended { item, .. } => {
                 serde_json::to_string(item).unwrap().contains(CONTEXT)
             }
             _ => false,

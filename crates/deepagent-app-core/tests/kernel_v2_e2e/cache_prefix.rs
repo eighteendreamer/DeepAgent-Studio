@@ -119,7 +119,8 @@ async fn h168_changed_workspace_after_cold_reopen_appends_new_version_without_to
     let snapshots: Vec<_> = events
         .iter()
         .filter_map(|event| {
-            let deepagent_core::event::EventPayload::ResponseItemAppended { item } = &event.payload
+            let deepagent_core::event::EventPayload::ResponseItemAppended { item, .. } =
+                &event.payload
             else {
                 return None;
             };

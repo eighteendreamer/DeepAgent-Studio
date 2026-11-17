@@ -690,7 +690,7 @@ fn native_items(db: &Database, session: &str) -> Vec<serde_json::Value> {
         .unwrap()
         .into_iter()
         .filter_map(|event| match event.payload {
-            EventPayload::ResponseItemAppended { item }
+            EventPayload::ResponseItemAppended { item, .. }
                 if matches!(
                     item,
                     deepagent_core::response_item::ResponseItem::ToolSearchCall { .. }

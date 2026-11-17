@@ -403,6 +403,7 @@ async fn h131_real_http_progress_succeeds_once_but_actual_idle_failure_stays_fai
             .filter_map(|event| match &event.payload {
                 EventPayload::ResponseItemAppended {
                     item: ResponseItem::Message { role, content },
+                    ..
                 } if role == "assistant" => Some(content.as_str()),
                 _ => None,
             })

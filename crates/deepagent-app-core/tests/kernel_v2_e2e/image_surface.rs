@@ -119,6 +119,7 @@ async fn multi_image_tool_loop_and_disk_restart_keep_one_admitted_turn() {
                             attachments,
                             ..
                         },
+                    ..
                 } if content.contains("h67-image-turn") => Some(attachments),
                 _ => None,
             })
@@ -175,6 +176,7 @@ async fn multi_image_tool_loop_and_disk_restart_keep_one_admitted_turn() {
         .find_map(|event| match &event.payload {
             EventPayload::ResponseItemAppended {
                 item: ResponseItem::InputMessage { attachments, .. },
+                ..
             } => Some(attachments.clone()),
             _ => None,
         })
@@ -194,6 +196,7 @@ async fn multi_image_tool_loop_and_disk_restart_keep_one_admitted_turn() {
         .append(
             sid,
             EventPayload::ResponseItemAppended {
+                origin: None,
                 item: ResponseItem::Message {
                     role: "user".into(),
                     content: "h67-legacy-turn".into(),

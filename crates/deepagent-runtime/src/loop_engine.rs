@@ -83,12 +83,13 @@ pub enum RunOutcome {
 fn persist_response_items<C: Clock>(
     session: &mut Session<'_, C>,
     items: Vec<ResponseOutputItem>,
+    origin: Option<deepagent_core::event::ModelOrigin>,
 ) -> Result<bool> {
     if items.is_empty() {
         return Ok(false);
     }
     for item in items {
-        session.append_response_item(item)?;
+        session.append_model_response_item(item, origin.clone())?;
     }
     Ok(true)
 }
@@ -809,7 +810,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             let provider_items_persisted = if self.is_cancelled() {
                 false
             } else {
-                persist_response_items(session, response_items)?
+                persist_response_items(session, response_items, agent.model_origin())?
             };
 
             // A cancellation may arrive after the provider stream has closed
@@ -3338,7 +3339,7 @@ mod tests {
             .unwrap()
             .into_iter()
             .filter_map(|event| match event.payload {
-                EventPayload::ResponseItemAppended { item } => Some(item),
+                EventPayload::ResponseItemAppended { item, .. } => Some(item),
                 _ => None,
             })
             .collect();

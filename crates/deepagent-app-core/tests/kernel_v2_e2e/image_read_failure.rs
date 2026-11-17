@@ -22,6 +22,7 @@ pub(super) fn image_events(db: &Database, session: &str) -> Vec<Event> {
             EventPayload::MessageAppended { message } => !message.attachments.is_empty(),
             EventPayload::ResponseItemAppended {
                 item: ResponseItem::InputMessage { attachments, .. },
+                ..
             } => !attachments.is_empty(),
             _ => false,
         })
