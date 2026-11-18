@@ -55,6 +55,36 @@ const element = (overrides = {}) => ({
   ...overrides,
 });
 
+function editorElement(refName) {
+  const ast = ts.createSourceFile(
+    "Composer.tsx", composerSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX,
+  );
+  let markup;
+  function visit(node) {
+    const isElement = ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node);
+    if (isElement && node.attributes.properties.some((attribute) =>
+      ts.isJsxAttribute(attribute) && attribute.name.getText(ast) === "ref" &&
+      attribute.initializer?.expression?.getText(ast) === refName,
+    )) markup = node.getText(ast);
+    ts.forEachChild(node, visit);
+  }
+  visit(ast);
+  assert.ok(markup, `${refName} must identify an editor element`);
+  return markup;
+}
+
+test("the mirror measures natural content height independently of the textarea", () => {
+  const mirror = editorElement("mirrorRef");
+  assert.match(mirror, /\binset-x-0\b/);
+  assert.match(mirror, /\btop-0\b/);
+  assert.doesNotMatch(mirror, /\b(?:inset-0|inset-y-0|bottom-0|h-full)\b/,
+    "stretching to the textarea height creates feedback and prevents shrinking");
+});
+
+test("the textarea does not leave an inline baseline gap below the mirror", () => {
+  assert.match(editorElement("textareaRef"), /\bblock\b/);
+});
+
 test("an empty draft is the minimum height without being measured", () => {
   const resize = resizeTextarea();
   // 240 is what a stale read would have produced; it must be ignored entirely.

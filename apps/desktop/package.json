@@ -32,7 +32,7 @@
     "test:run-completion-error": "node --test scripts/check-run-completion-error.test.cjs",
     "test:message-edit": "node --test scripts/check-message-edit-motion.test.cjs",
     "test:image-integrity": "node --test scripts/check-image-integrity.test.cjs",
-    "test:composer-activity": "node --test scripts/check-composer-activity.test.cjs scripts/check-composer-controls.test.cjs scripts/check-history-preload.test.cjs",
+    "test:composer-activity": "node --test scripts/check-composer-activity.test.cjs scripts/check-composer-controls.test.cjs scripts/check-history-preload.test.cjs scripts/check-composer-height.test.cjs",
     "test:continuous-corners": "node --test scripts/check-continuous-corners.test.mjs",
     "test:onboarding": "node --test scripts/check-onboarding-entrance.test.cjs",
     "test:workflow": "node --test scripts/check-workflow.test.cjs scripts/check-workflow-documents.test.cjs scripts/audit-workflow-isolation.test.cjs",

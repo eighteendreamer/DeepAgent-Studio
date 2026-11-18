@@ -443,11 +443,10 @@ export function Composer({
       return;
     }
 
-    // Measure the mirror, not the textarea. The mirror is the real layout layer
-    // — same width, same font, same wrapping — and it is absolutely positioned,
-    // so its scrollHeight describes the content alone instead of depending on
-    // the height we are about to write. Reading the textarea's own scrollHeight
-    // made height and scrollHeight feed each other.
+    // The mirror shares the editor's width and wrapping, but keeps its natural
+    // content height (no bottom inset). Stretching it to the textarea's viewport
+    // would feed the previous height back into this measurement and prevent
+    // shorter drafts from shrinking.
     const mirror = mirrorRef.current;
     const measured = mirror ? mirror.scrollHeight : textarea.scrollHeight;
     const nextHeight = Math.min(
@@ -1508,7 +1507,7 @@ export function Composer({
           ref={mirrorRef}
           data-message-composer-content
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 overflow-hidden custom-scrollbar whitespace-pre-wrap break-words bg-transparent text-sm leading-6 text-text-base"
+          className="pointer-events-none absolute inset-x-0 top-0 overflow-hidden custom-scrollbar whitespace-pre-wrap break-words bg-transparent text-sm leading-6 text-text-base"
           style={{
             minHeight: `${COMPOSER_TEXTAREA_MIN_HEIGHT}px`,
             maxHeight: `${textareaMaxHeight}px`,
@@ -1522,7 +1521,7 @@ export function Composer({
           aria-autocomplete="list"
           aria-controls={atOpen ? `${suggestId}-at` : slashOpen ? `${suggestId}-slash` : undefined}
           aria-activedescendant={atOpen ? `${suggestId}-at-option-${atSelected}` : slashOpen ? `${suggestId}-slash-option-${slashSelected}` : undefined}
-          className={`composer-textarea custom-scrollbar relative z-10 w-full resize-none bg-transparent text-sm leading-6 text-transparent outline-none placeholder-transparent ${
+          className={`composer-textarea custom-scrollbar relative z-10 block w-full resize-none bg-transparent text-sm leading-6 text-transparent outline-none placeholder-transparent ${
             draftValue ? "" : "composer-textarea--empty"
           }`}
           style={{
