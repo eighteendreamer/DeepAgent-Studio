@@ -2,7 +2,9 @@
 use super::*;
 use crate::session_memory::testing::{scripted_client_with_transport, ScriptedTransport};
 use deepagent_core::clock::SystemClock;
-use deepagent_hooks::{HookDefinitions, SystemHookRunner};
+use deepagent_hooks::{
+    HookCommandResult, HookCommandRunner, HookCommandShell, HookDefinitions, SystemHookRunner,
+};
 use serde_json::{json, Value};
 
 const FIRST: &str = "H111_RETAIN_FIRST_INSTRUCTION";
@@ -76,9 +78,18 @@ impl Fixture {
         definitions: Value,
         answers: Vec<Vec<String>>,
     ) -> (HookedReactiveContextCompactor, Arc<ScriptedTransport>) {
+        self.with_runner(definitions, answers, Arc::new(SystemHookRunner))
+    }
+
+    fn with_runner(
+        &self,
+        definitions: Value,
+        answers: Vec<Vec<String>>,
+        runner: Arc<dyn HookCommandRunner>,
+    ) -> (HookedReactiveContextCompactor, Arc<ScriptedTransport>) {
         let defs = HookDefinitions::parse(&definitions.to_string()).unwrap();
         let mut hooks = HookRegistry::new();
-        assert!(defs.register_into(&mut hooks, Arc::new(SystemHookRunner)) > 0);
+        assert!(defs.register_into(&mut hooks, runner) > 0);
         let (client, wire) = scripted_client_with_transport(answers);
         (
             HookedReactiveContextCompactor::new(
@@ -100,6 +111,30 @@ impl Fixture {
                 "called\n"
             );
         }
+    }
+}
+
+/// Observe the real process runner, retaining its timeout and drop/tree owner.
+#[derive(Default)]
+struct ObservedSystemRunner {
+    exit_code: std::sync::Mutex<Option<i32>>,
+}
+
+#[async_trait::async_trait]
+impl HookCommandRunner for ObservedSystemRunner {
+    async fn run(
+        &self,
+        command: &str,
+        stdin_json: &str,
+        shell: HookCommandShell,
+        env: &std::collections::BTreeMap<String, String>,
+        timeout: std::time::Duration,
+    ) -> deepagent_core::error::Result<HookCommandResult> {
+        let result = SystemHookRunner
+            .run(command, stdin_json, shell, env, timeout)
+            .await?;
+        *self.exit_code.lock().unwrap() = Some(result.exit_code);
+        Ok(result)
     }
 }
 
@@ -334,15 +369,37 @@ async fn h111_existing_session_note_cannot_bypass_new_summary_instructions() {
 
 #[tokio::test]
 async fn h111_real_hook_cancellation_stops_compaction_and_timeout_remains_nonblocking() {
-    for timeout in [false, true] {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+    };
+
+    for (timeout, readiness_after_deadline) in [(false, false), (true, false), (true, true)] {
+        eprintln!("real hook case: timeout={timeout}, readiness_after_deadline={readiness_after_deadline}");
         let f = Fixture::new();
         let pid_path = f.temp.path().join("started-pid.txt");
         let late_path = f.temp.path().join("late.txt");
         let quote = |path: &std::path::Path| path.to_string_lossy().replace('\'', "''");
-        let command = format!("[IO.File]::WriteAllText('{}',[string]$PID); Start-Sleep -Seconds 30; [IO.File]::WriteAllText('{}','late'); [Console]::Out.Write('{FIRST}')", quote(&pid_path), quote(&late_path));
-        let (c, wire) = f.with_definitions(json!({"hooks":{"PreCompact":[{"hooks":[{
+        let marker = format!(
+            "[IO.File]::WriteAllText('{}',[string]$PID)",
+            quote(&pid_path)
+        );
+        // Move the existing stall before readiness to exercise a timeout that
+        // cannot produce a marker. This is fault injection, not a longer wait.
+        let start = if readiness_after_deadline {
+            format!("Start-Sleep -Seconds 30; {marker}")
+        } else {
+            format!("{marker}; Start-Sleep -Seconds 30")
+        };
+        let command = format!(
+            "{start}; [IO.File]::WriteAllText('{}','late'); [Console]::Out.Write('{FIRST}')",
+            quote(&late_path)
+        );
+        let runner = Arc::new(ObservedSystemRunner::default());
+        let (c, wire) = f.with_runner(json!({"hooks":{"PreCompact":[{"hooks":[{
             "type":"command","shell":"powershell","command":command,"timeout":if timeout {1} else {10}
-        }]}]}}), vec![answer("normal timeout fallback")]);
+        }]}]}}), vec![answer("normal timeout fallback")], runner.clone());
         let cancel = Arc::new(AtomicBool::new(false));
         let before = deepagent_persistence::event_store::EventStore::new(&f.db)
             .load_session(f.sid)
@@ -353,24 +410,45 @@ async fn h111_real_hook_cancellation_stops_compaction_and_timeout_remains_nonblo
             CompactionTrigger::ContextOverflow,
             Some(cancel.clone()),
         );
-        let signal = async {
-            tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                while !pid_path.exists() {
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .expect("real hook must start");
-            if !timeout {
+        let (result, process) = tokio::time::timeout(std::time::Duration::from_secs(8), async {
+            if timeout {
+                // A deadline covers startup too; readiness is not a prerequisite.
+                (execution.await, None)
+            } else {
+                tokio::pin!(execution);
+                let ready = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    loop {
+                        if let Ok(text) = std::fs::read_to_string(&pid_path) {
+                            if let Ok(pid) = text.parse::<u32>() {
+                                break pid;
+                            }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                });
+                let pid = tokio::select! {
+                    pid = ready => pid.expect("real cancellation hook must become ready"),
+                    result = &mut execution => panic!("hook ended before cancellation readiness: {result:?}"),
+                };
+                // Observe the exact live process before cancellation, fencing PID reuse.
+                let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+                assert!(!handle.is_null(), "{}", std::io::Error::last_os_error());
+                // SAFETY: fresh owned process handle returned by OpenProcess.
+                let process = unsafe { OwnedHandle::from_raw_handle(handle.cast()) };
                 cancel.store(true, Ordering::Release);
+                (execution.await, Some(process))
             }
-        };
-        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(8), async {
-            tokio::join!(execution, signal)
         })
         .await
         .unwrap();
         if timeout {
+            assert_eq!(*runner.exit_code.lock().unwrap(), Some(124));
+            if readiness_after_deadline {
+                assert!(
+                    !pid_path.exists(),
+                    "deadline must precede the delayed marker"
+                );
+            }
             // SystemHookRunner represents timeout as nonzero exit 124; the
             // existing nonblocking policy must not turn it into instructions.
             let outcome = result.unwrap();
@@ -392,20 +470,19 @@ async fn h111_real_hook_cancellation_stops_compaction_and_timeout_remains_nonblo
             );
         }
         assert!(!late_path.exists());
-        let pid: u32 = std::fs::read_to_string(&pid_path).unwrap().parse().unwrap();
-        // Query the exact synthetic hook process, not the user's processes.
-        let status = std::process::Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                &format!("if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ exit 1 }}"),
-            ])
-            .status()
-            .unwrap();
-        assert!(
-            status.success(),
-            "cancel/timeout must reap the actual command hook"
-        );
+        if let Some(process) = process {
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    let state = unsafe { WaitForSingleObject(process.as_raw_handle().cast(), 0) };
+                    if state == WAIT_OBJECT_0 {
+                        break;
+                    }
+                    assert_eq!(state, WAIT_TIMEOUT, "native hook observation failed");
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("cancellation must reap the exact ready hook process");
+        }
     }
 }
