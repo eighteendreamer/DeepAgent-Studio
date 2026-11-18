@@ -536,10 +536,6 @@ impl HttpTransport for HangingTransport {
     }
 }
 
-fn e2e_root(run_id: &str) -> PathBuf {
-    PathBuf::from(r"G:\Code\Kotlin_code\_deepagent-e2e").join(run_id)
-}
-
 /// Audit-only probe: records backend routing without running any host command.
 #[tokio::test]
 async fn audit_sandbox_override_does_not_route_to_default_direct_backend() {
@@ -817,7 +813,8 @@ async fn write_turn_reaches_terminal_with_checkpoint_and_real_side_effect() {
             .unwrap()
             .as_millis()
     );
-    let root = e2e_root(&run_id);
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("workspace");
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(
         root.join("cleanup-manifest.json"),
@@ -886,7 +883,7 @@ async fn write_turn_reaches_terminal_with_checkpoint_and_real_side_effect() {
         .unwrap();
     assert_eq!(checkpoint_count, 1);
 
-    std::fs::remove_dir_all(root).unwrap();
+    directory.close().unwrap();
 }
 
 #[tokio::test]
@@ -1513,7 +1510,8 @@ async fn cancel_by_run_id_stops_model_stream_and_reaches_terminal_under_two_seco
             .unwrap()
             .as_millis()
     );
-    let root = e2e_root(&run_id);
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("workspace");
     std::fs::create_dir_all(&root).unwrap();
     let db = Arc::new(Database::open_in_memory().unwrap());
     let discovery: Arc<dyn HttpTransport> = Arc::new(MockTransport::with_get_json(
@@ -1561,7 +1559,7 @@ async fn cancel_by_run_id_stops_model_stream_and_reaches_terminal_under_two_seco
     assert!(events
         .iter()
         .any(|event| { event.event_type == "run_terminal" && event.data["kind"] == "cancelled" }));
-    std::fs::remove_dir_all(root).unwrap();
+    directory.close().unwrap();
 }
 
 #[tokio::test]
@@ -1574,7 +1572,8 @@ async fn native_move_and_delete_are_verified_and_recorded_as_completion_evidence
             .unwrap()
             .as_millis()
     );
-    let root = e2e_root(&run_id);
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("workspace");
     std::fs::create_dir_all(root.join("remove-me/nested")).unwrap();
     std::fs::write(root.join("before.txt"), "move-content").unwrap();
     std::fs::write(root.join("remove-me/nested/file.txt"), "delete-content").unwrap();
@@ -1644,7 +1643,7 @@ async fn native_move_and_delete_are_verified_and_recorded_as_completion_evidence
     assert!(kinds.contains(&"created"));
     assert!(kinds.contains(&"deleted"));
 
-    std::fs::remove_dir_all(root).unwrap();
+    directory.close().unwrap();
 }
 
 #[tokio::test]
@@ -1664,7 +1663,8 @@ async fn completion_is_not_gated_by_prompt_keyword_extraction() {
             .unwrap()
             .as_millis()
     );
-    let root = e2e_root(&run_id);
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("workspace");
     std::fs::create_dir_all(root.join("target-dir")).unwrap();
     std::fs::write(root.join("target-dir/keep.txt"), "still-here").unwrap();
 
@@ -1713,7 +1713,7 @@ async fn completion_is_not_gated_by_prompt_keyword_extraction() {
         .iter()
         .any(|event| { event.event_type == "run_terminal" && event.data["kind"] == "succeeded" }));
 
-    std::fs::remove_dir_all(root).unwrap();
+    directory.close().unwrap();
 }
 
 #[tokio::test]
@@ -1726,7 +1726,8 @@ async fn subagent_run_persists_terminal_state_and_independent_transcript() {
             .unwrap()
             .as_millis()
     );
-    let root = e2e_root(&run_id);
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("workspace");
     std::fs::create_dir_all(&root).unwrap();
     let db = Arc::new(Database::open_in_memory().unwrap());
     let discovery: Arc<dyn HttpTransport> = Arc::new(MockTransport::with_get_json(
@@ -1800,7 +1801,7 @@ async fn subagent_run_persists_terminal_state_and_independent_transcript() {
         .iter()
         .any(|event| event.event_type == "subagent_notification"));
 
-    std::fs::remove_dir_all(root).unwrap();
+    directory.close().unwrap();
 }
 
 #[tokio::test]
@@ -1813,7 +1814,8 @@ async fn background_subagent_outlives_parent_and_can_be_cancelled_independently(
             .unwrap()
             .as_millis()
     );
-    let root = e2e_root(&run_id);
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("workspace");
     std::fs::create_dir_all(&root).unwrap();
     let db = Arc::new(Database::open_in_memory().unwrap());
     let discovery: Arc<dyn HttpTransport> = Arc::new(MockTransport::with_get_json(
@@ -1899,7 +1901,7 @@ async fn background_subagent_outlives_parent_and_can_be_cancelled_independently(
     assert_eq!(notification.data["state"], "cancelled");
     assert_eq!(notification.data["id"], subagent_id);
 
-    std::fs::remove_dir_all(root).unwrap();
+    directory.close().unwrap();
 }
 
 #[tokio::test]
@@ -1910,7 +1912,8 @@ async fn terminal_subagent_resumes_across_parent_runs_in_the_same_session() {
         .as_millis();
     let first_run = format!("kernel-v2-resume-a-{}-{stamp}", std::process::id());
     let second_run = format!("kernel-v2-resume-b-{}-{stamp}", std::process::id());
-    let root = e2e_root(&first_run);
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("workspace");
     std::fs::create_dir_all(&root).unwrap();
     let db = Arc::new(Database::open_in_memory().unwrap());
     let discovery: Arc<dyn HttpTransport> = Arc::new(MockTransport::with_get_json(
@@ -1985,7 +1988,7 @@ async fn terminal_subagent_resumes_across_parent_runs_in_the_same_session() {
         .iter()
         .any(|event| event.event_type == "subagent_completed"));
 
-    std::fs::remove_dir_all(root).unwrap();
+    directory.close().unwrap();
 }
 
 #[tokio::test]
@@ -1998,7 +2001,9 @@ async fn worktree_subagent_rebinds_file_tools_without_touching_main_checkout() {
             .unwrap()
             .as_millis()
     );
-    let root = e2e_root(&run_id);
+    // The checkout and the runtime's sibling worktree base share one owned fixture.
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("workspace");
     std::fs::create_dir_all(&root).unwrap();
     run_git(&root, &["init"]);
     run_git(
@@ -2060,6 +2065,12 @@ async fn worktree_subagent_rebinds_file_tools_without_touching_main_checkout() {
 
     let record = chat.subagent_runs(&run_id).unwrap().remove(0);
     let worktree = PathBuf::from(record.worktree_path.as_ref().unwrap());
+    assert!(
+        std::fs::canonicalize(&worktree)
+            .unwrap()
+            .starts_with(std::fs::canonicalize(directory.path()).unwrap()),
+        "the worktree must stay inside the fixture's temporary directory"
+    );
     assert_eq!(
         std::fs::read_to_string(worktree.join("isolated.txt")).unwrap(),
         "worktree-ok"
@@ -2089,8 +2100,7 @@ async fn worktree_subagent_rebinds_file_tools_without_touching_main_checkout() {
         .remove(&record.id)
         .await
         .unwrap();
-    std::fs::remove_dir_all(worktree_base.parent().unwrap()).unwrap();
-    std::fs::remove_dir_all(root).unwrap();
+    directory.close().unwrap();
 }
 
 fn run_git(repo: &std::path::Path, args: &[&str]) {
@@ -2158,7 +2168,8 @@ async fn failed_subagent_propagates_paired_failure_and_parent_still_terminates()
             .unwrap()
             .as_millis()
     );
-    let root = e2e_root(&run_id);
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("workspace");
     std::fs::create_dir_all(&root).unwrap();
     let db = Arc::new(Database::open_in_memory().unwrap());
     let discovery: Arc<dyn HttpTransport> = Arc::new(MockTransport::with_get_json(
@@ -2225,7 +2236,7 @@ async fn failed_subagent_propagates_paired_failure_and_parent_still_terminates()
         assert_eq!(record.state, "failed");
     }
 
-    std::fs::remove_dir_all(root).unwrap();
+    directory.close().unwrap();
 }
 
 /// A text answer that also reports provider usage, so usage-gated behaviour
@@ -2370,10 +2381,10 @@ fn cost_rows(db: &Database, session_id: &str) -> Vec<(i64, i64)> {
 /// separately from ordinary turns.
 struct NoteE2e {
     base_run_id: String,
-    root: PathBuf,
     db: Arc<Database>,
     transport: Arc<NotePassTransport>,
     chat: ChatService,
+    directory: tempfile::TempDir,
 }
 
 impl NoteE2e {
@@ -2386,7 +2397,8 @@ impl NoteE2e {
                 .unwrap()
                 .as_millis()
         );
-        let root = e2e_root(&base_run_id);
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("workspace");
         std::fs::create_dir_all(&root).unwrap();
         let db = Arc::new(Database::open_in_memory().unwrap());
         let discovery: Arc<dyn HttpTransport> = Arc::new(MockTransport::with_get_json(
@@ -2403,10 +2415,10 @@ impl NoteE2e {
         let chat = ChatService::new(db.clone(), settings, transport.clone(), &root).with_cost(cost);
         Self {
             base_run_id,
-            root,
             db,
             transport,
             chat,
+            directory,
         }
     }
 
@@ -2493,7 +2505,7 @@ async fn completed_turn_writes_the_session_note_and_bills_the_pass() {
         "the turn and the note pass must bill separately for session {session_id}"
     );
 
-    std::fs::remove_dir_all(&e2e.root).unwrap();
+    e2e.directory.close().unwrap();
 }
 
 /// The two watermarks, proven through the real run path: a later pass folds in
@@ -2565,7 +2577,7 @@ async fn a_later_pass_folds_only_the_uncovered_turn_and_a_flat_context_pays_noth
         "no pass, no note change"
     );
 
-    std::fs::remove_dir_all(&e2e.root).unwrap();
+    e2e.directory.close().unwrap();
 }
 
 #[tokio::test]

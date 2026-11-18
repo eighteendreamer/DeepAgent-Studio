@@ -199,10 +199,6 @@ impl HttpTransport for ReplayTransport {
     }
 }
 
-fn e2e_root(run_id: &str) -> PathBuf {
-    PathBuf::from(r"G:\Code\Kotlin_code\_deepagent-e2e").join(run_id)
-}
-
 async fn chat_with(transport: Arc<dyn HttpTransport>, root: &PathBuf) -> (ChatService, AppService) {
     let db = Arc::new(Database::open_in_memory().unwrap());
     let discovery: Arc<dyn HttpTransport> = Arc::new(MockTransport::with_get_json(
@@ -236,7 +232,8 @@ fn unique_run_id(label: &str) -> String {
 #[tokio::test]
 async fn golden_trace_simple_answer_matches_fixture() {
     let run_id = unique_run_id("simple");
-    let root = e2e_root(&run_id);
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("workspace");
     std::fs::create_dir_all(&root).unwrap();
     let transport: Arc<dyn HttpTransport> = Arc::new(ReplayTransport::new([vec![
         r#"{"type":"response.output_text.delta","delta":"Paris."}"#.to_string(),
@@ -337,14 +334,15 @@ async fn golden_trace_simple_answer_matches_fixture() {
             .sum::<usize>(),
         snapshot.projected_request_tokens.unwrap()
     );
-    std::fs::remove_dir_all(root).unwrap();
+    directory.close().unwrap();
 }
 
 /// Golden trace + invariants for a run with one tool round-trip.
 #[tokio::test]
 async fn golden_trace_tool_call_run_holds_invariants() {
     let run_id = unique_run_id("tool");
-    let root = e2e_root(&run_id);
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("workspace");
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("hello.txt"), "hi").unwrap();
     let transport: Arc<dyn HttpTransport> = Arc::new(ReplayTransport::new([
@@ -395,7 +393,7 @@ async fn golden_trace_tool_call_run_holds_invariants() {
         ]
     );
     assert_terminal_invariants(&chat, &run_id);
-    std::fs::remove_dir_all(root).unwrap();
+    directory.close().unwrap();
 }
 
 /// Hard metric: a cancel request is ACKNOWLEDGED (cancel_session returns and
@@ -433,7 +431,8 @@ async fn cancel_request_acknowledged_within_200ms() {
     }
 
     let run_id = unique_run_id("cancel-ack");
-    let root = e2e_root(&run_id);
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("workspace");
     std::fs::create_dir_all(&root).unwrap();
     let started = Arc::new(tokio::sync::Notify::new());
     let transport: Arc<dyn HttpTransport> = Arc::new(NotifyHangTransport {
@@ -477,5 +476,5 @@ async fn cancel_request_acknowledged_within_200ms() {
         .unwrap();
     assert!(result.is_ok(), "cancel finalization failed: {result:?}");
     assert_terminal_invariants(&chat, &run_id);
-    std::fs::remove_dir_all(root).unwrap();
+    directory.close().unwrap();
 }
