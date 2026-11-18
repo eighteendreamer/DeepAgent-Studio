@@ -584,7 +584,7 @@
         "empty": "Choose an image for your app background",
         "formats": "PNG, JPG or WebP, up to 10 MB. Images stay on this device.",
         "transparency": "Background transparency",
-        "transparencyHint": "0% shows the original image; 100% is fully transparent. Text and controls stay opaque.",
+        "transparencyHint": "Higher values make interface backgrounds more transparent: 0% is solid, 100% reveals the original image without blur. Text and icons stay opaque.",
         "processing": "Processing image…",
         "preview": "Background image preview",
         "saveFailed": "Could not save background settings: {{reason}}",

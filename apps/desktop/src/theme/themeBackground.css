@@ -1,18 +1,14 @@
-/* Wallpaper is a presentation layer: saved theme colors and content opacity stay
-   intact. Elevated tokens also reach portals and the animated menu shells that
-   copy their computed background, avoiding a second opaque surface underneath. */
+/* Transparency belongs to interface backgrounds, never to the wallpaper or
+   content. Portals and animated shells use this same adjustable material. */
 html.theme-custom-background {
-  --app-wallpaper-panel: color-mix(in srgb, var(--theme-bg) 68%, transparent);
-  --app-wallpaper-input: color-mix(in srgb, var(--theme-bg) 72%, transparent);
-  --app-wallpaper-muted: color-mix(in srgb, var(--theme-bg) 60%, transparent);
-  --app-wallpaper-popover: color-mix(in srgb, var(--theme-bg) 82%, transparent);
+  --app-wallpaper-panel: color-mix(in srgb, var(--theme-bg) calc(var(--app-surface-opacity, .25) * 100%), transparent);
   --app-wallpaper-hover: color-mix(in srgb, var(--theme-fg) 12%, transparent);
   --app-wallpaper-outline: color-mix(in srgb, var(--theme-fg) 22%, transparent);
-  --theme-elevated: var(--app-wallpaper-popover) !important;
-  --theme-text-secondary: color-mix(in srgb, var(--theme-fg) 90%, var(--theme-bg)) !important;
+  --theme-elevated: var(--app-wallpaper-panel) !important;
+  --theme-text-secondary: var(--theme-fg) !important;
 }
 
-/* One viewport background per window. Opacity never applies to application content. */
+/* One sharp, full-strength wallpaper per window. */
 html.theme-custom-background body {
   isolation: isolate;
   background-color: var(--theme-bg, #fff) !important;
@@ -28,17 +24,22 @@ html.theme-custom-background body::before {
   background-position: center;
   background-size: cover;
   background-repeat: no-repeat;
-  opacity: var(--app-background-opacity, .25);
+}
+
+/* Paint window chrome once, including the area outside both rounded frame
+   corners. Separate rectangular rail/header fills leave dark corner patches. */
+html.theme-custom-background #root > :is(.bg-sidebar-bg, .bg-bg-base) {
+  background-color: var(--app-wallpaper-panel) !important;
 }
 
 /* Legacy neutral utilities participate in the same material as shadcn fields
    and menus. Absolute circular switch thumbs keep their solid fill. */
-html.theme-custom-background :is(.bg-white, .bg-white\/90, .bg-white\/80, .bg-bg-base):not(.rounded-full.absolute) {
+html.theme-custom-background :is(.bg-white, .bg-white\/90, .bg-white\/80, .bg-bg-base, .bg-sidebar-bg):not(:where(.rounded-full.absolute, [role="slider"])) {
   background-color: var(--app-wallpaper-panel) !important;
 }
 
-html.theme-custom-background :is(.bg-gray-50, .bg-gray-50\/50, .bg-gray-100, .bg-hover-bg) {
-  background-color: var(--app-wallpaper-muted) !important;
+html.theme-custom-background :is(.bg-gray-50, .bg-gray-50\/50, .bg-gray-50\/80, .bg-gray-100, .bg-hover-bg) {
+  background-color: var(--app-wallpaper-panel) !important;
 }
 
 html.theme-custom-background :is(.hover\:bg-white, .hover\:bg-gray-50, .hover\:bg-gray-100):hover {
@@ -52,49 +53,22 @@ html.theme-custom-background [data-settings-viewport] .bg-white .bg-white:not(in
 }
 
 html.theme-custom-background :is(.app-input-surface, input.bg-white, textarea.bg-white) {
-  background-color: var(--app-wallpaper-input) !important;
+  background-color: var(--app-wallpaper-panel) !important;
 }
 
-html.theme-custom-background :is(.app-input-surface, [data-app-surface="popover"]) {
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-}
-
-/* Spring menus paint on the inner moving shell, not on the positioning box.
-   A filter on that same shell preserves both transparency and menu motion. */
-html.theme-custom-background :is([data-spring-shell], [data-morph-panel]) {
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+/* No frosted-glass filter: 100% must reveal the actual image without haze. */
+html.theme-custom-background :is(.app-input-surface, [data-app-surface="popover"], [data-spring-shell], [data-morph-panel]) {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 html.theme-custom-background .morph-menu-content.bg-elevated-bg {
   background-color: transparent;
 }
 
-/* Inline previews and assistant text need their own quiet reading surface,
-   including plain-text slash-command output and syntax-highlighter wrappers. */
-html.theme-custom-background .markdown-body {
-  background-color: var(--app-wallpaper-panel);
-  border-radius: 12px;
-  padding: 12px 16px;
-  overflow-wrap: anywhere;
-}
-
+/* Syntax highlighters must not add a solid fill over the reading surface. */
 html.theme-custom-background .markdown-body :is(pre, code) {
   background-color: transparent !important;
-  text-shadow: none;
-}
-
-html.theme-custom-background .app-content-frame {
-  background-color: color-mix(in srgb, var(--theme-bg) 24%, transparent);
-}
-
-html.theme-custom-background :is(.app-navigation-rail, .app-titlebar) {
-  background-color: var(--app-wallpaper-input);
-}
-
-html.theme-custom-background .app-sidebar-region {
-  background-color: var(--app-wallpaper-muted);
 }
 
 /* Secondary labels and neutral icons share one readable foreground. Preserve
@@ -121,7 +95,7 @@ html.theme-custom-background :is(.border-border-theme, .ui-menu-surface) {
 /* Keep page wrappers clear; readable foreground surfaces above provide their
    own material. Canvas windows never receive theme-custom-background. */
 html.theme-custom-background #root,
-html.theme-custom-background #root > :is(.bg-sidebar-bg, .bg-bg-base),
+html.theme-custom-background :is(.app-content-frame, .app-navigation-rail, .app-titlebar, .app-sidebar-region),
 html.theme-custom-background .app-main-surface,
 html.theme-custom-background .view-frame > .bg-white,
 html.theme-custom-background [data-settings-viewport],
@@ -135,11 +109,11 @@ html.theme-custom-background .app-sidebar-region > [data-spring-disclosure] {
 .background-transparency-slider > :first-child {
   background: var(--theme-border);
 }
-.background-transparency-slider > :first-child > span {
-  background: var(--theme-accent);
+html .background-transparency-slider > :first-child > span {
+  background: var(--theme-accent) !important;
 }
 
-.background-transparency-slider [role="slider"] {
+html .background-transparency-slider [role="slider"] {
   background-color: var(--theme-accent) !important;
   border-color: var(--theme-elevated);
 }

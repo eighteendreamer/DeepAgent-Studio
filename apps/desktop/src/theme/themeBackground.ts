@@ -38,8 +38,8 @@ export function normalizeBackgroundImage(value: unknown): ThemeBackgroundImage |
 
 export function previewBackgroundTransparency(value: number): void {
   document.documentElement.style.setProperty(
-    "--app-background-opacity",
-    String(1 - normalizeBackgroundTransparency(value) / 100),
+    "--app-surface-opacity",
+    String((100 - normalizeBackgroundTransparency(value)) / 100),
   );
 }
 

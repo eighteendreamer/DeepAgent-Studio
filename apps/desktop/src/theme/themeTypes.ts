@@ -40,6 +40,7 @@ export interface ThemePreferences {
   codeFont: string;
   translucentSidebar: boolean;
   backgroundImage: ThemeBackgroundImage | null;
+  /** Interface background transparency: 0 = solid, 100 = clear; wallpaper stays opaque. */
   backgroundTransparency: number;
 }
 

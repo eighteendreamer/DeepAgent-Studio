@@ -11,6 +11,8 @@ delete process.env.NODE_PATH;
 const root = path.resolve(__dirname, '..');
 const output = path.join(root, 'target/theme-surfaces');
 const baseline = process.argv.includes('--baseline');
+const referenceImage = process.env.THEME_TEST_WALLPAPER
+  ? 'data:image/png;base64,' + fs.readFileSync(process.env.THEME_TEST_WALLPAPER).toString('base64') : null;
 fs.mkdirSync(output, { recursive: true });
 fs.writeFileSync(path.join(output, 'index.html'), '<!doctype html><html><head><meta charset="UTF-8"></head><body><div id="root"></div><script type="module" src="./main.tsx"></script></body></html>');
 fs.writeFileSync(path.join(output, 'main.tsx'), `
@@ -36,9 +38,14 @@ const image = document.createElement('canvas'); image.width=800; image.height=50
 const ctx=image.getContext('2d');
 for(let y=0;y<500;y+=40) for(let x=0;x<800;x+=40) {ctx.fillStyle=(x+y)%80 ? '#0b132b' : '#e8edff';ctx.fillRect(x,y,40,40);}
 const state=defaultV2State(); state.mode=params.get('mode')||'light';
-state.preferences.backgroundImage=params.get('wallpaper')==='off'?null:{dataUrl:image.toDataURL('image/png'),name:'contrast-checker.png'};
-state.preferences.backgroundTransparency=0;
-localStorage.setItem('deepagent:theme:v2',JSON.stringify(state)); localStorage.setItem('i18nextLng','zh');
+state.preferences.backgroundImage=params.get('wallpaper')==='off'?null:{dataUrl:${JSON.stringify(referenceImage)}||image.toDataURL('image/png'),name:${JSON.stringify(referenceImage ? 'reference-wallpaper.png' : 'contrast-checker.png')}};
+state.preferences.backgroundTransparency=50;
+const fixtureKey=location.search+location.hash;
+if(sessionStorage.getItem('theme-fixture-key')!==fixtureKey) {
+ localStorage.setItem('deepagent:theme:v2',JSON.stringify(state));
+ sessionStorage.setItem('theme-fixture-key',fixtureKey);
+}
+localStorage.setItem('i18nextLng','zh');
 bootstrapTheme();
 const sessions=[{id:'fixture',title:'透明背景测试对话',project:'测试项目',updated_at:'2026-11-18T00:00:00Z'}];
 const block={kind:'user',id:'fixture-user',text:'请检查这个用户消息气泡',attachments:[],selectedSkills:[],mentions:[],source:{id:'fixture-user',role:'user',content:'请检查这个用户消息气泡'}};
@@ -73,7 +80,7 @@ async function run() {
   const { createServer } = await import('vite');
   const server = await createServer({ root, configFile: path.join(root, 'vite.config.ts'), logLevel: 'error',
     optimizeDeps: { entries: [path.join(output, 'index.html')] },
-    server: { host: '127.0.0.1', port: 1432, strictPort: true }, plugins: [{ name: 'theme-test-api', enforce: 'pre',
+    server: { host: '127.0.0.1', port: 1432, strictPort: true, watch: null }, plugins: [{ name: 'theme-test-api', enforce: 'pre',
       resolveId(id, importer) { if (id === '@tauri-apps/api/webview' && importer?.replace(/\\/g, '/').endsWith('/src/canvas/CanvasApp.tsx')) return '\0theme-canvas-native'; },
       load(id) { if(id === '\0theme-canvas-native') return 'export function getCurrentWebview(){return {async onDragDropEvent(){return ()=>{};}}}'; },
       transform(source, id) {
@@ -99,21 +106,25 @@ async function run() {
       return {label,kind,background:rgba,alpha,color:css.color,filter:css.backdropFilter};
     },{label,kind});
     results.push(row);
-    if(!baseline) assert.ok(kind==='opaque'?row.alpha===1:row.alpha>0&&row.alpha<1,JSON.stringify(row));
+    if(!baseline) {
+      assert.ok(kind==='opaque'?row.alpha===1:kind==='clear'?row.alpha===0:row.alpha>0&&row.alpha<1,JSON.stringify(row));
+      assert.equal(row.filter,'none',JSON.stringify(row));
+    }
     return row;
   };
   const contrast=async(selector,label,minimum=4.5)=>{
     const row=await page.locator(selector).first().evaluate((node,{label,minimum})=>{
       const canvas=document.createElement('canvas');canvas.width=1;canvas.height=1;const ctx=canvas.getContext('2d');
       const rgba=color=>{ctx.clearRect(0,0,1,1);ctx.fillStyle=color;ctx.fillRect(0,0,1,1);return Array.from(ctx.getImageData(0,0,1,1).data).map(value=>value/255);};
-      const layers=[];let opacity=1;
-      // body::before paints the wallpaper above the body's solid fallback.
-      // Only descendants contribute material above that image.
-      for(let parent=node;parent&&parent!==document.body;parent=parent.parentElement){const css=getComputedStyle(parent);layers.unshift(rgba(css.backgroundColor));opacity*=Number(css.opacity);}
+      let opacity=1;
+      for(let parent=node;parent&&parent!==document.body;parent=parent.parentElement) opacity*=Number(getComputedStyle(parent).opacity);
       const luminance=rgb=>rgb.slice(0,3).map(value=>value<=.04045?value/12.92:((value+.055)/1.055)**2.4).reduce((sum,value,index)=>sum+value*[.2126,.7152,.0722][index],0);
       const fg=rgba(getComputedStyle(node).color);
-      const ratios=[[0,0,0],[1,1,1]].map(base=>{let bg=base;for(const color of layers) bg=bg.map((value,index)=>color[index]*color[3]+value*(1-color[3]));const a=luminance(fg),b=luminance(bg);return (Math.max(a,b)+.05)/(Math.min(a,b)+.05);});
-      return {label,minimum,contrast:Math.min(...ratios),opacity};
+      // Arbitrary images at 100% transparency have no fixed contrast. Check the
+      // theme's foreground independently; screenshots cover the image itself.
+      const bg=rgba(getComputedStyle(document.documentElement).getPropertyValue('--theme-bg'));
+      const a=luminance(fg),b=luminance(bg);
+      return {label,minimum,reference:'solid-theme-background',contrast:(Math.max(a,b)+.05)/(Math.min(a,b)+.05),opacity};
     },{label,minimum});
     results.push(row);
     if(!baseline) {assert.ok(row.contrast>=minimum,JSON.stringify(row));assert.ok(row.opacity>=.99,JSON.stringify(row));}
@@ -127,7 +138,7 @@ async function run() {
       await contrast('.app-input-surface .text-gray-400',mode+':placeholder-contrast');
       await contrast('[data-nav="skills"] svg',mode+':navigation-icon-contrast',3);
       await sample('[data-user-message-id]',mode+':user-message');
-      await sample('.markdown-body',mode+':system-output');
+      await sample('.markdown-body',mode+':system-output','clear');
       const codeBackground=await page.locator('[data-fixture-output] code').evaluate(node=>getComputedStyle(node).backgroundColor);
       if(!baseline) assert.equal(codeBackground,'rgba(0, 0, 0, 0)');
       await page.locator('.composer-textarea').fill('/');
@@ -162,6 +173,70 @@ async function run() {
       await contrast('[data-settings-viewport] .bg-white .text-text-secondary',mode+':settings-description-contrast');
       await sample('[data-settings-viewport] .bg-white.rounded-full.absolute',mode+':switch-thumb','opaque');
       await page.screenshot({path:path.join(output,(baseline?'before-':'after-')+mode+'-settings.png')});
+      await page.locator('[data-cat="appearance"]').click();
+      const slider=page.getByRole('slider',{name:'背景透明度'});
+      await slider.waitFor();
+      // Exercise the real shadcn slider, including live preview, persistence,
+      // both endpoints, and the user's reported 71% setting.
+      for(const value of [0,71,100]) {
+        await slider.focus();
+        await page.keyboard.press('Home');
+        if(value===100) await page.keyboard.press('End');
+        else for(let step=0;step<value;step++) await page.keyboard.press('ArrowRight');
+        await page.waitForTimeout(200);
+        await sample('#root > .bg-sidebar-bg',mode+':window-chrome:'+value,value===0?'opaque':value===100?'clear':'translucent');
+        await sample('[data-settings-category="appearance"] > section',mode+':appearance-card:'+value,value===0?'opaque':value===100?'clear':'translucent');
+        await sample('.background-transparency-slider [role="slider"]',mode+':slider-thumb:'+value,'opaque');
+        const state=await page.evaluate(()=>{
+          const css=node=>getComputedStyle(node), frame=document.querySelector('.app-content-frame');
+          const transparency=JSON.parse(localStorage.getItem('deepagent:theme:v2')).preferences.backgroundTransparency;
+          return {transparency,imageOpacity:getComputedStyle(document.body,'::before').opacity,
+            surfaceOpacity:css(document.documentElement).getPropertyValue('--app-surface-opacity').trim(),
+            frameFill:css(frame).backgroundColor,railFill:css(document.querySelector('.app-navigation-rail')).backgroundColor,
+            titleFill:css(document.querySelector('.app-titlebar')).backgroundColor,
+            leftRadius:css(frame).borderTopLeftRadius,rightRadius:css(frame).borderTopRightRadius,
+            clip:css(frame).overflow};
+        });
+        results.push({label:mode+':slider:'+value,...state});
+        await page.screenshot({path:path.join(output,(baseline?'before-':'after-')+mode+'-appearance-'+value+'.png')});
+        if(!baseline) {
+          assert.equal(state.transparency,value);
+          assert.equal(state.imageOpacity,'1');
+          assert.ok(Math.abs(Number(state.surfaceOpacity)-(1-value/100))<1e-6);
+          assert.equal(state.frameFill,'rgba(0, 0, 0, 0)');
+          assert.equal(state.railFill,'rgba(0, 0, 0, 0)');
+          assert.equal(state.titleFill,'rgba(0, 0, 0, 0)');
+          assert.equal(state.leftRadius,state.rightRadius);
+          assert.ok(parseFloat(state.leftRadius)>=24);
+          assert.equal(state.clip,'hidden');
+        }
+      }
+      await page.locator('[data-fixture-view="chat"]').click();
+      await sample('[data-message-composer-surface]',mode+':fully-clear-composer','clear');
+      await sample('[data-user-message-id]',mode+':fully-clear-message','clear');
+      await page.locator('.composer-textarea').fill('/');
+      await page.locator('[data-composer-suggest]').waitFor();
+      await page.waitForTimeout(450);
+      await sample('[data-composer-suggest]',mode+':fully-clear-slash','clear');
+      await page.locator('.composer-textarea').fill('');
+      await page.locator('[data-fixture-search]').click();
+      await page.getByPlaceholder('搜索对话').waitFor();
+      await sample('.fixed .bg-elevated-bg',mode+':fully-clear-search','clear');
+      await page.keyboard.press('Escape');
+      await page.locator('[data-nav="other"]').click();
+      await page.locator('[data-nav-surface="plugins"]').waitFor();
+      await page.waitForTimeout(650);
+      await sample('[data-spring-shell]',mode+':fully-clear-other-menu','clear');
+      await page.keyboard.press('Escape');
+      await page.locator('.app-navigation-bottom button[aria-label="设置"]').click();
+      await page.locator('[data-menu-item="settings"]').waitFor();
+      await page.waitForTimeout(650);
+      await sample('[data-morph-panel]',mode+':fully-clear-settings-menu','clear');
+      await page.keyboard.press('Escape');
+      await page.reload({waitUntil:'networkidle'});
+      await page.locator('[data-message-composer-surface]').waitFor();
+      await sample('[data-message-composer-surface]',mode+':reload-transparency','clear');
+      await page.evaluate(()=>window.__themeFixture.update({backgroundTransparency:50}));
       await page.locator('[data-fixture-view="skills"]').click();
       await page.getByText('Code Review',{exact:true}).first().click();
       await page.locator('[data-surface="skills"] pre').first().waitFor();
@@ -185,6 +260,11 @@ async function run() {
     fs.writeFileSync(path.join(output,baseline?'before.json':'after.json'),JSON.stringify(results,null,2));
     assert.deepEqual(errors,[]);
     console.log(JSON.stringify({checks:results.length,errors,output,results},null,2));
+  } catch(error) {
+    fs.writeFileSync(path.join(output,'failure.html'),await page.content());
+    fs.writeFileSync(path.join(output,'failure.json'),JSON.stringify({errors,results},null,2));
+    await page.screenshot({path:path.join(output,'failure.png')});
+    throw error;
   } finally { await browser.close(); await server.close(); }
 }
 run().catch(error=>{console.error(error);process.exitCode=1;});

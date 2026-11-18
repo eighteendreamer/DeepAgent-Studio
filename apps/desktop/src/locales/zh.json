@@ -584,7 +584,7 @@
         "empty": "选择一张图片作为全局背景",
         "formats": "支持 PNG、JPG、WebP，最大 10 MB；图片仅保存在本机。",
         "transparency": "背景透明度",
-        "transparencyHint": "0% 为原图，100% 完全透明；文字和控件不受影响。",
+        "transparencyHint": "数值越大，界面底色越透明；0% 为实色，100% 完全透出背景原图，不添加模糊。文字和图标不随之淡出。",
         "processing": "正在处理图片…",
         "preview": "背景图片预览",
         "saveFailed": "无法保存背景设置：{{reason}}",

@@ -117,15 +117,18 @@ test("persisted images admit bounded raster data only and transparency has a fin
   assert.equal(background.normalizeBackgroundTransparency(NaN), 75);
 });
 
-test("wallpaper opacity affects only its CSS variable and removing it restores sidebar translucency", () => {
+test("transparency controls surface opacity in the expected direction and removing wallpaper restores sidebar translucency", () => {
   const h = host(), background = h.load("themeBackground.ts");
   const preferences = { ...h.load("themeStorage.ts").defaultV2State().preferences, backgroundImage: image };
   assert.equal(background.applyThemeBackground(preferences), false);
   assert.ok(h.classes.has("theme-custom-background"));
-  assert.equal(h.properties.get("--app-background-opacity"), "0.25");
+  assert.equal(h.properties.get("--app-surface-opacity"), "0.25");
+  assert.equal(h.properties.has("--app-background-opacity"), false);
   assert.equal(h.properties.has("opacity"), false);
-  background.previewBackgroundTransparency(100);
-  assert.equal(h.properties.get("--app-background-opacity"), "0");
+  for (const [transparency, opacity] of [[0, "1"], [71, "0.29"], [100, "0"]]) {
+    background.previewBackgroundTransparency(transparency);
+    assert.equal(h.properties.get("--app-surface-opacity"), opacity);
+  }
   assert.equal(background.applyThemeBackground({ ...preferences, backgroundImage: null }), true);
   assert.ok(!h.classes.has("theme-custom-background"));
   assert.ok(h.classes.has("theme-translucent-sidebar"));
@@ -172,7 +175,7 @@ test("reload and startup restore the same wallpaper, transparency and theme vari
   assert.deepEqual(plain(storage.loadThemeState()), plain(state));
   h.load("themeBootstrap.ts").bootstrapTheme();
   assert.ok(h.classes.has("dark")); assert.ok(h.classes.has("theme-custom-background"));
-  assert.equal(h.properties.get("--app-background-opacity"), "0.6");
+  assert.equal(h.properties.get("--app-surface-opacity"), "0.6");
   assert.ok(h.properties.get("--app-background-image").includes(image.dataUrl));
 });
 
