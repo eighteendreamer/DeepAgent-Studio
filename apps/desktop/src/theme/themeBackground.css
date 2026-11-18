@@ -1,0 +1,49 @@
+/* One viewport background per window. Opacity never applies to application content. */
+html.theme-custom-background body {
+  isolation: isolate;
+  background-color: var(--theme-bg, #fff) !important;
+}
+
+html.theme-custom-background body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image: var(--app-background-image);
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+  opacity: var(--app-background-opacity, .25);
+}
+
+/* Only page and frame backgrounds reveal the wallpaper. Foreground cards,
+   editors and portal surfaces keep their theme colors for readable content. */
+html.theme-custom-background #root,
+html.theme-custom-background #root > :is(.bg-sidebar-bg, .bg-bg-base),
+html.theme-custom-background .app-main-surface,
+html.theme-custom-background .view-frame > .bg-white,
+html.theme-custom-background [data-settings-viewport],
+html.theme-custom-background .app-sidebar-region .bg-sidebar-bg,
+html.theme-custom-background .app-sidebar-region > [data-spring-disclosure],
+html.theme-custom-background [data-app-background-surface] {
+  background-color: transparent !important;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.background-transparency-slider > :first-child {
+  background: var(--theme-border);
+}
+.background-transparency-slider > :first-child > span {
+  background: var(--theme-accent);
+}
+
+.background-transparency-slider [role="slider"] {
+  background-color: var(--theme-accent) !important;
+  border-color: var(--theme-elevated);
+}
+
+.background-transparency-slider[data-disabled] {
+  opacity: .5;
+}

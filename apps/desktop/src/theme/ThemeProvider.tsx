@@ -9,7 +9,9 @@ import {
   type ReactNode,
 } from "react";
 import { BUILTIN_PRESETS, getPresetById } from "./themePresets";
-import { loadThemeState, saveThemeState } from "./themeStorage";
+import { loadThemeState, migrateThemeState, saveThemeState } from "./themeStorage";
+import { applyThemeBackground } from "./themeBackground";
+import "./themeBackground.css";
 import { applyTokens, paletteToTokens } from "./themeTokens";
 import { decodeThemeShare, encodeThemeShare } from "./themeShare";
 import { setWindowTranslucent } from "../api";
@@ -167,14 +169,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   ]);
 
   useEffect(() => {
-    const root = document.documentElement;
-    if (state.preferences.translucentSidebar) {
-      root.classList.add("theme-translucent-sidebar");
-    } else {
-      root.classList.remove("theme-translucent-sidebar");
-    }
-    void setWindowTranslucent(state.preferences.translucentSidebar);
-  }, [state.preferences.translucentSidebar]);
+    const translucentWindow = applyThemeBackground(state.preferences);
+    void setWindowTranslucent(translucentWindow);
+  }, [state.preferences.backgroundImage, state.preferences.backgroundTransparency,
+    state.preferences.translucentSidebar]);
 
   useEffect(() => {
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
@@ -194,7 +192,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         incoming.schemaVersion === 2 &&
         (incoming.revision ?? 0) > (stateRef.current.revision ?? 0)
       ) {
-        setState(incoming);
+        setState(migrateThemeState(incoming));
       }
     };
     return () => {
@@ -212,7 +210,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
           next.schemaVersion === 2 &&
           (next.revision ?? 0) > (stateRef.current.revision ?? 0)
         ) {
-          setState(next);
+          setState(migrateThemeState(next));
         }
       } catch {
         // ignore
@@ -227,9 +225,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       ...next,
       revision: (stateRef.current.revision ?? 0) + 1,
     };
+    saveThemeState(withRevision);
     stateRef.current = withRevision;
     setState(withRevision);
-    saveThemeState(withRevision);
     channelRef.current?.postMessage(withRevision);
   }, []);
 

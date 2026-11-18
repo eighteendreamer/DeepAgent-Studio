@@ -30,10 +30,17 @@ export interface ThemePreset {
   updatedAt?: string;
 }
 
+export interface ThemeBackgroundImage {
+  dataUrl: string;
+  name: string;
+}
+
 export interface ThemePreferences {
   uiFont: string;
   codeFont: string;
   translucentSidebar: boolean;
+  backgroundImage: ThemeBackgroundImage | null;
+  backgroundTransparency: number;
 }
 
 export interface PersistedThemeStateV2 {

@@ -1,5 +1,6 @@
 import { loadThemeState } from "./themeStorage";
 import { applyTokens, paletteToTokens } from "./themeTokens";
+import { applyThemeBackground } from "./themeBackground";
 import type { ThemeMode, ThemeVariant } from "./themeTypes";
 
 export function resolveVariant(mode: ThemeMode): ThemeVariant {
@@ -20,9 +21,7 @@ export function bootstrapTheme(): void {
       { uiFont: state.preferences.uiFont, codeFont: state.preferences.codeFont },
       variant === "dark",
     );
-    if (state.preferences.translucentSidebar) {
-      document.documentElement.classList.add("theme-translucent-sidebar");
-    }
+    applyThemeBackground(state.preferences);
   } catch {
     // startup must not fail; leave defaults
   }

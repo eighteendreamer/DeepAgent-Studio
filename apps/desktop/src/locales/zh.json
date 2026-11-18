@@ -573,6 +573,27 @@
       "noWorktreesDesc": "Codex 创建的工作树将显示在此处。"
     },
     "appearance": {
+      "wallpaper": {
+        "title": "背景图片",
+        "description": "上传图片作为整个应用的背景，切换页面后保持生效。",
+        "upload": "上传图片",
+        "replace": "更换图片",
+        "remove": "移除图片",
+        "empty": "选择一张图片作为全局背景",
+        "formats": "支持 PNG、JPG、WebP，最大 10 MB；图片仅保存在本机。",
+        "transparency": "背景透明度",
+        "transparencyHint": "0% 为原图，100% 完全透明；文字和控件不受影响。",
+        "processing": "正在处理图片…",
+        "preview": "背景图片预览",
+        "saveFailed": "无法保存背景设置：{{reason}}",
+        "uploadFailed": "图片处理失败：{{reason}}",
+        "errors": {
+          "unsupported": "请选择 PNG、JPG 或 WebP 图片。",
+          "tooLarge": "请选择 10 MB 以内的非空图片。",
+          "decode": "图片无法解码或尺寸过大，请选择其他图片。",
+          "encode": "无法压缩这张图片，请选择较小的图片。"
+        }
+      },
       "selected": "已选",
       "select": "选择",
       "title": "外观",

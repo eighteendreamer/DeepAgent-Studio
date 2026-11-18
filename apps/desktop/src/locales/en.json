@@ -573,6 +573,27 @@
       "noWorktreesDesc": "Worktrees created by Codex will be displayed here."
     },
     "appearance": {
+      "wallpaper": {
+        "title": "Background image",
+        "description": "Use an image across the app, including when switching pages.",
+        "upload": "Upload image",
+        "replace": "Replace image",
+        "remove": "Remove image",
+        "empty": "Choose an image for your app background",
+        "formats": "PNG, JPG or WebP, up to 10 MB. Images stay on this device.",
+        "transparency": "Background transparency",
+        "transparencyHint": "0% shows the original image; 100% is fully transparent. Text and controls stay opaque.",
+        "processing": "Processing image…",
+        "preview": "Background image preview",
+        "saveFailed": "Could not save background settings: {{reason}}",
+        "uploadFailed": "Could not process this image: {{reason}}",
+        "errors": {
+          "unsupported": "Choose a PNG, JPG or WebP image.",
+          "tooLarge": "Choose a non-empty image no larger than 10 MB.",
+          "decode": "This image cannot be decoded or is too large. Choose another image.",
+          "encode": "Could not compress this image. Choose a smaller image."
+        }
+      },
       "selected": "Selected",
       "select": "Select",
       "title": "Appearance",

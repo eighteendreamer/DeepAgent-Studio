@@ -3,6 +3,11 @@ import {
   DEFAULT_DARK_PRESET_ID,
   DEFAULT_LIGHT_PRESET_ID,
 } from "./themePresets";
+import {
+  DEFAULT_BACKGROUND_TRANSPARENCY,
+  normalizeBackgroundImage,
+  normalizeBackgroundTransparency,
+} from "./themeBackground";
 import type {
   PersistedThemeStateV2,
   ThemePalette,
@@ -26,6 +31,8 @@ function defaultPreferences(): ThemePreferences {
     uiFont: DEFAULT_UI_FONT,
     codeFont: DEFAULT_CODE_FONT,
     translucentSidebar: true,
+    backgroundImage: null,
+    backgroundTransparency: DEFAULT_BACKGROUND_TRANSPARENCY,
   };
 }
 
@@ -131,7 +138,15 @@ export function migrateThemeState(input: unknown): PersistedThemeStateV2 {
     if (!isValidPalette(state.workingPalettes.dark)) {
       state.workingPalettes.dark = defaultPalette("dark");
     }
-    return state;
+    return {
+      ...state,
+      preferences: {
+        ...defaultPreferences(),
+        ...state.preferences,
+        backgroundImage: normalizeBackgroundImage(state.preferences?.backgroundImage),
+        backgroundTransparency: normalizeBackgroundTransparency(state.preferences?.backgroundTransparency),
+      },
+    };
   }
   const migrated = migrateFromLegacy();
   if (migrated) return migrated;
@@ -151,9 +166,5 @@ export function loadThemeState(): PersistedThemeStateV2 {
 }
 
 export function saveThemeState(state: PersistedThemeStateV2): void {
-  try {
-    localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify(state));
-  } catch {
-    // storage full or unavailable
-  }
+  localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify(state));
 }
