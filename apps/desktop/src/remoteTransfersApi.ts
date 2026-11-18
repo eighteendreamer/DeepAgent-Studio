@@ -45,6 +45,8 @@ export interface DirectoryConflictResponse {
 export interface TransferOptions {
   kind?: TransferKind;
   directoryConflict?: DirectoryConflictPolicy;
+  /** Resolve native upload paths before queue admission; never stored in history. */
+  detectLocalKind?: boolean;
 }
 export interface TransferInput {
   direction: TransferDirection;
@@ -54,7 +56,7 @@ export interface TransferInput {
 }
 export interface TransferTask {
   id: string;
-  request: TransferOptions & { connectionId: string; transfer: TransferInput };
+  request: Omit<TransferOptions, "detectLocalKind"> & { connectionId: string; transfer: TransferInput };
   attempt: number;
   state: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled";
   bytes: string;
@@ -103,6 +105,7 @@ export async function remoteTransferSubmit(connectionId: string, transfer: Trans
   const invoke = getInvoke();
   if (!invoke) throw Error("transfers require the desktop app");
   return invoke("remote_transfer_submit", {
+    detectLocalKind: options.detectLocalKind ?? false,
     request: { connectionId, kind: options.kind ?? "file", directoryConflict: options.directoryConflict ?? "ask",
       transfer: { ...transfer, conflict: transfer.conflict ?? "ask" } },
   });

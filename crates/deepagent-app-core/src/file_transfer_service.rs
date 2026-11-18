@@ -430,6 +430,49 @@ impl TransferCoordinator {
             Err(_) => self.inner.current_snapshot(),
         }
     }
+    /// Native drops carry paths, not trusted file kinds. Resolve upload sources
+    /// before admission; persisted tasks and retries keep the existing typed contract.
+    pub async fn submit_detected_upload(
+        &self,
+        mut request: TransferRequest,
+    ) -> Result<TransferTask> {
+        let local = std::path::Path::new(&request.transfer.local_path);
+        if request.transfer.direction != deepagent_ssh::FileTransferDirection::Upload
+            || !local.is_absolute()
+            || local.file_name().is_none()
+        {
+            return Err(invalid(
+                "local kind detection requires an absolute upload source",
+            ));
+        }
+        let metadata = tokio::fs::symlink_metadata(local)
+            .await
+            .map_err(|error| invalid(&format!("cannot inspect local upload source: {error}")))?;
+        #[cfg(windows)]
+        let is_link = {
+            use std::os::windows::fs::MetadataExt;
+            metadata.file_attributes()
+                & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+                != 0
+        };
+        #[cfg(not(windows))]
+        let is_link = metadata.is_symlink();
+        request.kind = if is_link {
+            return Err(invalid(
+                "local upload source must not be a link or reparse point",
+            ));
+        } else if metadata.is_file() {
+            TransferKind::File
+        } else if metadata.is_dir() {
+            TransferKind::Directory
+        } else {
+            return Err(invalid(
+                "local upload source must be a regular file or directory",
+            ));
+        };
+        self.submit(request).await
+    }
+
     pub async fn submit(&self, mut request: TransferRequest) -> Result<TransferTask> {
         if request.connection_id.is_empty()
             || request.connection_id.len() > 256

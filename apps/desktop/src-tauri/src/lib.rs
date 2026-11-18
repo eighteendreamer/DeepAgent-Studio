@@ -5791,12 +5791,14 @@ async fn ssh_file_metadata(
 async fn remote_transfer_submit(
     state: State<'_, AppState>,
     request: deepagent_app_core::file_transfer_service::TransferRequest,
+    detect_local_kind: Option<bool>,
 ) -> Result<deepagent_app_core::file_transfer_service::TransferTask, String> {
-    state
-        .transfers
-        .submit(request)
-        .await
-        .map_err(|e| e.to_string())
+    if detect_local_kind.unwrap_or(false) {
+        state.transfers.submit_detected_upload(request).await
+    } else {
+        state.transfers.submit(request).await
+    }
+    .map_err(|error| error.to_string())
 }
 #[tauri::command]
 async fn remote_transfer_snapshot(

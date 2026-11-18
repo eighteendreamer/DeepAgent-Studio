@@ -230,13 +230,13 @@ export function RemoteSidebar({
     let unlisten: (() => void) | undefined;
     let disposed = false;
 
-    const resolveDropTarget = (position: { x: number; y: number }): string => {
+    const resolveDropTarget = (position: { x: number; y: number }): string | null => {
       const el = document.elementFromPoint(
         position.x / window.devicePixelRatio,
         position.y / window.devicePixelRatio,
       );
       const target = el?.closest<HTMLElement>("[data-remote-drop-dir]");
-      return target?.dataset.remoteDropDir || "/";
+      return target?.dataset.remoteDropDir ?? null;
     };
 
     const setupDragDrop = async () => {
@@ -246,34 +246,42 @@ export function RemoteSidebar({
         if (event.payload.type === "drop") {
           const paths = event.payload.paths;
           if (paths.length === 0) return;
+          const targetDir = resolveDropTarget(event.payload.position);
+          if (targetDir === null || disposed) return;
 
           const conn = selectedRef.current;
-          if (!conn) {
+          if (!conn || conn.status !== "connected") {
             message.error(t("remote.notConnected"));
             return;
           }
 
-          const targetDir = resolveDropTarget(event.payload.position);
-
           let successCount = 0;
           let errorCount = 0;
+          let firstError = "";
+          const active = () => !disposed && selectedRef.current?.id === conn.id
+            && selectedRef.current.status === "connected";
           for (const localPath of paths) {
-            const name = localPath.split(/[\\/]/).pop();
+            if (!active()) return;
+            const name = localPath.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
             if (!name) { errorCount++; continue; }
             try {
               await remoteTransferSubmit(conn.id, { direction: "upload", localPath,
-                remotePath: targetDir.endsWith("/") ? `${targetDir}${name}` : `${targetDir}/${name}` });
+                remotePath: targetDir.endsWith("/") ? `${targetDir}${name}` : `${targetDir}/${name}` },
+                { detectLocalKind: true });
               successCount++;
-            } catch { errorCount++; }
+            } catch (error) {
+              errorCount++;
+              if (!firstError) firstError = `${localPath}: ${normalizeSshError(
+                error instanceof Error ? error.message : String(error), t)}`;
+            }
           }
-
-          await loadDir(conn.id, targetDir);
+          if (!active()) return;
 
           if (successCount > 0) {
             message.success(t("remote.transfers.enqueued", { count: successCount }));
           }
           if (errorCount > 0) {
-            message.error(t("remote.transfers.enqueueFailed", { count: errorCount }));
+            message.error([t("remote.transfers.enqueueFailed", { count: errorCount }), firstError].filter(Boolean).join(": "));
           }
 
         }
@@ -285,7 +293,10 @@ export function RemoteSidebar({
       unlisten = unlistenFn;
     };
 
-    void setupDragDrop();
+    void setupDragDrop().catch(error => {
+      if (!disposed) setDirError(normalizeSshError(
+        error instanceof Error ? error.message : String(error), t));
+    });
 
     return () => {
       disposed = true;
@@ -745,6 +756,7 @@ export function RemoteSidebar({
                   <button
                     type="button"
                     aria-label={entry.path}
+                    data-remote-drop-dir={parentDirOf(entry.path, entry.name)}
                     className="flex w-full items-center gap-1 rounded-md py-1 pr-1.5 pl-0 text-left text-[12px] text-text-base hover:bg-black/5"
                     style={{ paddingLeft: 4 + depth * 12 }}
 
@@ -919,7 +931,7 @@ export function RemoteSidebar({
           </div>
         )}
 
-        <div className="text-[12px]">
+        <div className="text-[12px]" data-remote-drop-dir="/">
           {!selected ? (
             <div className="px-2.5 py-1 text-text-secondary">
               {t("remote.emptyTree")}
@@ -934,6 +946,7 @@ export function RemoteSidebar({
                 entry.is_dir ? (
                   <HoverInfo key={`${dir}/${entry.name}`} content={`${dir} · ${entry.path}`}><button
                     type="button"
+                    data-remote-drop-dir={entry.path}
                     className="flex w-full items-center gap-1.5 rounded-md px-2.5 py-1 text-left hover:bg-black/5"
 
                     onClick={() => toggleDir(entry)}
@@ -951,6 +964,7 @@ export function RemoteSidebar({
                 ) : (
                   <HoverInfo key={`${dir}/${entry.name}`} content={`${dir} · ${entry.path}`}><button
                     type="button"
+                    data-remote-drop-dir={dir}
                     className="flex w-full items-center gap-1.5 rounded-md px-2.5 py-1 text-left hover:bg-black/5"
 
                     onClick={() => onOpenFile(entry.path, entry.name)}
