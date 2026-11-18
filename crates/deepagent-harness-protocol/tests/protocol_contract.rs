@@ -145,7 +145,7 @@ fn h212_response_constructors_own_the_same_wire_version_for_results_and_errors()
 
 #[test]
 fn h222_thread_reasoning_round_trips_without_losing_explicit_none() {
-    for effort in ["none", "low", "high", "max"] {
+    for effort in ["none", "low", "medium", "high", "max"] {
         let params = serde_json::json!({"reasoningEffort":effort});
         let request: ThreadStartRequest = serde_json::from_value(params.clone()).unwrap();
         assert_eq!(serde_json::to_value(request).unwrap(), params);

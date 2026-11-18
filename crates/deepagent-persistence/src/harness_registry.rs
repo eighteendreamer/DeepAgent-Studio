@@ -23,6 +23,8 @@ const LEGACY_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
 const LEGACY_DEEPSEEK_KEY_NAME: &str = "deepseek_api_key";
 
 const LEGACY_SEED_ID: &str = "harness_registry_seed_v1";
+const CHAT_SELECTION_COLLECTION: &str = "harness_selection";
+const CHAT_SELECTION_ID: &str = "chat";
 
 /// One provider entry. The API key is referenced by `api_key_ref`, never held here.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +32,7 @@ pub struct HarnessProvider {
     pub id: String,
     pub channel: String,
     pub logo: String,
+    pub website_url: String,
     pub model_url: String,
     pub protocol: String,
     pub api_key_ref: String,
@@ -76,6 +79,68 @@ pub(crate) fn import_legacy_deepseek_provider(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Install defaults once. Reopening never restores deleted providers or overwrites
+/// a user's endpoint, protocol, credentials, model activation or chat selection.
+pub(crate) fn seed_builtin_harness_providers(conn: &Connection) -> Result<()> {
+    let transaction = conn.unchecked_transaction().map_err(map_sqlite)?;
+    let now = now_millis();
+    let inserted = transaction
+        .execute(
+            "INSERT INTO documents (collection, id, body, created_at, updated_at)
+         VALUES ('migrations', 'harness_builtin_providers_v1', '{\"version\":1}', ?1, ?1)
+         ON CONFLICT(collection, id) DO NOTHING",
+            [now],
+        )
+        .map_err(map_sqlite)?;
+    if inserted != 0 {
+        for (id, channel, url, website, logo, key, balance) in [
+            (
+                "layso",
+                "Layso",
+                "https://api.layso.ai/v1",
+                "https://layso.ai/",
+                "/providers/layso.webp",
+                "harness_provider:layso",
+                "auto",
+            ),
+            (
+                "deepseek",
+                "DeepSeek",
+                LEGACY_DEEPSEEK_BASE_URL,
+                "https://www.deepseek.com/",
+                "/providers/deepseek.svg",
+                LEGACY_DEEPSEEK_KEY_NAME,
+                "official",
+            ),
+        ] {
+            transaction
+                .execute(
+                    "INSERT INTO harness_providers
+                 (id, channel, model_url, website_url, logo, protocol, api_key_ref,
+                  balance_kind, status, revision, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'responses', ?6, ?7, 1, 1, ?8, ?8)
+                 ON CONFLICT(id) DO NOTHING",
+                    params![id, channel, url, website, logo, key, balance, now],
+                )
+                .map_err(map_sqlite)?;
+            // Supply missing branding on existing official routes only.
+            transaction
+                .execute(
+                    "UPDATE harness_providers SET
+                    website_url = CASE WHEN website_url = '' THEN ?2 ELSE website_url END,
+                    logo = CASE WHEN logo = '' THEN ?3 ELSE logo END,
+                    revision = revision + 1, updated_at = ?5
+                 WHERE id = ?1 AND rtrim(model_url, '/') = ?4
+                   AND (website_url = '' OR logo = '')",
+                    params![id, website, logo, url, now],
+                )
+                .map_err(map_sqlite)?;
+        }
+        tracing::info!("installed built-in harness provider defaults");
+    }
+    transaction.commit().map_err(map_sqlite)
+}
+
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -104,13 +169,75 @@ fn provider_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<HarnessProvide
         balance_kind: row.get(6)?,
         enabled: row.get::<_, i64>(7)? != 0,
         revision: row.get(8)?,
+        website_url: row.get(9)?,
     })
 }
 
 const PROVIDER_COLUMNS: &str = "id, channel, logo, model_url, protocol, api_key_ref,
-    balance_kind, status, revision";
+    balance_kind, status, revision, website_url";
 
 impl Database {
+    /// Return the persisted chat selection, if the user has chosen one from
+    /// the harness model list. Missing selection keeps legacy DeepSeek
+    /// settings as the compatibility default.
+    pub fn harness_chat_selection(&self) -> Result<Option<(String, String)>> {
+        self.with_conn(|conn| {
+            let body: Option<String> = conn
+                .query_row(
+                    "SELECT body FROM documents WHERE collection = ?1 AND id = ?2",
+                    params![CHAT_SELECTION_COLLECTION, CHAT_SELECTION_ID],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(map_sqlite)?;
+            let Some(body) = body else { return Ok(None) };
+            let value: serde_json::Value = serde_json::from_str(&body).map_err(|error| {
+                CoreError::Persistence(format!("invalid harness selection: {error}"))
+            })?;
+            let provider = value.get("provider_id").and_then(serde_json::Value::as_str);
+            let model = value.get("model_name").and_then(serde_json::Value::as_str);
+            match (provider, model) {
+                (Some(provider), Some(model))
+                    if !provider.trim().is_empty() && !model.trim().is_empty() =>
+                {
+                    Ok(Some((provider.to_owned(), model.to_owned())))
+                }
+                _ => Err(CoreError::Persistence(
+                    "harness selection must contain provider_id and model_name".into(),
+                )),
+            }
+        })
+    }
+
+    /// Persist the next chat selection without touching the current run's
+    /// frozen model snapshot.
+    pub fn set_harness_chat_selection(&self, provider_id: &str, model_name: &str) -> Result<()> {
+        let provider_id = provider_id.trim();
+        let model_name = model_name.trim();
+        if provider_id.is_empty() || model_name.is_empty() {
+            return Err(CoreError::invalid(
+                "harness chat selection must not be empty",
+            ));
+        }
+        let body = serde_json::json!({
+            "provider_id": provider_id,
+            "model_name": model_name,
+        })
+        .to_string();
+        let now = now_millis();
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO documents (collection, id, body, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?4)
+                 ON CONFLICT(collection, id) DO UPDATE SET body = excluded.body,
+                    updated_at = excluded.updated_at",
+                params![CHAT_SELECTION_COLLECTION, CHAT_SELECTION_ID, body, now],
+            )
+            .map_err(map_sqlite)?;
+            Ok(())
+        })
+    }
+
     /// Read a provider and its selected model in one SQLite statement. Keep
     /// inactive rows so admission can explain why an exact selection is invalid.
     pub fn harness_model_route(
@@ -121,7 +248,7 @@ impl Database {
         self.with_conn(|conn| {
             conn.query_row(
                 "SELECT p.id, p.channel, p.logo, p.model_url, p.protocol, p.api_key_ref,
-                        p.balance_kind, p.status, p.revision,
+                        p.balance_kind, p.status, p.revision, p.website_url,
                         m.provider_id, m.model_name, m.display_name, m.protocol,
                         m.context_window, m.output_limit, m.capabilities, m.status
                  FROM harness_models m JOIN harness_providers p ON p.id = m.provider_id
@@ -165,6 +292,15 @@ impl Database {
                      ON CONFLICT(id) DO NOTHING",
                     params![base_url, LEGACY_DEEPSEEK_KEY_NAME, now],
                 ).map_err(map_sqlite)?;
+                // An untouched built-in row may precede legacy settings import.
+                // Hydrate its endpoint from those settings in the same transaction.
+                transaction.execute(
+                    "UPDATE harness_providers SET model_url = ?1
+                     WHERE id = 'deepseek' AND revision = 1
+                       AND model_url = ?2 AND protocol = 'responses'
+                       AND api_key_ref = ?3 AND channel = 'DeepSeek'",
+                    params![base_url, LEGACY_DEEPSEEK_BASE_URL, LEGACY_DEEPSEEK_KEY_NAME],
+                ).map_err(map_sqlite)?;
                 transaction.execute(
                     "INSERT INTO harness_models
                         (id, provider_id, model_name, display_name, protocol, context_window,
@@ -189,11 +325,12 @@ impl Database {
             conn.execute(
                 "INSERT INTO harness_providers
                     (id, channel, logo, model_url, protocol, api_key_ref, balance_kind,
-                     status, revision, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?9)
+                     status, revision, created_at, updated_at, website_url)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?9, ?10)
                  ON CONFLICT(id) DO UPDATE SET
                     channel = excluded.channel,
                     logo = excluded.logo,
+                    website_url = excluded.website_url,
                     model_url = excluded.model_url,
                     protocol = excluded.protocol,
                     api_key_ref = excluded.api_key_ref,
@@ -211,6 +348,7 @@ impl Database {
                     provider.balance_kind,
                     i64::from(provider.enabled),
                     now,
+                    provider.website_url,
                 ],
             )
             .map_err(map_sqlite)?;
@@ -363,7 +501,7 @@ impl Database {
             let mut statement = conn
                 .prepare(
                     "SELECT p.id, p.channel, p.logo, p.model_url, p.protocol, p.api_key_ref,
-                            p.balance_kind, p.status, p.revision,
+                            p.balance_kind, p.status, p.revision, p.website_url,
                             m.provider_id, m.model_name, m.display_name, m.protocol,
                             m.context_window, m.output_limit, m.capabilities, m.status
                      FROM harness_models m
@@ -385,14 +523,14 @@ fn route_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(HarnessProvider,
     Ok((
         provider_from_row(row)?,
         HarnessModel {
-            provider_id: row.get(9)?,
-            model_name: row.get(10)?,
-            display_name: row.get(11)?,
-            protocol: row.get(12)?,
-            context_window: row.get(13)?,
-            output_limit: row.get(14)?,
-            capabilities: row.get(15)?,
-            active: row.get::<_, i64>(16)? != 0,
+            provider_id: row.get(10)?,
+            model_name: row.get(11)?,
+            display_name: row.get(12)?,
+            protocol: row.get(13)?,
+            context_window: row.get(14)?,
+            output_limit: row.get(15)?,
+            capabilities: row.get(16)?,
+            active: row.get::<_, i64>(17)? != 0,
         },
     ))
 }

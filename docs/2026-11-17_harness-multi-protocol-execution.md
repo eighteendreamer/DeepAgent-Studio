@@ -13,6 +13,7 @@
 - 流式能力沿用现有 `turn/start` 后的通知，统一内部契约，不新增独立 `turn/stream` 入口。
 - 切换模型时仅在供应商同时改变的情况下重新查询余额。
 - 模型切换从下一轮用户消息生效；当前 turn 的工具调用与续写始终使用 admission 冻结的模型。
+- 所有模型默认有思考能力；未声明时开放五档，最低档表示关闭。此前“手工配置前全部置灰”作废。
 - 每轮先运行失败测试，再修复并运行回归；记录真实结果，不能改写验收标准或绕过步骤。
 - 测试凭据仅用于用户授权的接口验收，不进入代码、命令输出、截图明文或本记录。
 
@@ -348,3 +349,222 @@ fork/ACK 的序号在发包前校验安全无符号整数，避免 JavaScript �
 包含 4 个原生进程、3 个分支、4 次显式运行，使用公开 forkThread 方法；既有 CLI 二进制 SHA256 为
 `fcaa80efa5a49a8fece86091cd695a45e320f39460f74abfc8aeadc229e1983f`，本批未重新构建 CLI。
 默认并行失败保留为工程限制，不能记为默认全测通过。
+
+H018 后续按 package.json 的原始 pnpm test 命令复跑：默认并行 204 passed / 0 failed，
+耗时 7594ms。本次通过不抹去此前两项超时证据；未为通过修改脚本并发或测试超时。
+
+## H012：统一默认思考能力与 medium 全链路（2026-11-18，验证中）
+
+用户纠正优先于此前回答：缺省能力采用五档且可关闭，保留显式配置。
+用户随后说明“预设”指方案设计，不要求新安装默认选中关闭；保持初始高档和已保存的选择。
+根因：UI 读取旧 effort 元数据、off 禁用条件相反；前后端把 medium 转成 high；
+Chat Completions 的直接及桥接入口没有消费注册表思考能力。
+
+RED：能力服务原用例 12 passed / 3 failed；三协议 H55 为 3 passed / 1 failed；
+前端 medium 保存曾得到 high。新增真实 registry → ModelClient → transport 矩阵为
+0 passed / 1 failed，受限档位在 Chat 入口仍实际发包；最低档中文标签断言为 13 passed / 1 failed。
+
+修复：中性能力解析由模型层共享，UI 与 admission 同源；能力缺省开放五档，显式空表保持空，
+非法类型、未知档位及重复档位报错且不回显值。medium 成为独立 canonical 值，同步设置、
+斜杠命令、子代理工具 schema、Tauri/TS 契约和真实请求断言；旧 thinking_depth 迁移保持原语义。
+选择器最低档显示“关闭”，全禁用滑杆拒绝指针与键盘提交。
+
+补充兼容 RED：旧 effort 声明只支持 low 时，高档仍能实际发包，真实三协议矩阵为
+0 passed / 1 failed。共享解析补上旧 effort 限制（新 thinking_levels 优先），非法旧声明仍拒绝。
+
+补充 UI RED：激活列表为空仍回填旧模型，未选择模型时擅自显示列表首项，15 passed / 2 failed。
+成功读取注册表后以该结果为准，空结果不回填旧模型；未选择时不伪造首项选择。最终 17 passed。
+
+已验证：前端 controls 17 passed（含各保存档位不触发关闭写入）；能力解析单测 4 passed；
+能力服务 15、resolver 12（含真实三协议发包矩阵与旧声明限制）、
+registry run 7 passed。桌面完整 pnpm build（前置测试、TypeScript、Vite）通过。
+全仓 fmt check 目前仅剩 core/id.rs 四处既有排版差异；本轮修改文件已格式化。
+
+使用用户授权的两组目标进行直接 HTTP SSE 探针，每组分别发送关闭与 medium：
+Responses 两次 HTTP 200 且 response.completed，耗时 2946 / 4680 ms；
+Messages 两次 HTTP 200 且 message_stop，耗时 715 / 816 ms。只输出状态、耗时和长度，
+凭据保留内存；此探针不经过 Tauri/ModelClient，不能替代应用或 UI 端到端验收。
+
+TypeScript SDK 基础 sdk.test.mjs 本次 15 passed；这不是 H011 的全部文件集合，
+不能据此抹去其默认并行超时记录。workspace 全量测试在编译期间发现兼容问题后中止，
+改跑最终源码的定向回归；完整 workspace、原生桌面构建及手动 UI 仍待完成。
+
+AppCore 全量 lib 后续使用已编译测试二进制串行执行：1720 passed / 35 ignored / 1 failed，
+耗时 829.46s（编译快照包含 H015，不含 H016）。五档输出上限测试
+reasoning_tiers_keep_selected_model_and_registry_output_limit 通过；此前旧测试断言不发送输出上限，
+已通过 RED 核实与注册表契约冲突，现断言所有五档均保持模型及注册表上限。
+唯一失败仍为 project_runtime_wins_over_managed_fallback，实际 Local、预期 Managed；
+未修改无关运行时选择逻辑，不能宣称 AppCore 全量或 workspace 门禁通过。
+
+## H013：Messages 复用完整请求体预算（2026-11-18）
+
+根因：Messages SDK 请求在最后直接 serde_json::to_string，绕过现有 48 MiB bounded writer。
+先扩展既有 H69 矩阵，新增 Messages 路由并复用三协议完整 SSE 生命周期；正常控制断言实际文本。
+RED：真实 48 MiB 转义输入未被拒绝，transport 返回成功，聚焦用例 0 passed / 1 failed。
+
+修复：Messages 最后一步调用现有 request_body::encode，没有增加第二套预算。
+GREEN：models/http/lib H69 同组四项 4 passed，包含全部公共入口、精确上限（含上限本身）、
+工具、默认值、历史替换和真实 loopback HTTP。耗时 101.02 秒，未接触外部服务。
+最终 models/http/all-targets clippy（offline，-D warnings）通过；测试 fixture 只在 lib 注册一次，
+修复中途 clippy 指出的重复模块加载，未使用 lint allow 隐藏问题。
+
+## H014：原生桌面构建依赖对齐（2026-11-18，验证中）
+
+RED：独立桌面 workspace 解析 zip 2.6.1，calamine 0.26.1 的 ZipFile<'a> 与新增 R 泛型不兼容，
+构建报 4 个错误。核对 calamine 当前 Cargo.toml（zip = 2）、两个版本真实源码和根 Cargo.lock，
+根工作区已锁定兼容的 zip 2.4.2；桌面锁文件被忽略，单改本地锁无法保证可复现。
+
+共享 zip 约束精确到 2.4.2，并将本地桌面锁对齐；cargo tree --locked --offline 确认
+calamine、AppCore 与 rust_xlsxwriter 共用此版本。复跑已通过 calamine 编译，随后因缺少
+项目要求的真实 CLI sidecar 停止。已启动既有 pnpm prebundle-cli 准备脚本；为先完成 H015 行为修复，
+在依赖编译阶段中止，已有编译缓存保留，待最终源码稳定后重跑。
+后续真实 pnpm prebundle-cli 通过，冷构建 20m57s；sidecar SHA256 为
+2b16eb10ae095905802e65954c7c707e936c9daab1df3579e720668fa20fae03。
+原生桌面 cargo build --locked --offline -j 1 后续通过，耗时 7m14s。
+使用隔离数据根实际启动后，首次连接曾出现 Windows“未响应”；随后连接成功并进入向导。
+用户亲自确认沙箱权限页后进入主界面，默认 DeepSeek 首轮真实对话成功，应用显示总耗时 14.0s。
+初始化响应性仍待定位，双供应商产品流程继续验收中。
+
+## H015：模型拉取保留配置与显式元数据（2026-11-18）
+
+RED：真实服务与数据库用例 1 passed / 2 failed。再次拉取把已存模型的 display_name、protocol、
+context_window、output_limit、capabilities 覆盖成默认值；新模型返回的明确容量和 effort 同样被丢弃。
+
+修复：已有模型保持保存的配置，新增模型保留接口明确提供的容量、输入类型与 effort；
+未声明能力仍按 H012 的默认五档处理。空/重复模型名、非法容量和非法能力在整批写入前拒绝，
+不新增模型名称猜测。服务 18、resolver 12、registry run 7 项全部通过；H016 增加模型编辑后，
+服务回归增至 19 项并通过。
+
+## H016：模型配置编辑与跨层契约（2026-11-18，原生验收中）
+
+RED：前端编辑器不存在，4 项用例失败；后端调用因输入类型与保存方法不存在而编译失败。
+修复复用现有注册表存储：只编辑已存在模型的名称、协议覆盖、上下文、输出上限与思考能力，
+保留激活状态及其他能力元数据。保存前校验正整数容量、输出范围和能力声明，坏输入不写库。
+前端使用现有 shadcn Dialog/Input/Checkbox/Select/Button；保存失败保留表单和真实错误。
+新增 Tauri 保存入口并同步 Rust/TS DTO；能力更新通知不触发余额查询。
+
+GREEN：服务 19、resolver 12 项通过；前端编辑及实际 TS API 转发 5 项通过，tsc 通过。
+编辑测试已加入 pnpm build。修改 Rust 文件 rustfmt 检查通过。完整前端构建与原生 UI 待收结果。
+
+## H017：设置页供应商切换的异步边界（2026-11-18）
+
+RED：真实组件回调的延迟 Promise 回归为 5 passed / 2 failed：切换供应商后旧行仍可编辑，
+迟到的激活结果会修改另一供应商的同名模型。列表请求也缺少卸载/切换后的结果隔离。
+修复：切换或新建时清空旧列表与编辑器；effect 清理后丢弃旧请求结果；激活回写使用
+provider_id + model_name 联合身份。未新增缓存或第二套状态服务。
+
+补充 RED：手动拉取的迟到回复仍可覆盖切换后的列表，7 passed / 1 failed。自动读取与手动拉取
+统一使用同一个请求代次，切换和卸载均使旧代次失效。
+
+GREEN：编辑/设置页 8、Composer 17 项合跑 25 passed，tsc 通过。完整 build 曾在 RED 阶段命中
+前两项失败，修复后重跑通过，Vite 耗时 2m02s；最后新增的手动拉取代次保护在后续完整构建中复核。
+原生桌面及实际 API 产品流程仍未验收完成。
+
+## H018：思考档位的显式等价标注（2026-11-18）
+
+RED：选择器未消费 thinking_distinct，明确声明的等价档仍只有普通标签，17 passed / 1 failed。
+修复直接读取当前模型声明：仅在非空 distinct 声明中缺少的可用开启档标注“等价”，关闭档独立显示；
+没有声明时不猜测等价关系。提交参数仍保持用户所选 canonical 值，不做隐式钳制。
+同时移除本批引入的重复 thinkingMax 翻译键。
+
+GREEN：Composer 18、模型编辑/设置页 8 项合跑 26 passed。最终 pnpm build 通过，
+包含新增测试、tsc、Vite（1m29s）。真实新 sidecar 运行 SDK pnpm test:stdio，6 passed，
+覆盖 cold fork、archive/resume、分页、方法路由、连接失败与 durable cursor；耗时 7397ms。
+该组使用隔离 root 与既有离线运行夹具，不算外部模型或原生 UI 产品验收。原生截图仍待完成。
+
+## H019：原生验收发现的模型设置标签缺失（2026-11-18）
+
+RED：原生截图出现 settings.tabs.models，闭合的协议/余额选择器显示 chat_completions / auto。
+根因分别为基础语言资源缺少导航键、菜单条目尚未挂载时 SelectValue 没有可用标签。
+新增同一设置页组件与语言资源回归为 8 passed / 2 failed。
+修复补充中英文导航名称，并用现有 SelectValue.placeholder 提供当前协议、余额与继承协议标签；
+没有更改共享 Select 或协议值。GREEN：模型编辑/设置页 10 passed；原生复核与完整构建继续执行。
+
+## H020：模型列表引用变化触发输入框渲染循环（2026-11-18）
+
+原生控制台实际出现 Maximum update depth exceeded，调用栈定位 Composer。
+根因：useComposerModelSettings 每次返回新 models 数组，Composer 的建议列表 effect 依赖该数组，
+空输入时也 setSlashResults([])，形成渲染循环。新增公开 hook 的空闲重渲染及真实列表变化回归，
+RED 为 18 passed / 1 failed。修复在 owning hook 按 state.options 缓存派生数组，
+真实列表变化仍通知消费方；没有在 effect 内加额外状态特判。GREEN：Composer 19、设置页 10 项通过。
+原生响应与控制台复核继续执行。
+
+H020/H021 后续原生复验：模型菜单可打开并显示激活的 gpt-5.6-sol，选择后余额进入查询状态并返回 ∞；
+五档均可选，选“关闭”后主按钮显示 gpt-5.6-sol 关闭。原生菜单不再触发本次选择器 SyntaxError。
+最终完整 pnpm build（全部脚本、tsc、Vite）通过，Vite 耗时 3m47s。
+
+## H021：原生模型菜单被复合模型标识触发崩溃（2026-11-18，验证中）
+
+RED：实际原生应用打开模型菜单后白屏，DevTools 报 querySelector 的 SyntaxError，
+堆栈为 SlidingPill → SlidingMenuList。注册表复合 id 使用 JSON 字符串，包含引号；
+SlidingMenuList 将 activeId 直接插进 CSS 属性选择器，破坏了选择器语法。
+在拥有选择器的共享菜单边界使用浏览器 CSS.escape 序列化值，保留模型标识及持久化契约。
+此处以原生失败/复验作为回归，不用伪造 querySelector 的通过结果替代浏览器验证。
+
+## H022：初始化与旧模型刷新移出原生命令分发线程（2026-11-18，验证中）
+
+RED：本轮首次登录曾被 Windows 标为未响应。查证 Tauri 2.7.5 command wrapper：
+同步命令在分发回调直接执行；initialize_project 中 block_on 网络发现后还同步写密钥/数据库并等待 Sandboxie 子进程，
+旧 refresh_models 同样 block_on。此边界会在等待期间占用分发线程，不能以连接最终成功作为流畅性通过。
+两入口改为 async 并复用已有 run_blocking；克隆现有 runtime handle，在 blocking pool 保持同一服务调用、
+初始化顺序、错误与沙箱行为。未变更权限或另建执行链。Rust 编译、既有回归及原生响应性待复核。
+
+## H023：真实 Responses 流被本系统序号入口阻断（2026-11-18，后续见 H025）
+
+原生产品链真实请求失败，显示 invalid_response_sequence（previous=0, received=None），应用总耗时 16.2s。
+同一授权目标的脱敏逐事件探针确认：response.created(0) → sub2api.gateway_ready(无序号) →
+response.created(0) → in_progress(1) → 正常增量 → completed(9)。没有打印密钥、响应文本或请求正文。
+现有 Responses accumulator 在所有 data 事件上先校验递增序号，把非 Responses 通知也送入了语义校验。
+不能用此前 HTTP 200 探针宣称产品链通过。用户要求先查证 deepseek-harness 的第三方接入；
+不再把本系统的入口缺口直接归咎于网关，也不新增供应商专用握手配置。查证和修复见 H025。
+
+## H024：最终 workspace 门禁实测（2026-11-18）
+
+cargo test --workspace --locked --offline -j 1 编译后在 AppCore lib 停止：1714 passed / 7 failed / 44 ignored。
+失败为 4 项图像/语音无 EOF 超时、1 项 workflow oversized image 退出超时、1 项真实 compaction hook 启动超时、
+1 项 project_runtime_wins_over_managed_fallback（Local != Managed）。
+使用同一已编译测试二进制与断言串行复核相关组：25 passed / 6 failed；workflow 项通过，其余 6 项仍失败。
+未更改超时或测试并发来伪造通过，也未修改独立画布及远程运行时逻辑。完整 workspace 门禁仍未通过。
+
+## H025：第三方 Responses 入口与 Messages 基础地址（2026-11-18，原生复验中）
+
+用户要求查证 deepseek-harness 第三方接入，并明确 Messages 表单只填写基础 URL，由系统追加资源路径。
+
+依据：`借鉴/deepseek-harness/packages/llm/llm-pi-ai/src/adapter.ts:475` 将请求交给
+`snapshot.models.streamSimple`；`models.ts` 将静态路由委托给协议实现。该参考版本锁定
+`@earendil-works/pi-ai@1.3.0`，核对 npm 同版本发布包的 `openai-responses.js` 和
+`openai-responses-shared.js`：以配置的 baseURL/apiKey 创建 OpenAI 客户端，按 type 消费事件，
+没有本系统的强制递增序号门禁。不能声称我们已经完成 async-openai 迁移，P4 仍未完成。
+Messages 推理路径依据同一参考项目 `llm-deepseek/src/messages-api.ts::messagesApiRoot`：
+保留供应商前缀，缺省追加 `/v1`，已有末尾 `/v1` 则复用，再追加 `/messages`。
+模型发现按提供方契约：通用 Anthropic-compatible 路由复用版本化根地址；
+DeepSeek 官方 `/anthropic` 路由遵循 `llm-deepseek/src/listing.ts::modelListingURL`，使用同源 `/models`。
+同一授权凭据实测 `/anthropic/v1/models` 为 404，`/models` 为 200，返回 2 个模型。
+这一真实差异已补入失败测试；没有遇到 404 就盲试任意路径，也不向其他源转发凭据。
+
+RED：原生逐事件失败序列的脱敏夹具再次复现 invalid_response_sequence；Messages 根地址测试
+2 failed；AppCore 实际 discovery 请求为 `/anthropic/models`，与 `/anthropic/v1/models` 不符。
+
+修复：Responses 首先分流标准 error 与非 response 命名空间通知；通知不进入语义序号和诊断载荷。
+只有仍处于 created 元数据阶段时可重建创建基线，in_progress 或任何输出事件后继续严格验证，
+不能用 created 重置已经开始的输出。此收敛是本地兼容边界设计，不新增 sub2api 分支或用户配置。
+Messages 推理与通用模型发现共用一个 api_root；DeepSeek 官方的模型发现规则收敛在 discovery seam，
+保存的用户 URL 保持原样，不要求用户填写 `/messages`。
+同步三协议 HTTP 夹具和 runtime 请求断言，避免继续把旧的 `/messages` 根路径当作正确端点。
+
+GREEN：models/http lib 280 passed；Messages 客户端 2、Messages stream 10、Responses sequence 9、
+identity 9、terminal 5、旧序号审计 1、SSE framing 5，合计 321 passed。真实 reqwest 回环覆盖
+扩展通知及重复 created，也保留输出后重复序号拒绝。AppCore 模型服务 20、内核终态 5 passed，
+包含工具只提交一次及失败回放检查。Runtime H210 1、H55 三协议 4 passed；正式流完整性错误仍零重试。
+
+H022 后端 `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets --locked --offline -j 1`
+实际 exit 0，17m57s。H025 原生二进制重建和真实 API/UI 复验进行中；全 workspace 门禁仍以 H024 的失败记录为准。
+
+## H026：提交前定向回归复核（2026-11-18）
+
+- `cargo test -p deepagent-models --features http -p deepagent-persistence --locked --offline -j 1 -- --test-threads=1`：644 passed、4 ignored、0 failed。
+- `cargo test -p deepagent-app-core --test harness_model_resolver --test harness_model_service --test harness_registry_run --test harness_registry_seed --locked --offline -j 1 -- --test-threads=1`：51 passed、0 failed，包含三协议思考约束、启用目录、Slash 选择及当前 turn 冻结。
+- 全部本轮已修改 Rust 文件的 `rustfmt --edition 2021 --check` 通过；全仓格式检查仍因未修改的 `crates/deepagent-core/src/id.rs` 四处宏排版失败。
+- TypeScript SDK 的 `pnpm test`：204 passed；桌面 `pnpm build`：544 项测试、TypeScript 和 Vite 构建通过，另一次最终 TypeScript 检查与 Vite 构建通过。
+
+本次是定向回归及提交整理，没有重新宣称完整 workspace 测试、全量 clippy 或所有真实供应商验收通过。原始本机验证日志位于忽略目录 `target/commit-audit-20261118/`。

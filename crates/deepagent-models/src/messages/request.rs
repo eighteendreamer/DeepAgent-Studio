@@ -42,7 +42,7 @@ pub(crate) fn encode_request(request: &ResponseRequest, max_tokens: u32) -> Resu
     if let Some(choice) = request.tool_choice.as_ref() {
         body.tool_choice = Some(messages_tool_choice(choice)?);
     }
-    Ok(serde_json::to_string(&body)?)
+    crate::client::request_body::encode(&body)
 }
 
 pub(crate) fn project_tools(tools: &[ToolSchema]) -> Vec<Value> {

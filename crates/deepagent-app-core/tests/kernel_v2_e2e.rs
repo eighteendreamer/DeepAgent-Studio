@@ -3043,7 +3043,7 @@ async fn responses_reasoning_effort_settings_accepts_official_aliases_and_normal
     );
     settings.initialize("sk-audit-placeholder").await.unwrap();
 
-    for effort in ["none", "low", "high", "max"] {
+    for effort in ["none", "low", "medium", "high", "max"] {
         settings
             .set_responses_settings(ResponsesApiSettings {
                 reasoning_effort: Some(effort.to_string()),
@@ -3057,7 +3057,7 @@ async fn responses_reasoning_effort_settings_accepts_official_aliases_and_normal
         assert_eq!(effective, deepagent_models::ReasoningEffort::parse(effort));
     }
 
-    for (alias, canonical) in [("minimal", "low"), ("medium", "high"), ("xhigh", "high")] {
+    for (alias, canonical) in [("minimal", "low"), ("medium", "medium"), ("xhigh", "high")] {
         settings
             .set_responses_settings(ResponsesApiSettings {
                 reasoning_effort: Some(alias.to_string()),
@@ -3140,7 +3140,7 @@ async fn responses_reasoning_effort_settings_reach_provider_wire() {
         ("high", "high"),
         ("max", "max"),
         ("minimal", "low"),
-        ("medium", "high"),
+        ("medium", "medium"),
         ("xhigh", "high"),
     ] {
         settings
@@ -3178,7 +3178,7 @@ async fn responses_reasoning_effort_settings_reach_provider_wire() {
 
     assert_eq!(
         actual_requests,
-        ["none", "low", "high", "max", "low", "high", "high"]
+        ["none", "low", "high", "max", "low", "medium", "high"]
     );
 }
 

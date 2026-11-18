@@ -75,7 +75,7 @@ test("H127 preserves ordered tool image refs from the real Rust protocol fixture
 test("forwards explicit thread reasoning and exposes the saved value after resume", async () => {
   const agent = createAgent();
   try {
-    for (const effort of ["none", "low", "high", "max"]) {
+    for (const effort of ["none", "low", "medium", "high", "max"]) {
       const thread = await agent.startThread({reasoningEffort: effort});
       assert.equal(thread.configuration.overrides.reasoning_effort, effort);
       assert.deepEqual((await agent.resumeThread(thread.id)).configuration, thread.configuration);

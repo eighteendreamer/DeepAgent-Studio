@@ -5,6 +5,8 @@ use deepagent_core::{error::CoreError, message::Message};
 use serde_json::json;
 use std::sync::Mutex;
 
+use crate::test_wire as wire_fixture;
+
 // Deliberately use the documented production limit, not a lowered test limit.
 const LIMIT: usize = 48 * 1024 * 1024;
 
@@ -19,19 +21,16 @@ impl HttpTransport for Recorder {
         sink: &mut dyn crate::transport::EventSink,
     ) -> Result<()> {
         self.0.lock().unwrap().push(request.body.len());
-        let events = if request.url.ends_with("/responses") {
-            vec![
-                r#"{"type":"response.completed","response":{"id":"h69","object":"response","created_at":1,"model":"deepseek-flash","output":[],"status":"completed"}}"#,
-            ]
-        } else {
-            vec![
-                r#"{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#,
-                "[DONE]",
-            ]
-        };
-        let mut sequence = crate::test_sequence::FixtureSequence::default();
-        for event in events {
-            if sink.on_event(&sequence.event(event))? {
+        let mode = wire_fixture::MODES
+            .into_iter()
+            .find(|mode| request.url.ends_with(wire_fixture::endpoint(*mode)))
+            .expect("known model endpoint");
+        for event in wire_fixture::start(mode)
+            .into_iter()
+            .chain([wire_fixture::delta(mode, "ok", 0)])
+            .chain(wire_fixture::finish(mode, "ok", 1))
+        {
+            if sink.on_event(&event)? {
                 break;
             }
         }
@@ -41,6 +40,7 @@ impl HttpTransport for Recorder {
 
 // route 0/1 exercise native Responses / the Responses-to-Chat bridge;
 // route 2 exercises direct Chat, independent of the config's default wire.
+// route 3 exercises Messages through the same public Responses entry points.
 async fn send(
     client: &ModelClient,
     request: ResponseRequest,
@@ -87,11 +87,15 @@ async fn send(
 }
 
 fn config(route: usize) -> ModelConfig {
-    ModelConfig::deepseek("PRIVATE_SYNTHETIC_KEY").with_wire_mode(if route == 1 {
-        WireMode::ChatCompletions
-    } else {
-        WireMode::Responses
-    })
+    let mut config = ModelConfig::deepseek("PRIVATE_SYNTHETIC_KEY").with_wire_mode(match route {
+        1 => WireMode::ChatCompletions,
+        3 => WireMode::Messages,
+        _ => WireMode::Responses,
+    });
+    if route == 3 {
+        config.defaults.max_output_tokens = Some(1024);
+    }
+    config
 }
 
 fn request(text: &str) -> ResponseRequest {
@@ -115,7 +119,7 @@ async fn h69_all_dispatch_entries_reject_final_oversize_and_keep_small_controls(
     // Escaping doubles this text: raw character count alone fits the limit.
     let oversized = format!("PRIVATE_PAYLOAD{}", "\\".repeat(LIMIT / 2));
     assert!(oversized.len() < LIMIT);
-    for route in 0..3 {
+    for route in 0..4 {
         let transport = Arc::new(Recorder::default());
         let client = ModelClient::new(transport.clone(), config(route));
         for entry in 0..4 {
@@ -135,9 +139,13 @@ async fn h69_all_dispatch_entries_reject_final_oversize_and_keep_small_controls(
         }
         assert!(transport.0.lock().unwrap().is_empty());
         for entry in 0..4 {
-            send(&client, request("正常对照 🦀"), route, entry, false)
-                .await
-                .unwrap();
+            assert_eq!(
+                send(&client, request("正常对照 🦀"), route, entry, false)
+                    .await
+                    .unwrap()
+                    .output_text_projection(),
+                "ok"
+            );
         }
         assert_eq!(transport.0.lock().unwrap().len(), 4);
     }
@@ -145,19 +153,12 @@ async fn h69_all_dispatch_entries_reject_final_oversize_and_keep_small_controls(
 
 #[tokio::test]
 async fn h69_exact_production_boundary_is_inclusive_on_every_wire() {
-    for route in 0..3 {
+    for route in 0..4 {
         let transport = Arc::new(Recorder::default());
         let client = ModelClient::new(transport.clone(), config(route));
-        let mut base = request("");
-        base.stream = true;
-        // Nonempty presence validation is only relevant when actually sent.
-        let overhead = if route == 0 {
-            serde_json::to_vec(&base).unwrap().len()
-        } else {
-            let mut chat = ChatCompletionRequest::new("deepseek-flash", vec![Message::user("")]);
-            chat.stream = true;
-            serde_json::to_vec(&chat).unwrap().len()
-        };
+        send(&client, request("x"), route, 3, false).await.unwrap();
+        let overhead = transport.0.lock().unwrap()[0] - 1;
+        transport.0.lock().unwrap().clear();
         for size in [LIMIT - 1, LIMIT, LIMIT + 1] {
             let padded = request(&"x".repeat(size - overhead));
             if size > LIMIT {
@@ -173,7 +174,7 @@ async fn h69_exact_production_boundary_is_inclusive_on_every_wire() {
 #[tokio::test]
 async fn h69_tools_defaults_and_history_refresh_share_the_full_body_budget() {
     let half = "x".repeat(LIMIT / 2);
-    for route in 0..3 {
+    for route in 0..4 {
         let transport = Arc::new(Recorder::default());
         let client = ModelClient::new(transport.clone(), config(route));
         let mut tools = request(&half);
@@ -202,11 +203,9 @@ async fn h69_tools_defaults_and_history_refresh_share_the_full_body_budget() {
         assert_eq!(*transport.0.lock().unwrap(), vec![LIMIT]);
         transport.0.lock().unwrap().clear();
 
-        let defaults = ResponseDefaults {
-            tool_choice: Some(json!("auto")),
-            ..Default::default()
-        };
-        let client = ModelClient::new(transport.clone(), config(route).with_defaults(defaults));
+        let mut with_defaults = config(route);
+        with_defaults.defaults.tool_choice = Some(json!("auto"));
+        let client = ModelClient::new(transport.clone(), with_defaults);
         invalid(
             send(&client, request(&at_limit), route, 2, false)
                 .await
@@ -223,7 +222,7 @@ async fn h69_real_http_transport_sees_only_the_small_control_on_each_route() {
     use tokio::net::TcpListener;
     use tokio::time::{timeout, Duration};
 
-    for route in 0..3 {
+    for route in 0..4 {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mut cfg = config(route);
         cfg.base_url = format!("http://{}", listener.local_addr().unwrap());
@@ -274,22 +273,35 @@ async fn h69_real_http_transport_sees_only_the_small_control_on_each_route() {
             let body: serde_json::Value =
                 serde_json::from_slice(&received[header_end..header_end + length]).unwrap();
             let key = if route == 0 { "input" } else { "messages" };
-            assert_eq!(body[key][0]["content"], "HTTP normal control");
-            let data = if route == 0 {
-                "data: {\"type\":\"response.completed\",\"sequence_number\":0,\"response\":{\"id\":\"h69\",\"object\":\"response\",\"created_at\":1,\"model\":\"deepseek-flash\",\"output\":[],\"status\":\"completed\"}}\n\n"
+            let content = if route == 3 {
+                &body[key][0]["content"][0]["text"]
             } else {
-                "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+                &body[key][0]["content"]
             };
+            assert_eq!(content, "HTTP normal control");
+            let mode = match route {
+                0 => WireMode::Responses,
+                3 => WireMode::Messages,
+                _ => WireMode::ChatCompletions,
+            };
+            let data = String::from_utf8(wire_fixture::encode(
+                wire_fixture::start(mode)
+                    .into_iter()
+                    .chain([wire_fixture::delta(mode, "ok", 0)])
+                    .chain(wire_fixture::finish(mode, "ok", 1)),
+            ))
+            .unwrap();
             let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{data}", data.len());
             socket.write_all(response.as_bytes()).await.unwrap();
         });
-        timeout(
+        let response = timeout(
             Duration::from_secs(5),
             send(&client, request("HTTP normal control"), route, 3, false),
         )
         .await
         .unwrap()
         .unwrap();
+        assert_eq!(response.output_text_projection(), "ok");
         timeout(Duration::from_secs(5), server)
             .await
             .unwrap()

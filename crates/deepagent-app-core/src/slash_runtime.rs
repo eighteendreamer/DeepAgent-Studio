@@ -511,7 +511,7 @@ impl<'a> SlashRuntime<'a> {
                 None => {
                     let depth = self.settings.reasoning_effort()?;
                     format!(
-                        "Reasoning effort is {}. Usage: /thinking <none|low|high|max>.",
+                        "Reasoning effort is {}. Usage: /thinking <none|low|medium|high|max>.",
                         depth.label()
                     )
                 }
@@ -532,24 +532,18 @@ impl<'a> SlashRuntime<'a> {
             }
             SlashAction::Model { model_id } => match model_id {
                 Some(model_id) => {
-                    self.settings
-                        .set_model(deepagent_models::ModelRole::Chat, &model_id)?;
-                    format!("Switched chat model to {model_id}.")
+                    let model = self.settings.harness_models().select_model_by_name(&model_id)?;
+                    format!("已切换到 {} 的 {}。", model.provider_channel, model.model_name)
                 }
-                None => match self.settings.view()? {
-                    Some(view) if !view.available_models.is_empty() => format!(
-                        "可用模型:\n- {}\n\n用法: /model <model_id>",
-                        view.available_models.join("\n- ")
-                    ),
-                    Some(_) => {
-                        "没有发现可用模型。请先刷新 DeepSeek 模型列表。"
-                            .to_string()
+                None => {
+                    let models = self.settings.harness_models().active_models()?;
+                    if models.is_empty() {
+                        "暂无已启用模型，请在模型设置中启用。".to_string()
+                    } else {
+                        format!("已启用模型:\n- {}\n\n用法: /model <model_name>（重名时使用 <provider_id>/<model_name>）",
+                            models.iter().map(|model| format!("{} · {} ({}/{})", model.provider_channel, model.model_name, model.provider_id, model.model_name)).collect::<Vec<_>>().join("\n- "))
                     }
-                    None => {
-                        "设置尚未初始化。请先填写并验证 DeepSeek API Key。"
-                            .to_string()
-                    }
-                },
+                }
             },
             SlashAction::Clear => {
                 "Cleared the chat surface. Start a new chat from the sidebar for a fresh session."
@@ -1175,7 +1169,7 @@ fn collect_agent_items(
 
 fn parse_reasoning_effort(depth: &str) -> Result<ReasoningEffort> {
     ReasoningEffort::parse(depth)
-        .ok_or_else(|| CoreError::invalid("usage: /thinking <none|low|high|max>"))
+        .ok_or_else(|| CoreError::invalid("usage: /thinking <none|low|medium|high|max>"))
 }
 
 /// Format a rule count with an optional inline listing (diagnostics helper).

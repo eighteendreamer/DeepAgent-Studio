@@ -36,6 +36,7 @@ fn harness_registry_tables_have_the_planned_columns() {
         "id",
         "channel",
         "logo",
+        "website_url",
         "model_url",
         "protocol",
         "api_key_ref",
@@ -137,7 +138,7 @@ fn legacy_deepseek_key_becomes_one_provider_row_and_import_is_idempotent() {
 }
 
 #[test]
-fn import_without_a_legacy_key_creates_no_provider_row() {
+fn import_without_a_legacy_key_keeps_only_builtins() {
     let db = Database::open_in_memory().unwrap();
     let conn = db.conn.lock().unwrap();
 
@@ -148,5 +149,56 @@ fn import_without_a_legacy_key_creates_no_provider_row() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(count, 0);
+    assert_eq!(count, 2);
+}
+
+#[test]
+fn builtin_providers_have_persisted_responses_routes_branding_and_websites() {
+    let db = Database::open_in_memory().unwrap();
+    let providers = db.list_harness_providers().unwrap();
+    assert_eq!(providers.len(), 2);
+    for (id, url, website, logo) in [
+        (
+            "layso",
+            "https://api.layso.ai/v1",
+            "https://layso.ai/",
+            "/providers/layso.webp",
+        ),
+        (
+            "deepseek",
+            "https://api.deepseek.com",
+            "https://www.deepseek.com/",
+            "/providers/deepseek.svg",
+        ),
+    ] {
+        let provider = providers.iter().find(|provider| provider.id == id).unwrap();
+        assert_eq!(provider.model_url, url);
+        assert_eq!(provider.protocol, "responses");
+        assert_eq!(provider.website_url, website);
+        assert_eq!(provider.logo, logo);
+        assert!(db.list_harness_models(id).unwrap().is_empty());
+    }
+    assert!(db.harness_chat_selection().unwrap().is_none());
+}
+
+#[test]
+fn builtin_seed_preserves_edits_and_deletion_on_cold_reopen() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("builtins.sqlite");
+    let saved;
+    {
+        let db = Database::open(&path).unwrap();
+        let mut provider = db.list_harness_providers().unwrap().remove(0);
+        assert_eq!(provider.id, "deepseek");
+        provider.model_url = "https://custom.test/v1".into();
+        provider.website_url = "https://custom.test/".into();
+        provider.protocol = "messages".into();
+        provider.logo = "custom-brand".into();
+        provider.enabled = false;
+        db.save_harness_provider(&provider).unwrap();
+        db.remove_harness_provider("layso").unwrap();
+        saved = db.list_harness_providers().unwrap();
+    }
+    let db = Database::open(&path).unwrap();
+    assert_eq!(db.list_harness_providers().unwrap(), saved);
 }

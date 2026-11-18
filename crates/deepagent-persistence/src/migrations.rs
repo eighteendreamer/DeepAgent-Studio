@@ -536,6 +536,10 @@ const MIGRATIONS: &[&str] = &[
 
     CREATE INDEX IF NOT EXISTS idx_harness_models_provider ON harness_models(provider_id, status);
     "#,
+    // V25: provider website belongs to the persisted provider, alongside its logo.
+    r#"
+    ALTER TABLE harness_providers ADD COLUMN website_url TEXT NOT NULL DEFAULT '';
+    "#,
 ];
 
 /// The highest schema version defined by this build.
@@ -565,7 +569,15 @@ pub fn run(conn: &Connection) -> Result<()> {
         // Each migration + version bump runs atomically.
         conn.execute_batch("BEGIN;").map_err(map_sqlite)?;
         let result = (|| -> Result<()> {
-            conn.execute_batch(script).map_err(map_sqlite)?;
+            // Projection recovery can replay later migrations over an existing schema.
+            let website_exists = next == 25
+                && conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM pragma_table_info('harness_providers') WHERE name = 'website_url')",
+                    [], |row| row.get::<_, bool>(0),
+                ).map_err(map_sqlite)?;
+            if !website_exists {
+                conn.execute_batch(script).map_err(map_sqlite)?;
+            }
             // user_version does not accept bound params; format is safe (i64).
             conn.execute_batch(&format!("PRAGMA user_version = {next};"))
                 .map_err(map_sqlite)?;
@@ -627,6 +639,56 @@ fn ensure_session_search_projection(conn: &Connection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v25_upgrades_existing_provider_metadata_without_changing_routes_or_secrets() {
+        let conn = Connection::open_in_memory().unwrap();
+        for script in &MIGRATIONS[..24] {
+            conn.execute_batch(script).unwrap();
+        }
+        conn.execute_batch(
+            "PRAGMA user_version = 24;
+            INSERT INTO harness_providers (id, channel, logo, model_url, protocol,
+                api_key_ref, status, revision, created_at, updated_at)
+            VALUES ('deepseek', 'My route', 'custom', 'https://custom.test', 'messages',
+                'custom-secret-ref', 0, 8, 1, 2);",
+        )
+        .unwrap();
+        run(&conn).unwrap();
+        crate::harness_registry::seed_builtin_harness_providers(&conn).unwrap();
+        let row: (String, String, String, String, i64, i64, String) = conn
+            .query_row(
+                "SELECT logo, model_url, protocol, api_key_ref, status, revision, website_url
+             FROM harness_providers WHERE id = 'deepseek'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            (
+                "custom".into(),
+                "https://custom.test".into(),
+                "messages".into(),
+                "custom-secret-ref".into(),
+                0,
+                8,
+                String::new()
+            )
+        );
+        conn.execute_batch("PRAGMA user_version = 24;").unwrap();
+        run(&conn).expect("schema replay must keep existing website column");
+    }
 
     #[test]
     fn fresh_db_reaches_latest() {

@@ -82,6 +82,7 @@ async fn observe(sample: &Value, model: &str) -> (usize, usize) {
     let capability = ModelCapability {
         input_modalities: None,
         effort: None,
+        thinking: None,
         model_id: model.into(),
         context_window: 128_000,
         max_output_tokens: 8192,

@@ -28,6 +28,10 @@ extern crate self as deepagent_models;
 #[path = "../tests/support/sequence.rs"]
 pub mod test_sequence;
 
+#[cfg(test)]
+#[path = "../tests/support/sse_protocol_fixture.rs"]
+pub(crate) mod test_wire;
+
 pub mod balance;
 pub mod capability;
 pub mod chat;

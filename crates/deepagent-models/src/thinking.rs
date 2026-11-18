@@ -5,9 +5,8 @@
 //! (P2) place the returned value into the right request field; they must not
 //! re-derive it.
 //!
-//! `ReasoningEffort` in `chat.rs` is the legacy four-variant DeepSeek type. It
-//! stays until the UI moves to `ThinkingLevel` (P9); until then this table is
-//! the single source for the new protocol path.
+//! `ReasoningEffort` retains the stored `none` spelling for compatibility;
+//! `ThinkingLevel::Off` is the corresponding UI tier.
 
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +22,8 @@ pub enum ThinkingLevel {
 }
 
 impl ThinkingLevel {
+    pub const ALL: [Self; 5] = [Self::Off, Self::Low, Self::Medium, Self::High, Self::Max];
+
     /// Canonical label used in settings, UI and logs.
     pub const fn label(self) -> &'static str {
         match self {
@@ -32,6 +33,106 @@ impl ThinkingLevel {
             ThinkingLevel::High => "high",
             ThinkingLevel::Max => "max",
         }
+    }
+}
+
+impl From<crate::ReasoningEffort> for ThinkingLevel {
+    fn from(effort: crate::ReasoningEffort) -> Self {
+        match effort {
+            crate::ReasoningEffort::None => Self::Off,
+            crate::ReasoningEffort::Low => Self::Low,
+            crate::ReasoningEffort::Medium => Self::Medium,
+            crate::ReasoningEffort::High => Self::High,
+            crate::ReasoningEffort::Max => Self::Max,
+        }
+    }
+}
+
+/// The registry's neutral thinking declaration, shared by UI and admission.
+/// Missing fields use the user's preset: all five tiers, with off first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThinkingCapabilities {
+    pub thinking_levels: Vec<ThinkingLevel>,
+    pub thinking_distinct: Vec<ThinkingLevel>,
+    pub thinking_disable: bool,
+}
+
+impl Default for ThinkingCapabilities {
+    fn default() -> Self {
+        Self {
+            thinking_levels: ThinkingLevel::ALL.to_vec(),
+            // Omission does not claim that any two provider tiers are equivalent.
+            thinking_distinct: Vec::new(),
+            thinking_disable: true,
+        }
+    }
+}
+
+impl ThinkingCapabilities {
+    pub fn from_registry_json(value: &serde_json::Value) -> deepagent_core::error::Result<Self> {
+        use deepagent_core::error::CoreError;
+        if !value.is_object() {
+            return Err(CoreError::invalid(
+                "registry model capabilities must be an object",
+            ));
+        }
+        let mut capabilities: Self = serde_json::from_value(value.clone())
+            .map_err(|_| CoreError::invalid("invalid registry model thinking capabilities"))?;
+        // Old seeds persist the provider's effort declaration. A missing neutral
+        // declaration must not turn these explicit limits into unrestricted tiers.
+        // A neutral thinking_levels field (including []) always takes precedence.
+        if value.get("thinking_levels").is_none() {
+            if let Some(legacy) = value.get("effort").filter(|value| !value.is_null()) {
+                let invalid = || CoreError::invalid("invalid registry model effort capabilities");
+                let metadata: crate::discovery::ModelEffortMetadata =
+                    serde_json::from_value(legacy.clone()).map_err(|_| invalid())?;
+                let levels = metadata
+                    .supported_levels
+                    .iter()
+                    .map(|level| {
+                        crate::ReasoningEffort::parse_responses(level)
+                            .filter(|effort| *effort != crate::ReasoningEffort::None)
+                            .map(ThinkingLevel::from)
+                            .ok_or_else(invalid)
+                    })
+                    .collect::<deepagent_core::error::Result<Vec<_>>>()?;
+                if levels.is_empty()
+                    || metadata.default_level.as_deref().is_some_and(|default| {
+                        !crate::ReasoningEffort::parse_responses(default)
+                            .is_some_and(|effort| levels.contains(&effort.into()))
+                    })
+                {
+                    return Err(invalid());
+                }
+                capabilities.thinking_levels =
+                    std::iter::once(ThinkingLevel::Off).chain(levels).collect();
+            }
+        }
+        let unique = |levels: &[ThinkingLevel]| {
+            levels
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                == levels.len()
+        };
+        if !unique(&capabilities.thinking_levels)
+            || !unique(&capabilities.thinking_distinct)
+            || capabilities
+                .thinking_distinct
+                .iter()
+                .any(|level| !capabilities.thinking_levels.contains(level))
+        {
+            return Err(CoreError::invalid(
+                "invalid registry model thinking capability levels",
+            ));
+        }
+        Ok(capabilities)
+    }
+
+    pub fn allows(&self, level: ThinkingLevel) -> bool {
+        self.thinking_levels.contains(&level)
+            && (level != ThinkingLevel::Off || self.thinking_disable)
     }
 }
 
@@ -133,6 +234,25 @@ mod tests {
     use ThinkingFamily as F;
     use ThinkingLevel as L;
     use ThinkingWire::{Effort, Omit, Switch, Unsupported};
+
+    #[test]
+    fn registry_defaults_preserve_explicit_legacy_effort_limits() {
+        let capabilities = ThinkingCapabilities::from_registry_json(&serde_json::json!({
+            "effort":{"supported_levels":["low","medium"],"default_level":"medium"}
+        }))
+        .unwrap();
+        assert_eq!(capabilities.thinking_levels, [L::Off, L::Low, L::Medium]);
+        assert!(capabilities.allows(L::Off));
+        assert!(!capabilities.allows(L::High));
+        for invalid in [
+            serde_json::json!({"effort":{"supported_levels":[]}}),
+            serde_json::json!({"effort":{"supported_levels":["future"]}}),
+            serde_json::json!({"effort":{"supported_levels":["low","low"]}}),
+            serde_json::json!({"effort":{"supported_levels":["low"],"default_level":"high"}}),
+        ] {
+            assert!(ThinkingCapabilities::from_registry_json(&invalid).is_err());
+        }
+    }
 
     /// Every cell of plan §1.3, one assertion per (family, tier).
     #[test]

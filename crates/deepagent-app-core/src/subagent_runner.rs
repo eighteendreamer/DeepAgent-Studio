@@ -1265,7 +1265,7 @@ fn subagent_reasoning_effort(
         None => Ok(inherited),
         Some(value) => ReasoningEffort::parse(value).ok_or_else(|| {
             CoreError::invalid(format!(
-                "invalid sub-agent effort '{value}'; expected none, low, high, or max"
+                "invalid sub-agent effort '{value}'; expected none, low, medium, high, or max"
             ))
         }),
     }
@@ -2852,10 +2852,10 @@ mod tests {
 
     #[test]
     fn subagent_effort_rejects_noncanonical_values() {
-        for value in ["none", "low", "high", "max"] {
+        for value in ["none", "low", "medium", "high", "max"] {
             assert!(subagent_reasoning_effort(Some(value), ReasoningEffort::None).is_ok());
         }
-        for alias in ["minimal", "medium", "xhigh", "simple", "deep"] {
+        for alias in ["minimal", "xhigh", "simple", "deep"] {
             assert!(subagent_reasoning_effort(Some(alias), ReasoningEffort::None).is_err());
         }
     }

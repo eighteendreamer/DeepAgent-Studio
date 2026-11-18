@@ -1,10 +1,10 @@
-//! Final DeepSeek wire budget, shared by both protocols and all send entries.
+//! Final DeepSeek wire budget, shared by all protocols and send entries.
 use deepagent_core::error::{CoreError, Result};
 use serde::Serialize;
 use std::io::{self, Write};
 
 // https://api-docs.deepseek.com/guides/vision/#limits
-// Applies to the complete JSON body, including inline base64, on both routes.
+// Applies to the complete JSON body, including inline base64, on every route.
 const MAX_REQUEST_BYTES: usize = 48 * 1024 * 1024;
 
 pub(crate) fn encode(request: &impl Serialize) -> Result<String> {

@@ -139,7 +139,7 @@ async fn read_request(socket: &mut TcpStream) -> Value {
             assert!(
                 headers.starts_with("POST /responses HTTP/1.1")
                     || headers.starts_with("POST /chat/completions HTTP/1.1")
-                    || headers.starts_with("POST /messages HTTP/1.1")
+                    || headers.starts_with("POST /v1/messages HTTP/1.1")
                     || headers.starts_with("GET /models HTTP/1.1")
             );
             if headers.starts_with("GET /models HTTP/1.1") {

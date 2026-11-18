@@ -189,6 +189,7 @@ mod tests {
         ModelCapability {
             input_modalities: None,
             effort: None,
+            thinking: None,
             model_id: "deepseek-v4-flash".into(),
             context_window: 1_000_000,
             max_output_tokens: 384_000,

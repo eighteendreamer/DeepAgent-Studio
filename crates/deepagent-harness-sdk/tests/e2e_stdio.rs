@@ -638,7 +638,7 @@ async fn h222_real_stdio_thread_reasoning_survives_process_restart() {
     let client = process.client();
     client.initialize("h222-start", "1").await.unwrap();
     let mut saved = Vec::new();
-    for effort in ["none", "low", "high", "max"] {
+    for effort in ["none", "low", "medium", "high", "max"] {
         let response = client
             .thread_start(ThreadStartRequest {
                 cwd: None,

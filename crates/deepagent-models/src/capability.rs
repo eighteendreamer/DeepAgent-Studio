@@ -46,6 +46,9 @@ pub struct ModelCapability {
     /// Missing means unknown; an empty or unrecognized list is not unrestricted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<ModelEffortMetadata>,
+    /// Neutral harness declaration; absent on legacy standalone clients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<crate::thinking::ThinkingCapabilities>,
     /// Provenance of the existing context/output budgeting fields. Input
     /// modalities are independently merged from metadata or the exact snapshot.
     pub capability_source: CapabilitySource,
@@ -60,6 +63,24 @@ impl ModelCapability {
         &self,
         requested: Option<ReasoningEffort>,
     ) -> Result<Option<ReasoningEffort>> {
+        if let Some(thinking) = &self.thinking {
+            let effort = requested.or_else(|| {
+                self.effort
+                    .as_ref()
+                    .and_then(|metadata| metadata.default_level.as_deref())
+                    .and_then(ReasoningEffort::parse_responses)
+            });
+            if let Some(effort) = effort {
+                if !thinking.allows(effort.into()) {
+                    return Err(CoreError::invalid(format!(
+                        "model '{}' does not support reasoning effort '{}'",
+                        self.model_id,
+                        effort.label()
+                    )));
+                }
+            }
+            return Ok(effort);
+        }
         let Some(metadata) = self.effort.as_ref() else {
             return Ok(requested);
         };
@@ -211,6 +232,7 @@ impl ModelCapabilityResolver {
         Some(ModelCapability {
             input_modalities: None,
             effort: None,
+            thinking: None,
             model_id: model_id.to_string(),
             context_window: 1_000_000,
             max_output_tokens: 384_000,
@@ -226,6 +248,7 @@ impl ModelCapabilityResolver {
         ModelCapability {
             input_modalities: None,
             effort: None,
+            thinking: None,
             model_id: model_id.to_string(),
             context_window: self.fallback_context_window,
             max_output_tokens: self.fallback_max_output_tokens,

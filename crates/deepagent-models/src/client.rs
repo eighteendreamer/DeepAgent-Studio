@@ -197,7 +197,7 @@ impl ModelConfig {
     ) -> Result<Option<ReasoningEffort>> {
         let capability = self.capability(model);
         let effort = self.reasoning_effort_input(&capability, requested);
-        if self.wire_mode != WireMode::Responses {
+        if self.wire_mode != WireMode::Responses && capability.thinking.is_none() {
             return Ok(effort);
         }
         capability.resolve_reasoning_effort(effort)
@@ -215,7 +215,7 @@ impl ModelConfig {
 
     /// Anthropic Messages-compatible endpoint.
     pub fn messages_endpoint(&self) -> String {
-        format!("{}/messages", self.base_url.trim_end_matches('/'))
+        format!("{}/messages", crate::messages::api_root(&self.base_url))
     }
 
     pub fn with_defaults(mut self, defaults: ResponseDefaults) -> Self {
@@ -875,6 +875,16 @@ impl ModelClient {
             if let Some(effort) = self.config.defaults.reasoning_effort {
                 *request = request.clone().with_reasoning_effort(effort);
             }
+        }
+        if self.config.capability(&request.model).thinking.is_some() {
+            let requested = request.reasoning_effort.or_else(|| {
+                request
+                    .thinking
+                    .as_ref()
+                    .filter(|thinking| thinking.kind == "disabled")
+                    .map(|_| ReasoningEffort::None)
+            });
+            self.effective_reasoning_effort(&request.model, requested)?;
         }
         if request.tool_choice.is_none() {
             request.tool_choice = self

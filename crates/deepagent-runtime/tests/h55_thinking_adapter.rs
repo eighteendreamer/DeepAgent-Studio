@@ -45,7 +45,7 @@ impl HttpTransport for ScriptedTransport {
         let suffix = match self.mode {
             WireMode::Responses => "/responses",
             WireMode::ChatCompletions => "/chat/completions",
-            WireMode::Messages => "/messages",
+            WireMode::Messages => "/v1/messages",
         };
         assert!(request.url.ends_with(suffix));
         let attempt = {
@@ -168,6 +168,7 @@ async fn h55_agent_preserves_efforts_on_retries_and_surfaces_overload_without_re
         for effort in [
             ReasoningEffort::None,
             ReasoningEffort::Low,
+            ReasoningEffort::parse("medium").expect("medium must remain a distinct canonical tier"),
             ReasoningEffort::High,
             ReasoningEffort::Max,
         ] {

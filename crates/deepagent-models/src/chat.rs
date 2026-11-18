@@ -27,9 +27,7 @@ pub fn validate_responses_user_identifier(value: &str) -> Result<()> {
     Ok(())
 }
 
-/// DeepSeek Responses reasoning effort exposed to users.
-///
-/// The four variants serialize directly to the official Responses values.
+/// Neutral reasoning effort. `none` retains the existing stored off spelling.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningEffort {
@@ -37,6 +35,8 @@ pub enum ReasoningEffort {
     None,
     /// Thinking enabled at low effort.
     Low,
+    /// Thinking enabled at medium effort.
+    Medium,
     /// Thinking enabled at high effort.
     #[default]
     High,
@@ -50,6 +50,7 @@ impl ReasoningEffort {
         match self {
             ReasoningEffort::None => "none",
             ReasoningEffort::Low => "low",
+            ReasoningEffort::Medium => "medium",
             ReasoningEffort::High => "high",
             ReasoningEffort::Max => "max",
         }
@@ -60,6 +61,7 @@ impl ReasoningEffort {
         match value {
             "none" => Some(Self::None),
             "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
             "high" => Some(Self::High),
             "max" => Some(Self::Max),
             _ => None,
@@ -73,7 +75,7 @@ impl ReasoningEffort {
     pub fn parse_responses(value: &str) -> Option<Self> {
         match value {
             "minimal" => Some(Self::Low),
-            "medium" | "xhigh" => Some(Self::High),
+            "xhigh" => Some(Self::High),
             _ => Self::parse(value),
         }
     }
@@ -187,7 +189,7 @@ pub struct ResponseRequest {
     pub temperature: Option<f32>,
     /// Max output tokens.
     pub max_output_tokens: Option<u32>,
-    /// Responses API reasoning effort (`none` / `low` / `high` / `max`).
+    /// Neutral reasoning effort (`none` / `low` / `medium` / `high` / `max`).
     pub reasoning_effort: Option<ReasoningEffort>,
     /// Advertised tools.
     pub tools: Vec<ToolSchema>,
@@ -1180,6 +1182,7 @@ mod tests {
     fn reasoning_effort_flags() {
         assert_eq!(ReasoningEffort::None.label(), "none");
         assert_eq!(ReasoningEffort::Low.label(), "low");
+        assert_eq!(ReasoningEffort::Medium.label(), "medium");
         assert_eq!(ReasoningEffort::High.label(), "high");
         assert_eq!(ReasoningEffort::Max.label(), "max");
         assert_eq!(ReasoningEffort::default(), ReasoningEffort::High);
@@ -1190,6 +1193,7 @@ mod tests {
         for (label, effort) in [
             ("none", ReasoningEffort::None),
             ("low", ReasoningEffort::Low),
+            ("medium", ReasoningEffort::Medium),
             ("high", ReasoningEffort::High),
             ("max", ReasoningEffort::Max),
         ] {
@@ -1199,7 +1203,7 @@ mod tests {
                 effort
             );
         }
-        for alias in ["minimal", "medium", "xhigh", "simple", "deep", " HIGH "] {
+        for alias in ["minimal", "xhigh", "simple", "deep", " HIGH "] {
             assert!(
                 ReasoningEffort::parse(alias).is_none(),
                 "must reject {alias}"
@@ -1215,7 +1219,7 @@ mod tests {
     fn responses_reasoning_effort_aliases_map_to_canonical_values() {
         for (alias, expected) in [
             ("minimal", ReasoningEffort::Low),
-            ("medium", ReasoningEffort::High),
+            ("medium", ReasoningEffort::Medium),
             ("xhigh", ReasoningEffort::High),
         ] {
             assert_eq!(ReasoningEffort::parse_responses(alias), Some(expected));
@@ -1230,6 +1234,7 @@ mod tests {
         for effort in [
             ReasoningEffort::None,
             ReasoningEffort::Low,
+            ReasoningEffort::Medium,
             ReasoningEffort::High,
             ReasoningEffort::Max,
         ] {

@@ -249,7 +249,7 @@ impl SlashRegistry {
             ))
             .register_command(SlashCommand::new(
                 "thinking",
-                "查看或设置推理强度：none、low、high、max",
+                "查看或设置推理强度：none、low、medium、high、max",
                 StaticHandler::new(SlashActionTemplate::Thinking),
             ))
             .register_command(SlashCommand::new(

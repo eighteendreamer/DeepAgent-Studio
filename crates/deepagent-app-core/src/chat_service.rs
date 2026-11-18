@@ -3040,7 +3040,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn slash_model_without_args_lists_available_models() {
+    async fn slash_model_without_args_lists_only_activated_registry_models() {
         let (_db, settings, dir) = seeded().await;
         let chat = ChatService::new(_db, settings, chat_transport(), dir.path());
         let events = Arc::new(std::sync::Mutex::new(Vec::<RuntimeEvent>::new()));
@@ -3056,13 +3056,17 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(events.lock().unwrap().iter().any(|ev| {
-            matches!(
-                ev,
-                RuntimeEvent::RunCompleted { message, .. }
-                    if message.contains("deepseek-v4-pro") && message.contains("/model <model_id>")
-            )
-        }));
+        let events = events.lock().unwrap();
+        let message = events
+            .iter()
+            .find_map(|event| match event {
+                RuntimeEvent::RunCompleted { message, .. } => Some(message),
+                _ => None,
+            })
+            .expect("slash command must complete locally");
+        assert!(message.contains("deepseek-v4-flash"), "{message}");
+        assert!(!message.contains("deepseek-v4-pro"), "{message}");
+        assert!(message.contains("/model <model_name>"), "{message}");
     }
 
     #[tokio::test]
@@ -3091,32 +3095,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn max_reasoning_keeps_chat_model_without_inventing_output_limit() {
+    async fn reasoning_tiers_keep_selected_model_and_registry_output_limit() {
         let (db, settings, dir) = seeded().await;
-        settings
-            .set_reasoning_effort(ReasoningEffort::Max)
-            .expect("reasoning effort can be updated");
+        let registered_limit = db
+            .harness_model_route("deepseek", "deepseek-v4-flash")
+            .unwrap()
+            .unwrap()
+            .1
+            .output_limit;
 
         let last_body = Arc::new(std::sync::Mutex::new(None));
         let transport = Arc::new(RecordingTransport {
             last_body: last_body.clone(),
         });
-        let chat = ChatService::new(db, settings, transport, dir.path());
-
-        chat.run("solve a complex task", |_| {}, |_| {})
-            .await
-            .unwrap();
-
-        let body = last_body.lock().unwrap().clone().unwrap();
-        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(json["model"], "deepseek-v4-flash");
-        assert_eq!(json["reasoning"]["effort"], "max");
-        assert!(json.get("thinking").is_none());
-        assert!(json.get("reasoning_effort").is_none());
-        assert!(
-            json.get("max_output_tokens").is_none(),
-            "reasoning effort does not imply an output token ceiling"
-        );
+        let chat = ChatService::new(db, settings.clone(), transport, dir.path());
+        for effort in [
+            ReasoningEffort::None,
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+            ReasoningEffort::Max,
+        ] {
+            settings.set_reasoning_effort(effort).unwrap();
+            chat.run("solve a complex task", |_| {}, |_| {})
+                .await
+                .unwrap();
+            let body = last_body.lock().unwrap().clone().unwrap();
+            let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(json["model"], "deepseek-v4-flash");
+            assert_eq!(json["reasoning"]["effort"], effort.label());
+            assert!(json.get("thinking").is_none());
+            assert!(json.get("reasoning_effort").is_none());
+            assert_eq!(
+                json["max_output_tokens"], registered_limit,
+                "reasoning effort must not change the registered output ceiling"
+            );
+        }
     }
 
     #[tokio::test]

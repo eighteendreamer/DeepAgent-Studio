@@ -66,6 +66,7 @@ async fn h54_effective_parameters_survive_project_run_precedence_retry_and_tool_
         (None, None, "max"),
         (Some("reasoningEffort"), None, "low"),
         (Some("reasoning_effort"), Some("none"), "none"),
+        (Some("reasoning_effort"), Some("medium"), "medium"),
     ] {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("control.txt"), "H54 synthetic control").unwrap();
@@ -143,7 +144,7 @@ async fn h54_invalid_run_effort_is_rejected_before_transport() {
     let settings = configured_settings(db.clone()).await;
     let transport = Arc::new(Attempts::default());
     let chat = ChatService::new(db, settings, transport.clone(), root.path());
-    for value in ["medium", "simple", "deep", "xhigh", "off"] {
+    for value in ["simple", "deep", "xhigh", "off"] {
         let error = chat
             .run_in_session_with_overrides(
                 "This invalid run must not dispatch.",

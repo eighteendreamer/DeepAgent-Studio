@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use deepagent_app_core::harness_model_service::{
-    HarnessModelService, HarnessModelView, HarnessProviderInput,
+    HarnessModelInput, HarnessModelService, HarnessModelView, HarnessProviderInput,
 };
 use deepagent_app_core::{MemorySecretStore, SecretStore};
 use deepagent_models::transport::{HttpTransport, MockTransport};
@@ -19,17 +19,151 @@ fn service_with_models_response(body: &str) -> (HarnessModelService, Arc<MemoryS
     (service, secrets)
 }
 
+#[tokio::test]
+async fn h025_messages_discovery_uses_versioned_base_without_resource_path_in_settings() {
+    struct EndpointTransport(String);
+    #[async_trait::async_trait]
+    impl HttpTransport for EndpointTransport {
+        async fn stream(
+            &self,
+            _: deepagent_models::TransportRequest,
+            _: &mut dyn deepagent_models::transport::EventSink,
+        ) -> deepagent_core::Result<()> {
+            panic!("discovery must not invoke inference");
+        }
+
+        async fn get_json(&self, url: &str, key: &str) -> deepagent_core::Result<String> {
+            assert_eq!(url, self.0);
+            assert_eq!(key, "synthetic");
+            Ok(r#"{"data":[{"id":"fixture"}]}"#.into())
+        }
+    }
+    for (base, expected) in [
+        (
+            "https://provider.test/anthropic",
+            "https://provider.test/anthropic/v1/models",
+        ),
+        (
+            "https://provider.test/anthropic/v1/",
+            "https://provider.test/anthropic/v1/models",
+        ),
+        (
+            "https://api.deepseek.com/anthropic",
+            "https://api.deepseek.com/models",
+        ),
+        (
+            "https://api.deepseek.com/anthropic/v1/",
+            "https://api.deepseek.com/models",
+        ),
+    ] {
+        let service = HarnessModelService::new(
+            Arc::new(Database::open_in_memory().unwrap()),
+            Arc::new(MemorySecretStore::new()),
+            Arc::new(EndpointTransport(expected.into())),
+        );
+        let mut provider = input("messages", Some("synthetic"));
+        provider.protocol = "messages".into();
+        provider.model_url = base.into();
+        service.save_provider(provider).unwrap();
+        let models = service.fetch_models("messages").await.unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].model_name, "fixture");
+        assert_eq!(
+            service
+                .list_providers()
+                .unwrap()
+                .into_iter()
+                .find(|provider| provider.id == "messages")
+                .unwrap()
+                .model_url,
+            base
+        );
+    }
+}
+
 fn input(id: &str, api_key: Option<&str>) -> HarnessProviderInput {
     HarnessProviderInput {
         id: Some(id.into()),
         channel: format!("{id} channel"),
         logo: String::new(),
+        website_url: None,
         model_url: "https://provider.test/v1".into(),
         protocol: "chat_completions".into(),
         balance_kind: "auto".into(),
         enabled: true,
         api_key: api_key.map(str::to_string),
     }
+}
+
+#[test]
+fn website_and_uploaded_logo_round_trip_without_exposing_credentials() {
+    let (service, _) = service_with_models_response("{}");
+    let mut provider = input("custom", Some("synthetic-provider-key"));
+    provider.website_url = Some("https://provider.test/".into());
+    provider.logo = "data:image/png;base64,iVBORw0KGgo=".into();
+    let saved = service.save_provider(provider).unwrap();
+    assert_eq!(saved.website_url, "https://provider.test/");
+    assert!(saved.logo.starts_with("data:image/png;base64,"));
+    assert!(saved.has_api_key);
+    assert!(!serde_json::to_string(&saved)
+        .unwrap()
+        .contains("synthetic-provider-key"));
+    let saved = service.save_provider(input("custom", None)).unwrap();
+    assert_eq!(
+        saved.website_url, "https://provider.test/",
+        "older clients preserve the website"
+    );
+}
+
+#[test]
+fn invalid_branding_is_rejected_before_writing_a_secret() {
+    let (service, secrets) = service_with_models_response("{}");
+    for website in [
+        "javascript:alert(1)",
+        "file:///test",
+        "https://user:secret@provider.test/",
+    ] {
+        let mut provider = input("bad", Some("synthetic"));
+        provider.website_url = Some(website.into());
+        assert!(service.save_provider(provider).is_err());
+    }
+    for logo in [
+        "https://remote.test/logo.svg".to_string(),
+        "data:image/svg+xml;base64,PHN2Zy8+".into(),
+        format!("data:image/png;base64,{}", "A".repeat(1_398_108)),
+    ] {
+        let mut provider = input("bad", Some("synthetic"));
+        provider.logo = logo;
+        assert!(service.save_provider(provider).is_err());
+    }
+    assert!(secrets.get("harness_provider:bad").unwrap().is_none());
+}
+
+#[tokio::test]
+async fn balance_none_is_a_real_noop_and_does_not_require_a_secret() {
+    let (service, secrets, db) = legacy_provider_service();
+    db.save_harness_provider(&HarnessProvider {
+        id: "no-balance".into(),
+        channel: "No Balance".into(),
+        logo: String::new(),
+        website_url: String::new(),
+        model_url: "https://provider.example/v1".into(),
+        protocol: "responses".into(),
+        api_key_ref: "harness_provider:no-balance".into(),
+        balance_kind: "none".into(),
+        enabled: true,
+        revision: 0,
+    })
+    .unwrap();
+    let result = service.fetch_balance("no-balance").await.unwrap();
+    assert_eq!(result.provider_id, "no-balance");
+    assert_eq!(result.balance_kind, "none");
+    assert_eq!(result.amount.amount, None);
+    assert!(!result.amount.unlimited);
+    assert!(secrets
+        .get("harness_provider:no-balance")
+        .unwrap()
+        .is_none());
 }
 
 // V24 imports the existing key by reference rather than copying its plaintext.
@@ -39,6 +173,7 @@ fn legacy_provider_service() -> (HarnessModelService, Arc<MemorySecretStore>, Ar
         id: "deepseek".into(),
         channel: "DeepSeek".into(),
         logo: String::new(),
+        website_url: String::new(),
         model_url: "https://api.deepseek.com".into(),
         protocol: "responses".into(),
         api_key_ref: "deepseek_api_key".into(),
@@ -71,7 +206,12 @@ fn legacy_provider_metadata_edits_keep_the_imported_key_reference() {
             "metadata edits must retain the imported key"
         );
         assert_eq!(
-            db.list_harness_providers().unwrap()[0].api_key_ref,
+            db.list_harness_providers()
+                .unwrap()
+                .into_iter()
+                .find(|provider| provider.id == "deepseek")
+                .unwrap()
+                .api_key_ref,
             "deepseek_api_key"
         );
         assert_eq!(
@@ -98,7 +238,12 @@ fn legacy_provider_key_rotation_updates_the_referenced_secret_without_copying_it
 
     assert!(saved.has_api_key);
     assert_eq!(
-        db.list_harness_providers().unwrap()[0].api_key_ref,
+        db.list_harness_providers()
+            .unwrap()
+            .into_iter()
+            .find(|provider| provider.id == "deepseek")
+            .unwrap()
+            .api_key_ref,
         "deepseek_api_key"
     );
     assert_eq!(
@@ -122,7 +267,11 @@ fn legacy_provider_removal_deletes_its_referenced_secret() {
         secrets.get("another-provider-key").unwrap().as_deref(),
         Some("test-unrelated-key")
     );
-    assert!(service.list_providers().unwrap().is_empty());
+    assert!(service
+        .list_providers()
+        .unwrap()
+        .iter()
+        .all(|provider| provider.id != "deepseek"));
 }
 
 #[test]
@@ -183,6 +332,162 @@ fn fetched_models_are_stored_inactive_under_their_provider() {
 }
 
 #[test]
+fn fetching_models_preserves_saved_model_configuration() {
+    let (service, _, db) = legacy_provider_service();
+    let saved = deepagent_persistence::harness_registry::HarnessModel {
+        provider_id: "deepseek".into(),
+        model_name: "deepseek-flash".into(),
+        display_name: "Configured model".into(),
+        protocol: Some("messages".into()),
+        context_window: 64_000,
+        output_limit: 4_096,
+        capabilities: serde_json::json!({"thinking_levels":["off","medium"],
+            "thinking_disable":true,"input_modalities":["text"]})
+        .to_string(),
+        active: true,
+    };
+    db.save_harness_models("deepseek", &[saved.clone()])
+        .unwrap();
+    futures_block_on(service.fetch_models("deepseek")).unwrap();
+    assert_eq!(db.list_harness_models("deepseek").unwrap(), [saved]);
+    assert_eq!(
+        service.active_models().unwrap()[0].thinking_levels,
+        ["off", "medium"]
+    );
+}
+
+#[test]
+fn fetching_new_models_retains_declared_capacity_and_effort_without_name_guessing() {
+    let (service, _) = service_with_models_response(
+        r#"{"data":[{
+        "id":"unknown-model","context_window":64000,"max_output_tokens":4096,
+        "input_modalities":["text"],
+        "effort":{"supported_levels":["low","medium"],"default_level":"medium"}
+    }]}"#,
+    );
+    service
+        .save_provider(input("alpha", Some("test-key")))
+        .unwrap();
+    let fetched = futures_block_on(service.fetch_models("alpha")).unwrap();
+    assert_eq!(fetched[0].context_window, 64_000);
+    assert_eq!(fetched[0].output_limit, 4_096);
+    assert!(!fetched[0].active);
+    service
+        .set_model_active("alpha", "unknown-model", true)
+        .unwrap();
+    let active = service.active_models().unwrap().remove(0);
+    assert_eq!(active.thinking_levels, ["off", "low", "medium"]);
+}
+
+#[test]
+fn invalid_discovery_metadata_cannot_partially_replace_saved_models() {
+    for invalid in [
+        serde_json::json!({"id":""}),
+        serde_json::json!({"id":"valid"}),
+        serde_json::json!({"id":"invalid","context_window":0}),
+        serde_json::json!({"id":"invalid","max_output_tokens":u64::MAX}),
+        serde_json::json!({"id":"invalid","effort":{"supported_levels":["future"]}}),
+    ] {
+        let body = serde_json::json!({"data":[{"id":"valid"},invalid]}).to_string();
+        let (service, _) = service_with_models_response(&body);
+        service
+            .save_provider(input("alpha", Some("test-key")))
+            .unwrap();
+        assert!(futures_block_on(service.fetch_models("alpha")).is_err());
+        assert!(service.list_models("alpha").unwrap().is_empty());
+    }
+}
+
+#[test]
+fn model_editor_updates_registry_capabilities_and_preserves_activation_and_other_metadata() {
+    let (service, _, db) = legacy_provider_service();
+    futures_block_on(service.fetch_models("deepseek")).unwrap();
+    service
+        .set_model_active("deepseek", "deepseek-flash", true)
+        .unwrap();
+    let mut row = db.list_harness_models("deepseek").unwrap().remove(0);
+    row.capabilities = r#"{"input_modalities":["text"],"supports_tools":false}"#.into();
+    db.save_harness_models("deepseek", &[row]).unwrap();
+    let input = HarnessModelInput {
+        provider_id: "deepseek".into(),
+        model_name: "deepseek-flash".into(),
+        display_name: "Edited model".into(),
+        protocol: Some("messages".into()),
+        context_window: 64_000,
+        output_limit: 4_096,
+        thinking_levels: vec!["off".into(), "medium".into()],
+        thinking_distinct: vec!["medium".into()],
+        thinking_disable: true,
+    };
+    let saved = service.save_model(input.clone()).unwrap();
+    assert!(saved.active);
+    assert_eq!(saved.display_name, "Edited model");
+    assert_eq!(saved.protocol.as_deref(), Some("messages"));
+    assert_eq!(saved.context_window, 64_000);
+    assert_eq!(saved.output_limit, 4_096);
+    assert_eq!(saved.thinking_levels, ["off", "medium"]);
+    assert_eq!(saved.thinking_distinct, ["medium"]);
+    assert!(saved.thinking_disable);
+    let stored: serde_json::Value =
+        serde_json::from_str(&db.list_harness_models("deepseek").unwrap()[0].capabilities).unwrap();
+    assert_eq!(stored["input_modalities"], serde_json::json!(["text"]));
+    assert_eq!(stored["supports_tools"], false);
+    let route = deepagent_app_core::harness_model_resolver::resolve_active_model(
+        &db,
+        "deepseek",
+        "deepseek-flash",
+    )
+    .unwrap();
+    assert!(route
+        .capability
+        .resolve_reasoning_effort(Some(deepagent_models::ReasoningEffort::High))
+        .is_err());
+    futures_block_on(service.fetch_models("deepseek")).unwrap();
+    assert_eq!(service.list_models("deepseek").unwrap()[0], saved);
+
+    for invalid in [
+        HarnessModelInput {
+            context_window: 0,
+            ..input.clone()
+        },
+        HarnessModelInput {
+            output_limit: 0,
+            ..input.clone()
+        },
+        HarnessModelInput {
+            output_limit: u32::MAX as i64 + 1,
+            ..input.clone()
+        },
+        HarnessModelInput {
+            protocol: Some("unknown".into()),
+            ..input.clone()
+        },
+        HarnessModelInput {
+            thinking_levels: vec!["unknown".into()],
+            ..input.clone()
+        },
+        HarnessModelInput {
+            thinking_levels: vec!["medium".into(), "medium".into()],
+            ..input.clone()
+        },
+        HarnessModelInput {
+            thinking_distinct: vec!["high".into()],
+            ..input.clone()
+        },
+    ] {
+        assert!(service.save_model(invalid).is_err());
+        assert_eq!(service.list_models("deepseek").unwrap()[0], saved);
+    }
+    assert!(service
+        .save_model(HarnessModelInput {
+            model_name: "missing".into(),
+            ..input
+        })
+        .is_err());
+    assert_eq!(service.list_models("deepseek").unwrap().len(), 1);
+}
+
+#[test]
 fn model_views_expose_ui_fields_in_camel_case() {
     let (service, _secrets) = service_with_models_response("{\"data\":[{\"id\":\"m-a\"}]}");
     service
@@ -237,6 +542,106 @@ fn activated_models_report_their_effective_protocol_and_endpoint() {
 }
 
 #[test]
+fn active_model_thinking_uses_the_registry_contract_before_legacy_effort() {
+    let (service, _, db) = legacy_provider_service();
+    let capability = serde_json::json!({
+        "thinking_levels": ["off", "low", "medium", "high", "max"],
+        "thinking_distinct": ["low", "high", "max"],
+        "thinking_disable": true,
+        "effort": {"supported_levels": ["high"]}
+    });
+    db.save_harness_models(
+        "deepseek",
+        &[deepagent_persistence::harness_registry::HarnessModel {
+            provider_id: "deepseek".into(),
+            model_name: "test-thinking".into(),
+            display_name: "Test Thinking".into(),
+            protocol: None,
+            context_window: 100_000,
+            output_limit: 8_192,
+            capabilities: capability.to_string(),
+            active: true,
+        }],
+    )
+    .unwrap();
+    for view in [
+        service.active_models().unwrap().remove(0),
+        service.select_model("deepseek", "test-thinking").unwrap(),
+        service.selected_model().unwrap().unwrap(),
+    ] {
+        let json = serde_json::to_value(view).unwrap();
+        assert_eq!(json["thinkingLevels"], capability["thinking_levels"]);
+        assert_eq!(json["thinkingDistinct"], capability["thinking_distinct"]);
+        assert_eq!(json["thinkingDisable"], true);
+    }
+}
+
+#[test]
+fn models_without_thinking_metadata_use_the_user_preset_with_off_as_the_first_level() {
+    let (service, _) = service_with_models_response("{\"data\":[{\"id\":\"unknown-model\"}]}");
+    service
+        .save_provider(input("alpha", Some("test-key")))
+        .unwrap();
+    futures_block_on(service.fetch_models("alpha")).unwrap();
+    service
+        .set_model_active("alpha", "unknown-model", true)
+        .unwrap();
+    let view = service.active_models().unwrap().remove(0);
+    assert_eq!(
+        view.thinking_levels,
+        ["off", "low", "medium", "high", "max"]
+    );
+    assert!(
+        view.thinking_disable,
+        "the default lowest level must disable thinking"
+    );
+}
+
+#[test]
+fn explicit_empty_thinking_levels_override_legacy_and_invalid_metadata_is_reported() {
+    let (service, _, db) = legacy_provider_service();
+    let mut model = deepagent_persistence::harness_registry::HarnessModel {
+        provider_id: "deepseek".into(),
+        model_name: "test-thinking".into(),
+        display_name: "Test Thinking".into(),
+        protocol: None,
+        context_window: 100_000,
+        output_limit: 8_192,
+        capabilities: serde_json::json!({"thinking_levels": [],
+            "effort": {"supported_levels": ["high"]}})
+        .to_string(),
+        active: true,
+    };
+    db.save_harness_models("deepseek", &[model.clone()])
+        .unwrap();
+    assert!(service.active_models().unwrap()[0]
+        .thinking_levels
+        .is_empty());
+    for invalid in [
+        "[]",
+        "{\"thinking_levels\":true}",
+        "{\"thinking_levels\":[\"unknown\"]}",
+        "{\"thinking_levels\":[\"off\",\"off\"]}",
+        "{\"thinking_levels\":[\"off\"],\"thinking_distinct\":[\"high\"]}",
+    ] {
+        model.capabilities = invalid.into();
+        db.save_harness_models("deepseek", &[model.clone()])
+            .unwrap();
+        assert!(
+            service.active_models().is_err(),
+            "invalid metadata must not become an empty capability"
+        );
+        let before = db.harness_chat_selection().unwrap();
+        assert!(service.select_model("deepseek", "test-thinking").is_err());
+        assert_eq!(
+            db.harness_chat_selection().unwrap(),
+            before,
+            "an invalid capability must not change the selected model"
+        );
+    }
+}
+
+#[test]
 fn removing_a_provider_deletes_its_key_and_models() {
     let (service, secrets) = service_with_models_response("{\"data\":[{\"id\":\"m-a\"}]}");
     service
@@ -247,7 +652,11 @@ fn removing_a_provider_deletes_its_key_and_models() {
     assert!(service.remove_provider("alpha").unwrap());
 
     assert!(secrets.get("harness_provider:alpha").unwrap().is_none());
-    assert!(service.list_providers().unwrap().is_empty());
+    assert!(service
+        .list_providers()
+        .unwrap()
+        .iter()
+        .all(|provider| provider.id != "alpha"));
     assert!(service.list_models("alpha").unwrap().is_empty());
 }
 

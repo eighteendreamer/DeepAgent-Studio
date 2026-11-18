@@ -4,6 +4,14 @@ use super::*;
 use deepagent_persistence::harness_registry::HarnessModel;
 
 impl SettingsService {
+    pub(crate) fn harness_models(&self) -> crate::harness_model_service::HarnessModelService {
+        crate::harness_model_service::HarnessModelService::new(
+            self.db.clone(),
+            self.secrets.clone(),
+            self.transport.clone(),
+        )
+    }
+
     pub(crate) fn database(&self) -> &Database {
         &self.db
     }

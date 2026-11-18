@@ -14,7 +14,7 @@ pub fn endpoint(mode: WireMode) -> &'static str {
     match mode {
         WireMode::Responses => "/responses",
         WireMode::ChatCompletions => "/chat/completions",
-        WireMode::Messages => "/messages",
+        WireMode::Messages => "/v1/messages",
     }
 }
 

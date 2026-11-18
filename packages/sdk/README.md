@@ -9,7 +9,7 @@ through resume, fork and host restart. Omission (or JSON null) keeps the existin
 host/project default; the string `"none"` explicitly disables thinking.
 `thread.run(input, {reasoningEffort: "high"})` overrides only that turn, including
 its tool loop and steer replacement; it does not rewrite the thread default.
-The existing model resolver validates the canonical `none`/`low`/`high`/`max`
+The existing model resolver validates the canonical `none`/`low`/`medium`/`high`/`max`
 values in the shared model resolver, not thread creation. A successful creation only
 acknowledges saved input, not model/backend/credential readiness; invalid nonblank strings
 are preserved and reported as invalid by scoped `readConfig`. The existing

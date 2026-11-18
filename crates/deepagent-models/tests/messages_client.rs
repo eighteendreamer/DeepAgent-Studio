@@ -65,7 +65,7 @@ async fn messages_client_uses_messages_endpoint_and_neutral_result() {
     let response = client.stream_response(request).await.unwrap();
     assert_eq!(response.output_text_projection(), "ok");
     let request = transport.request.lock().unwrap().clone().unwrap();
-    assert_eq!(request.url, "https://api.deepseek.com/messages");
+    assert_eq!(request.url, "https://api.deepseek.com/v1/messages");
     assert_eq!(request.api_key, "fixture-key");
     let body: Value = serde_json::from_str(&request.body).unwrap();
     assert_eq!(body["model"], "fixture-model");
@@ -73,4 +73,34 @@ async fn messages_client_uses_messages_endpoint_and_neutral_result() {
     assert_eq!(body["system"], "rules");
     assert_eq!(body["messages"][0]["role"], "user");
     assert_eq!(body["stream"], true);
+}
+
+#[test]
+fn messages_endpoint_appends_protocol_path_to_base_url_once() {
+    for (base, expected) in [
+        (
+            "https://api.anthropic.com",
+            "https://api.anthropic.com/v1/messages",
+        ),
+        (
+            "https://api.anthropic.com/v1/",
+            "https://api.anthropic.com/v1/messages",
+        ),
+        (
+            "https://api.deepseek.com/anthropic",
+            "https://api.deepseek.com/anthropic/v1/messages",
+        ),
+        (
+            "https://api.deepseek.com/anthropic/v1///",
+            "https://api.deepseek.com/anthropic/v1/messages",
+        ),
+        (
+            "https://provider.test/tenant/v10",
+            "https://provider.test/tenant/v10/v1/messages",
+        ),
+    ] {
+        let mut config = ModelConfig::deepseek("synthetic").with_wire_mode(WireMode::Messages);
+        config.base_url = base.into();
+        assert_eq!(config.messages_endpoint(), expected);
+    }
 }

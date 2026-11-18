@@ -75,6 +75,85 @@ fn reject(error: CoreError) {
 }
 
 #[test]
+fn h025_extension_notifications_and_repeated_creation_do_not_enter_response_sequence() {
+    for notification in ["sub2api.gateway_ready", "vendor.connection_ready"] {
+        let mut accumulator = ResponseAccumulator::new();
+        let mut seen = Seen::default();
+        for event in [
+            json!({"type":"response.created","sequence_number":0,
+                "response":{"id":"provisional","model":"fixture"}}),
+            json!({"type":notification,"message":"PRIVATE_EXTENSION"}),
+            json!({"type":"response.created","sequence_number":0,
+                "response":{"id":"synthetic","model":"fixture"}}),
+            json!({"type":"response.in_progress","sequence_number":1}),
+            delta(2),
+            terminal(json!(3)),
+        ] {
+            accumulator
+                .push_sse_data_observed(&event.to_string(), &mut seen)
+                .unwrap();
+        }
+        assert_eq!(
+            accumulator.finish().unwrap().output_text_projection(),
+            "synthetic text"
+        );
+        let diagnostics: Vec<_> = seen
+            .0
+            .iter()
+            .filter_map(|event| match event {
+                ModelStreamEvent::ResponseStreamEvent { event_type, .. } => {
+                    Some(event_type.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(!diagnostics.contains(&notification));
+        assert!(!serde_json::to_string(&seen.0)
+            .unwrap()
+            .contains("PRIVATE_EXTENSION"));
+    }
+}
+
+#[test]
+fn h025_creation_cannot_reset_sequence_after_progress() {
+    let mut accumulator = ResponseAccumulator::new();
+    let mut seen = Seen::default();
+    for event in [
+        json!({"type":"response.created","sequence_number":0}),
+        json!({"type":"response.in_progress","sequence_number":1}),
+    ] {
+        accumulator
+            .push_sse_data_observed(&event.to_string(), &mut seen)
+            .unwrap();
+    }
+    let before = seen.0.len();
+    reject(
+        accumulator
+            .push_sse_data_observed(
+                &json!({"type":"response.created","sequence_number":0}).to_string(),
+                &mut seen,
+            )
+            .unwrap_err(),
+    );
+    assert_eq!(seen.0.len(), before);
+    assert!(accumulator.finish().is_err());
+}
+
+#[test]
+fn h025_provider_error_events_do_not_require_response_sequence() {
+    let mut accumulator = ResponseAccumulator::new();
+    let error = accumulator
+        .push_sse_data_observed(
+            &json!({"type":"error","code":"server_overloaded","message":"overloaded"}).to_string(),
+            &mut Seen::default(),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(error, CoreError::Provider { code: Some(code), .. } if code == "server_overloaded")
+    );
+}
+
+#[test]
 fn h210_invalid_sequence_has_no_semantic_projection_and_poisons_the_stream() {
     for prior in [None, Some(7_u64), Some(u64::MAX)] {
         let mut cases = vec![
@@ -236,7 +315,7 @@ async fn h210_real_http_sequence_check_preserves_gap_and_rejects_replay() {
         net::TcpListener,
         time::{timeout, Duration},
     };
-    for duplicate in [false, true] {
+    for case in ["gap", "duplicate", "preamble"] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -267,7 +346,16 @@ async fn h210_real_http_sequence_check_preserves_gap_and_rejects_replay() {
                 assert!(count > 0);
                 received.extend_from_slice(&bytes[..count]);
             }
-            let events = if duplicate {
+            let events = if case == "preamble" {
+                vec![
+                    json!({"type":"response.created","sequence_number":0}),
+                    json!({"type":"vendor.connection_ready"}),
+                    json!({"type":"response.created","sequence_number":0}),
+                    json!({"type":"response.in_progress","sequence_number":1}),
+                    delta(2),
+                    terminal(json!(3)),
+                ]
+            } else if case == "duplicate" {
                 vec![delta(0), terminal(json!(0))]
             } else {
                 vec![
@@ -300,7 +388,7 @@ async fn h210_real_http_sequence_check_preserves_gap_and_rejects_replay() {
         )
         .await
         .unwrap();
-        if duplicate {
+        if case == "duplicate" {
             reject(response.unwrap_err());
             assert!(!seen
                 .0
@@ -308,17 +396,19 @@ async fn h210_real_http_sequence_check_preserves_gap_and_rejects_replay() {
                 .any(|event| matches!(event, ModelStreamEvent::Finished { .. })));
         } else {
             assert_eq!(response.unwrap().usage.unwrap().total_tokens, 11);
-            assert!(seen
-                .0
-                .iter()
-                .any(|event| serde_json::to_value(event).unwrap()["sequence_gap"] == 2));
+            if case == "gap" {
+                assert!(seen
+                    .0
+                    .iter()
+                    .any(|event| serde_json::to_value(event).unwrap()["sequence_gap"] == 2));
+            }
             // H-200: real HTTP deframing must preserve terminal identity too.
             assert!(seen.0.iter().any(|event| {
                 let event = serde_json::to_value(event).unwrap();
                 event["event_type"] == "response.completed"
                     && event["response_id"] == "synthetic"
                     && event["provider_model"] == "deepseek-flash"
-                    && event["sequence_number"] == 4
+                    && event["sequence_number"] == if case == "preamble" { 3 } else { 4 }
             }));
         }
         timeout(Duration::from_secs(5), server)

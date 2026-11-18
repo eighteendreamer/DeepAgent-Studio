@@ -29,7 +29,14 @@ async fn h222_canonical_thread_defaults_and_turn_overrides_reach_real_wire() {
         .set_reasoning_effort(ReasoningEffort::Low)
         .unwrap();
     let mut expected_wire = Vec::new();
-    for effort in [None, Some("none"), Some("low"), Some("high"), Some("max")] {
+    for effort in [
+        None,
+        Some("none"),
+        Some("low"),
+        Some("medium"),
+        Some("high"),
+        Some("max"),
+    ] {
         let created = thread(&fixture, effort);
         fixture.thread_id = created["threadId"].as_str().unwrap().to_owned();
         assert_eq!(
@@ -190,7 +197,7 @@ async fn h222_invalid_thread_effort_is_preserved_and_rejected_before_provider_di
     let mut fixture = Fixture::with_transport(transport.clone()).await;
     // H-155 aliases remain a separate issue: never silently drop or replace
     // them with a canonical default while fixing this protocol seam.
-    for effort in ["bogus", " high ", "minimal", "medium", "xhigh"] {
+    for effort in ["bogus", " high ", "minimal", "xhigh"] {
         let created = thread(&fixture, Some(effort));
         assert_eq!(
             created["configuration"]["overrides"]["reasoning_effort"],

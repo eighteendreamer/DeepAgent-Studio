@@ -9,8 +9,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 
-#[path = "../tests/support/sse_protocol_fixture.rs"]
-mod protocol_fixture;
+use crate::test_wire as protocol_fixture;
 
 async fn write_chunk(socket: &mut TcpStream, bytes: &[u8]) -> bool {
     socket

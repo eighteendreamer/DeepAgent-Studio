@@ -6,6 +6,7 @@ mod h49_tests {
         ModelCapability {
             model_id: model.into(),
             effort: None,
+            thinking: None,
             context_window: window,
             max_output_tokens: limit,
             supports_tools: true,

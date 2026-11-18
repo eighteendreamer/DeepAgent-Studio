@@ -11,6 +11,7 @@ fn provider(id: &str, protocol: &str) -> HarnessProvider {
         id: id.into(),
         channel: format!("{id}-channel"),
         logo: String::new(),
+        website_url: String::new(),
         model_url: format!("https://{id}.test/v1"),
         protocol: protocol.into(),
         api_key_ref: format!("{id}_api_key"),
@@ -18,6 +19,22 @@ fn provider(id: &str, protocol: &str) -> HarnessProvider {
         enabled: true,
         revision: 0,
     }
+}
+
+#[test]
+fn chat_selection_round_trips_without_affecting_model_activation() {
+    let db = Database::open_in_memory().unwrap();
+    assert_eq!(db.harness_chat_selection().unwrap(), None);
+    db.set_harness_chat_selection("alpha", "m-one").unwrap();
+    assert_eq!(
+        db.harness_chat_selection().unwrap(),
+        Some(("alpha".into(), "m-one".into()))
+    );
+    db.set_harness_chat_selection("beta", "m-two").unwrap();
+    assert_eq!(
+        db.harness_chat_selection().unwrap(),
+        Some(("beta".into(), "m-two".into()))
+    );
 }
 
 fn model(provider_id: &str, name: &str) -> HarnessModel {
@@ -43,9 +60,12 @@ fn saving_a_provider_round_trips_and_bumps_its_revision() {
         .unwrap();
 
     let listed = db.list_harness_providers().unwrap();
-    assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].protocol, "chat_completions");
-    assert_eq!(listed[0].revision, 2);
+    let saved = listed
+        .iter()
+        .find(|provider| provider.id == "alpha")
+        .unwrap();
+    assert_eq!(saved.protocol, "chat_completions");
+    assert_eq!(saved.revision, 2);
 }
 
 #[test]
@@ -57,7 +77,7 @@ fn unknown_protocol_is_rejected_before_storage() {
         .expect_err("gemini is not a harness protocol");
 
     assert!(error.to_string().contains("gemini"), "{error}");
-    assert!(db.list_harness_providers().unwrap().is_empty());
+    assert_eq!(db.list_harness_providers().unwrap().len(), 2);
 }
 
 #[test]
@@ -148,6 +168,6 @@ fn removing_a_provider_removes_its_models() {
 
     assert!(db.remove_harness_provider("alpha").unwrap());
 
-    assert!(db.list_harness_providers().unwrap().is_empty());
+    assert_eq!(db.list_harness_providers().unwrap().len(), 2);
     assert!(db.active_harness_models().unwrap().is_empty());
 }

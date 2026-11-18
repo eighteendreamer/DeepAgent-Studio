@@ -49,6 +49,97 @@ fn response_function_call(call_id: &str, name: &str, arguments: serde_json::Valu
 const INPUT: &str = "Read fixture.txt and acknowledge it.";
 const MODEL: &str = "registry-model";
 
+async fn slash(f: &Fixture, prompt: &str) -> Result<String> {
+    let output = Arc::new(Mutex::new(String::new()));
+    let captured = output.clone();
+    f.chat
+        .run_in_session(
+            prompt,
+            None,
+            None,
+            None,
+            vec![],
+            None,
+            false,
+            None,
+            move |event| {
+                if let deepagent_runtime::RuntimeEvent::RunCompleted { message, .. } = event {
+                    *captured.lock().unwrap() = message;
+                }
+            },
+            |_| {},
+        )
+        .await?;
+    let message = output.lock().unwrap().clone();
+    Ok(message)
+}
+
+#[tokio::test]
+async fn slash_model_uses_activated_registry_and_routes_the_next_turn() {
+    let f = Fixture::new("responses", None).await;
+    let mut inactive = model(None);
+    inactive.model_name = "inactive-model".into();
+    inactive.active = false;
+    f.db.save_harness_models("alpha", &[inactive]).unwrap();
+    let listing = slash(&f, "/model").await.unwrap();
+    assert!(listing.contains("Alpha"));
+    assert!(listing.contains(MODEL));
+    assert!(!listing.contains("inactive-model"));
+    let receipt = slash(&f, &format!("/model {MODEL}")).await.unwrap();
+    assert!(receipt.contains("Alpha"));
+    assert_eq!(
+        f.db.harness_chat_selection().unwrap(),
+        Some(("alpha".into(), MODEL.into()))
+    );
+    assert!(
+        f.wire.requests.lock().unwrap().is_empty(),
+        "slash never calls inference"
+    );
+    f.run("after-slash-model", HarnessRunOverrides::default())
+        .await
+        .unwrap();
+    let requests = f.wire.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_request(
+        &requests[0],
+        "https://alpha.test/v1/responses",
+        "synthetic-alpha-key",
+        MODEL,
+    );
+}
+
+#[tokio::test]
+async fn slash_model_rejects_inactive_and_ambiguous_names_without_changing_selection() {
+    let f = Fixture::new("responses", None).await;
+    let mut other = provider("responses");
+    other.id = "beta".into();
+    other.channel = "Beta".into();
+    f.db.save_harness_provider(&other).unwrap();
+    let mut duplicate = model(None);
+    duplicate.provider_id = "beta".into();
+    f.db.save_harness_models("beta", &[duplicate]).unwrap();
+    let before = f.db.harness_chat_selection().unwrap();
+    assert!(slash(&f, &format!("/model {MODEL}"))
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("multiple providers"));
+    assert_eq!(f.db.harness_chat_selection().unwrap(), before);
+    slash(&f, &format!("/model beta/{MODEL}")).await.unwrap();
+    f.db.set_harness_model_active("alpha", MODEL, false)
+        .unwrap();
+    assert!(slash(&f, &format!("/model alpha/{MODEL}"))
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("not activated"));
+    assert_eq!(
+        f.db.harness_chat_selection().unwrap(),
+        Some(("beta".into(), MODEL.into()))
+    );
+    assert!(f.wire.requests.lock().unwrap().is_empty());
+}
+
 fn selection(provider: &str, model: &str) -> HarnessRunOverrides {
     HarnessRunOverrides {
         provider: Some(provider.into()),
@@ -64,6 +155,7 @@ fn provider(protocol: &str) -> HarnessProvider {
         id: "alpha".into(),
         channel: "Alpha".into(),
         logo: String::new(),
+        website_url: String::new(),
         model_url: "https://alpha.test/v1".into(),
         protocol: protocol.into(),
         api_key_ref: "registry-alpha-key".into(),

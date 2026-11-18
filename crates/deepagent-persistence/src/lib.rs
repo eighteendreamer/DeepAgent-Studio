@@ -102,6 +102,7 @@ impl Database {
         configure_pragmas(&conn)?;
         migrations::run(&conn)?;
         harness_registry::import_legacy_deepseek_provider(&conn)?;
+        harness_registry::seed_builtin_harness_providers(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
             data_root,

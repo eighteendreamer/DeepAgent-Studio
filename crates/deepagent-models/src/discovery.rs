@@ -272,6 +272,28 @@ impl ModelDiscovery {
         }
     }
 
+    /// Select the protocol's listing root without changing the configured inference root.
+    pub fn with_wire_mode(mut self, wire_mode: crate::WireMode) -> Self {
+        if wire_mode == crate::WireMode::Messages {
+            // The official DeepSeek Messages route lists models at its origin,
+            // as llm-deepseek::modelListingURL does. Other Anthropic-compatible
+            // providers retain their deployment prefix and native `/v1` path.
+            let deepseek_messages = url::Url::parse(&self.base_url).is_ok_and(|url| {
+                url.origin().ascii_serialization() == DEEPSEEK_BASE_URL
+                    && matches!(
+                        url.path().trim_end_matches('/'),
+                        "/anthropic" | "/anthropic/v1"
+                    )
+            });
+            self.base_url = if deepseek_messages {
+                DEEPSEEK_BASE_URL.to_owned()
+            } else {
+                crate::messages::api_root(&self.base_url)
+            };
+        }
+        self
+    }
+
     /// The fully-qualified `/models` endpoint.
     pub fn models_endpoint(&self) -> String {
         format!("{}{}", self.base_url.trim_end_matches('/'), MODELS_PATH)

@@ -102,11 +102,21 @@ pub(crate) fn resolve_run_model(
 ) -> Result<RunModelPlan> {
     // Preserve the old public provider id as an alias for its migrated row.
     // Selection and validation still go through the registry exactly once.
+    let persisted_selection = db.harness_chat_selection()?;
+    let selected_provider = persisted_selection
+        .as_ref()
+        .map(|(provider, _)| provider.as_str())
+        .unwrap_or("deepseek");
+    let selected_model = persisted_selection
+        .as_ref()
+        .map(|(_, model)| model.as_str())
+        .unwrap_or(&loaded.catalog.chat_model);
     let provider = match provider_override {
-        None | Some(DEEPSEEK_OFFICIAL_PROVIDER) => "deepseek",
+        None => selected_provider,
+        Some(DEEPSEEK_OFFICIAL_PROVIDER) => "deepseek",
         Some(id) => id,
     };
-    let model = model_override.unwrap_or(&loaded.catalog.chat_model);
+    let model = model_override.unwrap_or(selected_model);
     let route = crate::harness_model_resolver::resolve_active_model(db, provider, model)?;
     let requested = resolve_reasoning_effort(loaded, reasoning_effort_override)?;
     let mut defaults = response_defaults(loaded, requested);
@@ -185,7 +195,7 @@ pub(crate) fn resolve_reasoning_effort(
     if let Some(value) = run_override {
         return ReasoningEffort::parse(value).map(Some).ok_or_else(|| {
             CoreError::invalid(format!(
-                "reasoning effort must be none, low, high, or max; got '{value}'"
+                "reasoning effort must be none, low, medium, high, or max; got '{value}'"
             ))
         });
     }
@@ -193,7 +203,7 @@ pub(crate) fn resolve_reasoning_effort(
         || settings.responses.developer.contains_key("reasoning");
     if has_responses_effort && response_effort.is_none() {
         return Err(CoreError::invalid(
-            "stored Responses reasoning effort is invalid; select none, low, high, or max",
+            "stored Responses reasoning effort is invalid; select none, low, medium, high, or max",
         ));
     }
     Ok(response_effort.or(settings
@@ -231,7 +241,7 @@ mod tests {
             resolve_reasoning_effort(&settings, None).unwrap(),
             Some(ReasoningEffort::High)
         );
-        for value in ["minimal", "medium", "xhigh", "simple", "deep"] {
+        for value in ["minimal", "xhigh", "simple", "deep"] {
             assert!(
                 resolve_reasoning_effort(&settings, Some(value)).is_err(),
                 "{value}"
@@ -240,7 +250,7 @@ mod tests {
         settings.responses.reasoning_effort = Some("medium".into());
         assert_eq!(
             resolve_reasoning_effort(&settings, None).unwrap(),
-            Some(ReasoningEffort::High)
+            Some(ReasoningEffort::Medium)
         );
     }
 
@@ -292,5 +302,51 @@ mod tests {
             resolve(&settings, Some("low")).unwrap().reasoning_effort,
             ReasoningEffort::Low
         );
+    }
+
+    #[test]
+    fn persisted_harness_selection_drives_the_next_admission() {
+        let mut settings: AppSettings = serde_json::from_value(serde_json::json!({
+            "catalog": { "base_url": deepagent_models::DEEPSEEK_BASE_URL,
+                "available": [], "chat_model":"legacy", "reasoner_model":"legacy" },
+            "discovered_at":0, "sandbox_mode":"workspace_write"
+        }))
+        .unwrap();
+        settings.reasoning_effort_explicit = false;
+        let db = deepagent_persistence::Database::open_in_memory().unwrap();
+        db.seed_legacy_harness_model(
+            &settings.catalog.base_url,
+            &deepagent_persistence::harness_registry::HarnessModel {
+                provider_id: "deepseek".into(),
+                model_name: "legacy".into(),
+                display_name: "legacy".into(),
+                protocol: None,
+                context_window: 1_000_000,
+                output_limit: 131_072,
+                capabilities: "{}".into(),
+                active: true,
+            },
+        )
+        .unwrap();
+        db.save_harness_models(
+            "deepseek",
+            &[deepagent_persistence::harness_registry::HarnessModel {
+                provider_id: "deepseek".into(),
+                model_name: "next-model".into(),
+                display_name: "next-model".into(),
+                protocol: None,
+                context_window: 1_000_000,
+                output_limit: 131_072,
+                capabilities: "{}".into(),
+                active: true,
+            }],
+        )
+        .unwrap();
+        db.set_harness_chat_selection("deepseek", "next-model")
+            .unwrap();
+
+        let plan = super::resolve_run_model(&db, &settings, None, None, None).unwrap();
+        assert_eq!(plan.model, "next-model");
+        assert_eq!(plan.provider_id, "deepseek");
     }
 }

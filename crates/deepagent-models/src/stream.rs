@@ -55,11 +55,26 @@ impl ResponseAccumulator {
     ) -> Result<bool> {
         let value: serde_json::Value = serde_json::from_str(data.trim())
             .map_err(|e| CoreError::Serialization(format!("bad Responses event: {e}")))?;
-        let (sequence_number, sequence_gap) = self.sequence.accept(&value)?;
         let kind = value
             .get("type")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("");
+        if kind == "error" {
+            return Err(crate::provider_error::from_json_error(
+                None,
+                Some(&value),
+                Some("response_error"),
+                "Responses stream failed",
+                None,
+                None,
+            ));
+        }
+        // Provider transport notifications are not Responses semantic events.
+        // Match the protocol namespace rather than maintaining gateway names.
+        if !kind.starts_with("response.") && !kind.is_empty() {
+            return Ok(false);
+        }
+        let (sequence_number, sequence_gap) = self.sequence.accept(&value)?;
         let terminal_status = match kind {
             "response.completed" => Some("completed"),
             "response.incomplete" => Some("incomplete"),

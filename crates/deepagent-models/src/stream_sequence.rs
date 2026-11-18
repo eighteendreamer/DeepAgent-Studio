@@ -6,6 +6,7 @@ use serde_json::Value;
 pub(super) struct Sequence {
     last: Option<u64>,
     invalid: bool,
+    progressed: bool,
 }
 
 impl Sequence {
@@ -17,6 +18,15 @@ impl Sequence {
             self.invalid = true;
             return Err(invalid_sequence(self.last, None));
         };
+        // Creation only supplies provisional response metadata. Some compatible
+        // transports emit it before forwarding the upstream creation event.
+        // Once any other Responses event arrives, a restart is no longer safe.
+        if event.get("type").and_then(Value::as_str) == Some("response.created") && !self.progressed
+        {
+            self.last = None;
+        } else {
+            self.progressed = true;
+        }
         let gap = if let Some(last) = self.last {
             if current <= last {
                 self.invalid = true;

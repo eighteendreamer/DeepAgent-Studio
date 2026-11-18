@@ -84,6 +84,30 @@ fn legacy_load_imports_only_the_chat_selection_and_preserves_its_capacities() {
 }
 
 #[test]
+fn legacy_import_hydrates_an_untouched_builtin_with_the_saved_endpoint() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    legacy_settings(&db);
+    let store = DocumentStore::new(&db);
+    let mut document = store.get("settings", "app").unwrap().unwrap();
+    document.body = document
+        .body
+        .replace("https://api.deepseek.com", "https://legacy.test/v1");
+    store
+        .put(
+            "settings",
+            "app",
+            &document.body,
+            None,
+            Timestamp::from_millis(2),
+        )
+        .unwrap();
+    service(db.clone()).load().unwrap();
+    let routes = db.active_harness_models().unwrap();
+    assert_eq!(routes[0].0.model_url, "https://legacy.test/v1");
+    assert_eq!(routes[0].0.api_key_ref, "deepseek_api_key");
+}
+
+#[test]
 fn repeated_legacy_load_does_not_reactivate_or_recreate_user_removed_routes() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("seed.sqlite");
@@ -111,11 +135,19 @@ fn repeated_legacy_load_does_not_reactivate_or_recreate_user_removed_routes() {
         assert!(db.active_harness_models().unwrap().is_empty());
         assert!(db.remove_harness_provider("deepseek").unwrap());
         settings.load().unwrap();
-        assert!(db.list_harness_providers().unwrap().is_empty());
+        assert!(db
+            .list_harness_providers()
+            .unwrap()
+            .iter()
+            .all(|provider| provider.id != "deepseek"));
     }
     let db = Arc::new(Database::open(&path).unwrap());
     service(db.clone()).load().unwrap();
-    assert!(db.list_harness_providers().unwrap().is_empty());
+    assert!(db
+        .list_harness_providers()
+        .unwrap()
+        .iter()
+        .all(|provider| provider.id != "deepseek"));
 }
 
 #[test]
@@ -130,8 +162,9 @@ fn registry_seed_failure_cannot_publish_half_a_route() {
         .map_err(|error| deepagent_core::error::CoreError::Persistence(error.to_string()))
     })
     .unwrap();
+    let before = db.list_harness_providers().unwrap();
     assert!(service(db.clone()).load().is_err());
-    assert!(db.list_harness_providers().unwrap().is_empty());
+    assert_eq!(db.list_harness_providers().unwrap(), before);
     db.with_conn(|conn| {
         conn.execute_batch("DROP TRIGGER reject_seed;")
             .map_err(|error| deepagent_core::error::CoreError::Persistence(error.to_string()))
@@ -145,7 +178,7 @@ fn registry_seed_failure_cannot_publish_half_a_route() {
 fn uninitialized_settings_do_not_create_a_default_route() {
     let db = Arc::new(Database::open_in_memory().unwrap());
     assert!(service(db.clone()).load().unwrap().is_none());
-    assert!(db.list_harness_providers().unwrap().is_empty());
+    assert_eq!(db.list_harness_providers().unwrap().len(), 2);
 }
 
 #[tokio::test]
@@ -194,6 +227,7 @@ fn legacy_seed_preserves_existing_provider_and_model_edits() {
         id: "deepseek".into(),
         channel: "Edited route".into(),
         logo: "edited".into(),
+        website_url: String::new(),
         model_url: "https://edited.test/v1".into(),
         protocol: "messages".into(),
         api_key_ref: "edited-secret-ref".into(),

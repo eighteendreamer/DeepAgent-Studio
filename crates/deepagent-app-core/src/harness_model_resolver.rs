@@ -10,16 +10,12 @@ use deepagent_models::{CapabilitySource, ModelCapability, WireMode};
 use deepagent_persistence::harness_registry::{HarnessModel, HarnessProvider};
 use deepagent_persistence::Database;
 
-/// Maps a registry protocol onto a wire the runtime can speak. `messages` is
-/// accepted by the registry but has no codec yet (plan §9, P5), so it is refused
-/// here instead of being sent over the wrong wire.
+/// Maps a registry protocol onto a wire the runtime can speak.
 pub fn wire_mode_for_protocol(protocol: &str) -> Result<WireMode> {
     match protocol {
         "responses" => Ok(WireMode::Responses),
         "chat_completions" => Ok(WireMode::ChatCompletions),
-        "messages" => Err(CoreError::invalid(
-            "protocol `messages` has no runtime codec yet",
-        )),
+        "messages" => Ok(WireMode::Messages),
         other => Err(CoreError::invalid(format!("unknown protocol `{other}`"))),
     }
 }
@@ -108,10 +104,11 @@ fn registry_capability(model: &HarnessModel) -> Result<ModelCapability> {
         context_window: capacity(model.context_window)?,
         max_output_tokens: capacity(model.output_limit)?,
         supports_tools: true,
-        supports_thinking: false,
+        supports_thinking: true,
         supports_json_output: true,
         input_modalities: None,
         effort: None,
+        thinking: None,
         capability_source: CapabilitySource::UserOverride,
         fallback_reason: None,
     };
@@ -128,6 +125,9 @@ fn registry_capability(model: &HarnessModel) -> Result<ModelCapability> {
     value["model_id"] = defaults.model_id.into();
     value["context_window"] = defaults.context_window.into();
     value["max_output_tokens"] = defaults.max_output_tokens.into();
-    serde_json::from_value(value)
-        .map_err(|_| CoreError::invalid("invalid registry model capability fields"))
+    let thinking = deepagent_models::thinking::ThinkingCapabilities::from_registry_json(&stored)?;
+    let mut capability: ModelCapability = serde_json::from_value(value)
+        .map_err(|_| CoreError::invalid("invalid registry model capability fields"))?;
+    capability.thinking = Some(thinking);
+    Ok(capability)
 }

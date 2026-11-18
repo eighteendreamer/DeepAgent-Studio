@@ -131,6 +131,12 @@
 
 输入框的下拉从当前模型这一行读，换模型自动变。
 
+2026-11-18 用户纠正：所有模型默认具备思考能力，未声明能力时采用
+`off/low/medium/high/max` 五档并允许关闭；最低档在界面显示“关闭”。
+此前“必须手工配置、配置前全部置灰”的回答作废。已显式保存的模型能力仍优先，
+不根据模型名称推断能力；显式空列表与坏数据不能当作缺省值放行。
+这里的“预设”指方案设计，并不要求新安装默认选中关闭；保持现有初始档位和已有用户保存的选择。
+
 ---
 
 ## 2. 协议配置粒度
@@ -462,22 +468,22 @@ pub struct BalanceAmount {
 
 | 批次 | 状态 | 证据 / 与原计划的偏差 |
 |---|---|---|
-| G0 工程门禁 | 编译检查通过；完整门禁未通过 | H010：workspace/all-targets/all-features check 通过；models/http lib 279、runtime lib 493 passed / 2 ignored，三协议 HTTP 专项 10 passed，models/http/all-targets clippy 通过。桌面完整 `pnpm build` 通过。完整 workspace 测试仍需复跑；既有 AppCore 两项失败及全仓 fmt/clippy 问题尚未处理。远程连接由另一会话负责。 |
+| G0 工程门禁 | 编译检查通过；完整门禁未通过 | H024 最后完整 workspace 测试在 AppCore lib 停止：1714 passed / 7 failed / 44 ignored；串行复核仍有 6 项失败，不能沿用此前“仅剩 1 项”的结论。H022 原生 all-targets check 通过；H025 models/http 321、AppCore 模型服务 20、内核终态 5 passed。桌面完整 `pnpm build` 已通过；全仓 fmt/clippy 问题仍待处理。远程连接由另一会话负责。 |
 | P0 可测性验证 | 已记录结论，采用 (a) | §10-1；SDK 只承担类型与序列化，复用现有 HTTP/SSE/取消/预算边界。anthropic-sdk 已进入生产依赖；async-openai 尚未接入。 |
-| P1 中性内容层 + 五档映射 | 类型和 UI 已实现；运行链仍有兼容映射 | `b6774635` 增加 `ThinkingLevel` / `map_thinking` 和 `ResponseItem::Reasoning.signature` 可选字段。Composer 已收敛 `off/low/medium/high/max`；Rust 运行链仍兼容旧 `ReasoningEffort`，`medium` 暂映射为 `high`，需后续统一中性档位到 provider adapter。 |
+| P1 中性内容层 + 五档映射 | 五档已贯通，家族映射接入待完成 | `b6774635` 增加 `ThinkingLevel` / `map_thinking` 和 `ResponseItem::Reasoning.signature`。H012 将 medium 独立保留到三协议请求体，默认能力与显式能力共用解析与校验；`map_thinking` 家族映射仍待接入 provider adapter。 |
 | P2 协议表 + 工厂 | 部分完成 | `protocol::codec_for` 已收口 Responses / Chat Completions / Messages 的请求体与工具投影；Messages 请求、流式解码、usage、签名、错误和工具结果顺序已接入 ModelClient。统一 codec 流式边界和 Responses SDK 类型层仍需继续收敛。 |
 | P3 数据模型 + 迁移 | 运行链已接入，消费方回归中 | V24 表、CRUD、激活列表、AppCore DTO、7 个 Tauri command 与 TS API 均已落地。`9c9046be` 修复密钥引用；`b1de6059` 完成一次性 Chat 种子迁移。H004 将 admission、执行绑定、工具续写、技能审查和标题调用接入注册表；解析、真实运行链、内核相关和 persistence 回归均通过。模型选择已持久化并由下一轮 admission 读取，旧 Chat 字段仅作迁移/兼容回退。 |
 | P3c 过载与备用模型删除 | 已提交，相关回归通过 | `10234777`：过载统一不可重试，明确 503 过载也立即报错；删除运行时 fallback 路径。models lib 240 passed；runtime lib 493 passed / 2 ignored；H55 4 passed；内核 H144 7 passed；采样、计费/预算、输出上限、图像模式及模型快照串行回归通过；真实 HTTP 1 项、CLI 2 项通过。H004 已接入单一 resolver。 |
 | P3b 会话 JSONL 的 `origin` | 已实现，回归通过 | `ResponseItemAppended.origin` 为可选 `ModelOrigin`，由真实模型运行链写入；旧 JSONL 无 `origin` 仍可读。core 往返 2 项、persistence 来源回放 1 项、persistence 全量 221 项、session 27 项、AppCore 注册表真实运行 7 项通过。跨供应商思考签名是否需要降级仍待实测，当前只保留签名与来源，不擅自改变回放语义。 |
-| P4 / P5 SDK 与双协议 codec | Messages SDK 请求/解析已接入；真实传输待验收 | H008 修复重复工具结果、required→any、显式关闭思考；SDK 类型承担请求与流式 schema。H55 同组运行回归覆盖 Messages，4 passed。DeepSeek Messages 支持 Bearer 并忽略版本头；原生 Anthropic 请求头仍待适配。async-openai 尚未进入生产依赖；Messages 图片与缓存断点待补齐。 |
-| P6 设置页 | 基础界面与后端已实现；流程待验收 | `ModelsSettings.tsx` 已接供应商 CRUD、协议/余额类型配置、模型拉取与激活；尚无完整供应商/模型管理流程的实际 UI 验收。 |
+| P4 / P5 SDK 与双协议 codec | Messages SDK 请求/解析已接入；真实传输复验中 | H008 修复重复工具结果、required→any、显式关闭思考。H025 查证 deepseek-harness 的第三方 pi-ai 路由，修复扩展通知进入 Responses 序号门禁及输出前重复 created；Messages 基础 URL 统一补 `/v1`，系统追加 `/messages`，模型发现复用同一根地址。DeepSeek Messages 支持 Bearer；原生 Anthropic 请求头仍待适配。async-openai 尚未进入生产依赖；Messages 图片与缓存断点待补齐。 |
+| P6 设置页 | 基础界面与后端已实现；流程待验收 | `ModelsSettings.tsx` 已接供应商 CRUD、模型拉取/激活和配置编辑。H015 保留已存配置，H016 支持协议/容量/思考编辑，服务 19 + resolver 12 项通过；H017 设置页迟到请求回归通过。完整原生 UI 流程仍待验收。 |
 | P7 余额 | 已修复已知解析/UI 缺口；真实 API 待验收 | H009 修复未知形状误判无限、分币换算、display 单位、缺失金额伪造零与错误跨供应商回退；两处 UI 共用查询与金额格式化并丢弃迟到结果。models lib 256、前端余额专项 9 passed。完整桌面与真实余额 API 待验收。 |
 | P8 缓存 | 未完成 | 尚未新增稳定前缀治理或 Messages `cache_control` 断点；继续复用现有上下文压缩阈值。 |
-| P9 输入框思考档位 | UI 五档已显示；端到端未完成 | Composer 已显示五档并读取模型能力置灰；当前 `medium` 通过旧设置接口映射为 `high`。能力投影读取 `/effort/supported_levels` 而非方案的 `thinking_levels`，且 `thinking_disable` 的 UI 禁用条件与 §1.4 语义相反，仍需统一契约和真实 provider 验收。 |
+| P9 输入框思考档位 | 五档参数与能力回归通过，原生 UI 验收待完成 | H012 统一 `thinking_levels` / `thinking_distinct` / `thinking_disable`，缺省五档可关闭，兼容显式旧 effort 限制；修正 off 禁用条件与全禁用滑杆，medium 保存不再变为 high。H018 补齐显式等价标注，Composer 18 项与 registry → transport 三协议矩阵通过；原生 UI 流程仍待验收。 |
 | P10 模型列表与切换 | 已接入；桌面手动验收待完成 | Composer 消费激活模型，按 provider 分组；选择写入 harness 注册表，跨供应商触发余额刷新；当前 turn 冻结旧模型，工具续写保持旧模型，下一轮用户消息重新 admission。 |
-| P11 产品验收 | 未开始 | 真实 API、首次登录和双协议 UI 流程及性能数据尚未取得，不能宣告可交付。 |
+| P11 产品验收 | 直接接口探针通过，完整验收未完成 | 用户提供的 Responses / Messages 接口分别关闭与 medium 共四次直接 HTTP SSE 探针成功；未经过 ModelClient/Tauri。首次登录、双协议 UI 流程与性能数据尚未取得，不能宣告可交付。 |
 | F0 协议层盘点 | 已有只读盘点；需按当前代码复核 | 见 9.2；用户已确认不新增 `turn/stream`。 |
-| F1+ 协议层补齐 | SDK 三入口已补齐，其余缺口待继续 | H011 / `a8dd03fc`：公开 forkThread、sandboxStatus、acknowledgeEvents，复用既有服务端方法。SDK 串行全测 204 passed，真实 CLI cold fork 1 passed；默认并行两项生命周期超时尚未解决。 |
+| F1+ 协议层补齐 | SDK 三入口已补齐，其余缺口待继续 | H011 / `a8dd03fc`：公开 forkThread、sandboxStatus、acknowledgeEvents，复用既有服务端方法。SDK 串行全测 204 passed，真实 CLI cold fork 1 passed；H018 默认 pnpm test 复跑 204 passed / 0 failed，保留此前并行超时记录。 |
 
 ### 9.2 F0 盘点结论
 

@@ -602,10 +602,10 @@ fn validate_developer_responses_fields(
         }
         if !matches!(
             reasoning.get("effort").and_then(serde_json::Value::as_str),
-            Some("none" | "low" | "high" | "max")
+            Some("none" | "low" | "medium" | "high" | "max")
         ) {
             return Err(CoreError::invalid(
-                "Responses reasoning.effort must be none, low, high, or max",
+                "Responses reasoning.effort must be none, low, medium, high, or max",
             ));
         }
     }
@@ -3516,7 +3516,7 @@ fn responses_developer_json_uses_official_nested_reasoning_shape() {
 
 #[test]
 fn reasoning_effort_accepts_official_aliases_but_rejects_legacy_labels() {
-    for (value, canonical) in [("minimal", "low"), ("medium", "high"), ("xhigh", "high")] {
+    for (value, canonical) in [("minimal", "low"), ("medium", "medium"), ("xhigh", "high")] {
         let settings = ResponsesApiSettings {
             reasoning_effort: Some(value.to_string()),
             ..ResponsesApiSettings::default()
@@ -3550,7 +3550,7 @@ fn reasoning_effort_accepts_official_aliases_but_rejects_legacy_labels() {
             "must reject {value}"
         );
     }
-    for value in ["none", "low", "high", "max"] {
+    for value in ["none", "low", "medium", "high", "max"] {
         assert!(ResponsesApiSettings::from_developer_json(&format!(
             r#"{{"reasoning":{{"effort":"{value}"}}}}"#
         ))
@@ -3647,7 +3647,7 @@ async fn load_migrates_legacy_reasoning_and_normalizes_responses_aliases() {
 
     let loaded = svc.load().unwrap().unwrap();
     assert_eq!(loaded.reasoning_effort, ReasoningEffort::High);
-    assert_eq!(loaded.responses.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(loaded.responses.reasoning_effort.as_deref(), Some("medium"));
     assert_eq!(loaded.responses.developer["reasoning"]["effort"], "high");
     assert_eq!(loaded.responses.effective_temperature(), Some(0.4));
 
@@ -3658,7 +3658,7 @@ async fn load_migrates_legacy_reasoning_and_normalizes_responses_aliases() {
     let cleaned: serde_json::Value = serde_json::from_str(&cleaned.body).unwrap();
     assert!(cleaned.get("thinking_depth").is_none());
     assert_eq!(cleaned["reasoning_effort"], "high");
-    assert_eq!(cleaned["responses"]["reasoning_effort"], "high");
+    assert_eq!(cleaned["responses"]["reasoning_effort"], "medium");
     assert_eq!(
         cleaned["responses"]["developer"]["reasoning"]["effort"],
         "high"

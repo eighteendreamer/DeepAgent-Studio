@@ -322,6 +322,7 @@ impl RunCapabilityRecorder {
             "wireMode": match wire.wire_mode {
                 deepagent_models::WireMode::Responses => "responses",
                 deepagent_models::WireMode::ChatCompletions => "chat_completions",
+                deepagent_models::WireMode::Messages => "messages",
             },
             "model": wire.model,
             "sourceSchemaHash": source.schema_hash,

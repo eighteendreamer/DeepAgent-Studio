@@ -4396,6 +4396,7 @@ mod tests {
         let capability = deepagent_models::ModelCapability {
             input_modalities: None,
             effort: None,
+            thinking: None,
             model_id: "test".into(),
             context_window: window,
             max_output_tokens: 8_192,
