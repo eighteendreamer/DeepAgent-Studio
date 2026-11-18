@@ -14,10 +14,22 @@ type Props<T extends string> = {
   disabled?: boolean;
 };
 
+function nearestEnabledIndex<T extends string>(stops: SliderStop<T>[], index: number): number {
+  if (!stops[index]?.disabled) return index;
+  for (let distance = 1; distance < stops.length; distance += 1) {
+    const lower = index - distance;
+    if (lower >= 0 && !stops[lower]?.disabled) return lower;
+    const upper = index + distance;
+    if (upper < stops.length && !stops[upper]?.disabled) return upper;
+  }
+  return index;
+}
+
 export function EffortSlider<T extends string>({ stops, value, onChange, ariaLabel, disabled }: Props<T>) {
   const [reducedMotion, setReducedMotion] = useState(() => window.matchMedia("(prefers-reduced-motion: reduce)").matches);
   const active = Math.max(0, stops.findIndex(stop => stop.value === value));
   const max = Math.max(0, stops.length - 1);
+  const unavailable = disabled || !stops.some(stop => !stop.disabled);
   const [preview, setPreview] = useState(active);
   const [dragging, setDragging] = useState(false);
   const previewRef = useRef(active);
@@ -34,7 +46,8 @@ export function EffortSlider<T extends string>({ stops, value, onChange, ariaLab
     setPreview(previewRef.current);
   };
   const commit = (next: number) => {
-    const index = Math.max(0, Math.min(max, Math.round(next)));
+    if (unavailable) return;
+    const index = nearestEnabledIndex(stops, Math.max(0, Math.min(max, Math.round(next))));
     updatePreview(index);
     if (stops[index] && stops[index].value !== value) onChange(stops[index].value);
   };
@@ -79,14 +92,14 @@ export function EffortSlider<T extends string>({ stops, value, onChange, ariaLab
 
   return (
     <div ref={rootRef} className="reasoning-effort" data-dragging={dragging || undefined}
-      data-maximum={selected === max || undefined} data-disabled={disabled || undefined}>
+      data-maximum={selected === max || undefined} data-disabled={unavailable || undefined}>
       <SliderPrimitive appearance="effort" min={0} max={Math.max(1, max)} step={0.001}
-        value={[preview]} disabled={disabled || max === 0}
+        value={[preview]} disabled={unavailable || max === 0}
         thumbProps={{ "aria-label": ariaLabel, "aria-valuenow": selected, "aria-valuetext": stops[selected]?.label }}
         onValueChange={([next]) => updatePreview(next)} onValueCommit={([next]) => commit(next)}
         onPointerDown={event => { if (!event.isPrimary || event.button !== 0) event.preventDefault(); }}
         onPointerDownCapture={event => {
-          if (disabled || max === 0 || !event.isPrimary || event.button !== 0) return;
+          if (unavailable || max === 0 || !event.isPrimary || event.button !== 0) return;
           gesture.current = { id: event.pointerId, startX: event.clientX, lastX: event.clientX, time: event.timeStamp, moved: false };
           motion.current?.press();
         }}
@@ -121,7 +134,7 @@ export function EffortSlider<T extends string>({ stops, value, onChange, ariaLab
           else return;
           event.preventDefault();
           event.stopPropagation();
-          if (!disabled) commit(next);
+          commit(next);
         }}>
         <div className="reasoning-effort-fill" aria-hidden="true"><canvas ref={canvasRef} /></div>
         <div className="reasoning-effort-dots" aria-hidden="true">
@@ -131,8 +144,8 @@ export function EffortSlider<T extends string>({ stops, value, onChange, ariaLab
       </SliderPrimitive>
       <div className="reasoning-effort-stops" style={{ gridTemplateColumns: `repeat(${stops.length}, minmax(0, 1fr))` }}>
         {stops.map((stop, index) => (
-          <Button key={stop.value} variant="ghost" size="sm" disabled={disabled} aria-pressed={index === selected}
-            className="h-auto rounded px-0.5 py-[3px] text-[11px] font-normal hover:bg-transparent"
+          <Button key={stop.value} variant="ghost" size="sm" disabled={unavailable || stop.disabled} aria-pressed={index === selected}
+            className={`h-auto rounded px-0.5 py-[3px] text-[11px] font-normal hover:bg-transparent ${stop.disabled ? "text-text-tertiary opacity-45" : ""}`}
             onClick={() => commit(index)}>{stop.label}</Button>
         ))}
       </div>

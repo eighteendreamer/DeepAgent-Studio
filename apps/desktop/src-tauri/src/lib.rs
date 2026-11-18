@@ -59,7 +59,6 @@ use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use tauri::window::{Effect as WindowEffect, EffectsBuilder};
 use tauri::{Emitter, Manager, State};
-use tauri_plugin_decorum::WebviewWindowExt;
 
 // One keychain service name for every host; defined in `deepagent-app-core`.
 use deepagent_app_core::KEYCHAIN_SERVICE;
@@ -972,26 +971,33 @@ fn save_binary_file(path: String, bytes: Vec<u8>) -> Result<(), String> {
 // ---- settings / initialization commands -----------------------------------
 
 #[tauri::command]
-fn initialize_project(state: State<'_, AppState>, api_key: String) -> Result<SettingsView, String> {
+async fn initialize_project(
+    state: State<'_, AppState>,
+    api_key: String,
+) -> Result<SettingsView, String> {
     let settings = state.settings.clone();
-    let view = state
-        .rt
-        .block_on(async move { settings.initialize(&api_key).await })
-        .map_err(|e| e.to_string())?;
+    let rt = state.rt.handle().clone();
+    let projects = state.projects.clone();
+    let sandboxie = state.sandboxie.clone();
+    run_blocking(move || {
+        let view = rt
+            .block_on(settings.initialize(&api_key))
+            .map_err(|e| e.to_string())?;
 
-    let project_root = state
-        .projects
-        .active()
-        .ok()
-        .flatten()
-        .map(PathBuf::from)
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(std::env::temp_dir);
-    if let Err(err) = state.sandboxie.initialize_for_project(project_root) {
-        eprintln!("sandboxie initialize after login failed: {err}");
-    }
+        let project_root = projects
+            .active()
+            .ok()
+            .flatten()
+            .map(PathBuf::from)
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(std::env::temp_dir);
+        if let Err(err) = sandboxie.initialize_for_project(project_root) {
+            eprintln!("sandboxie initialize after login failed: {err}");
+        }
 
-    Ok(view)
+        Ok(view)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1073,12 +1079,14 @@ fn sandboxie_install(state: State<'_, AppState>) -> Result<SandboxieStatusDto, S
 }
 
 #[tauri::command]
-fn refresh_models(state: State<'_, AppState>) -> Result<SettingsView, String> {
+async fn refresh_models(state: State<'_, AppState>) -> Result<SettingsView, String> {
     let settings = state.settings.clone();
-    state
-        .rt
-        .block_on(async move { settings.refresh_models().await })
-        .map_err(|e| e.to_string())
+    let rt = state.rt.handle().clone();
+    run_blocking(move || {
+        rt.block_on(settings.refresh_models())
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Query the user's DeepSeek balance via the official `GET /user/balance`
@@ -2137,6 +2145,18 @@ fn harness_models_list(
         .map_err(|e| e.to_string())
 }
 
+/// Update a stored model's protocol, capacity and neutral thinking declaration.
+#[tauri::command]
+fn harness_model_save(
+    state: State<'_, AppState>,
+    model: deepagent_app_core::harness_model_service::HarnessModelInput,
+) -> Result<deepagent_app_core::harness_model_service::HarnessModelView, String> {
+    state
+        .harness_models
+        .save_model(model)
+        .map_err(|error| error.to_string())
+}
+
 /// Pull `GET /models` for a provider with its stored key. New models start inactive.
 #[tauri::command]
 async fn harness_models_fetch(
@@ -2172,6 +2192,44 @@ fn harness_active_models(
     state
         .harness_models
         .active_models()
+        .map_err(|e| e.to_string())
+}
+
+/// Select an activated harness model for the next chat turn.
+#[tauri::command]
+fn harness_model_select(
+    state: State<'_, AppState>,
+    provider_id: String,
+    model_name: String,
+) -> Result<deepagent_app_core::harness_model_service::ActiveModelView, String> {
+    state
+        .harness_models
+        .select_model(&provider_id, &model_name)
+        .map_err(|e| e.to_string())
+}
+
+/// Read the selected harness model without exposing credentials.
+#[tauri::command]
+fn harness_model_selection(
+    state: State<'_, AppState>,
+) -> Result<Option<deepagent_app_core::harness_model_service::ActiveModelView>, String> {
+    state
+        .harness_models
+        .selected_model()
+        .map_err(|e| e.to_string())
+}
+
+/// Query one harness provider's configured balance adapter. The response is
+/// normalized and never contains the provider API key.
+#[tauri::command]
+async fn harness_balance(
+    state: State<'_, AppState>,
+    provider_id: String,
+) -> Result<deepagent_app_core::harness_model_service::HarnessBalanceView, String> {
+    state
+        .harness_models
+        .fetch_balance(&provider_id)
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -3221,7 +3279,7 @@ fn set_reasoning_effort(
     effort: String,
 ) -> Result<SettingsView, String> {
     let parsed = deepagent_models::ReasoningEffort::parse(&effort).ok_or_else(|| {
-        format!("unknown reasoning effort '{effort}'; expected none, low, high, or max")
+        format!("unknown reasoning effort '{effort}'; expected none, low, medium, high, or max")
     })?;
     state
         .settings
@@ -7107,9 +7165,7 @@ pub fn run() {
         .plugin(tauri_plugin_decorum::init())
         .manage(Mutex::new(SplashGate::default()))
         .setup(|app| {
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.create_overlay_titlebar();
-            }
+            // Main-window chrome is rendered by React, including after a reload.
             let paths = prepare_data_root(app.handle())?;
             let attachments_dir = paths.attachments.clone();
             let recordings_dir = paths.recordings.clone();
@@ -7921,9 +7977,13 @@ pub fn run() {
             harness_provider_save,
             harness_provider_remove,
             harness_models_list,
+            harness_model_save,
             harness_models_fetch,
             harness_model_set_active,
             harness_active_models,
+            harness_model_select,
+            harness_model_selection,
+            harness_balance,
             canvas_models_discover,
             canvas_prompt_profiles_read,
             canvas_prompt_resolve,

@@ -1,5 +1,6 @@
 import { HoverInfo } from "./ui/HoverInfo";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { SurfaceVisibility } from "./ui/SurfaceVisibility";
 import type { KnowledgeEntry } from "../types";
 
 // Accent color per entry kind (matches the badge palette used elsewhere).
@@ -89,6 +90,7 @@ const MAX_VELOCITY = 18;
  * node drag, click-to-select, and hover highlighting.
  */
 export function KnowledgeGraph({ entries, selectedId, search, onSelect }: Props) {
+  const visible = useContext(SurfaceVisibility);
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 800, h: 600 });
 
@@ -110,6 +112,7 @@ export function KnowledgeGraph({ entries, selectedId, search, onSelect }: Props)
 
   // Track container size.
   useEffect(() => {
+    if (!visible) return;
     const el = containerRef.current;
     if (!el) return;
     const ro = new ResizeObserver(() => {
@@ -120,7 +123,7 @@ export function KnowledgeGraph({ entries, selectedId, search, onSelect }: Props)
     const r = el.getBoundingClientRect();
     setSize({ w: Math.max(320, r.width), h: Math.max(240, r.height) });
     return () => ro.disconnect();
-  }, []);
+  }, [visible]);
 
   // (Re)build the graph whenever entries change, preserving positions of nodes
   // that still exist so the layout doesn't jump on a refresh.
@@ -257,11 +260,12 @@ export function KnowledgeGraph({ entries, selectedId, search, onSelect }: Props)
   }, [size.w, size.h]);
 
   useEffect(() => {
+    if (!visible) return;
     rafRef.current = requestAnimationFrame(step);
     return () => {
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
     };
-  }, [step]);
+  }, [step, visible]);
 
   const reheat = () => {
     alphaRef.current = Math.max(alphaRef.current, 0.6);

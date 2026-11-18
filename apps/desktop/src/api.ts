@@ -206,6 +206,15 @@ export function getInvoke(): InvokeFn | null {
   return null;
 }
 
+// Harness model commands share the main API module so lightweight composer
+// tests can mock one bridge without importing Tauri directly.
+export {
+  getHarnessModelSelection,
+  listActiveHarnessModels,
+  selectHarnessModel,
+  type HarnessActiveModelView,
+} from "./harnessModelsApi";
+
 /**
  * Tell the shell that the main window has painted its first frame. The Rust
  * side reveals the main window and closes the startup splash once this and the
@@ -394,8 +403,20 @@ export async function refreshModels(): Promise<SettingsView> {
  */
 export async function getBalance(): Promise<Balance> {
   const invoke = getInvoke();
-  if (invoke) return invoke<Balance>("get_balance");
-  return { is_available: false, infos: [] };
+  if (!invoke) return { is_available: null, infos: [] };
+  const { fetchSelectedHarnessBalance } = await import("./harnessModelsApi");
+  const selected = await fetchSelectedHarnessBalance();
+  if (!selected) return invoke<Balance>("get_balance");
+  return {
+    is_available: selected.available,
+    infos: selected.amount.unit === "none" ? [] : [{
+      currency: selected.amount.unit,
+      total_balance: selected.amount.amount === null ? "" : String(selected.amount.amount),
+      unlimited: selected.amount.unlimited,
+      granted_balance: "",
+      topped_up_balance: "",
+    }],
+  };
 }
 
 /** Clear the stored API key (sign out). */
@@ -423,7 +444,7 @@ export async function setChatModel(modelId: string): Promise<SettingsView> {
 
 /** Set DeepSeek Responses reasoning effort for subsequent chat requests. */
 export async function setReasoningEffort(
-  effort: "none" | "low" | "high" | "max"
+  effort: "none" | "low" | "medium" | "high" | "max"
 ): Promise<SettingsView> {
   const invoke = getInvoke();
   if (invoke) {
@@ -3660,7 +3681,7 @@ const MOCK_COMMANDS: Command[] = [
   { id: "slash.mcp", title: "/mcp", description: "查看已配置的 MCP 服务及启用状态", category: "内置命令", shortcut: null },
   { id: "slash.projects", title: "/projects", description: "查看已打开项目和当前激活项目", category: "内置命令", shortcut: null },
   { id: "slash.sessions", title: "/sessions", description: "查看最近会话列表", category: "内置命令", shortcut: null },
-  { id: "slash.thinking", title: "/thinking", description: "查看或设置推理强度：none、low、high、max", category: "内置命令", shortcut: null },
+  { id: "slash.thinking", title: "/thinking", description: "查看或设置推理强度：none、low、medium、high、max", category: "内置命令", shortcut: null },
   { id: "slash.effort", title: "/effort", description: "/thinking 的别名，查看或设置推理强度", category: "内置命令", shortcut: null },
   { id: "slash.plan", title: "/plan", description: "进入只读 Plan 模式，先规划再执行", category: "内置命令", shortcut: null },
   { id: "slash.execute", title: "/execute", description: "退出 Plan 模式，恢复正常执行权限", category: "内置命令", shortcut: null },

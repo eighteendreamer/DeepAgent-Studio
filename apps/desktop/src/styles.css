@@ -64,6 +64,14 @@
   overflow: hidden;
 }
 .app-titlebar-spacer { height: var(--app-titlebar-height); }
+.app-titlebar { position: relative; z-index: 100; display: flex; align-items: center; }
+.app-window-controls { display: flex; height: 100%; }
+.app-window-controls button { width: 46px; height: 100%; padding: 0; border-radius: 0; }
+.app-window-controls svg { width: 14px; height: 14px; }
+.app-window-controls .app-window-close:hover { background: #e81123; color: white; }
+/* Old running backends may still inject decorum controls after HMR. React owns
+   this header now, so never expose two sets of window controls. */
+body:has(.app-titlebar) div[data-tauri-decorum-tb] { display: none !important; }
 .app-titlebar-navigation {
   display: flex;
   align-items: center;
@@ -73,7 +81,7 @@
 }
 .app-titlebar-navigation .app-titlebar-button {
   width: var(--app-nav-button-size);
-  height: var(--app-nav-button-size);
+  height: min(var(--app-nav-button-size), var(--app-titlebar-height));
   padding: 0;
   border-radius: 10px;
 }
@@ -557,8 +565,6 @@ html.theme-translucent-sidebar.dark .bg-sidebar-bg {
   height: 100%;
   min-width: 0;
   flex-direction: column;
-  animation: view-frame-in 220ms cubic-bezier(0.16, 1, 0.3, 1);
-  will-change: opacity, transform;
 }
 
 .app-main-surface {
@@ -781,8 +787,8 @@ html.theme-translucent-sidebar.dark .bg-sidebar-bg {
 }
 
 .settings-section {
-  animation: view-frame-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
-  will-change: opacity, transform;
+  /* Navigation reveals existing content immediately. */
+  min-width: 0;
 }
 
 .approval-card {

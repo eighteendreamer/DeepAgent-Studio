@@ -36,3 +36,16 @@ export function formatCny(n: number): string {
 }
 
 export const cnySymbol = CNY_SYMBOL;
+
+/** A provider balance's unit is independent of the session's CNY ledger. */
+export function formatBalanceAmount(currency: string, value: string, unlimited = false): string {
+  const symbols: Record<string, string> = { CNY: "¥", RMB: "¥", USD: "$", EUR: "€", GBP: "£" };
+  const unit = currency.trim();
+  const symbol = symbols[unit.toUpperCase()] ?? "";
+  const suffix = symbol || !unit ? "" : ` ${unit}`;
+  if (unlimited) return `${symbol}∞${suffix}`;
+  if (!value.trim()) return "—";
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return "—";
+  return `${symbol}${unit.toLowerCase() === "tokens" ? String(amount) : amount.toFixed(2)}${suffix}`;
+}

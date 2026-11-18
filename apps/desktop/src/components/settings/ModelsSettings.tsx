@@ -1,373 +1,278 @@
-import { useEffect, useMemo, useState } from "react";
-import { Boxes, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Boxes, ExternalLink, Pencil, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { Button } from "../shadcn/button";
 import { Checkbox } from "../shadcn/checkbox";
 import { Input } from "../shadcn/input";
-import { Label } from "../shadcn/label";
+import { Dialog, DialogCloseIcon, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "../shadcn/dialog";
+import { HarnessModelEditor } from "./HarnessModelEditor";
+import { HarnessProviderEditor, PROTOCOL_LABEL } from "./HarnessProviderEditor";
+import { ProviderLogo } from "./ProviderLogo";
+import { VirtualList, type VirtualListPosition } from "../ui/VirtualList";
+import { openExternalUrl } from "../../api";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "../shadcn/select";
-import {
-  HARNESS_BALANCE_KINDS,
-  HARNESS_PROTOCOLS,
-  fetchHarnessModels,
-  listHarnessModels,
-  listHarnessProviders,
-  removeHarnessProvider,
-  saveHarnessProvider,
-  setHarnessModelActive,
-  type HarnessBalanceKind,
-  type HarnessModelView,
-  type HarnessProtocol,
-  type HarnessProviderInput,
-  type HarnessProviderView,
+  fetchHarnessModels, listHarnessModels, listHarnessProviders, removeHarnessProvider,
+  saveHarnessProvider, saveHarnessModel, setHarnessModelActive,
+  type HarnessModelView, type HarnessProviderInput, type HarnessProviderView,
 } from "../../harnessModelsApi";
-
-const PROTOCOL_LABEL: Record<HarnessProtocol, string> = {
-  responses: "Responses",
-  chat_completions: "Chat Completions",
-  messages: "Messages (Anthropic)",
-};
-
-const BALANCE_LABEL: Record<HarnessBalanceKind, string> = {
-  auto: "自动探测",
-  none: "不查询",
-  official: "官方接口",
-  new_api: "New API",
-  sub2api: "sub2api",
-};
-
-/** Form state. `id === null` means a provider not saved yet. */
-interface Draft {
-  id: string | null;
-  channel: string;
-  logo: string;
-  modelUrl: string;
-  protocol: HarnessProtocol;
-  balanceKind: HarnessBalanceKind;
-  enabled: boolean;
-  /** Typed key. Empty keeps the stored key. Never pre-filled from the backend. */
-  apiKey: string;
-}
-
-const EMPTY_DRAFT: Draft = {
-  id: null,
-  channel: "",
-  logo: "",
-  modelUrl: "",
-  protocol: "chat_completions",
-  balanceKind: "auto",
-  enabled: true,
-  apiKey: "",
-};
-
-function draftFromProvider(provider: HarnessProviderView): Draft {
-  return {
-    id: provider.id,
-    channel: provider.channel,
-    logo: provider.logo,
-    modelUrl: provider.modelUrl,
-    protocol: provider.protocol,
-    balanceKind: provider.balanceKind,
-    enabled: provider.enabled,
-    apiKey: "",
-  };
-}
+import "./ModelsSettings.css";
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+const modelKey = (model: HarnessModelView) => model.modelName;
+const ModelRow = memo(function ModelRow({ model, onEdit, onToggle }: {
+  model: HarnessModelView;
+  onEdit: (model: HarnessModelView) => void;
+  onToggle: (model: HarnessModelView, active: boolean) => void;
+}) {
+  return <div data-model-name={model.modelName} className="grid grid-cols-[minmax(0,1fr)_96px_80px_64px] items-center gap-3 border-b border-border-theme py-3 max-[780px]:grid-cols-[minmax(0,1fr)_72px_64px]">
+    <div className="min-w-0 flex-1"><div className="truncate text-[13px] font-medium">{model.displayName}</div></div>
+    <span className="text-xs tabular-nums text-text-secondary">{model.contextWindow.toLocaleString()}</span>
+    <span className="text-xs tabular-nums text-text-secondary max-[780px]:hidden">{model.outputLimit.toLocaleString()}</span>
+    <div className="flex items-center justify-end gap-2">
+      <Checkbox aria-label={`激活 ${model.modelName}`} checked={model.active} onCheckedChange={checked => onToggle(model, checked === true)} />
+      <Button variant="ghost" size="icon" className="size-7" aria-label={`编辑 ${model.modelName}`} onClick={() => onEdit(model)}><Pencil className="size-3.5" /></Button>
+    </div>
+  </div>;
+});
+
 export function ModelsSettings() {
   const [providers, setProviders] = useState<HarnessProviderView[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
-  const [models, setModels] = useState<HarnessModelView[]>([]);
+  const [modelCache, setModelCache] = useState<Record<string, HarnessModelView[]>>({});
+  const [modelErrors, setModelErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
+  const [fetchingId, setFetchingId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  const selected = useMemo(
-    () => providers.find((provider) => provider.id === selectedId) ?? null,
-    [providers, selectedId],
-  );
-
-  const refreshProviders = async (): Promise<HarnessProviderView[]> => {
-    const next = await listHarnessProviders();
-    setProviders(next);
-    return next;
-  };
+  const [editing, setEditing] = useState<HarnessModelView | null>(null);
+  const [providerEditor, setProviderEditor] = useState<{ provider: HarnessProviderView | null } | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [query, setQuery] = useState("");
+  const modelRequests = useRef(new Map<string, number>());
+  const [providerEditorOpen, setProviderEditorOpen] = useState(false);
+  const [modelEditorOpen, setModelEditorOpen] = useState(false);
+  const pendingActivations = useRef(new Set<string>());
+  const listPositions = useRef(new Map<string, VirtualListPosition>());
+  const selected = useMemo(() => providers.find(provider => provider.id === selectedId) ?? null, [providers, selectedId]);
+  const models = modelCache[selectedId ?? ""] ?? [];
+  const modelsLoading = selectedId !== null && !(selectedId in modelCache) && !modelErrors[selectedId];
+  const visibleModels = useMemo(() => models.filter(model => `${model.displayName} ${model.modelName}`.toLowerCase().includes(query.trim().toLowerCase())), [models, query]);
+  const positionKey = selectedId ?? "";
+  let listPosition = listPositions.current.get(positionKey);
+  if (!listPosition) {
+    listPosition = { filter: query, top: 0, width: 0, heights: new Map() };
+    listPositions.current.set(positionKey, listPosition);
+  }
+  if (listPosition.filter !== query) {
+    listPosition = { ...listPosition, filter: query, top: 0 };
+    listPositions.current.set(positionKey, listPosition);
+  }
 
   useEffect(() => {
-    refreshProviders().catch((err) => setError(errorText(err)));
+    let cancelled = false;
+    listHarnessProviders().then(next => {
+      if (cancelled) return;
+      setProviders(next);
+      setSelectedId(next[0]?.id ?? null);
+    }).catch(failure => { if (!cancelled) setError(errorText(failure)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
-    if (!selectedId) {
-      setModels([]);
-      return;
+    // Local registry rows are loaded once per provider. Switching only selects a snapshot.
+    // Keep per-provider versions so background replies cannot overwrite a newer mutation.
+    for (const provider of providers) {
+      if (modelRequests.current.has(provider.id)) continue;
+      const request = 1;
+      modelRequests.current.set(provider.id, request);
+      listHarnessModels(provider.id).then(next => {
+        if (modelRequests.current.get(provider.id) === request) {
+          setModelCache(current => ({ ...current, [provider.id]: next }));
+        }
+      }).catch(failure => {
+        if (modelRequests.current.get(provider.id) === request) {
+          setModelErrors(current => ({ ...current, [provider.id]: errorText(failure) }));
+        }
+      });
     }
-    listHarnessModels(selectedId)
-      .then(setModels)
-      .catch((err) => setError(errorText(err)));
-  }, [selectedId]);
+  }, [providers]);
+
+  const editProvider = (provider: HarnessProviderView | null) => {
+    setProviderEditor({ provider });
+    setProviderEditorOpen(true);
+  };
+  const editModel = useCallback((model: HarnessModelView) => {
+    setEditing(model);
+    setModelEditorOpen(true);
+  }, []);
 
   const selectProvider = (provider: HarnessProviderView) => {
+    if (provider.id === selectedId) return;
     setError(null);
+    setModelEditorOpen(false);
+    setQuery("");
     setSelectedId(provider.id);
-    setDraft(draftFromProvider(provider));
   };
 
-  const startCreate = () => {
-    setError(null);
-    setSelectedId(null);
-    setDraft(EMPTY_DRAFT);
-  };
-
-  const update = <K extends keyof Draft>(key: K, value: Draft[K]) =>
-    setDraft((current) => ({ ...current, [key]: value }));
-
-  const save = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const input: HarnessProviderInput = {
-        id: draft.id,
-        channel: draft.channel.trim(),
-        logo: draft.logo.trim(),
-        modelUrl: draft.modelUrl.trim(),
-        protocol: draft.protocol,
-        balanceKind: draft.balanceKind,
-        enabled: draft.enabled,
-        apiKey: draft.apiKey.trim() ? draft.apiKey.trim() : null,
-      };
-      const saved = await saveHarnessProvider(input);
-      await refreshProviders();
-      selectProvider(saved);
-    } catch (err) {
-      setError(errorText(err));
-    } finally {
-      setBusy(false);
-    }
+  const saveProvider = async (input: HarnessProviderInput) => {
+    const saved = await saveHarnessProvider(input);
+    setProviders(current => [...current.filter(provider => provider.id !== saved.id), saved]
+      .sort((a, b) => a.channel.localeCompare(b.channel)));
+    selectProvider(saved);
+    setProviderEditorOpen(false);
   };
 
   const remove = async () => {
-    if (!draft.id) return;
-    if (!window.confirm(`删除供应商「${draft.channel || draft.id}」？其模型与已保存的密钥会一并删除。`)) {
-      return;
-    }
+    if (!selected) return;
     setBusy(true);
     setError(null);
     try {
-      await removeHarnessProvider(draft.id);
-      await refreshProviders();
-      startCreate();
-    } catch (err) {
-      setError(errorText(err));
+      await removeHarnessProvider(selected.id);
+      const next = providers.filter(provider => provider.id !== selected.id);
+      modelRequests.current.set(selected.id, (modelRequests.current.get(selected.id) ?? 0) + 1);
+      setProviders(next);
+      setModelCache(current => { const updated = { ...current }; delete updated[selected.id]; return updated; });
+      listPositions.current.delete(selected.id);
+      setSelectedId(next[0]?.id ?? null);
+      setQuery("");
+      setDeleting(false);
+    } catch (failure) {
+      setError(errorText(failure));
+      setDeleting(false);
     } finally {
       setBusy(false);
     }
   };
 
   const fetchModels = async () => {
-    if (!draft.id) return;
-    setBusy(true);
+    if (!selectedId || fetchingId) return;
+    const providerId = selectedId;
+    const request = (modelRequests.current.get(providerId) ?? 0) + 1;
+    modelRequests.current.set(providerId, request);
+    setFetchingId(providerId);
     setError(null);
     try {
-      setModels(await fetchHarnessModels(draft.id));
-    } catch (err) {
-      setError(errorText(err));
+      const next = await fetchHarnessModels(providerId);
+      if (request === modelRequests.current.get(providerId)) {
+        setModelCache(current => ({ ...current, [providerId]: next }));
+        setModelErrors(current => { const updated = { ...current }; delete updated[providerId]; return updated; });
+      }
+    } catch (failure) {
+      if (request === modelRequests.current.get(providerId)) setModelErrors(current => ({ ...current, [providerId]: errorText(failure) }));
     } finally {
-      setBusy(false);
+      setFetchingId(null);
     }
   };
 
-  const toggleActive = async (model: HarnessModelView, active: boolean) => {
+  const toggleActive = useCallback(async (model: HarnessModelView, active: boolean) => {
+    const key = `${model.providerId}:${model.modelName}`;
+    if (pendingActivations.current.has(key)) return;
+    pendingActivations.current.add(key);
+    modelRequests.current.set(model.providerId, (modelRequests.current.get(model.providerId) ?? 0) + 1);
     setError(null);
+    setModelErrors(current => {
+      if (!(model.providerId in current)) return current;
+      const next = { ...current }; delete next[model.providerId]; return next;
+    });
+    setModelCache(current => ({ ...current, [model.providerId]: (current[model.providerId] ?? []).map(item => item.modelName === model.modelName ? { ...item, active } : item) }));
     try {
       await setHarnessModelActive(model.providerId, model.modelName, active);
-      setModels((current) =>
-        current.map((item) =>
-          item.modelName === model.modelName ? { ...item, active } : item,
-        ),
-      );
-    } catch (err) {
-      setError(errorText(err));
+    } catch (failure) {
+      setModelCache(current => ({ ...current, [model.providerId]: (current[model.providerId] ?? []).map(item => item.modelName === model.modelName ? { ...item, active: model.active } : item) }));
+      setModelErrors(current => ({ ...current, [model.providerId]: errorText(failure) }));
+    } finally {
+      pendingActivations.current.delete(key);
     }
-  };
-
-  const canSave = draft.channel.trim() !== "" && draft.modelUrl.trim() !== "" && !busy;
-  const keyPlaceholder = selected?.hasApiKey ? "已保存，留空则保持不变" : "输入 API Key";
+  }, []);
+  const renderModel = useCallback((model: HarnessModelView) => <ModelRow model={model} onEdit={editModel} onToggle={toggleActive} />, [editModel, toggleActive]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-4 p-1">
-      <div className="flex items-center gap-2">
-        <Boxes className="size-5 text-muted-foreground" aria-hidden />
-        <h2 className="text-base font-semibold">模型</h2>
-        <span className="text-sm text-muted-foreground">
-          添加供应商、拉取模型，激活后会出现在会话窗口的模型列表中。
-        </span>
+    <div className="models-settings-surface flex h-full min-h-0 min-w-0 flex-col gap-5 overflow-hidden">
+      <div className="flex shrink-0 items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5"><Boxes className="size-5 text-text-secondary" aria-hidden /><h2 className="text-lg font-semibold">模型</h2></div>
+        <Button variant="outline" size="sm" onClick={() => editProvider(null)} disabled={busy}><Plus className="size-4" aria-hidden />添加供应商</Button>
       </div>
-
-      {error ? (
-        <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-          {error}
-        </div>
-      ) : null}
-
-      <div className="grid min-h-0 flex-1 grid-cols-[220px_minmax(0,1fr)] gap-4">
-        <aside className="flex min-h-0 flex-col gap-2 overflow-y-auto">
-          <Button variant="outline" size="sm" onClick={startCreate} className="justify-start">
-            <Plus className="size-4" aria-hidden />
-            添加供应商
-          </Button>
-          {providers.map((provider) => (
-            <button
-              key={provider.id}
-              type="button"
-              onClick={() => selectProvider(provider)}
-              className={`flex flex-col items-start rounded-md border px-3 py-2 text-left text-sm transition-colors ${
-                provider.id === selectedId ? "border-primary bg-accent" : "border-border hover:bg-accent/50"
-              }`}
-            >
-              <span className="font-medium">{provider.channel || provider.id}</span>
-              <span className="text-xs text-muted-foreground">
-                {PROTOCOL_LABEL[provider.protocol]}
-                {provider.enabled ? "" : " · 已停用"}
-                {provider.hasApiKey ? "" : " · 未设置密钥"}
+      {error && <div role="alert" className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
+      <div className="grid min-h-0 min-w-0 flex-1 grid-cols-[184px_minmax(0,1fr)] gap-7 overflow-hidden max-[900px]:grid-cols-[152px_minmax(0,1fr)] max-[900px]:gap-4">
+        <aside aria-label="供应商" className="flex min-h-0 min-w-0 flex-col border-r border-border-theme pr-4">
+          <div className="shrink-0 px-2 py-2 text-xs font-medium text-text-secondary">供应商 <span className="ml-1 tabular-nums">{providers.length}</span></div>
+          <div data-provider-scroll className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overscroll-contain">
+          {providers.map(provider => (
+            <Button key={provider.id} variant="ghost" aria-label={`选择供应商 ${provider.channel}`} aria-pressed={provider.id === selectedId}
+              onClick={() => selectProvider(provider)} disabled={busy}
+              className={`h-auto min-w-0 shrink-0 justify-start gap-2.5 rounded-xl px-2 py-3 text-left ${provider.id === selectedId ? "bg-elevated-bg text-text-base shadow-sm" : "hover:bg-hover-bg"}`}>
+              <ProviderLogo logo={provider.logo} name={provider.channel} className="size-8 rounded-lg" />
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span className="truncate text-[13px] font-medium text-text-base">{provider.channel}</span>
+                <span className="truncate text-[11px] font-normal text-text-secondary">{provider.enabled ? PROTOCOL_LABEL[provider.protocol] : "已停用"}</span>
               </span>
-            </button>
-          ))}
-        </aside>
-
-        <section className="flex min-h-0 flex-col gap-5 overflow-y-auto">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="harness-channel">供应商名称</Label>
-              <Input
-                id="harness-channel"
-                value={draft.channel}
-                onChange={(event) => update("channel", event.target.value)}
-                placeholder="例如 DeepSeek"
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="harness-logo">图标标识（可选）</Label>
-              <Input
-                id="harness-logo"
-                value={draft.logo}
-                onChange={(event) => update("logo", event.target.value)}
-              />
-            </div>
-            <div className="col-span-2 flex flex-col gap-1.5">
-              <Label htmlFor="harness-url">Base URL</Label>
-              <Input
-                id="harness-url"
-                value={draft.modelUrl}
-                onChange={(event) => update("modelUrl", event.target.value)}
-                placeholder="https://api.example.com/v1"
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label>协议</Label>
-              <Select value={draft.protocol} onValueChange={(value) => update("protocol", value as HarnessProtocol)}>
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {HARNESS_PROTOCOLS.map((protocol) => (
-                    <SelectItem key={protocol} value={protocol}>
-                      {PROTOCOL_LABEL[protocol]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label>余额查询</Label>
-              <Select value={draft.balanceKind} onValueChange={(value) => update("balanceKind", value as HarnessBalanceKind)}>
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {HARNESS_BALANCE_KINDS.map((kind) => (
-                    <SelectItem key={kind} value={kind}>
-                      {BALANCE_LABEL[kind]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="col-span-2 flex flex-col gap-1.5">
-              <Label htmlFor="harness-key">API Key</Label>
-              <Input
-                id="harness-key"
-                type="password"
-                autoComplete="off"
-                value={draft.apiKey}
-                onChange={(event) => update("apiKey", event.target.value)}
-                placeholder={keyPlaceholder}
-              />
-            </div>
-            <label className="col-span-2 flex items-center gap-2 text-sm">
-              <Checkbox
-                checked={draft.enabled}
-                onCheckedChange={(checked) => update("enabled", checked === true)}
-              />
-              启用此供应商
-            </label>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <Button onClick={save} disabled={!canSave}>
-              保存
             </Button>
-            {draft.id ? (
-              <Button variant="outline" onClick={remove} disabled={busy}>
-                <Trash2 className="size-4" aria-hidden />
-                删除供应商
-              </Button>
-            ) : null}
+          ))}
           </div>
-
-          <div className="flex flex-col gap-3 border-t pt-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-medium">模型</h3>
-              <Button variant="outline" size="sm" onClick={fetchModels} disabled={!draft.id || busy}>
-                <RefreshCw className="size-4" aria-hidden />
-                拉取模型
+        </aside>
+        <section className="flex min-h-0 min-w-0 flex-col overflow-hidden">
+          {selected ? <>
+            <div className="flex shrink-0 items-start gap-3">
+              <ProviderLogo logo={selected.logo} name={selected.channel} className="size-10 rounded-lg" />
+              <div className="min-w-0 flex-1 pt-0.5">
+                <h3 className="truncate text-base font-semibold">{selected.channel}</h3>
+                <div className="mt-1 flex items-center gap-1.5 text-xs text-text-secondary"><span className={`size-1.5 rounded-full ${selected.enabled && selected.hasApiKey ? "bg-emerald-500" : "bg-gray-400"}`} />{!selected.enabled ? "已停用" : selected.hasApiKey ? "已配置密钥" : "未配置密钥"}</div>
+              </div>
+              <Button variant="outline" size="sm" aria-label="编辑供应商" onClick={() => editProvider(selected)} disabled={busy}>配置</Button>
+              <Button variant="ghost" size="icon" className="size-8 hover:text-red-600" aria-label="删除供应商" onClick={() => setDeleting(true)} disabled={busy}><Trash2 className="size-3.5" /></Button>
+            </div>
+            <div className="mt-3 flex min-w-0 shrink-0 items-center gap-2 text-xs text-text-secondary">
+              <span className="rounded-md bg-hover-bg px-2 py-1">{PROTOCOL_LABEL[selected.protocol]}</span>
+              <span className="min-w-0 flex-1 truncate">{selected.modelUrl}</span>
+              {selected.websiteUrl ? <Button variant="ghost" size="sm" className="h-7 px-0 text-xs" onClick={() => void openExternalUrl(selected.websiteUrl).catch(failure => setError(errorText(failure)))}><ExternalLink className="size-3.5" />访问官网</Button> : <span />}
+            </div>
+            <div className="mt-5 flex shrink-0 items-center justify-between border-t border-border-theme pt-4">
+              <h4 className="text-sm font-semibold">模型 <span className="ml-1 font-normal tabular-nums text-text-secondary">{models.filter(model => model.active).length} / {models.length}</span></h4>
+              <Button variant="outline" size="sm" onClick={fetchModels} disabled={busy || fetchingId !== null || !selected.hasApiKey}>
+                <RefreshCw className={`size-3.5 ${fetchingId === selectedId ? "animate-spin" : ""}`} aria-hidden />拉取模型
               </Button>
             </div>
-            {!draft.id ? (
-              <p className="text-sm text-muted-foreground">保存供应商后即可拉取模型。</p>
-            ) : models.length === 0 ? (
-              <p className="text-sm text-muted-foreground">暂无模型。点击“拉取模型”从供应商获取列表。</p>
-            ) : (
-              <ul className="flex flex-col divide-y rounded-md border">
-                {models.map((model) => (
-                  <li key={model.modelName} className="flex items-center gap-3 px-3 py-2">
-                    <Checkbox
-                      aria-label={`激活 ${model.modelName}`}
-                      checked={model.active}
-                      onCheckedChange={(checked) => toggleActive(model, checked === true)}
-                    />
-                    <div className="flex min-w-0 flex-1 flex-col">
-                      <span className="truncate text-sm font-medium">{model.displayName}</span>
-                      <span className="truncate text-xs text-muted-foreground">{model.modelName}</span>
-                    </div>
-                    <span className="text-xs text-muted-foreground">
-                      上下文 {model.contextWindow.toLocaleString()} · 输出 {model.outputLimit.toLocaleString()}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+            {models.length > 0 && <div className="relative mt-4 shrink-0"><Search className="pointer-events-none absolute left-3 top-3 size-4 text-text-secondary" /><Input aria-label="搜索模型" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索模型" className="pl-9 shadow-none" /></div>}
+            <div className="mt-4 grid shrink-0 grid-cols-[minmax(0,1fr)_96px_80px_64px] gap-3 border-b border-border-theme pb-2 text-xs text-text-secondary max-[780px]:grid-cols-[minmax(0,1fr)_72px_64px]"><span>模型</span><span>上下文</span><span className="max-[780px]:hidden">输出上限</span><span className="text-right">启用</span></div>
+            <div aria-busy={modelsLoading} className="min-h-0 flex-1">
+              <VirtualList key={selectedId} items={visibleModels} itemKey={modelKey} renderItem={renderModel}
+                estimatedHeight={53} itemHeight={53} position={listPosition} label="模型列表" empty={null}
+                className="h-full overflow-y-auto overscroll-contain" />
+            </div>
+            {modelErrors[selected.id] ? <p role="alert" className="py-6 text-sm text-red-700">{modelErrors[selected.id]}</p>
+              : modelsLoading ? <div className="py-6 text-sm text-text-secondary">正在读取已保存的模型…</div>
+              : models.length === 0 ? <div className="flex min-h-32 flex-col items-center justify-center gap-3 text-text-secondary"><p className="text-sm">{selected.hasApiKey ? "暂无模型" : "添加 API Key 后拉取模型"}</p>{!selected.hasApiKey && <Button variant="outline" size="sm" onClick={() => editProvider(selected)}>配置供应商</Button>}</div>
+              : visibleModels.length === 0 && <p className="py-10 text-center text-sm text-text-secondary">没有匹配的模型</p>}
+          </> : <div className="flex min-h-80 items-center justify-center text-sm text-text-secondary">{loading ? "加载供应商…" : "添加供应商以配置模型"}</div>}
         </section>
       </div>
+      <Dialog open={providerEditorOpen} onOpenChange={setProviderEditorOpen}>
+        <DialogContent className="models-settings-surface max-w-[520px]" aria-labelledby="provider-editor-title" closeOnBackdrop={false}>
+          <DialogHeader><DialogTitle id="provider-editor-title" className="text-base">{providerEditor?.provider ? "编辑供应商" : "添加供应商"}</DialogTitle><DialogCloseIcon aria-label="关闭供应商编辑"><X className="size-4" /></DialogCloseIcon></DialogHeader>
+          {providerEditor && <HarnessProviderEditor key={providerEditor.provider?.id ?? "new"} provider={providerEditor.provider} onSave={saveProvider} onCancel={() => setProviderEditorOpen(false)} />}
+        </DialogContent>
+      </Dialog>
+      <Dialog open={deleting} onOpenChange={setDeleting}>
+        <DialogContent className="models-settings-surface max-w-[400px]" aria-labelledby="provider-delete-title" closeOnBackdrop={!busy} closeOnEscape={!busy}>
+          <DialogHeader><DialogTitle id="provider-delete-title" className="text-base">删除 {selected?.channel}？</DialogTitle></DialogHeader>
+          <p className="px-6 pb-4 text-sm text-text-secondary">此供应商的模型与已保存的密钥会一并删除。</p>
+          <DialogFooter><Button variant="outline" disabled={busy} onClick={() => setDeleting(false)}>取消</Button><Button variant="destructive" disabled={busy} onClick={remove}>{busy ? "删除中" : "删除"}</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={modelEditorOpen} onOpenChange={setModelEditorOpen}>
+        <DialogContent className="models-settings-surface max-w-[520px]" aria-labelledby="model-editor-title" closeOnBackdrop={false}>
+          <DialogHeader><DialogTitle id="model-editor-title" className="min-w-0 truncate text-base">{editing?.modelName}</DialogTitle><DialogCloseIcon aria-label="关闭模型编辑"><X className="size-4" /></DialogCloseIcon></DialogHeader>
+          {editing && <HarnessModelEditor key={`${editing.providerId}:${editing.modelName}`} model={editing} onCancel={() => setModelEditorOpen(false)} onSave={async input => {
+            modelRequests.current.set(input.providerId, (modelRequests.current.get(input.providerId) ?? 0) + 1);
+            const saved = await saveHarnessModel(input);
+            setModelCache(current => ({ ...current, [saved.providerId]: (current[saved.providerId] ?? []).map(model => model.modelName === saved.modelName ? saved : model) }));
+            setModelEditorOpen(false);
+          }} />}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

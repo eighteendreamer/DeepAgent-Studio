@@ -16,6 +16,7 @@ interface Props<T> {
   open: boolean;
   sections: ComposerSuggestSection<T>[];
   selectedIndex: number;
+  navigationKey?: number;
   getKey: (item: T) => string;
   renderItem: (item: T, selected: boolean) => ReactNode;
   renderTooltip?: (item: T) => ReactNode;
@@ -29,6 +30,7 @@ export function ComposerSuggestPanel<T>({
   open,
   sections,
   selectedIndex,
+  navigationKey = 0,
   getKey,
   renderItem,
   renderTooltip,
@@ -73,7 +75,9 @@ export function ComposerSuggestPanel<T>({
     const bounds = scroll.getBoundingClientRect(), row = selected.getBoundingClientRect();
     if (row.top < bounds.top) scroll.scrollTop -= bounds.top - row.top;
     else if (row.bottom > bounds.bottom) scroll.scrollTop += row.bottom - bounds.bottom;
-  }, [open, activeId]);
+  // Hover changes the highlight while wheel-scrolling. Only a new result set
+  // or keyboard navigation may move the viewport to the selected row.
+  }, [open, sections, navigationKey]);
 
   if (!open) return null;
   return (

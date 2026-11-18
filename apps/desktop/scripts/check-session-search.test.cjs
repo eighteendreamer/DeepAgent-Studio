@@ -21,6 +21,7 @@ function fixture(t, response, tauri = true) {
   loaded.filename = filename;
   loaded.paths = Module._nodeModulePaths(path.dirname(filename));
   loaded.require = (specifier) => {
+    if (specifier === "./harnessModelsApi") return {};
     assert.equal(specifier, "@tauri-apps/api/core");
     return { invoke: async (command, args) => {
       calls.push({ command, args });

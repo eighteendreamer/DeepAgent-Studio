@@ -8,11 +8,11 @@ const source = readFileSync(join(__dirname, "..", "src", "App.tsx"), "utf8");
 test("plugin page stays mounted after its first visit", () => {
   assert.match(
     source,
-    /const \[pluginsMounted, setPluginsMounted\] = useState\(false\)/,
+    /const \[visitedViews, setVisitedViews\] = useState<View\[\]>\(\[\]\)/,
   );
 
-  const start = source.indexOf('{(view === "plugins" || pluginsMounted) && (');
-  const end = source.indexOf('{view === "automation" && (', start);
+  const start = source.indexOf('{(view === "plugins" || visitedViews.includes("plugins")) && (');
+  const end = source.indexOf('{(view === "automation" || visitedViews.includes("automation")) && (', start);
   assert.notEqual(start, -1, "plugin page must remain mounted after first visit");
   assert.notEqual(end, -1, "automation view must follow the plugin page");
 

@@ -1,0 +1,17 @@
+.models-settings-surface input {
+  background-color: var(--theme-elevated, #fff);
+}
+
+.models-settings-surface input:focus {
+  border-color: var(--theme-text-secondary, #6b7280);
+  box-shadow: none;
+}
+
+.models-settings-surface button:focus-visible {
+  --tw-ring-color: var(--theme-border, #d1d5db);
+}
+
+.models-settings-surface [role="checkbox"][data-state="checked"] {
+  border-color: var(--theme-fg, #1f2937);
+  background-color: var(--theme-fg, #1f2937);
+}

@@ -20,6 +20,7 @@ export type SliderStop<T extends string = string> = {
   label: string;
   /** Optional lucide-react icon rendered before the stop label. */
   icon?: LucideIcon;
+  disabled?: boolean;
 };
 
 type Props<T extends string> = {

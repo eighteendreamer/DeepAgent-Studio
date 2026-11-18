@@ -427,11 +427,14 @@ export interface BalanceInfo {
   total_balance: string;
   granted_balance: string;
   topped_up_balance: string;
+  /** Registry balances keep unlimited separate from a numeric amount. */
+  unlimited?: boolean;
 }
 
 /** Account balance summary (mirrors deepagent-app-core::BalanceDto). */
 export interface Balance {
-  is_available: boolean;
+  /** null means the selected provider did not report availability. */
+  is_available: boolean | null;
   infos: BalanceInfo[];
 }
 
@@ -985,7 +988,7 @@ export interface SettingsView {
   approval_policy: string;
   sandbox_mode: "read_only" | "workspace_write" | "full_access";
   terminal_shell: "powershell" | "command_prompt" | "git_bash" | "wsl";
-  reasoning_effort: "none" | "low" | "high" | "max";
+  reasoning_effort: "none" | "low" | "medium" | "high" | "max";
   responses: ResponsesApiSettings;
   /** Backend-computed scenarios, not the actual tool set of a future run. */
   responses_sampling?: ResponsesSamplingPreview[];

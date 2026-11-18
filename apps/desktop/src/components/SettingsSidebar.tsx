@@ -13,6 +13,7 @@ import {
   Link,
   Monitor,
   Network,
+  PawPrint,
   Server,
   Settings,
   SlidersHorizontal,
@@ -21,6 +22,7 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useSlidingIndicator, SlidingPill } from "./ui/SlidingPill";
+import { preloadSettingsCategory } from "./settings/settingsCategories";
 
 interface Category {
   id: string;
@@ -31,6 +33,7 @@ interface Category {
 const CATEGORIES: Category[] = [
   { id: "general", label: "常规", icon: Settings },
   { id: "appearance", label: "外观", icon: Sun },
+  { id: "pet", label: "宠物", icon: PawPrint },
   { id: "config", label: "配置", icon: SlidersHorizontal },
   { id: "models", label: "模型", icon: Boxes },
   { id: "personalize", label: "个性化", icon: Smile },
@@ -87,6 +90,9 @@ export function SettingsSidebar({ onBack, activeCategoryId, onSelectCategory }: 
               <button
                 key={cat.id}
                 data-cat={cat.id}
+                aria-current={activeCategoryId === cat.id ? "page" : undefined}
+                onPointerEnter={() => { void preloadSettingsCategory(cat.id).catch(() => {}); }}
+                onFocus={() => { void preloadSettingsCategory(cat.id).catch(() => {}); }}
                 onClick={() => onSelectCategory(cat.id)}
                 className={`relative z-[1] w-full flex items-center px-2.5 py-1.5 rounded-md text-[13px] text-text-base ${
                   activeCategoryId === cat.id ? "font-medium" : ""

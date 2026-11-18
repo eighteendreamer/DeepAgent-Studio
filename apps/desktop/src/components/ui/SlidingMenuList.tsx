@@ -25,7 +25,7 @@ export function SlidingMenuList({
 }: Props) {
   const { containerRef, containerProps, indicatorStyle } = useSlidingIndicator({
     hoverSelector: `[${MENU_ITEM_ATTR}]`,
-    activeSelector: `[${MENU_ITEM_ATTR}="${activeId}"]`,
+    activeSelector: `[${MENU_ITEM_ATTR}="${CSS.escape(activeId)}"]`,
   });
 
   return (

@@ -1,6 +1,8 @@
 import { summarizeWebSearch } from "./components/chat-timeline/webSearchSummary";
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { flushSync } from "react-dom";
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { SurfaceVisibility } from "./components/ui/SurfaceVisibility";
+import { SettingsView } from "./components/SettingsView";
+import { SettingsSidebar } from "./components/SettingsSidebar";
 import { SpringDisclosure } from "./components/ui/SpringDisclosure";
 import { MessageSendMotionContext, useMessageSendMotionController } from "./components/ui/MessageSendMotionContext";
 import { ProcessStoreContext } from "./components/chat-timeline/ProcessDisclosureContext";
@@ -33,7 +35,6 @@ import {
   clearApiKey,
   getVisionSettings,
   getSettings,
-  refreshModels,
   runChat,
   RunCompletionError,
   cancelRun,
@@ -94,36 +95,30 @@ import { message } from "./components/message";
 import { resolveChatRepositoryPath } from "./components/composerActivityData";
 import { createSessionPrefetch } from "./sessionPrefetch";
 import { preloadMarkdownRenderers } from "./components/MarkdownText";
+import { ChatView } from "./components/ChatView";
 
 const StartView = lazy(() =>
   import("./components/StartView").then((module) => ({ default: module.StartView })),
 );
-const ChatView = lazy(() =>
-  import("./components/ChatView").then((module) => ({ default: module.ChatView })),
-);
-const SkillsView = lazy(() =>
-  import("./components/SkillsView").then((module) => ({ default: module.SkillsView })),
-);
-const KnowledgeView = lazy(() =>
-  import("./components/KnowledgeView").then((module) => ({ default: module.KnowledgeView })),
-);
-const PluginsView = lazy(() =>
-  import("./components/PluginsView").then((module) => ({ default: module.PluginsView })),
-);
-const AutomationView = lazy(() =>
-  import("./components/AutomationView").then((module) => ({ default: module.AutomationView })),
-);
-const SettingsView = lazy(() =>
-  import("./components/SettingsView").then((module) => ({ default: module.SettingsView })),
-);
+const auxiliaryViewLoaders = {
+  skills: () => import("./components/SkillsView").then(module => ({ default: module.SkillsView })),
+  knowledge: () => import("./components/KnowledgeView").then(module => ({ default: module.KnowledgeView })),
+  plugins: () => import("./components/PluginsView").then(module => ({ default: module.PluginsView })),
+  automation: () => import("./components/AutomationView").then(module => ({ default: module.AutomationView })),
+};
+const SkillsView = memo(lazy(auxiliaryViewLoaders.skills));
+const KnowledgeView = memo(lazy(auxiliaryViewLoaders.knowledge));
+const PluginsView = memo(lazy(auxiliaryViewLoaders.plugins));
+const AutomationView = memo(lazy(auxiliaryViewLoaders.automation));
+function preloadSurface(id: string) {
+  const loader = auxiliaryViewLoaders[id as keyof typeof auxiliaryViewLoaders];
+  if (loader) void loader().catch(() => {});
+}
 const SearchModal = lazy(() =>
   import("./components/SearchModal").then((module) => ({ default: module.SearchModal })),
 );
 const OnboardingWizard = lazy(() =>
   import("./components/OnboardingWizard").then((module) => ({ default: module.OnboardingWizard })),
-);
-const SettingsSidebar = lazy(() =>
-  import("./components/SettingsSidebar").then((module) => ({ default: module.SettingsSidebar })),
 );
 const RemoteSidebar = lazy(() =>
   import("./components/remote/RemoteSidebar").then((module) => ({ default: module.RemoteSidebar })),
@@ -137,26 +132,9 @@ type View = "start" | "chat" | "skills" | "knowledge" | "plugins" | "automation"
 const LEFT_SIDEBAR_OPEN_KEY = "deepagent:left-sidebar-open";
 const STREAM_RENDER_INTERVAL_MS = 33;
 
-type ViewTransitionDocument = Document & {
-  startViewTransition?: (callback: () => void) => void;
-};
-
 function runUiTransition(update: () => void) {
-  if (typeof document === "undefined" || typeof window === "undefined") {
-    update();
-    return;
-  }
-
-  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const startViewTransition = (document as ViewTransitionDocument).startViewTransition;
-  if (!startViewTransition || reduceMotion) {
-    update();
-    return;
-  }
-
-  startViewTransition.call(document, () => {
-    flushSync(update);
-  });
+  // Navigation state must not wait for a document snapshot or transition animation.
+  update();
 }
 
 function ViewLoading() {
@@ -579,7 +557,7 @@ export function App() {
     return next;
   }));
   const [view, setView] = useState<View>("start");
-  const [pluginsMounted, setPluginsMounted] = useState(false);
+  const [visitedViews, setVisitedViews] = useState<View[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   // FIFO queue of tool-approval requests awaiting the user's decision.
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
@@ -603,7 +581,9 @@ export function App() {
   const [activePendingRunKey, setActivePendingRunKey] = useState<string | null>(null);
 
   useEffect(() => {
-    if (view === "plugins") setPluginsMounted(true);
+    if (["skills", "knowledge", "plugins", "automation", "settings"].includes(view)) {
+      setVisitedViews(current => current.includes(view) ? current : [...current, view]);
+    }
   }, [view]);
 
   // The in-flight transcript, kept per-session in a ref so it SURVIVES
@@ -675,9 +655,6 @@ export function App() {
         setShowOnboarding(!configured);
         if (configured) {
           localStorage.setItem("onboarding_complete", "true");
-          refreshModels().catch(() => {
-            // Keep the cached list if the provider is temporarily unreachable.
-          });
         } else {
           localStorage.removeItem("onboarding_complete");
         }
@@ -2679,7 +2656,7 @@ export function App() {
           onOpenPlugins={() => navigateFromRail("plugins")} onOpenAutomation={() => navigateFromRail("automation")}
           onOpenRemote={() => navigateFromRail("remote")}
           onOpenCanvas={() => { void openStudioCanvasWindow().catch(error => message.error(`打开无限画板失败：${String(error)}`)); closeCompactSidebar(); }}
-          onOpenSettings={() => navigateFromRail("settings")} onLogout={onLogout} />
+          onOpenSettings={() => navigateFromRail("settings")} onPrepareSurface={preloadSurface} onLogout={onLogout} />
         <div className="app-content-frame">
         {isCompactLayout && isSidebarOpen && <Button variant="ghost" className="app-sidebar-backdrop" aria-label={t("sidebar.collapseSidebar")} tabIndex={-1} onClick={dismissLeftSidebar} />}
         <div ref={sidebarRegionRef} id="app-context-sidebar" className="app-sidebar-region">
@@ -2759,7 +2736,7 @@ export function App() {
           <MessageSendMotionContext.Provider value={messageSendMotion}>
           <Suspense fallback={<ViewLoading />}>
             {view === "start" && (
-              <div key={viewFrameKey} className="view-frame">
+              <div key={viewFrameKey} data-surface="start" className="view-frame">
                 <StartView 
                   projectName={activeProjectName} 
                   activeProjectPath={activeProjectPath}
@@ -2772,7 +2749,7 @@ export function App() {
               </div>
             )}
             {view === "chat" && (
-              <div key={viewFrameKey} className="view-frame">
+              <div key={viewFrameKey} data-surface="chat" className="view-frame">
                 <ProcessStoreContext.Provider value={processDisclosureStore}>
                 <ChatView
                   sessionId={chatSessionId}
@@ -2812,34 +2789,40 @@ export function App() {
                 </ProcessStoreContext.Provider>
               </div>
             )}
-            {view === "skills" && (
-              <div key={viewFrameKey} className="view-frame">
+            {(view === "skills" || visitedViews.includes("skills")) && (
+              <div key="skills" data-surface="skills" hidden={view !== "skills"} className={view === "skills" ? "view-frame" : "hidden"}>
+                <SurfaceVisibility.Provider value={view === "skills"}>
                 <SkillsView />
+                </SurfaceVisibility.Provider>
               </div>
             )}
-            {view === "knowledge" && (
-              <div key={viewFrameKey} className="view-frame">
+            {(view === "knowledge" || visitedViews.includes("knowledge")) && (
+              <div key="knowledge" data-surface="knowledge" hidden={view !== "knowledge"} className={view === "knowledge" ? "view-frame" : "hidden"}>
+                <SurfaceVisibility.Provider value={view === "knowledge"}>
                 <KnowledgeView />
+                </SurfaceVisibility.Provider>
               </div>
             )}
-            {(view === "plugins" || pluginsMounted) && (
-              <div className={view === "plugins" ? "view-frame" : "hidden"}>
+            {(view === "plugins" || visitedViews.includes("plugins")) && (
+              <div key="plugins" data-surface="plugins" hidden={view !== "plugins"} className={view === "plugins" ? "view-frame" : "hidden"}>
+                <SurfaceVisibility.Provider value={view === "plugins"}>
                 <PluginsView />
+                </SurfaceVisibility.Provider>
               </div>
             )}
-            {view === "automation" && (
-              <div key={viewFrameKey} className="view-frame">
+            {(view === "automation" || visitedViews.includes("automation")) && (
+              <div key="automation" data-surface="automation" hidden={view !== "automation"} className={view === "automation" ? "view-frame" : "hidden"}>
                 <AutomationView />
               </div>
             )}
             {view === "remote" && (
-              <div key={viewFrameKey} className="view-frame">
+              <div key={viewFrameKey} data-surface="remote" className="view-frame">
                 <RemoteView key={remoteConnection?.id ?? "unselected"} connection={remoteConnection} openFile={remoteOpenFile} />
               </div>
             )}
-            {view === "settings" && (
-              <div key={viewFrameKey} className="view-frame">
-                <SettingsView activeCategoryId={activeSettingsCategory} />
+            {(view === "settings" || visitedViews.includes("settings")) && (
+              <div key="settings" data-surface="settings" hidden={view !== "settings"} className={view === "settings" ? "view-frame" : "hidden"}>
+                <SettingsView activeCategoryId={activeSettingsCategory} visible={view === "settings"} />
               </div>
             )}
           </Suspense>

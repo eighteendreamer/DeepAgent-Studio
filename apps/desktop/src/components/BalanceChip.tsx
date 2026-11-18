@@ -4,12 +4,11 @@ import { LoaderCircle, Wallet } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { getBalance, SETTINGS_CHANGED_EVENT, type SettingsChangedDetail } from "../api";
+import { formatBalanceAmount } from "./chat-timeline/format";
 import type { Balance, BalanceInfo } from "../types";
 
 /**
- * A compact "余额: ¥xx.xx" chip that calls DeepSeek's `/user/balance` and
- * shows the primary balance line. Click to refresh; hover to see the
- * granted/topped-up breakdown across every currency the account holds.
+ * The selected provider's balance. Click to refresh; hover for any breakdown.
  */
 export function BalanceChip({ popoverSuppressed = false }: { popoverSuppressed?: boolean }) {
   const { t } = useTranslation();
@@ -18,20 +17,23 @@ export function BalanceChip({ popoverSuppressed = false }: { popoverSuppressed?:
   const [error, setError] = useState<string | null>(null);
   const [hovered, setHovered] = useState(false);
   const aborted = useRef(false);
+  const generation = useRef(0);
 
   const refresh = useCallback(async () => {
+    const requested = ++generation.current;
     setLoading(true);
     setError(null);
+    setBalance(null);
     try {
       const next = await getBalance();
-      if (!aborted.current) setBalance(next);
+      if (!aborted.current && requested === generation.current) setBalance(next);
     } catch (e) {
-      if (!aborted.current) {
+      if (!aborted.current && requested === generation.current) {
         setBalance(null);
         setError((e as Error).message ?? String(e));
       }
     } finally {
-      if (!aborted.current) setLoading(false);
+      if (!aborted.current && requested === generation.current) setLoading(false);
     }
   }, []);
 
@@ -48,6 +50,7 @@ export function BalanceChip({ popoverSuppressed = false }: { popoverSuppressed?:
     window.addEventListener(SETTINGS_CHANGED_EVENT, onChanged);
     return () => {
       aborted.current = true;
+      generation.current += 1;
       window.removeEventListener(SETTINGS_CHANGED_EVENT, onChanged);
     };
   }, [refresh]);
@@ -85,20 +88,22 @@ export function BalanceChip({ popoverSuppressed = false }: { popoverSuppressed?:
               {i > 0 && <div className="my-1.5 h-px shrink-0 bg-border-theme opacity-[0.55]" />}
               <div className="flex items-center justify-between pb-2 font-medium">
                 <span>{info.currency}</span>
-                <span className="tabular-nums">{formatAmount(info.currency, info.total_balance)}</span>
+                <span className="tabular-nums">{formatBalanceAmount(info.currency, info.total_balance, info.unlimited)}</span>
               </div>
+              {(info.granted_balance || info.topped_up_balance) && <>
               <div className="my-1.5 h-px shrink-0 bg-border-theme opacity-[0.55]" />
               <div className="flex items-center justify-between py-0.5 text-text-secondary tabular-nums">
                 <span>{t("balanceChip.granted")}</span>
-                <span>{formatAmount(info.currency, info.granted_balance)}</span>
+                <span>{formatBalanceAmount(info.currency, info.granted_balance)}</span>
               </div>
               <div className="flex items-center justify-between py-0.5 text-text-secondary tabular-nums">
                 <span>{t("balanceChip.toppedUp")}</span>
-                <span>{formatAmount(info.currency, info.topped_up_balance)}</span>
+                <span>{formatBalanceAmount(info.currency, info.topped_up_balance)}</span>
               </div>
+              </>}
             </div>
           ))}
-          {!balance.is_available && (
+          {balance.is_available === false && (
             <>
               <div className="my-1.5 h-px shrink-0 bg-border-theme opacity-[0.55]" />
               <div className="pt-0.5 text-[11px] text-amber-600">{t("balanceChip.depleted")}</div>
@@ -117,7 +122,7 @@ function pickTone(
 ): string {
   if (loading) return "text-text-secondary";
   if (error) return "text-text-secondary hover:text-text-base";
-  if (balance && !balance.is_available) return "text-amber-600 hover:text-amber-700";
+  if (balance?.is_available === false) return "text-amber-600 hover:text-amber-700";
   return "text-text-secondary hover:text-text-base";
 }
 
@@ -130,34 +135,7 @@ function formatLabel(
   if (loading && !primary) return t("balanceChip.loading");
   if (error) return t("balanceChip.unavailable");
   if (!primary) return t("balanceChip.notSet");
-  return `${t("balanceChip.label")} ${formatAmount(primary.currency, primary.total_balance)}`;
-}
-
-/** Render an amount with a currency-appropriate symbol. */
-function formatAmount(currency: string, value: string): string {
-  const trimmed = value?.trim() ?? "";
-  if (!trimmed) return "—";
-  const symbol = currencySymbol(currency);
-  // Round display to 2 decimals when the source has more, else keep as-is.
-  const num = Number(trimmed);
-  if (Number.isFinite(num)) return `${symbol}${num.toFixed(2)}`;
-  return `${symbol}${trimmed}`;
-}
-
-function currencySymbol(currency: string): string {
-  switch ((currency || "").toUpperCase()) {
-    case "CNY":
-    case "RMB":
-      return "¥";
-    case "USD":
-      return "$";
-    case "EUR":
-      return "€";
-    case "GBP":
-      return "£";
-    default:
-      return `${currency} `.trimEnd() + " ";
-  }
+  return `${t("balanceChip.label")} ${formatBalanceAmount(primary.currency, primary.total_balance, primary.unlimited)}`;
 }
 
 function tooltipText(

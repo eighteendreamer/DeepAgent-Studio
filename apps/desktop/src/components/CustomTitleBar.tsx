@@ -1,16 +1,12 @@
 import { HoverInfo } from "./ui/HoverInfo";
-import { ArrowLeft, ArrowRight, PanelLeft } from "lucide-react";
-import { useEffect, useState } from "react";
-import { createPortal } from "react-dom";
+import { ArrowLeft, ArrowRight, Copy, Minus, PanelLeft, Square, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
-import {
-  isMainWindow,
-  NAV_ROW_ID,
-  NAV_SLOT_ID,
-  waitForDecorumElement,
-} from "./decorumTitlebar";
+import { isMainWindow, NAV_ROW_ID } from "./decorumTitlebar";
 import { Button } from "./shadcn/button";
 import { cn } from "./shadcn/utils";
+import { message } from "./message";
 
 interface Props {
   onToggleSidebar: () => void;
@@ -34,104 +30,72 @@ export function CustomTitleBar({
 }: Props) {
   const { t } = useTranslation();
   const [visible, setVisible] = useState(true);
-  const [slot, setSlot] = useState<HTMLElement | null>(null);
+  const [nativeWindow, setNativeWindow] = useState<import("@tauri-apps/api/window").Window | null>(null);
+  const [maximized, setMaximized] = useState(false);
+  const snapTimer = useRef<ReturnType<typeof setTimeout>>();
+  const cancelSnap = () => clearTimeout(snapTimer.current);
+  useEffect(() => cancelSnap, []);
 
   useEffect(() => {
     let disposed = false;
-    isMainWindow()
-      .then((ok) => {
-        if (!disposed) setVisible(ok);
-      })
-      .catch(() => {});
-    return () => {
-      disposed = true;
-    };
+    let unlisten: (() => void) | undefined;
+    void isMainWindow().then(ok => { if (!disposed) setVisible(ok); });
+    if ("__TAURI_INTERNALS__" in window) {
+      void import("@tauri-apps/api/window").then(async ({ getCurrentWindow }) => {
+        const current = getCurrentWindow();
+        if (disposed || current.label !== "main") return;
+        setNativeWindow(current);
+        const refresh = async () => {
+          const value = await current.isMaximized();
+          if (!disposed) setMaximized(value);
+        };
+        await refresh();
+        const stop = await current.onResized(() => { void refresh().catch(error => console.error("titlebar resize", error)); });
+        if (disposed) stop(); else unlisten = stop;
+      }).catch(error => console.error("titlebar initialization", error));
+    }
+    return () => { disposed = true; unlisten?.(); };
   }, []);
 
-  useEffect(() => {
-    if (!visible) return;
-    let disposed = false;
-    waitForDecorumElement("[data-tauri-decorum-tb]")
-      .then((titlebar) => {
-        if (disposed) return;
-        let el = document.getElementById(NAV_SLOT_ID) as HTMLDivElement | null;
-        if (!el) {
-          el = document.createElement("div");
-          el.id = NAV_SLOT_ID;
-          // 容器是 justify-content:end 的 flex，流内排布只会贴右侧；
-          // 绝对定位钉在最左，且定位节点绘制在流内拖拽层之上，保证可点击。
-          el.style.position = "absolute";
-          el.style.left = "0";
-          el.style.top = "0";
-          el.style.height = "100%";
-          const minimizeBtn = titlebar.querySelector("#decorum-tb-minimize");
-          if (minimizeBtn) {
-            titlebar.insertBefore(el, minimizeBtn);
-          } else {
-            titlebar.appendChild(el);
-          }
-        }
-        setSlot(el);
-      })
-      .catch(() => {});
-    return () => {
-      disposed = true;
-    };
-  }, [visible]);
-
-  useEffect(() => {
-    return () => {
-      document.getElementById(NAV_SLOT_ID)?.remove();
-    };
-  }, []);
+  const nativeAction = (action: "minimize" | "toggleMaximize" | "close") => {
+    cancelSnap();
+    if (nativeWindow) void nativeWindow[action]().catch(error => message.error(String(error)));
+  };
+  const scheduleSnap = () => {
+    cancelSnap();
+    if (nativeWindow && navigator.userAgent.includes("Windows")) {
+      // Preserve decorum's existing Windows snap-layout hover behavior.
+      snapTimer.current = setTimeout(() => {
+        void nativeWindow.setFocus().then(() => invoke("plugin:decorum|show_snap_overlay"))
+          .catch(error => console.error("titlebar snap overlay", error));
+      }, 620);
+    }
+  };
 
   if (!visible) return null;
 
+  const navigation = [
+    { key: "toggleSidebar", icon: PanelLeft, onClick: onToggleSidebar, disabled: false },
+    { key: "goBack", icon: ArrowLeft, onClick: onBack, disabled: !canGoBack },
+    { key: "goForward", icon: ArrowRight, onClick: onForward, disabled: !canGoForward },
+  ];
+
   return (
-    <>
-      {/* The spacer and native overlay use the same height token. */}
-      <div className="app-titlebar-spacer shrink-0" />
-      {slot &&
-        createPortal(
-          <div
-            id={NAV_ROW_ID}
-            className={cn("app-titlebar-navigation", className)}
-          >
-            <HoverInfo content={t("settings.shortcuts.toggleSidebar")}><Button
-              variant="ghost"
-              size="icon"
-              className={BUTTON_CLASS}
-              onClick={onToggleSidebar}
-
-              aria-label={t("settings.shortcuts.toggleSidebar")}
-            >
-              <PanelLeft />
-            </Button></HoverInfo>
-            <HoverInfo content={t("settings.shortcuts.goBack")}><Button
-              variant="ghost"
-              size="icon"
-              className={BUTTON_CLASS}
-              onClick={onBack}
-              disabled={!canGoBack}
-
-              aria-label={t("settings.shortcuts.goBack")}
-            >
-              <ArrowLeft />
-            </Button></HoverInfo>
-            <HoverInfo content={t("settings.shortcuts.goForward")}><Button
-              variant="ghost"
-              size="icon"
-              className={BUTTON_CLASS}
-              onClick={onForward}
-              disabled={!canGoForward}
-
-              aria-label={t("settings.shortcuts.goForward")}
-            >
-              <ArrowRight />
-            </Button></HoverInfo>
-          </div>,
-          slot,
-        )}
-    </>
+    <header className="app-titlebar app-titlebar-spacer shrink-0">
+      <div id={NAV_ROW_ID} className={cn("app-titlebar-navigation", className)}>
+        {navigation.map(item => <HoverInfo key={item.key} content={t(`settings.shortcuts.${item.key}`)}>
+          <Button variant="ghost" size="icon" className={BUTTON_CLASS} onClick={item.onClick}
+            disabled={item.disabled} aria-label={t(`settings.shortcuts.${item.key}`)}>
+            <item.icon />
+          </Button>
+        </HoverInfo>)}
+      </div>
+      <div className="h-full flex-1" data-tauri-drag-region />
+      {nativeWindow && <div className="app-window-controls">
+        <Button variant="ghost" size="icon" aria-label={t("titleBar.minimize")} onClick={() => nativeAction("minimize")}><Minus /></Button>
+        <Button variant="ghost" size="icon" aria-label={t(maximized ? "titleBar.restore" : "titleBar.maximize")} onMouseEnter={scheduleSnap} onMouseLeave={cancelSnap} onClick={() => nativeAction("toggleMaximize")}>{maximized ? <Copy /> : <Square />}</Button>
+        <Button variant="ghost" size="icon" className="app-window-close" aria-label={t("titleBar.close")} onClick={() => nativeAction("close")}><X /></Button>
+      </div>}
+    </header>
   );
 }

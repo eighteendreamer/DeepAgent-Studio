@@ -214,6 +214,9 @@ export function RemoteSidebar({
     let unlisten: (() => void) | undefined;
     let disposed = false;
 
+    // Browser previews have no native webview or host file-drop events.
+    if (!("__TAURI_INTERNALS__" in window)) return;
+
     const resolveDropTarget = (position: { x: number; y: number }): string => {
       const el = document.elementFromPoint(
         position.x / window.devicePixelRatio,

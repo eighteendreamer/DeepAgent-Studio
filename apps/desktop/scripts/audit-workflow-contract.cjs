@@ -18,7 +18,9 @@ function loadTypeScript(relativePath, imports = {}) {
   loaded.paths = Module._nodeModulePaths(path.dirname(filename));
   const requireModule = loaded.require.bind(loaded);
   loaded.require = (specifier) => Object.hasOwn(imports, specifier) ? imports[specifier]
-    : specifier === "./conditionBranches" ? loadTypeScript("../src/canvas/workflow/utils/conditionBranches.ts") : requireModule(specifier);
+    : specifier === "./conditionBranches" ? loadTypeScript("../src/canvas/workflow/utils/conditionBranches.ts")
+      : specifier === "./harnessModelsApi" ? {}
+      : requireModule(specifier);
   loaded._compile(compiled.outputText, filename);
   return loaded.exports;
 }

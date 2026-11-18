@@ -36,6 +36,7 @@ interface Props {
   onOpenCanvas: () => void;
   onOpenSettings: () => void;
   onLogout: () => void;
+  onPrepareSurface?: (id: string) => void;
 }
 
 /** Persistent feature navigation; the adjacent sidebar owns projects and chats. */
@@ -71,6 +72,7 @@ export function AppNavigationRail(props: Props) {
       {mainNav.map(item => <HoverInfo key={item.id} content={t(`sidebar.${item.key}`)} side="right">
         <Button variant="ghost" size="icon" className="app-navigation-button relative z-[1] hover:bg-transparent"
           data-nav={item.id} aria-label={t(`sidebar.${item.key}`)}
+          onPointerEnter={() => props.onPrepareSurface?.(item.id)} onFocus={() => props.onPrepareSurface?.(item.id)}
           aria-current={activeNavId === item.id ? "page" : undefined} onClick={item.action}>
           <item.icon />
         </Button>
@@ -88,6 +90,8 @@ export function AppNavigationRail(props: Props) {
         </MenuTriggerOpenContext.Provider>
         <DropdownMenuContent side="right" align="start" sideOffset={10} className="min-w-[10.5rem]">
           {OVERFLOW_NAV.map(item => <DropdownMenuItem key={item.id}
+            data-nav-surface={item.id}
+            onPointerEnter={() => props.onPrepareSurface?.(item.id)} onFocus={() => props.onPrepareSurface?.(item.id)}
             className={cn("gap-2 text-sm", props.activeSurface === item.id && "font-medium bg-sidebar-highlight")}
             onSelect={() => overflowActions[item.id]()}>
             <item.icon className="h-4 w-4 shrink-0 text-text-secondary" />{t(`sidebar.${item.id}`)}

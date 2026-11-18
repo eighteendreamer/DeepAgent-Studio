@@ -1,10 +1,9 @@
 import {
   forwardRef,
-  useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useRef,
-  useState,
   type HTMLAttributes,
   type MouseEvent,
   type MutableRefObject,
@@ -15,12 +14,11 @@ import { createPortal } from "react-dom";
 
 import { cn } from "../shadcn/utils";
 import {
-  playModalOriginClose,
   playModalOriginOpen,
-  prefersReducedMotion,
   type ModalTriggerOrigin,
 } from "./modalFromOriginMotion";
 import { Panel } from "./Panel";
+import { SurfaceVisibility } from "./SurfaceVisibility";
 
 export type { ModalTriggerOrigin } from "./modalFromOriginMotion";
 export { modalOriginFromElement } from "./modalFromOriginMotion";
@@ -42,7 +40,7 @@ export interface GlobalModalProps {
 }
 
 /**
- * 全局居中弹窗 —— portal + GSAP 从触发原点 scale 展开/收回（方案 A）。
+ * Controlled modal: opening is synchronous; dismissal never waits for an animation.
  */
 export function GlobalModal({
   open,
@@ -58,80 +56,38 @@ export function GlobalModal({
   closeOnEscape = true,
   zIndexClass = "z-[200]",
 }: GlobalModalProps) {
-  const [mounted, setMounted] = useState(open);
+  const visible = useContext(SurfaceVisibility);
   const backdropRef = useRef<HTMLDivElement>(null);
   const panelElementRef = useRef<HTMLDivElement | null>(null);
-  const originRef = useRef<ModalTriggerOrigin | null>(origin);
   const tlRef = useRef<ReturnType<typeof playModalOriginOpen> | null>(null);
-  const closingRef = useRef(false);
-
-  useEffect(() => {
-    if (open && origin) {
-      originRef.current = origin;
-    }
-  }, [open, origin]);
-
-  const finishClose = useCallback(() => {
-    closingRef.current = false;
-    setMounted(false);
-    originRef.current = null;
-    onClose();
-  }, [onClose]);
-
-  const beginClose = useCallback(() => {
-    if (closingRef.current || !mounted) return;
-
-    const backdrop = backdropRef.current;
-    const panel = panelElementRef.current;
-    if (!backdrop || !panel) {
-      finishClose();
-      return;
-    }
-
-    closingRef.current = true;
-    tlRef.current?.kill();
-    if (prefersReducedMotion()) {
-      finishClose();
-      return;
-    }
-    tlRef.current = playModalOriginClose(backdrop, panel, originRef.current);
-    tlRef.current.eventCallback("onComplete", finishClose);
-  }, [finishClose, mounted]);
-
-  useEffect(() => {
-    if (open) {
-      setMounted(true);
-      closingRef.current = false;
-      return;
-    }
-    if (mounted && !closingRef.current) {
-      beginClose();
-    }
-  }, [beginClose, mounted, open]);
 
   useLayoutEffect(() => {
-    if (!mounted || !open || closingRef.current) return;
+    if (!open || !visible) return;
 
     const backdrop = backdropRef.current;
     const panel = panelElementRef.current;
     if (!backdrop || !panel) return;
 
     tlRef.current?.kill();
-    tlRef.current = playModalOriginOpen(backdrop, panel, originRef.current);
+    tlRef.current = playModalOriginOpen(backdrop, panel, origin);
 
     return () => {
       tlRef.current?.kill();
     };
-  }, [mounted, open]);
+  }, [open, origin, visible]);
 
   useEffect(() => {
-    if (!mounted || !closeOnEscape) return;
+    if (open && !visible) onClose();
+  }, [open, visible, onClose]);
+
+  useEffect(() => {
+    if (!open || !visible || !closeOnEscape) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") beginClose();
+      if (event.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [beginClose, closeOnEscape, mounted]);
+  }, [onClose, closeOnEscape, open, visible]);
 
   useEffect(
     () => () => {
@@ -140,12 +96,12 @@ export function GlobalModal({
     [],
   );
 
-  if (!mounted || typeof document === "undefined") return null;
+  if (!open || !visible || typeof document === "undefined") return null;
 
   const handleShellMouseDown = (event: MouseEvent<HTMLDivElement>) => {
-    if (!closeOnBackdrop || closingRef.current) return;
+    if (!closeOnBackdrop) return;
     if (event.target === event.currentTarget || event.target === backdropRef.current) {
-      beginClose();
+      onClose();
     }
   };
 

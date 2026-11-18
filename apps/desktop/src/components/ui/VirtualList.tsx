@@ -13,6 +13,8 @@ interface Props<T> {
   itemKey: (item: T) => string;
   renderItem: (item: T) => ReactNode;
   estimatedHeight: number;
+  /** Fixed rows skip DOM measurement and per-row resize observers. */
+  itemHeight?: number;
   position: VirtualListPosition;
   label: string;
   className?: string;
@@ -22,7 +24,7 @@ interface Props<T> {
 /** Variable-height windowing, following ChatTimeline's measured rows and rAF scroll updates.
  * The owner retains geometry only; item data continues to come from its existing store.
  */
-function VirtualListInner<T>({ items, itemKey, renderItem, estimatedHeight, position, label, className, empty }: Props<T>) {
+function VirtualListInner<T>({ items, itemKey, renderItem, estimatedHeight, itemHeight, position, label, className, empty }: Props<T>) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [viewport, setViewport] = useState({ top: position.top, height: 0 });
   const [measurement, setMeasurement] = useState(0);
@@ -30,8 +32,9 @@ function VirtualListInner<T>({ items, itemKey, renderItem, estimatedHeight, posi
   const keys = useMemo(() => items.map(itemKey), [items, itemKey]);
   const offsets = useMemo(() => {
     void measurement;
+    if (itemHeight !== undefined) return Array.from({ length: keys.length + 1 }, (_, index) => index * itemHeight);
     return virtualListOffsets(keys, position.heights, estimatedHeight);
-  }, [keys, position, estimatedHeight, measurement]);
+  }, [keys, position, estimatedHeight, itemHeight, measurement]);
   const range = virtualListRange(offsets, viewport.top, viewport.height, estimatedHeight * 3);
 
   useLayoutEffect(() => {
@@ -52,8 +55,10 @@ function VirtualListInner<T>({ items, itemKey, renderItem, estimatedHeight, posi
     const resize = () => {
       if (position.width !== container.clientWidth) {
         position.width = container.clientWidth;
-        position.heights.clear();
-        setMeasurement(value => value + 1);
+        if (itemHeight === undefined) {
+          position.heights.clear();
+          setMeasurement(value => value + 1);
+        }
       }
       schedule();
     };
@@ -69,7 +74,7 @@ function VirtualListInner<T>({ items, itemKey, renderItem, estimatedHeight, posi
       observer.disconnect();
       if (frame) cancelAnimationFrame(frame);
     };
-  }, [position]);
+  }, [position, itemHeight]);
 
   // Clamp after filtering/deletion or viewport resize rather than showing a blank window.
   useLayoutEffect(() => {
@@ -104,7 +109,7 @@ function VirtualListInner<T>({ items, itemKey, renderItem, estimatedHeight, posi
         <div className="relative" style={{ height: offsets[keys.length] }}>
           {indexes.map(index => (
             <MeasuredRow key={keys[index]} itemKey={keys[index]} index={index} count={items.length}
-              top={offsets[index]} onMeasure={measure}
+              top={offsets[index]} itemHeight={itemHeight} onMeasure={measure}
               onFocus={setFocusedKey}>
               {renderItem(items[index])}
             </MeasuredRow>
@@ -115,14 +120,15 @@ function VirtualListInner<T>({ items, itemKey, renderItem, estimatedHeight, posi
   );
 }
 
-const MeasuredRow = memo(function MeasuredRow({ itemKey, index, count, top, onMeasure, onFocus, children }: {
-  itemKey: string; index: number; count: number; top: number;
+const MeasuredRow = memo(function MeasuredRow({ itemKey, index, count, top, itemHeight, onMeasure, onFocus, children }: {
+  itemKey: string; index: number; count: number; top: number; itemHeight?: number;
   onMeasure: (key: string, height: number) => void;
   onFocus: (key: string | null) => void;
   children: ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
+    if (itemHeight !== undefined) return;
     const element = ref.current;
     if (!element) return;
     const measure = () => onMeasure(itemKey, element.getBoundingClientRect().height);
@@ -130,10 +136,10 @@ const MeasuredRow = memo(function MeasuredRow({ itemKey, index, count, top, onMe
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     return () => observer.disconnect();
-  }, [itemKey, onMeasure]);
+  }, [itemKey, itemHeight, onMeasure]);
   return (
     <div ref={ref} role="listitem" aria-posinset={index + 1} aria-setsize={count}
-      className="absolute left-0 right-0" style={{ top }}
+      className="absolute left-0 right-0" style={{ top, height: itemHeight }}
       onFocusCapture={() => onFocus(itemKey)}
       onBlurCapture={event => { if (!event.currentTarget.contains(event.relatedTarget)) onFocus(null); }}>
       {children}

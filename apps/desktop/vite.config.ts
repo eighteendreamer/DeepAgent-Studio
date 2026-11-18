@@ -38,7 +38,9 @@ export default defineConfig(({ command }) => ({
       // public/file-viewer 是 file-viewer 的纯静态产物（约 2900 个文件 / 152MB），
       // 不在模块图内（HMR 日志全为 "no modules matched"）。一旦被覆盖写入，
       // chokidar 会逐个派发 file change，实测阻塞 dev server 启动约 74 秒。
-      ignored: ["**/public/file-viewer/**"],
+      // Rust sources, bundled skills and Cargo outputs have their own watcher.
+      // Watching those trees here can fail on Windows and does not serve HMR.
+      ignored: ["**/public/file-viewer/**", "**/src-tauri/**", "**/target/**"],
     },
   },
   build: {

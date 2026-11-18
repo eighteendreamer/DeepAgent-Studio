@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, Zap, Coins, Wallet } from "lucide-react";
 import { getCostSummary, getBalance, unwrapRuntimeEvent, SETTINGS_CHANGED_EVENT } from "../api";
-import { formatCny, formatTokens } from "./chat-timeline/format";
+import { formatBalanceAmount, formatCny, formatTokens } from "./chat-timeline/format";
 import type { Balance, CostSummary } from "../types";
 
 interface Props {
@@ -38,6 +38,7 @@ export function SessionUsageBar({ sessionId, busy = false }: Props) {
   // Latest-request-wins: a slow reply for a session the user left must not
   // overwrite the numbers of the session they switched to.
   const generation = useRef(0);
+  const balanceGeneration = useRef(0);
   const busyRef = useRef(busy);
   busyRef.current = busy;
 
@@ -62,10 +63,14 @@ export function SessionUsageBar({ sessionId, busy = false }: Props) {
   }, [sessionId]);
 
   const fetchBalance = useCallback(async () => {
+    const requested = ++balanceGeneration.current;
+    setBalance(null);
     try {
       const data = await getBalance();
-      setBalance(data);
+      if (requested === balanceGeneration.current) setBalance(data);
     } catch (err) {
+      if (requested !== balanceGeneration.current) return;
+      setBalance(null);
       console.error("fetch balance failed:", err);
     }
   }, []);
@@ -86,6 +91,7 @@ export function SessionUsageBar({ sessionId, busy = false }: Props) {
 
   useEffect(() => {
     fetchBalance();
+    return () => { balanceGeneration.current += 1; };
   }, [fetchBalance]);
 
   useEffect(() => {
@@ -174,10 +180,10 @@ export function SessionUsageBar({ sessionId, busy = false }: Props) {
             </span>
           </>
         )}
-        {balance && balance.is_available && balance.infos.length > 0 && (
+        {balance && balance.infos.length > 0 && (
           <span className="text-text-tertiary">
             <Wallet size={11} className="mr-0.5 inline" />
-            余额 {formatCny(parseFloat(balance.infos[0].total_balance))}
+            余额 {formatBalanceAmount(balance.infos[0].currency, balance.infos[0].total_balance, balance.infos[0].unlimited)}
           </span>
         )}
       </div>

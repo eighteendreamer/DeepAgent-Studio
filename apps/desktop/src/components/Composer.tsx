@@ -1,12 +1,12 @@
 import { HoverInfo } from "./ui/HoverInfo";
 import { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo, useId } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { Brain, Check, ChevronDown, CircleAlert, Feather, Hand, Lightbulb, Loader2, ShieldHalf, Sparkles } from "lucide-react";
+import { Brain, BrainCircuit, Check, ChevronDown, CircleAlert, Feather, Hand, Lightbulb, Loader2, ShieldHalf, Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ContextCapacityIndicator } from "./ContextCapacityIndicator";
 import { ComposerSuggestPanel } from "./ComposerSuggestPanel";
 import { ModelThinkingSelector } from "./ModelThinkingSelector";
-import { useComposerModelSettings } from "../hooks/useComposerModelSettings";
+import { useComposerModelSettings, type ThinkingLevel } from "../hooks/useComposerModelSettings";
 import { InputSurface } from "./ui/InputSurface";
 import { useMessageSendMotion } from "./ui/MessageSendMotionContext";
 import { ComposerAttachButton } from "./ComposerAttachButton";
@@ -250,10 +250,11 @@ export function Composer({
   const composerRef = useRef<HTMLDivElement>(null);
   const messageSendMotion = useMessageSendMotion();
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
-  const { models, selectedModel, modelCapabilities, selectedThinking, switching,
+  const { modelOptions, activeModelOptions, selectedModel, modelCapabilities, selectedThinking, switching,
     chooseModel, chooseThinking } = useComposerModelSettings();
   const [slashResults, setSlashResults] = useState<SlashChoice[]>([]);
   const [slashSelected, setSlashSelected] = useState(0);
+  const [suggestionNavigation, setSuggestionNavigation] = useState(0);
   const [atSections, setAtSections] = useState<AtSection[]>([]);
   const [atSelected, setAtSelected] = useState(0);
   const [selectedSkills, setSelectedSkills] = useState<ComposerSkillSelection[]>([]);
@@ -312,12 +313,12 @@ export function Composer({
   }, [draftValue, value]);
 
   const THINKING_OPTIONS = [
-    { id: "none", label: "composer.thinkingNone", icon: Feather },
+    { id: "off", label: "composer.thinkingNone", icon: Feather },
     { id: "low", label: "composer.thinkingLow", icon: Lightbulb },
-    // Display ranks are ordinal; DeepSeek's wire values remain high / max.
-    { id: "high", label: "composer.thinkingMedium", icon: Brain },
-    { id: "max", label: "composer.thinkingHigh", icon: Sparkles },
-  ] as const;
+    { id: "medium", label: "composer.thinkingMedium", icon: Brain },
+    { id: "high", label: "composer.thinkingHigh", icon: BrainCircuit },
+    { id: "max", label: "composer.thinkingMax", icon: Sparkles },
+  ] as const satisfies readonly { id: ThinkingLevel; label: string; icon: typeof Feather }[];
 
   const ALL_APPROVAL_OPTIONS = [
     { id: "default", label: "composer.defaultPermission", desc: "composer.defaultPermissionDesc", icon: Hand },
@@ -497,15 +498,15 @@ export function Composer({
       const exactArgCommand = firstSpace < 0 && (commandName === "model" || commandName === "thinking");
 
       if (commandName === "model" && (firstSpace >= 0 || exactArgCommand)) {
-        const choices = models
-          .filter((id) => id.toLowerCase().includes(argQuery))
-          .map((id) => ({
-            id: `slash-arg.model.${id}`,
-            title: id,
-            description: id === selectedModel ? "当前模型" : "切换到这个 DeepSeek 模型",
+        const choices = activeModelOptions
+          .filter((model) => `${model.modelName} ${model.providerLabel}`.toLowerCase().includes(argQuery))
+          .map((model) => ({
+            id: `slash-arg.model.${model.id}`,
+            title: model.modelName,
+            description: model.id === selectedModel ? `当前模型 · ${model.providerLabel}` : `切换到 ${model.providerLabel} 的模型`,
             category: "模型",
             shortcut: null,
-            insertText: `/model ${id} `,
+            insertText: `/model ${model.providerId}/${model.modelName} `,
           }));
         setSlashResults(choices);
         setSlashSelected(0);
@@ -514,17 +515,18 @@ export function Composer({
 
       if (commandName === "thinking" && (firstSpace >= 0 || exactArgCommand)) {
         const choices = [
-          { id: "none", title: "none", description: "关闭推理", category: "推理强度" },
+          { id: "off", title: "off", description: "关闭推理", category: "推理强度" },
           { id: "low", title: "low", description: "低推理强度", category: "推理强度" },
-          { id: "high", title: "high", description: "中档推理强度（API：high）", category: "推理强度" },
-          { id: "max", title: "max", description: "高档推理强度（API：max）", category: "推理强度" },
+          { id: "medium", title: "medium", description: "中推理强度", category: "推理强度" },
+          { id: "high", title: "high", description: "高推理强度", category: "推理强度" },
+          { id: "max", title: "max", description: "最高推理强度", category: "推理强度" },
         ]
           .filter((opt) => opt.title.includes(argQuery) || opt.description.includes(argQuery))
           .map((opt) => ({
             ...opt,
             id: `slash-arg.thinking.${opt.id}`,
             shortcut: null,
-            insertText: `/thinking ${opt.id} `,
+            insertText: `/thinking ${opt.id === "off" ? "none" : opt.id} `,
           }));
         setSlashResults(choices);
         setSlashSelected(0);
@@ -580,7 +582,7 @@ export function Composer({
     return () => {
       cancelled = true;
     };
-  }, [activeSlashToken, draftValue, models, selectedModel, selectedSkills, skills]);
+  }, [activeSlashToken, draftValue, activeModelOptions, selectedModel, selectedSkills, skills]);
 
   useEffect(() => {
     if (!activeAtToken || slashOpen) {
@@ -1373,11 +1375,13 @@ export function Composer({
     if (e.nativeEvent.isComposing) return;
     if (atOpen && e.key === "ArrowDown") {
       e.preventDefault();
+      setSuggestionNavigation(value => value + 1);
       setAtSelected((s) => Math.min(s + 1, atEntries.length - 1));
       return;
     }
     if (atOpen && e.key === "ArrowUp") {
       e.preventDefault();
+      setSuggestionNavigation(value => value + 1);
       setAtSelected((s) => Math.max(s - 1, 0));
       return;
     }
@@ -1396,11 +1400,13 @@ export function Composer({
     }
     if (slashOpen && e.key === "ArrowDown") {
       e.preventDefault();
+      setSuggestionNavigation(value => value + 1);
       setSlashSelected((s) => Math.min(s + 1, slashEntries.length - 1));
       return;
     }
     if (slashOpen && e.key === "ArrowUp") {
       e.preventDefault();
+      setSuggestionNavigation(value => value + 1);
       setSlashSelected((s) => Math.max(s - 1, 0));
       return;
     }
@@ -1438,6 +1444,7 @@ export function Composer({
         open={atOpen}
         sections={atSections}
         selectedIndex={atSelected}
+        navigationKey={suggestionNavigation}
         getKey={(item) => item.id}
         onSelect={chooseAt}
         onHover={setAtSelected}
@@ -1466,6 +1473,7 @@ export function Composer({
         open={slashOpen}
         sections={slashSections}
         selectedIndex={slashSelected}
+        navigationKey={suggestionNavigation}
         getKey={(cmd) => cmd.id}
         onSelect={chooseSlash}
         onHover={setSlashSelected}
@@ -1697,7 +1705,8 @@ export function Composer({
           <ContextCapacityIndicator
             snapshot={contextUsage}
             contextWindow={
-              modelCapabilities.find((c) => c.model_id === selectedModel)?.context_window
+              modelOptions.find((model) => model.id === selectedModel)?.contextWindow
+                ?? modelCapabilities.find((c) => c.model_id === selectedModel)?.context_window
             }
             fallbackPromptTokens={contextUsageFallbackTokens}
             popoverSuppressed={isModelDropdownOpen || isApprovalDropdownOpen}
@@ -1715,7 +1724,9 @@ export function Composer({
               open={isModelDropdownOpen}
               disabled={busy && !onStop}
               switching={switching}
-              models={models}
+              models={modelOptions}
+              thinkingLevels={modelOptions.find((model) => model.id === selectedModel)?.thinkingLevels}
+              thinkingDisable={modelOptions.find((model) => model.id === selectedModel)?.thinkingDisable}
               selectedModel={selectedModel}
               selectedThinking={selectedThinking}
               thinkingOptions={THINKING_OPTIONS.map((opt) => ({

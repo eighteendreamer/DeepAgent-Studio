@@ -10,7 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 export const HARNESS_PROTOCOLS = ["responses", "chat_completions", "messages"] as const;
 export type HarnessProtocol = (typeof HARNESS_PROTOCOLS)[number];
 
-/** Balance query kinds. Dispatch is not implemented yet (plan P7); stored only. */
+/** Balance query kinds supported by the backend adapter. */
 export const HARNESS_BALANCE_KINDS = ["auto", "none", "official", "new_api", "sub2api"] as const;
 export type HarnessBalanceKind = (typeof HARNESS_BALANCE_KINDS)[number];
 
@@ -18,6 +18,7 @@ export interface HarnessProviderView {
   id: string;
   channel: string;
   logo: string;
+  websiteUrl: string;
   modelUrl: string;
   protocol: HarnessProtocol;
   balanceKind: HarnessBalanceKind;
@@ -31,6 +32,7 @@ export interface HarnessProviderInput {
   id: string | null;
   channel: string;
   logo: string;
+  websiteUrl: string;
   modelUrl: string;
   protocol: HarnessProtocol;
   balanceKind: HarnessBalanceKind;
@@ -48,7 +50,12 @@ export interface HarnessModelView {
   contextWindow: number;
   outputLimit: number;
   active: boolean;
+  thinkingLevels: string[];
+  thinkingDistinct: string[];
+  thinkingDisable: boolean;
 }
+
+export type HarnessModelInput = Omit<HarnessModelView, "active">;
 
 export interface HarnessActiveModelView {
   providerId: string;
@@ -60,6 +67,20 @@ export interface HarnessActiveModelView {
   protocol: HarnessProtocol;
   contextWindow: number;
   outputLimit: number;
+  thinkingLevels: string[];
+  thinkingDistinct: string[];
+  thinkingDisable: boolean;
+}
+
+export interface HarnessBalanceView {
+  providerId: string;
+  balanceKind: HarnessBalanceKind;
+  amount: {
+    amount: number | null;
+    unit: string;
+    unlimited: boolean;
+  };
+  available: boolean | null;
 }
 
 export function listHarnessProviders(): Promise<HarnessProviderView[]> {
@@ -78,6 +99,14 @@ export function listHarnessModels(providerId: string): Promise<HarnessModelView[
   return invoke("harness_models_list", { providerId });
 }
 
+export async function saveHarnessModel(model: HarnessModelInput): Promise<HarnessModelView> {
+  const saved = await invoke<HarnessModelView>("harness_model_save", { model });
+  window.dispatchEvent(new CustomEvent("deepagent:settings-changed", {
+    detail: { reason: "model_capabilities", affectsBalance: false },
+  }));
+  return saved;
+}
+
 /** Pulls `GET /models` with the stored key. Newly found models start inactive. */
 export function fetchHarnessModels(providerId: string): Promise<HarnessModelView[]> {
   return invoke("harness_models_fetch", { providerId });
@@ -93,4 +122,31 @@ export function setHarnessModelActive(
 
 export function listActiveHarnessModels(): Promise<HarnessActiveModelView[]> {
   return invoke("harness_active_models");
+}
+
+export function selectHarnessModel(
+  providerId: string,
+  modelName: string,
+  affectsBalance = false,
+): Promise<HarnessActiveModelView> {
+  const request = invoke<HarnessActiveModelView>("harness_model_select", { providerId, modelName });
+  return request.then((view) => {
+    window.dispatchEvent(new CustomEvent("deepagent:settings-changed", {
+      detail: { reason: "chat_model", affectsBalance },
+    }));
+    return view;
+  });
+}
+
+export function getHarnessModelSelection(): Promise<HarnessActiveModelView | null> {
+  return invoke("harness_model_selection");
+}
+
+export function fetchHarnessBalance(providerId: string): Promise<HarnessBalanceView> {
+  return invoke("harness_balance", { providerId });
+}
+
+export async function fetchSelectedHarnessBalance(): Promise<HarnessBalanceView | null> {
+  const selected = await getHarnessModelSelection();
+  return selected ? fetchHarnessBalance(selected.providerId) : null;
 }

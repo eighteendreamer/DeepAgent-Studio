@@ -1,80 +1,51 @@
-import { lazy, Suspense, useLayoutEffect, useRef } from "react";
-import gsap from "gsap";
-import { prefersReducedMotion } from "./ui/springMotion";
-
-const GeneralSettings = lazy(() => import("./settings/GeneralSettings").then((m) => ({ default: m.GeneralSettings })));
-const AppearanceSettings = lazy(() => import("./settings/AppearanceSettings").then((m) => ({ default: m.AppearanceSettings })));
-const ConfigSettings = lazy(() => import("./settings/ConfigSettings").then((m) => ({ default: m.ConfigSettings })));
-const ModelsSettings = lazy(() => import("./settings/ModelsSettings").then((m) => ({ default: m.ModelsSettings })));
-const PersonalizeSettings = lazy(() => import("./settings/PersonalizeSettings").then((m) => ({ default: m.PersonalizeSettings })));
-const ShortcutsSettings = lazy(() => import("./settings/ShortcutsSettings").then((m) => ({ default: m.ShortcutsSettings })));
-const MCPSettings = lazy(() => import("./settings/MCPSettings").then((m) => ({ default: m.MCPSettings })));
-const HooksSettings = lazy(() => import("./settings/HooksSettings").then((m) => ({ default: m.HooksSettings })));
-const ConnectionsSettings = lazy(() => import("./settings/ConnectionsSettings").then((m) => ({ default: m.ConnectionsSettings })));
-const GitSettings = lazy(() => import("./settings/GitSettings").then((m) => ({ default: m.GitSettings })));
-const EnvSettings = lazy(() => import("./settings/EnvSettings").then((m) => ({ default: m.EnvSettings })));
-const WorktreeSettings = lazy(() => import("./settings/WorktreeSettings").then((m) => ({ default: m.WorktreeSettings })));
-const BrowserSettings = lazy(() => import("./settings/BrowserSettings").then((m) => ({ default: m.BrowserSettings })));
-const ComputerSettings = lazy(() => import("./settings/ComputerSettings").then((m) => ({ default: m.ComputerSettings })));
-const ArchiveSettings = lazy(() => import("./settings/ArchiveSettings").then((m) => ({ default: m.ArchiveSettings })));
-const ProjectMapDebugSettings = lazy(() => import("./settings/ProjectMapDebugSettings").then((m) => ({ default: m.ProjectMapDebugSettings })));
-const AboutSettings = lazy(() => import("./settings/AboutSettings").then((m) => ({ default: m.AboutSettings })));
+import { memo, Suspense, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { preloadSettingsCategory, settingsCategories, settingsCategory } from "./settings/settingsCategories";
+import { SurfaceVisibility } from "./ui/SurfaceVisibility";
 
 interface Props {
   activeCategoryId: string;
+  visible?: boolean;
 }
 
-export function SettingsView({ activeCategoryId }: Props) {
-  const sectionRef = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    if (!sectionRef.current || prefersReducedMotion()) return;
-    const context = gsap.context(() => {
-      gsap.fromTo(sectionRef.current, { opacity: 0, y: 7 }, { opacity: 1, y: 0, duration: 0.24, ease: "power2.out" });
-    });
-    return () => context.revert();
-  }, [activeCategoryId]);
-  const renderPlugin = () => {
-    switch (activeCategoryId) {
-      case "general": return <GeneralSettings />;
-      case "appearance": return <AppearanceSettings />;
-      case "config": return <ConfigSettings />;
-      case "models": return <ModelsSettings />;
-      case "personalize": return <PersonalizeSettings />;
-      case "shortcuts": return <ShortcutsSettings />;
-      case "mcp": return <MCPSettings />;
-      case "hooks": return <HooksSettings />;
-      case "connections": return <ConnectionsSettings />;
-      case "git": return <GitSettings />;
-      case "env": return <EnvSettings />;
-      case "worktree": return <WorktreeSettings />;
-      case "browser": return <BrowserSettings />;
-      case "computer": return <ComputerSettings />;
-      case "project_map_debug": return <ProjectMapDebugSettings />;
-      case "archive": return <ArchiveSettings />;
-      case "about": return <AboutSettings />;
-      default: return <GeneralSettings />;
-    }
-  };
+export const SettingsView = memo(function SettingsView({ activeCategoryId, visible = true }: Props) {
+  const { t } = useTranslation();
+  const active = settingsCategory(activeCategoryId);
+  const [visited, setVisited] = useState([active]);
+  const categories = visited.includes(active) ? visited : [...visited, active];
+  useEffect(() => {
+    setVisited(current => current.includes(active) ? current : [...current, active]);
+  }, [active]);
+  useEffect(() => {
+    // Warm code only, one category at a time. Unvisited pages do not read data.
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const remaining = Object.keys(settingsCategories);
+    const next = () => {
+      const id = remaining.shift();
+      if (cancelled || !id) return;
+      void preloadSettingsCategory(id).catch(() => {}).finally(() => {
+        if (!cancelled) timer = setTimeout(next, 100);
+      });
+    };
+    timer = setTimeout(next, 500);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, []);
 
   return (
-    <div className="stable-scrollbar-gutter w-full h-full bg-bg-base text-text-base overflow-y-auto px-16 pt-16 pb-20 flex justify-center relative">
-      <div className="w-full max-w-[700px]">
-          <div
-            key={activeCategoryId}
-            ref={sectionRef}
-            className="settings-section spring-settings-section w-full"
-          >
-            <Suspense
-              fallback={
-                <div className="flex min-h-40 items-center justify-center" aria-busy="true">
-                  <div className="h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-primary" />
-                </div>
-              }
-            >
-              {renderPlugin()}
-            </Suspense>
-          </div>
+    <div data-settings-viewport className={`h-full min-h-0 w-full bg-bg-base text-text-base max-[900px]:px-6 ${active === "models" ? "overflow-hidden px-10 py-6" : "stable-scrollbar-gutter overflow-y-auto px-10 pb-16 pt-10"}`}>
+      <div className={`mx-auto w-full ${active === "models" ? "h-full min-h-0 max-w-[1040px]" : "max-w-[700px]"}`}>
+        {categories.map(id => {
+          const Category = settingsCategories[id];
+          return <section key={id} hidden={id !== active} className={`settings-section w-full ${id === "models" ? "h-full min-h-0" : ""}`} data-settings-category={id}>
+            <SurfaceVisibility.Provider value={visible && id === active}>
+              <Suspense fallback={<h1 data-category-pending className="text-2xl font-semibold">{t(`settings.tabs.${id}`)}</h1>}>
+                <Category />
+              </Suspense>
+            </SurfaceVisibility.Provider>
+          </section>;
+        })}
       </div>
     </div>
   );
-}
+});

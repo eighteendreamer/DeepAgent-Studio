@@ -51,9 +51,9 @@ export function playModalOriginOpen(
   }
 
   const transformOrigin = origin ? originTransformFromPanel(panel, origin) : "center center";
-  gsap.set(backdrop, { autoAlpha: 0 });
+  gsap.set(backdrop, { autoAlpha: 1 });
   gsap.set(panel, {
-    opacity: 0,
+    opacity: 1,
     visibility: "visible",
     scale: MODAL_ORIGIN_MOTION.scaleFrom,
     transformOrigin,
@@ -71,7 +71,7 @@ export function playModalOriginOpen(
       duration: MODAL_ORIGIN_MOTION.openPanelDuration,
       ease: MODAL_ORIGIN_MOTION.openPanelEase,
     },
-    MODAL_ORIGIN_MOTION.openPanelDelay,
+    0,
   );
 
   return tl;

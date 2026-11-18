@@ -17,7 +17,7 @@ import { cn } from "./shadcn/utils";
 
 
 
-type ReasoningEffort = "none" | "low" | "high" | "max";
+type ReasoningEffort = "off" | "low" | "medium" | "high" | "max";
 
 
 
@@ -33,6 +33,15 @@ type ThinkingOption = {
 
 
 
+export type ModelOption = {
+  id: string;
+  label: string;
+  providerLabel: string;
+  thinkingLevels?: string[];
+  thinkingDistinct?: string[];
+  thinkingDisable?: boolean;
+};
+
 type Props = {
 
   open: boolean;
@@ -41,13 +50,17 @@ type Props = {
 
   switching?: boolean;
 
-  models: string[];
+  models: readonly ModelOption[];
 
   selectedModel: string;
 
   selectedThinking: ReasoningEffort;
 
   thinkingOptions: readonly ThinkingOption[];
+
+  thinkingLevels?: readonly string[];
+
+  thinkingDisable?: boolean;
 
   selectModelLabel: string;
 
@@ -63,12 +76,6 @@ type Props = {
 
 };
 
-
-
-function modelLabel(id: string): string {
-  if (!id) return "";
-  return id;
-}
 
 
 /** 标题、选项容器与滑轨统一外沿，选项文字保留独立内边距。 */
@@ -96,6 +103,8 @@ export function ModelThinkingSelector({
   selectedThinking,
 
   thinkingOptions,
+  thinkingLevels,
+  thinkingDisable,
 
   selectModelLabel,
 
@@ -118,7 +127,12 @@ export function ModelThinkingSelector({
 
     thinkingOptions.find((option) => option.id === selectedThinking) ?? thinkingOptions[2];
 
-  const pillModel = selectedModel ? modelLabel(selectedModel) : selectModelLabel;
+  const selectedOption = models.find((model) => model.id === selectedModel);
+  const declaredLevels = thinkingLevels ?? selectedOption?.thinkingLevels ?? thinkingOptions.map(option => option.id);
+  const supportedLevels = new Set(declaredLevels.map((level) => level === "none" ? "off" : level));
+  const canDisableThinking = thinkingDisable ?? selectedOption?.thinkingDisable ?? true;
+  const distinctLevels = new Set(selectedOption?.thinkingDistinct ?? []);
+  const pillModel = selectedOption?.label || (selectedModel ? selectedModel : selectModelLabel);
 
   const trigger = (
     <HoverInfo content={`${selectModelLabel} / ${selectedThinkingOption.label}`}><TintButton
@@ -160,7 +174,7 @@ export function ModelThinkingSelector({
 
 
 
-            <div className="max-h-[96px] overflow-y-auto">
+            <div className="max-h-[240px] overflow-y-auto overscroll-contain">
 
               {models.length === 0 ? (
 
@@ -170,41 +184,31 @@ export function ModelThinkingSelector({
 
                 <SlidingMenuList activeId={selectedModel} pillClassName={MODEL_MENU.pill} className="w-full py-0.5">
 
-                  {models.map((id) => {
-
-                    const selected = id === selectedModel;
-
-                    return (
-
-                      <ListItem
-
-                        key={id}
-
-                        {...{ [MENU_ITEM_ATTR]: id }}
-
-                        sliding
-
-                        selected={selected}
-
-                        aria-busy={switching || undefined}
-                        onClick={() => onChooseModel(id)}
-
-                        className={cn(
-                          "cursor-pointer px-2.5 py-2 text-left",
-                          selected ? "text-text-base" : "text-text-secondary",
-                        )}
-
-                      >
-
-                        <span className="font-medium">{modelLabel(id)}</span>
-
-                        {selected && <Check size={10} className="ml-3 text-text-base" />}
-
-                      </ListItem>
-
-                    );
-
-                  })}
+                  {Array.from(new Map(models.map((model) => [model.providerLabel, model])).keys()).map((provider) => (
+                    <div key={provider} className="pb-1 last:pb-0">
+                      <div className="flex items-center gap-2 px-2.5 pb-1 pt-2 text-[11px] font-normal text-text-secondary">
+                        <span className="min-w-0 truncate">{provider}</span>
+                        <span aria-hidden="true" className="h-px min-w-3 flex-1 bg-border-theme opacity-[0.55]" />
+                      </div>
+                      {models.filter((model) => model.providerLabel === provider).map((model) => {
+                        const selected = model.id === selectedModel;
+                        return (
+                          <ListItem
+                            key={model.id}
+                            {...{ [MENU_ITEM_ATTR]: model.id }}
+                            sliding
+                            selected={selected}
+                            aria-busy={switching || undefined}
+                            onClick={() => onChooseModel(model.id)}
+                            className="cursor-pointer gap-2 py-2 pl-5 pr-2.5 text-left text-[13px] text-text-base"
+                          >
+                            <span className={cn("min-w-0 truncate", selected ? "font-semibold" : "font-medium")}>{model.label}</span>
+                            {selected && <Check size={12} className="shrink-0 text-text-base" />}
+                          </ListItem>
+                        );
+                      })}
+                    </div>
+                  ))}
 
                 </SlidingMenuList>
 
@@ -232,8 +236,12 @@ export function ModelThinkingSelector({
 
               stops={thinkingOptions.map((option) => ({
                 value: option.id,
-                label: option.label,
+                label: option.id !== "off" && supportedLevels.has(option.id)
+                  && distinctLevels.size > 0 && !distinctLevels.has(option.id)
+                    ? t("composer.thinkingEquivalent", { level: option.label }) : option.label,
                 icon: option.icon,
+                disabled: !supportedLevels.has(option.id)
+                  || (option.id === "off" && !canDisableThinking),
               }))}
 
               value={selectedThinking}
