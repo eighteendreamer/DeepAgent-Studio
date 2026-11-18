@@ -17,6 +17,7 @@ type Labeler = (key: string) => string;
 
 export function TransferTaskBody({ task, label }: { task: TransferTask; label: Labeler }) {
   const live = task.state === "running" || task.state === "cancelling";
+  const destination = task.directoryReceipt?.destinationPath ?? task.receipt?.destinationPath ?? task.error?.destinationPath;
   const warnings = [
     ...(task.error?.cleanupWarnings ?? []), ...(task.receipt?.cleanupWarnings ?? []),
     ...(task.directoryReceipt?.cleanupWarnings ?? []),
@@ -27,6 +28,8 @@ export function TransferTaskBody({ task, label }: { task: TransferTask; label: L
     <p className="break-all">{label(task.state)} · {task.bytes} / {task.total ?? "?"} B · {label("averageSpeed")} {live ? task.speedBps ?? "?" : "—"} B/s · {label("attempt")} {task.attempt}</p>
     <p>{label("files")} {task.completedFiles ?? "?"} / {task.totalFiles ?? "?"}</p>
     {task.request.kind === "directory" && <p>{label("skippedFiles")} {task.skippedFiles ?? 0}</p>}
+    {destination && <p className="break-all text-text-secondary">{label("destinationPath")} · {destination}</p>}
+    {!!task.directoryReceipt?.renamedFiles && <p>{label("renamedFiles")} {task.directoryReceipt.renamedFiles}</p>}
     {task.currentFile && <p className="break-all text-text-secondary">{label("currentFile")} · {task.currentFile}</p>}
     {task.error && <p role="alert" className="break-words text-red-500">{task.error.code}: {task.error.message}</p>}
     {task.error?.relativePath && <p className="break-all text-red-500">{label("failedFile")} · {task.error.relativePath}</p>}
@@ -50,9 +53,11 @@ export function RemoteTransfersPanel({ connectionId }: { connectionId: string })
   const [local, setLocal] = useState("");
   const [remote, setRemote] = useState("");
   const [busy, setBusy] = useState(false);
-  const [replace, setReplace] = useState<string | null>(null);
-  const replacementTask = tasks.find(task => task.id === replace);
+  const [resolution, setResolution] = useState<{ id: string; policy: "replace" | "keep_both" } | null>(null);
+  const replacementTask = tasks.find(task => task.id === resolution?.id);
   const replacement = replacementTask?.request.transfer;
+  const keepBoth = resolution?.policy === "keep_both";
+  const decisionLabel = keepBoth ? "keepBoth" : "replace";
 
   useEffect(() => observeRemoteTransfers({
     next: snapshot => { setTasks(snapshot.tasks); setError(""); },
@@ -116,7 +121,13 @@ export function RemoteTransfersPanel({ connectionId }: { connectionId: string })
           {task.error?.code === "conflict" && <>
             <Button variant="outline" size="sm" disabled={busy}
               onClick={() => void act(() => remoteTransferRetry(task.id, "skip", task.request.kind === "directory" ? (task.error?.relativePath ? "merge" : "skip") : undefined))}>{label("skip")}</Button>
-            {(task.request.kind !== "directory" || task.error?.relativePath) && <Button variant="destructive" size="sm" disabled={busy} onClick={() => setReplace(task.id)}>{label("replace")}</Button>}
+            {task.request.kind === "directory" && !task.error?.relativePath
+              ? <Button variant="outline" size="sm" disabled={busy}
+                  onClick={() => void act(() => remoteTransferRetry(task.id, "ask", "keep_both"))}>{label("keepBothDirectory")}</Button>
+              : <>
+                <Button variant="outline" size="sm" disabled={busy} onClick={() => setResolution({ id: task.id, policy: "keep_both" })}>{label(task.request.kind === "directory" ? "keepBothFiles" : "keepBoth")}</Button>
+                <Button variant="destructive" size="sm" disabled={busy} onClick={() => setResolution({ id: task.id, policy: "replace" })}>{label("replace")}</Button>
+              </>}
           </>}
         </div>
       </article>)}
@@ -149,18 +160,18 @@ export function RemoteTransfersPanel({ connectionId }: { connectionId: string })
         </DialogFooter>
       </DialogContent>
     </Dialog>}
-    {replace && <Dialog open onOpenChange={open => { if (!open && !busy) setReplace(null); }}>
+    {resolution && <Dialog open onOpenChange={open => { if (!open && !busy) setResolution(null); }}>
       <DialogContent>
-        <DialogHeader className="flex-col gap-2"><DialogTitle>{label("replace")}</DialogTitle><DialogDescription>{label(replacementTask?.request.kind === "directory" ? "replaceDirectoryFilesWarning" : "replaceWarning")}</DialogDescription></DialogHeader>
+        <DialogHeader className="flex-col gap-2"><DialogTitle>{label(decisionLabel)}</DialogTitle><DialogDescription>{label(keepBoth ? (replacementTask?.request.kind === "directory" ? "keepBothDirectoryFilesWarning" : "keepBothWarning") : (replacementTask?.request.kind === "directory" ? "replaceDirectoryFilesWarning" : "replaceWarning"))}</DialogDescription></DialogHeader>
         <div className="break-all px-5 py-4 text-[12px]">
           {replacement && <>{label(replacement.direction)} · {replacement.localPath} ↔ {replacement.remotePath}</>}
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => setReplace(null)}>{label("close")}</Button>
-          <Button variant="destructive" disabled={busy || !replacement} onClick={() => void act(async () => {
-            await remoteTransferRetry(replace, "replace", replacementTask?.request.kind === "directory" ? "merge" : undefined);
-            setReplace(null);
-          })}>{label("confirmReplace")}</Button>
+          <Button variant="outline" onClick={() => setResolution(null)}>{label("close")}</Button>
+          <Button variant={keepBoth ? "default" : "destructive"} disabled={busy || !replacement} onClick={() => void act(async () => {
+            await remoteTransferRetry(resolution.id, resolution.policy, replacementTask?.request.kind === "directory" ? "merge" : undefined);
+            setResolution(null);
+          })}>{label(keepBoth ? "confirmKeepBoth" : "confirmReplace")}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>}

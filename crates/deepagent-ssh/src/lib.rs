@@ -66,6 +66,7 @@ pub use transport::{SshClient, SshCommandOutput};
 
 mod agent;
 mod config;
+mod conflict_target;
 mod connection_challenge;
 mod connection_flow;
 mod directory_plan;

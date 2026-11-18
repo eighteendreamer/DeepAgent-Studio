@@ -32,7 +32,7 @@ impl TransferExecutor for Executor {
             bytes: 3,
             total: Some(10),
         });
-        tokio::select! {_ = self.release.notified()=>Ok(FileTransferReceipt{bytes:if self.skipped { "0" } else { "10" }.into(),sha256:"fixture".into(),skipped:self.skipped,publish_strategy:"created".into(),cleanup_warnings:vec![]}),_ = cancel.cancelled()=>Err(FileTransferError{code:"cancelled".into(),message:"cancelled after stream cleanup".into(),cleanup_warnings:vec![],relative_path:None})}
+        tokio::select! {_ = self.release.notified()=>Ok(FileTransferReceipt{bytes:if self.skipped { "0" } else { "10" }.into(),sha256:"fixture".into(),skipped:self.skipped,publish_strategy:"created".into(),cleanup_warnings:vec![],destination_path:None}),_ = cancel.cancelled()=>Err(FileTransferError{code:"cancelled".into(),message:"cancelled after stream cleanup".into(),cleanup_warnings:vec![],relative_path:None,destination_path:None})}
     }
 }
 fn request(id: &str, name: &str) -> TransferRequest {

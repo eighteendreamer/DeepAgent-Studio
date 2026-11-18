@@ -35,6 +35,125 @@ fn request(direction: FileTransferDirection, local: &Path) -> FileTransferReques
 }
 
 #[tokio::test]
+async fn keep_both_directory_roots_preserve_the_entire_existing_tree_in_both_directions() {
+    let (server, dir, ssh, id) = fixture().await;
+    let input = dir.path().join("input");
+    std::fs::create_dir_all(input.join("empty")).unwrap();
+    std::fs::write(input.join("data"), b"new").unwrap();
+    server
+        .counts
+        .directories
+        .write()
+        .unwrap()
+        .insert("/tree".into());
+    server
+        .counts
+        .files
+        .write()
+        .unwrap()
+        .insert("/tree/data".into(), b"original".to_vec());
+    let policy = serde_json::from_str("\"keep_both\"").expect("directory keep-both policy");
+    let upload = ssh
+        .transfer_directory(
+            &id,
+            request(FileTransferDirection::Upload, &input),
+            policy,
+            DirectoryWalkLimits::default(),
+            CancellationToken::new(),
+            Arc::new(|_| {}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(upload).unwrap()["destinationPath"],
+        "/tree (1)"
+    );
+    assert_eq!(
+        server.counts.files.read().unwrap()["/tree/data"],
+        b"original"
+    );
+    assert_eq!(
+        server.counts.files.read().unwrap()["/tree (1)/data"],
+        b"new"
+    );
+    assert!(server
+        .counts
+        .directories
+        .read()
+        .unwrap()
+        .contains("/tree (1)/empty"));
+    let output = dir.path().join("result.dir");
+    std::fs::write(&output, b"existing file also occupies this name").unwrap();
+    let download = ssh
+        .transfer_directory(
+            &id,
+            request(FileTransferDirection::Download, &output),
+            policy,
+            DirectoryWalkLimits::default(),
+            CancellationToken::new(),
+            Arc::new(|_| {}),
+        )
+        .await
+        .unwrap();
+    let destination = std::fs::canonicalize(dir.path())
+        .unwrap()
+        .join("result.dir (1)");
+    assert_eq!(
+        serde_json::to_value(download).unwrap()["destinationPath"],
+        destination.to_str().unwrap()
+    );
+    assert_eq!(
+        std::fs::read(destination.join("data")).unwrap(),
+        b"original"
+    );
+    assert!(output.is_file());
+}
+
+#[tokio::test]
+async fn directory_merge_can_keep_both_files_without_renaming_the_root() {
+    let (server, dir, ssh, id) = fixture().await;
+    let input = dir.path().join("input");
+    std::fs::create_dir(&input).unwrap();
+    std::fs::write(input.join("data.txt"), b"new").unwrap();
+    server
+        .counts
+        .directories
+        .write()
+        .unwrap()
+        .insert("/tree".into());
+    server
+        .counts
+        .files
+        .write()
+        .unwrap()
+        .insert("/tree/data.txt".into(), b"original".to_vec());
+    let mut req = request(FileTransferDirection::Upload, &input);
+    req.conflict = serde_json::from_str("\"keep_both\"").expect("file keep-both policy");
+    let receipt = ssh
+        .transfer_directory(
+            &id,
+            req,
+            DirectoryConflictPolicy::Merge,
+            DirectoryWalkLimits::default(),
+            CancellationToken::new(),
+            Arc::new(|_| {}),
+        )
+        .await
+        .unwrap();
+    let json = serde_json::to_value(receipt).unwrap();
+    assert_eq!(json["destinationPath"], "/tree");
+    assert_eq!(json["renamedFiles"], 1);
+    assert_eq!(
+        server.counts.files.read().unwrap()["/tree/data.txt"],
+        b"original"
+    );
+    assert_eq!(
+        server.counts.files.read().unwrap()["/tree/data (1).txt"],
+        b"new"
+    );
+}
+
+#[tokio::test]
 async fn directory_roundtrip_preserves_empty_unicode_and_zero_files_with_exact_aggregate_progress()
 {
     let (server, dir, ssh, id) = fixture().await;

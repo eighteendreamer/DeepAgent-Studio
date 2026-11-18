@@ -57,6 +57,57 @@ async fn fixture() -> (
 }
 
 #[tokio::test]
+async fn keep_both_decisions_and_actual_targets_survive_in_the_existing_history() {
+    let (server, dir, ssh, id, db, queue) = fixture().await;
+    let input = dir.path().join("input");
+    std::fs::create_dir(&input).unwrap();
+    std::fs::write(input.join("data.txt"), b"new").unwrap();
+    server
+        .counts
+        .directories
+        .write()
+        .unwrap()
+        .insert("/tree".into());
+    server
+        .counts
+        .files
+        .write()
+        .unwrap()
+        .insert("/tree/data.txt".into(), b"original".to_vec());
+    let mut merge = request(&id, &input, "upload", "merge");
+    merge.transfer.conflict = serde_json::from_str("\"keep_both\"").unwrap();
+    let merged = queue.submit(merge).await.unwrap();
+    let done = terminal(&queue, &merged.id).await;
+    assert_eq!(done["directoryReceipt"]["destinationPath"], "/tree");
+    assert_eq!(done["directoryReceipt"]["renamedFiles"], 1);
+    assert_eq!(
+        server.counts.files.read().unwrap()["/tree/data.txt"],
+        b"original"
+    );
+    assert_eq!(
+        server.counts.files.read().unwrap()["/tree/data (1).txt"],
+        b"new"
+    );
+    let separate = queue
+        .submit(request(&id, &input, "upload", "keep_both"))
+        .await
+        .unwrap();
+    let done = terminal(&queue, &separate.id).await;
+    assert_eq!(done["directoryReceipt"]["destinationPath"], "/tree (1)");
+    assert_eq!(
+        server.counts.files.read().unwrap()["/tree (1)/data.txt"],
+        b"new"
+    );
+    drop(queue);
+    let recovered = TransferCoordinator::new(db, ssh).unwrap();
+    let tasks = recovered.snapshot().await.unwrap();
+    let separate = tasks.iter().find(|task| task.id == separate.id).unwrap();
+    let json = serde_json::to_value(separate).unwrap();
+    assert_eq!(json["request"]["directoryConflict"], "keep_both");
+    assert_eq!(json["directoryReceipt"]["destinationPath"], "/tree (1)");
+}
+
+#[tokio::test]
 async fn directory_roundtrip_persists_aggregate_receipts_in_the_existing_queue() {
     let (server, dir, ssh, id, db, queue) = fixture().await;
     let input = dir.path().join("input");

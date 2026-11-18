@@ -23,6 +23,7 @@ pub enum DirectoryConflictPolicy {
     Ask,
     Skip,
     Merge,
+    KeepBoth,
 }
 
 #[derive(Debug, Clone)]
@@ -45,46 +46,84 @@ pub struct DirectoryTransferReceipt {
     pub skipped_files: u32,
     pub created_directories: u32,
     pub cleanup_warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_path: Option<String>,
+    #[serde(default)]
+    pub renamed_files: u32,
 }
 
 impl SshService {
     pub async fn transfer_directory(
         &self,
         connection_id: &str,
-        request: FileTransferRequest,
+        mut request: FileTransferRequest,
         conflict: DirectoryConflictPolicy,
         limits: DirectoryWalkLimits,
         cancel: CancellationToken,
         progress: Arc<dyn Fn(DirectoryTransferProgress) + Send + Sync>,
     ) -> Result<DirectoryTransferReceipt, FileTransferError> {
         // Never trust a caller-provided plan or reuse a prior attempt's snapshot.
-        let plan = self
+        if conflict == DirectoryConflictPolicy::KeepBoth
+            && request.direction == FileTransferDirection::Download
+        {
+            request.local_path =
+                crate::conflict_target::local_target(Path::new(&request.local_path), true, &cancel)
+                    .await?
+                    .to_str()
+                    .ok_or_else(|| failure("invalid", "target is not UTF-8"))?
+                    .to_owned();
+        }
+        let mut plan = self
             .plan_directory_transfer(connection_id, request.clone(), limits, cancel.clone())
             .await?;
         let (owner, sftp) = operation(&cancel, self.inner.file_session(connection_id)).await?;
-        let result = Execution {
-            sftp: &sftp,
-            request: &request,
-            conflict,
-            plan: &plan,
-            cancel: &cancel,
-            notify: progress,
-            progress: DirectoryTransferProgress {
-                bytes: 0,
-                total: plan
-                    .total_bytes
-                    .parse()
-                    .map_err(|_| failure("integrity", "invalid planned total"))?,
-                total_files: plan.total_files,
-                completed_files: 0,
-                skipped_files: 0,
-                current_file: None,
-            },
-            created_directories: 0,
-            warnings: Vec::new(),
+        let result = async {
+            if conflict == DirectoryConflictPolicy::KeepBoth
+                && request.direction == FileTransferDirection::Upload
+            {
+                plan.remote_root =
+                    crate::conflict_target::remote_target(&sftp, &plan.remote_root, true, &cancel)
+                        .await?;
+                for entry in &plan.entries {
+                    crate::directory_walk::validate_root(&format!(
+                        "{}/{}",
+                        plan.remote_root, entry.relative_path
+                    ))?;
+                }
+            }
+            Execution {
+                sftp: &sftp,
+                request: &request,
+                conflict,
+                plan: &plan,
+                cancel: &cancel,
+                notify: progress,
+                progress: DirectoryTransferProgress {
+                    bytes: 0,
+                    total: plan
+                        .total_bytes
+                        .parse()
+                        .map_err(|_| failure("integrity", "invalid planned total"))?,
+                    total_files: plan.total_files,
+                    completed_files: 0,
+                    skipped_files: 0,
+                    current_file: None,
+                },
+                created_directories: 0,
+                renamed_files: 0,
+                warnings: Vec::new(),
+            }
+            .run()
+            .await
         }
-        .run()
         .await;
+        let result = result.map_err(|mut error: FileTransferError| {
+            error.destination_path = Some(match request.direction {
+                FileTransferDirection::Upload => plan.remote_root.clone(),
+                FileTransferDirection::Download => plan.local_root.clone(),
+            });
+            error
+        });
         let close = tokio::time::timeout(Duration::from_secs(3), sftp.close()).await;
         owner.touch_keepalive();
         match (result, close) {
@@ -180,6 +219,7 @@ struct Execution<'a> {
     notify: Arc<dyn Fn(DirectoryTransferProgress) + Send + Sync>,
     progress: DirectoryTransferProgress,
     created_directories: u32,
+    renamed_files: u32,
     warnings: Vec<String>,
 }
 
@@ -237,6 +277,11 @@ impl Execution<'_> {
             skipped_files: self.progress.skipped_files,
             created_directories: self.created_directories,
             cleanup_warnings: self.warnings.clone(),
+            destination_path: Some(match self.request.direction {
+                FileTransferDirection::Upload => self.plan.remote_root.clone(),
+                FileTransferDirection::Download => self.plan.local_root.clone(),
+            }),
+            renamed_files: self.renamed_files,
         }
     }
 
@@ -307,6 +352,10 @@ impl Execution<'_> {
                 DirectoryConflictPolicy::Ask => Err(failure(
                     "conflict",
                     "directory exists; choose skip or explicit merge",
+                )),
+                DirectoryConflictPolicy::KeepBoth => Err(failure(
+                    "conflict",
+                    "keep-both directory target appeared before creation",
                 )),
                 DirectoryConflictPolicy::Skip => Ok(true),
                 DirectoryConflictPolicy::Merge => Ok(false),
@@ -432,6 +481,17 @@ impl Execution<'_> {
         if receipt.skipped {
             self.progress.skipped_files += 1;
         } else {
+            let expected = match self.request.direction {
+                FileTransferDirection::Upload => request.remote_path.as_str(),
+                FileTransferDirection::Download => request.local_path.as_str(),
+            };
+            if receipt
+                .destination_path
+                .as_deref()
+                .is_some_and(|path| path != expected)
+            {
+                self.renamed_files += 1;
+            }
             self.progress.bytes += planned;
             self.progress.completed_files += 1;
         }

@@ -66,7 +66,8 @@ export function createUploadInvalidator(connectionId: string, refresh: (paths: S
       const key = `${task.id}:${task.attempt}`;
       next.add(key);
       if (!seen.has(key)) {
-        const path = task.request.transfer.remotePath;
+        const path = task.directoryReceipt?.destinationPath ?? task.receipt?.destinationPath
+          ?? task.error?.destinationPath ?? task.request.transfer.remotePath;
         paths.add(path.slice(0, path.lastIndexOf("/")) || "/");
         if (directory) {
           paths.add(path);

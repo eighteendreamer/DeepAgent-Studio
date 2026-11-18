@@ -1,9 +1,9 @@
 import { getInvoke } from "./api";
 
 export type TransferDirection = "upload" | "download";
-export type ConflictPolicy = "ask" | "skip" | "replace";
+export type ConflictPolicy = "ask" | "skip" | "replace" | "keep_both";
 export type TransferKind = "file" | "directory";
-export type DirectoryConflictPolicy = "ask" | "skip" | "merge";
+export type DirectoryConflictPolicy = "ask" | "skip" | "merge" | "keep_both";
 export interface TransferOptions {
   kind?: TransferKind;
   directoryConflict?: DirectoryConflictPolicy;
@@ -28,10 +28,11 @@ export interface TransferTask {
   speedBps?: string | null;
   revision: number;
   updatedMs: number;
-  error: { code: string; message: string; cleanupWarnings: string[]; relativePath?: string } | null;
+  error: { code: string; message: string; cleanupWarnings: string[]; relativePath?: string; destinationPath?: string } | null;
   directoryReceipt?: {
     bytes: string; totalBytes: string; totalFiles: number; completedFiles: number;
     skippedFiles: number; createdDirectories: number; cleanupWarnings: string[];
+    destinationPath?: string; renamedFiles?: number;
   } | null;
   receipt: {
     bytes: string;
@@ -39,6 +40,7 @@ export interface TransferTask {
     skipped: boolean;
     publishStrategy: string;
     cleanupWarnings: string[];
+    destinationPath?: string;
   } | null;
 }
 

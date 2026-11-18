@@ -6,7 +6,12 @@ use russh_sftp::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{future::Future, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
@@ -23,6 +28,7 @@ pub enum FileConflictPolicy {
     Ask,
     Skip,
     Replace,
+    KeepBoth,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -46,6 +52,8 @@ pub struct FileTransferReceipt {
     pub skipped: bool,
     pub publish_strategy: String,
     pub cleanup_warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_path: Option<String>,
 }
 #[derive(Debug, Clone, thiserror::Error, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,6 +64,8 @@ pub struct FileTransferError {
     pub cleanup_warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relative_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_path: Option<String>,
 }
 impl FileTransferError {
     pub fn new(code: &str, message: &str) -> Self {
@@ -64,6 +74,7 @@ impl FileTransferError {
             message: message.into(),
             cleanup_warnings: vec![],
             relative_path: None,
+            destination_path: None,
         }
     }
 }
@@ -214,6 +225,7 @@ fn skipped() -> FileTransferReceipt {
         skipped: true,
         publish_strategy: "skipped".into(),
         cleanup_warnings: vec![],
+        destination_path: None,
     }
 }
 
@@ -232,10 +244,16 @@ pub(super) async fn upload(
     if expected_size.is_some_and(|size| size != meta.len()) {
         return Err(fail("integrity"));
     }
-    let existing = remote_metadata(sftp, &request.remote_path).await?;
+    let target = if request.conflict == FileConflictPolicy::KeepBoth {
+        crate::conflict_target::remote_target(sftp, &request.remote_path, false, cancel).await?
+    } else {
+        request.remote_path.clone()
+    };
+    let existing = remote_metadata(sftp, &target).await?;
     if let Some(existing) = &existing {
         match request.conflict {
             FileConflictPolicy::Ask => return Err(fail("conflict")),
+            FileConflictPolicy::KeepBoth => return Err(fail("conflict")),
             FileConflictPolicy::Skip => return Ok(skipped()),
             FileConflictPolicy::Replace => {
                 regular(existing)?;
@@ -284,13 +302,14 @@ pub(super) async fn upload(
             return Err(fail("cancelled"));
         }
         let (strategy, warnings) =
-            publish_remote(sftp, &stage, &request.remote_path, existing.is_some()).await?;
+            publish_remote(sftp, &stage, &target, existing.is_some()).await?;
         Ok(FileTransferReceipt {
             bytes: meta.len().to_string(),
             sha256: digest,
             skipped: false,
             publish_strategy: strategy,
             cleanup_warnings: warnings,
+            destination_path: Some(target),
         })
     }
     .await;
@@ -363,7 +382,7 @@ async fn publish_remote(
 pub(super) async fn download(
     sftp: &SftpSession,
     request: &FileTransferRequest,
-    local: &PathBuf,
+    local: &Path,
     cancel: &CancellationToken,
     progress: &TransferProgressCallback,
     expected_size: Option<u64>,
@@ -375,13 +394,19 @@ pub(super) async fn download(
     if expected_size.is_some_and(|size| size != total) {
         return Err(fail("integrity"));
     }
-    match tokio::fs::symlink_metadata(local).await {
+    let target = if request.conflict == FileConflictPolicy::KeepBoth {
+        crate::conflict_target::local_target(local, false, cancel).await?
+    } else {
+        local.to_path_buf()
+    };
+    match tokio::fs::symlink_metadata(&target).await {
         Ok(existing) => {
             if !existing.is_file() || crate::directory_plan::is_link(&existing) {
                 return Err(fail("invalid"));
             }
             match request.conflict {
                 FileConflictPolicy::Ask => return Err(fail("conflict")),
+                FileConflictPolicy::KeepBoth => return Err(fail("conflict")),
                 FileConflictPolicy::Skip => return Ok(skipped()),
                 FileConflictPolicy::Replace => {}
             }
@@ -426,7 +451,7 @@ pub(super) async fn download(
     if cancel.is_cancelled() {
         return Err(fail("cancelled"));
     }
-    let target = local.clone();
+    let destination_path = target.to_str().ok_or_else(|| fail("invalid"))?.to_owned();
     let replace = request.conflict == FileConflictPolicy::Replace;
     tokio::task::spawn_blocking(move || {
         let result = if replace {
@@ -462,5 +487,6 @@ pub(super) async fn download(
         skipped: false,
         publish_strategy: if replace { "atomic_replace" } else { "created" }.into(),
         cleanup_warnings: vec![],
+        destination_path: Some(destination_path),
     })
 }

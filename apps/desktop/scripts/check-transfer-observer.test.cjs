@@ -25,6 +25,19 @@ function observer() {
 }
 const flush = () => new Promise(setImmediate);
 const snapshot = (revision, state = 'running') => ({ revision, tasks: [{ id: 'task', attempt: 1, state, request: {connectionId: 'a', transfer: {direction:'upload', remotePath:'/file'}} }] });
+test('keep-both invalidates the actual renamed directory on success and partial failure', () => {
+  const h = observer(); const refreshed = [];
+  const accept = h.exports.createUploadInvalidator('a', paths => refreshed.push(Array.from(paths)),
+    () => ['/tree (1)/loaded','/tree/old']);
+  const task = {id:'copy',attempt:1,state:'completed',directoryReceipt:{destinationPath:'/tree (1)'},
+    request:{kind:'directory',connectionId:'a',transfer:{direction:'upload',remotePath:'/tree'}}};
+  accept({revision:'1',tasks:[task]});
+  assert.ok(refreshed[0].includes('/tree (1)/loaded'));
+  assert.ok(!refreshed[0].includes('/tree/old'));
+  accept({revision:'2',tasks:[{...task,attempt:2,state:'failed',directoryReceipt:null,
+    error:{destinationPath:'/tree (2)',relativePath:'nested/bad'}}]});
+  assert.ok(refreshed[1].includes('/tree (2)/nested'));
+});
 test('directory publication and partial failure invalidate the root and loaded descendant directories', () => {
   const h = observer(); const refreshed = [];
   const accept = h.exports.createUploadInvalidator('a', paths => refreshed.push(Array.from(paths)));

@@ -7,6 +7,19 @@ const ts = require('typescript');
 const React = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
 const root = path.resolve(__dirname, '..');
+test('keep-both receipts display actual targets and directory rename counts', () => {
+  const render = production('src/components/remote/RemoteTransfersPanel.tsx', 'TransferTaskBody');
+  const task = {state:'completed',bytes:'3',total:'3',attempt:1,completedFiles:1,
+    request:{kind:'directory',transfer:{direction:'upload',remotePath:'/tree',localPath:'C:/tree'}},
+    directoryReceipt:{destinationPath:'/tree (1)/<copy>',renamedFiles:2,cleanupWarnings:[]}};
+  const html = renderToStaticMarkup(React.createElement(render,{task,label:k=>k}));
+  assert.match(html, /destinationPath.*\/tree \(1\)\/&lt;copy&gt;/);
+  assert.match(html, /renamedFiles 2/);
+  const failed = {...task,state:'failed',directoryReceipt:null,
+    error:{code:'publish',message:'partial',cleanupWarnings:[],destinationPath:'/tree (2)'}};
+  const failureHtml = renderToStaticMarkup(React.createElement(render,{task:failed,label:k=>k}));
+  assert.match(failureHtml, /destinationPath.*\/tree \(2\)/);
+});
 test('directory submission and retry carry explicit directory policy through the existing commands', async () => {
   const calls = [];
   const context = { getInvoke: () => async (command, args) => { calls.push({command, args}); } };
