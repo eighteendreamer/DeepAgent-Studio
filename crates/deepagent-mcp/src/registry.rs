@@ -441,6 +441,11 @@ pub(crate) fn validated_tools(server_name: &str, defs: Vec<McpToolDef>) -> Resul
 }
 
 #[cfg(test)]
+#[path = "../tests/support/node_runtime.rs"]
+#[allow(dead_code)] // Shared support also has helpers for isolated environment hosts.
+mod node_runtime;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::transport::MockTransport;
@@ -509,6 +514,7 @@ mod tests {
 
     #[tokio::test]
     async fn audit_exhausted_liveness_retires_tools_and_stops_request_reconnects() {
+        let node = super::node_runtime::resolve_node_runtime().await;
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("exhausted-server.cjs");
         let attempts = dir.path().join("process-starts");
@@ -537,7 +543,7 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
         let config = crate::McpServerConfig {
             response_limit_bytes: None,
             transport: None,
-            command: Some("node".into()),
+            command: Some(node.to_string_lossy().into_owned()),
             args: vec![
                 script.to_string_lossy().into_owned(),
                 attempts.to_string_lossy().into_owned(),
@@ -577,6 +583,8 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
         .expect("real failed handshakes must exhaust the liveness budget");
         let starts = || std::fs::read_to_string(&attempts).unwrap().lines().count();
         let after_probe = starts();
+        let after_probe_status =
+            format!("{:?}", registry.servers["audit"].client.connection_status());
         let registry = Arc::new(registry);
         let adapters = crate::adapters_for(registry.clone());
         let mut failed_calls = Vec::new();
@@ -597,6 +605,7 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
             serde_json::json!({
                 "probe_finished": probe.is_finished(),
                 "starts_after_probe": after_probe,
+                "status_after_probe": after_probe_status,
                 "starts_after_calls": starts_after_calls,
                 "failed_calls": failed_calls,
                 "discoverable_tools": registry.all_tools().len(),

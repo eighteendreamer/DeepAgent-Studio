@@ -17,6 +17,10 @@ use windows_sys::Win32::System::Threading::{
     OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
 };
 
+#[path = "support/node_runtime.rs"]
+#[allow(dead_code)] // Shared support also has helpers for isolated environment hosts.
+mod node_runtime;
+
 // Own only this fixture's freshly reported PID. The worker also has an 8s
 // watchdog, so an unexpected panic before reading its PID is bounded.
 struct OwnedFixtureProcess {
@@ -65,6 +69,7 @@ impl Drop for OwnedFixtureProcess {
 
 struct Fixture {
     _dir: tempfile::TempDir,
+    node: PathBuf,
     script: PathBuf,
     dotnet_script: PathBuf,
     ready: PathBuf,
@@ -78,7 +83,10 @@ struct FixtureOwner {
 }
 
 impl Fixture {
-    fn new() -> Self {
+    async fn new() -> Self {
+        // Resolve the dependency before measuring service startup. A version-manager
+        // launcher is not the direct Node child exercised by the ownership contract.
+        let node = node_runtime::resolve_node_runtime().await;
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("mcp-process-owner.cjs");
         let ready = dir.path().join("worker-ready.json");
@@ -124,10 +132,10 @@ if (mode === 'worker') {
         std::fs::write(
             &dotnet_script,
             r#"
-param([string]$WorkerScript, [string]$ReadyPath, [string]$HeartbeatPath, [string]$RequestsPath)
+param([string]$NodeExecutable, [string]$WorkerScript, [string]$ReadyPath, [string]$HeartbeatPath, [string]$RequestsPath)
 $ErrorActionPreference = 'Stop'
 $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-$startInfo.FileName = (Get-Command node.exe).Source
+$startInfo.FileName = $NodeExecutable
 $startInfo.Arguments = '"' + $WorkerScript + '" worker "' + $ReadyPath + '" "' + $HeartbeatPath + '"'
 $startInfo.UseShellExecute = $false
 $startInfo.CreateNoWindow = $true
@@ -162,6 +170,7 @@ while ($null -ne ($line = [Console]::ReadLine())) {
         .unwrap();
         Self {
             _dir: dir,
+            node,
             script,
             dotnet_script,
             ready,
@@ -175,8 +184,13 @@ while ($null -ne ($line = [Console]::ReadLine())) {
             vec![
                 "-NoProfile".into(),
                 "-NonInteractive".into(),
+                // This script is generated locally by the fixture. Pin only the
+                // child session's policy so host defaults cannot prevent startup.
+                "-ExecutionPolicy".into(),
+                "RemoteSigned".into(),
                 "-File".into(),
                 self.dotnet_script.to_string_lossy().into_owned(),
+                self.node.to_string_lossy().into_owned(),
                 self.script.to_string_lossy().into_owned(),
             ]
         } else {
@@ -194,7 +208,9 @@ while ($null -ne ($line = [Console]::ReadLine())) {
                 if launcher == "dotnet" {
                     "powershell.exe"
                 } else {
-                    "node"
+                    self.node
+                        .to_str()
+                        .expect("fixture Node runtime path must be UTF-8")
                 }
                 .into(),
             ),
@@ -308,7 +324,7 @@ async fn audit_stdio_close_and_drop_terminate_owned_descendants() {
         ("dotnet", true),
         ("dotnet", false),
     ] {
-        let fixture = Fixture::new();
+        let fixture = Fixture::new().await;
         let transport = StdioTransport::spawn(&fixture.config(launcher, false)).unwrap();
         let owner = fixture.owner().await;
         assert!(owner.root.alive() && owner.worker.alive());
@@ -351,10 +367,17 @@ async fn audit_stdio_close_and_drop_terminate_owned_descendants() {
 #[tokio::test]
 async fn initialize_cancellation_releases_the_whole_service() {
     for launcher in ["node", "dotnet"] {
-        let fixture = Fixture::new();
+        let fixture = Fixture::new().await;
         let factory = ConfigReconnectFactory::new(fixture.config(launcher, true), "h46-init");
-        let initialize = tokio::spawn(async move { factory.reconnect().await });
-        let owner = fixture.owner().await;
+        let mut initialize = tokio::spawn(async move { factory.reconnect().await });
+        let owner = tokio::select! {
+            result = &mut initialize => match result {
+                Ok(Err(error)) => panic!("{launcher} initialize failed before worker readiness: {error}"),
+                Ok(Ok(_)) => panic!("{launcher} initialize must remain pending until cancellation"),
+                Err(error) => panic!("{launcher} initialize task ended before worker readiness: {error}"),
+            },
+            owner = fixture.owner() => owner,
+        };
         fixture.wait_request("initialize", None).await;
         fixture.assert_heartbeat_advances().await;
         assert!(
@@ -370,7 +393,7 @@ async fn initialize_cancellation_releases_the_whole_service() {
 #[tokio::test]
 async fn root_exit_does_not_release_descendants_before_owner_close_or_drop() {
     for explicit_close in [true, false] {
-        let fixture = Fixture::new();
+        let fixture = Fixture::new().await;
         let transport = StdioTransport::spawn(&fixture.config("dotnet", false)).unwrap();
         let owner = fixture.owner().await;
         transport
@@ -406,7 +429,7 @@ async fn assert_echo(registry: &McpRegistry, expected_pid: u32) {
 
 #[tokio::test]
 async fn shared_snapshots_keep_old_service_until_last_reference_without_killing_replacement() {
-    let old_fixture = Fixture::new();
+    let old_fixture = Fixture::new().await;
     let old = old_fixture.registry().await;
     let old_owner = old_fixture.owner().await;
     let snapshot = old.clone();
@@ -416,7 +439,7 @@ async fn shared_snapshots_keep_old_service_until_last_reference_without_killing_
     old_fixture.wait_request("ping", None).await;
     assert_echo(&snapshot, old_owner.root.pid).await;
 
-    let new_fixture = Fixture::new();
+    let new_fixture = Fixture::new().await;
     let new = new_fixture.registry().await;
     let new_owner = new_fixture.owner().await;
     published.retain_servers(|_| false);
@@ -435,7 +458,7 @@ async fn shared_snapshots_keep_old_service_until_last_reference_without_killing_
 
 #[tokio::test]
 async fn cancelling_one_call_does_not_kill_the_shared_service() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let registry = fixture.registry().await;
     let owner = fixture.owner().await;
     let other = registry.clone();
