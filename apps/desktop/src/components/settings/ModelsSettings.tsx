@@ -227,7 +227,7 @@ export function ModelsSettings() {
             <div className="mt-3 flex min-w-0 shrink-0 items-center gap-2 text-xs text-text-secondary">
               <span className="rounded-md bg-hover-bg px-2 py-1">{PROTOCOL_LABEL[selected.protocol]}</span>
               <span className="min-w-0 flex-1 truncate">{selected.modelUrl}</span>
-              {selected.websiteUrl ? <Button variant="ghost" size="sm" className="h-7 px-0 text-xs" onClick={() => void openExternalUrl(selected.websiteUrl).catch(failure => setError(errorText(failure)))}><ExternalLink className="size-3.5" />访问官网</Button> : <span />}
+              {selected.websiteUrl ? <Button variant="outline" size="sm" className="shrink-0 gap-1.5 text-text-base" onClick={() => void openExternalUrl(selected.websiteUrl).catch(failure => setError(errorText(failure)))}>访问官网<ExternalLink className="size-3.5" aria-hidden /></Button> : <span />}
             </div>
             <div className="mt-5 flex shrink-0 items-center justify-between border-t border-border-theme pt-4">
               <h4 className="text-sm font-semibold">模型 <span className="ml-1 font-normal tabular-nums text-text-secondary">{models.filter(model => model.active).length} / {models.length}</span></h4>
