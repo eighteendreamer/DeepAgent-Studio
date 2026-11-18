@@ -14,7 +14,7 @@ export function InputSurface({ className, ...rest }: HTMLAttributes<HTMLDivEleme
   return (
     <div
       className={cn(
-        "relative w-full rounded-[24px] bg-elevated-bg shadow-[0_6px_20px_rgba(31,38,48,0.08)]",
+        "app-input-surface relative w-full rounded-[24px] bg-elevated-bg shadow-[0_6px_20px_rgba(31,38,48,0.08)]",
         "transition-[box-shadow,background-color,border-color] duration-300 ease-out",
         "focus-within:shadow-[0_8px_26px_rgba(31,38,48,0.12)]",
         className,

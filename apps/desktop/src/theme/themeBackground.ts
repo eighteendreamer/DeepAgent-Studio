@@ -46,12 +46,15 @@ export function previewBackgroundTransparency(value: number): void {
 /** Shared by startup and the provider; never loads remote or arbitrary CSS URLs. */
 export function applyThemeBackground(preferences: ThemePreferences): boolean {
   const root = document.documentElement;
-  const image = normalizeBackgroundImage(preferences.backgroundImage);
+  // Canvas has its own opaque workspace. Keep the shared preference intact so
+  // its updates still reach ordinary application windows through the provider.
+  const canvasWindow = new URLSearchParams(window.location.hash.slice(1)).get("window") === "canvas";
+  const image = canvasWindow ? null : normalizeBackgroundImage(preferences.backgroundImage);
   root.classList.toggle("theme-custom-background", image !== null);
   if (image) root.style.setProperty("--app-background-image", `url("${image.dataUrl}")`);
   else root.style.removeProperty("--app-background-image");
   previewBackgroundTransparency(preferences.backgroundTransparency);
-  const translucentWindow = preferences.translucentSidebar && !image;
+  const translucentWindow = preferences.translucentSidebar && !image && !canvasWindow;
   root.classList.toggle("theme-translucent-sidebar", translucentWindow);
   return translucentWindow;
 }

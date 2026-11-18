@@ -36,7 +36,7 @@ function host(options = {}) {
     toDataURL() { return ++encodes < (options.fitsOnAttempt ?? 1) ? image.dataUrl + "A".repeat(1_048_576) : image.dataUrl; },
   };
   const globals = {
-    console, TextEncoder, TextDecoder, btoa, atob,
+    console, TextEncoder, TextDecoder, btoa, atob, URLSearchParams,
     localStorage: {
       getItem: key => values.get(key) ?? null,
       setItem(key, value) { if (quotaFailure) throw new Error("QuotaExceededError"); values.set(key, value); },
@@ -45,6 +45,7 @@ function host(options = {}) {
       assert.equal(tag, "canvas"); return canvas;
     } },
     window: {
+      location: { hash: options.hash ?? "" },
       matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
       addEventListener: (name, handler) => { listeners[name] = handler; }, removeEventListener() {},
     },
@@ -129,6 +130,16 @@ test("wallpaper opacity affects only its CSS variable and removing it restores s
   assert.ok(!h.classes.has("theme-custom-background"));
   assert.ok(h.classes.has("theme-translucent-sidebar"));
   assert.equal(h.properties.has("--app-background-image"), false);
+});
+
+test("the canvas window ignores wallpaper without changing the shared saved preference", () => {
+  const h = host({ hash: "#window=canvas" });
+  const preferences = { ...h.load("themeStorage.ts").defaultV2State().preferences, backgroundImage: image };
+  assert.equal(h.load("themeBackground.ts").applyThemeBackground(preferences), false);
+  assert.ok(!h.classes.has("theme-custom-background"));
+  assert.ok(!h.classes.has("theme-translucent-sidebar"));
+  assert.equal(h.properties.has("--app-background-image"), false);
+  assert.deepEqual(plain(preferences.backgroundImage), image);
 });
 
 test("unsupported and oversized files are rejected before decoding or allocating an object URL", async () => {

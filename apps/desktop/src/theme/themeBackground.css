@@ -1,3 +1,17 @@
+/* Wallpaper is a presentation layer: saved theme colors and content opacity stay
+   intact. Elevated tokens also reach portals and the animated menu shells that
+   copy their computed background, avoiding a second opaque surface underneath. */
+html.theme-custom-background {
+  --app-wallpaper-panel: color-mix(in srgb, var(--theme-bg) 68%, transparent);
+  --app-wallpaper-input: color-mix(in srgb, var(--theme-bg) 72%, transparent);
+  --app-wallpaper-muted: color-mix(in srgb, var(--theme-bg) 60%, transparent);
+  --app-wallpaper-popover: color-mix(in srgb, var(--theme-bg) 82%, transparent);
+  --app-wallpaper-hover: color-mix(in srgb, var(--theme-fg) 12%, transparent);
+  --app-wallpaper-outline: color-mix(in srgb, var(--theme-fg) 22%, transparent);
+  --theme-elevated: var(--app-wallpaper-popover) !important;
+  --theme-text-secondary: color-mix(in srgb, var(--theme-fg) 90%, var(--theme-bg)) !important;
+}
+
 /* One viewport background per window. Opacity never applies to application content. */
 html.theme-custom-background body {
   isolation: isolate;
@@ -17,16 +31,102 @@ html.theme-custom-background body::before {
   opacity: var(--app-background-opacity, .25);
 }
 
-/* Only page and frame backgrounds reveal the wallpaper. Foreground cards,
-   editors and portal surfaces keep their theme colors for readable content. */
+/* Legacy neutral utilities participate in the same material as shadcn fields
+   and menus. Absolute circular switch thumbs keep their solid fill. */
+html.theme-custom-background :is(.bg-white, .bg-white\/90, .bg-white\/80, .bg-bg-base):not(.rounded-full.absolute) {
+  background-color: var(--app-wallpaper-panel) !important;
+}
+
+html.theme-custom-background :is(.bg-gray-50, .bg-gray-50\/50, .bg-gray-100, .bg-hover-bg) {
+  background-color: var(--app-wallpaper-muted) !important;
+}
+
+html.theme-custom-background :is(.hover\:bg-white, .hover\:bg-gray-50, .hover\:bg-gray-100):hover {
+  background-color: var(--app-wallpaper-hover) !important;
+}
+
+/* Settings often paint both a group and every row. Only the group needs glass;
+   field backgrounds remain visible and switch thumbs remain solid. */
+html.theme-custom-background [data-settings-viewport] .bg-white .bg-white:not(input, textarea, button, .rounded-full) {
+  background-color: transparent !important;
+}
+
+html.theme-custom-background :is(.app-input-surface, input.bg-white, textarea.bg-white) {
+  background-color: var(--app-wallpaper-input) !important;
+}
+
+html.theme-custom-background :is(.app-input-surface, [data-app-surface="popover"]) {
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+/* Spring menus paint on the inner moving shell, not on the positioning box.
+   A filter on that same shell preserves both transparency and menu motion. */
+html.theme-custom-background :is([data-spring-shell], [data-morph-panel]) {
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+html.theme-custom-background .morph-menu-content.bg-elevated-bg {
+  background-color: transparent;
+}
+
+/* Inline previews and assistant text need their own quiet reading surface,
+   including plain-text slash-command output and syntax-highlighter wrappers. */
+html.theme-custom-background .markdown-body {
+  background-color: var(--app-wallpaper-panel);
+  border-radius: 12px;
+  padding: 12px 16px;
+  overflow-wrap: anywhere;
+}
+
+html.theme-custom-background .markdown-body :is(pre, code) {
+  background-color: transparent !important;
+  text-shadow: none;
+}
+
+html.theme-custom-background .app-content-frame {
+  background-color: color-mix(in srgb, var(--theme-bg) 24%, transparent);
+}
+
+html.theme-custom-background :is(.app-navigation-rail, .app-titlebar) {
+  background-color: var(--app-wallpaper-input);
+}
+
+html.theme-custom-background .app-sidebar-region {
+  background-color: var(--app-wallpaper-muted);
+}
+
+/* Secondary labels and neutral icons share one readable foreground. Preserve
+   semantic accent/error colors and the intentional transparency of the rich
+   composer textarea; only its mirror renders the visible draft. */
+:where(html.theme-custom-background) :is(.text-gray-400, .text-gray-500, .text-gray-600) {
+  color: var(--theme-text-secondary);
+}
+
+html.theme-custom-background :is(input, textarea)::placeholder {
+  color: var(--theme-text-secondary);
+  opacity: 1;
+}
+
+html.theme-custom-background .composer-textarea::placeholder {
+  color: transparent;
+}
+
+html.theme-custom-background :is(.border-border-theme, .ui-menu-surface) {
+  --ui-menu-border: var(--app-wallpaper-outline);
+  border-color: var(--app-wallpaper-outline);
+}
+
+/* Keep page wrappers clear; readable foreground surfaces above provide their
+   own material. Canvas windows never receive theme-custom-background. */
 html.theme-custom-background #root,
 html.theme-custom-background #root > :is(.bg-sidebar-bg, .bg-bg-base),
 html.theme-custom-background .app-main-surface,
 html.theme-custom-background .view-frame > .bg-white,
 html.theme-custom-background [data-settings-viewport],
 html.theme-custom-background .app-sidebar-region .bg-sidebar-bg,
-html.theme-custom-background .app-sidebar-region > [data-spring-disclosure],
-html.theme-custom-background [data-app-background-surface] {
+html.theme-custom-background .app-sidebar-region > [data-spring-disclosure] {
   background-color: transparent !important;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;

@@ -11,6 +11,7 @@ export const Panel = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement> &
     return (
       <div
         ref={ref}
+        data-app-surface="popover"
         className={cn(
           "rounded-2xl bg-elevated-bg shadow-[0_6px_24px_rgba(0,0,0,0.10)]",
           menu && FLOATING_MENU.panel,

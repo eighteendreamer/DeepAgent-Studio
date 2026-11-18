@@ -786,7 +786,6 @@ function WorkflowCanvasInner() {
   return (
     <div
       ref={containerRef}
-      data-app-background-surface
       className="relative h-full w-full overflow-hidden"
       style={{ background: "#0a0a0a" }}
       onDoubleClickCapture={handleDoubleClick}
