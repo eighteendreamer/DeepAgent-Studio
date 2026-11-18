@@ -37,6 +37,14 @@ pub struct Counts {
     pub repeat_directory_page: AtomicBool,
     pub reject_directory_close: AtomicBool,
     pub reject_publish_paths: RwLock<std::collections::HashSet<String>>,
+    pub directory_renames: RwLock<Vec<(String, String)>>,
+    pub directory_rename_started: tokio::sync::Notify,
+    pub directory_rename_gate: RwLock<Option<Arc<tokio::sync::Notify>>>,
+    pub directory_create_started: tokio::sync::Notify,
+    pub directory_create_gate: RwLock<Option<Arc<tokio::sync::Notify>>>,
+    pub reject_directory_publish: AtomicBool,
+    pub reject_directory_restore: AtomicBool,
+    pub reject_directory_cleanup: AtomicBool,
 }
 
 struct Handler {

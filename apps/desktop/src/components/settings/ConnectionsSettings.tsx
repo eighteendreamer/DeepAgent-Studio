@@ -352,9 +352,6 @@ export function ConnectionsSettings() {
               </span>
               <FontAwesomeIcon icon={["fas", "server"]} />
             </div>
-            <div className="mb-4 text-[13px] text-text-secondary">
-              {t("settings.connections.sshDesc")}
-            </div>
             <button
               className="rounded-full bg-black/5 px-4 py-1.5 text-[13px] font-medium text-text-base transition-colors hover:bg-black/5"
               onClick={openCreate}
@@ -460,9 +457,6 @@ export function ConnectionsSettings() {
                     ? t("settings.connections.edit")
                     : t("settings.connections.addSsh")}
                 </h3>
-                <p className="mt-1 text-[11px] leading-4 text-text-secondary">
-                  {t("settings.connections.sshDesc")}
-                </p>
               </div>
               <button
                 type="button"

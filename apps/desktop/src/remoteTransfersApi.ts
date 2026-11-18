@@ -3,7 +3,7 @@ import { getInvoke } from "./api";
 export type TransferDirection = "upload" | "download";
 export type ConflictPolicy = "ask" | "skip" | "replace" | "keep_both";
 export type TransferKind = "file" | "directory";
-export type DirectoryConflictPolicy = "ask" | "skip" | "merge" | "keep_both";
+export type DirectoryConflictPolicy = "ask" | "skip" | "merge" | "keep_both" | "replace";
 export interface FileConflictDecision {
   policy: Exclude<ConflictPolicy, "ask">;
   applyToRemainingFiles: boolean;
@@ -75,6 +75,7 @@ export interface TransferTask {
     bytes: string; totalBytes: string; totalFiles: number; completedFiles: number;
     skippedFiles: number; createdDirectories: number; cleanupWarnings: string[];
     destinationPath?: string; renamedFiles?: number;
+    publishStrategy?: "directory_created" | "directory_backup_replace";
   } | null;
   receipt: {
     bytes: string;

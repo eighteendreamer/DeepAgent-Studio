@@ -32,12 +32,13 @@ export function TransferTaskBody({ task, label }: { task: TransferTask; label: L
     {task.request.kind === "directory" && <p>{label("skippedFiles")} {task.skippedFiles ?? 0}</p>}
     {destination && <p className="break-all text-text-secondary">{label("destinationPath")} · {destination}</p>}
     {!!task.directoryReceipt?.renamedFiles && <p>{label("renamedFiles")} {task.directoryReceipt.renamedFiles}</p>}
+    {task.directoryReceipt?.publishStrategy && <p>{label(task.directoryReceipt.publishStrategy === "directory_backup_replace" ? "directoryBackupReplace" : "directoryCreated")}</p>}
     {task.currentFile && <p className="break-all text-text-secondary">{label("currentFile")} · {task.currentFile}</p>}
     {task.lastFileConflict && <p className="break-all text-text-secondary">
       {label("lastFileDecision")} · {task.lastFileConflict.pending.conflict.relativePath} · {label(task.lastFileConflict.decision.policy === "keep_both" ? "keepBoth" : task.lastFileConflict.decision.policy)} · {label(task.lastFileConflict.decision.applyToRemainingFiles ? "remainingFileConflicts" : "currentFileOnly")}
     </p>}
     {task.lastDirectoryConflict && <p className="break-all text-text-secondary">
-      {label("lastDirectoryDecision")} · {task.lastDirectoryConflict.pending.conflict.destinationPath} · {label(task.lastDirectoryConflict.decision === "keep_both" ? "keepBothDirectory" : task.lastDirectoryConflict.decision)}
+      {label("lastDirectoryDecision")} · {task.lastDirectoryConflict.pending.conflict.destinationPath} · {label(task.lastDirectoryConflict.decision === "keep_both" ? "keepBothDirectory" : task.lastDirectoryConflict.decision === "replace" ? "replaceDirectory" : task.lastDirectoryConflict.decision)}
     </p>}
     {task.error && <p role="alert" className="break-words text-red-500">{task.error.code}: {task.error.message}</p>}
     {task.error?.relativePath && <p className="break-all text-red-500">{label("failedFile")} · {task.error.relativePath}</p>}
@@ -52,16 +53,34 @@ export function DirectoryConflictActions({ pending, label, busy, onResolve }: {
   pending: PendingDirectoryConflict; label: Labeler; busy: boolean;
   onResolve: (policy: DirectoryConflictResponse["decision"]) => Promise<unknown>;
 }) {
+  const [confirmation, setConfirmation] = useState<string | null>(null);
+  const confirming = confirmation === pending.id;
   return <div className="min-w-0 space-y-2 rounded-md border border-border-theme p-2 text-[12px]">
     <p className="font-medium" role="status">{label("waitingDirectoryConflict")}</p>
     <p className="break-all text-text-secondary">{label(pending.conflict.direction)} · {label("destinationPath")} · {pending.conflict.destinationPath}</p>
     <p>{label("sourceFiles")} {pending.conflict.totalFiles} · {label("plannedBytes")} {pending.conflict.totalBytes} B</p>
-    <p className="text-text-secondary">{label("directoryConflictSafe")}</p>
     <div className="flex flex-wrap gap-2">
       <Button variant="outline" size="sm" disabled={busy} onClick={() => onResolve("skip")}>{label("skip")}</Button>
       <Button variant="outline" size="sm" disabled={busy} onClick={() => onResolve("merge")}>{label("merge")}</Button>
       <Button variant="outline" size="sm" disabled={busy} onClick={() => onResolve("keep_both")}>{label("keepBothDirectory")}</Button>
+      <Button variant="destructive" size="sm" disabled={busy} onClick={() => setConfirmation(pending.id)}>{label("replaceDirectory")}</Button>
     </div>
+    {confirming && <Dialog open onOpenChange={open => { if (!open && !busy) setConfirmation(null); }}>
+      <DialogContent className="w-[min(640px,calc(100vw-32px))]">
+        <DialogHeader className="flex-col gap-2">
+          <DialogTitle>{label("replaceDirectory")}</DialogTitle>
+          <DialogDescription>{label("replaceWholeDirectoryWarning")}</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2 break-all px-5 py-4 text-[12px]">
+          <p>{label(pending.conflict.direction)} · {label("destinationPath")} · {pending.conflict.destinationPath}</p>
+          <p>{label("sourceFiles")} {pending.conflict.totalFiles} · {label("plannedBytes")} {pending.conflict.totalBytes} B</p>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" disabled={busy} onClick={() => setConfirmation(null)}>{label("close")}</Button>
+          <Button variant="destructive" disabled={busy} onClick={async () => { await onResolve("replace"); setConfirmation(null); }}>{label("confirmReplaceDirectory")}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>}
   </div>;
 }
 
@@ -78,7 +97,6 @@ export function FileConflictActions({ pending, label, busy, onResolve }: {
     <p className="break-all">{pending.conflict.relativePath}</p>
     <p className="break-all text-text-secondary">{label(pending.conflict.direction)} · {label("destinationPath")} · {pending.conflict.destinationPath}</p>
     <p>{label("sourceSize")} {pending.conflict.sourceSize} B</p>
-    <p className="text-text-secondary">{label("fileConflictSafe")}</p>
     <div className="flex items-start gap-2">
       <Checkbox id={`conflict-scope-${pending.id}`} disabled={busy} checked={applyToRemainingFiles}
         onCheckedChange={checked => setApplyToRemainingFiles(checked === true)} />
@@ -178,7 +196,7 @@ export function RemoteTransfersPanel({ connectionId }: { connectionId: string })
       {tasks.slice().reverse().map(task => <article key={task.id} className="flex items-start gap-2 rounded-lg border border-border-theme p-2">
         <div className="min-w-0 flex-1 space-y-2">
           <TransferTaskBody task={task} label={label} />
-          {task.state === "running" && task.pendingDirectoryConflict && <DirectoryConflictActions
+          {task.state === "running" && task.pendingDirectoryConflict && <DirectoryConflictActions key={task.pendingDirectoryConflict.id}
             pending={task.pendingDirectoryConflict} label={label} busy={busy} onResolve={decision => act(() => remoteTransferResolveDirectoryConflict(task.id, {
               version: task.pendingDirectoryConflict!.version, id: task.pendingDirectoryConflict!.id,
               attempt: task.pendingDirectoryConflict!.attempt, decision,
@@ -209,8 +227,8 @@ export function RemoteTransfersPanel({ connectionId }: { connectionId: string })
       </article>)}
     </div>}
     {form && <Dialog open onOpenChange={open => { if (!open && !busy) setForm(null); }}>
-      <DialogContent className="flex max-h-[85vh] w-[min(640px,calc(100vw-32px))] flex-col overflow-hidden" aria-label={label(form)}>
-        <DialogHeader className="flex-col gap-2"><DialogTitle>{label(form)}</DialogTitle><DialogDescription>{label(kind === "directory" ? "directorySafe" : "safe")}</DialogDescription></DialogHeader>
+      <DialogContent className="flex max-h-[85vh] w-[min(640px,calc(100vw-32px))] flex-col overflow-hidden" aria-label={label(form)} aria-describedby={undefined}>
+        <DialogHeader className="flex-col gap-2"><DialogTitle>{label(form)}</DialogTitle></DialogHeader>
         <div className="space-y-3 overflow-y-auto px-5 py-4">
           <Label htmlFor="transfer-kind">{label("kind")}</Label>
           <Select value={kind} onValueChange={value => { setKind(value as TransferKind); setLocal(""); }}>

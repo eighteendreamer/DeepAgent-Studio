@@ -221,29 +221,105 @@ impl russh_sftp::server::Handler for MemoryFiles {
         oldpath: String,
         newpath: String,
     ) -> Result<Status, Self::Error> {
-        let mut files = self.files.write().unwrap();
-        if files.contains_key(&newpath)
-            || (newpath == "/reject-publish" && oldpath.ends_with(".part"))
-            || self
-                .counts
-                .reject_publish_paths
-                .read()
+        let directory = {
+            let files = self.files.read().unwrap();
+            let directories = self.counts.directories.read().unwrap();
+            if files.contains_key(&newpath)
+                || directories.contains(&newpath)
+                || (newpath == "/reject-publish" && oldpath.ends_with(".part"))
+                || self
+                    .counts
+                    .reject_publish_paths
+                    .read()
+                    .unwrap()
+                    .contains(&newpath)
+            {
+                return Err(StatusCode::Failure);
+            }
+            directories.contains(&oldpath)
+        };
+        if directory {
+            self.counts
+                .directory_renames
+                .write()
                 .unwrap()
-                .contains(&newpath)
-        {
-            return Err(StatusCode::Failure);
+                .push((oldpath.clone(), newpath.clone()));
+            let gate = self.counts.directory_rename_gate.write().unwrap().take();
+            self.counts.directory_rename_started.notify_one();
+            if let Some(gate) = gate {
+                gate.notified().await;
+            }
+            if (oldpath.ends_with(".directory-stage")
+                && self
+                    .counts
+                    .reject_directory_publish
+                    .load(std::sync::atomic::Ordering::SeqCst))
+                || (oldpath.ends_with(".directory-backup")
+                    && self
+                        .counts
+                        .reject_directory_restore
+                        .load(std::sync::atomic::Ordering::SeqCst))
+            {
+                return Err(StatusCode::Failure);
+            }
+            let mut files = self.files.write().unwrap();
+            let mut directories = self.counts.directories.write().unwrap();
+            // Recheck after the delivery gate, just as a server rejects a raced target.
+            if files.contains_key(&newpath) || directories.contains(&newpath) {
+                return Err(StatusCode::Failure);
+            }
+            let prefix = format!("{oldpath}/");
+            let moves: Vec<_> = directories
+                .iter()
+                .filter(|path| *path == &oldpath || path.starts_with(&prefix))
+                .cloned()
+                .collect();
+            for path in moves {
+                directories.remove(&path);
+                directories.insert(format!("{newpath}{}", &path[oldpath.len()..]));
+            }
+            let moves: Vec<_> = files
+                .keys()
+                .filter(|path| path.starts_with(&prefix))
+                .cloned()
+                .collect();
+            for path in moves {
+                let value = files.remove(&path).unwrap();
+                files.insert(format!("{newpath}{}", &path[oldpath.len()..]), value);
+            }
+            let mut attributes = self.counts.file_attributes.write().unwrap();
+            let moves: Vec<_> = attributes
+                .keys()
+                .filter(|path| *path == &oldpath || path.starts_with(&prefix))
+                .cloned()
+                .collect();
+            for path in moves {
+                let value = attributes.remove(&path).unwrap();
+                attributes.insert(format!("{newpath}{}", &path[oldpath.len()..]), value);
+            }
+            return Ok(success(id));
         }
+        let mut files = self.files.write().unwrap();
         let bytes = files.remove(&oldpath).ok_or(StatusCode::NoSuchFile)?;
         files.insert(newpath, bytes);
         Ok(success(id))
     }
 
     async fn remove(&mut self, id: u32, path: String) -> Result<Status, Self::Error> {
+        if path.contains(".directory-backup/")
+            && self
+                .counts
+                .reject_directory_cleanup
+                .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(StatusCode::PermissionDenied);
+        }
         self.files
             .write()
             .unwrap()
             .remove(&path)
             .ok_or(StatusCode::NoSuchFile)?;
+        self.counts.file_attributes.write().unwrap().remove(&path);
         Ok(success(id))
     }
 
@@ -254,13 +330,47 @@ impl russh_sftp::server::Handler for MemoryFiles {
         _: FileAttributes,
     ) -> Result<Status, Self::Error> {
         let parent = path.rsplit_once('/').map(|p| p.0).unwrap_or("");
+        {
+            let files = self.files.read().unwrap();
+            let mut directories = self.counts.directories.write().unwrap();
+            if (!parent.is_empty() && !directories.contains(parent))
+                || files.contains_key(&path)
+                || !directories.insert(path.clone())
+            {
+                return Err(StatusCode::Failure);
+            }
+        }
+        if path.ends_with(".directory-stage") {
+            let gate = self.counts.directory_create_gate.write().unwrap().take();
+            self.counts.directory_create_started.notify_one();
+            if let Some(gate) = gate {
+                gate.notified().await;
+            }
+        }
+        Ok(success(id))
+    }
+
+    async fn rmdir(&mut self, id: u32, path: String) -> Result<Status, Self::Error> {
+        if path.ends_with(".directory-backup")
+            && self
+                .counts
+                .reject_directory_cleanup
+                .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(StatusCode::PermissionDenied);
+        }
+        let prefix = format!("{path}/");
+        let files = self.files.read().unwrap();
         let mut directories = self.counts.directories.write().unwrap();
-        if (!parent.is_empty() && !directories.contains(parent))
-            || self.files.read().unwrap().contains_key(&path)
-            || !directories.insert(path)
+        if files.keys().any(|entry| entry.starts_with(&prefix))
+            || directories.iter().any(|entry| entry.starts_with(&prefix))
         {
             return Err(StatusCode::Failure);
         }
+        if !directories.remove(&path) {
+            return Err(StatusCode::NoSuchFile);
+        }
+        self.counts.file_attributes.write().unwrap().remove(&path);
         Ok(success(id))
     }
 
@@ -293,7 +403,8 @@ impl russh_sftp::server::Handler for MemoryFiles {
             .unwrap()
             .get(&path)
             .cloned();
-        let entries = if let Some(entries) = override_entries {
+        let populate_attributes = override_entries.is_none();
+        let mut entries = if let Some(entries) = override_entries {
             entries
         } else {
             let mut entries = std::collections::BTreeMap::new();
@@ -316,6 +427,12 @@ impl russh_sftp::server::Handler for MemoryFiles {
             }
             entries.into_values().collect()
         };
+        if populate_attributes {
+            for entry in &mut entries {
+                let full = format!("{}/{}", path.trim_end_matches('/'), entry.filename);
+                entry.attrs = self.lstat(id, full).await?.attrs;
+            }
+        }
         self.next_handle += 1;
         let handle = format!("dir-{}", self.next_handle);
         self.directories.insert(handle.clone(), entries.into());

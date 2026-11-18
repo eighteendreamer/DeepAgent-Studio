@@ -75,7 +75,7 @@ export function RemoteFileProperties({ connectionId, path, onClose }: {
   }
 
   return <Dialog open onOpenChange={open => { if (!open) onClose(); }}><DialogContent className="flex max-h-[85vh] w-[min(640px,calc(100vw-32px))] flex-col overflow-hidden" aria-label={label("title")}>
-    <DialogHeader><DialogTitle>{label("title")}</DialogTitle><DialogDescription className="break-all">{path} · {label("description")}</DialogDescription></DialogHeader>
+    <DialogHeader><DialogTitle>{label("title")}</DialogTitle><DialogDescription className="break-all">{path}</DialogDescription></DialogHeader>
     <div className="min-h-0 overflow-y-auto px-5 py-4">
     {busy && <p role="status">{label("loading")}</p>}
     {error && <p role="alert" className="break-words text-red-500">{label("failed")}: {error}</p>}

@@ -231,65 +231,95 @@ impl PlanBuilder {
         root: &Path,
         cancel: &CancellationToken,
     ) -> Result<(), FileTransferError> {
-        let mut pending = vec![(root.to_owned(), String::new(), 0)];
-        while let Some((path, relative, depth)) = pending.pop() {
-            let metadata = operation(cancel, tokio::fs::symlink_metadata(&path)).await?;
-            if is_link(&metadata)
-                || !metadata.is_dir()
-                || operation(cancel, tokio::fs::canonicalize(&path)).await? != path
-            {
-                return Err(failure(
-                    "invalid",
-                    &format!("local directory identity changed: {relative}"),
-                ));
-            }
-            let mut directory = operation(cancel, tokio::fs::read_dir(&path)).await?;
-            while let Some(item) = operation(cancel, directory.next_entry()).await? {
-                let name = item.file_name();
-                let name = name
-                    .to_str()
-                    .ok_or_else(|| failure("invalid", "local entry name is not UTF-8"))?;
-                if name.contains('/') || name.contains('\0') || name.is_empty() {
-                    return Err(failure(
-                        "invalid",
-                        "local name cannot be represented as a POSIX component",
-                    ));
-                }
-                let relative_path = if relative.is_empty() {
-                    name.into()
-                } else {
-                    format!("{relative}/{name}")
-                };
-                crate::files::validate_path(&relative_path)
-                    .map_err(|_| failure("invalid", "relative path exceeds local bounds"))?;
-                let metadata = operation(cancel, tokio::fs::symlink_metadata(item.path())).await?;
-                let kind = if is_link(&metadata) {
-                    RemoteFileKind::Symlink
-                } else if metadata.is_dir() {
-                    RemoteFileKind::Directory
-                } else if metadata.is_file() {
-                    RemoteFileKind::File
-                } else {
-                    RemoteFileKind::Other
-                };
-                if kind == RemoteFileKind::Directory {
-                    if depth >= self.limits.max_depth {
-                        return Err(failure(
-                            "limit",
-                            &format!("directory depth limit reached: {relative_path}"),
-                        ));
-                    }
-                    pending.push((item.path(), relative_path.clone(), depth + 1));
-                }
-                self.push(
-                    relative_path,
-                    kind,
-                    metadata.is_file().then(|| metadata.len().to_string()),
-                )?;
-            }
+        for (relative, metadata) in local_entries(root, self.limits, cancel).await? {
+            self.push(
+                relative,
+                local_kind(&metadata),
+                metadata.is_file().then(|| metadata.len().to_string()),
+            )?;
         }
         Ok(())
     }
+}
+
+pub(super) fn local_kind(metadata: &Metadata) -> RemoteFileKind {
+    if is_link(metadata) {
+        RemoteFileKind::Symlink
+    } else if metadata.is_dir() {
+        RemoteFileKind::Directory
+    } else if metadata.is_file() {
+        RemoteFileKind::File
+    } else {
+        RemoteFileKind::Other
+    }
+}
+
+/// One bounded, non-following local traversal for planning and publication cleanup.
+pub(super) async fn local_entries(
+    root: &Path,
+    limits: DirectoryWalkLimits,
+    cancel: &CancellationToken,
+) -> Result<Vec<(String, Metadata)>, FileTransferError> {
+    limits.validate()?;
+    let mut entries = Vec::new();
+    let mut metadata_bytes = 0;
+    let mut pending = vec![(root.to_owned(), String::new(), 0)];
+    while let Some((path, relative, depth)) = pending.pop() {
+        let metadata = operation(cancel, tokio::fs::symlink_metadata(&path)).await?;
+        if is_link(&metadata)
+            || !metadata.is_dir()
+            || operation(cancel, tokio::fs::canonicalize(&path)).await? != path
+        {
+            return Err(failure(
+                "invalid",
+                &format!("local directory identity changed: {relative}"),
+            ));
+        }
+        let mut directory = operation(cancel, tokio::fs::read_dir(&path)).await?;
+        while let Some(item) = operation(cancel, directory.next_entry()).await? {
+            let name = item.file_name();
+            let name = name
+                .to_str()
+                .ok_or_else(|| failure("invalid", "local entry name is not UTF-8"))?;
+            if name.contains('/') || name.contains('\0') || name.is_empty() {
+                return Err(failure(
+                    "invalid",
+                    "local name cannot be represented as a POSIX component",
+                ));
+            }
+            let relative_path = if relative.is_empty() {
+                name.into()
+            } else {
+                format!("{relative}/{name}")
+            };
+            crate::files::validate_path(&relative_path)
+                .map_err(|_| failure("invalid", "relative path exceeds local bounds"))?;
+            let metadata = operation(cancel, tokio::fs::symlink_metadata(item.path())).await?;
+            let kind = local_kind(&metadata);
+            if kind == RemoteFileKind::Directory {
+                if depth >= limits.max_depth {
+                    return Err(failure(
+                        "limit",
+                        &format!("directory depth limit reached: {relative_path}"),
+                    ));
+                }
+                pending.push((item.path(), relative_path.clone(), depth + 1));
+            }
+            if entries.len() >= limits.max_entries as usize {
+                return Err(failure("limit", "directory entry limit reached"));
+            }
+            metadata_bytes += relative_path.len() * 2 + 512;
+            if metadata_bytes > MAX_METADATA_BYTES {
+                return Err(failure(
+                    "limit",
+                    "directory metadata exceeds 8 MiB local budget",
+                ));
+            }
+            entries.push((relative_path, metadata));
+        }
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(entries)
 }
 
 fn validate_download_names(entries: &[DirectoryTransferEntry]) -> Result<(), FileTransferError> {

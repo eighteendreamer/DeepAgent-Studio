@@ -75,7 +75,6 @@ export function SshAuthenticationFields({ value, onChange, onPickKeyFile }: Prop
           <SelectItem value="pageant">Pageant</SelectItem>
         </SelectContent>
       </Select>
-      <p className="text-[11px] leading-5 text-text-secondary">{t("settings.connections.agent.help")}</p>
       <div role="status" aria-live="polite" className="space-y-2 text-[12px]">
         {!current && <p>{t("settings.connections.agent.checking")}</p>}
         {current?.error && <p className="break-words text-red-600">{current.error}</p>}

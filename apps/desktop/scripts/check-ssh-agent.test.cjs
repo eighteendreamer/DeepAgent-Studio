@@ -81,6 +81,7 @@ test('shared Agent fields have readable initial labels, no private credential co
     const html = renderToStaticMarkup(React.createElement(Fields, { value: { authType: 'pageant', keyPath: '', password: '' }, onChange() {}, onPickKeyFile() {} }));
     assert.ok(!html.includes('MISSING INITIAL LABEL'));
     assert.ok(html.includes(translate(`settings.connections.agent.states.${state}`)));
-    assert.ok(html.includes('Agent Forwarding'));
+    assert.ok(!html.includes(translate('settings.connections.agent.help')));
+    assert.ok(html.includes(translate('settings.connections.agent.refresh')));
   }
 });

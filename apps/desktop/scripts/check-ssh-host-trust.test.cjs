@@ -139,7 +139,7 @@ test('host-key error formatting is idempotent across test results and status ren
   }
 });
 
-test('shared production field renders accessible strict-trust guidance and edits its value', () => {
+test('shared production field keeps its accessible label and editing without explanatory copy', () => {
   const fn = production('components/remote/SshHostTrustField.tsx', 'SshHostTrustField', {
     React, useTranslation: () => ({ t: translate }), Input: 'input', Label: 'label', Button: 'button',
     useRef: initial => ({ current: initial }), useState: initial => [initial, () => {}], useEffect() {},
@@ -148,14 +148,13 @@ test('shared production field renders accessible strict-trust guidance and edits
   const element = fn({ id: 'fixture-trust', host: 'fixture.invalid', port: 22, value: 'C:\\fixture\\known_hosts', onChange: value => { changed = value; } });
   const html = renderToStaticMarkup(element);
   assert.match(html, /for="fixture-trust"/);
-  assert.match(html, /aria-describedby="fixture-trust-help"/);
-  assert.match(html, /不自动接受/);
-  assert.match(html, /\[host\]:port/);
+  assert.doesNotMatch(html, /aria-describedby/);
+  assert.ok(!html.includes(translate('settings.connections.knownHostsHelp')));
   element.props.children[1].props.onChange({ target: { value: 'C:\\fixture\\new' } });
   assert.equal(changed, 'C:\\fixture\\new');
 });
 
-test('shared policy selector explains TOFU, refuses invalid values, and switches back to Strict', () => {
+test('shared policy selector omits explanatory copy, refuses invalid values, and switches back to Strict', () => {
   const Select = ({ children }) => React.createElement('div', null, children);
   const fn = production('components/remote/SshHostTrustField.tsx', 'SshHostTrustField', {
     React, useTranslation: () => ({ t: translate }), Input: 'input', Label: 'label', Button: 'button',
@@ -164,8 +163,10 @@ test('shared policy selector explains TOFU, refuses invalid values, and switches
   });
   const changed = [];
   const element = fn({ id: 'policy-fixture', host: 'fixture.invalid', port: 22, value: '', onChange() {}, policy: 'accept_new', onPolicyChange: value => changed.push(value) });
-  assert.match(renderToStaticMarkup(element), /TOFU/);
-  assert.match(renderToStaticMarkup(element), /冒充/);
+  const html = renderToStaticMarkup(element);
+  assert.ok(!html.includes(translate('settings.connections.acceptNewHelp')));
+  assert.ok(!html.includes(translate('settings.connections.acceptNewFileHelp')));
+  assert.doesNotMatch(html, /aria-describedby/);
   const find = node => node && typeof node === 'object' && (node.type === Select ? node : React.Children.toArray(node.props?.children).map(find).find(Boolean));
   const select = find(element);
   assert.ok(select, 'use the existing shadcn Select');
@@ -251,7 +252,7 @@ test('inspection UI reports pending/result/errors and prevents form submit or au
   view = render(props);
   assert.match(view.html, /SHA256:fixture-only/);
   assert.match(view.html, /ssh-ed25519/);
-  assert.match(view.html, /不代表远端服务器已通过校验/);
+  assert.doesNotMatch(view.html, /不代表远端服务器已通过校验/);
   assert.match(view.html, /role="status"/);
 });
 
@@ -385,6 +386,22 @@ const auditText = key => translate(`settings.connections.trustAudit.${key}`);
 const auditView = (count=25) => ({connection_id:'id',host:'fixture.invalid',port:2222,route:'direct',revision:count,
   records:Array.from({length:count},(_,i)=>({revision:i+1,at_ms:i+1,action:'trust_verified',trusted_fingerprints:[`SHA256:audit-${i+1}`],revoked_fingerprints:[]}))});
 const auditDriver = api => trustManagerDriver(api,'components/remote/SshHostTrustAuditDialog.tsx','SshHostTrustAuditDialog');
+
+test('trust management and audit omit explanatory paragraphs while retaining records and actions', async () => {
+  const props = managerProps();
+  const manager = trustManagerDriver();
+  manager.render(props); await flushManager();
+  const managerView = manager.render(props);
+  assert.ok(!managerView.text.includes(managerText('help')));
+  assert.ok(managerView.button(managerText('close')));
+  const audit = auditDriver({sshHostTrustAudit:async()=>auditView(1)});
+  audit.render({...props,onBack(){}}); await flushManager();
+  const auditViewResult = audit.render({...props,onBack(){}});
+  assert.ok(!auditViewResult.text.includes(auditText('help')));
+  assert.ok(!auditViewResult.text.includes(auditText('usageHelp')));
+  assert.ok(auditViewResult.text.includes('SHA256:audit-1'));
+  assert.ok(auditViewResult.button(auditText('refresh')));
+});
 
 test('audit UI distinguishes successful authentication time, unknown history and metadata errors',async()=>{
   const props={connection:managerProps().connection,onBack(){}};

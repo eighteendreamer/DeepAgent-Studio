@@ -215,11 +215,6 @@ export function RemoteView({ connection, openFile }: RemoteViewProps) {
         <div className="text-[13px] text-text-secondary">
           {connection.username}@{connection.host}:{connection.port}
         </div>
-        {failed && (
-          <div className="text-[12px] text-gray-400">
-            {t("remote.reconnectHint")}
-          </div>
-        )}
       </div>
     );
   }

@@ -24,6 +24,7 @@ pub enum DirectoryConflictPolicy {
     Skip,
     Merge,
     KeepBoth,
+    Replace,
 }
 
 /// A file awaiting an explicit choice inside the current directory attempt.
@@ -108,6 +109,8 @@ pub struct DirectoryTransferReceipt {
     pub destination_path: Option<String>,
     #[serde(default)]
     pub renamed_files: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publish_strategy: Option<String>,
 }
 
 impl SshService {
@@ -182,6 +185,9 @@ impl SshService {
                 .map_err(|_| failure("integrity", "invalid planned total"))?;
             let total_files = plan.total_files;
             Execution {
+                ssh: self,
+                connection_id,
+                limits,
                 sftp: &sftp,
                 request: &request,
                 conflict,
@@ -237,7 +243,10 @@ fn failure(code: &str, message: &str) -> FileTransferError {
     FileTransferError::new(code, message)
 }
 
-async fn local_directory(path: &Path, cancel: &CancellationToken) -> Result<(), FileTransferError> {
+pub(super) async fn local_directory(
+    path: &Path,
+    cancel: &CancellationToken,
+) -> Result<(), FileTransferError> {
     let meta = operation(cancel, tokio::fs::symlink_metadata(path)).await?;
     if !meta.is_dir()
         || is_link(&meta)
@@ -267,7 +276,7 @@ async fn remote_directory(
 }
 
 /// Recheck every ancestor before path-based IO. SFTP has no portable directory-handle CAS.
-async fn remote_chain(
+pub(super) async fn remote_chain(
     sftp: &SftpSession,
     path: &str,
     cancel: &CancellationToken,
@@ -282,7 +291,7 @@ async fn remote_chain(
     Ok(())
 }
 
-async fn local_chain(
+pub(super) async fn local_chain(
     root: &Path,
     path: &Path,
     cancel: &CancellationToken,
@@ -300,6 +309,9 @@ async fn local_chain(
 }
 
 struct Execution<'a> {
+    ssh: &'a SshService,
+    connection_id: &'a str,
+    limits: DirectoryWalkLimits,
     sftp: &'a SftpSession,
     request: &'a FileTransferRequest,
     conflict: DirectoryConflictPolicy,
@@ -366,7 +378,7 @@ impl Execution<'_> {
         if policy == DirectoryConflictPolicy::Ask {
             return Err(failure(
                 "invalid",
-                "a directory decision must select skip, merge or keep both",
+                "a directory decision must select skip, merge, keep both or replace",
             ));
         }
         // A human wait grants no exemption from the original source/path checks.
@@ -413,6 +425,47 @@ impl Execution<'_> {
             self.emit();
             return Ok(self.receipt());
         }
+        if self.conflict == DirectoryConflictPolicy::Replace {
+            // Keep the publication state machine off the caller's polling stack.
+            return Box::pin(self.run_replace()).await;
+        }
+        self.entries().await?;
+        Ok(self.receipt())
+    }
+
+    async fn run_replace(&mut self) -> Result<DirectoryTransferReceipt, FileTransferError> {
+        let mut publication = crate::directory_publication::DirectoryPublication::prepare(
+            self.ssh,
+            self.connection_id,
+            self.sftp,
+            self.plan,
+            self.limits,
+            self.cancel,
+        )
+        .await?;
+        publication.stage_plan(self.plan);
+        self.created_directories += 1;
+        let staged = self.entries().await;
+        // Receipts, source validation and every error keep the user's final root.
+        publication.restore_plan(self.plan);
+        let result = async {
+            staged?;
+            self.validate_roots().await?;
+            publication.publish(self.cancel).await
+        }
+        .await;
+        match result {
+            Ok((strategy, warnings)) => {
+                self.warnings.extend(warnings);
+                let mut receipt = self.receipt();
+                receipt.publish_strategy = Some(strategy);
+                Ok(receipt)
+            }
+            Err(error) => Err(publication.abort(error).await),
+        }
+    }
+
+    async fn entries(&mut self) -> Result<(), FileTransferError> {
         let root = PathBuf::from(&self.plan.local_root);
         // Planning sorts POSIX relative paths, placing each parent before its descendants.
         for index in 0..self.plan.entries.len() {
@@ -422,13 +475,13 @@ impl Execution<'_> {
             let result = self.resolve_entry(&entry, &root).await;
             if let Err(mut error) = result {
                 error.relative_path = Some(entry.relative_path.clone());
-                error.cleanup_warnings.extend(self.warnings);
+                error.cleanup_warnings.append(&mut self.warnings);
                 return Err(error);
             }
         }
         self.progress.current_file = None;
         self.emit();
-        Ok(self.receipt())
+        Ok(())
     }
 
     fn receipt(&self) -> DirectoryTransferReceipt {
@@ -445,6 +498,7 @@ impl Execution<'_> {
                 FileTransferDirection::Download => self.plan.local_root.clone(),
             }),
             renamed_files: self.renamed_files,
+            publish_strategy: None,
         }
     }
 
@@ -510,6 +564,10 @@ impl Execution<'_> {
                 }
             }
         };
+        // Whole-directory Replace writes exclusively into its own sibling stage.
+        if relative.is_empty() && policy == DirectoryConflictPolicy::Replace {
+            return Ok(false);
+        }
         if exists {
             return match policy {
                 DirectoryConflictPolicy::Ask => Err(failure(
@@ -522,6 +580,9 @@ impl Execution<'_> {
                 )),
                 DirectoryConflictPolicy::Skip => Ok(true),
                 DirectoryConflictPolicy::Merge => Ok(false),
+                DirectoryConflictPolicy::Replace => {
+                    unreachable!("replace root is staged separately")
+                }
             };
         }
         if self.cancel.is_cancelled() {

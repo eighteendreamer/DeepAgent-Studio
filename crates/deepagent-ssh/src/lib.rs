@@ -72,6 +72,7 @@ mod conflict_target;
 mod connection_challenge;
 mod connection_flow;
 mod directory_plan;
+mod directory_publication;
 mod directory_transfer;
 mod directory_walk;
 mod error;

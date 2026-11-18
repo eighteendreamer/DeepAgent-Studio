@@ -117,7 +117,6 @@ function HostTrustPanel({ connection, onClose, onChanged }: Props & { connection
           <DialogDescription className="break-all">{connection.host}:{connection.port} · {label("direct")}</DialogDescription>
         </DialogHeader>
         <div className="min-h-0 space-y-4 overflow-y-auto px-5 py-4 text-[12px]">
-          <p className="text-text-secondary">{label("help")}</p>
           {busy && <p role="status" aria-live="polite">{label("busy")}</p>}
           {error && <p role="alert" className="break-all rounded-lg bg-red-50 p-3 text-red-600">{error}</p>}
           {!busy && records.length === 0 && <p className="text-text-secondary">{label("empty")}</p>}

@@ -19,43 +19,75 @@ test('directory-root responses keep their nonce and cannot become file decisions
 });
 
 test('directory-root controls show the exact destination and keep this attempt', async () => {
-  const calls = [];
-  const render = production('src/components/remote/RemoteTransfersPanel.tsx', 'DirectoryConflictActions', {
-    Button: props => React.createElement('button', props, props.children),
-  });
-  const tree = render({pending:{version:1,id:'root',attempt:2,conflict:{direction:'download',
-    destinationPath:'C:/目录/<target>',totalFiles:7,totalBytes:'9007199254740993'}},
-    label:key=>key,busy:false,onResolve:async policy=>{calls.push(policy);}});
+  const harness = directoryActionsHarness();
+  harness.props.pending = {version:1,id:'root',attempt:2,conflict:{direction:'download',
+    destinationPath:'C:/目录/<target>',totalFiles:7,totalBytes:'9007199254740993'}};
+  const tree = harness.draw();
   const html = renderToStaticMarkup(tree);
   assert.match(html,/C:\/目录\/&lt;target&gt;/);
   assert.match(html,/waitingDirectoryConflict|directoryConflictSafe/);
   assert.match(html,/9007199254740993/);
-  assert.doesNotMatch(html,/replace|applyToRemainingFiles/);
-  const visit = async node => {
-    if (!node || typeof node !== 'object') return;
-    if (node.props.onClick) { assert.equal(node.props.disabled,false); await node.props.onClick(); }
-    for (const child of React.Children.toArray(node.props.children)) await visit(child);
-  };
-  await visit(tree);
-  assert.deepEqual(calls,['skip','merge','keep_both']);
-  const disabled = render({pending:{conflict:{}},label:key=>key,busy:true,onResolve:async()=>{}});
-  assert.equal((renderToStaticMarkup(disabled).match(/disabled=""/g)||[]).length,3);
+  assert.doesNotMatch(html,/applyToRemainingFiles/);
+  for (const label of ['skip','merge','keepBothDirectory']) await harness.button(tree,label).props.onClick();
+  assert.deepEqual(harness.calls,['skip','merge','keep_both']);
+  harness.props.busy = true;
+  assert.equal((renderToStaticMarkup(harness.draw()).match(/disabled=""/g)||[]).length,4);
 });
 
 test('directory-root planned counts cannot be presented as transferred files', () => {
-  const render = production('src/components/remote/RemoteTransfersPanel.tsx', 'DirectoryConflictActions', {
-    Button: props => React.createElement('button', props, props.children),
-  });
+  const harness = directoryActionsHarness();
   for (const [locale, countLabel, sizeLabel] of [
     ['en', 'Source files', 'Planned bytes'], ['zh', '源文件数', '计划总字节'],
   ]) {
     const labels = JSON.parse(readFileSync(path.join(root, `src/locales/${locale}.json`), 'utf8')).remote.transfers;
-    const html = renderToStaticMarkup(render({pending:{conflict:{direction:'upload',
-      destinationPath:'/tree',totalFiles:7,totalBytes:'9007199254740993'}},
-      label:key=>labels[key],busy:false,onResolve:async()=>{}}));
+    harness.props.pending = {id:'locale',conflict:{direction:'upload',destinationPath:'/tree',totalFiles:7,totalBytes:'9007199254740993'}};
+    harness.props.label = key=>labels[key];
+    const html = renderToStaticMarkup(harness.draw());
     assert.ok(html.includes(countLabel), `${locale}: ${html}`);
     assert.ok(html.includes(sizeLabel), `${locale}: ${html}`);
     assert.ok(!html.includes(labels.files), `${locale}: planned count is not a transferred count`);
+  }
+});
+
+function directoryActionsHarness() {
+  return conflictActionsHarness('DirectoryConflictActions');
+}
+
+test('whole-directory confirmation preserves deletion scope without implementation copy', () => {
+  for (const locale of ['en', 'zh']) {
+    const labels = JSON.parse(readFileSync(path.join(root, `src/locales/${locale}.json`), 'utf8')).remote.transfers;
+    assert.doesNotMatch(labels.replaceWholeDirectoryWarning, /staged|publication|暂存|校验后|发布|SFTP/i);
+    assert.match(labels.replaceWholeDirectoryWarning, locale === 'zh' ? /文件.*子目录.*源目录保留/ : /files.*folders.*source.*preserved/i);
+  }
+});
+
+test('whole-directory replacement needs a separate confirmation bound to the current nonce', async () => {
+  const harness = directoryActionsHarness();
+  let tree = harness.draw();
+  harness.button(tree,'replaceDirectory').props.onClick();
+  assert.equal(harness.calls.length,0);
+  tree = harness.draw();
+  assert.match(renderToStaticMarkup(tree),/replaceWholeDirectoryWarning/);
+  assert.ok(harness.find(tree,node=>node.props?.open === true));
+  harness.props.pending = {...harness.props.pending,id:'new-root-nonce'};
+  tree = harness.draw();
+  assert.equal(harness.find(tree,node=>node.props?.open === true),undefined);
+  harness.button(tree,'replaceDirectory').props.onClick();
+  await harness.button(harness.draw(),'confirmReplaceDirectory').props.onClick();
+  assert.deepEqual(harness.calls,['replace']);
+});
+
+test('conflict rows omit explanatory copy while retaining actionable context and confirmations', () => {
+  for (const component of ['DirectoryConflictActions', 'FileConflictActions']) {
+    const harness = conflictActionsHarness(component);
+    const tree = harness.draw();
+    const html = renderToStaticMarkup(tree);
+    assert.doesNotMatch(html, /directoryConflictSafe|fileConflictSafe/);
+    assert.match(html, /destinationPath/);
+    assert.match(html, /waitingDirectoryConflict|waitingFileConflict/);
+    harness.button(tree, component === 'DirectoryConflictActions' ? 'replaceDirectory' : 'replace').props.onClick();
+    assert.match(renderToStaticMarkup(harness.draw()), /replaceWholeDirectoryWarning|replaceCurrentFileWarning/);
+    assert.equal(harness.calls.length, 0);
   }
 });
 
@@ -70,11 +102,11 @@ test('file conflict responses preserve the task, attempt, nonce and bounded scop
   assert.equal(JSON.stringify(calls[0].args), JSON.stringify({id:'task',response}));
 });
 
-function conflictActionsHarness() {
+function conflictActionsHarness(component = 'FileConflictActions') {
   const values = []; let index = 0;
   const calls = [];
   const control = tag => props => React.createElement(tag, props, props.children);
-  const render = production('src/components/remote/RemoteTransfersPanel.tsx', 'FileConflictActions', {
+  const render = production('src/components/remote/RemoteTransfersPanel.tsx', component, {
     useState: initial => { const slot = index++; if (!(slot in values)) values[slot] = initial;
       return [values[slot], value => { values[slot] = value; }]; },
     Button:control('button'), Checkbox:control('span'), Label:control('label'),

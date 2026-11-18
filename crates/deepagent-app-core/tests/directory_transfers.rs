@@ -324,6 +324,138 @@ async fn directory_merge_advances_to_file_decisions_without_replanning_or_replay
 }
 
 #[tokio::test]
+async fn whole_directory_replace_resumes_the_original_attempt_and_persists_its_receipt() {
+    for direction in ["upload", "download"] {
+        let (server, dir, ssh, id, db, queue) = fixture().await;
+        let input = conflicting_input(&server, dir.path(), &["a"]);
+        server
+            .counts
+            .files
+            .write()
+            .unwrap()
+            .insert("/tree/remote-only".into(), b"old".to_vec());
+        let task = queue
+            .submit(request(&id, &input, direction, "ask"))
+            .await
+            .unwrap();
+        let pending = root_waiting(&queue, &task.id).await;
+        let answer = root_response(&pending, "replace");
+        queue
+            .resolve_directory_conflict(&task.id, answer.clone())
+            .await
+            .unwrap();
+        let done = terminal(&queue, &task.id).await;
+        assert_eq!(done["state"], "completed", "{done}");
+        assert_eq!(done["attempt"], 1);
+        assert_eq!(
+            done["directoryReceipt"]["publishStrategy"],
+            "directory_backup_replace"
+        );
+        assert_eq!(done["lastDirectoryConflict"]["pending"]["id"], answer.id);
+        assert_eq!(done["lastDirectoryConflict"]["decision"], "replace");
+        assert!(done["pendingDirectoryConflict"].is_null());
+        assert!(done["pendingFileConflict"].is_null());
+        if direction == "upload" {
+            assert!(!server
+                .counts
+                .files
+                .read()
+                .unwrap()
+                .contains_key("/tree/remote-only"));
+            assert_eq!(server.counts.files.read().unwrap()["/tree/a"], b"new-a");
+        } else {
+            assert!(!input.join("a").exists());
+            assert_eq!(std::fs::read(input.join("remote-only")).unwrap(), b"old");
+        }
+        assert!(queue
+            .resolve_directory_conflict(&task.id, answer)
+            .await
+            .is_err());
+        drop(queue);
+        let reopened = TransferCoordinator::new(db, ssh).unwrap();
+        assert_eq!(
+            serde_json::to_value(reopened.snapshot().await.unwrap().remove(0)).unwrap(),
+            done
+        );
+    }
+}
+
+#[tokio::test]
+async fn cancellation_during_directory_publication_records_the_actual_success() {
+    let (server, dir, _ssh, id, _db, queue) = fixture().await;
+    let input = conflicting_input(&server, dir.path(), &["a"]);
+    let release = Arc::new(tokio::sync::Notify::new());
+    *server.counts.directory_rename_gate.write().unwrap() = Some(release.clone());
+    let task = queue
+        .submit(request(&id, &input, "upload", "replace"))
+        .await
+        .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        server.counts.directory_rename_started.notified(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        queue.cancel(&task.id).await.unwrap().state,
+        TransferState::Cancelling
+    );
+    release.notify_one();
+    let done = terminal(&queue, &task.id).await;
+    assert_eq!(done["state"], "completed", "{done}");
+    assert_eq!(
+        done["directoryReceipt"]["publishStrategy"],
+        "directory_backup_replace"
+    );
+    assert_eq!(server.counts.files.read().unwrap()["/tree/a"], b"new-a");
+}
+
+#[tokio::test]
+async fn failed_directory_recovery_is_persisted_with_the_real_backup_path() {
+    let (server, dir, ssh, id, db, queue) = fixture().await;
+    let input = conflicting_input(&server, dir.path(), &["a"]);
+    server
+        .counts
+        .files
+        .write()
+        .unwrap()
+        .insert("/tree/original".into(), b"keep".to_vec());
+    server
+        .counts
+        .reject_directory_publish
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    server
+        .counts
+        .reject_directory_restore
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let task = queue
+        .submit(request(&id, &input, "upload", "replace"))
+        .await
+        .unwrap();
+    let done = terminal(&queue, &task.id).await;
+    assert_eq!(done["state"], "failed", "{done}");
+    assert!(done["directoryReceipt"].is_null());
+    assert_eq!(done["error"]["code"], "publish");
+    assert_eq!(done["error"]["destinationPath"], "/tree");
+    let backup = server.counts.directory_renames.read().unwrap()[0].1.clone();
+    assert!(done["error"]["cleanupWarnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|warning| warning.as_str().unwrap().contains(&backup)));
+    assert_eq!(
+        server.counts.files.read().unwrap()[&format!("{backup}/original")],
+        b"keep"
+    );
+    drop(queue);
+    let reopened = TransferCoordinator::new(db, ssh).unwrap();
+    assert_eq!(
+        serde_json::to_value(reopened.snapshot().await.unwrap().remove(0)).unwrap(),
+        done
+    );
+}
+
+#[tokio::test]
 async fn directory_root_consent_is_durable_and_a_failed_save_does_not_release_work() {
     let (server, dir, ssh, id, db, queue) = fixture().await;
     let input = conflicting_input(&server, dir.path(), &["a"]);
