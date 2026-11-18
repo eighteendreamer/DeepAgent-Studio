@@ -7,8 +7,9 @@ use deepagent_core::{
 use deepagent_persistence::{document_store::DocumentStore, Database};
 use deepagent_runtime::CancellationTree;
 use deepagent_ssh::{
-    FileConflictPolicy, FileTransferError, FileTransferProgress, FileTransferReceipt,
-    FileTransferRequest, SshService,
+    DirectoryConflictPolicy, DirectoryTransferProgress, DirectoryTransferReceipt,
+    DirectoryWalkLimits, FileConflictPolicy, FileTransferError, FileTransferProgress,
+    FileTransferReceipt, FileTransferRequest, SshService,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
@@ -20,11 +21,22 @@ use tokio::sync::{watch, Semaphore};
 
 const COLLECTION: &str = "remote_transfers_v1";
 const LIMIT: usize = 128;
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferKind {
+    #[default]
+    File,
+    Directory,
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TransferRequest {
     pub connection_id: String,
     pub transfer: FileTransferRequest,
+    #[serde(default)]
+    pub kind: TransferKind,
+    #[serde(default)]
+    pub directory_conflict: DirectoryConflictPolicy,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -52,7 +64,7 @@ pub struct TransferTask {
     pub total: Option<String>,
     pub revision: u64,
     pub updated_ms: i64,
-    /// Remote path represented by this single-file task; absent in old history.
+    /// Single remote file path or current relative path within a directory task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_file: Option<String>,
     /// Known file count for this task; single-file transfers are always 1.
@@ -60,6 +72,8 @@ pub struct TransferTask {
     pub total_files: Option<u32>,
     #[serde(default)]
     pub completed_files: u32,
+    #[serde(default)]
+    pub skipped_files: u32,
     /// Average payload bytes per second since Running, excluding queue wait.
     /// Kept exact across IPC and cleared when the task reaches a terminal state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -67,6 +81,8 @@ pub struct TransferTask {
     #[serde(skip)]
     started_at: Option<Instant>,
     pub receipt: Option<FileTransferReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory_receipt: Option<DirectoryTransferReceipt>,
     pub error: Option<FileTransferError>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +106,19 @@ pub trait TransferExecutor: Send + Sync {
         cancel: CancellationTree,
         progress: Arc<dyn Fn(FileTransferProgress) + Send + Sync>,
     ) -> std::result::Result<FileTransferReceipt, FileTransferError>;
+    async fn execute_directory(
+        &self,
+        _connection_id: &str,
+        _request: FileTransferRequest,
+        _conflict: DirectoryConflictPolicy,
+        _cancel: CancellationTree,
+        _progress: Arc<dyn Fn(DirectoryTransferProgress) + Send + Sync>,
+    ) -> std::result::Result<DirectoryTransferReceipt, FileTransferError> {
+        Err(FileTransferError::new(
+            "unsupported",
+            "executor does not support directory transfers",
+        ))
+    }
 }
 #[async_trait::async_trait]
 impl TransferExecutor for SshService {
@@ -103,6 +132,32 @@ impl TransferExecutor for SshService {
         self.transfer_file(id, request, cancel.token(), progress)
             .await
     }
+    async fn execute_directory(
+        &self,
+        id: &str,
+        request: FileTransferRequest,
+        conflict: DirectoryConflictPolicy,
+        cancel: CancellationTree,
+        progress: Arc<dyn Fn(DirectoryTransferProgress) + Send + Sync>,
+    ) -> std::result::Result<DirectoryTransferReceipt, FileTransferError> {
+        self.transfer_directory(
+            id,
+            request,
+            conflict,
+            DirectoryWalkLimits::default(),
+            cancel.token(),
+            progress,
+        )
+        .await
+    }
+}
+enum ExecutionReceipt {
+    File(FileTransferReceipt),
+    Directory(DirectoryTransferReceipt),
+}
+enum ProgressUpdate {
+    File(FileTransferProgress),
+    Directory(DirectoryTransferProgress),
 }
 struct State {
     document: Document,
@@ -266,6 +321,7 @@ impl TransferCoordinator {
             healthy(&state)?;
             if let Some(task) = state.document.tasks.iter().find(|t| {
                 !t.state.terminal()
+                    && t.request.kind == request.kind
                     && t.request.connection_id == request.connection_id
                     && t.request.transfer.direction == request.transfer.direction
                     && t.request.transfer.local_path == request.transfer.local_path
@@ -276,7 +332,9 @@ impl TransferCoordinator {
             if state.document.tasks.len() >= LIMIT {
                 return Err(invalid("transfer history is full; clear finished tasks"));
             }
-            let current_file = Some(request.transfer.remote_path.clone());
+            let current_file =
+                (request.kind == TransferKind::File).then(|| request.transfer.remote_path.clone());
+            let total_files = (request.kind == TransferKind::File).then_some(1);
             let task = TransferTask {
                 id: uuid::Uuid::new_v4().to_string(),
                 request,
@@ -287,11 +345,13 @@ impl TransferCoordinator {
                 revision: 1,
                 updated_ms: SystemClock.now().as_millis(),
                 current_file,
-                total_files: Some(1),
+                total_files,
                 completed_files: 0,
+                skipped_files: 0,
                 speed_bps: None,
                 started_at: None,
                 receipt: None,
+                directory_receipt: None,
                 error: None,
             };
             let before = state.document.clone();
@@ -338,6 +398,14 @@ impl TransferCoordinator {
         Ok(state.document.tasks[index].clone())
     }
     pub async fn retry(&self, id: &str, conflict: FileConflictPolicy) -> Result<TransferTask> {
+        self.retry_with_policies(id, conflict, None).await
+    }
+    pub async fn retry_with_policies(
+        &self,
+        id: &str,
+        conflict: FileConflictPolicy,
+        directory_conflict: Option<DirectoryConflictPolicy>,
+    ) -> Result<TransferTask> {
         let task = {
             let mut state = self.inner.state.lock().unwrap_or_else(|p| p.into_inner());
             healthy(&state)?;
@@ -353,6 +421,11 @@ impl TransferCoordinator {
             ) {
                 return Err(invalid("only failed/cancelled transfers can be retried"));
             }
+            if directory_conflict.is_some()
+                && state.document.tasks[index].request.kind != TransferKind::Directory
+            {
+                return Err(invalid("directory policy requires a directory task"));
+            }
             let before = state.document.clone();
             let task = &mut state.document.tasks[index];
             task.attempt = task
@@ -360,14 +433,20 @@ impl TransferCoordinator {
                 .checked_add(1)
                 .ok_or_else(|| invalid("attempt limit reached"))?;
             task.request.transfer.conflict = conflict;
+            if let Some(policy) = directory_conflict {
+                task.request.directory_conflict = policy;
+            }
             task.state = TransferState::Queued;
             task.error = None;
             task.receipt = None;
+            task.directory_receipt = None;
             task.bytes = "0".into();
             task.total = None;
             task.completed_files = 0;
-            task.current_file = Some(task.request.transfer.remote_path.clone());
-            task.total_files = Some(1);
+            task.skipped_files = 0;
+            task.current_file = (task.request.kind == TransferKind::File)
+                .then(|| task.request.transfer.remote_path.clone());
+            task.total_files = (task.request.kind == TransferKind::File).then_some(1);
             task.speed_bps = None;
             task.started_at = None;
             task.revision += 1;
@@ -433,34 +512,32 @@ impl TransferCoordinator {
             let progress_weak = weak.clone();
             let id = task.id.clone();
             let attempt = task.attempt;
-            let progress = Arc::new(move |progress: FileTransferProgress| {
+            let progress = Arc::new(move |progress: ProgressUpdate| {
                 if let Some(inner) = progress_weak.upgrade() {
-                    let mut state = inner.state.lock().unwrap_or_else(|p| p.into_inner());
-                    if let Some(t) = state
-                        .document
-                        .tasks
-                        .iter_mut()
-                        .find(|t| t.id == id && t.attempt == attempt && !t.state.terminal())
-                    {
-                        t.bytes = progress.bytes.to_string();
-                        t.total = progress.total.map(|v| v.to_string());
-                        let now = SystemClock.now().as_millis();
-                        let started = t.started_at.get_or_insert_with(Instant::now);
-                        t.speed_bps = Some(average_speed(progress.bytes, started.elapsed()));
-                        t.revision += 1;
-                        t.updated_ms = now;
-                        inner.notify();
-                    }
+                    inner.progress(&id, attempt, progress);
                 }
             });
-            let result = executor
-                .execute(
-                    &task.request.connection_id,
-                    task.request.transfer,
-                    cancel,
-                    progress,
-                )
-                .await;
+            let result = match task.request.kind {
+                TransferKind::File => executor
+                    .execute(
+                        &task.request.connection_id,
+                        task.request.transfer,
+                        cancel,
+                        Arc::new(move |p| progress(ProgressUpdate::File(p))),
+                    )
+                    .await
+                    .map(ExecutionReceipt::File),
+                TransferKind::Directory => executor
+                    .execute_directory(
+                        &task.request.connection_id,
+                        task.request.transfer,
+                        task.request.directory_conflict,
+                        cancel,
+                        Arc::new(move |p| progress(ProgressUpdate::Directory(p))),
+                    )
+                    .await
+                    .map(ExecutionReceipt::Directory),
+            };
             if let Some(inner) = weak.upgrade() {
                 let (state, receipt, error) = match result {
                     Ok(receipt) => (TransferState::Completed, Some(receipt), None),
@@ -483,6 +560,33 @@ impl TransferCoordinator {
     }
 }
 impl Inner {
+    fn progress(&self, id: &str, attempt: u32, update: ProgressUpdate) {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(task) = state
+            .document
+            .tasks
+            .iter_mut()
+            .find(|t| t.id == id && t.attempt == attempt && !t.state.terminal())
+        {
+            let (bytes, total) = match update {
+                ProgressUpdate::File(p) => (p.bytes, p.total),
+                ProgressUpdate::Directory(p) => {
+                    task.current_file = p.current_file;
+                    task.total_files = Some(p.total_files);
+                    task.completed_files = p.completed_files;
+                    task.skipped_files = p.skipped_files;
+                    (p.bytes, Some(p.total))
+                }
+            };
+            task.bytes = bytes.to_string();
+            task.total = total.map(|v| v.to_string());
+            let started = task.started_at.get_or_insert_with(Instant::now);
+            task.speed_bps = Some(average_speed(bytes, started.elapsed()));
+            task.revision += 1;
+            task.updated_ms = SystemClock.now().as_millis();
+            self.notify();
+        }
+    }
     fn notify(&self) {
         self.changes
             .send_modify(|revision| *revision = revision.wrapping_add(1));
@@ -526,7 +630,7 @@ impl Inner {
         id: &str,
         attempt: u32,
         next: TransferState,
-        receipt: Option<FileTransferReceipt>,
+        receipt: Option<ExecutionReceipt>,
         error: Option<FileTransferError>,
     ) -> Result<()> {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
@@ -546,7 +650,23 @@ impl Inner {
         let before = state.document.clone();
         let task = &mut state.document.tasks[index];
         task.state = next;
-        task.receipt = receipt;
+        match receipt {
+            Some(ExecutionReceipt::File(receipt)) => {
+                task.bytes = receipt.bytes.clone();
+                task.completed_files = u32::from(!receipt.skipped);
+                task.skipped_files = u32::from(receipt.skipped);
+                task.receipt = Some(receipt);
+            }
+            Some(ExecutionReceipt::Directory(receipt)) => {
+                task.bytes = receipt.bytes.clone();
+                task.total = Some(receipt.total_bytes.clone());
+                task.total_files = Some(receipt.total_files);
+                task.completed_files = receipt.completed_files;
+                task.skipped_files = receipt.skipped_files;
+                task.directory_receipt = Some(receipt);
+            }
+            None => {}
+        }
         task.error = error;
         task.revision += 1;
         task.updated_ms = SystemClock.now().as_millis();
@@ -554,12 +674,6 @@ impl Inner {
             task.started_at = Some(Instant::now());
             task.speed_bps = None;
             task.completed_files = 0;
-        }
-        if let Some(receipt) = &task.receipt {
-            task.bytes = receipt.bytes.clone();
-            if next == TransferState::Completed && !receipt.skipped {
-                task.completed_files = task.total_files.unwrap_or(1);
-            }
         }
         if next.terminal() {
             task.started_at = None;

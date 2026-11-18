@@ -329,7 +329,7 @@ export function RemoteSidebar({
       // Root plus loaded parents; multiple completions in one notice share refreshes.
       const visible = new Set(["/", ...[...paths].filter(path => treeRef.current[path])]);
       for (const path of visible) void loadDir(id, path);
-    });
+    }, () => Object.keys(treeRef.current));
     return observeRemoteTransfers({ next, error: error => setDirError(String(error)) });
   }, [selected?.id, selected?.status]);
 

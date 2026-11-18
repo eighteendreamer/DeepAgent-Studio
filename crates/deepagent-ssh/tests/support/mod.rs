@@ -36,6 +36,7 @@ pub struct Counts {
     pub canonical_paths: RwLock<HashMap<String, String>>,
     pub repeat_directory_page: AtomicBool,
     pub reject_directory_close: AtomicBool,
+    pub reject_publish_paths: RwLock<std::collections::HashSet<String>>,
 }
 
 struct Handler {

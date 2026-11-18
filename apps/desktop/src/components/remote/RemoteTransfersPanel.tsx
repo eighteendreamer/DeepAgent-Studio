@@ -3,12 +3,13 @@ import { useTranslation } from "react-i18next";
 import { Button } from "../shadcn/button";
 import { Input } from "../shadcn/input";
 import { Label } from "../shadcn/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../shadcn/select";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "../shadcn/dialog";
 import {
   remoteTransferSubmit, remoteTransferCancel,
-  remoteTransferRetry, remoteTransfersClear, type TransferTask, type TransferDirection,
+  remoteTransferRetry, remoteTransfersClear, type TransferTask, type TransferDirection, type TransferKind,
 } from "../../remoteTransfersApi";
 import { observeRemoteTransfers } from "../../remoteTransferObserver";
 
@@ -18,14 +19,17 @@ export function TransferTaskBody({ task, label }: { task: TransferTask; label: L
   const live = task.state === "running" || task.state === "cancelling";
   const warnings = [
     ...(task.error?.cleanupWarnings ?? []), ...(task.receipt?.cleanupWarnings ?? []),
+    ...(task.directoryReceipt?.cleanupWarnings ?? []),
   ];
   return <div className="min-w-0 flex-1 space-y-1 text-[12px]">
-    <p className="break-all">{label(task.request.transfer.direction)} · {task.request.transfer.remotePath}</p>
+    <p className="break-all">{label(task.request.transfer.direction)}{task.request.kind === "directory" ? ` · ${label("directory")}` : ""} · {task.request.transfer.remotePath}</p>
     <p className="break-all text-text-secondary">{task.request.transfer.localPath}</p>
     <p className="break-all">{label(task.state)} · {task.bytes} / {task.total ?? "?"} B · {label("averageSpeed")} {live ? task.speedBps ?? "?" : "—"} B/s · {label("attempt")} {task.attempt}</p>
     <p>{label("files")} {task.completedFiles ?? "?"} / {task.totalFiles ?? "?"}</p>
+    {task.request.kind === "directory" && <p>{label("skippedFiles")} {task.skippedFiles ?? 0}</p>}
     {task.currentFile && <p className="break-all text-text-secondary">{label("currentFile")} · {task.currentFile}</p>}
     {task.error && <p role="alert" className="break-words text-red-500">{task.error.code}: {task.error.message}</p>}
+    {task.error?.relativePath && <p className="break-all text-red-500">{label("failedFile")} · {task.error.relativePath}</p>}
     {task.receipt && <p className="break-all text-text-secondary">
       {task.receipt.skipped ? label("skipped") : task.receipt.publishStrategy} {task.receipt.sha256}
     </p>}
@@ -42,11 +46,13 @@ export function RemoteTransfersPanel({ connectionId }: { connectionId: string })
   const [error, setError] = useState("");
   const [expanded, setExpanded] = useState(false);
   const [form, setForm] = useState<TransferDirection | null>(null);
+  const [kind, setKind] = useState<TransferKind>("file");
   const [local, setLocal] = useState("");
   const [remote, setRemote] = useState("");
   const [busy, setBusy] = useState(false);
   const [replace, setReplace] = useState<string | null>(null);
-  const replacement = tasks.find(task => task.id === replace)?.request.transfer;
+  const replacementTask = tasks.find(task => task.id === replace);
+  const replacement = replacementTask?.request.transfer;
 
   useEffect(() => observeRemoteTransfers({
     next: snapshot => { setTasks(snapshot.tasks); setError(""); },
@@ -67,6 +73,7 @@ export function RemoteTransfersPanel({ connectionId }: { connectionId: string })
   }
   function openForm(direction: TransferDirection) {
     setForm(direction);
+    setKind("file");
     setLocal("");
     setRemote("");
     setError("");
@@ -74,11 +81,14 @@ export function RemoteTransfersPanel({ connectionId }: { connectionId: string })
   async function choose() {
     try {
       const dialog = await import("@tauri-apps/plugin-dialog");
-      const path = form === "download"
+      const path = kind === "directory"
+        ? await dialog.open({ multiple: false, directory: true })
+        : form === "download"
         ? await dialog.save({ defaultPath: remote.split("/").pop() || "download" })
         : await dialog.open({ multiple: false, directory: false });
       if (typeof path === "string") {
-        setLocal(path);
+        const name = remote.split("/").filter(Boolean).pop() || "download";
+        setLocal(kind === "directory" && form === "download" ? `${path.replace(/[\\/]$/, "")}/${name}` : path);
         if (!remote) setRemote("/" + path.split(/[\\/]/).pop());
       }
     } catch (e) {
@@ -102,32 +112,37 @@ export function RemoteTransfersPanel({ connectionId }: { connectionId: string })
           {["queued", "running"].includes(task.state) && <Button variant="outline" size="sm" disabled={busy}
             onClick={() => void act(() => remoteTransferCancel(task.id))}>{label("cancel")}</Button>}
           {["failed", "cancelled"].includes(task.state) && <Button variant="outline" size="sm" disabled={busy}
-            onClick={() => void act(() => remoteTransferRetry(task.id))}>{label("retry")}</Button>}
+            onClick={() => void act(() => remoteTransferRetry(task.id, "ask", task.request.kind === "directory" ? "merge" : undefined))}>{label(task.request.kind === "directory" ? "retryMerge" : "retry")}</Button>}
           {task.error?.code === "conflict" && <>
             <Button variant="outline" size="sm" disabled={busy}
-              onClick={() => void act(() => remoteTransferRetry(task.id, "skip"))}>{label("skip")}</Button>
-            <Button variant="destructive" size="sm" disabled={busy} onClick={() => setReplace(task.id)}>{label("replace")}</Button>
+              onClick={() => void act(() => remoteTransferRetry(task.id, "skip", task.request.kind === "directory" ? (task.error?.relativePath ? "merge" : "skip") : undefined))}>{label("skip")}</Button>
+            {(task.request.kind !== "directory" || task.error?.relativePath) && <Button variant="destructive" size="sm" disabled={busy} onClick={() => setReplace(task.id)}>{label("replace")}</Button>}
           </>}
         </div>
       </article>)}
     </div>}
     {form && <Dialog open onOpenChange={open => { if (!open && !busy) setForm(null); }}>
       <DialogContent className="flex max-h-[85vh] w-[min(640px,calc(100vw-32px))] flex-col overflow-hidden" aria-label={label(form)}>
-        <DialogHeader><DialogTitle>{label(form)}</DialogTitle><DialogDescription>{label("safe")}</DialogDescription></DialogHeader>
+        <DialogHeader className="flex-col gap-2"><DialogTitle>{label(form)}</DialogTitle><DialogDescription>{label(kind === "directory" ? "directorySafe" : "safe")}</DialogDescription></DialogHeader>
         <div className="space-y-3 overflow-y-auto px-5 py-4">
+          <Label htmlFor="transfer-kind">{label("kind")}</Label>
+          <Select value={kind} onValueChange={value => { setKind(value as TransferKind); setLocal(""); }}>
+            <SelectTrigger id="transfer-kind"><SelectValue placeholder={label(kind)} /></SelectTrigger>
+            <SelectContent><SelectItem value="file">{label("file")}</SelectItem><SelectItem value="directory">{label("directory")}</SelectItem></SelectContent>
+          </Select>
           <Label htmlFor="transfer-remote">{label("remotePath")}</Label>
           <Input id="transfer-remote" value={remote} onChange={e => setRemote(e.target.value)} placeholder="/home/user/file.bin" />
           <Label htmlFor="transfer-local">{label("localPath")}</Label>
           <div className="flex gap-2">
             <Input id="transfer-local" value={local} onChange={e => setLocal(e.target.value)} />
-            <Button variant="outline" onClick={() => void choose()}>{label("choose")}</Button>
+            <Button variant="outline" onClick={() => void choose()}>{label(kind === "directory" ? (form === "download" ? "chooseParent" : "chooseDirectory") : "choose")}</Button>
           </div>
           {error && <p role="alert" className="text-red-500">{error}</p>}
         </div>
         <DialogFooter>
           <Button variant="outline" disabled={busy} onClick={() => setForm(null)}>{label("close")}</Button>
           <Button disabled={busy || !local || !remote.startsWith("/")} onClick={() => void act(async () => {
-            await remoteTransferSubmit(connectionId, { direction: form, localPath: local, remotePath: remote });
+            await remoteTransferSubmit(connectionId, { direction: form, localPath: local, remotePath: remote }, { kind });
             setForm(null);
             setExpanded(true);
           })}>{label("enqueue")}</Button>
@@ -136,14 +151,14 @@ export function RemoteTransfersPanel({ connectionId }: { connectionId: string })
     </Dialog>}
     {replace && <Dialog open onOpenChange={open => { if (!open && !busy) setReplace(null); }}>
       <DialogContent>
-        <DialogHeader><DialogTitle>{label("replace")}</DialogTitle><DialogDescription>{label("replaceWarning")}</DialogDescription></DialogHeader>
+        <DialogHeader className="flex-col gap-2"><DialogTitle>{label("replace")}</DialogTitle><DialogDescription>{label(replacementTask?.request.kind === "directory" ? "replaceDirectoryFilesWarning" : "replaceWarning")}</DialogDescription></DialogHeader>
         <div className="break-all px-5 py-4 text-[12px]">
           {replacement && <>{label(replacement.direction)} · {replacement.localPath} ↔ {replacement.remotePath}</>}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => setReplace(null)}>{label("close")}</Button>
           <Button variant="destructive" disabled={busy || !replacement} onClick={() => void act(async () => {
-            await remoteTransferRetry(replace, "replace");
+            await remoteTransferRetry(replace, "replace", replacementTask?.request.kind === "directory" ? "merge" : undefined);
             setReplace(null);
           })}>{label("confirmReplace")}</Button>
         </DialogFooter>

@@ -54,6 +54,8 @@ pub struct FileTransferError {
     pub code: String,
     pub message: String,
     pub cleanup_warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relative_path: Option<String>,
 }
 impl FileTransferError {
     pub fn new(code: &str, message: &str) -> Self {
@@ -61,6 +63,7 @@ impl FileTransferError {
             code: code.into(),
             message: message.into(),
             cleanup_warnings: vec![],
+            relative_path: None,
         }
     }
 }
@@ -78,7 +81,7 @@ fn fail(code: &str) -> FileTransferError {
         },
     )
 }
-async fn bounded<T, E: std::fmt::Display>(
+pub(super) async fn bounded<T, E: std::fmt::Display>(
     context: &str,
     work: impl Future<Output = std::result::Result<T, E>>,
 ) -> Result<T> {
@@ -101,7 +104,10 @@ pub(super) async fn operation<T, E: std::fmt::Display>(
         result = bounded("transfer IO", work) => result,
     }
 }
-async fn remote_metadata(sftp: &SftpSession, path: &str) -> Result<Option<FileAttributes>> {
+pub(super) async fn remote_metadata(
+    sftp: &SftpSession,
+    path: &str,
+) -> Result<Option<FileAttributes>> {
     match tokio::time::timeout(Duration::from_secs(30), sftp.symlink_metadata(path)).await {
         Ok(Ok(meta)) => Ok(Some(meta)),
         Ok(Err(SftpError::Status(s))) if s.status_code == StatusCode::NoSuchFile => Ok(None),
@@ -191,10 +197,10 @@ impl SshService {
         let (_, sftp) = operation(&cancel, self.inner.file_session(connection_id)).await?;
         let result = match request.direction {
             FileTransferDirection::Upload => {
-                upload(&sftp, &request, &local, &cancel, &progress).await
+                upload(&sftp, &request, &local, &cancel, &progress, None).await
             }
             FileTransferDirection::Download => {
-                download(&sftp, &request, &local, &cancel, &progress).await
+                download(&sftp, &request, &local, &cancel, &progress, None).await
             }
         };
         let _ = tokio::time::timeout(Duration::from_secs(3), sftp.close()).await;
@@ -211,16 +217,20 @@ fn skipped() -> FileTransferReceipt {
     }
 }
 
-async fn upload(
+pub(super) async fn upload(
     sftp: &SftpSession,
     request: &FileTransferRequest,
     local: &PathBuf,
     cancel: &CancellationToken,
     progress: &TransferProgressCallback,
+    expected_size: Option<u64>,
 ) -> Result<FileTransferReceipt> {
     let meta = operation(cancel, tokio::fs::symlink_metadata(local)).await?;
-    if !meta.is_file() || meta.is_symlink() {
+    if !meta.is_file() || crate::directory_plan::is_link(&meta) {
         return Err(fail("invalid"));
+    }
+    if expected_size.is_some_and(|size| size != meta.len()) {
+        return Err(fail("integrity"));
     }
     let existing = remote_metadata(sftp, &request.remote_path).await?;
     if let Some(existing) = &existing {
@@ -350,20 +360,24 @@ async fn publish_remote(
     ))
 }
 
-async fn download(
+pub(super) async fn download(
     sftp: &SftpSession,
     request: &FileTransferRequest,
     local: &PathBuf,
     cancel: &CancellationToken,
     progress: &TransferProgressCallback,
+    expected_size: Option<u64>,
 ) -> Result<FileTransferReceipt> {
     let meta = remote_metadata(sftp, &request.remote_path)
         .await?
         .ok_or_else(|| fail("not_found"))?;
     let total = regular(&meta)?;
+    if expected_size.is_some_and(|size| size != total) {
+        return Err(fail("integrity"));
+    }
     match tokio::fs::symlink_metadata(local).await {
         Ok(existing) => {
-            if !existing.is_file() || existing.is_symlink() {
+            if !existing.is_file() || crate::directory_plan::is_link(&existing) {
                 return Err(fail("invalid"));
             }
             match request.conflict {

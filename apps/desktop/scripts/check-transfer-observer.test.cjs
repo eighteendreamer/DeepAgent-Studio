@@ -25,6 +25,19 @@ function observer() {
 }
 const flush = () => new Promise(setImmediate);
 const snapshot = (revision, state = 'running') => ({ revision, tasks: [{ id: 'task', attempt: 1, state, request: {connectionId: 'a', transfer: {direction:'upload', remotePath:'/file'}} }] });
+test('directory publication and partial failure invalidate the root and loaded descendant directories', () => {
+  const h = observer(); const refreshed = [];
+  const accept = h.exports.createUploadInvalidator('a', paths => refreshed.push(Array.from(paths)));
+  const task = {id:'directory',attempt:1,state:'failed',completedFiles:1,
+    error:{relativePath:'nested/bad'},request:{kind:'directory',connectionId:'a',transfer:{direction:'upload',remotePath:'/tree'}}};
+  accept({revision:'1',tasks:[task]});
+  assert.equal(refreshed.length,1);
+  assert.ok(refreshed[0].includes('/'));
+  assert.ok(refreshed[0].includes('/tree'));
+  assert.ok(refreshed[0].includes('/tree/nested'));
+  accept({revision:'2',tasks:[task]});
+  assert.equal(refreshed.length,1,'terminal attempt invalidated once');
+});
 
 test('panel and file tree share one wait, including StrictMode detach/reattach', async () => {
   const h = observer(); const received = []; const stale = [];

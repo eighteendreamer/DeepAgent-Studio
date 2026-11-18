@@ -5833,10 +5833,11 @@ async fn remote_transfer_retry(
     state: State<'_, AppState>,
     id: String,
     conflict: deepagent_ssh::FileConflictPolicy,
+    directory_conflict: Option<deepagent_ssh::DirectoryConflictPolicy>,
 ) -> Result<deepagent_app_core::file_transfer_service::TransferTask, String> {
     state
         .transfers
-        .retry(&id, conflict)
+        .retry_with_policies(&id, conflict, directory_conflict)
         .await
         .map_err(|e| e.to_string())
 }

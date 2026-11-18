@@ -224,6 +224,12 @@ impl russh_sftp::server::Handler for MemoryFiles {
         let mut files = self.files.write().unwrap();
         if files.contains_key(&newpath)
             || (newpath == "/reject-publish" && oldpath.ends_with(".part"))
+            || self
+                .counts
+                .reject_publish_paths
+                .read()
+                .unwrap()
+                .contains(&newpath)
         {
             return Err(StatusCode::Failure);
         }
@@ -238,6 +244,23 @@ impl russh_sftp::server::Handler for MemoryFiles {
             .unwrap()
             .remove(&path)
             .ok_or(StatusCode::NoSuchFile)?;
+        Ok(success(id))
+    }
+
+    async fn mkdir(
+        &mut self,
+        id: u32,
+        path: String,
+        _: FileAttributes,
+    ) -> Result<Status, Self::Error> {
+        let parent = path.rsplit_once('/').map(|p| p.0).unwrap_or("");
+        let mut directories = self.counts.directories.write().unwrap();
+        if (!parent.is_empty() && !directories.contains(parent))
+            || self.files.read().unwrap().contains_key(&path)
+            || !directories.insert(path)
+        {
+            return Err(StatusCode::Failure);
+        }
         Ok(success(id))
     }
 

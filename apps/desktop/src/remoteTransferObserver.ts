@@ -52,19 +52,28 @@ export function createTransferObserver(read: typeof remoteTransfersWatch) {
 export const observeRemoteTransfers = createTransferObserver(remoteTransfersWatch);
 
 /** Invalidate published parents, bounded by the current queue, once per attempt. */
-export function createUploadInvalidator(connectionId: string, refresh: (paths: Set<string>) => void) {
+export function createUploadInvalidator(connectionId: string, refresh: (paths: Set<string>) => void,
+  loadedPaths: () => Iterable<string> = () => []) {
   let seen = new Set<string>();
   return (snapshot: TransferSnapshot) => {
     const next = new Set<string>();
     const paths = new Set<string>();
     for (const task of snapshot.tasks) {
-      if (task.request.connectionId !== connectionId || task.request.transfer.direction !== "upload"
-        || task.state !== "completed" || !task.receipt || task.receipt.skipped) continue;
+      if (task.request.connectionId !== connectionId || task.request.transfer.direction !== "upload") continue;
+      const directory = task.request.kind === "directory";
+      if (directory ? !["completed", "failed", "cancelled"].includes(task.state)
+        : task.state !== "completed" || !task.receipt || task.receipt.skipped) continue;
       const key = `${task.id}:${task.attempt}`;
       next.add(key);
       if (!seen.has(key)) {
         const path = task.request.transfer.remotePath;
         paths.add(path.slice(0, path.lastIndexOf("/")) || "/");
+        if (directory) {
+          paths.add(path);
+          for (const loaded of loadedPaths()) if (loaded.startsWith(`${path}/`)) paths.add(loaded);
+          const relative = task.error?.relativePath;
+          if (relative?.includes("/")) paths.add(`${path}/${relative.slice(0, relative.lastIndexOf("/"))}`);
+        }
       }
     }
     seen = next;

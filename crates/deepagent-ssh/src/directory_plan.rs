@@ -111,7 +111,7 @@ fn path_text(path: &Path) -> Result<&str, FileTransferError> {
         .ok_or_else(|| failure("invalid", "local path is not representable as UTF-8"))
 }
 
-fn is_link(metadata: &Metadata) -> bool {
+pub(super) fn is_link(metadata: &Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;

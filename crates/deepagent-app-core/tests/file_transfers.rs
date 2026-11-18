@@ -32,12 +32,14 @@ impl TransferExecutor for Executor {
             bytes: 3,
             total: Some(10),
         });
-        tokio::select! {_ = self.release.notified()=>Ok(FileTransferReceipt{bytes:if self.skipped { "0" } else { "10" }.into(),sha256:"fixture".into(),skipped:self.skipped,publish_strategy:"created".into(),cleanup_warnings:vec![]}),_ = cancel.cancelled()=>Err(FileTransferError{code:"cancelled".into(),message:"cancelled after stream cleanup".into(),cleanup_warnings:vec![]})}
+        tokio::select! {_ = self.release.notified()=>Ok(FileTransferReceipt{bytes:if self.skipped { "0" } else { "10" }.into(),sha256:"fixture".into(),skipped:self.skipped,publish_strategy:"created".into(),cleanup_warnings:vec![]}),_ = cancel.cancelled()=>Err(FileTransferError{code:"cancelled".into(),message:"cancelled after stream cleanup".into(),cleanup_warnings:vec![],relative_path:None})}
     }
 }
 fn request(id: &str, name: &str) -> TransferRequest {
     TransferRequest {
         connection_id: id.into(),
+        kind: Default::default(),
+        directory_conflict: Default::default(),
         transfer: FileTransferRequest {
             direction: FileTransferDirection::Upload,
             local_path: std::env::temp_dir().join(name).to_string_lossy().into(),
@@ -504,6 +506,32 @@ async fn cleanup_holds_connection_lane_and_cross_connection_work_can_continue() 
 mod support;
 
 #[tokio::test]
+async fn rejected_directory_retry_policy_cannot_mutate_a_file_attempt() {
+    let queue = TransferCoordinator::new(
+        Arc::new(Database::open_in_memory().unwrap()),
+        Arc::new(Executor::default()),
+    )
+    .unwrap();
+    let task = queue.submit(request("a", "invalid-policy")).await.unwrap();
+    state(&queue, &task.id, TransferState::Running).await;
+    queue.cancel(&task.id).await.unwrap();
+    state(&queue, &task.id, TransferState::Cancelled).await;
+    let before = serde_json::to_value(queue.snapshot().await.unwrap()).unwrap();
+    assert!(queue
+        .retry_with_policies(
+            &task.id,
+            FileConflictPolicy::Replace,
+            Some(deepagent_ssh::DirectoryConflictPolicy::Merge)
+        )
+        .await
+        .is_err());
+    assert_eq!(
+        serde_json::to_value(queue.snapshot().await.unwrap()).unwrap(),
+        before
+    );
+}
+
+#[tokio::test]
 async fn persisted_queue_executes_real_loopback_sftp_upload_and_download_without_reauth() {
     let server = support::SshServer::start("127.0.0.1").await;
     let dir = tempfile::tempdir().unwrap();
@@ -520,6 +548,8 @@ async fn persisted_queue_executes_real_loopback_sftp_upload_and_download_without
     let upload = service
         .submit(TransferRequest {
             connection_id: connection.id.clone(),
+            kind: Default::default(),
+            directory_conflict: Default::default(),
             transfer: FileTransferRequest {
                 direction: FileTransferDirection::Upload,
                 local_path: input.to_string_lossy().into(),
@@ -533,6 +563,8 @@ async fn persisted_queue_executes_real_loopback_sftp_upload_and_download_without
     let download = service
         .submit(TransferRequest {
             connection_id: connection.id.clone(),
+            kind: Default::default(),
+            directory_conflict: Default::default(),
             transfer: FileTransferRequest {
                 direction: FileTransferDirection::Download,
                 local_path: output.to_string_lossy().into(),
