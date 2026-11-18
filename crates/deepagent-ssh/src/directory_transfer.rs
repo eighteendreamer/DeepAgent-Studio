@@ -4,8 +4,8 @@ use crate::file_transfer::{
     bounded, download, operation, remote_metadata, upload, TransferProgressCallback,
 };
 use crate::{
-    DirectoryTransferEntry, DirectoryTransferPlan, DirectoryWalkLimits, FileTransferDirection,
-    FileTransferError, FileTransferRequest, RemoteFileKind, SshService,
+    DirectoryTransferEntry, DirectoryTransferPlan, DirectoryWalkLimits, FileConflictPolicy,
+    FileTransferDirection, FileTransferError, FileTransferRequest, RemoteFileKind, SshService,
 };
 use russh_sftp::client::SftpSession;
 use serde::{Deserialize, Serialize};
@@ -24,6 +24,40 @@ pub enum DirectoryConflictPolicy {
     Skip,
     Merge,
     KeepBoth,
+}
+
+/// A file awaiting an explicit choice inside the current directory attempt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DirectoryFileConflict {
+    pub relative_path: String,
+    pub destination_path: String,
+    pub direction: FileTransferDirection,
+    pub source_size: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FileConflictDecision {
+    pub policy: FileConflictPolicy,
+    pub apply_to_remaining_files: bool,
+}
+
+#[async_trait::async_trait]
+pub trait DirectoryFileConflictResolver: Send + Sync {
+    async fn resolve(
+        &self,
+        conflict: DirectoryFileConflict,
+    ) -> Result<FileConflictDecision, FileTransferError>;
+}
+
+/// Host interaction is optional; callers without a resolver retain fail-on-Ask behavior.
+pub struct DirectoryTransferOptions {
+    pub conflict: DirectoryConflictPolicy,
+    pub limits: DirectoryWalkLimits,
+    pub cancel: CancellationToken,
+    pub progress: Arc<dyn Fn(DirectoryTransferProgress) + Send + Sync>,
+    pub file_conflicts: Option<Arc<dyn DirectoryFileConflictResolver>>,
 }
 
 #[derive(Debug, Clone)]
@@ -56,12 +90,39 @@ impl SshService {
     pub async fn transfer_directory(
         &self,
         connection_id: &str,
-        mut request: FileTransferRequest,
+        request: FileTransferRequest,
         conflict: DirectoryConflictPolicy,
         limits: DirectoryWalkLimits,
         cancel: CancellationToken,
         progress: Arc<dyn Fn(DirectoryTransferProgress) + Send + Sync>,
     ) -> Result<DirectoryTransferReceipt, FileTransferError> {
+        self.transfer_directory_with_options(
+            connection_id,
+            request,
+            DirectoryTransferOptions {
+                conflict,
+                limits,
+                cancel,
+                progress,
+                file_conflicts: None,
+            },
+        )
+        .await
+    }
+
+    pub async fn transfer_directory_with_options(
+        &self,
+        connection_id: &str,
+        mut request: FileTransferRequest,
+        options: DirectoryTransferOptions,
+    ) -> Result<DirectoryTransferReceipt, FileTransferError> {
+        let DirectoryTransferOptions {
+            conflict,
+            limits,
+            cancel,
+            progress,
+            file_conflicts,
+        } = options;
         // Never trust a caller-provided plan or reuse a prior attempt's snapshot.
         if conflict == DirectoryConflictPolicy::KeepBoth
             && request.direction == FileTransferDirection::Download
@@ -112,6 +173,8 @@ impl SshService {
                 created_directories: 0,
                 renamed_files: 0,
                 warnings: Vec::new(),
+                file_conflict: request.conflict,
+                file_conflicts,
             }
             .run()
             .await
@@ -221,6 +284,8 @@ struct Execution<'a> {
     created_directories: u32,
     renamed_files: u32,
     warnings: Vec<String>,
+    file_conflict: FileConflictPolicy,
+    file_conflicts: Option<Arc<dyn DirectoryFileConflictResolver>>,
 }
 
 impl Execution<'_> {
@@ -256,7 +321,7 @@ impl Execution<'_> {
         for entry in &self.plan.entries {
             self.progress.current_file = Some(entry.relative_path.clone());
             self.emit();
-            let result = self.entry(entry, &root).await;
+            let result = self.resolve_entry(entry, &root).await;
             if let Err(mut error) = result {
                 error.relative_path = Some(entry.relative_path.clone());
                 error.cleanup_warnings.extend(self.warnings);
@@ -385,10 +450,58 @@ impl Execution<'_> {
         Ok(false)
     }
 
+    async fn resolve_entry(
+        &mut self,
+        entry: &DirectoryTransferEntry,
+        root: &Path,
+    ) -> Result<(), FileTransferError> {
+        let result = self.entry(entry, root, self.file_conflict).await;
+        let Err(error) = result else { return result };
+        // A publication/cleanup failure is never an invitation to replay work.
+        if error.code != "conflict"
+            || !error.cleanup_warnings.is_empty()
+            || entry.kind != RemoteFileKind::File
+            || self.file_conflict != FileConflictPolicy::Ask
+        {
+            return Err(error);
+        }
+        let Some(resolver) = &self.file_conflicts else {
+            return Err(error);
+        };
+        let (local, remote) = self.paths(&entry.relative_path);
+        let conflict = DirectoryFileConflict {
+            relative_path: entry.relative_path.clone(),
+            destination_path: match self.request.direction {
+                FileTransferDirection::Upload => remote,
+                FileTransferDirection::Download => local.to_string_lossy().into_owned(),
+            },
+            direction: self.request.direction,
+            source_size: entry.size_bytes.clone().unwrap_or_default(),
+        };
+        let decision = tokio::select! {
+            biased;
+            _ = self.cancel.cancelled() => return Err(failure("cancelled", "file decision cancelled")),
+            decision = resolver.resolve(conflict) => decision?,
+        };
+        if decision.policy == FileConflictPolicy::Ask {
+            return Err(failure(
+                "invalid",
+                "a file decision must select skip, keep both or replace",
+            ));
+        }
+        if decision.apply_to_remaining_files {
+            self.file_conflict = decision.policy;
+        }
+        // Recheck source, ancestors and destination after the human wait. Only this
+        // entry is retried; previously published entries are never replayed.
+        self.entry(entry, root, decision.policy).await
+    }
+
     async fn entry(
         &mut self,
         entry: &DirectoryTransferEntry,
         root: &Path,
+        policy: FileConflictPolicy,
     ) -> Result<(), FileTransferError> {
         let (local, remote) = self.paths(&entry.relative_path);
         local_chain(root, local.parent().unwrap(), self.cancel).await?;
@@ -445,7 +558,7 @@ impl Execution<'_> {
             direction: self.request.direction,
             local_path: local.to_str().unwrap().into(),
             remote_path: remote,
-            conflict: self.request.conflict,
+            conflict: policy,
         };
         let base = self.progress.clone();
         let notify = self.notify.clone();

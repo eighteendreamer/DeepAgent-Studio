@@ -4,6 +4,27 @@ export type TransferDirection = "upload" | "download";
 export type ConflictPolicy = "ask" | "skip" | "replace" | "keep_both";
 export type TransferKind = "file" | "directory";
 export type DirectoryConflictPolicy = "ask" | "skip" | "merge" | "keep_both";
+export interface FileConflictDecision {
+  policy: Exclude<ConflictPolicy, "ask">;
+  applyToRemainingFiles: boolean;
+}
+export interface PendingFileConflict {
+  version: number;
+  id: string;
+  attempt: number;
+  conflict: {
+    relativePath: string;
+    destinationPath: string;
+    direction: TransferDirection;
+    sourceSize: string;
+  };
+}
+export interface FileConflictResponse {
+  version: number;
+  id: string;
+  attempt: number;
+  decision: FileConflictDecision;
+}
 export interface TransferOptions {
   kind?: TransferKind;
   directoryConflict?: DirectoryConflictPolicy;
@@ -28,6 +49,8 @@ export interface TransferTask {
   speedBps?: string | null;
   revision: number;
   updatedMs: number;
+  pendingFileConflict?: PendingFileConflict | null;
+  lastFileConflict?: { pending: PendingFileConflict; decision: FileConflictDecision } | null;
   error: { code: string; message: string; cleanupWarnings: string[]; relativePath?: string; destinationPath?: string } | null;
   directoryReceipt?: {
     bytes: string; totalBytes: string; totalFiles: number; completedFiles: number;
@@ -73,6 +96,11 @@ export async function remoteTransferCancel(id: string): Promise<TransferTask> {
   const invoke = getInvoke();
   if (!invoke) throw Error("transfers require the desktop app");
   return invoke("remote_transfer_cancel", { id });
+}
+export async function remoteTransferResolveFileConflict(id: string, response: FileConflictResponse): Promise<TransferTask> {
+  const invoke = getInvoke();
+  if (!invoke) throw Error("transfers require the desktop app");
+  return invoke("remote_transfer_resolve_file_conflict", { id, response });
 }
 export async function remoteTransferRetry(id: string, conflict: ConflictPolicy = "ask", directoryConflict?: DirectoryConflictPolicy): Promise<TransferTask> {
   const invoke = getInvoke();

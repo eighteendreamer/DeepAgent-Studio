@@ -2,7 +2,7 @@
 mod support;
 
 use deepagent_app_core::file_transfer_service::{
-    TransferCoordinator, TransferRequest, TransferState,
+    FileConflictResponse, TransferCoordinator, TransferRequest, TransferState, TransferTask,
 };
 use deepagent_persistence::Database;
 use deepagent_ssh::{FileConflictPolicy, SshService};
@@ -54,6 +54,529 @@ async fn fixture() -> (
     let db = Arc::new(Database::open(dir.path().join("queue.sqlite")).unwrap());
     let queue = TransferCoordinator::new(db.clone(), ssh.clone()).unwrap();
     (server, dir, ssh, id, db, queue)
+}
+
+async fn waiting(queue: &TransferCoordinator, id: &str) -> TransferTask {
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        let mut cursor = None;
+        loop {
+            let snapshot = queue
+                .watch(cursor.as_deref(), std::time::Duration::from_secs(1))
+                .await
+                .unwrap();
+            let task = snapshot.tasks.iter().find(|task| task.id == id).unwrap();
+            assert!(!task.state.terminal(), "conflict should wait, got {task:?}");
+            if task.pending_file_conflict.is_some() {
+                return task.clone();
+            }
+            cursor = Some(snapshot.revision);
+        }
+    })
+    .await
+    .expect("a pending file conflict must become observable")
+}
+
+fn response(task: &TransferTask, policy: &str, remaining: bool) -> FileConflictResponse {
+    let pending = task.pending_file_conflict.as_ref().unwrap();
+    serde_json::from_value(serde_json::json!({
+        "version":pending.version,"id":pending.id,"attempt":pending.attempt,
+        "decision":{"policy":policy,"applyToRemainingFiles":remaining}
+    }))
+    .unwrap()
+}
+
+fn conflicting_input(
+    server: &support::SshServer,
+    dir: &Path,
+    names: &[&str],
+) -> std::path::PathBuf {
+    let input = dir.join("input");
+    std::fs::create_dir(&input).unwrap();
+    server
+        .counts
+        .directories
+        .write()
+        .unwrap()
+        .insert("/tree".into());
+    for name in names {
+        std::fs::write(input.join(name), format!("new-{name}")).unwrap();
+        if *name != "a" {
+            server
+                .counts
+                .files
+                .write()
+                .unwrap()
+                .insert(format!("/tree/{name}"), format!("old-{name}").into_bytes());
+        }
+    }
+    input
+}
+
+#[tokio::test]
+async fn individual_skip_keep_both_and_replace_continue_without_replaying_published_files() {
+    let (server, dir, ssh, id, db, queue) = fixture().await;
+    let input = conflicting_input(&server, dir.path(), &["a", "b", "c", "d"]);
+    let task = queue
+        .submit(request(&id, &input, "upload", "merge"))
+        .await
+        .unwrap();
+    for (name, policy) in [("b", "skip"), ("c", "keep_both"), ("d", "replace")] {
+        let pending = waiting(&queue, &task.id).await;
+        let conflict = pending.pending_file_conflict.as_ref().unwrap();
+        assert_eq!(conflict.conflict.relative_path, name);
+        assert_eq!(conflict.conflict.source_size, "5");
+        assert_eq!(conflict.attempt, 1);
+        assert_eq!(pending.speed_bps, None);
+        if name == "b" {
+            server
+                .counts
+                .files
+                .write()
+                .unwrap()
+                .insert("/tree/a".into(), b"changed-after-publication".to_vec());
+        }
+        queue
+            .resolve_file_conflict(&task.id, response(&pending, policy, false))
+            .await
+            .unwrap();
+    }
+    let done = terminal(&queue, &task.id).await;
+    assert_eq!(done["state"], "completed");
+    assert_eq!(done["attempt"], 1);
+    assert_eq!(done["completedFiles"], 3);
+    assert_eq!(done["skippedFiles"], 1);
+    assert_eq!(done["directoryReceipt"]["renamedFiles"], 1);
+    let files = server.counts.files.read().unwrap().clone();
+    assert_eq!(files["/tree/a"], b"changed-after-publication");
+    assert!(!files.contains_key("/tree/a (1)"));
+    assert_eq!(files["/tree/b"], b"old-b");
+    assert_eq!(files["/tree/c"], b"old-c");
+    assert_eq!(files["/tree/c (1)"], b"new-c");
+    assert_eq!(files["/tree/d"], b"new-d");
+    assert!(files.keys().all(|path| !path.contains(".deepagent-")));
+    drop(queue);
+    let reopened = TransferCoordinator::new(db, ssh).unwrap();
+    let restored = reopened.snapshot().await.unwrap().remove(0);
+    assert!(restored.pending_file_conflict.is_none());
+    let audit = restored.last_file_conflict.unwrap();
+    assert_eq!(audit.pending.conflict.relative_path, "d");
+    assert_eq!(audit.decision.policy, FileConflictPolicy::Replace);
+    assert!(!audit.decision.apply_to_remaining_files);
+}
+
+#[tokio::test]
+async fn remaining_file_policy_only_applies_forward_in_this_attempt() {
+    let (server, dir, _ssh, id, _db, queue) = fixture().await;
+    let input = conflicting_input(&server, dir.path(), &["a", "b", "c", "d"]);
+    std::fs::write(input.join("e"), b"fresh").unwrap();
+    let task = queue
+        .submit(request(&id, &input, "upload", "merge"))
+        .await
+        .unwrap();
+    let pending = waiting(&queue, &task.id).await;
+    queue
+        .resolve_file_conflict(&task.id, response(&pending, "keep_both", true))
+        .await
+        .unwrap();
+    let done = terminal(&queue, &task.id).await;
+    assert_eq!(done["state"], "completed");
+    assert_eq!(done["attempt"], 1);
+    assert_eq!(done["completedFiles"], 5);
+    assert_eq!(done["directoryReceipt"]["renamedFiles"], 3);
+    assert_eq!(done["request"]["transfer"]["conflict"], "ask");
+    assert_eq!(
+        done["lastFileConflict"]["pending"]["conflict"]["relativePath"],
+        "b"
+    );
+    assert_eq!(
+        done["lastFileConflict"]["decision"]["applyToRemainingFiles"],
+        true
+    );
+    let files = server.counts.files.read().unwrap();
+    for name in ["b", "c", "d"] {
+        assert_eq!(
+            files[&format!("/tree/{name}")],
+            format!("old-{name}").as_bytes()
+        );
+        assert_eq!(
+            files[&format!("/tree/{name} (1)")],
+            format!("new-{name}").as_bytes()
+        );
+    }
+    assert_eq!(files["/tree/e"], b"fresh");
+    assert!(!files.contains_key("/tree/a (1)"));
+}
+
+#[tokio::test]
+async fn skip_and_replace_can_each_apply_to_the_remaining_file_conflicts() {
+    for policy in ["skip", "replace"] {
+        let (server, dir, _ssh, id, _db, queue) = fixture().await;
+        let input = conflicting_input(&server, dir.path(), &["a", "b", "c", "d"]);
+        let task = queue
+            .submit(request(&id, &input, "upload", "merge"))
+            .await
+            .unwrap();
+        let pending = waiting(&queue, &task.id).await;
+        queue
+            .resolve_file_conflict(&task.id, response(&pending, policy, true))
+            .await
+            .unwrap();
+        let done = terminal(&queue, &task.id).await;
+        assert_eq!(done["state"], "completed");
+        assert_eq!(done["completedFiles"], if policy == "skip" { 1 } else { 4 });
+        assert_eq!(done["skippedFiles"], if policy == "skip" { 3 } else { 0 });
+        assert_eq!(done["attempt"], 1);
+        let files = server.counts.files.read().unwrap();
+        for name in ["b", "c", "d"] {
+            assert_eq!(
+                files[&format!("/tree/{name}")],
+                format!("{}-{name}", if policy == "skip" { "old" } else { "new" }).as_bytes()
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn pending_decision_must_be_saved_before_it_is_advertised_or_answered() {
+    let (server, dir, _ssh, id, db, queue) = fixture().await;
+    let input = conflicting_input(&server, dir.path(), &["a", "b"]);
+    db.with_conn(|conn| {
+        conn.execute_batch("CREATE TRIGGER reject_pending BEFORE UPDATE ON documents WHEN NEW.collection='remote_transfers_v1' AND NEW.body LIKE '%pendingFileConflict%' BEGIN SELECT RAISE(FAIL,'fixture pending persistence failure'); END;").unwrap();
+        Ok(())
+    }).unwrap();
+    let task = queue
+        .submit(request(&id, &input, "upload", "merge"))
+        .await
+        .unwrap();
+    let failed = terminal(&queue, &task.id).await;
+    assert_eq!(failed["state"], "failed");
+    assert_eq!(failed["error"]["code"], "persistence");
+    assert!(failed["pendingFileConflict"].is_null());
+    assert!(failed["lastFileConflict"].is_null());
+    assert_eq!(failed["completedFiles"], 1);
+    assert_eq!(server.counts.files.read().unwrap()["/tree/b"], b"old-b");
+}
+
+#[tokio::test]
+async fn stale_duplicate_cancelled_and_wrong_scope_responses_cannot_resume_a_file() {
+    let (server, dir, _ssh, id, _db, queue) = fixture().await;
+    let input = conflicting_input(&server, dir.path(), &["a", "b", "c"]);
+    let task = queue
+        .submit(request(&id, &input, "upload", "merge"))
+        .await
+        .unwrap();
+    let pending = waiting(&queue, &task.id).await;
+    let first = response(&pending, "skip", false);
+    for invalid in [
+        FileConflictResponse {
+            version: 2,
+            ..first.clone()
+        },
+        FileConflictResponse {
+            attempt: 2,
+            ..first.clone()
+        },
+        FileConflictResponse {
+            id: "other-nonce".into(),
+            ..first.clone()
+        },
+        response(&pending, "ask", false),
+    ] {
+        assert!(queue
+            .resolve_file_conflict(&task.id, invalid)
+            .await
+            .is_err());
+    }
+    assert!(queue
+        .resolve_file_conflict("another-task", first.clone())
+        .await
+        .is_err());
+    queue
+        .resolve_file_conflict(&task.id, first.clone())
+        .await
+        .unwrap();
+    let second = waiting(&queue, &task.id).await;
+    assert_eq!(
+        second
+            .pending_file_conflict
+            .as_ref()
+            .unwrap()
+            .conflict
+            .relative_path,
+        "c"
+    );
+    assert!(queue
+        .resolve_file_conflict(&task.id, first.clone())
+        .await
+        .is_err());
+    let second_response = response(&second, "replace", true);
+    queue.cancel(&task.id).await.unwrap();
+    assert!(queue
+        .resolve_file_conflict(&task.id, second_response)
+        .await
+        .is_err());
+    let cancelled = terminal(&queue, &task.id).await;
+    assert_eq!(cancelled["state"], "cancelled");
+    assert!(cancelled["pendingFileConflict"].is_null());
+    queue
+        .retry_with_policies(&task.id, FileConflictPolicy::Ask, None)
+        .await
+        .unwrap();
+    let retried = waiting(&queue, &task.id).await;
+    assert_eq!(retried.attempt, 2);
+    assert!(retried.last_file_conflict.is_none());
+    assert_eq!(
+        retried
+            .pending_file_conflict
+            .as_ref()
+            .unwrap()
+            .conflict
+            .relative_path,
+        "a"
+    );
+    assert!(queue.resolve_file_conflict(&task.id, first).await.is_err());
+    queue.cancel(&task.id).await.unwrap();
+    terminal(&queue, &task.id).await;
+    assert_eq!(server.counts.files.read().unwrap()["/tree/c"], b"old-c");
+}
+
+#[tokio::test]
+async fn decision_persistence_failure_keeps_the_file_waiting_and_preserves_its_target() {
+    let (server, dir, _ssh, id, db, queue) = fixture().await;
+    let input = conflicting_input(&server, dir.path(), &["a", "b"]);
+    let task = queue
+        .submit(request(&id, &input, "upload", "merge"))
+        .await
+        .unwrap();
+    let pending = waiting(&queue, &task.id).await;
+    let answer = response(&pending, "replace", false);
+    db.with_conn(|conn| {
+        conn.execute_batch("CREATE TRIGGER reject_decision BEFORE UPDATE ON documents WHEN NEW.collection='remote_transfers_v1' BEGIN SELECT RAISE(FAIL,'fixture decision persistence failure'); END;").unwrap();
+        Ok(())
+    }).unwrap();
+    assert!(queue
+        .resolve_file_conflict(&task.id, answer.clone())
+        .await
+        .is_err());
+    let still_waiting = queue.snapshot().await.unwrap().remove(0);
+    assert_eq!(still_waiting.pending_file_conflict.unwrap().id, answer.id);
+    assert!(still_waiting.last_file_conflict.is_none());
+    assert_eq!(server.counts.files.read().unwrap()["/tree/b"], b"old-b");
+    db.with_conn(|conn| {
+        conn.execute_batch("DROP TRIGGER reject_decision").unwrap();
+        Ok(())
+    })
+    .unwrap();
+    queue.resolve_file_conflict(&task.id, answer).await.unwrap();
+    assert_eq!(terminal(&queue, &task.id).await["state"], "completed");
+    assert_eq!(server.counts.files.read().unwrap()["/tree/b"], b"new-b");
+}
+
+#[tokio::test]
+async fn restart_invalidates_a_durable_pending_file_decision_without_network_replay() {
+    let (server, dir, ssh, id, db, queue) = fixture().await;
+    let input = conflicting_input(&server, dir.path(), &["a", "b"]);
+    let task = queue
+        .submit(request(&id, &input, "upload", "merge"))
+        .await
+        .unwrap();
+    let pending = waiting(&queue, &task.id).await;
+    let old = response(&pending, "replace", true);
+    let durable = deepagent_persistence::document_store::DocumentStore::new(&db)
+        .get("remote_transfers_v1", "queue")
+        .unwrap()
+        .unwrap();
+    assert!(durable.body.contains(&old.id));
+    let before = server.counts.files.read().unwrap().clone();
+    drop(queue);
+    let reopened = TransferCoordinator::new(db, ssh).unwrap();
+    let restored = reopened.snapshot().await.unwrap().remove(0);
+    assert_eq!(restored.state, TransferState::Failed);
+    assert_eq!(restored.error.unwrap().code, "interrupted");
+    assert!(restored.pending_file_conflict.is_none());
+    assert!(reopened.resolve_file_conflict(&task.id, old).await.is_err());
+    assert_eq!(*server.counts.files.read().unwrap(), before);
+}
+
+#[tokio::test]
+async fn source_and_target_are_revalidated_after_waiting_for_a_file_decision() {
+    for change_source in [true, false] {
+        let (server, dir, _ssh, id, _db, queue) = fixture().await;
+        let input = conflicting_input(&server, dir.path(), &["a", "b"]);
+        let task = queue
+            .submit(request(&id, &input, "upload", "merge"))
+            .await
+            .unwrap();
+        let pending = waiting(&queue, &task.id).await;
+        if change_source {
+            std::fs::write(input.join("b"), b"different length after asking").unwrap();
+        } else {
+            server.counts.files.write().unwrap().remove("/tree/b");
+            server
+                .counts
+                .directories
+                .write()
+                .unwrap()
+                .insert("/tree/b".into());
+        }
+        queue
+            .resolve_file_conflict(&task.id, response(&pending, "replace", false))
+            .await
+            .unwrap();
+        let failed = terminal(&queue, &task.id).await;
+        assert_eq!(failed["state"], "failed");
+        assert_eq!(
+            failed["error"]["code"],
+            if change_source {
+                "integrity"
+            } else {
+                "invalid"
+            }
+        );
+        assert_eq!(failed["error"]["relativePath"], "b");
+        assert!(failed["pendingFileConflict"].is_null());
+        let files = server.counts.files.read().unwrap();
+        assert_eq!(files["/tree/a"], b"new-a");
+        if change_source {
+            assert_eq!(files["/tree/b"], b"old-b");
+        } else {
+            assert!(!files.contains_key("/tree/b"));
+            assert!(server
+                .counts
+                .directories
+                .read()
+                .unwrap()
+                .contains("/tree/b"));
+        }
+        assert!(files.keys().all(|path| !path.contains(".deepagent-")));
+    }
+}
+
+#[tokio::test]
+async fn download_conflicts_resume_only_the_current_file_and_preserve_originals() {
+    let (server, dir, _ssh, id, _db, queue) = fixture().await;
+    server
+        .counts
+        .directories
+        .write()
+        .unwrap()
+        .insert("/tree".into());
+    server.counts.files.write().unwrap().extend([
+        ("/tree/a".into(), b"remote-a".to_vec()),
+        ("/tree/b".into(), b"remote-b".to_vec()),
+    ]);
+    let output = dir.path().join("output");
+    std::fs::create_dir(&output).unwrap();
+    std::fs::write(output.join("b"), b"local-original").unwrap();
+    let task = queue
+        .submit(request(&id, &output, "download", "merge"))
+        .await
+        .unwrap();
+    let pending = waiting(&queue, &task.id).await;
+    assert_eq!(pending.completed_files, 1);
+    assert_eq!(
+        pending
+            .pending_file_conflict
+            .as_ref()
+            .unwrap()
+            .conflict
+            .destination_path,
+        output.canonicalize().unwrap().join("b").to_str().unwrap()
+    );
+    queue
+        .resolve_file_conflict(&task.id, response(&pending, "keep_both", false))
+        .await
+        .unwrap();
+    let done = terminal(&queue, &task.id).await;
+    assert_eq!(done["state"], "completed");
+    assert_eq!(done["attempt"], 1);
+    assert_eq!(std::fs::read(output.join("a")).unwrap(), b"remote-a");
+    assert!(!output.join("a (1)").exists());
+    assert_eq!(std::fs::read(output.join("b")).unwrap(), b"local-original");
+    assert_eq!(std::fs::read(output.join("b (1)")).unwrap(), b"remote-b");
+}
+
+#[tokio::test]
+async fn cancellation_of_a_file_decision_releases_the_existing_connection_lane() {
+    let (server, dir, _ssh, id, _db, queue) = fixture().await;
+    let input = conflicting_input(&server, dir.path(), &["a", "b"]);
+    let first = queue
+        .submit(request(&id, &input, "upload", "merge"))
+        .await
+        .unwrap();
+    waiting(&queue, &first.id).await;
+    let mut next = request(&id, &input, "upload", "merge");
+    next.transfer.remote_path = "/second".into();
+    let second = queue.submit(next).await.unwrap();
+    assert_eq!(second.state, TransferState::Queued);
+    queue.cancel(&first.id).await.unwrap();
+    assert_eq!(terminal(&queue, &first.id).await["state"], "cancelled");
+    assert_eq!(terminal(&queue, &second.id).await["state"], "completed");
+    assert_eq!(server.counts.files.read().unwrap()["/tree/b"], b"old-b");
+    assert_eq!(server.counts.files.read().unwrap()["/second/b"], b"new-b");
+}
+
+#[tokio::test]
+async fn directory_file_conflicts_wait_in_the_current_attempt_without_replaying_published_files() {
+    let (server, dir, _ssh, id, _db, queue) = fixture().await;
+    let input = dir.path().join("input");
+    std::fs::create_dir(&input).unwrap();
+    std::fs::write(input.join("a.txt"), b"first").unwrap();
+    std::fs::write(input.join("b.txt"), b"second").unwrap();
+    server
+        .counts
+        .directories
+        .write()
+        .unwrap()
+        .insert("/tree".into());
+    server
+        .counts
+        .files
+        .write()
+        .unwrap()
+        .insert("/tree/b.txt".into(), b"original".to_vec());
+    let task = queue
+        .submit(request(&id, &input, "upload", "merge"))
+        .await
+        .unwrap();
+    let snapshot = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        let mut cursor = None;
+        loop {
+            let snapshot = queue
+                .watch(cursor.as_deref(), std::time::Duration::from_secs(1))
+                .await
+                .unwrap();
+            let current = snapshot
+                .tasks
+                .iter()
+                .find(|entry| entry.id == task.id)
+                .unwrap();
+            let value = serde_json::to_value(current).unwrap();
+            if current.state.terminal() || !value["pendingFileConflict"].is_null() {
+                break value;
+            }
+            cursor = Some(snapshot.revision);
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        snapshot["state"], "running",
+        "a file conflict must wait for its own decision in the same attempt"
+    );
+    assert_eq!(snapshot["attempt"], 1);
+    assert_eq!(snapshot["completedFiles"], 1);
+    assert_eq!(
+        snapshot["pendingFileConflict"]["conflict"]["relativePath"],
+        "b.txt"
+    );
+    assert_eq!(server.counts.files.read().unwrap()["/tree/a.txt"], b"first");
+    assert_eq!(
+        server.counts.files.read().unwrap()["/tree/b.txt"],
+        b"original"
+    );
+    queue.cancel(&task.id).await.unwrap();
+    assert_eq!(terminal(&queue, &task.id).await["state"], "cancelled");
 }
 
 #[tokio::test]

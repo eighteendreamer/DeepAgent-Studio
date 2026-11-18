@@ -7,6 +7,78 @@ const ts = require('typescript');
 const React = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
 const root = path.resolve(__dirname, '..');
+test('file conflict responses preserve the task, attempt, nonce and bounded scope', async () => {
+  const calls = [];
+  const respond = production('src/remoteTransfersApi.ts', 'remoteTransferResolveFileConflict', {
+    getInvoke: () => async (command, args) => { calls.push({command, args}); },
+  });
+  const response = {version:1,id:'nonce',attempt:2,decision:{policy:'keep_both',applyToRemainingFiles:true}};
+  await respond('task', response);
+  assert.equal(calls[0].command, 'remote_transfer_resolve_file_conflict');
+  assert.equal(JSON.stringify(calls[0].args), JSON.stringify({id:'task',response}));
+});
+
+function conflictActionsHarness() {
+  const values = []; let index = 0;
+  const calls = [];
+  const control = tag => props => React.createElement(tag, props, props.children);
+  const render = production('src/components/remote/RemoteTransfersPanel.tsx', 'FileConflictActions', {
+    useState: initial => { const slot = index++; if (!(slot in values)) values[slot] = initial;
+      return [values[slot], value => { values[slot] = value; }]; },
+    Button:control('button'), Checkbox:control('span'), Label:control('label'),
+    Dialog:control('section'),DialogContent:control('div'),DialogHeader:control('header'),
+    DialogTitle:control('h2'),DialogDescription:control('p'),DialogFooter:control('footer'),
+  });
+  const props = {pending:{version:1,id:'nonce',attempt:1,conflict:{relativePath:'子目录/<file>',
+    destinationPath:'/tree/子目录/<file>',direction:'upload',sourceSize:'9007199254740993'}},
+    label:key=>key,busy:false,onResolve:async decision=>{calls.push(decision);}};
+  const draw = () => { index=0; return render(props); };
+  const find = (tree, predicate) => { if (!tree || typeof tree !== 'object') return;
+    if (predicate(tree)) return tree;
+    for (const child of React.Children.toArray(tree.props?.children)) { const found=find(child,predicate); if(found)return found; } };
+  const button = (tree,label) => { const found=find(tree,node=>node.props?.children===label && !!node.props?.onClick); assert.ok(found,label);return found; };
+  return {draw,find,button,calls,props};
+}
+
+test('pending conflict controls expose exact context and default to this file', async () => {
+  const harness = conflictActionsHarness();
+  let tree = harness.draw();
+  const html = renderToStaticMarkup(tree);
+  assert.match(html, /子目录\/&lt;file&gt;/);
+  assert.match(html, /9007199254740993/);
+  assert.match(html, /applyToRemainingFiles/);
+  await harness.button(tree,'skip').props.onClick();
+  assert.equal(JSON.stringify(harness.calls[0]),JSON.stringify({policy:'skip',applyToRemainingFiles:false}));
+  harness.find(tree,node=>!!node.props?.onCheckedChange).props.onCheckedChange(true);
+  tree=harness.draw();
+  await harness.button(tree,'keepBoth').props.onClick();
+  assert.equal(JSON.stringify(harness.calls[1]),JSON.stringify({policy:'keep_both',applyToRemainingFiles:true}));
+});
+
+test('replacement requires confirmation and names current versus remaining scope', async () => {
+  const harness = conflictActionsHarness();
+  let tree=harness.draw();
+  harness.button(tree,'replace').props.onClick();
+  assert.equal(harness.calls.length,0);
+  tree=harness.draw();
+  assert.match(renderToStaticMarkup(tree),/replaceCurrentFileWarning/);
+  await harness.button(tree,'confirmReplace').props.onClick();
+  assert.equal(harness.calls[0].policy,'replace');
+  assert.equal(harness.calls[0].applyToRemainingFiles,false);
+  harness.find(tree,node=>!!node.props?.onCheckedChange).props.onCheckedChange(true);
+  assert.match(renderToStaticMarkup(harness.draw()),/replaceRemainingFilesWarning/);
+});
+
+test('latest file decision translates keep-both and pending rows hide live speed', () => {
+  const render=production('src/components/remote/RemoteTransfersPanel.tsx','TransferTaskBody');
+  const task={state:'running',bytes:'5',total:'10',attempt:1,speedBps:'99999',pendingFileConflict:{id:'next'},
+    request:{transfer:{direction:'upload',remotePath:'/tree',localPath:'C:/tree'}},
+    lastFileConflict:{pending:{conflict:{relativePath:'b'}},decision:{policy:'keep_both',applyToRemainingFiles:false}}};
+  const html=renderToStaticMarkup(React.createElement(render,{task,label:key=>key}));
+  assert.match(html,/keepBoth/);
+  assert.doesNotMatch(html,/keep_both|99999/);
+});
+
 test('keep-both receipts display actual targets and directory rename counts', () => {
   const render = production('src/components/remote/RemoteTransfersPanel.tsx', 'TransferTaskBody');
   const task = {state:'completed',bytes:'3',total:'3',attempt:1,completedFiles:1,

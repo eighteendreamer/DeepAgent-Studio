@@ -5829,6 +5829,18 @@ async fn remote_transfer_cancel(
     state.transfers.cancel(&id).await.map_err(|e| e.to_string())
 }
 #[tauri::command]
+async fn remote_transfer_resolve_file_conflict(
+    state: State<'_, AppState>,
+    id: String,
+    response: deepagent_app_core::file_transfer_service::FileConflictResponse,
+) -> Result<deepagent_app_core::file_transfer_service::TransferTask, String> {
+    state
+        .transfers
+        .resolve_file_conflict(&id, response)
+        .await
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
 async fn remote_transfer_retry(
     state: State<'_, AppState>,
     id: String,
@@ -8100,6 +8112,7 @@ pub fn run() {
             remote_transfer_watch,
             remote_transfer_cancel,
             remote_transfer_retry,
+            remote_transfer_resolve_file_conflict,
             remote_transfer_clear,
             ssh_realpath,
             ssh_read_file,

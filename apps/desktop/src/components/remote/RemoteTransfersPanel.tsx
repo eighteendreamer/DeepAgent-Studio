@@ -3,20 +3,22 @@ import { useTranslation } from "react-i18next";
 import { Button } from "../shadcn/button";
 import { Input } from "../shadcn/input";
 import { Label } from "../shadcn/label";
+import { Checkbox } from "../shadcn/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../shadcn/select";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "../shadcn/dialog";
 import {
-  remoteTransferSubmit, remoteTransferCancel,
+  remoteTransferSubmit, remoteTransferCancel, remoteTransferResolveFileConflict,
   remoteTransferRetry, remoteTransfersClear, type TransferTask, type TransferDirection, type TransferKind,
+  type PendingFileConflict, type FileConflictDecision,
 } from "../../remoteTransfersApi";
 import { observeRemoteTransfers } from "../../remoteTransferObserver";
 
 type Labeler = (key: string) => string;
 
 export function TransferTaskBody({ task, label }: { task: TransferTask; label: Labeler }) {
-  const live = task.state === "running" || task.state === "cancelling";
+  const live = !task.pendingFileConflict && (task.state === "running" || task.state === "cancelling");
   const destination = task.directoryReceipt?.destinationPath ?? task.receipt?.destinationPath ?? task.error?.destinationPath;
   const warnings = [
     ...(task.error?.cleanupWarnings ?? []), ...(task.receipt?.cleanupWarnings ?? []),
@@ -31,12 +33,54 @@ export function TransferTaskBody({ task, label }: { task: TransferTask; label: L
     {destination && <p className="break-all text-text-secondary">{label("destinationPath")} · {destination}</p>}
     {!!task.directoryReceipt?.renamedFiles && <p>{label("renamedFiles")} {task.directoryReceipt.renamedFiles}</p>}
     {task.currentFile && <p className="break-all text-text-secondary">{label("currentFile")} · {task.currentFile}</p>}
+    {task.lastFileConflict && <p className="break-all text-text-secondary">
+      {label("lastFileDecision")} · {task.lastFileConflict.pending.conflict.relativePath} · {label(task.lastFileConflict.decision.policy === "keep_both" ? "keepBoth" : task.lastFileConflict.decision.policy)} · {label(task.lastFileConflict.decision.applyToRemainingFiles ? "remainingFileConflicts" : "currentFileOnly")}
+    </p>}
     {task.error && <p role="alert" className="break-words text-red-500">{task.error.code}: {task.error.message}</p>}
     {task.error?.relativePath && <p className="break-all text-red-500">{label("failedFile")} · {task.error.relativePath}</p>}
     {task.receipt && <p className="break-all text-text-secondary">
       {task.receipt.skipped ? label("skipped") : task.receipt.publishStrategy} {task.receipt.sha256}
     </p>}
     {warnings.map(warning => <p key={warning} className="break-all text-amber-600">{warning}</p>)}
+  </div>;
+}
+
+/** A new pending nonce remounts this component, resetting scope and confirmation. */
+export function FileConflictActions({ pending, label, busy, onResolve }: {
+  pending: PendingFileConflict; label: Labeler; busy: boolean;
+  onResolve: (decision: FileConflictDecision) => Promise<unknown>;
+}) {
+  const [applyToRemainingFiles, setApplyToRemainingFiles] = useState(false);
+  const [confirmReplace, setConfirmReplace] = useState(false);
+  const choose = (policy: FileConflictDecision["policy"]) => onResolve({ policy, applyToRemainingFiles });
+  return <div className="min-w-0 space-y-2 rounded-md border border-border-theme p-2 text-[12px]">
+    <p className="font-medium" role="status">{label("waitingFileConflict")}</p>
+    <p className="break-all">{pending.conflict.relativePath}</p>
+    <p className="break-all text-text-secondary">{label(pending.conflict.direction)} · {label("destinationPath")} · {pending.conflict.destinationPath}</p>
+    <p>{label("sourceSize")} {pending.conflict.sourceSize} B</p>
+    <p className="text-text-secondary">{label("fileConflictSafe")}</p>
+    <div className="flex items-start gap-2">
+      <Checkbox id={`conflict-scope-${pending.id}`} disabled={busy} checked={applyToRemainingFiles}
+        onCheckedChange={checked => setApplyToRemainingFiles(checked === true)} />
+      <Label className="text-[12px] leading-4" htmlFor={`conflict-scope-${pending.id}`}>{label("applyToRemainingFiles")}</Label>
+    </div>
+    <div className="flex flex-wrap gap-2">
+      <Button variant="outline" size="sm" disabled={busy} onClick={() => choose("skip")}>{label("skip")}</Button>
+      <Button variant="outline" size="sm" disabled={busy} onClick={() => choose("keep_both")}>{label("keepBoth")}</Button>
+      <Button variant="destructive" size="sm" disabled={busy} onClick={() => setConfirmReplace(true)}>{label("replace")}</Button>
+    </div>
+    {confirmReplace && <Dialog open onOpenChange={open => { if (!open && !busy) setConfirmReplace(false); }}>
+      <DialogContent>
+        <DialogHeader className="flex-col gap-2"><DialogTitle>{label("replace")}</DialogTitle>
+          <DialogDescription>{label(applyToRemainingFiles ? "replaceRemainingFilesWarning" : "replaceCurrentFileWarning")}</DialogDescription>
+        </DialogHeader>
+        <div className="break-all px-5 py-4 text-[12px]">{label(pending.conflict.direction)} · {pending.conflict.destinationPath}</div>
+        <DialogFooter>
+          <Button variant="outline" disabled={busy} onClick={() => setConfirmReplace(false)}>{label("close")}</Button>
+          <Button variant="destructive" disabled={busy} onClick={() => choose("replace")}>{label("confirmReplace")}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>}
   </div>;
 }
 
@@ -109,10 +153,17 @@ export function RemoteTransfersPanel({ connectionId }: { connectionId: string })
       <Button variant="ghost" size="sm" disabled={busy} onClick={() => void act(() => remoteTransfersClear())}>{label("clear")}</Button>
     </div>
     {error && <p role="alert" className="break-all text-[12px] text-red-500">{error}</p>}
-    {expanded && <div className="max-h-[220px] space-y-2 overflow-y-auto pt-2">
+    {expanded && <div className={`${tasks.some(task => task.pendingFileConflict) ? "max-h-[50vh]" : "max-h-[220px]"} space-y-2 overflow-y-auto pt-2`}>
       {tasks.length === 0 && <p className="text-[12px] text-text-secondary">{label("empty")}</p>}
       {tasks.slice().reverse().map(task => <article key={task.id} className="flex items-start gap-2 rounded-lg border border-border-theme p-2">
-        <TransferTaskBody task={task} label={label} />
+        <div className="min-w-0 flex-1 space-y-2">
+          <TransferTaskBody task={task} label={label} />
+          {task.state === "running" && task.pendingFileConflict && <FileConflictActions key={task.pendingFileConflict.id}
+            pending={task.pendingFileConflict} label={label} busy={busy} onResolve={decision => act(() => remoteTransferResolveFileConflict(task.id, {
+              version: task.pendingFileConflict!.version, id: task.pendingFileConflict!.id,
+              attempt: task.pendingFileConflict!.attempt, decision,
+            }))} />}
+        </div>
         <div className="flex shrink-0 flex-col gap-1">
           {["queued", "running"].includes(task.state) && <Button variant="outline" size="sm" disabled={busy}
             onClick={() => void act(() => remoteTransferCancel(task.id))}>{label("cancel")}</Button>}
