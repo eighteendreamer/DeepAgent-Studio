@@ -8,9 +8,9 @@ use deepagent_persistence::{document_store::DocumentStore, Database};
 use deepagent_runtime::CancellationTree;
 use deepagent_ssh::{
     DirectoryConflictPolicy, DirectoryFileConflict, DirectoryFileConflictResolver,
-    DirectoryTransferOptions, DirectoryTransferProgress, DirectoryTransferReceipt,
-    DirectoryWalkLimits, FileConflictDecision, FileConflictPolicy, FileTransferError,
-    FileTransferProgress, FileTransferReceipt, FileTransferRequest, SshService,
+    DirectoryRootConflict, DirectoryTransferOptions, DirectoryTransferProgress,
+    DirectoryTransferReceipt, DirectoryWalkLimits, FileConflictDecision, FileConflictPolicy,
+    FileTransferError, FileTransferProgress, FileTransferReceipt, FileTransferRequest, SshService,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
@@ -57,28 +57,35 @@ impl TransferState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PendingFileConflict {
+pub struct PendingConflict<C> {
     pub version: u32,
     pub id: String,
     pub attempt: u32,
-    pub conflict: DirectoryFileConflict,
+    pub conflict: C,
 }
+pub type PendingFileConflict = PendingConflict<DirectoryFileConflict>;
+pub type PendingDirectoryConflict = PendingConflict<DirectoryRootConflict>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct FileConflictResponse {
+pub struct ConflictResponse<D> {
     pub version: u32,
     pub id: String,
     pub attempt: u32,
-    pub decision: FileConflictDecision,
+    pub decision: D,
 }
+pub type FileConflictResponse = ConflictResponse<FileConflictDecision>;
+pub type DirectoryConflictResponse = ConflictResponse<DirectoryConflictPolicy>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ResolvedFileConflict {
-    pub pending: PendingFileConflict,
-    pub decision: FileConflictDecision,
+pub struct ResolvedConflict<C, D> {
+    pub pending: PendingConflict<C>,
+    pub decision: D,
 }
+pub type ResolvedFileConflict = ResolvedConflict<DirectoryFileConflict, FileConflictDecision>;
+pub type ResolvedDirectoryConflict =
+    ResolvedConflict<DirectoryRootConflict, DirectoryConflictPolicy>;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TransferTask {
@@ -115,6 +122,19 @@ pub struct TransferTask {
     /// Bounded audit of the latest explicit decision in this attempt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_file_conflict: Option<ResolvedFileConflict>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_directory_conflict: Option<PendingDirectoryConflict>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_directory_conflict: Option<ResolvedDirectoryConflict>,
+}
+impl TransferTask {
+    fn has_pending_conflict(&self) -> bool {
+        self.pending_file_conflict.is_some() || self.pending_directory_conflict.is_some()
+    }
+    fn clear_pending_conflict(&mut self) -> bool {
+        let file = self.pending_file_conflict.take().is_some();
+        self.pending_directory_conflict.take().is_some() || file
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -200,7 +220,7 @@ struct State {
     body: Option<String>,
     tokens: HashMap<String, CancellationTree>,
     lanes: HashMap<String, Weak<Semaphore>>,
-    file_waiters: HashMap<String, oneshot::Sender<FileConflictDecision>>,
+    decision_waiters: HashMap<String, oneshot::Sender<ConflictDecision>>,
     recovery_required: bool,
 }
 struct Inner {
@@ -220,41 +240,79 @@ impl Drop for Owner {
 }
 
 /// Holds no strong queue/owner reference while a user is deciding.
-struct QueueFileConflictResolver {
+struct QueueConflictResolver {
     inner: Weak<Inner>,
     task_id: String,
     attempt: u32,
     cancel: CancellationTree,
 }
 
-#[async_trait::async_trait]
-impl DirectoryFileConflictResolver for QueueFileConflictResolver {
-    async fn resolve(
+enum ConflictRequest {
+    File(DirectoryFileConflict),
+    Directory(DirectoryRootConflict),
+}
+
+#[derive(Clone, Copy)]
+enum ConflictDecision {
+    File(FileConflictDecision),
+    Directory(DirectoryConflictPolicy),
+}
+
+impl QueueConflictResolver {
+    async fn wait(
         &self,
-        conflict: DirectoryFileConflict,
-    ) -> std::result::Result<FileConflictDecision, FileTransferError> {
+        conflict: ConflictRequest,
+    ) -> std::result::Result<ConflictDecision, FileTransferError> {
         if self.cancel.is_cancelled() {
             return Err(FileTransferError::new(
                 "cancelled",
-                "file decision cancelled",
+                "conflict decision cancelled",
             ));
         }
         let receiver = self
             .inner
             .upgrade()
             .ok_or_else(|| FileTransferError::new("cancelled", "transfer host stopped"))?
-            .begin_file_conflict(&self.task_id, self.attempt, conflict)
+            .begin_conflict(&self.task_id, self.attempt, conflict)
             .map_err(|error| {
                 if self.cancel.is_cancelled() {
-                    FileTransferError::new("cancelled", "file decision cancelled")
+                    FileTransferError::new("cancelled", "conflict decision cancelled")
                 } else {
                     FileTransferError::new("persistence", &error.to_string())
                 }
             })?;
         tokio::select! {
             biased;
-            _ = self.cancel.cancelled() => Err(FileTransferError::new("cancelled", "file decision cancelled")),
-            decision = receiver => decision.map_err(|_| FileTransferError::new("cancelled", "file decision closed")),
+            _ = self.cancel.cancelled() => Err(FileTransferError::new("cancelled", "conflict decision cancelled")),
+            decision = receiver => decision.map_err(|_| FileTransferError::new("cancelled", "conflict decision closed")),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl DirectoryFileConflictResolver for QueueConflictResolver {
+    async fn resolve(
+        &self,
+        conflict: DirectoryFileConflict,
+    ) -> std::result::Result<FileConflictDecision, FileTransferError> {
+        match self.wait(ConflictRequest::File(conflict)).await? {
+            ConflictDecision::File(decision) => Ok(decision),
+            _ => Err(FileTransferError::new(
+                "invalid",
+                "file decision kind changed",
+            )),
+        }
+    }
+    async fn resolve_root(
+        &self,
+        conflict: DirectoryRootConflict,
+    ) -> std::result::Result<DirectoryConflictPolicy, FileTransferError> {
+        match self.wait(ConflictRequest::Directory(conflict)).await? {
+            ConflictDecision::Directory(decision) => Ok(decision),
+            _ => Err(FileTransferError::new(
+                "invalid",
+                "directory decision kind changed",
+            )),
         }
     }
 }
@@ -292,9 +350,12 @@ impl TransferCoordinator {
         }
         let mut changed = false;
         for task in &mut document.tasks {
+            if task.pending_file_conflict.is_some() && task.pending_directory_conflict.is_some() {
+                return Err(invalid("multiple pending decisions for one transfer"));
+            }
             let interrupted = !task.state.terminal();
             let had_live_speed = task.speed_bps.take().is_some();
-            let had_pending_file = task.pending_file_conflict.take().is_some();
+            let had_pending_file = task.clear_pending_conflict();
             if interrupted {
                 task.state = TransferState::Failed;
                 task.error = Some(FileTransferError::new(
@@ -318,7 +379,7 @@ impl TransferCoordinator {
                     body,
                     tokens: HashMap::new(),
                     lanes: HashMap::new(),
-                    file_waiters: HashMap::new(),
+                    decision_waiters: HashMap::new(),
                     recovery_required: false,
                 }),
                 global: Arc::new(Semaphore::new(4)),
@@ -434,6 +495,8 @@ impl TransferCoordinator {
                 error: None,
                 pending_file_conflict: None,
                 last_file_conflict: None,
+                pending_directory_conflict: None,
+                last_directory_conflict: None,
             };
             let before = state.document.clone();
             state.document.tasks.push(task.clone());
@@ -466,7 +529,7 @@ impl TransferCoordinator {
             TransferState::Cancelling
         };
         state.document.tasks[index].revision += 1;
-        state.document.tasks[index].pending_file_conflict = None;
+        state.document.tasks[index].clear_pending_conflict();
         state.document.tasks[index].speed_bps = None;
         if let Err(e) = self.inner.persist(&mut state) {
             state.document = before;
@@ -475,7 +538,7 @@ impl TransferCoordinator {
         if let Some(token) = state.tokens.get(id) {
             token.cancel();
         }
-        state.file_waiters.remove(id);
+        state.decision_waiters.remove(id);
         if queued {
             state.tokens.remove(id);
         }
@@ -487,6 +550,39 @@ impl TransferCoordinator {
         id: &str,
         response: FileConflictResponse,
     ) -> Result<TransferTask> {
+        self.resolve_conflict(
+            id,
+            response.version,
+            &response.id,
+            response.attempt,
+            ConflictDecision::File(response.decision),
+        )
+        .await
+    }
+
+    pub async fn resolve_directory_conflict(
+        &self,
+        id: &str,
+        response: DirectoryConflictResponse,
+    ) -> Result<TransferTask> {
+        self.resolve_conflict(
+            id,
+            response.version,
+            &response.id,
+            response.attempt,
+            ConflictDecision::Directory(response.decision),
+        )
+        .await
+    }
+
+    async fn resolve_conflict(
+        &self,
+        id: &str,
+        version: u32,
+        nonce: &str,
+        attempt: u32,
+        decision: ConflictDecision,
+    ) -> Result<TransferTask> {
         let mut state = self.inner.state.lock().unwrap_or_else(|p| p.into_inner());
         healthy(&state)?;
         let index = state
@@ -496,34 +592,57 @@ impl TransferCoordinator {
             .position(|t| t.id == id)
             .ok_or_else(|| invalid("transfer not found"))?;
         let task = &state.document.tasks[index];
-        let pending = task
-            .pending_file_conflict
-            .as_ref()
-            .ok_or_else(|| invalid("no pending file conflict"))?;
-        if response.version != 1
-            || response.version != pending.version
-            || response.id != pending.id
-            || response.attempt != task.attempt
-            || pending.attempt != task.attempt
+        let pending = match decision {
+            ConflictDecision::File(choice) if choice.policy != FileConflictPolicy::Ask => task
+                .pending_file_conflict
+                .as_ref()
+                .map(|p| (p.version, p.id.as_str(), p.attempt)),
+            ConflictDecision::Directory(policy) if policy != DirectoryConflictPolicy::Ask => task
+                .pending_directory_conflict
+                .as_ref()
+                .map(|p| (p.version, p.id.as_str(), p.attempt)),
+            _ => None,
+        }
+        .ok_or_else(|| invalid("no pending conflict matching the decision kind"))?;
+        if version != 1
+            || version != pending.0
+            || nonce != pending.1
+            || attempt != task.attempt
+            || pending.2 != task.attempt
             || task.state != TransferState::Running
-            || response.decision.policy == FileConflictPolicy::Ask
             || !state
                 .tokens
                 .get(id)
                 .is_some_and(|token| !token.is_cancelled())
             || !state
-                .file_waiters
+                .decision_waiters
                 .get(id)
                 .is_some_and(|sender| !sender.is_closed())
         {
-            return Err(invalid("stale or invalid file conflict response"));
+            return Err(invalid("stale or invalid conflict response"));
         }
         let before = state.document.clone();
         let task = &mut state.document.tasks[index];
-        task.last_file_conflict = Some(ResolvedFileConflict {
-            pending: task.pending_file_conflict.take().unwrap(),
-            decision: response.decision,
-        });
+        let (kind, policy, remaining) = match decision {
+            ConflictDecision::File(choice) => {
+                task.last_file_conflict = Some(ResolvedFileConflict {
+                    pending: task.pending_file_conflict.take().unwrap(),
+                    decision: choice,
+                });
+                (
+                    "file",
+                    format!("{:?}", choice.policy),
+                    choice.apply_to_remaining_files,
+                )
+            }
+            ConflictDecision::Directory(policy) => {
+                task.last_directory_conflict = Some(ResolvedDirectoryConflict {
+                    pending: task.pending_directory_conflict.take().unwrap(),
+                    decision: policy,
+                });
+                ("directory_root", format!("{policy:?}"), false)
+            }
+        };
         task.revision += 1;
         task.updated_ms = SystemClock.now().as_millis();
         // Durable consent precedes any resumed filesystem/network operation.
@@ -531,12 +650,18 @@ impl TransferCoordinator {
             state.document = before;
             return Err(error);
         }
-        let sender = state.file_waiters.remove(id).unwrap();
-        tracing::info!(task_id = id, attempt = response.attempt, policy = ?response.decision.policy,
-            remaining_files = response.decision.apply_to_remaining_files, "remote file conflict decision saved");
+        let sender = state.decision_waiters.remove(id).unwrap();
+        tracing::info!(
+            task_id = id,
+            attempt,
+            kind,
+            policy,
+            remaining_files = remaining,
+            "remote conflict decision saved"
+        );
         sender
-            .send(response.decision)
-            .map_err(|_| invalid("file decision wait ended"))?;
+            .send(decision)
+            .map_err(|_| invalid("conflict decision wait ended"))?;
         Ok(state.document.tasks[index].clone())
     }
     pub async fn retry(&self, id: &str, conflict: FileConflictPolicy) -> Result<TransferTask> {
@@ -591,8 +716,9 @@ impl TransferCoordinator {
             task.total_files = (task.request.kind == TransferKind::File).then_some(1);
             task.speed_bps = None;
             task.started_at = None;
-            task.pending_file_conflict = None;
+            task.clear_pending_conflict();
             task.last_file_conflict = None;
+            task.last_directory_conflict = None;
             task.revision += 1;
             let result = task.clone();
             if let Err(e) = self.inner.persist(&mut state) {
@@ -678,7 +804,7 @@ impl TransferCoordinator {
                         task.request.directory_conflict,
                         cancel.clone(),
                         Arc::new(move |p| progress(ProgressUpdate::Directory(p))),
-                        Some(Arc::new(QueueFileConflictResolver {
+                        Some(Arc::new(QueueConflictResolver {
                             inner: weak.clone(),
                             task_id: task.id.clone(),
                             attempt: task.attempt,
@@ -710,12 +836,12 @@ impl TransferCoordinator {
     }
 }
 impl Inner {
-    fn begin_file_conflict(
+    fn begin_conflict(
         &self,
         id: &str,
         attempt: u32,
-        conflict: DirectoryFileConflict,
-    ) -> Result<oneshot::Receiver<FileConflictDecision>> {
+        conflict: ConflictRequest,
+    ) -> Result<oneshot::Receiver<ConflictDecision>> {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         healthy(&state)?;
         let index = state
@@ -727,22 +853,37 @@ impl Inner {
         let task = &state.document.tasks[index];
         if task.state != TransferState::Running
             || task.request.kind != TransferKind::Directory
-            || task.pending_file_conflict.is_some()
+            || task.has_pending_conflict()
             || !state
                 .tokens
                 .get(id)
                 .is_some_and(|token| !token.is_cancelled())
         {
-            return Err(invalid("transfer cannot wait for a file decision"));
+            return Err(invalid("transfer cannot wait for a conflict decision"));
         }
         let before = state.document.clone();
         let task = &mut state.document.tasks[index];
-        task.pending_file_conflict = Some(PendingFileConflict {
-            version: 1,
-            id: uuid::Uuid::new_v4().to_string(),
-            attempt,
-            conflict,
-        });
+        let nonce = uuid::Uuid::new_v4().to_string();
+        let kind = match conflict {
+            ConflictRequest::File(conflict) => {
+                task.pending_file_conflict = Some(PendingConflict {
+                    version: 1,
+                    id: nonce,
+                    attempt,
+                    conflict,
+                });
+                "file"
+            }
+            ConflictRequest::Directory(conflict) => {
+                task.pending_directory_conflict = Some(PendingConflict {
+                    version: 1,
+                    id: nonce,
+                    attempt,
+                    conflict,
+                });
+                "directory_root"
+            }
+        };
         task.speed_bps = None;
         task.revision += 1;
         task.updated_ms = SystemClock.now().as_millis();
@@ -751,11 +892,12 @@ impl Inner {
             return Err(error);
         }
         let (sender, receiver) = oneshot::channel();
-        state.file_waiters.insert(id.into(), sender);
+        state.decision_waiters.insert(id.into(), sender);
         tracing::info!(
             task_id = id,
             attempt,
-            "remote transfer awaiting file conflict decision"
+            kind,
+            "remote transfer awaiting conflict decision"
         );
         Ok(receiver)
     }
@@ -878,7 +1020,7 @@ impl Inner {
         if next.terminal() {
             task.started_at = None;
             task.speed_bps = None;
-            task.pending_file_conflict = None;
+            task.clear_pending_conflict();
         }
         if let Err(e) = self.persist(&mut state) {
             state.document = before;
@@ -890,7 +1032,7 @@ impl Inner {
         }
         if next.terminal() {
             state.tokens.remove(id);
-            state.file_waiters.remove(id);
+            state.decision_waiters.remove(id);
         }
         Ok(())
     }
@@ -917,7 +1059,7 @@ mod progress_tests {
         .unwrap();
         let cancel = CancellationTree::new();
         cancel.cancel();
-        let resolver = QueueFileConflictResolver {
+        let resolver = QueueConflictResolver {
             inner: Arc::downgrade(&queue.inner),
             task_id: "cancelled-before-registration".into(),
             attempt: 1,

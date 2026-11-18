@@ -9,16 +9,16 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "../shadcn/dialog";
 import {
-  remoteTransferSubmit, remoteTransferCancel, remoteTransferResolveFileConflict,
+  remoteTransferSubmit, remoteTransferCancel, remoteTransferResolveFileConflict, remoteTransferResolveDirectoryConflict,
   remoteTransferRetry, remoteTransfersClear, type TransferTask, type TransferDirection, type TransferKind,
-  type PendingFileConflict, type FileConflictDecision,
+  type PendingFileConflict, type FileConflictDecision, type PendingDirectoryConflict, type DirectoryConflictResponse,
 } from "../../remoteTransfersApi";
 import { observeRemoteTransfers } from "../../remoteTransferObserver";
 
 type Labeler = (key: string) => string;
 
 export function TransferTaskBody({ task, label }: { task: TransferTask; label: Labeler }) {
-  const live = !task.pendingFileConflict && (task.state === "running" || task.state === "cancelling");
+  const live = !task.pendingFileConflict && !task.pendingDirectoryConflict && (task.state === "running" || task.state === "cancelling");
   const destination = task.directoryReceipt?.destinationPath ?? task.receipt?.destinationPath ?? task.error?.destinationPath;
   const warnings = [
     ...(task.error?.cleanupWarnings ?? []), ...(task.receipt?.cleanupWarnings ?? []),
@@ -36,12 +36,32 @@ export function TransferTaskBody({ task, label }: { task: TransferTask; label: L
     {task.lastFileConflict && <p className="break-all text-text-secondary">
       {label("lastFileDecision")} · {task.lastFileConflict.pending.conflict.relativePath} · {label(task.lastFileConflict.decision.policy === "keep_both" ? "keepBoth" : task.lastFileConflict.decision.policy)} · {label(task.lastFileConflict.decision.applyToRemainingFiles ? "remainingFileConflicts" : "currentFileOnly")}
     </p>}
+    {task.lastDirectoryConflict && <p className="break-all text-text-secondary">
+      {label("lastDirectoryDecision")} · {task.lastDirectoryConflict.pending.conflict.destinationPath} · {label(task.lastDirectoryConflict.decision === "keep_both" ? "keepBothDirectory" : task.lastDirectoryConflict.decision)}
+    </p>}
     {task.error && <p role="alert" className="break-words text-red-500">{task.error.code}: {task.error.message}</p>}
     {task.error?.relativePath && <p className="break-all text-red-500">{label("failedFile")} · {task.error.relativePath}</p>}
     {task.receipt && <p className="break-all text-text-secondary">
       {task.receipt.skipped ? label("skipped") : task.receipt.publishStrategy} {task.receipt.sha256}
     </p>}
     {warnings.map(warning => <p key={warning} className="break-all text-amber-600">{warning}</p>)}
+  </div>;
+}
+
+export function DirectoryConflictActions({ pending, label, busy, onResolve }: {
+  pending: PendingDirectoryConflict; label: Labeler; busy: boolean;
+  onResolve: (policy: DirectoryConflictResponse["decision"]) => Promise<unknown>;
+}) {
+  return <div className="min-w-0 space-y-2 rounded-md border border-border-theme p-2 text-[12px]">
+    <p className="font-medium" role="status">{label("waitingDirectoryConflict")}</p>
+    <p className="break-all text-text-secondary">{label(pending.conflict.direction)} · {label("destinationPath")} · {pending.conflict.destinationPath}</p>
+    <p>{label("sourceFiles")} {pending.conflict.totalFiles} · {label("plannedBytes")} {pending.conflict.totalBytes} B</p>
+    <p className="text-text-secondary">{label("directoryConflictSafe")}</p>
+    <div className="flex flex-wrap gap-2">
+      <Button variant="outline" size="sm" disabled={busy} onClick={() => onResolve("skip")}>{label("skip")}</Button>
+      <Button variant="outline" size="sm" disabled={busy} onClick={() => onResolve("merge")}>{label("merge")}</Button>
+      <Button variant="outline" size="sm" disabled={busy} onClick={() => onResolve("keep_both")}>{label("keepBothDirectory")}</Button>
+    </div>
   </div>;
 }
 
@@ -153,11 +173,16 @@ export function RemoteTransfersPanel({ connectionId }: { connectionId: string })
       <Button variant="ghost" size="sm" disabled={busy} onClick={() => void act(() => remoteTransfersClear())}>{label("clear")}</Button>
     </div>
     {error && <p role="alert" className="break-all text-[12px] text-red-500">{error}</p>}
-    {expanded && <div className={`${tasks.some(task => task.pendingFileConflict) ? "max-h-[50vh]" : "max-h-[220px]"} space-y-2 overflow-y-auto pt-2`}>
+    {expanded && <div className={`${tasks.some(task => task.pendingFileConflict || task.pendingDirectoryConflict) ? "max-h-[50vh]" : "max-h-[220px]"} space-y-2 overflow-y-auto pt-2`}>
       {tasks.length === 0 && <p className="text-[12px] text-text-secondary">{label("empty")}</p>}
       {tasks.slice().reverse().map(task => <article key={task.id} className="flex items-start gap-2 rounded-lg border border-border-theme p-2">
         <div className="min-w-0 flex-1 space-y-2">
           <TransferTaskBody task={task} label={label} />
+          {task.state === "running" && task.pendingDirectoryConflict && <DirectoryConflictActions
+            pending={task.pendingDirectoryConflict} label={label} busy={busy} onResolve={decision => act(() => remoteTransferResolveDirectoryConflict(task.id, {
+              version: task.pendingDirectoryConflict!.version, id: task.pendingDirectoryConflict!.id,
+              attempt: task.pendingDirectoryConflict!.attempt, decision,
+            }))} />}
           {task.state === "running" && task.pendingFileConflict && <FileConflictActions key={task.pendingFileConflict.id}
             pending={task.pendingFileConflict} label={label} busy={busy} onResolve={decision => act(() => remoteTransferResolveFileConflict(task.id, {
               version: task.pendingFileConflict!.version, id: task.pendingFileConflict!.id,

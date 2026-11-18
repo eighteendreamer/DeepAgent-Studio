@@ -25,6 +25,23 @@ export interface FileConflictResponse {
   attempt: number;
   decision: FileConflictDecision;
 }
+export interface PendingDirectoryConflict {
+  version: number;
+  id: string;
+  attempt: number;
+  conflict: {
+    destinationPath: string;
+    direction: TransferDirection;
+    totalFiles: number;
+    totalBytes: string;
+  };
+}
+export interface DirectoryConflictResponse {
+  version: number;
+  id: string;
+  attempt: number;
+  decision: Exclude<DirectoryConflictPolicy, "ask">;
+}
 export interface TransferOptions {
   kind?: TransferKind;
   directoryConflict?: DirectoryConflictPolicy;
@@ -51,6 +68,8 @@ export interface TransferTask {
   updatedMs: number;
   pendingFileConflict?: PendingFileConflict | null;
   lastFileConflict?: { pending: PendingFileConflict; decision: FileConflictDecision } | null;
+  pendingDirectoryConflict?: PendingDirectoryConflict | null;
+  lastDirectoryConflict?: { pending: PendingDirectoryConflict; decision: DirectoryConflictResponse["decision"] } | null;
   error: { code: string; message: string; cleanupWarnings: string[]; relativePath?: string; destinationPath?: string } | null;
   directoryReceipt?: {
     bytes: string; totalBytes: string; totalFiles: number; completedFiles: number;
@@ -101,6 +120,11 @@ export async function remoteTransferResolveFileConflict(id: string, response: Fi
   const invoke = getInvoke();
   if (!invoke) throw Error("transfers require the desktop app");
   return invoke("remote_transfer_resolve_file_conflict", { id, response });
+}
+export async function remoteTransferResolveDirectoryConflict(id: string, response: DirectoryConflictResponse): Promise<TransferTask> {
+  const invoke = getInvoke();
+  if (!invoke) throw Error("transfers require the desktop app");
+  return invoke("remote_transfer_resolve_directory_conflict", { id, response });
 }
 export async function remoteTransferRetry(id: string, conflict: ConflictPolicy = "ask", directoryConflict?: DirectoryConflictPolicy): Promise<TransferTask> {
   const invoke = getInvoke();

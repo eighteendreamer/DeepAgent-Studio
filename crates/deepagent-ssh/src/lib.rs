@@ -31,9 +31,9 @@ pub use config::{
 pub use connection_challenge::{SshConnectionAttempt, SshHostKeyChallenge, SshHostKeyDecision};
 pub use directory_plan::{DirectoryTransferEntry, DirectoryTransferPlan};
 pub use directory_transfer::{
-    DirectoryConflictPolicy, DirectoryFileConflict, DirectoryFileConflictResolver,
-    DirectoryTransferOptions, DirectoryTransferProgress, DirectoryTransferReceipt,
-    FileConflictDecision,
+    DirectoryConflictPolicy, DirectoryConflictResolver, DirectoryFileConflict,
+    DirectoryFileConflictResolver, DirectoryRootConflict, DirectoryTransferOptions,
+    DirectoryTransferProgress, DirectoryTransferReceipt, FileConflictDecision,
 };
 pub use directory_walk::{DirectoryWalkLimits, RemoteDirectoryEntry, RemoteDirectoryTree};
 pub use error::{SshError, SshResult};

@@ -36,6 +36,16 @@ pub struct DirectoryFileConflict {
     pub source_size: String,
 }
 
+/// The selected destination root, before any directory or file is published.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DirectoryRootConflict {
+    pub destination_path: String,
+    pub direction: FileTransferDirection,
+    pub total_files: u32,
+    pub total_bytes: String,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FileConflictDecision {
@@ -44,12 +54,25 @@ pub struct FileConflictDecision {
 }
 
 #[async_trait::async_trait]
-pub trait DirectoryFileConflictResolver: Send + Sync {
+pub trait DirectoryConflictResolver: Send + Sync {
     async fn resolve(
         &self,
         conflict: DirectoryFileConflict,
     ) -> Result<FileConflictDecision, FileTransferError>;
+
+    async fn resolve_root(
+        &self,
+        _conflict: DirectoryRootConflict,
+    ) -> Result<DirectoryConflictPolicy, FileTransferError> {
+        Err(failure(
+            "conflict",
+            "directory root requires an explicit decision",
+        ))
+    }
 }
+
+/// Compatibility name for existing file-only hosts; root handling is opt-in.
+pub use DirectoryConflictResolver as DirectoryFileConflictResolver;
 
 /// Host interaction is optional; callers without a resolver retain fail-on-Ask behavior.
 pub struct DirectoryTransferOptions {
@@ -57,7 +80,8 @@ pub struct DirectoryTransferOptions {
     pub limits: DirectoryWalkLimits,
     pub cancel: CancellationToken,
     pub progress: Arc<dyn Fn(DirectoryTransferProgress) + Send + Sync>,
-    pub file_conflicts: Option<Arc<dyn DirectoryFileConflictResolver>>,
+    /// Legacy field name; the same resolver may also handle the selected root.
+    pub file_conflicts: Option<Arc<dyn DirectoryConflictResolver>>,
 }
 
 #[derive(Debug, Clone)]
@@ -152,20 +176,22 @@ impl SshService {
                     ))?;
                 }
             }
+            let total = plan
+                .total_bytes
+                .parse()
+                .map_err(|_| failure("integrity", "invalid planned total"))?;
+            let total_files = plan.total_files;
             Execution {
                 sftp: &sftp,
                 request: &request,
                 conflict,
-                plan: &plan,
+                plan: &mut plan,
                 cancel: &cancel,
                 notify: progress,
                 progress: DirectoryTransferProgress {
                     bytes: 0,
-                    total: plan
-                        .total_bytes
-                        .parse()
-                        .map_err(|_| failure("integrity", "invalid planned total"))?,
-                    total_files: plan.total_files,
+                    total,
+                    total_files,
                     completed_files: 0,
                     skipped_files: 0,
                     current_file: None,
@@ -277,7 +303,7 @@ struct Execution<'a> {
     sftp: &'a SftpSession,
     request: &'a FileTransferRequest,
     conflict: DirectoryConflictPolicy,
-    plan: &'a DirectoryTransferPlan,
+    plan: &'a mut DirectoryTransferPlan,
     cancel: &'a CancellationToken,
     notify: Arc<dyn Fn(DirectoryTransferProgress) + Send + Sync>,
     progress: DirectoryTransferProgress,
@@ -293,8 +319,7 @@ impl Execution<'_> {
         (self.notify)(self.progress.clone());
     }
 
-    async fn run(mut self) -> Result<DirectoryTransferReceipt, FileTransferError> {
-        self.emit();
+    async fn validate_roots(&self) -> Result<(), FileTransferError> {
         let root = PathBuf::from(&self.plan.local_root);
         match self.request.direction {
             FileTransferDirection::Upload => {
@@ -312,16 +337,89 @@ impl Execution<'_> {
                 local_directory(root.parent().unwrap(), self.cancel).await?;
             }
         }
-        if self.ensure_directory("", self.conflict).await? {
+        Ok(())
+    }
+
+    async fn ensure_root(&mut self) -> Result<bool, FileTransferError> {
+        let result = self.ensure_directory("", self.conflict).await;
+        let Err(error) = result else { return result };
+        if error.code != "conflict" || self.conflict != DirectoryConflictPolicy::Ask {
+            return Err(error);
+        }
+        let Some(resolver) = &self.file_conflicts else {
+            return Err(error);
+        };
+        let conflict = DirectoryRootConflict {
+            direction: self.request.direction,
+            destination_path: match self.request.direction {
+                FileTransferDirection::Upload => self.plan.remote_root.clone(),
+                FileTransferDirection::Download => self.plan.local_root.clone(),
+            },
+            total_files: self.plan.total_files,
+            total_bytes: self.plan.total_bytes.clone(),
+        };
+        let policy = tokio::select! {
+            biased;
+            _ = self.cancel.cancelled() => return Err(failure("cancelled", "directory decision cancelled")),
+            decision = resolver.resolve_root(conflict) => decision?,
+        };
+        if policy == DirectoryConflictPolicy::Ask {
+            return Err(failure(
+                "invalid",
+                "a directory decision must select skip, merge or keep both",
+            ));
+        }
+        // A human wait grants no exemption from the original source/path checks.
+        self.validate_roots().await?;
+        if policy == DirectoryConflictPolicy::KeepBoth {
+            match self.request.direction {
+                FileTransferDirection::Upload => {
+                    self.plan.remote_root = crate::conflict_target::remote_target(
+                        self.sftp,
+                        &self.plan.remote_root,
+                        true,
+                        self.cancel,
+                    )
+                    .await?;
+                    for entry in &self.plan.entries {
+                        crate::directory_walk::validate_root(&format!(
+                            "{}/{}",
+                            self.plan.remote_root, entry.relative_path,
+                        ))?;
+                    }
+                }
+                FileTransferDirection::Download => {
+                    self.plan.local_root = crate::conflict_target::local_target(
+                        Path::new(&self.plan.local_root),
+                        true,
+                        self.cancel,
+                    )
+                    .await?
+                    .to_str()
+                    .ok_or_else(|| failure("invalid", "target is not UTF-8"))?
+                    .into();
+                }
+            }
+        }
+        self.conflict = policy;
+        self.ensure_directory("", policy).await
+    }
+
+    async fn run(mut self) -> Result<DirectoryTransferReceipt, FileTransferError> {
+        self.emit();
+        self.validate_roots().await?;
+        if self.ensure_root().await? {
             self.progress.skipped_files = self.plan.total_files;
             self.emit();
             return Ok(self.receipt());
         }
+        let root = PathBuf::from(&self.plan.local_root);
         // Planning sorts POSIX relative paths, placing each parent before its descendants.
-        for entry in &self.plan.entries {
+        for index in 0..self.plan.entries.len() {
+            let entry = self.plan.entries[index].clone();
             self.progress.current_file = Some(entry.relative_path.clone());
             self.emit();
-            let result = self.resolve_entry(entry, &root).await;
+            let result = self.resolve_entry(&entry, &root).await;
             if let Err(mut error) = result {
                 error.relative_path = Some(entry.relative_path.clone());
                 error.cleanup_warnings.extend(self.warnings);

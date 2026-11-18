@@ -7,6 +7,58 @@ const ts = require('typescript');
 const React = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
 const root = path.resolve(__dirname, '..');
+test('directory-root responses keep their nonce and cannot become file decisions', async () => {
+  const calls = [];
+  const respond = production('src/remoteTransfersApi.ts', 'remoteTransferResolveDirectoryConflict', {
+    getInvoke: () => async (command, args) => { calls.push({command, args}); },
+  });
+  const response = {version:1,id:'root-nonce',attempt:2,decision:'merge'};
+  await respond('task', response);
+  assert.equal(calls[0].command, 'remote_transfer_resolve_directory_conflict');
+  assert.equal(JSON.stringify(calls[0].args), JSON.stringify({id:'task',response}));
+});
+
+test('directory-root controls show the exact destination and keep this attempt', async () => {
+  const calls = [];
+  const render = production('src/components/remote/RemoteTransfersPanel.tsx', 'DirectoryConflictActions', {
+    Button: props => React.createElement('button', props, props.children),
+  });
+  const tree = render({pending:{version:1,id:'root',attempt:2,conflict:{direction:'download',
+    destinationPath:'C:/目录/<target>',totalFiles:7,totalBytes:'9007199254740993'}},
+    label:key=>key,busy:false,onResolve:async policy=>{calls.push(policy);}});
+  const html = renderToStaticMarkup(tree);
+  assert.match(html,/C:\/目录\/&lt;target&gt;/);
+  assert.match(html,/waitingDirectoryConflict|directoryConflictSafe/);
+  assert.match(html,/9007199254740993/);
+  assert.doesNotMatch(html,/replace|applyToRemainingFiles/);
+  const visit = async node => {
+    if (!node || typeof node !== 'object') return;
+    if (node.props.onClick) { assert.equal(node.props.disabled,false); await node.props.onClick(); }
+    for (const child of React.Children.toArray(node.props.children)) await visit(child);
+  };
+  await visit(tree);
+  assert.deepEqual(calls,['skip','merge','keep_both']);
+  const disabled = render({pending:{conflict:{}},label:key=>key,busy:true,onResolve:async()=>{}});
+  assert.equal((renderToStaticMarkup(disabled).match(/disabled=""/g)||[]).length,3);
+});
+
+test('directory-root planned counts cannot be presented as transferred files', () => {
+  const render = production('src/components/remote/RemoteTransfersPanel.tsx', 'DirectoryConflictActions', {
+    Button: props => React.createElement('button', props, props.children),
+  });
+  for (const [locale, countLabel, sizeLabel] of [
+    ['en', 'Source files', 'Planned bytes'], ['zh', '源文件数', '计划总字节'],
+  ]) {
+    const labels = JSON.parse(readFileSync(path.join(root, `src/locales/${locale}.json`), 'utf8')).remote.transfers;
+    const html = renderToStaticMarkup(render({pending:{conflict:{direction:'upload',
+      destinationPath:'/tree',totalFiles:7,totalBytes:'9007199254740993'}},
+      label:key=>labels[key],busy:false,onResolve:async()=>{}}));
+    assert.ok(html.includes(countLabel), `${locale}: ${html}`);
+    assert.ok(html.includes(sizeLabel), `${locale}: ${html}`);
+    assert.ok(!html.includes(labels.files), `${locale}: planned count is not a transferred count`);
+  }
+});
+
 test('file conflict responses preserve the task, attempt, nonce and bounded scope', async () => {
   const calls = [];
   const respond = production('src/remoteTransfersApi.ts', 'remoteTransferResolveFileConflict', {
