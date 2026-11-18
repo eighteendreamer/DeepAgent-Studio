@@ -36,7 +36,12 @@ export function useSpringPress<T extends HTMLElement>(forwardedRef?: ForwardedRe
       window.removeEventListener("pointerup", release);
       window.removeEventListener("pointercancel", release);
       window.removeEventListener("blur", release);
-      tween?.kill(); gsap.set(node, { clearProps: "scale" });
+      // Untouched buttons own no transform. Starting GSAP just to clear one
+      // forces style/layout work for every button when a whole view unmounts.
+      if (tween) {
+        tween.kill();
+        gsap.set(node, { clearProps: "scale" });
+      }
     };
   }, []);
   return ref;

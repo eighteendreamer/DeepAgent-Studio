@@ -30,7 +30,7 @@
     "test:timeline-memory": "node --test scripts/check-timeline-memory.test.cjs",
     "test:process-collapse": "node --test scripts/check-process-collapse.test.cjs",
     "test:run-completion-error": "node --test scripts/check-run-completion-error.test.cjs",
-    "test:message-edit": "node --test scripts/check-message-edit-motion.test.cjs",
+    "test:message-edit": "node --test scripts/check-message-edit-motion.test.cjs scripts/check-menu-mount.test.cjs scripts/check-spring-press.test.cjs",
     "test:image-integrity": "node --test scripts/check-image-integrity.test.cjs",
     "test:composer-activity": "node --test scripts/check-composer-activity.test.cjs scripts/check-composer-controls.test.cjs scripts/check-history-preload.test.cjs scripts/check-composer-height.test.cjs",
     "test:theme-background": "node --test scripts/check-theme-background.test.cjs",

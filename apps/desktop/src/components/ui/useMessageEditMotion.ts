@@ -30,9 +30,13 @@ export function useMessageEditMotion(open: boolean, draft: string, contentVersio
     let timeline: gsap.core.Timeline | undefined, resizing: gsap.core.Timeline | undefined;
     let lastWidth = slot.clientWidth;
     const dimensions = () => {
-      compact.style.maxWidth = `${slot.clientWidth * 0.8}px`;
+      const availableWidth = slot.clientWidth;
+      compact.style.maxWidth = `${availableWidth * 0.8}px`;
       const closed = { width: compact.offsetWidth, height: compact.offsetHeight };
-      const width = Math.min(slot.clientWidth, Math.max(Math.min(320, slot.clientWidth), slot.clientWidth * 0.65));
+      const width = Math.min(availableWidth, Math.max(Math.min(320, availableWidth), availableWidth * 0.65));
+      // The closed face needs only its bubble dimensions. Preparing the hidden
+      // editor here would force additional layouts on every new message.
+      if (!open) return { closed, width, height: 0, flow: 0 };
       editor.style.width = `${width}px`;
       textarea.style.height = "auto";
       textarea.style.height = `${Math.min(144, Math.max(48, Math.ceil(textarea.scrollHeight)))}px`;

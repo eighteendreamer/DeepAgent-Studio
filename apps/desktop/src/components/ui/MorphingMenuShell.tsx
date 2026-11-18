@@ -66,6 +66,11 @@ export function MorphingMenuShell({ open, onOpenChange, layoutId, trigger, class
     if (!shell || !anchor || !compact) return;
     const first = previousOpen.current === undefined;
     previousOpen.current = open;
+    compact.inert = open;
+    // A resting control uses normal CSS layout. Measure and initialize GSAP
+    // only while its panel is present; finish() restores that resting layout.
+    if (!showPanel || !panel || !content) return;
+    panel.inert = !open;
     let disposed = false;
     let timeline: gsap.core.Timeline | undefined;
     let resize: gsap.core.Tween | undefined;
@@ -87,12 +92,6 @@ export function MorphingMenuShell({ open, onOpenChange, layoutId, trigger, class
       anchor.style.width = ""; anchor.style.height = "";
       if (triggerLayout === "block") compact.style.width = "100%";
     };
-    compact.inert = open;
-    if (panel) panel.inert = !open;
-    if (!showPanel || !panel || !content) {
-      restClosed();
-      return;
-    }
     if (open) setPresent(true);
 
     // Reserve the compact control's layout slot. The same shell owns both sizes.

@@ -17,6 +17,7 @@ function load(file, environment, importer = require) {
 
 function fixture(width = 896) {
   const cells = [], pending = [], sets = [], timelines = [];
+  let editorMeasurements = 0, draftHeight = 24;
   const media = { matches: false, addEventListener() {}, removeEventListener() {} };
   const environment = { window: { matchMedia: () => media },
     getComputedStyle: node => ({ opacity: String(node.style.opacity ?? 0), backgroundColor: "rgb(243,244,246)" }),
@@ -24,7 +25,9 @@ function fixture(width = 896) {
   };
   const motion = load("springMotion.ts", environment);
   const element = () => ({ style: {}, dataset: {}, inert: false });
-  const textarea = { ...element(), value: "你是谁", scrollHeight: 24, focusCount: 0,
+  const textarea = { ...element(), value: "你是谁", focusCount: 0,
+    get scrollHeight() { editorMeasurements++; return draftHeight; },
+    set scrollHeight(value) { draftHeight = value; },
     focus() { this.focusCount++; }, setSelectionRange() {} };
   const editButton = { ...element(), focusCount: 0, focus() { this.focusCount++; } };
   const nodes = {
@@ -77,8 +80,15 @@ function fixture(width = 896) {
     }
   };
   render(false);
-  return { nodes, sets, timelines, motion, media, render };
+  return { nodes, sets, timelines, motion, media, render, get editorMeasurements() { return editorMeasurements; } };
 }
+
+test("a resting message never measures its hidden editor", () => {
+  const f = fixture();
+  assert.equal(f.editorMeasurements, 0);
+  f.render(true);
+  assert.ok(f.editorMeasurements > 0);
+});
 
 test("E width stays compact on desktop and fits narrow containers", () => {
   for (const [available, expected] of [[896, 582.4], [512, 332.8], [274, 274]]) {
