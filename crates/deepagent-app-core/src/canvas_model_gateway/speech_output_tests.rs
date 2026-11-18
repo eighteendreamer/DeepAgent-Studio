@@ -86,11 +86,9 @@ async fn refuses_without_eof(body: Vec<u8>, framing: Framing) {
     let mut wire = MediaWire::media(body, framing, "audio/mpeg", true).await;
     let root = tempfile::tempdir().unwrap();
     let (gateway, artifacts, id) = host(root.path(), &wire);
-    let result = tokio::time::timeout(
-        Duration::from_secs(2),
-        gateway.run_audio(request(&id, "mp3")),
-    )
-    .await;
+    let result = wire
+        .before_eof(gateway.run_audio(request(&id, "mp3")))
+        .await;
     wire.close().await;
     let error = result
         .expect("speech limit must not wait for EOF")

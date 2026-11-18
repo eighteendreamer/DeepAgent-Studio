@@ -471,6 +471,11 @@ struct LocalInlineImageProvider {
 
 impl LocalInlineImageProvider {
     async fn start(image_bytes: Vec<u8>) -> Self {
+        // Prepare the synthetic provider response before the workflow starts.
+        // Encoding 32 MiB is fixture setup, not application response latency.
+        use base64::Engine as _;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(image_bytes);
+        let payload = json!({"data":[{"b64_json":encoded}]}).to_string();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -483,9 +488,6 @@ impl LocalInlineImageProvider {
                     || line.starts_with("POST /v1/images/edits ")
             );
             captured.lock().unwrap().push((line, body));
-            use base64::Engine as _;
-            let encoded = base64::engine::general_purpose::STANDARD.encode(image_bytes);
-            let payload = json!({"data":[{"b64_json":encoded}]}).to_string();
             let header = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 payload.len()
