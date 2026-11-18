@@ -159,7 +159,10 @@ unicode-width = "0.2"
 # Office document parsing (file preview + office tools): zip for OOXML
 # container access (docx/pptx), calamine for xlsx sheet reading. Pure Rust,
 # no external runtime — this is the Tier C fallback for office previews.
-zip = "2"
+# calamine 0.26 uses ZipFile<'a>; zip 2.6 requires a reader type parameter.
+# Keep the shared OOXML reader on the root lockfile's compatible version,
+# including the standalone desktop workspace whose lockfile is not tracked.
+zip = "=2.4.2"
 calamine = "0.26"
 # Pure-Rust PDF text extraction (Tier C). Page rasterization is a Tier R
 # upgrade (pdfium) handled later; this gives a text-only degrade path.
