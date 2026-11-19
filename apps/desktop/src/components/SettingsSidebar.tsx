@@ -3,6 +3,7 @@ import {
   Archive,
   ArrowLeft,
   Boxes,
+  ChartColumnIncreasing,
   Compass,
   type LucideIcon,
   GitBranch,
@@ -31,6 +32,7 @@ interface Category {
 }
 
 const CATEGORIES: Category[] = [
+  { id: "usage", label: "使用统计", icon: ChartColumnIncreasing },
   { id: "general", label: "常规", icon: Settings },
   { id: "appearance", label: "外观", icon: Sun },
   { id: "pet", label: "宠物", icon: PawPrint },

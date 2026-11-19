@@ -34,7 +34,7 @@ export const SettingsView = memo(function SettingsView({ activeCategoryId, visib
 
   return (
     <div data-settings-viewport className={`h-full min-h-0 w-full bg-bg-base text-text-base max-[900px]:px-6 ${active === "models" ? "overflow-hidden px-10 py-6" : "stable-scrollbar-gutter overflow-y-auto px-10 pb-16 pt-10"}`}>
-      <div className={`mx-auto w-full ${active === "models" ? "h-full min-h-0 max-w-[1040px]" : "max-w-[700px]"}`}>
+      <div className={`mx-auto w-full ${active === "models" ? "h-full min-h-0 max-w-[1040px]" : active === "usage" ? "max-w-[1120px]" : "max-w-[700px]"}`}>
         {categories.map(id => {
           const Category = settingsCategories[id];
           return <section key={id} hidden={id !== active} className={`settings-section w-full ${id === "models" ? "h-full min-h-0" : ""}`} data-settings-category={id}>

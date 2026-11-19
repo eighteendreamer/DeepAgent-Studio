@@ -1,6 +1,7 @@
 import { lazy, memo, type ComponentType } from "react";
 
 const loaders = {
+  usage: () => import("./UsageSettings").then(module => ({ default: module.UsageSettings })),
   general: () => import("./GeneralSettings").then(module => ({ default: module.GeneralSettings })),
   appearance: () => import("./AppearanceSettings").then(module => ({ default: module.AppearanceSettings })),
   pet: () => import("./PetSettings").then(module => ({ default: module.PetSettings })),
