@@ -78,6 +78,7 @@ pub(crate) fn build_system_manifest_with_permissions(
         prompt_budget,
         user_language,
         permission_rules,
+        &mut |_| {},
     )
     .0
 }
@@ -94,6 +95,7 @@ pub(crate) fn build_system_manifest_with_instruction_sources(
     prompt_budget: usize,
     user_language: Option<&str>,
     permission_rules: Option<&PermissionRules>,
+    observe_phase: &mut dyn FnMut(&'static str),
 ) -> (ContextManifest, Vec<deepagent_context::LoadedInstruction>) {
     let today = current_date_string();
     let os = std::env::consts::OS;
@@ -145,6 +147,7 @@ pub(crate) fn build_system_manifest_with_instruction_sources(
             env_block,
         );
 
+    observe_phase("system_environment");
     if let Some(git) = deepagent_workspace::detect_git_context(root) {
         assembler = assembler.push(
             ContextSourceKind::GitContext,
@@ -155,6 +158,7 @@ pub(crate) fn build_system_manifest_with_instruction_sources(
             git.to_prompt_block(),
         );
     }
+    observe_phase("git_context");
 
     // Project structure (§3.1 `directory` high-value context): a bounded,
     // noise-skipping snapshot of the project layout (type, manifests, README
@@ -178,6 +182,7 @@ pub(crate) fn build_system_manifest_with_instruction_sources(
             }
         }
     }
+    observe_phase("workspace_structure");
 
     assembler = assembler.push(
         ContextSourceKind::PermissionContext,
@@ -235,7 +240,10 @@ pub(crate) fn build_system_manifest_with_instruction_sources(
         );
     }
 
-    assembler.assemble_with_instruction_sources(&HeuristicTokenizer::new(), prompt_budget)
+    let manifest =
+        assembler.assemble_with_instruction_sources(&HeuristicTokenizer::new(), prompt_budget);
+    observe_phase("instructions_and_manifest");
+    manifest
 }
 
 fn workspace_scan_allowed(permission_rules: Option<&PermissionRules>) -> bool {

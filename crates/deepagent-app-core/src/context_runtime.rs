@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
@@ -1598,9 +1598,20 @@ pub(crate) struct BuiltRunContext {
     pub(crate) system_prompt: String,
     pub(crate) final_user_prompt: String,
     pub(crate) context_usage: deepagent_context::ContextUsageSnapshot,
+    /// Disjoint preparation spans, recorded in memory before diagnostic I/O.
+    pub(crate) preparation_timings_us: BTreeMap<&'static str, u64>,
 }
 
 pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<BuiltRunContext> {
+    let mut preparation_timings_us = BTreeMap::new();
+    let mut phase_started = std::time::Instant::now();
+    let mut observe_phase = |phase| {
+        let now = std::time::Instant::now();
+        let elapsed_us =
+            u64::try_from(now.duration_since(phase_started).as_micros()).unwrap_or(u64::MAX);
+        preparation_timings_us.insert(phase, elapsed_us);
+        phase_started = now;
+    };
     // Built-in output style (§7.1): stable per-session block injected into the
     // cacheable system prefix. Read from the persisted setting (env-overridable).
     let output_style_block =
@@ -1633,6 +1644,7 @@ pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<
             Some(lang.to_string())
         }
     });
+    observe_phase("catalogs_and_settings");
 
     let (system_manifest, loaded_instructions) =
         crate::system_context::build_system_manifest_with_instruction_sources(
@@ -1646,8 +1658,10 @@ pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<
             request.context_policy.prompt_budget,
             user_language.as_deref(),
             Some(request.permission_rules),
+            &mut observe_phase,
         );
     let system_prompt = system_manifest.render();
+    observe_phase("render");
 
     // User-input layer attachments (knowledge passive block, remote context)
     // are collected through the shared attachment hub rather than hand-composed.
@@ -1683,6 +1697,7 @@ pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<
         .await;
     let final_user_prompt =
         compose_prompt_with_attachments(request.prompt_for_model, &user_attachments);
+    observe_phase("user_attachments");
     let mut context_usage = build_context_pack_snapshot(
         request.context_policy,
         &system_prompt,
@@ -1715,6 +1730,7 @@ pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<
         // Keep its measured metadata, and remeasure the current Surface in full.
         context_usage.record_provider_usage(prompt, hit, miss);
     }
+    observe_phase("context_usage");
 
     Ok(BuiltRunContext {
         system_manifest,
@@ -1722,6 +1738,7 @@ pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<
         system_prompt,
         final_user_prompt,
         context_usage,
+        preparation_timings_us,
     })
 }
 

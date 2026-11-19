@@ -2781,6 +2781,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn chat_preparation_profile_separates_context_costs_without_logging_content() {
+        let (db, settings, dir) = seeded().await;
+        std::fs::write(dir.path().join("AGENTS.md"), "private-instruction-canary").unwrap();
+        let logs = Arc::new(
+            deepagent_persistence::runtime_log_store::RuntimeLogStore::open_in_memory().unwrap(),
+        );
+        let chat = ChatService::new(db, settings, chat_transport(), dir.path())
+            .with_runtime_logs(logs.clone());
+        let session_id = chat
+            .run("private-prompt-canary", |_| {}, |_| {})
+            .await
+            .unwrap();
+        let entries = logs.recent_for_session(&session_id, 1000).unwrap();
+        let profiles: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.event == "run_context_profile")
+            .collect();
+        assert_eq!(profiles.len(), 1, "one profile per assembled user turn");
+        let profile = profiles[0];
+        assert_eq!(profile.category, "performance");
+        assert!(profile.run_id.is_some());
+        assert_eq!(profile.data.as_object().unwrap().len(), 1);
+        let phases = profile.data["phases_us"].as_object().unwrap();
+        for phase in [
+            "catalogs_and_settings",
+            "system_environment",
+            "git_context",
+            "workspace_structure",
+            "instructions_and_manifest",
+            "render",
+            "user_attachments",
+            "context_usage",
+        ] {
+            assert!(phases[phase].as_u64().is_some(), "missing timer: {phase}");
+        }
+        assert_eq!(phases.len(), 8);
+        assert!(!profile.data.to_string().contains("private-"));
+        assert!(!profile
+            .data
+            .to_string()
+            .contains(&dir.path().display().to_string()));
+    }
+
+    #[tokio::test]
     async fn preflight_tools_are_persisted_as_session_tool_events() {
         let (db, settings, dir) = seeded().await;
         let chat = ChatService::new(db.clone(), settings, chat_transport(), dir.path());

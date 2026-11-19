@@ -1082,6 +1082,16 @@ impl<'a> RunAssembler<'a> {
                 result = build_run_context(run_context_request) => result?,
             }
         };
+        append_runtime_log(
+            self.runtime_logs,
+            NewRuntimeLogEntry::info("performance", "run_context_profile")
+                .with_run_id(&run_id)
+                .with_session_id(&session_id)
+                .with_source("deepagent-app-core::context_runtime")
+                .with_data(serde_json::json!({
+                    "phases_us": run_context.preparation_timings_us,
+                })),
+        );
         let system_manifest = run_context.system_manifest;
         // A prepared/SDK run may start in a pre-created empty session. Inspect
         // its own lifecycle rather than the caller's continuation argument.
