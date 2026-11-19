@@ -20,6 +20,7 @@ export interface SshJumpForm {
   port: string;
   username: string;
   authType: SshFormAuthType;
+  agentFingerprint?: string;
   keyPath: string;
   keyContent: string;
   hasKeyContent: boolean;
@@ -42,6 +43,7 @@ export function sshJumpFromDto(jump?: SshJump | null): SshJumpForm {
     port: String(jump?.port ?? 22),
     username: jump?.username ?? "",
     authType,
+    agentFingerprint: jump?.agent_fingerprint ?? "",
     keyPath: jump?.key_path ?? "",
     keyContent: "",
     hasKeyContent: jump?.has_key_content ?? false,
@@ -65,6 +67,7 @@ export function sshJumpRequest(value?: SshJumpForm): SshJumpRequest {
     port: Number(value.port),
     username: value.username.trim(),
     auth_type: authType,
+    agent_fingerprint: ["agent", "openssh_agent", "pageant"].includes(value.authType) ? value.agentFingerprint ?? "" : undefined,
     key_path: value.authType === "file" ? value.keyPath.trim() || undefined : undefined,
     key_content: value.authType === "content" ? value.keyContent || undefined : undefined,
     certificate_path: value.authType === "file" || value.authType === "content" ? value.certificatePath.trim() || undefined : undefined,

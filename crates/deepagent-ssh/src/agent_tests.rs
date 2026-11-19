@@ -269,6 +269,8 @@ async fn ssh_agent_session(
     let server = tokio::spawn(async move {
         let config = Arc::new(server::Config {
             keys: vec![server_key],
+            auth_rejection_time: Duration::ZERO,
+            auth_rejection_time_initial: Some(Duration::ZERO),
             ..Default::default()
         });
         let (socket, _) = listener.accept().await.unwrap();
@@ -413,6 +415,528 @@ async fn agent_obeys_latest_remaining_methods_before_offering_another_identity()
             .disconnect(russh::Disconnect::ByApplication, "", "en")
             .await
             .unwrap();
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn automatic_agent_authentication_has_a_five_identity_attempt_budget() {
+    struct Reject;
+    impl russh::server::Handler for Reject {
+        type Error = russh::Error;
+        async fn auth_publickey(
+            &mut self,
+            _: &str,
+            _: russh::server::VerifiedPublicKey<'_>,
+        ) -> Result<russh::server::Auth, Self::Error> {
+            Ok(russh::server::Auth::Reject {
+                proceed_with_methods: Some(russh::MethodSet::from(
+                    &[russh::MethodKind::PublicKey][..],
+                )),
+                partial_success: false,
+            })
+        }
+    }
+    let (mut handle, server, _temp) = ssh_agent_session(Reject).await;
+    let (agent, signed) = fixture(
+        (0..8)
+            .map(|_| PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap())
+            .collect(),
+        false,
+    );
+    let connector = Arc::new(Connector {
+        clients: Mutex::new(VecDeque::from([Ok(agent)])),
+        ..Default::default()
+    });
+    let ready = resolve_agent(SshAgentProvider::Auto, connector)
+        .await
+        .ready
+        .unwrap();
+    let _ = authenticate_ready(&mut handle, "fixture", ready).await;
+    assert_eq!(
+        signed.load(Ordering::SeqCst),
+        5,
+        "an Agent with many keys must not exhaust the server's authentication attempts"
+    );
+    server.abort();
+}
+
+struct AgentMfaAgentServer {
+    stage: usize,
+    received: Arc<Mutex<Vec<String>>>,
+}
+
+impl russh::server::Handler for AgentMfaAgentServer {
+    type Error = russh::Error;
+
+    async fn auth_none(&mut self, _: &str) -> Result<russh::server::Auth, Self::Error> {
+        Ok(russh::server::Auth::Reject {
+            proceed_with_methods: Some(russh::MethodSet::from(&[russh::MethodKind::PublicKey][..])),
+            partial_success: false,
+        })
+    }
+
+    async fn auth_publickey(
+        &mut self,
+        _: &str,
+        key: russh::server::VerifiedPublicKey<'_>,
+    ) -> Result<russh::server::Auth, Self::Error> {
+        self.received
+            .lock()
+            .unwrap()
+            .push(key.public_key.fingerprint(HashAlg::Sha256).to_string());
+        if self.stage == 2 {
+            return Ok(russh::server::Auth::Accept);
+        }
+        self.stage = 1;
+        Ok(russh::server::Auth::Reject {
+            proceed_with_methods: Some(russh::MethodSet::from(
+                &[russh::MethodKind::KeyboardInteractive][..],
+            )),
+            partial_success: true,
+        })
+    }
+
+    async fn auth_keyboard_interactive<'a>(
+        &'a mut self,
+        _: &str,
+        _: &str,
+        response: Option<russh::server::Response<'a>>,
+    ) -> Result<russh::server::Auth, Self::Error> {
+        let Some(response) = response else {
+            return Ok(russh::server::Auth::Partial {
+                name: "Between Agent keys".into(),
+                instructions: String::new().into(),
+                prompts: vec![("Verification code".into(), false)].into(),
+            });
+        };
+        assert_eq!(
+            response.map(|value| value.to_vec()).collect::<Vec<_>>(),
+            vec![b"fixture-code".to_vec()]
+        );
+        self.stage = 2;
+        Ok(russh::server::Auth::Reject {
+            proceed_with_methods: Some(russh::MethodSet::from(&[russh::MethodKind::PublicKey][..])),
+            partial_success: true,
+        })
+    }
+}
+
+#[tokio::test]
+async fn agent_active_budget_excludes_human_mfa_wait_on_the_same_connection() {
+    use crate::public_key_candidates::PublicKeyCandidates;
+    use crate::transport_authentication::AuthenticationNegotiation;
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let (mut handle, server, temp) = ssh_agent_session(AgentMfaAgentServer {
+        stage: 0,
+        received: received.clone(),
+    })
+    .await;
+    let config = candidate_config(&temp, crate::SshAuthType::AutoPublicKey);
+    let trust = crate::host_trust::HostTrust::load(&config).await.unwrap();
+    let keys = (0..2)
+        .map(|_| PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap())
+        .collect();
+    let (ready, signatures) = ready_fixture(keys, false).await;
+    let candidates = PublicKeyCandidates::from_sources(&config, Some(ready), vec![]).unwrap();
+    let mut negotiation = AuthenticationNegotiation::with_public_keys(candidates);
+    let round = negotiation
+        .begin(&mut handle, &config, &trust, None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        round.kind,
+        crate::SshAuthenticationKind::KeyboardInteractive
+    );
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(61)).await;
+    tokio::time::resume();
+    let result = negotiation
+        .respond(
+            &mut handle,
+            &config,
+            &trust,
+            None,
+            vec!["fixture-code".into()],
+        )
+        .await;
+    assert!(
+        matches!(&result, Ok(None)),
+        "human MFA wait must not exhaust the Agent signing budget: {:?}",
+        result.as_ref().err().map(ToString::to_string)
+    );
+    assert_eq!(signatures.load(Ordering::SeqCst), 2);
+    let actual = received.lock().unwrap();
+    assert_eq!(actual.len(), 2);
+    assert_ne!(actual[0], actual[1]);
+    server.abort();
+}
+
+struct HeldAgentReplyServer {
+    entered: tokio::sync::mpsc::UnboundedSender<()>,
+    release: Arc<tokio::sync::Semaphore>,
+}
+
+impl russh::server::Handler for HeldAgentReplyServer {
+    type Error = russh::Error;
+
+    async fn auth_none(&mut self, _: &str) -> Result<russh::server::Auth, Self::Error> {
+        Ok(russh::server::Auth::Reject {
+            proceed_with_methods: Some(russh::MethodSet::from(&[russh::MethodKind::PublicKey][..])),
+            partial_success: false,
+        })
+    }
+
+    async fn auth_publickey(
+        &mut self,
+        _: &str,
+        _: russh::server::VerifiedPublicKey<'_>,
+    ) -> Result<russh::server::Auth, Self::Error> {
+        self.entered.send(()).unwrap();
+        self.release.acquire().await.unwrap().forget();
+        Ok(russh::server::Auth::Reject {
+            proceed_with_methods: Some(russh::MethodSet::from(&[russh::MethodKind::PublicKey][..])),
+            partial_success: false,
+        })
+    }
+}
+
+#[tokio::test]
+async fn agent_active_budget_remains_cumulative_across_public_key_calls() {
+    let (entered, mut observed) = tokio::sync::mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let (mut handle, server, _temp) = ssh_agent_session(HeldAgentReplyServer {
+        entered,
+        release: release.clone(),
+    })
+    .await;
+    let keys = (0..2)
+        .map(|_| PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap())
+        .collect();
+    let (mut ready, signatures) = ready_fixture(keys, false).await;
+    let attempt = tokio::spawn(async move {
+        let first = ready.take_next().unwrap();
+        ready
+            .authenticate_identity(&mut handle, "fixture", first)
+            .await?;
+        let second = ready.take_next().unwrap();
+        ready
+            .authenticate_identity(&mut handle, "fixture", second)
+            .await
+    });
+    observed.recv().await.unwrap();
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(40)).await;
+    tokio::time::resume();
+    release.add_permits(1);
+    observed.recv().await.unwrap();
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(21)).await;
+    tokio::time::resume();
+    release.add_permits(1);
+    let result = attempt.await.unwrap();
+    let error = result
+        .err()
+        .expect("two active waits totaling 61 seconds must exceed the shared 60-second budget");
+    assert!(error.to_string().contains("exceeded 60 seconds"), "{error}");
+    assert_eq!(signatures.load(Ordering::SeqCst), 2);
+    server.abort();
+}
+
+#[derive(Clone)]
+struct CandidateServer {
+    received: Arc<Mutex<Vec<String>>>,
+    accepted: Option<String>,
+    partial: bool,
+    remove_publickey: bool,
+}
+
+impl russh::server::Handler for CandidateServer {
+    type Error = russh::Error;
+    async fn auth_none(&mut self, _: &str) -> Result<russh::server::Auth, Self::Error> {
+        Ok(russh::server::Auth::Reject {
+            proceed_with_methods: Some(russh::MethodSet::from(&[russh::MethodKind::PublicKey][..])),
+            partial_success: false,
+        })
+    }
+    async fn auth_publickey(
+        &mut self,
+        _: &str,
+        key: russh::server::VerifiedPublicKey<'_>,
+    ) -> Result<russh::server::Auth, Self::Error> {
+        let fingerprint = key.public_key.fingerprint(HashAlg::Sha256).to_string();
+        self.received.lock().unwrap().push(fingerprint.clone());
+        if self.accepted.as_ref() == Some(&fingerprint) {
+            return Ok(russh::server::Auth::Accept);
+        }
+        let method = if self.remove_publickey {
+            russh::MethodKind::HostBased
+        } else {
+            russh::MethodKind::PublicKey
+        };
+        Ok(russh::server::Auth::Reject {
+            proceed_with_methods: Some(russh::MethodSet::from(&[method][..])),
+            partial_success: self.partial,
+        })
+    }
+}
+
+fn candidate_config(
+    temp: &tempfile::TempDir,
+    auth_type: crate::SshAuthType,
+) -> crate::SshConnectionConfig {
+    let known_hosts = temp.path().join("known_hosts");
+    let entry = std::fs::read_to_string(&known_hosts).unwrap();
+    let port = entry
+        .split("]:")
+        .nth(1)
+        .unwrap()
+        .split(' ')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut config = crate::SshConnectionConfig::new(
+        "candidate fixture",
+        "127.0.0.1",
+        port,
+        "fixture",
+        auth_type,
+    );
+    config.known_hosts_path = Some(known_hosts.to_str().unwrap().into());
+    config
+}
+
+async fn ready_fixture(keys: Vec<PrivateKey>, reject: bool) -> (ReadyAgent, Arc<AtomicUsize>) {
+    let (agent, signatures) = fixture(keys, reject);
+    let connector = Arc::new(Connector {
+        clients: Mutex::new(VecDeque::from([Ok(agent)])),
+        ..Default::default()
+    });
+    (
+        resolve_agent(SshAgentProvider::Auto, connector)
+            .await
+            .ready
+            .unwrap(),
+        signatures,
+    )
+}
+
+#[tokio::test]
+async fn real_negotiator_keeps_one_budget_and_never_repeats_an_identity_after_partial_success() {
+    use crate::public_key_candidates::PublicKeyCandidates;
+    use crate::transport_authentication::AuthenticationNegotiation;
+    for partial in [false, true] {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let (mut handle, server, temp) = ssh_agent_session(CandidateServer {
+            received: received.clone(),
+            accepted: None,
+            partial,
+            remove_publickey: false,
+        })
+        .await;
+        let config = candidate_config(&temp, crate::SshAuthType::AutoPublicKey);
+        let trust = crate::host_trust::HostTrust::load(&config).await.unwrap();
+        let keys = (0..8)
+            .map(|_| PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap())
+            .collect();
+        let (ready, signatures) = ready_fixture(keys, false).await;
+        let candidates = PublicKeyCandidates::from_sources(&config, Some(ready), vec![]).unwrap();
+        let error = AuthenticationNegotiation::with_public_keys(candidates)
+            .begin(&mut handle, &config, &trust, None)
+            .await
+            .err()
+            .expect("five rejected/partial identities do not complete authentication");
+        assert!(error.to_string().contains("5/5"), "{error}");
+        let actual = received.lock().unwrap();
+        assert_eq!(actual.len(), 5);
+        assert_eq!(
+            actual
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            5
+        );
+        assert_eq!(signatures.load(Ordering::SeqCst), 5);
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn selected_agent_identity_is_the_only_key_offered_and_disappearance_never_falls_back() {
+    use crate::public_key_candidates::PublicKeyCandidates;
+    use crate::transport_authentication::AuthenticationNegotiation;
+    let keys: Vec<_> = (0..8)
+        .map(|_| PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap())
+        .collect();
+    let selected = keys[7]
+        .public_key()
+        .fingerprint(HashAlg::Sha256)
+        .to_string();
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let (mut handle, server, temp) = ssh_agent_session(CandidateServer {
+        received: received.clone(),
+        accepted: Some(selected.clone()),
+        partial: false,
+        remove_publickey: false,
+    })
+    .await;
+    let mut config = candidate_config(&temp, crate::SshAuthType::Agent);
+    config.agent_fingerprint = Some(selected.clone());
+    let trust = crate::host_trust::HostTrust::load(&config).await.unwrap();
+    let (ready, signatures) = ready_fixture(keys, false).await;
+    let candidates = PublicKeyCandidates::from_sources(&config, Some(ready), vec![]).unwrap();
+    assert!(AuthenticationNegotiation::with_public_keys(candidates)
+        .begin(&mut handle, &config, &trust, None)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(*received.lock().unwrap(), vec![selected]);
+    assert_eq!(signatures.load(Ordering::SeqCst), 1);
+    let (ready, signatures) = ready_fixture(
+        vec![PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap()],
+        false,
+    )
+    .await;
+    assert!(PublicKeyCandidates::from_sources(&config, Some(ready), vec![]).is_err());
+    assert_eq!(signatures.load(Ordering::SeqCst), 0);
+    server.abort();
+}
+
+#[tokio::test]
+async fn automatic_files_skip_malformed_and_duplicate_keys_and_resume_encrypted_key_on_same_socket()
+{
+    use crate::public_key_candidates::PublicKeyCandidates;
+    use crate::transport_authentication::AuthenticationNegotiation;
+    for encrypted in [false, true] {
+        let agent_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+        let file_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+        let selected = file_key
+            .public_key()
+            .fingerprint(HashAlg::Sha256)
+            .to_string();
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let (mut handle, server, temp) = ssh_agent_session(CandidateServer {
+            received: received.clone(),
+            accepted: Some(selected.clone()),
+            partial: false,
+            remove_publickey: false,
+        })
+        .await;
+        let config = candidate_config(&temp, crate::SshAuthType::AutoPublicKey);
+        let trust = crate::host_trust::HostTrust::load(&config).await.unwrap();
+        let malformed = temp.path().join("id_ed25519");
+        let duplicate = temp.path().join("id_rsa");
+        let accepted = temp.path().join("id_ecdsa");
+        std::fs::write(&malformed, "malformed private key").unwrap();
+        agent_key
+            .write_openssh_file(&duplicate, Default::default())
+            .unwrap();
+        let file_key = if encrypted {
+            file_key
+                .encrypt(&mut rand::rng(), "attempt-only-unlock")
+                .unwrap()
+        } else {
+            file_key
+        };
+        file_key
+            .write_openssh_file(&accepted, Default::default())
+            .unwrap();
+        let (ready, signatures) = ready_fixture(vec![agent_key.clone(), agent_key], false).await;
+        let candidates = PublicKeyCandidates::from_sources(
+            &config,
+            Some(ready),
+            vec![malformed, duplicate, accepted]
+                .iter()
+                .map(|path| path.to_str().unwrap().into())
+                .collect(),
+        )
+        .unwrap();
+        let mut negotiation = AuthenticationNegotiation::with_public_keys(candidates);
+        let round = negotiation
+            .begin(&mut handle, &config, &trust, None)
+            .await
+            .unwrap();
+        if encrypted {
+            let round = round.unwrap();
+            assert_eq!(round.kind, crate::SshAuthenticationKind::PrivateKey);
+            assert!(round.name.ends_with("id_ecdsa"));
+            assert_eq!(received.lock().unwrap().len(), 1);
+            assert!(negotiation
+                .respond(
+                    &mut handle,
+                    &config,
+                    &trust,
+                    None,
+                    vec!["attempt-only-unlock".into()]
+                )
+                .await
+                .unwrap()
+                .is_none());
+        } else {
+            assert!(round.is_none());
+        }
+        assert_eq!(received.lock().unwrap().last(), Some(&selected));
+        assert_eq!(received.lock().unwrap().len(), 2);
+        assert_eq!(signatures.load(Ordering::SeqCst), 1);
+        assert!(config.password.is_none());
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn automatic_candidates_reserve_file_slots_and_stop_on_server_method_removal_or_signing_refusal(
+) {
+    use crate::public_key_candidates::PublicKeyCandidates;
+    use crate::transport_authentication::AuthenticationNegotiation;
+    for (remove_publickey, refuse_signature) in [(false, false), (true, false), (false, true)] {
+        let keys: Vec<_> = (0..11)
+            .map(|_| PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap())
+            .collect();
+        let selected = keys[10]
+            .public_key()
+            .fingerprint(HashAlg::Sha256)
+            .to_string();
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let (mut handle, server, temp) = ssh_agent_session(CandidateServer {
+            received: received.clone(),
+            accepted: Some(selected.clone()),
+            partial: false,
+            remove_publickey,
+        })
+        .await;
+        let config = candidate_config(&temp, crate::SshAuthType::AutoPublicKey);
+        let trust = crate::host_trust::HostTrust::load(&config).await.unwrap();
+        let mut files = vec![];
+        for (index, key) in keys[8..].iter().enumerate() {
+            let path = temp.path().join(format!("default-{index}"));
+            key.write_openssh_file(&path, Default::default()).unwrap();
+            files.push(path.to_str().unwrap().into());
+        }
+        let (ready, signatures) = ready_fixture(keys[..8].to_vec(), refuse_signature).await;
+        let candidates = PublicKeyCandidates::from_sources(&config, Some(ready), files).unwrap();
+        let result = AuthenticationNegotiation::with_public_keys(candidates)
+            .begin(&mut handle, &config, &trust, None)
+            .await;
+        if remove_publickey || refuse_signature {
+            assert!(result.is_err());
+            assert_eq!(signatures.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                received.lock().unwrap().len(),
+                usize::from(!refuse_signature)
+            );
+        } else {
+            assert!(result.unwrap().is_none());
+            let received = received.lock().unwrap();
+            assert_eq!(
+                received.len(),
+                5,
+                "two Agent identities plus three files share one budget"
+            );
+            assert_eq!(received.last(), Some(&selected));
+            assert_eq!(signatures.load(Ordering::SeqCst), 2);
+        }
         server.abort();
     }
 }

@@ -45,6 +45,7 @@ async fn pty_shell_streams_prompt_and_echoes_input() {
             port,
             username: username.clone(),
             auth_type: SshAuthType::Password,
+            agent_fingerprint: None,
             key_content: None,
             key_path: None,
             certificate_path: None,

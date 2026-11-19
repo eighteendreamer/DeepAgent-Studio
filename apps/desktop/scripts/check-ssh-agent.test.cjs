@@ -9,6 +9,65 @@ const { renderToStaticMarkup } = require('react-dom/server');
 const zh = require('../src/locales/zh.json');
 const root = path.resolve(__dirname, '../src');
 
+for (const file of ['components/settings/ConnectionsSettings.tsx', 'components/remote/RemoteSidebar.tsx']) {
+  test(`${file}: Agent identity selection survives editing and reaches both save commands`, async () => {
+    const fingerprint = 'SHA256:fixture-selected-identity';
+    let form;
+    production(file, file.includes('RemoteSidebar') ? 'startEdit' : 'openEdit', {
+      setForm: value => { form = value; }, setEditingId() {}, setIsModalOpen() {}, setTestResult() {}, setEditingConn() {}, setManagerMode() {},
+    })({ id:'id', name:'fixture', host:'fixture.invalid', port:22, username:'fixture', auth_type:'agent', agent_fingerprint:fingerprint });
+    assert.equal(form.agentFingerprint, fingerprint);
+    for (const editing of [false, true]) {
+      const calls = [];
+      const noop = () => {};
+      await production(file, 'handleSave', {
+        form, editingId:editing ? 'id' : null, managerMode:editing ? 'edit' : 'create', editingConn:{id:'id'},
+        sshCreateConnection:async (...args) => { calls.push(args); return {id:'id'}; }, sshUpdateConnection:async (...args) => calls.push(args),
+        closeModal:noop, load:noop, loadConnections:noop, setForm:noop, setEditingConn:noop, setManagerMode:noop, handleSelect:noop, emptyForm:{},
+        normalizeSshError:error=>error, message:{error:error=>{throw Error(error);}}, t:key=>key,
+      })();
+      assert.equal(calls[0][editing ? 16 : 15], fingerprint);
+    }
+  });
+}
+
+test('Agent identity selection crosses the IPC boundary without occupying keyPath', async () => {
+  const calls = [];
+  const create = production('api.ts', 'sshCreateConnection', {getInvoke:()=>async (...args)=>{ calls.push(args); return {}; }});
+  await create('fixture','fixture.invalid',22,'fixture','agent',undefined,undefined,undefined,'strict',undefined,undefined,undefined,undefined,undefined,undefined,'SHA256:selected');
+  assert.equal(calls[0][1].agentFingerprint, 'SHA256:selected');
+  assert.equal(calls[0][1].keyPath, undefined);
+});
+
+test('automatic public-key mode is separate from Agent inspection and provider changes clear the pin', () => {
+  const noop = () => null;
+  const Select = props => React.createElement('section', null, props.children);
+  const control = props => React.createElement('div', null, props.children);
+  const fingerprint = 'SHA256:selected';
+  const changes=[];
+  const Fields=production('components/remote/SshAuthenticationFields.tsx','SshAuthenticationFields', {
+    React,useId:()=> 'fixture',useState:()=> [null,noop],useEffect:noop,useTranslation:()=>({t:key=>key}),
+    Select,SelectTrigger:control,SelectValue:control,SelectItem:control,SelectContent:control,Label:control,Button:control,Input:control,Textarea:control,
+  });
+  function selects(element,result=[]) {
+    if (!React.isValidElement(element)) return result;
+    if(element.type===Select) result.push(element);
+    React.Children.forEach(element.props.children,child=>selects(child,result));
+    return result;
+  }
+  const props={onChange:value=>changes.push(value),onPickKeyFile:noop,onPickCertificateFile:noop};
+  const automatic=selects(Fields({...props,value:{authType:'auto_public_key',agentFingerprint:fingerprint}}));
+  assert.equal(automatic.length,1);
+  assert.equal(automatic[0].props.value,'auto_public_key');
+  const agent=selects(Fields({...props,value:{authType:'agent',agentFingerprint:fingerprint}}));
+  assert.equal(agent.length,3);
+  assert.equal(agent[2].props.value,fingerprint);
+  agent[1].props.onValueChange('pageant');
+  assert.equal(changes[0].agentFingerprint,'');
+  agent[2].props.onValueChange('automatic');
+  assert.equal(changes[1].agentFingerprint,'');
+});
+
 // Exercise the production callbacks, including both connection-editor entry points.
 function production(file, name, context = {}) {
   const source = readFileSync(path.join(root, file), 'utf8');

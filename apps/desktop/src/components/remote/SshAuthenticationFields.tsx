@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { canSaveSshJump, type SshJumpForm } from "./SshJumpFields";
 import { SshDefaultIdentityPicker } from "./SshDefaultIdentityPicker";
 
-export type SshFormAuthType = "password" | "file" | "content" | "agent" | "openssh_agent" | "pageant" | "chain";
+export type SshFormAuthType = "password" | "file" | "content" | "agent" | "openssh_agent" | "pageant" | "auto_public_key" | "chain";
 
 export interface SshAuthenticationFactorForm {
   id?: string;
@@ -54,6 +54,7 @@ function emptyAuthenticationFactor(): SshAuthenticationFactorForm {
 
 interface AuthenticationValue {
   authType: SshFormAuthType;
+  agentFingerprint?: string;
   keyPath: string;
   keyContent: string;
   hasKeyContent: boolean;
@@ -96,7 +97,7 @@ export function SshAuthenticationFields({ value, onChange, onPickKeyFile, onPick
   const { t } = useTranslation();
   const id = useId();
   const isPrivateKey = value.authType === "file" || value.authType === "content";
-  const isAgent = !factorMode && value.authType !== "password" && value.authType !== "chain" && !isPrivateKey;
+  const isAgent = !factorMode && ["agent", "openssh_agent", "pageant"].includes(value.authType);
   const provider: SshAgentProvider = value.authType === "pageant" ? "pageant" : value.authType === "openssh_agent" ? "open_ssh" : "auto";
   const [refresh, setRefresh] = useState(0);
   const [report, setReport] = useState<{ provider: SshAgentProvider; refresh: number; probes?: SshAgentProbe[]; error?: string } | null>(null);
@@ -135,13 +136,14 @@ export function SshAuthenticationFields({ value, onChange, onPickKeyFile, onPick
   return <div className="space-y-3">
     <div className="space-y-1.5">
       <Label htmlFor={`${id}-method`}>{t("settings.connections.agent.authentication")}</Label>
-      <Select value={isAgent ? "agent" : value.authType} onValueChange={(authType) => onChange({ authType: authType as SshFormAuthType, password: "", keyPath: "", keyContent: "", hasKeyContent: false, certificatePath: "", hasPassword: false, hasPassphrase: false, clearPassphrase: false, authenticationFactors: authType === "chain" ? [emptyAuthenticationFactor()] : [] })}>
-        <SelectTrigger id={`${id}-method`}><SelectValue placeholder={isAgent ? "SSH Agent" : t(value.authType === "chain" ? "settings.connections.authenticationChain" : value.authType === "content" ? "settings.connections.privateKeyContent" : value.authType === "file" ? "settings.connections.identityFile" : "settings.connections.password")} /></SelectTrigger>
+      <Select value={isAgent ? "agent" : value.authType} onValueChange={(authType) => onChange({ authType: authType as SshFormAuthType, agentFingerprint: "", password: "", keyPath: "", keyContent: "", hasKeyContent: false, certificatePath: "", hasPassword: false, hasPassphrase: false, clearPassphrase: false, authenticationFactors: authType === "chain" ? [emptyAuthenticationFactor()] : [] })}>
+        <SelectTrigger id={`${id}-method`}><SelectValue placeholder={isAgent ? "SSH Agent" : t(value.authType === "auto_public_key" ? "settings.connections.agent.autoPublicKey" : value.authType === "chain" ? "settings.connections.authenticationChain" : value.authType === "content" ? "settings.connections.privateKeyContent" : value.authType === "file" ? "settings.connections.identityFile" : "settings.connections.password")} /></SelectTrigger>
         <SelectContent>
           <SelectItem value="password">{t("settings.connections.password")}</SelectItem>
           <SelectItem value="file">{t("settings.connections.identityFile")}</SelectItem>
           <SelectItem value="content">{t("settings.connections.privateKeyContent")}</SelectItem>
           {!factorMode && <SelectItem value="agent">SSH Agent</SelectItem>}
+          {!factorMode && <SelectItem value="auto_public_key">{t("settings.connections.agent.autoPublicKey")}</SelectItem>}
           {!factorMode && <SelectItem value="chain">{t("settings.connections.authenticationChain")}</SelectItem>}
         </SelectContent>
       </Select>
@@ -197,12 +199,23 @@ export function SshAuthenticationFields({ value, onChange, onPickKeyFile, onPick
     </div>}
     {isAgent && <div className="space-y-2 rounded-xl border border-border-theme p-3">
       <Label htmlFor={`${id}-provider`}>{t("settings.connections.agent.provider")}</Label>
-      <Select value={provider} onValueChange={(next) => onChange({ authType: next === "pageant" ? "pageant" : next === "open_ssh" ? "openssh_agent" : "agent" })}>
+      <Select value={provider} onValueChange={(next) => onChange({ authType: next === "pageant" ? "pageant" : next === "open_ssh" ? "openssh_agent" : "agent", agentFingerprint: "" })}>
         <SelectTrigger id={`${id}-provider`}><SelectValue placeholder={provider === "auto" ? t("settings.connections.agent.auto") : provider === "pageant" ? "Pageant" : "OpenSSH Agent"} /></SelectTrigger>
         <SelectContent>
           <SelectItem value="auto">{t("settings.connections.agent.auto")}</SelectItem>
           <SelectItem value="open_ssh">OpenSSH Agent</SelectItem>
           <SelectItem value="pageant">Pageant</SelectItem>
+        </SelectContent>
+      </Select>
+      <Label htmlFor={`${id}-identity`}>{t("settings.connections.agent.identity")}</Label>
+      <Select value={value.agentFingerprint || "automatic"} onValueChange={(fingerprint) => onChange({ agentFingerprint: fingerprint === "automatic" ? "" : fingerprint })}>
+        <SelectTrigger id={`${id}-identity`}><SelectValue placeholder={value.agentFingerprint || t("settings.connections.agent.boundedIdentities")} /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="automatic">{t("settings.connections.agent.boundedIdentities")}</SelectItem>
+          {Array.from(new Map((current?.probes ?? []).flatMap((probe) => probe.identities).map((identity) => [identity.fingerprint, identity])).values()).map((identity) =>
+            <SelectItem key={identity.fingerprint} value={identity.fingerprint}>{identity.algorithm} {identity.fingerprint}</SelectItem>)}
+          {value.agentFingerprint && !current?.probes?.some((probe) => probe.identities.some((identity) => identity.fingerprint === value.agentFingerprint)) &&
+            <SelectItem value={value.agentFingerprint}>{value.agentFingerprint}</SelectItem>}
         </SelectContent>
       </Select>
       <div role="status" aria-live="polite" className="space-y-2 text-[12px]">

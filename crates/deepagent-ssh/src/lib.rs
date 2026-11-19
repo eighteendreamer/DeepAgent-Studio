@@ -111,6 +111,7 @@ mod known_hosts_import;
 mod private_identity;
 mod proxy;
 mod pty;
+mod public_key_candidates;
 mod remote;
 mod service;
 mod session;
@@ -810,6 +811,7 @@ impl SshService {
             port: dto.port,
             username: dto.username.clone(),
             auth_type: dto.auth_type,
+            agent_fingerprint: dto.agent_fingerprint.clone(),
             authentication_factors: Vec::new(),
             jump: None,
             timing: dto.timing,
@@ -982,6 +984,7 @@ mod tests {
                 port: 22,
                 username: "tester".into(),
                 auth_type: SshAuthType::Agent,
+                agent_fingerprint: None,
                 authentication_factors: None,
                 proxy: None,
                 jump: None,

@@ -12,6 +12,7 @@ pub enum SshAuthType {
     #[serde(rename = "openssh_agent")]
     OpenSshAgent,
     Pageant,
+    AutoPublicKey,
     KeyFile,
     KeyContent,
     Password,
@@ -35,6 +36,8 @@ pub struct SshConnectionConfig {
     pub port: u16,
     pub username: String,
     pub auth_type: SshAuthType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_fingerprint: Option<String>,
     pub key_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_content: Option<String>,
@@ -90,6 +93,8 @@ pub struct SshConnectionDto {
     pub username: String,
     pub auth_type: SshAuthType,
     #[serde(default)]
+    pub agent_fingerprint: Option<String>,
+    #[serde(default)]
     pub authentication_factors: Vec<crate::SshAuthenticationFactorDto>,
     #[serde(default)]
     pub proxy: Option<crate::SshProxyDto>,
@@ -119,6 +124,8 @@ pub struct CreateSshConnectionRequest {
     pub username: String,
     pub auth_type: SshAuthType,
     #[serde(default)]
+    pub agent_fingerprint: Option<String>,
+    #[serde(default)]
     pub authentication_factors: Option<Vec<crate::SshAuthenticationFactorRequest>>,
     #[serde(default)]
     pub proxy: Option<crate::SshProxyRequest>,
@@ -146,6 +153,9 @@ pub struct UpdateSshConnectionRequest {
     pub port: u16,
     pub username: String,
     pub auth_type: SshAuthType,
+    /// Omitted preserves a compatible Agent selection; empty explicitly clears it.
+    #[serde(default)]
+    pub agent_fingerprint: Option<String>,
     /// None preserves an existing chain; an explicit list replaces it by opaque factor IDs.
     #[serde(default)]
     pub authentication_factors: Option<Vec<crate::SshAuthenticationFactorRequest>>,
@@ -184,6 +194,7 @@ impl SshConnectionConfig {
     }
 
     pub(crate) fn normalize_credentials(&mut self) {
+        normalize_agent_fingerprint(self.auth_type, &mut self.agent_fingerprint);
         normalize_credential(
             self.auth_type,
             &mut self.key_path,
@@ -197,6 +208,7 @@ impl SshConnectionConfig {
     }
 
     pub(crate) fn validate_credentials(&self) -> crate::SshResult<()> {
+        validate_agent_fingerprint(self.agent_fingerprint.as_deref())?;
         if self.auth_type == SshAuthType::Chain {
             crate::authentication_factors::validate_factors(&self.authentication_factors)
         } else {
@@ -223,6 +235,7 @@ impl SshConnectionConfig {
             port,
             username: username.into(),
             auth_type,
+            agent_fingerprint: None,
             key_path: None,
             key_content: None,
             certificate_path: None,
@@ -241,6 +254,37 @@ impl SshConnectionConfig {
             cached_checked_at_ms: None,
         }
     }
+}
+
+impl SshAuthType {
+    pub(crate) fn uses_agent(self) -> bool {
+        matches!(self, Self::Agent | Self::OpenSshAgent | Self::Pageant)
+    }
+
+    pub(crate) fn uses_public_key_candidates(self) -> bool {
+        self.uses_agent() || self == Self::AutoPublicKey
+    }
+}
+
+pub(crate) fn normalize_agent_fingerprint(
+    auth_type: SshAuthType,
+    fingerprint: &mut Option<String>,
+) {
+    if !auth_type.uses_agent() || fingerprint.as_deref() == Some("") {
+        *fingerprint = None;
+    }
+}
+
+fn validate_agent_fingerprint(fingerprint: Option<&str>) -> crate::SshResult<()> {
+    if let Some(value) = fingerprint {
+        let parsed = value.parse::<russh::keys::ssh_key::Fingerprint>();
+        if !matches!(parsed, Ok(russh::keys::ssh_key::Fingerprint::Sha256(_))) {
+            return Err(crate::SshError::InvalidConfig(
+                "Agent identity requires a SHA256 public-key fingerprint".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn normalize_credential(

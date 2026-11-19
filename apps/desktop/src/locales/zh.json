@@ -827,6 +827,9 @@
     },
     "connections": {
       "agent": {
+        "autoPublicKey": "自动公钥（Agent 与默认密钥）",
+        "identity": "公钥身份",
+        "boundedIdentities": "自动选择（最多 5 个身份）",
         "authentication": "认证方式",
         "provider": "本机 Agent 提供方",
         "auto": "自动检测（OpenSSH 优先）",

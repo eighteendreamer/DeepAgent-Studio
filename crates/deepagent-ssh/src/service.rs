@@ -314,6 +314,7 @@ impl SshServiceImpl {
             Some(self.resolve_known_hosts(request.known_hosts_path.as_deref())?);
         config.host_key_policy = request.host_key_policy;
         config.key_path = request.key_path;
+        config.agent_fingerprint = request.agent_fingerprint;
         config.key_content = request.key_content;
         config.certificate_path = request.certificate_path;
         config.password = request.password;
@@ -370,6 +371,11 @@ impl SshServiceImpl {
             port: request.port,
             username: request.username,
             auth_type: request.auth_type,
+            agent_fingerprint: request.agent_fingerprint.or_else(|| {
+                (request.auth_type == cfg.auth_type && request.auth_type.uses_agent())
+                    .then(|| cfg.agent_fingerprint.clone())
+                    .flatten()
+            }),
             proxy: crate::proxy::resolve_proxy(request.proxy, cfg.proxy.as_ref())?,
             jump: crate::jump::resolve_jump(
                 request.jump,
@@ -1817,6 +1823,7 @@ impl SshServiceImpl {
             || original.port != cfg.port
             || original.username != cfg.username
             || original.auth_type != cfg.auth_type
+            || original.agent_fingerprint != cfg.agent_fingerprint
             || original.key_path != cfg.key_path
             || original.key_content != cfg.key_content
             || original.certificate_path != cfg.certificate_path
@@ -2219,6 +2226,7 @@ fn dto_from_config(
         port: cfg.port,
         username: cfg.username.clone(),
         auth_type: cfg.auth_type,
+        agent_fingerprint: cfg.agent_fingerprint.clone(),
         authentication_factors: cfg
             .authentication_factors
             .iter()

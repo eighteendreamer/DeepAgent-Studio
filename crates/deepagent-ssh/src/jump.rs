@@ -54,6 +54,8 @@ pub struct SshJumpConfig {
     pub port: u16,
     pub username: String,
     pub auth_type: SshAuthType,
+    #[serde(default)]
+    pub agent_fingerprint: Option<String>,
     pub key_path: Option<String>,
     pub key_content: Option<String>,
     pub certificate_path: Option<String>,
@@ -72,6 +74,8 @@ pub struct SshJumpSettingsRequest {
     pub port: u16,
     pub username: String,
     pub auth_type: SshAuthType,
+    #[serde(default)]
+    pub agent_fingerprint: Option<String>,
     pub key_path: Option<String>,
     pub key_content: Option<String>,
     pub certificate_path: Option<String>,
@@ -94,6 +98,7 @@ pub struct SshJumpDto {
     pub port: u16,
     pub username: String,
     pub auth_type: SshAuthType,
+    pub agent_fingerprint: Option<String>,
     pub key_path: Option<String>,
     pub certificate_path: Option<String>,
     pub has_key_content: bool,
@@ -140,6 +145,7 @@ impl SshJumpConfig {
         );
         config.id = parent.id.clone();
         config.key_path = self.key_path.clone();
+        config.agent_fingerprint = self.agent_fingerprint.clone();
         config.key_content = self.key_content.clone();
         config.certificate_path = self.certificate_path.clone();
         config.password = self.password.clone();
@@ -157,6 +163,7 @@ impl SshJumpConfig {
             port: self.port,
             username: self.username.clone(),
             auth_type: self.auth_type,
+            agent_fingerprint: self.agent_fingerprint.clone(),
             key_path: self.key_path.clone(),
             certificate_path: self.certificate_path.clone(),
             has_key_content: self.key_content.is_some(),
@@ -220,6 +227,9 @@ pub(crate) fn resolve_jump(
         port: settings.port,
         username: settings.username,
         auth_type: settings.auth_type,
+        agent_fingerprint: settings
+            .agent_fingerprint
+            .or_else(|| same_credential.and_then(|old| old.agent_fingerprint.clone())),
         key_path: settings.key_path,
         key_content: settings
             .key_content
@@ -250,6 +260,7 @@ pub(crate) fn resolve_jump(
             .or_else(|| same.map(|old| old.host_key_policy))
             .unwrap_or_default(),
     };
+    crate::config::normalize_agent_fingerprint(config.auth_type, &mut config.agent_fingerprint);
     crate::config::normalize_credential(
         config.auth_type,
         &mut config.key_path,

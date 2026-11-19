@@ -296,7 +296,7 @@ impl PendingClientAuthentication {
     }
 
     pub(crate) async fn verify_jump_trust(
-        &self,
+        &mut self,
         config: &SshConnectionConfig,
         store: Option<Arc<SshHostKeyStore>>,
     ) -> SshResult<()> {

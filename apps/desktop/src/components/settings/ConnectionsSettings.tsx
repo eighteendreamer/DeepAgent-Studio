@@ -35,6 +35,7 @@ interface FormData {
   port: string;
   username: string;
   authType: AuthType;
+  agentFingerprint?: string;
   keyPath: string;
   keyContent: string;
   hasKeyContent: boolean;
@@ -157,6 +158,7 @@ export function ConnectionsSettings() {
       username: conn.username,
       authType: conn.auth_type === "key_content" ? "content" : conn.auth_type === "key_file" ? "file" : conn.auth_type ?? (conn.key_path ? "file" : "password"),
       authenticationFactors: authenticationFactorsFromDto(conn.authentication_factors ?? []),
+      agentFingerprint: conn.agent_fingerprint ?? "",
       proxy: sshProxyFromDto(conn.proxy),
       jump: sshJumpFromDto(conn.jump),
       timing: sshTimingFromDto(conn.timing),
@@ -205,6 +207,7 @@ export function ConnectionsSettings() {
         sshProxyRequest(form.proxy),
         sshJumpRequest(form.jump),
         sshTimingRequest(form.timing),
+        ["agent", "openssh_agent", "pageant"].includes(form.authType) ? form.agentFingerprint ?? "" : undefined,
       );
     } else {
       await sshCreateConnection(
@@ -223,6 +226,7 @@ export function ConnectionsSettings() {
         sshProxyRequest(form.proxy),
         sshJumpRequest(form.jump),
         sshTimingRequest(form.timing),
+        ["agent", "openssh_agent", "pageant"].includes(form.authType) ? form.agentFingerprint ?? "" : undefined,
       );
     }
 

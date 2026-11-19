@@ -3,6 +3,7 @@
 
 use crate::authentication_challenge::{SshAuthenticationKind, SshAuthenticationPrompt};
 use crate::host_trust::HostTrust;
+use crate::public_key_candidates::{PublicKeyCandidate, PublicKeyCandidates};
 use crate::transport::{protocol_error, IdentityHandler, SshAuthenticationRound};
 use crate::{SshAuthType, SshConnectionConfig, SshError, SshHostKeyStore, SshResult};
 use russh::client::{self, Handle};
@@ -19,11 +20,14 @@ pub(crate) struct AuthenticationNegotiation {
     current_candidate: Option<AuthenticationCandidate>,
     completed_stages: usize,
     pending_kind: Option<SshAuthenticationKind>,
+    public_keys: PublicKeyCandidates,
+    public_key_methods: Option<MethodSet>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AuthenticationCandidate {
     Credential(usize),
+    PublicKey,
     KeyboardInteractive,
 }
 
@@ -33,6 +37,13 @@ enum AuthenticationReply {
 }
 
 impl AuthenticationNegotiation {
+    #[cfg(test)]
+    pub(crate) fn with_public_keys(public_keys: PublicKeyCandidates) -> Self {
+        Self {
+            public_keys,
+            ..Default::default()
+        }
+    }
     pub(crate) async fn begin(
         &mut self,
         handle: &mut Handle<IdentityHandler>,
@@ -69,23 +80,37 @@ impl AuthenticationNegotiation {
                 let passphrase = responses.first().ok_or_else(|| {
                     SshError::InvalidConfig("private-key unlock expects one passphrase".into())
                 })?;
-                let Some(AuthenticationCandidate::Credential(index)) = self.current_candidate
-                else {
-                    return Err(SshError::InvalidConfig(
-                        "private-key unlock has no active identity".into(),
-                    ));
-                };
-                let identity = config.authentication_config(index)?;
-                AuthenticationReply::Result(
-                    authenticate(handle, &identity, Some(passphrase), trust, store.clone())
+                match self.current_candidate {
+                    Some(AuthenticationCandidate::PublicKey) => {
+                        let candidate = self.public_keys.unlock(passphrase).await?;
+                        self.authenticate_public_candidate(
+                            handle,
+                            config,
+                            trust,
+                            store.clone(),
+                            candidate,
+                        )
                         .await?
-                        .ok_or_else(|| {
-                            SshError::AuthFailed(
-                                config.username.clone(),
-                                "private key remains locked".into(),
-                            )
-                        })?,
-                )
+                    }
+                    Some(AuthenticationCandidate::Credential(index)) => {
+                        let identity = config.authentication_config(index)?;
+                        AuthenticationReply::Result(
+                            authenticate(handle, &identity, Some(passphrase), trust, store.clone())
+                                .await?
+                                .ok_or_else(|| {
+                                    SshError::AuthFailed(
+                                        config.username.clone(),
+                                        "private key remains locked".into(),
+                                    )
+                                })?,
+                        )
+                    }
+                    _ => {
+                        return Err(SshError::InvalidConfig(
+                            "private-key unlock has no active identity".into(),
+                        ))
+                    }
+                }
             }
             Some(SshAuthenticationKind::KeyboardInteractive) => {
                 let response = handle
@@ -152,13 +177,23 @@ impl AuthenticationNegotiation {
                 }
                 self.attempted.clear();
             }
+            if config.auth_type.uses_public_key_candidates()
+                && remaining_methods.contains(&MethodKind::PublicKey)
+            {
+                verify_authentication_trust(config, trust, store.clone()).await?;
+                self.public_keys.initialize(config).await?;
+                self.public_key_methods = Some(remaining_methods.clone());
+            }
             let candidate = self
                 .pick_candidate(config, &remaining_methods)
                 .ok_or_else(|| {
                     no_method(
                         config,
                         &remaining_methods,
-                        "no untried configured SSH authentication method is offered",
+                        &format!(
+                            "no untried configured SSH authentication method is offered{}",
+                            self.public_keys.failure_context()
+                        ),
                     )
                 })?;
             verify_authentication_trust(config, trust, store.clone()).await?;
@@ -176,6 +211,10 @@ impl AuthenticationNegotiation {
                             protocol_error("start SSH keyboard-interactive authentication", error)
                         })?,
                 )
+            } else if candidate == AuthenticationCandidate::PublicKey {
+                let identity = self.public_keys.next(config).await?;
+                self.authenticate_public_candidate(handle, config, trust, store.clone(), identity)
+                    .await?
             } else {
                 let AuthenticationCandidate::Credential(index) = candidate else {
                     unreachable!()
@@ -195,6 +234,52 @@ impl AuthenticationNegotiation {
                 }
             };
         }
+    }
+
+    async fn authenticate_public_candidate(
+        &mut self,
+        handle: &mut Handle<IdentityHandler>,
+        config: &SshConnectionConfig,
+        trust: &HostTrust,
+        store: Option<Arc<SshHostKeyStore>>,
+        candidate: PublicKeyCandidate,
+    ) -> SshResult<AuthenticationReply> {
+        verify_authentication_trust(config, trust, store.clone()).await?;
+        let result = match candidate {
+            PublicKeyCandidate::Agent(identity) => {
+                self.public_keys
+                    .agent
+                    .as_mut()
+                    .ok_or_else(|| {
+                        SshError::InvalidConfig("Agent identity source is unavailable".into())
+                    })?
+                    .authenticate_identity(handle, &config.username, identity)
+                    .await?
+            }
+            PublicKeyCandidate::Private(identity) => {
+                authenticate_private_identity(handle, config, identity).await?
+            }
+            PublicKeyCandidate::Unlock(path) => {
+                return Ok(AuthenticationReply::Prompt(SshAuthenticationRound {
+                    kind: SshAuthenticationKind::PrivateKey,
+                    name: path,
+                    instructions: String::new(),
+                    prompts: vec![SshAuthenticationPrompt {
+                        prompt: "Private key passphrase".into(),
+                        echo: false,
+                    }],
+                }))
+            }
+            PublicKeyCandidate::Exhausted => client::AuthResult::Failure {
+                remaining_methods: self.public_key_methods.clone().ok_or_else(|| {
+                    SshError::InvalidConfig(
+                        "automatic public-key negotiation has no server methods".into(),
+                    )
+                })?,
+                partial_success: false,
+            },
+        };
+        Ok(AuthenticationReply::Result(result))
     }
 
     fn pick_candidate(
@@ -225,6 +310,13 @@ impl AuthenticationNegotiation {
                     return Some(candidate);
                 }
             } else {
+                if method == MethodKind::PublicKey && config.auth_type.uses_public_key_candidates()
+                {
+                    if self.public_keys.has_next() {
+                        return Some(AuthenticationCandidate::PublicKey);
+                    }
+                    continue;
+                }
                 let count = if chain {
                     config.authentication_factors.len()
                 } else {
@@ -310,6 +402,7 @@ fn configured_method(auth_type: SshAuthType) -> Option<MethodKind> {
         | SshAuthType::Agent
         | SshAuthType::OpenSshAgent
         | SshAuthType::Pageant => Some(MethodKind::PublicKey),
+        SshAuthType::AutoPublicKey => Some(MethodKind::PublicKey),
         SshAuthType::Chain => None,
     }
 }
@@ -340,38 +433,17 @@ async fn authenticate(
             else {
                 return Ok(None);
             };
-            let crate::private_identity::PrivateIdentity { key, certificate } = identity;
             // File IO and decryption can outlive the preceding trust check.
             verify_authentication_trust(config, trust, store).await?;
-            if let Some(certificate) = certificate {
-                handle
-                    .authenticate_openssh_cert(&config.username, Arc::new(key), certificate)
-                    .await
-            } else {
-                let hash = handle
-                    .best_supported_rsa_hash()
-                    .await
-                    .map_err(|error| protocol_error("SSH RSA negotiation", error))?
-                    .flatten();
-                handle
-                    .authenticate_publickey(
-                        &config.username,
-                        PrivateKeyWithHashAlg::new(Arc::new(key), hash),
-                    )
-                    .await
-            }
-        }
-        SshAuthType::Agent | SshAuthType::OpenSshAgent | SshAuthType::Pageant => {
-            let provider = match config.auth_type {
-                SshAuthType::Pageant => crate::SshAgentProvider::Pageant,
-                SshAuthType::OpenSshAgent => crate::SshAgentProvider::OpenSsh,
-                _ => crate::SshAgentProvider::Auto,
-            };
-            return crate::agent::authenticate(handle, &config.username, provider)
+            return authenticate_private_identity(handle, config, identity)
                 .await
                 .map(Some);
         }
-        SshAuthType::Chain => {
+        SshAuthType::Agent
+        | SshAuthType::OpenSshAgent
+        | SshAuthType::Pageant
+        | SshAuthType::AutoPublicKey
+        | SshAuthType::Chain => {
             return Err(SshError::InvalidConfig(
                 "SSH authentication requires a concrete credential".into(),
             ))
@@ -379,4 +451,30 @@ async fn authenticate(
     }
     .map_err(|error| protocol_error("SSH authentication", error))?;
     Ok(Some(result))
+}
+
+async fn authenticate_private_identity(
+    handle: &mut Handle<IdentityHandler>,
+    config: &SshConnectionConfig,
+    identity: crate::private_identity::PrivateIdentity,
+) -> SshResult<client::AuthResult> {
+    let crate::private_identity::PrivateIdentity { key, certificate } = identity;
+    if let Some(certificate) = certificate {
+        handle
+            .authenticate_openssh_cert(&config.username, Arc::new(key), certificate)
+            .await
+    } else {
+        let hash = handle
+            .best_supported_rsa_hash()
+            .await
+            .map_err(|error| protocol_error("SSH RSA negotiation", error))?
+            .flatten();
+        handle
+            .authenticate_publickey(
+                &config.username,
+                PrivateKeyWithHashAlg::new(Arc::new(key), hash),
+            )
+            .await
+    }
+    .map_err(|error| protocol_error("SSH authentication", error))
 }

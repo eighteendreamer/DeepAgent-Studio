@@ -125,9 +125,10 @@ impl AgentConnector for SystemAgentConnector {
     }
 }
 
-struct ReadyAgent {
-    client: AgentClient,
+pub(crate) struct ReadyAgent {
+    signer: AgentSigner,
     identities: Vec<AgentIdentity>,
+    remaining_authentication_time: Duration,
 }
 
 // Erase the provider stream before entering russh's borrowed RPITIT Signer boundary.
@@ -180,7 +181,7 @@ async fn resolve_agent(
             if identities.len() > MAX_IDENTITIES {
                 return Err(AgentIssue::new(SshAgentState::Error, "Agent has more than 64 identities; select a smaller identity set in your Agent"));
             }
-            Ok::<_, AgentIssue>(ReadyAgent { client, identities })
+            Ok::<_, AgentIssue>(ReadyAgent { signer: AgentSigner(client), identities, remaining_authentication_time: AUTHENTICATION_TIMEOUT })
         }).await.unwrap_or_else(|_| Err(AgentIssue::new(SshAgentState::TimedOut, "Agent inspection exceeded 2 seconds")));
         let probe = match inspected {
             Ok(ready) if !ready.identities.is_empty() => {
@@ -235,91 +236,159 @@ pub async fn probe_ssh_agent(provider: SshAgentProvider) -> Vec<SshAgentProbe> {
         .probes
 }
 
-pub(crate) async fn authenticate(
-    handle: &mut Handle<IdentityHandler>,
+pub(crate) async fn authentication_agent(
     username: &str,
     provider: SshAgentProvider,
-) -> SshResult<russh::client::AuthResult> {
+    optional: bool,
+) -> SshResult<Option<ReadyAgent>> {
     let resolution = resolve_agent(provider, Arc::new(SystemAgentConnector)).await;
-    let ready = resolution.ready.ok_or_else(|| {
-        let reason = resolution
-            .probes
-            .iter()
-            .map(|probe| {
-                format!(
-                    "{:?}: {:?}{}",
-                    probe.provider,
-                    probe.state,
-                    probe
-                        .reason
-                        .as_ref()
-                        .map(|reason| format!(" ({reason})"))
-                        .unwrap_or_default()
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("; ");
-        SshError::AuthFailed(
-            username.to_owned(),
-            format!("SSH Agent unavailable: {reason}"),
-        )
-    })?;
-    authenticate_ready(handle, username, ready).await
+    if let Some(ready) = resolution.ready {
+        return Ok(Some(ready));
+    }
+    if optional
+        && resolution.probes.iter().all(|probe| {
+            matches!(
+                probe.state,
+                SshAgentState::Empty | SshAgentState::Unavailable | SshAgentState::Unsupported
+            )
+        })
+    {
+        return Ok(None);
+    }
+    let reason = resolution
+        .probes
+        .iter()
+        .map(|probe| {
+            format!(
+                "{:?}: {:?}{}",
+                probe.provider,
+                probe.state,
+                probe
+                    .reason
+                    .as_ref()
+                    .map(|reason| format!(" ({reason})"))
+                    .unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(SshError::AuthFailed(
+        username.into(),
+        format!("SSH Agent unavailable: {reason}"),
+    ))
 }
 
+impl ReadyAgent {
+    pub(crate) fn select(
+        &mut self,
+        username: &str,
+        fingerprint: Option<&str>,
+        limit: usize,
+    ) -> SshResult<()> {
+        let mut seen = std::collections::HashSet::new();
+        self.identities.retain(|identity| {
+            let value = identity
+                .public_key()
+                .fingerprint(HashAlg::Sha256)
+                .to_string();
+            fingerprint.is_none_or(|selected| selected == value) && seen.insert(value)
+        });
+        if fingerprint.is_some() && self.identities.is_empty() {
+            return Err(SshError::AuthFailed(
+                username.into(),
+                "selected Agent fingerprint is no longer available; no other identity was offered"
+                    .into(),
+            ));
+        }
+        self.identities.truncate(limit);
+        Ok(())
+    }
+
+    pub(crate) fn has_next(&self) -> bool {
+        !self.identities.is_empty()
+    }
+
+    pub(crate) fn take_next(&mut self) -> Option<AgentIdentity> {
+        if self.identities.is_empty() {
+            None
+        } else {
+            Some(self.identities.remove(0))
+        }
+    }
+
+    pub(crate) async fn authenticate_identity(
+        &mut self,
+        handle: &mut Handle<IdentityHandler>,
+        username: &str,
+        identity: AgentIdentity,
+    ) -> SshResult<russh::client::AuthResult> {
+        // Human challenges suspend the negotiator between calls. Only active
+        // Agent authentication consumes the attempt's shared signing budget.
+        let started = tokio::time::Instant::now();
+        let result = tokio::time::timeout(self.remaining_authentication_time, async {
+            let hash = handle
+                .best_supported_rsa_hash()
+                .await
+                .map_err(|error| {
+                    SshError::AuthFailed(
+                        username.into(),
+                        format!("SSH Agent RSA negotiation: {error}"),
+                    )
+                })?
+                .flatten();
+            handle
+                .authenticate_publickey_with(
+                    username.to_owned(),
+                    identity.public_key().into_owned(),
+                    hash,
+                    &mut self.signer,
+                )
+                .await
+                .map_err(|error| {
+                    SshError::AuthFailed(
+                        username.into(),
+                        format!("SSH Agent signature/authentication failed: {error}"),
+                    )
+                })
+        })
+        .await;
+        self.remaining_authentication_time = self
+            .remaining_authentication_time
+            .saturating_sub(started.elapsed());
+        result.map_err(|_| {
+            SshError::AuthFailed(
+                username.into(),
+                "SSH Agent authentication exceeded 60 seconds; no fallback was attempted".into(),
+            )
+        })?
+    }
+}
+
+#[cfg(test)]
 async fn authenticate_ready(
     handle: &mut Handle<IdentityHandler>,
     username: &str,
-    ready: ReadyAgent,
+    mut ready: ReadyAgent,
 ) -> SshResult<russh::client::AuthResult> {
-    let deadline = tokio::time::Instant::now() + AUTHENTICATION_TIMEOUT;
-    let timeout_error = || {
-        SshError::AuthFailed(
-            username.to_owned(),
-            "SSH Agent authentication exceeded 60 seconds; no fallback was attempted".into(),
-        )
-    };
-    let hash = tokio::time::timeout_at(deadline, handle.best_supported_rsa_hash())
-        .await
-        .map_err(|_| timeout_error())?
-        .map_err(|error| {
-            SshError::AuthFailed(
-                username.to_owned(),
-                format!("SSH Agent RSA negotiation: {error}"),
-            )
-        })?
-        .flatten();
-    let mut signer = AgentSigner(ready.client);
-    let identity_count = ready.identities.len();
-    for (index, identity) in ready.identities.into_iter().enumerate() {
-        let public_key = identity.public_key().into_owned();
-        let result = tokio::time::timeout_at(
-            deadline,
-            handle.authenticate_publickey_with(username.to_owned(), public_key, hash, &mut signer),
-        )
-        .await
-        .map_err(|_| timeout_error())?
-        .map_err(|error| {
-            SshError::AuthFailed(
-                username.to_owned(),
-                format!("SSH Agent signature/authentication failed: {error}"),
-            )
-        })?;
-        // Another identity is allowed only while this stage still offers public-key auth.
-        // Preserve the latest reply for the caller's common authentication progression.
-        let another_identity_allowed = matches!(
-            &result,
-            russh::client::AuthResult::Failure {
-                remaining_methods,
-                partial_success: false,
-            } if remaining_methods.contains(&russh::MethodKind::PublicKey)
-        );
-        if !another_identity_allowed || index + 1 == identity_count {
+    ready.select(
+        username,
+        None,
+        crate::public_key_candidates::MAX_PUBLIC_KEY_ATTEMPTS,
+    )?;
+    while let Some(identity) = ready.take_next() {
+        let result = ready
+            .authenticate_identity(handle, username, identity)
+            .await?;
+        if !ready.has_next()
+            || !matches!(&result, russh::client::AuthResult::Failure {
+            remaining_methods, partial_success: false,
+        } if remaining_methods.contains(&russh::MethodKind::PublicKey))
+        {
             return Ok(result);
         }
     }
     Err(SshError::AuthFailed(
-        username.to_owned(),
+        username.into(),
         "SSH Agent returned no identities for authentication".into(),
     ))
 }
