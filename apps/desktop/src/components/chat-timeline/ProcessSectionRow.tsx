@@ -7,20 +7,9 @@ import { CollapseBlurPanel, CollapseChevron } from "./CollapseBlurPanel";
 import { useProcessDetail } from "./ProcessDisclosureContext";
 import { Button } from "../shadcn/button";
 
-function toolLabel(block: Extract<ChatBlock, { kind: "tool" }>): string {
-  const tool = block.tool;
-  const raw = tool.detail?.trim();
-  if (raw) return raw.length > 96 ? `${raw.slice(0, 95).trimEnd()}…` : raw;
-  if (tool.args?.trim()) return tool.name;
-  return tool.name || "tool";
-}
-
 function sectionTitle(section: ProcessSection): string {
   if (section.kind === "reasoning") return "思考";
-  if (section.blocks.length === 1 && section.blocks[0]?.kind === "tool") {
-    return toolLabel(section.blocks[0]);
-  }
-  return `执行 ${section.blocks.length} 步`;
+  return `${section.blocks.length} 项操作`;
 }
 
 function sectionIcon(section: ProcessSection): LucideIcon {
@@ -79,7 +68,7 @@ function ProcessCollapsibleRow({
         type="button"
         onClick={() => canOpen && toggle()}
         className={`group h-auto w-full min-w-0 justify-start gap-1.5 rounded-md px-1 py-0.5 text-left text-[13.5px] font-medium leading-6 transition ${
-          hasError ? "text-orange-700" : "text-text-secondary hover:bg-black/5 hover:text-text-base"
+          hasError ? "text-orange-700 dark:text-orange-400" : "text-text-secondary hover:bg-hover-bg hover:text-text-base"
         }`}
       >
         <Icon size={14} className="shrink-0 opacity-75" />
@@ -106,6 +95,8 @@ export function ProcessSectionRow({
   section: ProcessSection;
   processing: boolean;
 }) {
+  const onlyBlock = section.blocks.length === 1 ? section.blocks[0] : undefined;
+  if (onlyBlock?.kind === "tool") return <ProcessToolRow tool={onlyBlock.tool} />;
   if (section.kind === "output") return <ProcessOutputRow section={section} />;
   return <ProcessCollapsibleRow section={section} processing={processing} />;
 }

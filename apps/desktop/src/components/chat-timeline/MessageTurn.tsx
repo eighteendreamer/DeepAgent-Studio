@@ -8,6 +8,7 @@ import { SessionMarkerRow } from "./SessionMarkerRow";
 import type { Turn } from "./timelineTypes";
 import { TurnFooter } from "./TurnFooter";
 import { WorkMetaRow } from "./WorkMetaRow";
+import { WorkingOrb } from "./WorkingOrb";
 import { CollapseBlurPanel } from "./CollapseBlurPanel";
 import { ProcessDetailsContext, useTurnDisclosure } from "./ProcessDisclosureContext";
 
@@ -86,8 +87,8 @@ function MessageTurnComponent({
       ))}
       {processing && !hasProcess && assistantContentBlocks.length === 0 && (
         <div className="flex w-fit items-center gap-2 py-0.5 text-[14px] font-medium text-text-secondary">
-          <span className="h-2 w-2 animate-pulse rounded-full bg-primary" />
-          正在处理
+          <WorkingOrb active />
+          深度探索
         </div>
       )}
     </div>

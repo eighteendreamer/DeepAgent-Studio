@@ -1132,6 +1132,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn file_change_receipt_tracks_only_the_successful_tool_commit() {
+        let (dir, root) = temp_root();
+        let cache = new_shared_cache();
+        let read = ReadFileTool::with_cache(root.clone(), cache.clone());
+        let edit = EditFileTool::with_cache(root.clone(), cache.clone());
+        let write = WriteFileTool::with_cache(root, cache);
+        // A pre-existing user edit is the baseline, irrespective of Git HEAD.
+        std::fs::write(dir.path().join("receipt.txt"), "user change\nold\n").unwrap();
+        read.invoke(serde_json::json!({"path":"receipt.txt"}))
+            .await
+            .unwrap();
+        let result = edit
+            .invoke(serde_json::json!({"path":"receipt.txt", "old":"old", "new":"new"}))
+            .await
+            .unwrap();
+        assert!(result.ok);
+        let metadata = result.client_metadata.as_ref().unwrap();
+        assert_eq!(metadata["file_change"]["before"], "user change\nold\n");
+        assert_eq!(metadata["file_change"]["after"], "user change\nnew\n");
+        assert!(!serde_json::to_string(&result)
+            .unwrap()
+            .contains("file_change"));
+        let failed = edit
+            .invoke(serde_json::json!({"path":"receipt.txt", "old":"new", "new":"bad"}))
+            .await
+            .unwrap();
+        assert!(!failed.ok);
+        assert!(failed.client_metadata.is_none());
+        let created = write
+            .invoke(serde_json::json!({"path":"created.txt", "content":"hello"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            created.client_metadata.unwrap()["file_change"]["before"],
+            ""
+        );
+    }
+
+    #[tokio::test]
     async fn write_then_read_roundtrip() {
         let (_d, root) = temp_root();
         let w = WriteFileTool::new(root.clone());

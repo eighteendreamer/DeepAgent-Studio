@@ -1,314 +1,89 @@
-import { HoverInfo } from "../ui/HoverInfo";
 import { useMemo } from "react";
-import { useProcessDetail } from "./ProcessDisclosureContext";
-import {
-  Bot,
-  ChevronDown,
-  ChevronRight,
-  File,
-  FileCode,
-  Folder,
-  GitBranch,
-  Globe,
-  ListChecks,
-  LoaderCircle,
-  Search,
-  Terminal,
-  Wrench,
-  type LucideIcon,
-} from "lucide-react";
+import { BookOpen, Bot, ChevronRight, FileCode, Folder, GitBranch, Globe, ListChecks, Search, Terminal, Wrench } from "lucide-react";
 import type { ToolCall } from "../../types";
 import type { DagExecution } from "../../types/dag";
-import { DiffText } from "../git/GitDiffViewer";
-import { formatMs } from "./format";
+import { Button } from "../shadcn/button";
+import { HoverInfo } from "../ui/HoverInfo";
+import { CodeBlock, CodeBlockActions, CodeBlockContent, CodeBlockCopyButton, CodeBlockHeader, CodeBlockTitle } from "../shadcn/code-block";
+import { CollapseBlurPanel } from "./CollapseBlurPanel";
+import { useProcessDetail } from "./ProcessDisclosureContext";
 import { DagExecutionRow } from "./DagExecutionRow";
+import { FileChangeBlock } from "./FileChangeBlock";
+import { presentTool, type ToolPresentation } from "./toolPresentation";
+import { formatMs } from "./format";
+import { MarkdownText } from "../MarkdownText";
 
-type ParsedToolPayload = {
-  args: Record<string, unknown> | null;
-  output: Record<string, unknown> | null;
-  detailObject: Record<string, unknown> | null;
+const icons = { skill: Wrench, directory: Folder, read: BookOpen, change: FileCode, command: Terminal,
+  search: Search, git: GitBranch, planning: ListChecks, agent: Bot, file_read: Globe };
+const statuses = {
+  running: { label: "执行中", className: "text-text-secondary" },
+  ok: { label: "完成", className: "text-emerald-700 dark:text-emerald-400" },
+  error: { label: "失败", className: "text-red-600 dark:text-red-400" },
+  blocked: { label: "已阻止", className: "text-orange-700 dark:text-orange-400" },
 };
-
-type ToolSummary = {
-  inlineMeta: string[];
-  monoText: string;
-  detail: string;
-  matches: string[];
-  isDiff: boolean;
-  isError: boolean;
-};
-
-function parseJsonObject(value?: string): Record<string, unknown> | null {
-  if (!value?.trim()) return null;
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function readString(record: Record<string, unknown> | null | undefined, key: string): string {
-  const value = record?.[key];
-  return typeof value === "string" ? value : "";
-}
-
-function readNumber(record: Record<string, unknown> | null | undefined, key: string): number | null {
-  const value = record?.[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function readStringArray(record: Record<string, unknown> | null, key: string): string[] {
-  const value = record?.[key];
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
-}
-
-function compactText(value: string, max = 120): string {
-  const oneLine = value.replace(/\s+/g, " ").trim();
-  if (oneLine.length <= max) return oneLine;
-  return `${oneLine.slice(0, max - 1).trimEnd()}…`;
-}
-
-function prettyJson(value: unknown): string {
-  if (value == null) return "";
-  if (typeof value === "string") {
-    const parsed = parseJsonObject(value);
-    return parsed ? JSON.stringify(parsed, null, 2) : value;
-  }
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}
-
-function parsePayload(tool: ToolCall): ParsedToolPayload {
-  return {
-    args: parseJsonObject(tool.args),
-    output: asRecord(tool.output),
-    detailObject: parseJsonObject(tool.detail),
-  };
-}
-
-function stripToolName(summary: string, name: string): string {
-  const trimmed = summary.trim();
-  const prefix = `${name} `;
-  if (trimmed.toLowerCase().startsWith(prefix.toLowerCase())) {
-    return trimmed.slice(prefix.length).trim();
-  }
-  return trimmed;
-}
-
-function toolIcon(name: string, kind?: string): LucideIcon {
-  if (kind === "command_execution") return Terminal;
-  if (kind === "file_change") return FileCode;
-  if (kind === "file_read") return name.toLowerCase().includes("list") ? Folder : File;
-  if (kind === "search") return Search;
-  if (kind === "git") return GitBranch;
-  if (kind === "planning") return ListChecks;
-  if (kind === "agent") return Bot;
-
-  const normalized = name.toLowerCase();
-  if (normalized.includes("glob") || normalized.includes("list") || normalized.includes("ls")) return Folder;
-  if (normalized.includes("bash") || normalized.includes("shell") || normalized.includes("exec")) return Terminal;
-  if (normalized.includes("fetch") || normalized.includes("web")) return Globe;
-  if (normalized.includes("read") || normalized.includes("file")) return File;
-  if (normalized.includes("grep") || normalized.includes("search") || normalized.includes("find")) return Search;
-  if (normalized.includes("edit") || normalized.includes("write") || normalized.includes("patch")) return FileCode;
-  return Wrench;
-}
-
-// Tools that run for a long time keep their identity icon while running: the
-// "执行中" label and status dot already convey progress, and a spinner on a
-// shell command or sub-agent that runs for minutes only adds noise.
-function keepsIconWhileRunning(kind?: string): boolean {
-  return kind === "command_execution" || kind === "agent";
-}
-
-function statusMeta(tool: ToolCall): { label: string; className: string; dotClassName: string } {
-  if (tool.status === "running") {
-    return { label: "执行中", className: "text-blue-600", dotClassName: "bg-blue-500" };
-  }
-  if (tool.status === "ok") {
-    return { label: "完成", className: "text-green-600", dotClassName: "bg-green-500" };
-  }
-  if (tool.status === "blocked") {
-    return { label: "已阻止", className: "text-orange-600", dotClassName: "bg-orange-500" };
-  }
-  return { label: "失败", className: "text-red-600", dotClassName: "bg-red-500" };
-}
-
-function looksLikeUnifiedDiff(text: string): boolean {
-  return /^diff --git /m.test(text) || (/^@@\s/m.test(text) && (/^\+/m.test(text) || /^-/m.test(text)));
-}
-
-function summarizeTool(tool: ToolCall, payload: ParsedToolPayload): ToolSummary {
-  const name = tool.name.toLowerCase();
-  const data = payload.output ?? payload.detailObject;
-  const meta = tool.meta ?? null;
-  const matches = readStringArray(data, "matches");
-  const matchesCount = readNumber(meta, "matches_count");
-  const provider = readString(meta, "provider");
-  const pattern = readString(meta, "pattern") || readString(payload.args, "pattern") || readString(data, "pattern");
-  const path =
-    tool.filePath ||
-    readString(meta, "path") ||
-    readString(payload.args, "path") ||
-    readString(payload.args, "file_path") ||
-    readString(payload.args, "file") ||
-    readString(data, "path");
-  const command = readString(meta, "command") || readString(payload.args, "command") || readString(payload.args, "cmd");
-  const query = readString(meta, "query") || readString(payload.args, "query") || readString(payload.args, "text");
-  const inlineMeta: string[] = [];
-
-  if (matches.length > 0) inlineMeta.push(`${matches.length} matches`);
-  else if (typeof matchesCount === "number") inlineMeta.push(`${matchesCount} matches`);
-  if (provider) inlineMeta.push(provider);
-
-  let monoText = "";
-  if (matches.length > 0) {
-    monoText = pattern || matches.slice(0, 2).join("  ");
-  } else if (name.includes("glob") && data && Array.isArray(data.matches) && data.matches.length === 0) {
-    monoText = pattern || "no matches";
-  } else if (path) {
-    monoText = path;
-  } else if (command) {
-    monoText = command;
-  } else if (query) {
-    monoText = query;
-  } else if (tool.summary) {
-    monoText = stripToolName(tool.summary, tool.name);
-  } else if (tool.detail) {
-    monoText = tool.detail;
-  }
-
-  const detail =
-    matches.length > 0
-      ? matches.join("\n")
-      : prettyJson(tool.output ?? payload.detailObject ?? tool.detail ?? payload.args ?? "");
-
-  return {
-    inlineMeta: Array.from(new Set(inlineMeta)),
-    monoText: compactText(monoText, 140),
-    detail,
-    matches,
-    isDiff: looksLikeUnifiedDiff(detail),
-    isError: tool.status === "error" || tool.status === "blocked",
-  };
-}
 
 export function ProcessToolRow({ tool }: { tool: ToolCall }) {
-  // Special handling for plan_execute tool - render DAG visualization
-  if (tool.name === 'plan_execute' && tool.output) {
-    try {
-      const dagData = parseDagExecution(tool);
-      if (dagData) {
-        return <DagExecutionRow execution={dagData} />;
-      }
-    } catch (error) {
-      console.warn('Failed to parse DAG execution data, falling back to default display', error);
-    }
+  if (tool.name === "plan_execute" && tool.output) {
+    const execution = parseDagExecution(tool);
+    if (execution) return <DagExecutionRow execution={execution} />;
   }
-
   return <StandardToolRow tool={tool} />;
 }
 
 function StandardToolRow({ tool }: { tool: ToolCall }) {
-  const [open, toggleOpen] = useProcessDetail(`tool:${tool.call_id}`);
-  const payload = useMemo(() => parsePayload(tool), [tool]);
-  const summary = useMemo(() => summarizeTool(tool, payload), [tool, payload]);
-  const status = statusMeta(tool);
-  const canOpen = Boolean(summary.detail.trim());
-  const Icon = toolIcon(tool.name, tool.toolKind);
-  const running = tool.status === "running";
-  const showSpinner = running && !keepsIconWhileRunning(tool.toolKind);
-  const chevronClass = "shrink-0 text-text-secondary opacity-45 transition group-hover/tool:opacity-75";
-
-  return (
-    <div className="min-w-0">
-      <button
-        type="button"
-        onClick={() => canOpen && tool.status !== "running" && toggleOpen()}
-        className={`group/tool flex w-full min-w-0 items-center gap-2 rounded-md px-1 py-0.5 text-left text-[13.5px] leading-6 transition ${
-          canOpen ? "cursor-pointer hover:bg-black/5" : "cursor-default"
-        }`}
-      >
-        <span className="flex h-5 w-5 shrink-0 items-center justify-center text-text-secondary">
-          {showSpinner ? (
-            <LoaderCircle size={13} className="animate-spin text-primary" />
-          ) : (
-            <Icon size={13} />
-          )}
-        </span>
-        <span className="flex min-w-0 flex-1 items-baseline gap-2">
-          <span className="shrink-0 font-semibold text-text-base">{tool.name}</span>
-          <span className={`inline-flex shrink-0 items-center gap-1 text-[12px] font-medium ${status.className}`}>
-            <span className={`h-1.5 w-1.5 rounded-full ${status.dotClassName}`} />
-            {status.label}
-          </span>
-          {typeof tool.durationMs === "number" && (
-            <span className="shrink-0 text-[12px] tabular-nums text-text-secondary">{formatMs(tool.durationMs)}</span>
-          )}
-          {summary.inlineMeta.map((item) => (
-            <span key={item} className="shrink-0 text-[12px] text-text-secondary">
-              {item}
-            </span>
-          ))}
-          {summary.monoText && (
-            <HoverInfo content={summary.monoText}><code className="min-w-0 truncate bg-transparent p-0 font-mono text-[12.5px] text-text-secondary" >
-              {summary.monoText}
-            </code></HoverInfo>
-          )}
-        </span>
-        {canOpen && tool.status !== "running" &&
-          (open ? (
-            <ChevronDown size={12} className={chevronClass} />
-          ) : (
-            <ChevronRight size={12} className={chevronClass} />
-          ))}
-      </button>
-      {open && (
-        <div className="ml-7 mt-1 overflow-hidden rounded-lg bg-gray-50/75">
-          {summary.isDiff ? (
-            <div className="max-h-80 overflow-auto">
-              <DiffText text={summary.detail} />
-            </div>
-          ) : summary.matches.length > 0 ? (
-            <div className="max-h-64 overflow-auto px-3 py-2 font-mono text-[12px] leading-5 text-text-base">
-              {summary.matches.map((match) => (
-                <HoverInfo key={match} content={match}><div className="truncate" >
-                  {match}
-                </div></HoverInfo>
-              ))}
-            </div>
-          ) : summary.isError ? (
-            <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words bg-orange-50/80 px-3 py-2.5 font-mono text-[12px] leading-5 text-orange-900">
-              {summary.detail}
-            </pre>
-          ) : (
-            <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words px-3 py-2.5 font-mono text-[12px] leading-5 text-text-base">
-              {summary.detail}
-            </pre>
-          )}
-        </div>
-      )}
-    </div>
-  );
+  const [open, toggle] = useProcessDetail("tool:" + tool.call_id);
+  const summary = useMemo(() => presentTool(tool), [tool]);
+  const status = statuses[tool.status];
+  const Icon = icons[summary.kind as keyof typeof icons] || Wrench;
+  const canOpen = Boolean(summary.raw || summary.read || summary.command || summary.changes.length || summary.skillBody || summary.entries);
+  return <div className="min-w-0">
+    <Button variant="ghost" aria-expanded={open && canOpen} onClick={() => canOpen && toggle()}
+      aria-label={[summary.label, summary.target, status.label].filter(Boolean).join(" · ")}
+      className="group/tool h-auto w-full min-w-0 justify-start gap-2 rounded-md px-1 py-1 text-left text-[13px] font-normal leading-5 hover:bg-hover-bg">
+      <Icon size={13} className="shrink-0 text-text-secondary/80" />
+      <span className="shrink-0 text-text-base">{summary.label}</span>
+      {summary.target && <HoverInfo content={summary.target}><code className="min-w-0 truncate rounded border border-border-theme bg-hover-bg/40 px-1.5 py-0.5 font-mono text-[11px] text-text-secondary">{summary.target}</code></HoverInfo>}
+      {summary.kind === "read" && summary.description && <span className="shrink-0 text-[11px] text-text-secondary">{summary.description}</span>}
+      <span className="ml-auto flex shrink-0 items-center gap-2 text-[11px]">
+        <span className={status.className}>{status.label}</span>
+        {typeof tool.durationMs === "number" && <span className="tabular-nums text-text-secondary/70">{formatMs(tool.durationMs)}</span>}
+        {canOpen && <ChevronRight size={12} className={"text-text-secondary/60 transition-transform " + (open ? "rotate-90" : "")} />}
+      </span>
+    </Button>
+    <CollapseBlurPanel open={open && canOpen} innerClassName="ml-5 mt-1 mb-2 min-w-0">
+      {open && <ToolDetail summary={summary} tool={tool} />}
+    </CollapseBlurPanel>
+  </div>;
 }
 
-/**
- * Parse plan_execute tool output into DagExecution structure.
- * Returns null if the output doesn't contain valid DAG data.
- */
+function ToolDetail({ summary, tool }: { summary: ToolPresentation; tool: ToolCall }) {
+  const specialized = Boolean(summary.read || summary.command || summary.changes.length || summary.skillBody || summary.entries);
+  const command = summary.command;
+  return <div className="flex min-w-0 flex-col gap-2">
+    {summary.skillBody && <div className="max-h-80 overflow-auto border-l border-border-theme pl-3"><MarkdownText text={summary.skillBody} className="text-[13px]" /></div>}
+    {summary.entries && <CodeBlock size="sm"><CodeBlockContent aria-label="目录内容">
+      {summary.entries.length ? summary.entries.map(entry => entry.name + (entry.directory ? "/" : "")).join("\n") : "空目录"}
+    </CodeBlockContent></CodeBlock>}
+    {summary.read && <CodeBlock size="sm">
+      <CodeBlockHeader><BookOpen size={13} /><HoverInfo content={summary.target}><CodeBlockTitle>{summary.target.split(/[\\/]/).pop() || "文件内容"}</CodeBlockTitle></HoverInfo>
+        <CodeBlockActions><CodeBlockCopyButton value={summary.read.text} aria-label="复制文件内容" /></CodeBlockActions></CodeBlockHeader>
+      <CodeBlockContent lineNumbers startLine={summary.read.startLine}>{summary.read.text}</CodeBlockContent>
+    </CodeBlock>}
+    {summary.changes.map((change, index) => <FileChangeBlock key={index} change={change} path={summary.target} />)}
+    {command && <CodeBlock size="sm" variant={tool.status === "error" ? "destructive" : "default"}>
+      <CodeBlockHeader><Terminal size={13} /><CodeBlockTitle>终端</CodeBlockTitle>
+        <CodeBlockActions><CodeBlockCopyButton value={[command.command, command.stdout, command.stderr].filter(Boolean).join("\n")} aria-label="复制终端记录" /></CodeBlockActions></CodeBlockHeader>
+      <CodeBlockContent wrap>{"$ " + command.command}</CodeBlockContent>
+      {command.stdout && <CodeBlockContent wrap aria-label="标准输出" className="border-t border-border-theme">{command.stdout}</CodeBlockContent>}
+      {command.stderr && <CodeBlockContent wrap aria-label="标准错误" className="border-t border-red-500/20 text-red-700 dark:text-red-300">{command.stderr}</CodeBlockContent>}
+    </CodeBlock>}
+    {summary.matches.length > 0 ? <CodeBlock size="sm"><CodeBlockContent>{summary.matches.join("\n")}</CodeBlockContent></CodeBlock>
+      : !specialized && summary.raw && <CodeBlock size="sm"><CodeBlockContent wrap>{summary.kind === "change" && summary.description ? summary.description : summary.raw}</CodeBlockContent></CodeBlock>}
+  </div>;
+}
+
+
+
 function parseDagExecution(tool: ToolCall): DagExecution | null {
   try {
     const output = typeof tool.output === 'string' ? JSON.parse(tool.output) : tool.output;

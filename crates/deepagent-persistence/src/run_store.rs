@@ -986,6 +986,18 @@ impl<'db> RunStore<'db> {
         )
     }
 
+    /// Display receipts live in canonical run events, outside model-facing
+    /// session tool results. Read only completions, not every streamed delta.
+    pub fn tool_completions(&self, run_id: &str) -> Result<Vec<StoredRunEvent>> {
+        self.db.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT run_id, sequence, timestamp, phase, status, event_type, data FROM run_events WHERE run_id=?1 AND event_type='tool_completed' ORDER BY sequence"
+            ).map_err(map_sqlite)?;
+            let rows = stmt.query_map([run_id], run_event_from_row).map_err(map_sqlite)?;
+            rows.collect::<std::result::Result<Vec<_>, _>>().map_err(map_sqlite)
+        })
+    }
+
     /// Read the exclusive suffix, using the same future-cursor semantics as
     /// `events_page`. None includes the initial sequence-zero event.
     pub fn events_after(&self, run_id: &str, after: Option<u64>) -> Result<Vec<StoredRunEvent>> {

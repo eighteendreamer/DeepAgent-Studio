@@ -28,7 +28,7 @@
     "test:responses-sampling": "node --test scripts/check-responses-sampling.test.cjs",
     "test:web-search-settings": "node --test scripts/check-web-search-settings.test.cjs scripts/check-web-search-summary.test.cjs",
     "test:timeline-memory": "node --test scripts/check-timeline-memory.test.cjs",
-    "test:process-collapse": "node --test scripts/check-process-collapse.test.cjs",
+    "test:process-collapse": "node --test scripts/check-process-collapse.test.cjs scripts/check-tool-presentation.test.cjs scripts/check-working-orb.test.cjs",
     "test:run-completion-error": "node --test scripts/check-run-completion-error.test.cjs",
     "test:message-edit": "node --test scripts/check-message-edit-motion.test.cjs scripts/check-menu-mount.test.cjs scripts/check-spring-press.test.cjs",
     "test:image-integrity": "node --test scripts/check-image-integrity.test.cjs",

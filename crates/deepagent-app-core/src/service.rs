@@ -1002,6 +1002,43 @@ impl AppService {
             }
         }
 
+        // File-change receipts are intentionally excluded from model history.
+        // Hydrate only existing cards, keyed by both owning run and call id, so
+        // rewound/forked history cannot acquire a later workspace change.
+        for run_id in run_ids.values() {
+            let completions = RunStore::new(&self.db).tool_completions(run_id)?;
+            for event in completions {
+                if event.data.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+                    continue;
+                }
+                let Some(call_id) = event.data.get("call_id").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let Some(change) = event.data.pointer("/meta/client_metadata/file_change") else {
+                    continue;
+                };
+                for message in messages
+                    .iter_mut()
+                    .filter(|message| message.turn.as_ref().is_some_and(|turn| &turn.id == run_id))
+                {
+                    for part in &mut message.parts {
+                        if let ConversationPartDto::Tool {
+                            call_id: id,
+                            status,
+                            meta,
+                            ..
+                        } = part
+                        {
+                            if id == call_id && status == "ok" {
+                                let metadata = meta.get_or_insert_with(|| serde_json::json!({}));
+                                metadata["client_metadata"]["file_change"] = change.clone();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         messages.retain(|m| {
             if m.role != "assistant" {
                 return true;
@@ -1727,6 +1764,72 @@ mod tests {
         .unwrap();
         assert!(old.turn.is_none());
         assert!(old.id.is_none());
+    }
+
+    #[test]
+    fn file_change_receipts_replay_only_on_their_own_successful_cards() {
+        use deepagent_core::event::EventPayload;
+        use deepagent_core::message::{Message, ToolCall};
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1_000);
+        let mut session = Session::create(&db, &clock, Some("file receipts")).unwrap();
+        let sid = session.id().to_string();
+        for (run, ok) in [("first-run", true), ("second-run", false)] {
+            session
+                .append(EventPayload::MessageAppended {
+                    message: Message::user(run),
+                })
+                .unwrap();
+            let task = session.create_task(run).unwrap();
+            RunStore::new(&db)
+                .create(run, &sid, Some(&task.to_string()), 1_000)
+                .unwrap();
+            session
+                .append(EventPayload::ToolCallRequested {
+                    call: ToolCall {
+                        id: "reused-call-id".into(),
+                        name: "edit_file".into(),
+                        arguments: serde_json::json!({"path":"a.ts", "old":"a", "new":"b"}),
+                    },
+                })
+                .unwrap();
+            session
+                .append(EventPayload::ToolCallCompleted {
+                    content: Vec::new(),
+                    call_id: "reused-call-id".into(),
+                    ok,
+                    output: serde_json::json!({"path":"a.ts"}),
+                    duration_ms: 1,
+                })
+                .unwrap();
+            RunStore::new(&db).append_event(run, 1_001, "executing_tools", "completed", "tool_completed",
+                &serde_json::json!({"ok":true, "call_id":"reused-call-id", "meta":{"client_metadata":{"file_change":{
+                    "version":1, "before":run, "after":"applied", "start_line":42
+                }}}})).unwrap();
+        }
+        let service = AppService::new(db);
+        let conversation = service.session_conversation(&sid).unwrap();
+        assert_eq!(conversation, service.session_conversation(&sid).unwrap());
+        let cards: Vec<_> = conversation
+            .iter()
+            .flat_map(|message| &message.parts)
+            .filter_map(|part| {
+                if let ConversationPartDto::Tool { meta, .. } = part {
+                    Some(meta)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(cards.len(), 2);
+        assert_eq!(
+            cards[0].as_ref().unwrap()["client_metadata"]["file_change"]["before"],
+            "first-run"
+        );
+        assert!(cards[1]
+            .as_ref()
+            .and_then(|meta| meta.get("client_metadata"))
+            .is_none());
     }
 
     #[test]

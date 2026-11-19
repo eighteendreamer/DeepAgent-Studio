@@ -79,6 +79,35 @@ fn completed() -> RuntimeEvent {
 }
 
 #[test]
+fn file_change_client_receipt_survives_persistence_and_secret_redaction() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let live = Arc::new(Live::default());
+    let sink = sink(db.clone(), live.clone());
+    let mut event = completed();
+    if let RuntimeEvent::ToolCompleted { meta, .. } = &mut event {
+        *meta = Some(serde_json::json!({"client_metadata":{"file_change":{
+            "version":1, "before":"  old\n    indented\n", "after":"  new\n    indented\n", "start_line":118
+        }, "token":"sensitive-canary"}}));
+    }
+    sink.emit(event);
+    sink.checkpoint().unwrap();
+    let saved = RunStore::new(&db).tool_completions("fault-run").unwrap();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(
+        saved[0].data["meta"]["client_metadata"]["file_change"]["before"],
+        "  old\n    indented\n"
+    );
+    assert_eq!(
+        saved[0].data["meta"]["client_metadata"]["file_change"]["start_line"],
+        118
+    );
+    assert!(!serde_json::to_string(&saved)
+        .unwrap()
+        .contains("sensitive-canary"));
+    assert_eq!(live.0.lock().unwrap().len(), 1);
+}
+
+#[test]
 fn structured_failure_latches_first_cause_and_never_resumes_automatically() {
     for rejected in [
         "setup.completed",

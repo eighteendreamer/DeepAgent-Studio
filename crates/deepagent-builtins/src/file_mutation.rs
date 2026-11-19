@@ -110,7 +110,11 @@ pub(crate) async fn apply(
                 output["path"] = serde_json::json!(root.relativize(&path));
                 output["lines_added"] = serde_json::json!(new_lines.saturating_sub(old_lines));
                 output["lines_removed"] = serde_json::json!(old_lines.saturating_sub(new_lines));
-                ToolOutput::success(output)
+                let mut result = ToolOutput::success(output);
+                result.client_metadata = Some(serde_json::json!({
+                    "file_change": change_preview(before.as_deref().unwrap_or_default(), &content)
+                }));
+                result
             }
             Err(error) => ToolOutput::failure(format!("write failed: {error}")),
         }
@@ -119,6 +123,78 @@ pub(crate) async fn apply(
     .map_err(|error| {
         deepagent_core::error::CoreError::other(format!("file mutation join failed: {error}"))
     })
+}
+
+/// A bounded display receipt of this commit, never the workspace's Git diff.
+/// Trim only common outer lines, retaining three lines of context. Distant
+/// edits may exceed the preview budget; the write still succeeds without it.
+fn change_preview(before: &str, after: &str) -> serde_json::Value {
+    const MAX_BYTES: usize = 128 * 1024;
+    const MAX_LINES: usize = 1200;
+    let old: Vec<_> = before.split_inclusive('\n').collect();
+    let new: Vec<_> = after.split_inclusive('\n').collect();
+    let prefix = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+    let suffix = old[prefix..]
+        .iter()
+        .rev()
+        .zip(new[prefix..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let start = prefix.saturating_sub(3);
+    let old_end = old.len() - suffix.saturating_sub(3);
+    let new_end = new.len() - suffix.saturating_sub(3);
+    let old_slice = &old[start..old_end];
+    let new_slice = &new[start..new_end];
+    if old_slice.len() >= MAX_LINES
+        || new_slice.len() >= MAX_LINES
+        || old_slice
+            .iter()
+            .chain(new_slice)
+            .map(|line| line.len())
+            .sum::<usize>()
+            > MAX_BYTES
+    {
+        return serde_json::json!({"version": 1, "omitted": true, "reason": "preview_budget"});
+    }
+    serde_json::json!({
+        "version": 1, "before": old_slice.concat(), "after": new_slice.concat(),
+        "start_line": start + 1
+    })
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::change_preview;
+
+    #[test]
+    fn file_change_preview_keeps_actual_offsets_and_line_endings() {
+        let prefix = "unchanged\r\n".repeat(100);
+        let before = format!("{prefix}old\r\n{}", "tail\r\n".repeat(10));
+        let after = format!("{prefix}new\r\n{}", "tail\r\n".repeat(10));
+        let preview = change_preview(&before, &after);
+        assert_eq!(preview["start_line"], 98);
+        assert_eq!(
+            preview["before"],
+            "unchanged\r\n".repeat(3) + "old\r\n" + &"tail\r\n".repeat(3)
+        );
+        assert_eq!(
+            preview["after"],
+            "unchanged\r\n".repeat(3) + "new\r\n" + &"tail\r\n".repeat(3)
+        );
+    }
+
+    #[test]
+    fn file_change_preview_is_bounded_without_clipping_a_change() {
+        for (before, after) in [
+            ("a\n".repeat(1300), "b\n".repeat(1300)),
+            ("a".repeat(128 * 1024), "b".repeat(128 * 1024)),
+        ] {
+            let preview = change_preview(&before, &after);
+            assert_eq!(preview["omitted"], true);
+            assert!(preview.get("before").is_none());
+        }
+        assert_eq!(change_preview("", "新文件\n")["before"], "");
+    }
 }
 
 fn prepare(
