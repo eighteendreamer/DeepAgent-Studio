@@ -32,6 +32,14 @@ use crate::install_ledger::LedgerStore;
 
 use crate::dto::{RuntimeProgressDto, RuntimeStatusDto};
 
+#[path = "runtime_service/probe_cache.rs"]
+mod probe_cache;
+use probe_cache::RuntimeProbeCache;
+
+#[cfg(test)]
+#[path = "runtime_service/probe_cache_tests.rs"]
+mod probe_cache_tests;
+
 /// Target platform of a runtime artifact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Platform {
@@ -352,12 +360,12 @@ impl RuntimeEntry {
         self.artifacts.get(&Platform::current())
     }
 
-    fn probe_is_compatible(&self, probe: &Path) -> bool {
+    fn probe_is_compatible(&self, probe: &Path, probes: &RuntimeProbeCache) -> bool {
         let sdk = [RuntimeKind::Node, RuntimeKind::Python, RuntimeKind::Java]
             .into_iter()
             .find(|kind| kind.managed_id() == self.id);
         match sdk {
-            Some(kind) => inspect_runtime(kind, probe, &Some(self.version.clone())).is_some(),
+            Some(_) => probes.inspect(probe, &Some(self.version.clone())).is_some(),
             None => probe.exists(),
         }
     }
@@ -411,6 +419,7 @@ pub struct RuntimeService {
     cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
     /// Set by a host that keeps an install ledger (`with_state_root`).
     ledger: Option<LedgerStore>,
+    probes: RuntimeProbeCache,
 }
 
 impl RuntimeService {
@@ -473,6 +482,7 @@ impl RuntimeService {
     ) -> Self {
         let active_root = resolve_active_root(active_candidates);
         let lookup_roots = normalize_lookup_roots(&active_root, active_candidates, read_only_roots);
+        let probes = RuntimeProbeCache::new(active_root.join(".probe-cache"));
         Self {
             registry,
             active_root,
@@ -480,6 +490,7 @@ impl RuntimeService {
             downloader,
             cancels: Mutex::new(HashMap::new()),
             ledger: None,
+            probes,
         }
     }
 
@@ -487,6 +498,7 @@ impl RuntimeService {
     /// so an uninstall can delete exactly what a download put on disk instead of
     /// re-deriving the path from the compiled-in registry.
     pub fn with_state_root(mut self, state_root: &Path) -> Self {
+        self.probes = RuntimeProbeCache::new(state_root.join("cache/runtime-probes"));
         self.ledger = Some(LedgerStore::at(
             state_root,
             state_root.join(crate::install_ledger::LEDGER_FILE),
@@ -562,7 +574,7 @@ impl RuntimeService {
             for root in &self.lookup_roots {
                 let dir = root.join(&artifact.dest_subdir);
                 let probe = dir.join(artifact.probe.as_deref().unwrap_or(&entry.probe));
-                if entry.probe_is_compatible(&probe) {
+                if entry.probe_is_compatible(&probe, &self.probes) {
                     let source = if same_path(root, &self.active_root) {
                         "active"
                     } else {
@@ -574,7 +586,7 @@ impl RuntimeService {
                     if let Some(parent) = dir.parent() {
                         let parent_probe =
                             parent.join(artifact.probe.as_deref().unwrap_or(&entry.probe));
-                        if entry.probe_is_compatible(&parent_probe) {
+                        if entry.probe_is_compatible(&parent_probe, &self.probes) {
                             let source = if same_path(root, &self.active_root) {
                                 "active"
                             } else {
@@ -590,7 +602,7 @@ impl RuntimeService {
         // 2. Check system probe paths (winget / brew / apt / manual installs).
         if !entry.system_probe_paths.is_empty() {
             if let Some(dir) = find_in_system_paths(&entry.probe, &entry.system_probe_paths)
-                .filter(|dir| entry.probe_is_compatible(&dir.join(&entry.probe)))
+                .filter(|dir| entry.probe_is_compatible(&dir.join(&entry.probe), &self.probes))
             {
                 return Some((dir, "system"));
             }
@@ -598,7 +610,7 @@ impl RuntimeService {
 
         // 3. Check PATH lookup (works for any installed binary).
         if let Some(dir) = find_binary_on_path(&entry.probe)
-            .filter(|dir| entry.probe_is_compatible(&dir.join(&entry.probe)))
+            .filter(|dir| entry.probe_is_compatible(&dir.join(&entry.probe), &self.probes))
         {
             return Some((dir, "system"));
         }
@@ -626,7 +638,7 @@ impl RuntimeService {
         let mut rejected = Vec::new();
         if requirement.preference != RuntimePreference::ManagedOnly {
             if let Some(path) = explicit {
-                if let Some(found) = inspect_runtime(requirement.kind, path, &requirement.version) {
+                if let Some(found) = self.probes.inspect(path, &requirement.version) {
                     return Ok(resolution(
                         found,
                         requirement.kind,
@@ -641,9 +653,7 @@ impl RuntimeService {
             }
             if let Some(root) = project_root {
                 for candidate in project_runtime_candidates(requirement.kind, root) {
-                    if let Some(found) =
-                        inspect_runtime(requirement.kind, &candidate, &requirement.version)
-                    {
+                    if let Some(found) = self.probes.inspect(&candidate, &requirement.version) {
                         return Ok(resolution(
                             found,
                             requirement.kind,
@@ -654,8 +664,7 @@ impl RuntimeService {
                 }
             }
             if let Some(path) = find_executable_on_path(requirement.kind.command()) {
-                if let Some(found) = inspect_runtime(requirement.kind, &path, &requirement.version)
-                {
+                if let Some(found) = self.probes.inspect(&path, &requirement.version) {
                     return Ok(resolution(
                         found,
                         requirement.kind,
@@ -672,8 +681,7 @@ impl RuntimeService {
 
         if requirement.preference != RuntimePreference::LocalOnly {
             if let Some(path) = self.managed_runtime_executable(requirement.kind) {
-                if let Some(found) = inspect_runtime(requirement.kind, &path, &requirement.version)
-                {
+                if let Some(found) = self.probes.inspect(&path, &requirement.version) {
                     return Ok(resolution(
                         found,
                         requirement.kind,
@@ -1182,11 +1190,7 @@ fn resolution(
     }
 }
 
-fn inspect_runtime(
-    kind: RuntimeKind,
-    executable: &Path,
-    requirement: &Option<String>,
-) -> Option<InspectedRuntime> {
+fn probe_runtime_version(executable: &Path) -> Option<String> {
     if !executable.is_file() {
         return None;
     }
@@ -1203,15 +1207,7 @@ fn inspect_runtime(
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let version = extract_version(&text)?;
-    if !version_matches(&version, requirement.as_deref()) {
-        return None;
-    }
-    let _ = kind;
-    Some(InspectedRuntime {
-        executable: executable.to_path_buf(),
-        version,
-    })
+    extract_version(&text)
 }
 
 fn extract_version(text: &str) -> Option<String> {
@@ -2478,8 +2474,8 @@ mod tests {
     use std::io::Write;
 
     /// A downloader that writes fixed bytes (no network).
-    struct BytesDownloader {
-        bytes: Vec<u8>,
+    pub(super) struct BytesDownloader {
+        pub(super) bytes: Vec<u8>,
     }
 
     #[async_trait]
@@ -2557,7 +2553,7 @@ mod tests {
         }
     }
 
-    fn runtime_binary_name(name: &str) -> String {
+    pub(super) fn runtime_binary_name(name: &str) -> String {
         if cfg!(target_os = "windows") {
             format!("{name}.exe")
         } else {
@@ -2565,7 +2561,7 @@ mod tests {
         }
     }
 
-    fn compile_fake_runtime(dir: &Path, name: &str, version: &str) -> PathBuf {
+    pub(super) fn compile_fake_runtime(dir: &Path, name: &str, version: &str) -> PathBuf {
         let source = dir.join(format!("{name}.rs"));
         let executable = dir.join(runtime_binary_name(name));
         std::fs::write(
@@ -2573,6 +2569,10 @@ mod tests {
             format!(
                 r#"
 fn main() {{
+    use std::io::Write;
+    let calls = std::env::current_exe().unwrap().with_extension("calls");
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(calls).unwrap();
+    writeln!(file, "probe").unwrap();
     println!("{version}");
 }}
 "#
@@ -3061,7 +3061,7 @@ fn main() {{
         let legacy_node_dir = legacy_node_path.parent().unwrap();
         std::fs::create_dir_all(legacy_node_dir).unwrap();
         let legacy_node = compile_fake_runtime(legacy_node_dir, "node", "22.23.2");
-        assert!(!entry.probe_is_compatible(&legacy_node));
+        assert!(!entry.probe_is_compatible(&legacy_node, &svc.probes));
         let requirement = RuntimeRequirement {
             kind: RuntimeKind::Node,
             version: Some("24".to_string()),
