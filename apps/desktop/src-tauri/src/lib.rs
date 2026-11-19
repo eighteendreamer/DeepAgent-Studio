@@ -82,6 +82,9 @@ struct SqliteSshConfigStore {
 
 #[async_trait]
 impl deepagent_ssh::SshConfigStore for SqliteSshConfigStore {
+    fn supports_secret_storage(&self) -> bool {
+        true
+    }
     async fn load(&self) -> deepagent_ssh::SshResult<Vec<deepagent_ssh::SshConnectionConfig>> {
         if let Some(value) = self
             .secrets
@@ -5327,7 +5330,9 @@ fn to_dto_auth_type(t: DtoSshAuthType) -> &'static str {
         DtoSshAuthType::OpenSshAgent => "openssh_agent",
         DtoSshAuthType::Pageant => "pageant",
         DtoSshAuthType::KeyFile => "key_file",
+        DtoSshAuthType::KeyContent => "key_content",
         DtoSshAuthType::Password => "password",
+        DtoSshAuthType::Chain => "chain",
     }
 }
 
@@ -5348,7 +5353,12 @@ struct SshConnectionFrontendDto {
     pub port: u16,
     pub username: String,
     pub auth_type: &'static str,
+    pub authentication_factors: Vec<deepagent_ssh::SshAuthenticationFactorDto>,
+    pub proxy: Option<deepagent_ssh::SshProxyDto>,
+    pub jump: Option<deepagent_ssh::SshJumpDto>,
     pub key_path: Option<String>,
+    pub has_key_content: bool,
+    pub certificate_path: Option<String>,
     pub known_hosts_path: Option<String>,
     #[serde(default)]
     pub host_key_policy: deepagent_ssh::SshHostKeyPolicy,
@@ -5366,7 +5376,12 @@ impl From<DtoSshConnectionDto> for SshConnectionFrontendDto {
             port: dto.port,
             username: dto.username,
             auth_type: to_dto_auth_type(dto.auth_type),
+            authentication_factors: dto.authentication_factors,
+            proxy: dto.proxy,
+            jump: dto.jump,
             key_path: dto.key_path,
+            has_key_content: dto.has_key_content,
+            certificate_path: dto.certificate_path,
             known_hosts_path: dto.known_hosts_path,
             host_key_policy: dto.host_key_policy,
             status: to_dto_status(dto.status),
@@ -5401,7 +5416,15 @@ async fn ssh_inspect_host_trust(
     host: String,
     port: u16,
     known_hosts_path: Option<String>,
+    connection_id: Option<String>,
 ) -> Result<deepagent_ssh::SshHostTrustInspection, String> {
+    if let Some(id) = connection_id {
+        return state
+            .ssh
+            .inspect_connection_host_trust(&id)
+            .await
+            .map_err(|error| error.to_string());
+    }
     state
         .ssh
         .inspect_host_trust(&host, port, known_hosts_path.as_deref())
@@ -5535,7 +5558,12 @@ async fn ssh_create_connection(
     port: u16,
     username: String,
     auth_type: String,
+    authentication_factors: Option<Vec<deepagent_ssh::SshAuthenticationFactorRequest>>,
+    proxy: Option<deepagent_ssh::SshProxyRequest>,
+    jump: Option<deepagent_ssh::SshJumpRequest>,
     key_path: Option<String>,
+    key_content: Option<String>,
+    certificate_path: Option<String>,
     password: Option<String>,
     known_hosts_path: Option<String>,
     host_key_policy: Option<deepagent_ssh::SshHostKeyPolicy>,
@@ -5549,7 +5577,12 @@ async fn ssh_create_connection(
         port,
         username,
         auth_type: auth,
+        authentication_factors,
+        proxy,
+        jump,
         key_path,
+        key_content,
+        certificate_path,
         password,
         known_hosts_path,
         host_key_policy: host_key_policy.unwrap_or_default(),
@@ -5569,7 +5602,12 @@ async fn ssh_update_connection(
     port: u16,
     username: String,
     auth_type: String,
+    authentication_factors: Option<Vec<deepagent_ssh::SshAuthenticationFactorRequest>>,
+    proxy: Option<deepagent_ssh::SshProxyRequest>,
+    jump: Option<deepagent_ssh::SshJumpRequest>,
     key_path: Option<String>,
+    key_content: Option<String>,
+    certificate_path: Option<String>,
     password: Option<String>,
     known_hosts_path: Option<String>,
     host_key_policy: Option<deepagent_ssh::SshHostKeyPolicy>,
@@ -5584,7 +5622,12 @@ async fn ssh_update_connection(
         port,
         username,
         auth_type: auth,
+        authentication_factors,
+        proxy,
+        jump,
         key_path,
+        key_content,
+        certificate_path,
         password,
         known_hosts_path,
         host_key_policy,
@@ -5634,12 +5677,11 @@ async fn ssh_respond_host_key(
     attempt_id: String,
     challenge_id: String,
     decision: deepagent_ssh::SshHostKeyDecision,
-) -> Result<(), String> {
+) -> Result<deepagent_ssh::SshConnectionAttempt, String> {
     state
         .ssh
         .respond_host_key(&id, &attempt_id, &challenge_id, decision)
         .await
-        .map(|_| ())
         .map_err(|error| error.to_string())
 }
 
@@ -5653,6 +5695,35 @@ fn ssh_cancel_host_key(
     state
         .ssh
         .cancel_host_key(&id, &attempt_id, &challenge_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn ssh_respond_keyboard_interactive(
+    state: State<'_, AppState>,
+    id: String,
+    attempt_id: String,
+    challenge_id: String,
+    responses: Vec<String>,
+) -> Result<deepagent_ssh::SshConnectionAttempt, String> {
+    state
+        .ssh
+        .respond_keyboard_interactive(&id, &attempt_id, &challenge_id, responses)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn ssh_cancel_connection_attempt(
+    state: State<'_, AppState>,
+    id: String,
+    attempt_id: String,
+    challenge_id: String,
+) -> Result<(), String> {
+    state
+        .ssh
+        .cancel_connection_attempt(&id, &attempt_id, &challenge_id)
+        .await
         .map_err(|error| error.to_string())
 }
 
@@ -8115,6 +8186,8 @@ pub fn run() {
             ssh_begin_connection,
             ssh_respond_host_key,
             ssh_cancel_host_key,
+            ssh_respond_keyboard_interactive,
+            ssh_cancel_connection_attempt,
             ssh_disconnect,
             ssh_status,
             ssh_test_connection,

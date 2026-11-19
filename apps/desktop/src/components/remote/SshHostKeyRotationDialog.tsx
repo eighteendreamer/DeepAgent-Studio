@@ -5,6 +5,7 @@ import {
   type SshConnection, type SshHostKeyRotationPreview, type SshHostKeyRotationResult,
 } from "../../api";
 import { Button } from "../shadcn/button";
+import { matchesSshRoute, SshRouteLabel } from "./SshProxyFields";
 import { Checkbox } from "../shadcn/checkbox";
 import { Label } from "../shadcn/label";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../shadcn/dialog";
@@ -70,7 +71,7 @@ export function SshHostKeyRotationDialog({ connection, onBack, onCommitted }: Pr
         const result = await sshBeginHostKeyRotation(connection.id);
         if (owner !== generation.current) { await cancel(result); return; }
         const c = result.challenge;
-        if (c.connection_id !== connection.id || c.host !== connection.host || c.port !== connection.port || c.kind !== "key_rotation" || c.route !== "direct" || c.role !== "target") {
+        if (c.connection_id !== connection.id || c.host !== connection.host || c.port !== connection.port || c.kind !== "key_rotation" || !matchesSshRoute(connection, c) || c.role !== "target") {
           await cancel(result);
           throw new Error(label("unexpected"));
         }
@@ -90,7 +91,7 @@ export function SshHostKeyRotationDialog({ connection, onBack, onCommitted }: Pr
   const ackId = `ssh-rotation-ack-${connection.id}`;
   return <Dialog open onOpenChange={(open) => { if (!open && !busy) void run("back"); }}>
     <DialogContent className="flex max-h-[85vh] w-[min(640px,calc(100vw-32px))] flex-col overflow-hidden" closeOnBackdrop={!busy} closeOnEscape={!busy} aria-label={label("title")}>
-      <DialogHeader><DialogTitle>{label("title")}</DialogTitle><DialogDescription>{connection.host}:{connection.port} · {label("direct")}</DialogDescription></DialogHeader>
+      <DialogHeader><DialogTitle>{label("title")}</DialogTitle><DialogDescription>{connection.host}:{connection.port} · <SshRouteLabel proxy={connection.proxy} jump={connection.jump} /></DialogDescription></DialogHeader>
       <div className="min-h-0 space-y-4 overflow-y-auto px-5 py-4 text-[12px]">
         <p className="leading-5 text-text-secondary">{label("warning")}</p>
         {busy && <p role="status" aria-live="polite">{label("busy")}</p>}

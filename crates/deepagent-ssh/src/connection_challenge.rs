@@ -1,8 +1,8 @@
 //! Short-lived, connection-scoped host-key enrollment; not a runtime approval store.
-//! No live TCP handle, authentication secret or user response is retained here.
+//! Target confirmation may retain its verified jump route, never credentials or answers.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use deepagent_core::clock::{Clock, SystemClock};
@@ -13,7 +13,7 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::host_trust::HostTrust;
-use crate::{SshConnectionConfig, SshError, SshResult};
+use crate::{SshAuthenticationChallenge, SshConnectionConfig, SshError, SshResult};
 
 const CHALLENGE_TTL: Duration = Duration::from_secs(120);
 const MAX_ATTEMPTS: usize = 128;
@@ -28,6 +28,8 @@ pub struct SshHostKeyChallenge {
     pub username: String,
     pub role: &'static str,
     pub route: &'static str,
+    pub proxy: Option<crate::SshProxyEndpoint>,
+    pub jump: Option<crate::SshJumpEndpoint>,
     pub kind: &'static str,
     pub algorithm: String,
     pub fingerprint: String,
@@ -39,7 +41,12 @@ pub struct SshHostKeyChallenge {
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum SshConnectionAttempt {
     Connected,
-    ConfirmationRequired { challenge: Box<SshHostKeyChallenge> },
+    ConfirmationRequired {
+        challenge: Box<SshHostKeyChallenge>,
+    },
+    AuthenticationRequired {
+        challenge: Box<SshAuthenticationChallenge>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -54,6 +61,8 @@ pub(crate) struct PendingHostKey {
     pub trust: HostTrust,
     pub key: PublicKey,
     pub config_proof: [u8; 32],
+    pub deadline: Instant,
+    pub continuation: Option<crate::transport::PendingHostVerification>,
 }
 
 pub(crate) enum HostKeyPurpose {
@@ -65,10 +74,17 @@ struct Attempt {
     id: String,
     deadline: Instant,
     pending: Option<PendingHostKey>,
+    expiry: tokio_util::sync::CancellationToken,
+}
+
+impl Drop for Attempt {
+    fn drop(&mut self) {
+        self.expiry.cancel();
+    }
 }
 
 #[derive(Default)]
-pub(crate) struct HostKeyChallenges(Mutex<HashMap<String, Attempt>>);
+pub(crate) struct HostKeyChallenges(Arc<Mutex<HashMap<String, Attempt>>>);
 
 impl HostKeyChallenges {
     pub fn reserve(&self, id: &str) -> SshResult<String> {
@@ -80,15 +96,71 @@ impl HostKeyChallenges {
             ));
         }
         let attempt_id = Uuid::new_v4().to_string();
+        let expiry = tokio_util::sync::CancellationToken::new();
         attempts.insert(
             id.into(),
             Attempt {
                 id: attempt_id.clone(),
                 deadline: Instant::now() + CHALLENGE_TTL,
                 pending: None,
+                expiry: expiry.clone(),
             },
         );
+        let deadline = attempts[id].deadline;
+        let registry = Arc::downgrade(&self.0);
+        let connection_id = id.to_owned();
+        let current_attempt = attempt_id.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = expiry.cancelled() => return,
+                _ = tokio::time::sleep_until(deadline) => {},
+            }
+            if let Some(registry) = registry.upgrade() {
+                if let Ok(mut attempts) = registry.lock() {
+                    if attempts
+                        .get(&connection_id)
+                        .is_some_and(|attempt| attempt.id == current_attempt)
+                    {
+                        attempts.remove(&connection_id);
+                    }
+                }
+            }
+        });
         Ok(attempt_id)
+    }
+
+    pub(crate) fn deadline(&self, id: &str, attempt_id: &str) -> SshResult<Instant> {
+        self.0
+            .lock()
+            .map_err(|_| stale())?
+            .get(id)
+            .filter(|attempt| attempt.id == attempt_id && attempt.deadline > Instant::now())
+            .map(|attempt| attempt.deadline)
+            .ok_or_else(stale)
+    }
+
+    pub(crate) fn present_target(
+        &self,
+        cfg: &SshConnectionConfig,
+        attempt_id: &str,
+        continuation: crate::transport::PendingHostVerification,
+        can_save: bool,
+    ) -> SshResult<SshHostKeyChallenge> {
+        let challenge = self.present(
+            cfg,
+            attempt_id,
+            continuation.trust.clone(),
+            continuation.key.clone(),
+            HostKeyPurpose::Enrollment { can_save },
+        )?;
+        let mut attempts = self.0.lock().map_err(|_| stale())?;
+        let pending = attempts
+            .get_mut(&cfg.id)
+            .and_then(|attempt| attempt.pending.as_mut())
+            .filter(|pending| pending.challenge.challenge_id == challenge.challenge_id)
+            .ok_or_else(stale)?;
+        pending.continuation = Some(continuation);
+        Ok(challenge)
     }
 
     pub fn present(
@@ -99,6 +171,26 @@ impl HostKeyChallenges {
         key: PublicKey,
         purpose: HostKeyPurpose,
     ) -> SshResult<SshHostKeyChallenge> {
+        self.present_for_role(
+            cfg,
+            attempt_id,
+            trust,
+            key,
+            purpose,
+            crate::SshConnectionRole::Target,
+        )
+    }
+
+    pub(crate) fn present_for_role(
+        &self,
+        cfg: &SshConnectionConfig,
+        attempt_id: &str,
+        trust: HostTrust,
+        key: PublicKey,
+        purpose: HostKeyPurpose,
+        role: crate::SshConnectionRole,
+    ) -> SshResult<SshHostKeyChallenge> {
+        let active = role.config(cfg)?;
         let mut attempts = self.0.lock().map_err(|_| stale())?;
         let attempt = attempts
             .get_mut(&cfg.id)
@@ -112,11 +204,16 @@ impl HostKeyChallenges {
             connection_id: cfg.id.clone(),
             attempt_id: attempt_id.into(),
             challenge_id: Uuid::new_v4().to_string(),
-            host: cfg.host.clone(),
-            port: cfg.port,
-            username: cfg.username.clone(),
-            role: "target",
-            route: "direct",
+            host: active.host,
+            port: active.port,
+            username: active.username,
+            role: match role {
+                crate::SshConnectionRole::Target => "target",
+                crate::SshConnectionRole::Jump => "jump",
+            },
+            route: cfg.route_label(),
+            proxy: cfg.proxy.as_ref().map(crate::SshProxyConfig::endpoint),
+            jump: cfg.jump.as_ref().map(crate::SshJumpConfig::endpoint),
             kind,
             algorithm: key.algorithm().as_str().into(),
             fingerprint: key.fingerprint(HashAlg::Sha256).to_string(),
@@ -132,6 +229,8 @@ impl HostKeyChallenges {
             trust,
             key,
             config_proof: config_proof(cfg)?,
+            deadline: attempt.deadline,
+            continuation: None,
         });
         Ok(challenge)
     }
@@ -144,7 +243,7 @@ impl HostKeyChallenges {
     ) -> SshResult<PendingHostKey> {
         let mut attempts = self.0.lock().map_err(|_| stale())?;
         let attempt = attempts
-            .get(id)
+            .get_mut(id)
             .filter(|attempt| attempt.id == attempt_id)
             .ok_or_else(stale)?;
         if attempt.deadline <= Instant::now() {
@@ -156,10 +255,7 @@ impl HostKeyChallenges {
         }) {
             return Err(stale());
         }
-        attempts
-            .remove(id)
-            .and_then(|attempt| attempt.pending)
-            .ok_or_else(stale)
+        attempt.pending.take().ok_or_else(stale)
     }
 
     pub fn ensure_current(&self, id: &str, attempt_id: &str) -> SshResult<()> {
@@ -204,9 +300,14 @@ pub(crate) fn config_proof(cfg: &SshConnectionConfig) -> SshResult<[u8; 32]> {
         &cfg.username,
         cfg.auth_type,
         &cfg.key_path,
+        &cfg.key_content,
+        &cfg.certificate_path,
         &cfg.known_hosts_path,
         cfg.host_key_policy,
         &cfg.password,
+        &cfg.authentication_factors,
+        &cfg.proxy,
+        &cfg.jump,
         options,
     ))
     .map_err(|_| stale())?;

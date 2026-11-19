@@ -27,14 +27,18 @@ pub(crate) const MAX_KEYS: usize = 32;
 pub struct SshHostIdentity {
     pub host: String,
     pub port: u16,
-    route: DirectRoute,
+    route: HostRoute,
 }
 
-// Other routes are deliberately not accepted until the transport implements them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum DirectRoute {
+enum HostRoute {
     Direct,
+    Proxy(crate::SshProxyEndpoint),
+    Jump {
+        endpoint: crate::SshJumpEndpoint,
+        proxy: Option<crate::SshProxyEndpoint>,
+    },
 }
 
 impl SshHostIdentity {
@@ -58,8 +62,67 @@ impl SshHostIdentity {
         Ok(Self {
             host,
             port,
-            route: DirectRoute::Direct,
+            route: HostRoute::Direct,
         })
+    }
+
+    pub(crate) fn for_config(config: &crate::SshConnectionConfig) -> SshResult<Self> {
+        Self::for_endpoint(config, &config.host, config.port)
+    }
+
+    pub(crate) fn for_endpoint(
+        config: &crate::SshConnectionConfig,
+        host: &str,
+        port: u16,
+    ) -> SshResult<Self> {
+        let mut identity = Self::direct(host, port)?;
+        if let Some(proxy) = &config.proxy {
+            proxy.validate()?;
+            let endpoint = Self::direct(&proxy.host, proxy.port)?;
+            identity.route = HostRoute::Proxy(crate::SshProxyEndpoint {
+                mode: proxy.mode,
+                host: endpoint.host,
+                port: endpoint.port,
+            });
+        }
+        if let Some(jump) = &config.jump {
+            let endpoint = jump.endpoint().canonical()?;
+            let proxy = match identity.route {
+                HostRoute::Proxy(proxy) => Some(proxy),
+                _ => None,
+            };
+            identity.route = HostRoute::Jump { endpoint, proxy };
+        }
+        Ok(identity)
+    }
+
+    fn canonical(&self) -> SshResult<Self> {
+        let mut identity = Self::direct(&self.host, self.port)?;
+        if let HostRoute::Proxy(proxy) = &self.route {
+            let endpoint = Self::direct(&proxy.host, proxy.port)?;
+            identity.route = HostRoute::Proxy(crate::SshProxyEndpoint {
+                mode: proxy.mode,
+                host: endpoint.host,
+                port: endpoint.port,
+            });
+        }
+        if let HostRoute::Jump { endpoint, proxy } = &self.route {
+            identity.route = HostRoute::Jump {
+                endpoint: endpoint.canonical()?,
+                proxy: proxy
+                    .as_ref()
+                    .map(|proxy| {
+                        let host = Self::direct(&proxy.host, proxy.port)?;
+                        Ok::<_, SshError>(crate::SshProxyEndpoint {
+                            mode: proxy.mode,
+                            host: host.host,
+                            port: host.port,
+                        })
+                    })
+                    .transpose()?,
+            };
+        }
+        Ok(identity)
     }
 
     pub(crate) fn document_id(&self) -> SshResult<String> {
@@ -158,7 +221,7 @@ impl SshHostKeyStore {
 
     pub(crate) fn snapshot(&self, identity: &SshHostIdentity) -> SshResult<StoreSnapshot> {
         // Revalidate deserialized public identities too; callers cannot inject an alias.
-        if &SshHostIdentity::direct(&identity.host, identity.port)? != identity {
+        if &identity.canonical()? != identity {
             return Err(invalid_document());
         }
         let body = DocumentStore::new(&self.db)
@@ -566,10 +629,10 @@ fn storage_error(error: impl std::fmt::Display) -> SshError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use russh::keys::{ssh_key::rand_core::OsRng, Algorithm, PrivateKey};
+    use russh::keys::{Algorithm, PrivateKey};
 
     fn public() -> PublicKey {
-        PrivateKey::random(&mut OsRng, Algorithm::Ed25519)
+        PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
             .unwrap()
             .public_key()
             .clone()

@@ -1,5 +1,7 @@
-import { SshAuthenticationFields, type SshFormAuthType } from "../remote/SshAuthenticationFields";
+import { authenticationFactorRequests, authenticationFactorsFromDto, canSaveSshConnection, SshAuthenticationFields, type SshFormAuthType, type SshAuthenticationFactorForm } from "../remote/SshAuthenticationFields";
 import { SshHostTrustField } from "../remote/SshHostTrustField";
+import { SshProxyFields, sshProxyFromDto, sshProxyRequest, type SshProxyForm } from "../remote/SshProxyFields";
+import { SshJumpFields, sshJumpFromDto, sshJumpRequest, type SshJumpForm } from "../remote/SshJumpFields";
 import { SshHostTrustManager } from "../remote/SshHostTrustManager";
 import { useSshConnectionConfirmation } from "../remote/SshHostKeyPrompt";
 import { Button } from "../shadcn/button";
@@ -23,24 +25,36 @@ import {
 type AuthType = SshFormAuthType;
 
 interface FormData {
+  proxy: SshProxyForm;
+  jump: SshJumpForm;
+  authenticationFactors: SshAuthenticationFactorForm[];
   name: string;
   host: string;
   port: string;
   username: string;
   authType: AuthType;
   keyPath: string;
+  keyContent: string;
+  hasKeyContent: boolean;
+  certificatePath: string;
   knownHostsPath: string;
   hostKeyPolicy: SshHostKeyPolicy;
   password: string;
 }
 
 const emptyForm: FormData = {
+  proxy: sshProxyFromDto(),
+  jump: sshJumpFromDto(),
+  authenticationFactors: [],
   name: "",
   host: "",
   port: "22",
   username: "",
   authType: "password",
   keyPath: "",
+  keyContent: "",
+  hasKeyContent: false,
+  certificatePath: "",
   knownHostsPath: "",
   hostKeyPolicy: "strict",
   password: "",
@@ -136,8 +150,14 @@ export function ConnectionsSettings() {
       host: conn.host,
       port: String(conn.port),
       username: conn.username,
-      authType: conn.auth_type === "key_file" ? "file" : conn.auth_type ?? (conn.key_path ? "file" : "password"),
+      authType: conn.auth_type === "key_content" ? "content" : conn.auth_type === "key_file" ? "file" : conn.auth_type ?? (conn.key_path ? "file" : "password"),
+      authenticationFactors: authenticationFactorsFromDto(conn.authentication_factors ?? []),
+      proxy: sshProxyFromDto(conn.proxy),
+      jump: sshJumpFromDto(conn.jump),
       keyPath: conn.key_path || "",
+      keyContent: "",
+      hasKeyContent: conn.has_key_content ?? false,
+      certificatePath: conn.certificate_path || "",
       knownHostsPath: conn.known_hosts_path || "",
       hostKeyPolicy: conn.host_key_policy ?? "strict",
       password: "",
@@ -154,12 +174,12 @@ export function ConnectionsSettings() {
   };
 
   const handleSave = async () => {
-    if (!form.name || !form.host || !form.username) return;
+    if (!canSaveSshConnection(form)) return;
 
     const port = parseInt(form.port, 10) || 22;
-    const authType = form.authType === "file" ? "key_file" : form.authType;
+    const authType = form.authType === "content" ? "key_content" : form.authType === "file" ? "key_file" : form.authType;
     const keyPath = form.authType === "file" ? form.keyPath : undefined;
-    const password = form.authType === "password" ? form.password : undefined;
+    const password = form.authType === "password" || form.authType === "file" || form.authType === "content" ? form.password : undefined;
 
     if (editingId) {
       await sshUpdateConnection(
@@ -173,6 +193,11 @@ export function ConnectionsSettings() {
         password,
         form.knownHostsPath,
         form.hostKeyPolicy,
+        form.authType === "file" || form.authType === "content" ? form.certificatePath : undefined,
+        form.authType === "content" ? form.keyContent || undefined : undefined,
+        form.authType === "chain" ? authenticationFactorRequests(form.authenticationFactors) : undefined,
+        sshProxyRequest(form.proxy),
+        sshJumpRequest(form.jump),
       );
     } else {
       await sshCreateConnection(
@@ -185,6 +210,11 @@ export function ConnectionsSettings() {
         password,
         form.knownHostsPath,
         form.hostKeyPolicy,
+        form.authType === "file" || form.authType === "content" ? form.certificatePath : undefined,
+        form.authType === "content" ? form.keyContent || undefined : undefined,
+        form.authType === "chain" ? authenticationFactorRequests(form.authenticationFactors) : undefined,
+        sshProxyRequest(form.proxy),
+        sshJumpRequest(form.jump),
       );
     }
 
@@ -196,6 +226,12 @@ export function ConnectionsSettings() {
     const selected = await pickSshIdentityFile();
     if (!selected) return;
     setForm((prev) => ({ ...prev, keyPath: selected }));
+  };
+
+  const handlePickCertificateFile = async () => {
+    const selected = await pickSshIdentityFile("certificate");
+    if (!selected) return;
+    setForm((prev) => ({ ...prev, certificatePath: selected }));
   };
 
   const handleRemove = async (id: string) => {
@@ -541,7 +577,13 @@ export function ConnectionsSettings() {
                 </section>
 
                 <section className="border-t border-border-theme pt-3">
-                    <SshAuthenticationFields value={form} onChange={(change) => setForm((previous) => ({ ...previous, ...change }))} onPickKeyFile={() => void handlePickKeyFile()} />
+                  <SshProxyFields value={form.proxy} onChange={(proxy) => setForm((previous) => ({ ...previous, proxy }))} />
+                </section>
+                <section className="border-t border-border-theme pt-3">
+                  <SshJumpFields value={form.jump} onChange={(jump) => setForm((previous) => ({ ...previous, jump }))} />
+                </section>
+                <section className="border-t border-border-theme pt-3">
+                    <SshAuthenticationFields value={form} onChange={(change) => setForm((previous) => ({ ...previous, ...change }))} onPickKeyFile={() => void handlePickKeyFile()} onPickCertificateFile={() => void handlePickCertificateFile()} />
                   </section>
               </div>
 
@@ -556,7 +598,7 @@ export function ConnectionsSettings() {
                 <button
                   type="submit"
                   className="rounded-full bg-black px-4 py-1 text-[12px] font-medium text-white shadow-sm transition-colors hover:bg-gray-800 disabled:opacity-50"
-                  disabled={!form.name || !form.host || !form.username}
+                  disabled={!canSaveSshConnection(form)}
                 >
                   {editingId
                     ? t("settings.connections.save")

@@ -36,12 +36,17 @@ async fn pty_shell_streams_prompt_and_echoes_input() {
     let service = SshService::new(app_data.path().to_path_buf());
     let connection = service
         .create_connection(CreateSshConnectionRequest {
+            authentication_factors: None,
+            proxy: None,
+            jump: None,
             name: "pty-shell-it".into(),
             host: host.clone(),
             port,
             username: username.clone(),
             auth_type: SshAuthType::Password,
+            key_content: None,
             key_path: None,
+            certificate_path: None,
             host_key_policy: Default::default(),
             known_hosts_path: Some(
                 std::env::var("DEEPAGENT_SSH_TEST_KNOWN_HOSTS")

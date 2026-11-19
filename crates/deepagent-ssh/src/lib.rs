@@ -24,6 +24,13 @@ use std::path::PathBuf;
 pub use agent::{
     probe_ssh_agent, SshAgentIdentity, SshAgentProbe, SshAgentProvider, SshAgentState,
 };
+pub use authentication_challenge::{
+    SshAuthenticationChallenge, SshAuthenticationKind, SshAuthenticationPrompt,
+};
+pub use authentication_factors::{
+    SshAuthenticationFactor, SshAuthenticationFactorDto, SshAuthenticationFactorRequest,
+    MAX_AUTHENTICATION_FACTORS,
+};
 pub use config::{
     CreateSshConnectionRequest, SshAuthType, SshConnectionConfig, SshConnectionDto,
     SshHostKeyPolicy, SshStatus, UpdateSshConnectionRequest,
@@ -50,9 +57,17 @@ pub use host_trust::{SshHostTrustInspection, SshKnownHostKey};
 pub use host_trust_audit::{
     SshHostKeyFingerprint, SshHostTrustAction, SshHostTrustAudit, SshHostTrustAuditRecord,
 };
+pub use jump::{
+    SshConnectionRole, SshJumpConfig, SshJumpDto, SshJumpEndpoint, SshJumpRequest,
+    SshJumpSettingsRequest,
+};
 pub use known_hosts_import::{
     SshKnownHostsImportPreview, SshKnownHostsImportResult, SshKnownHostsImportRow,
     SshKnownHostsImportStatus,
+};
+pub use proxy::{
+    SshProxyConfig, SshProxyDto, SshProxyEndpoint, SshProxyRequest, SshProxySettingsRequest,
+    SshProxyType,
 };
 pub use remote::{
     RemoteBundleManifest, RemoteBundleRequest, RemoteBundleResult, RemoteInstallRequest,
@@ -67,6 +82,8 @@ pub use session::{
 pub use transport::{SshClient, SshCommandOutput};
 
 mod agent;
+mod authentication_challenge;
+mod authentication_factors;
 mod config;
 mod conflict_target;
 mod connection_challenge;
@@ -83,13 +100,17 @@ mod host_key_rotation;
 mod host_key_store;
 mod host_trust;
 mod host_trust_audit;
+mod jump;
 mod known_hosts_import;
+mod private_identity;
+mod proxy;
 mod pty;
 mod remote;
 mod service;
 mod session;
 mod sftp_packet_stream;
 mod transport;
+mod transport_authentication;
 
 use async_trait::async_trait;
 use deepagent_terminal::{
@@ -104,6 +125,10 @@ use std::sync::Arc;
 /// use encrypted SQLite without coupling this transport crate to app-core.
 #[async_trait]
 pub trait SshConfigStore: Send + Sync {
+    /// Private-key bodies must never be persisted by the legacy plaintext JSON adapter.
+    fn supports_secret_storage(&self) -> bool {
+        false
+    }
     async fn load(&self) -> SshResult<Vec<SshConnectionConfig>>;
     async fn save(&self, configs: &[SshConnectionConfig]) -> SshResult<()>;
 }
@@ -525,6 +550,14 @@ impl SshService {
             .await
     }
 
+    /// Inspect the saved connection's trust file, including its current route identity.
+    pub async fn inspect_connection_host_trust(
+        &self,
+        id: &str,
+    ) -> SshResult<SshHostTrustInspection> {
+        self.inner.inspect_connection_host_trust(id).await
+    }
+
     pub async fn create_connection(
         &self,
         request: CreateSshConnectionRequest,
@@ -607,7 +640,7 @@ impl SshService {
         attempt_id: &str,
         challenge_id: &str,
         decision: SshHostKeyDecision,
-    ) -> SshResult<SshServiceHandle> {
+    ) -> SshResult<SshConnectionAttempt> {
         self.inner
             .respond_host_key(id, attempt_id, challenge_id, decision)
             .await
@@ -615,6 +648,29 @@ impl SshService {
 
     pub fn cancel_host_key(&self, id: &str, attempt_id: &str, challenge_id: &str) -> SshResult<()> {
         self.inner.cancel_host_key(id, attempt_id, challenge_id)
+    }
+
+    pub async fn respond_keyboard_interactive(
+        &self,
+        id: &str,
+        attempt_id: &str,
+        challenge_id: &str,
+        responses: Vec<String>,
+    ) -> SshResult<SshConnectionAttempt> {
+        self.inner
+            .respond_keyboard_interactive(id, attempt_id, challenge_id, responses)
+            .await
+    }
+
+    pub async fn cancel_connection_attempt(
+        &self,
+        id: &str,
+        attempt_id: &str,
+        challenge_id: &str,
+    ) -> SshResult<()> {
+        self.inner
+            .cancel_connection_attempt(id, attempt_id, challenge_id)
+            .await
     }
 
     pub async fn exec(&self, handle: &SshServiceHandle, command: &str) -> SshResult<SshExecResult> {
@@ -736,6 +792,10 @@ impl SshService {
         &self,
         dto: &SshConnectionDto,
     ) -> SshResult<crate::session::SshTestResult> {
+        if dto.jump.is_some() {
+            let cfg = self.inner.config_for(&dto.id).await?;
+            return self.inner.test_connection(&cfg).await;
+        }
         let cfg = SshConnectionConfig {
             id: dto.id.clone(),
             name: dto.name.clone(),
@@ -743,7 +803,18 @@ impl SshService {
             port: dto.port,
             username: dto.username.clone(),
             auth_type: dto.auth_type,
+            authentication_factors: Vec::new(),
+            jump: None,
+            proxy: dto.proxy.as_ref().map(|proxy| SshProxyConfig {
+                mode: proxy.mode,
+                host: proxy.host.clone(),
+                port: proxy.port,
+                username: proxy.username.clone(),
+                password: None,
+            }),
             key_path: dto.key_path.clone(),
+            key_content: None,
+            certificate_path: dto.certificate_path.clone(),
             known_hosts_path: dto.known_hosts_path.clone(),
             host_key_policy: dto.host_key_policy,
             password: None,
@@ -903,7 +974,12 @@ mod tests {
                 port: 22,
                 username: "tester".into(),
                 auth_type: SshAuthType::Agent,
+                authentication_factors: None,
+                proxy: None,
+                jump: None,
                 key_path: None,
+                key_content: None,
+                certificate_path: None,
                 known_hosts_path: None,
                 host_key_policy: SshHostKeyPolicy::Strict,
                 password: None,

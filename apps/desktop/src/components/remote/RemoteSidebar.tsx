@@ -1,5 +1,7 @@
-import { SshAuthenticationFields, type SshFormAuthType } from "./SshAuthenticationFields";
+import { authenticationFactorRequests, authenticationFactorsFromDto, canSaveSshConnection, SshAuthenticationFields, type SshFormAuthType, type SshAuthenticationFactorForm } from "./SshAuthenticationFields";
 import { SshHostTrustField } from "./SshHostTrustField";
+import { SshProxyFields, sshProxyFromDto, sshProxyRequest, type SshProxyForm } from "./SshProxyFields";
+import { SshJumpFields, sshJumpFromDto, sshJumpRequest, type SshJumpForm } from "./SshJumpFields";
 import { SshHostTrustManager } from "./SshHostTrustManager";
 import { remoteTransferSubmit } from "../../remoteTransfersApi";
 import { createUploadInvalidator, observeRemoteTransfers } from "../../remoteTransferObserver";
@@ -64,24 +66,36 @@ interface RemoteSidebarProps {
 }
 
 interface ConnectionForm {
+  proxy: SshProxyForm;
+  jump: SshJumpForm;
+  authenticationFactors: SshAuthenticationFactorForm[];
   name: string;
   host: string;
   port: string;
   username: string;
   authType: AuthType;
   keyPath: string;
+  keyContent: string;
+  hasKeyContent: boolean;
+  certificatePath: string;
   knownHostsPath: string;
   hostKeyPolicy: SshHostKeyPolicy;
   password: string;
 }
 
 const emptyForm: ConnectionForm = {
+  proxy: sshProxyFromDto(),
+  jump: sshJumpFromDto(),
+  authenticationFactors: [],
   name: "",
   host: "",
   port: "22",
   username: "",
   authType: "password",
   keyPath: "",
+  keyContent: "",
+  hasKeyContent: false,
+  certificatePath: "",
   knownHostsPath: "",
   hostKeyPolicy: "strict",
   password: "",
@@ -504,12 +518,18 @@ export function RemoteSidebar({
     setForm((prev) => ({ ...prev, keyPath: selectedPath }));
   };
 
+  const handlePickCertificateFile = async () => {
+    const selectedPath = await pickSshIdentityFile("certificate");
+    if (!selectedPath) return;
+    setForm((prev) => ({ ...prev, certificatePath: selectedPath }));
+  };
+
   const handleSave = async () => {
-    if (!form.name || !form.host || !form.username) return;
+    if (!canSaveSshConnection(form)) return;
     const isEditing = managerMode === "edit";
-    const authType = form.authType === "file" ? "key_file" : form.authType;
+    const authType = form.authType === "content" ? "key_content" : form.authType === "file" ? "key_file" : form.authType;
     const keyPath = form.authType === "file" ? form.keyPath : undefined;
-    const password = form.authType === "password" ? form.password : undefined;
+    const password = form.authType === "password" || form.authType === "file" || form.authType === "content" ? form.password : undefined;
     try {
       if (isEditing && editingConn) {
         await sshUpdateConnection(
@@ -523,6 +543,11 @@ export function RemoteSidebar({
           password,
           form.knownHostsPath,
           form.hostKeyPolicy,
+          form.authType === "file" || form.authType === "content" ? form.certificatePath : undefined,
+          form.authType === "content" ? form.keyContent || undefined : undefined,
+          form.authType === "chain" ? authenticationFactorRequests(form.authenticationFactors) : undefined,
+          sshProxyRequest(form.proxy),
+          sshJumpRequest(form.jump),
         );
       } else {
         const created = await sshCreateConnection(
@@ -535,6 +560,11 @@ export function RemoteSidebar({
           password,
           form.knownHostsPath,
           form.hostKeyPolicy,
+          form.authType === "file" || form.authType === "content" ? form.certificatePath : undefined,
+          form.authType === "content" ? form.keyContent || undefined : undefined,
+          form.authType === "chain" ? authenticationFactorRequests(form.authenticationFactors) : undefined,
+          sshProxyRequest(form.proxy),
+          sshJumpRequest(form.jump),
         );
         void handleSelect(created);
       }
@@ -561,8 +591,14 @@ export function RemoteSidebar({
       host: conn.host,
       port: String(conn.port),
       username: conn.username,
-      authType: conn.auth_type === "key_file" ? "file" : conn.auth_type ?? (conn.key_path ? "file" : "password"),
+      authType: conn.auth_type === "key_content" ? "content" : conn.auth_type === "key_file" ? "file" : conn.auth_type ?? (conn.key_path ? "file" : "password"),
+      authenticationFactors: authenticationFactorsFromDto(conn.authentication_factors ?? []),
+      proxy: sshProxyFromDto(conn.proxy),
+      jump: sshJumpFromDto(conn.jump),
       keyPath: conn.key_path || "",
+      keyContent: "",
+      hasKeyContent: conn.has_key_content ?? false,
+      certificatePath: conn.certificate_path || "",
       knownHostsPath: conn.known_hosts_path || "",
       hostKeyPolicy: conn.host_key_policy ?? "strict",
       password: "",
@@ -1163,7 +1199,13 @@ export function RemoteSidebar({
                         onChange={(knownHostsPath) => setForm({ ...form, knownHostsPath })}
                       />
                       <section className="border-t border-border-theme pt-3">
-                    <SshAuthenticationFields value={form} onChange={(change) => setForm((previous) => ({ ...previous, ...change }))} onPickKeyFile={() => void handlePickKeyFile()} />
+                        <SshProxyFields value={form.proxy} onChange={(proxy) => setForm((previous) => ({ ...previous, proxy }))} />
+                      </section>
+                      <section className="border-t border-border-theme pt-3">
+                        <SshJumpFields value={form.jump} onChange={(jump) => setForm((previous) => ({ ...previous, jump }))} />
+                      </section>
+                      <section className="border-t border-border-theme pt-3">
+                    <SshAuthenticationFields value={form} onChange={(change) => setForm((previous) => ({ ...previous, ...change }))} onPickKeyFile={() => void handlePickKeyFile()} onPickCertificateFile={() => void handlePickCertificateFile()} />
                   </section>
                     </div>
                     <div className="flex justify-between border-t border-border-theme px-5 py-3">
@@ -1176,7 +1218,7 @@ export function RemoteSidebar({
                       </button>
                       <button
                         type="submit"
-                        disabled={!form.name || !form.host || !form.username}
+                        disabled={!canSaveSshConnection(form)}
                         className="rounded-full bg-black px-4 py-1.5 text-[13px] text-white transition-colors hover:bg-gray-800 disabled:opacity-60"
                       >
                         {t("settings.connections.save")}

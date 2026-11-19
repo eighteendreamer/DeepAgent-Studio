@@ -2,7 +2,7 @@
 use crate::transport::IdentityHandler;
 use crate::{SshError, SshResult};
 use russh::client::Handle;
-use russh::keys::{self, HashAlg, PublicKey};
+use russh::keys::{self, agent::AgentIdentity, HashAlg};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -127,7 +127,7 @@ impl AgentConnector for SystemAgentConnector {
 
 struct ReadyAgent {
     client: AgentClient,
-    identities: Vec<PublicKey>,
+    identities: Vec<AgentIdentity>,
 }
 
 // Erase the provider stream before entering russh's borrowed RPITIT Signer boundary.
@@ -137,16 +137,16 @@ struct AgentSigner(AgentClient);
 impl russh::Signer for AgentSigner {
     type Error = russh::AgentAuthError;
 
-    fn auth_publickey_sign(
+    fn auth_sign(
         &mut self,
-        key: &PublicKey,
+        identity: &AgentIdentity,
         hash_alg: Option<HashAlg>,
-        to_sign: russh::CryptoVec,
-    ) -> impl std::future::Future<Output = Result<russh::CryptoVec, Self::Error>> + Send {
-        let key = key.clone();
+        to_sign: Vec<u8>,
+    ) -> impl std::future::Future<Output = Result<Vec<u8>, Self::Error>> + Send {
+        let identity = identity.clone();
         Box::pin(async move {
             self.0
-                .sign_request(&key, hash_alg, to_sign)
+                .sign_request(&identity, hash_alg, to_sign)
                 .await
                 .map_err(Into::into)
         })
@@ -187,9 +187,12 @@ async fn resolve_agent(
                 let identities = ready
                     .identities
                     .iter()
-                    .map(|key| SshAgentIdentity {
-                        algorithm: key.algorithm().as_str().to_owned(),
-                        fingerprint: key.fingerprint(HashAlg::Sha256).to_string(),
+                    .map(|identity| {
+                        let key = identity.public_key();
+                        SshAgentIdentity {
+                            algorithm: key.algorithm().as_str().to_owned(),
+                            fingerprint: key.fingerprint(HashAlg::Sha256).to_string(),
+                        }
                     })
                     .collect();
                 resolution.ready = Some(ready);
@@ -236,7 +239,7 @@ pub(crate) async fn authenticate(
     handle: &mut Handle<IdentityHandler>,
     username: &str,
     provider: SshAgentProvider,
-) -> SshResult<()> {
+) -> SshResult<russh::client::AuthResult> {
     let resolution = resolve_agent(provider, Arc::new(SystemAgentConnector)).await;
     let ready = resolution.ready.ok_or_else(|| {
         let reason = resolution
@@ -268,7 +271,7 @@ async fn authenticate_ready(
     handle: &mut Handle<IdentityHandler>,
     username: &str,
     ready: ReadyAgent,
-) -> SshResult<()> {
+) -> SshResult<russh::client::AuthResult> {
     let deadline = tokio::time::Instant::now() + AUTHENTICATION_TIMEOUT;
     let timeout_error = || {
         SshError::AuthFailed(
@@ -287,10 +290,12 @@ async fn authenticate_ready(
         })?
         .flatten();
     let mut signer = AgentSigner(ready.client);
-    for identity in ready.identities {
+    let identity_count = ready.identities.len();
+    for (index, identity) in ready.identities.into_iter().enumerate() {
+        let public_key = identity.public_key().into_owned();
         let result = tokio::time::timeout_at(
             deadline,
-            handle.authenticate_publickey_with(username.to_owned(), identity, hash, &mut signer),
+            handle.authenticate_publickey_with(username.to_owned(), public_key, hash, &mut signer),
         )
         .await
         .map_err(|_| timeout_error())?
@@ -300,13 +305,22 @@ async fn authenticate_ready(
                 format!("SSH Agent signature/authentication failed: {error}"),
             )
         })?;
-        if result.success() {
-            return Ok(());
+        // Another identity is allowed only while this stage still offers public-key auth.
+        // Preserve the latest reply for the caller's common authentication progression.
+        let another_identity_allowed = matches!(
+            &result,
+            russh::client::AuthResult::Failure {
+                remaining_methods,
+                partial_success: false,
+            } if remaining_methods.contains(&russh::MethodKind::PublicKey)
+        );
+        if !another_identity_allowed || index + 1 == identity_count {
+            return Ok(result);
         }
     }
     Err(SshError::AuthFailed(
         username.to_owned(),
-        "server rejected SSH Agent identities; no other provider or credentials were tried".into(),
+        "SSH Agent returned no identities for authentication".into(),
     ))
 }
 

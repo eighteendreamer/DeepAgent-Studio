@@ -363,7 +363,9 @@ async fn repeated_dot_pages_are_bounded_instead_of_looping_forever() {
     .await
     .expect("malformed pagination must terminate without user cancellation");
     assert_eq!(result.unwrap_err().code, "limit");
+    assert_eq!(server.counts.directory_reads.load(Ordering::SeqCst), 5);
     assert_eq!(server.counts.directory_closes.load(Ordering::SeqCst), 1);
+    assert_eq!(server.auth_count(), 1);
 }
 
 #[tokio::test]

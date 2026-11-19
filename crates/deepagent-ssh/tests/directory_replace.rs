@@ -660,7 +660,7 @@ async fn changed_target_type_is_rejected_after_staging_without_touching_external
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remote_backup_cleanup_unlinks_nested_links_without_traversing_their_targets() {
     let (server, dir, ssh, id) = fixture().await;
     let local = dir.path().join("local");
@@ -682,17 +682,21 @@ async fn remote_backup_cleanup_unlinks_nested_links_without_traversing_their_tar
             ..Default::default()
         },
     );
-    let receipt = ssh
-        .transfer_directory(
-            &id,
-            request(FileTransferDirection::Upload, &local),
-            replace(),
-            DirectoryWalkLimits::default(),
-            CancellationToken::new(),
-            Arc::new(|_| {}),
-        )
-        .await
-        .unwrap();
+    let task_service = ssh.clone();
+    let task_id = id.clone();
+    let transfer = tokio::spawn(async move {
+        task_service
+            .transfer_directory(
+                &task_id,
+                request(FileTransferDirection::Upload, &local),
+                replace(),
+                DirectoryWalkLimits::default(),
+                CancellationToken::new(),
+                Arc::new(|_| {}),
+            )
+            .await
+    });
+    let receipt = transfer.await.unwrap().unwrap();
     assert!(
         receipt.cleanup_warnings.is_empty(),
         "{:?}",

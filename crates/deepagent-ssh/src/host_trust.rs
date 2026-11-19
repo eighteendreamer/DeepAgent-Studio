@@ -24,6 +24,9 @@ pub struct SshKnownHostKey {
 pub struct SshHostTrustInspection {
     pub host: String,
     pub port: u16,
+    pub route: String,
+    pub proxy: Option<crate::SshProxyEndpoint>,
+    pub jump: Option<crate::SshJumpEndpoint>,
     pub known_hosts_path: String,
     pub keys: Vec<SshKnownHostKey>,
 }
@@ -72,7 +75,7 @@ impl HostTrust {
         store: Option<&SshHostKeyStore>,
         mode: TrustRead,
     ) -> SshResult<Self> {
-        let identity = SshHostIdentity::direct(&config.host, config.port)?;
+        let identity = SshHostIdentity::for_config(config)?;
         let application = store.map(|store| store.snapshot(&identity)).transpose()?;
         let application_keys = application
             .as_ref()
@@ -238,7 +241,7 @@ impl HostTrust {
         config: &SshConnectionConfig,
         store: Option<Arc<SshHostKeyStore>>,
     ) -> SshResult<Self> {
-        let mut current = if self.confirmed_key.is_some() {
+        let mut current = if self.confirmed_key.is_some() || self.is_unknown() {
             Self::capture(config, store).await?
         } else {
             Self::load_with_store(config, store).await?
@@ -249,6 +252,10 @@ impl HostTrust {
 
     pub(crate) fn is_unknown(&self) -> bool {
         self.keys.is_empty() && self.revoked.is_empty()
+    }
+
+    pub(crate) fn needs_confirmation(&self) -> bool {
+        self.is_unknown() && self.confirmed_key.is_none()
     }
 
     pub(crate) async fn persist_unknown(
@@ -293,6 +300,9 @@ impl HostTrust {
         SshHostTrustInspection {
             host: config.host.clone(),
             port: config.port,
+            route: config.route_label().into(),
+            proxy: config.proxy.as_ref().map(crate::SshProxyConfig::endpoint),
+            jump: config.jump.as_ref().map(crate::SshJumpConfig::endpoint),
             known_hosts_path: self.path,
             // Fingerprinting is UI inspection work, not a tax on every PTY read
             // that revalidates an already connected client's trust source.
@@ -346,12 +356,12 @@ impl HostTrust {
 mod tests {
     use super::*;
     use crate::SshAuthType;
-    use russh::keys::{ssh_key::rand_core::OsRng, Algorithm, PrivateKey};
+    use russh::keys::{Algorithm, PrivateKey};
 
     #[test]
     fn rotation_preview_bounds_active_file_keys_before_presenting_an_impossible_plan() {
         let key = || {
-            PrivateKey::random(&mut OsRng, Algorithm::Ed25519)
+            PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
                 .unwrap()
                 .public_key()
                 .clone()
@@ -381,11 +391,11 @@ mod tests {
 
     #[test]
     fn rotation_tombstone_disables_old_file_key_without_disabling_its_replacement() {
-        let old = PrivateKey::random(&mut OsRng, Algorithm::Ed25519)
+        let old = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
             .unwrap()
             .public_key()
             .clone();
-        let new = PrivateKey::random(&mut OsRng, Algorithm::Ed25519)
+        let new = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
             .unwrap()
             .public_key()
             .clone();
@@ -416,7 +426,7 @@ mod tests {
     fn h125_known_hosts_hash_port_and_marker_contracts() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("known_hosts");
-        let public = PrivateKey::random(&mut OsRng, Algorithm::Ed25519)
+        let public = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
             .unwrap()
             .public_key()
             .to_openssh()

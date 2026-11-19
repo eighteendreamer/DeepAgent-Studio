@@ -67,7 +67,8 @@ impl SshService {
         let root = if root.is_empty() { "/" } else { root };
         validate_root(root)?;
         limits.validate()?;
-        let (owner, client) = operation(&cancel, self.inner.file_client(connection_id)).await?;
+        let (owner, client) =
+            operation(&cancel, Box::pin(self.inner.file_client(connection_id))).await?;
         let channel = operation(&cancel, client.get_channel()).await?;
         if let Err(error) = operation(&cancel, channel.request_subsystem(true, "sftp")).await {
             let _ = channel.close().await;

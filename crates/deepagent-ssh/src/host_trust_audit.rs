@@ -181,6 +181,8 @@ pub struct SshHostTrustAudit {
     pub host: String,
     pub port: u16,
     pub route: &'static str,
+    pub proxy: Option<crate::SshProxyEndpoint>,
+    pub jump: Option<crate::SshJumpEndpoint>,
     pub revision: u64,
     pub records: Vec<SshHostTrustAuditRecord>,
     pub last_used_at_ms: Option<i64>,
@@ -193,7 +195,7 @@ impl SshServiceImpl {
         let _lifecycle = self.lifecycle.read().await;
         let config = self.config_for(id).await?;
         let store = self.application_trust_store()?;
-        let identity = SshHostIdentity::direct(&config.host, config.port)?;
+        let identity = SshHostIdentity::for_config(&config)?;
         let (revision, records, last_used_at_ms, activity_error) =
             tokio::task::spawn_blocking(move || {
                 let (revision, records) = store.audit_snapshot(&identity)?;
@@ -205,11 +207,16 @@ impl SshServiceImpl {
             })
             .await
             .map_err(|error| SshError::Internal(format!("SSH trust audit reader: {error}")))??;
+        let route = config.route_label();
+        let proxy = config.proxy.as_ref().map(crate::SshProxyConfig::endpoint);
+        let jump = config.jump.as_ref().map(crate::SshJumpConfig::endpoint);
         Ok(SshHostTrustAudit {
             connection_id: config.id,
             host: config.host,
             port: config.port,
-            route: "direct",
+            route,
+            proxy,
+            jump,
             revision,
             records,
             last_used_at_ms,

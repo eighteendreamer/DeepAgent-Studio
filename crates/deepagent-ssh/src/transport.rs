@@ -3,13 +3,47 @@
 //! Host identity is checked against the pre-handshake snapshot; its source is
 //! revalidated before any credentials are offered, not just after authentication.
 
+use crate::authentication_challenge::{SshAuthenticationKind, SshAuthenticationPrompt};
 use crate::host_trust::HostTrust;
-use crate::{SshAuthType, SshConnectionConfig, SshError, SshHostKeyStore, SshResult};
-use deepagent_core::clock::{Clock, SystemClock};
+use crate::transport_authentication::AuthenticationNegotiation;
+use crate::{SshConnectionConfig, SshError, SshHostKeyStore, SshResult};
 use russh::client::{self, Handle, Msg};
-use russh::keys::{self, HashAlg, PrivateKeyWithHashAlg, PublicKey};
+use russh::keys::{HashAlg, PublicKey, PublicKeyOrCertificate};
 use russh::{Channel, ChannelMsg, Disconnect};
 use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio_util::sync::CancellationToken;
+
+trait SshStream: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> SshStream for T {}
+
+struct VerifiedJump {
+    client: SshClient,
+    trust: HostTrust,
+}
+
+enum SshRouteConnection {
+    Stream {
+        stream: Box<dyn SshStream>,
+        jump: Option<Arc<VerifiedJump>>,
+    },
+    AuthenticationRequired {
+        pending: PendingClientAuthentication,
+        round: SshAuthenticationRound,
+    },
+}
+
+impl Drop for VerifiedJump {
+    fn drop(&mut self) {
+        // A dropped/expired downstream handshake must also release its dedicated hop.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let client = self.client.clone();
+            runtime.spawn(async move {
+                let _ = client.disconnect().await;
+            });
+        }
+    }
+}
 
 pub(crate) struct IdentityHandler {
     // None is a probe that unconditionally rejects every key before authentication.
@@ -31,11 +65,14 @@ impl IdentityHandler {
 impl client::Handler for IdentityHandler {
     type Error = russh::Error;
 
-    async fn check_server_key(&mut self, presented: &PublicKey) -> Result<bool, Self::Error> {
-        let accepted = self
-            .trust
-            .as_ref()
-            .is_some_and(|trust| trust.accepts(presented));
+    async fn check_server_key(
+        &mut self,
+        presented: &PublicKeyOrCertificate,
+    ) -> Result<bool, Self::Error> {
+        let presented_key = presented.public_key();
+        let accepted = self.trust.as_ref().is_some_and(|trust| {
+            presented.certificate().is_none() && trust.accepts(&presented_key)
+        });
         let observation = if accepted {
             &self.accepted
         } else {
@@ -43,7 +80,7 @@ impl client::Handler for IdentityHandler {
         };
         *observation
             .lock()
-            .unwrap_or_else(|error| error.into_inner()) = Some(presented.clone());
+            .unwrap_or_else(|error| error.into_inner()) = Some(presented_key);
         Ok(accepted)
     }
 }
@@ -53,6 +90,203 @@ impl client::Handler for IdentityHandler {
 #[derive(Clone)]
 pub struct SshClient {
     handle: Arc<Handle<IdentityHandler>>,
+    jump: Option<Arc<VerifiedJump>>,
+}
+
+pub(crate) struct SshAuthenticationRound {
+    pub kind: SshAuthenticationKind,
+    pub name: String,
+    pub instructions: String,
+    pub prompts: Vec<SshAuthenticationPrompt>,
+}
+
+pub(crate) enum SshClientConnection {
+    ConfirmationRequired {
+        pending: PendingHostVerification,
+    },
+    Connected {
+        client: SshClient,
+        trust: HostTrust,
+        server_key: PublicKey,
+    },
+    AuthenticationRequired {
+        pending: PendingClientAuthentication,
+        round: SshAuthenticationRound,
+    },
+}
+
+/// Holds only the authenticated route while the target key awaits a decision.
+/// A fresh target channel is pinned to the reviewed key; the jump is not logged in again.
+pub(crate) struct PendingHostVerification {
+    pub trust: HostTrust,
+    pub key: PublicKey,
+    jump: Option<Arc<VerifiedJump>>,
+}
+
+impl PendingHostVerification {
+    pub(crate) async fn resume(
+        self,
+        config: &SshConnectionConfig,
+        trust: HostTrust,
+        store: Option<Arc<SshHostKeyStore>>,
+    ) -> SshResult<SshClientConnection> {
+        if let Some(jump) = &self.jump {
+            verify_jump(jump, config, store.clone()).await?;
+        }
+        if trust.reload(config, store.clone()).await? != trust {
+            return Err(HostTrust::error(
+                config,
+                "target trust changed before confirmation resumed",
+            ));
+        }
+        let stream = match &self.jump {
+            Some(jump) => SshClient::forward_stream(config, jump).await?,
+            None => Box::new(crate::proxy::open_tcp(config).await?) as Box<dyn SshStream>,
+        };
+        SshClient::authenticate_stream(config, &trust, store, stream, self.jump).await
+    }
+}
+
+pub(crate) struct PendingClientAuthentication {
+    pub role: crate::SshConnectionRole,
+    target_trust: Option<HostTrust>,
+    handle: Option<Handle<IdentityHandler>>,
+    pub trust: HostTrust,
+    pub server_key: PublicKey,
+    negotiation: AuthenticationNegotiation,
+    jump: Option<Arc<VerifiedJump>>,
+}
+
+pub(crate) enum AuthenticationStep {
+    ConfirmationRequired(PendingHostVerification),
+    Connected {
+        client: SshClient,
+        trust: HostTrust,
+        server_key: PublicKey,
+    },
+    Continue(SshAuthenticationRound),
+}
+
+impl PendingClientAuthentication {
+    pub(crate) async fn respond(
+        &mut self,
+        cancelled: &CancellationToken,
+        config: &SshConnectionConfig,
+        store: Option<Arc<SshHostKeyStore>>,
+        responses: Vec<String>,
+    ) -> SshResult<AuthenticationStep> {
+        self.verify_jump_trust(config, store.clone()).await?;
+        let active = self.role.config(config)?;
+        let handle = self.handle.as_mut().ok_or_else(|| {
+            SshError::AuthFailed(
+                config.username.clone(),
+                "authentication session is closed".into(),
+            )
+        })?;
+        let advance =
+            self.negotiation
+                .respond(handle, &active, &self.trust, store.clone(), responses);
+        let round = tokio::select! {
+            biased;
+            _ = cancelled.cancelled() => {
+                return Err(SshError::AuthFailed(
+                    config.username.clone(),
+                    "SSH authentication challenge was cancelled or expired".into(),
+                ));
+            }
+            result = advance => result?,
+        };
+        if let Some(round) = round {
+            return Ok(AuthenticationStep::Continue(round));
+        }
+        let handle = self.handle.take().ok_or_else(|| {
+            SshError::AuthFailed(
+                config.username.clone(),
+                "authentication session is closed".into(),
+            )
+        })?;
+        if self.role == crate::SshConnectionRole::Jump {
+            let target_trust = self.target_trust.take().ok_or_else(|| {
+                SshError::InvalidConfig("missing target trust for jump continuation".into())
+            })?;
+            let jump = Arc::new(VerifiedJump {
+                client: SshClient {
+                    handle: Arc::new(handle),
+                    jump: None,
+                },
+                trust: self.trust.clone(),
+            });
+            let continuation = async {
+                verify_jump(&jump, config, store.clone()).await?;
+                if target_trust.reload(config, store.clone()).await? != target_trust {
+                    return Err(HostTrust::error(
+                        config,
+                        "target trust changed during jump authentication",
+                    ));
+                }
+                let stream = SshClient::forward_stream(config, &jump).await?;
+                SshClient::authenticate_stream(
+                    config,
+                    &target_trust,
+                    store,
+                    stream,
+                    Some(jump.clone()),
+                )
+                .await
+            };
+            let progress = tokio::select! {
+                biased;
+                _ = cancelled.cancelled() => { return Err(SshError::AuthFailed(active.username, "SSH authentication challenge was cancelled or expired".into())); }
+                result = continuation => result?,
+            };
+            return match progress {
+                SshClientConnection::ConfirmationRequired { pending } => {
+                    Ok(AuthenticationStep::ConfirmationRequired(pending))
+                }
+                SshClientConnection::Connected {
+                    client,
+                    trust,
+                    server_key,
+                } => Ok(AuthenticationStep::Connected {
+                    client,
+                    trust,
+                    server_key,
+                }),
+                SshClientConnection::AuthenticationRequired { pending, round } => {
+                    *self = pending;
+                    Ok(AuthenticationStep::Continue(round))
+                }
+            };
+        }
+        Ok(AuthenticationStep::Connected {
+            client: SshClient {
+                handle: Arc::new(handle),
+                jump: self.jump.take(),
+            },
+            trust: self.trust.clone(),
+            server_key: self.server_key.clone(),
+        })
+    }
+
+    pub(crate) async fn verify_jump_trust(
+        &self,
+        config: &SshConnectionConfig,
+        store: Option<Arc<SshHostKeyStore>>,
+    ) -> SshResult<()> {
+        if let Some(jump) = &self.jump {
+            verify_jump(jump, config, store).await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn disconnect(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.disconnect(Disconnect::ByApplication, "", "en").await;
+        }
+        if let Some(jump) = self.jump.take() {
+            let _ = jump.client.disconnect().await;
+        }
+    }
 }
 
 pub struct SshCommandOutput {
@@ -66,6 +300,7 @@ impl SshClient {
     pub(crate) async fn probe_host_key(
         config: &SshConnectionConfig,
         trust: &HostTrust,
+        store: Option<Arc<SshHostKeyStore>>,
     ) -> SshResult<PublicKey> {
         if !trust.is_unknown() {
             return Err(HostTrust::error(
@@ -73,15 +308,38 @@ impl SshClient {
                 "only an unknown endpoint may be probed for confirmation",
             ));
         }
-        Self::observe_host_key(config).await
+        Self::observe_host_key(config, store).await
     }
 
     /// Management probe: also rejects unchanged/known keys, never offers credentials.
-    pub(crate) async fn observe_host_key(config: &SshConnectionConfig) -> SshResult<PublicKey> {
+    pub(crate) async fn observe_host_key(
+        config: &SshConnectionConfig,
+        store: Option<Arc<SshHostKeyStore>>,
+    ) -> SshResult<PublicKey> {
+        let (stream, _jump) = match Box::pin(Self::open_route(config, store, None)).await? {
+            SshRouteConnection::Stream { stream, jump } => (stream, jump),
+            SshRouteConnection::AuthenticationRequired { mut pending, .. } => {
+                pending.disconnect().await;
+                return Err(jump_error(
+                    "authentication",
+                    SshError::AuthFailed(
+                        config.username.clone(),
+                        "host-key probe requires an authenticated jump".into(),
+                    ),
+                ));
+            }
+        };
+        Self::observe_stream(config, stream).await
+    }
+
+    async fn observe_stream(
+        config: &SshConnectionConfig,
+        stream: Box<dyn SshStream>,
+    ) -> SshResult<PublicKey> {
         let observed = Arc::new(Mutex::new(None));
-        let result = client::connect(
+        let result = client::connect_stream(
             Arc::new(client::Config::default()),
-            (config.host.as_str(), config.port),
+            stream,
             IdentityHandler {
                 trust: None,
                 rejected: observed.clone(),
@@ -112,30 +370,140 @@ impl SshClient {
         config: &SshConnectionConfig,
         trust: &HostTrust,
         store: Option<Arc<SshHostKeyStore>>,
-    ) -> SshResult<Self> {
+        confirmed_jump: Option<HostTrust>,
+    ) -> SshResult<SshClientConnection> {
+        match Self::open_route(config, store.clone(), confirmed_jump).await? {
+            SshRouteConnection::Stream { stream, jump } => {
+                Self::authenticate_stream(config, trust, store, stream, jump).await
+            }
+            SshRouteConnection::AuthenticationRequired { mut pending, round } => {
+                pending.target_trust = Some(trust.clone());
+                Ok(SshClientConnection::AuthenticationRequired { pending, round })
+            }
+        }
+    }
+
+    async fn open_route(
+        config: &SshConnectionConfig,
+        store: Option<Arc<SshHostKeyStore>>,
+        confirmed_jump: Option<HostTrust>,
+    ) -> SshResult<SshRouteConnection> {
+        let Some(jump) = &config.jump else {
+            return Ok(SshRouteConnection::Stream {
+                stream: Box::new(crate::proxy::open_tcp(config).await?),
+                jump: None,
+            });
+        };
+        let hop = jump.config(config);
+        let trust = match confirmed_jump {
+            Some(trust) => {
+                if trust.reload(&hop, store.clone()).await? != trust {
+                    return Err(jump_error(
+                        "host verification",
+                        HostTrust::error(&hop, "confirmed jump trust changed"),
+                    ));
+                }
+                trust
+            }
+            None => crate::connection_flow::connection_trust(&hop, store.clone())
+                .await
+                .map_err(|error| jump_error("host verification", error))?,
+        };
+        let client = match Box::pin(Self::connect(&hop, &trust, store.clone(), None))
+            .await
+            .map_err(|error| jump_error("authentication", error))?
+        {
+            SshClientConnection::ConfirmationRequired { .. } => {
+                return Err(jump_error(
+                    "host verification",
+                    HostTrust::error(&hop, "jump requires explicit host verification"),
+                ));
+            }
+            SshClientConnection::Connected { client, .. } => client,
+            SshClientConnection::AuthenticationRequired { mut pending, round } => {
+                pending.role = crate::SshConnectionRole::Jump;
+                return Ok(SshRouteConnection::AuthenticationRequired { pending, round });
+            }
+        };
+        let jump = Arc::new(VerifiedJump { client, trust });
+        if jump.trust.reload(&hop, store).await? != jump.trust {
+            return Err(jump_error(
+                "host verification",
+                HostTrust::error(&hop, "jump trust changed during authentication"),
+            ));
+        }
+        let stream = Self::forward_stream(config, &jump).await?;
+        Ok(SshRouteConnection::Stream {
+            stream,
+            jump: Some(jump),
+        })
+    }
+
+    async fn forward_stream(
+        config: &SshConnectionConfig,
+        jump: &VerifiedJump,
+    ) -> SshResult<Box<dyn SshStream>> {
+        let channel = jump
+            .client
+            .handle
+            .channel_open_direct_tcpip(&config.host, u32::from(config.port), "127.0.0.1", 0)
+            .await
+            .map_err(|error| jump_error("forwarding", protocol_error("direct-tcpip", error)))?;
+        Ok(Box::new(channel.into_stream()))
+    }
+
+    async fn authenticate_stream(
+        config: &SshConnectionConfig,
+        trust: &HostTrust,
+        store: Option<Arc<SshHostKeyStore>>,
+        stream: Box<dyn SshStream>,
+        jump: Option<Arc<VerifiedJump>>,
+    ) -> SshResult<SshClientConnection> {
+        if trust.needs_confirmation() {
+            let key = Self::observe_stream(config, stream).await?;
+            if trust.reload(config, store.clone()).await? != *trust {
+                return Err(HostTrust::error(
+                    config,
+                    "target trust changed during host-key probe",
+                ));
+            }
+            if let Some(jump) = &jump {
+                verify_jump(jump, config, store.clone()).await?;
+            }
+            let pending = PendingHostVerification {
+                trust: trust.clone(),
+                key: key.clone(),
+                jump,
+            };
+            if config.host_key_policy == crate::SshHostKeyPolicy::AcceptNew {
+                let writer = store.clone().ok_or_else(|| {
+                    HostTrust::error(config, "AcceptNew requires the application trust store")
+                })?;
+                let trusted = trust.clone().persist_unknown(config, writer, key).await?;
+                return Box::pin(pending.resume(config, trusted, store)).await;
+            }
+            return Ok(SshClientConnection::ConfirmationRequired { pending });
+        }
         let handler = IdentityHandler::verified(trust.clone());
         let rejected = handler.rejected.clone();
         let accepted = handler.accepted.clone();
-        let mut handle = client::connect(
-            Arc::new(client::Config::default()),
-            (config.host.as_str(), config.port),
-            handler,
-        )
-        .await
-        .map_err(|error| {
-            let rejected = rejected.lock().unwrap_or_else(|error| error.into_inner());
-            match rejected.as_ref() {
-                Some(key) => HostTrust::error(
-                    config,
-                    &format!(
+        let mut handle =
+            client::connect_stream(Arc::new(client::Config::default()), stream, handler)
+                .await
+                .map_err(|error| {
+                    let rejected = rejected.lock().unwrap_or_else(|error| error.into_inner());
+                    match rejected.as_ref() {
+                        Some(key) => HostTrust::error(
+                            config,
+                            &format!(
                         "server key changed or does not match the verified entry; presented {} {}",
                         key.algorithm().as_str(),
                         key.fingerprint(HashAlg::Sha256)
                     ),
-                ),
-                None => protocol_error("SSH handshake", error),
-            }
-        })?;
+                        ),
+                        None => protocol_error("SSH handshake", error),
+                    }
+                })?;
 
         let key = accepted
             .lock()
@@ -144,40 +512,45 @@ impl SshClient {
             .ok_or_else(|| {
                 HostTrust::error(config, "handshake did not retain a verified server key")
             })?;
-        let authentication = async {
-            if &trust.reload(config, store.clone()).await? != trust {
-                return Err(HostTrust::error(
-                    config,
-                    "trust source changed before authentication",
-                ));
+        let mut negotiation = AuthenticationNegotiation::default();
+        if let Some(jump) = &jump {
+            verify_jump(jump, config, store.clone()).await?;
+        }
+        let authentication = negotiation.begin(&mut handle, config, trust, store).await;
+        match authentication {
+            Ok(Some(round)) => Ok(SshClientConnection::AuthenticationRequired {
+                pending: PendingClientAuthentication {
+                    role: crate::SshConnectionRole::Target,
+                    target_trust: None,
+                    handle: Some(handle),
+                    trust: trust.clone(),
+                    server_key: key,
+                    negotiation,
+                    jump,
+                },
+                round,
+            }),
+            Ok(None) => Ok(SshClientConnection::Connected {
+                client: Self {
+                    handle: Arc::new(handle),
+                    jump,
+                },
+                trust: trust.clone(),
+                server_key: key,
+            }),
+            Err(error) => {
+                let _ = handle.disconnect(Disconnect::ByApplication, "", "en").await;
+                Err(error)
             }
-            authenticate(&mut handle, config).await
         }
-        .await;
-        if let Err(error) = authentication {
-            let _ = handle.disconnect(Disconnect::ByApplication, "", "en").await;
-            return Err(error);
-        }
-        if let Some(store) = store {
-            let identity = crate::SshHostIdentity::direct(&config.host, config.port)?;
-            let now = SystemClock.now();
-            let result = tokio::task::spawn_blocking(move || {
-                store.record_authentication(&identity, &key, now)
-            })
-            .await
-            .map_err(|error| SshError::Internal(format!("SSH host activity task: {error}")))
-            .and_then(|result| result);
-            if let Err(error) = result {
-                tracing::warn!(target:"deepagent_ssh", %error, "SSH authenticated but last-used metadata was not saved; trust enforcement is unaffected");
-            }
-        }
-        Ok(Self {
-            handle: Arc::new(handle),
-        })
     }
 
     pub fn is_closed(&self) -> bool {
         self.handle.is_closed()
+            || self
+                .jump
+                .as_ref()
+                .is_some_and(|jump| jump.client.is_closed())
     }
 
     pub async fn get_channel(&self) -> SshResult<Channel<Msg>> {
@@ -223,80 +596,59 @@ impl SshClient {
     }
 
     pub async fn disconnect(&self) -> SshResult<()> {
-        if self.is_closed() {
-            return Ok(());
+        let result = if self.handle.is_closed() {
+            Ok(())
+        } else {
+            self.handle
+                .disconnect(Disconnect::ByApplication, "", "en")
+                .await
+                .map_err(|error| protocol_error("SSH disconnect", error))
+        };
+        if let Some(jump) = &self.jump {
+            Box::pin(jump.client.disconnect()).await?;
         }
-        self.handle
-            .disconnect(Disconnect::ByApplication, "", "en")
-            .await
-            .map_err(|error| protocol_error("SSH disconnect", error))
+        result
+    }
+
+    pub(crate) async fn verify_jump_trust(
+        &self,
+        config: &SshConnectionConfig,
+        store: Option<Arc<SshHostKeyStore>>,
+    ) -> SshResult<()> {
+        if let Some(jump) = &self.jump {
+            verify_jump(jump, config, store).await?;
+        }
+        Ok(())
     }
 }
 
-fn protocol_error(context: &str, error: russh::Error) -> SshError {
-    SshError::ConnectionLost(format!("{context}: {error}"))
+fn jump_error(stage: &'static str, source: SshError) -> SshError {
+    SshError::Jump {
+        stage,
+        source: Box::new(source),
+    }
 }
 
-async fn authenticate(
-    handle: &mut Handle<IdentityHandler>,
+async fn verify_jump(
+    jump: &VerifiedJump,
     config: &SshConnectionConfig,
+    store: Option<Arc<SshHostKeyStore>>,
 ) -> SshResult<()> {
-    let result = match config.auth_type {
-        SshAuthType::Password => {
-            handle
-                .authenticate_password(
-                    &config.username,
-                    config
-                        .password
-                        .as_deref()
-                        .ok_or_else(|| SshError::InvalidConfig("password is required".into()))?,
-                )
-                .await
-        }
-        SshAuthType::KeyFile => {
-            let path = config
-                .key_path
-                .clone()
-                .ok_or_else(|| SshError::InvalidConfig("key path is required".into()))?;
-            let passphrase = config.password.clone();
-            let key = tokio::task::spawn_blocking(move || {
-                keys::load_secret_key(path, passphrase.as_deref())
-            })
-            .await
-            .map_err(|error| SshError::Internal(format!("SSH identity reader: {error}")))?
-            .map_err(|error| {
-                SshError::AuthFailed(
-                    config.username.clone(),
-                    format!("read SSH private key: {error}"),
-                )
-            })?;
-            let hash = handle
-                .best_supported_rsa_hash()
-                .await
-                .map_err(|error| protocol_error("SSH RSA negotiation", error))?
-                .flatten();
-            handle
-                .authenticate_publickey(
-                    &config.username,
-                    PrivateKeyWithHashAlg::new(Arc::new(key), hash),
-                )
-                .await
-        }
-        SshAuthType::Agent | SshAuthType::OpenSshAgent | SshAuthType::Pageant => {
-            let provider = match config.auth_type {
-                SshAuthType::Pageant => crate::SshAgentProvider::Pageant,
-                SshAuthType::OpenSshAgent => crate::SshAgentProvider::OpenSsh,
-                _ => crate::SshAgentProvider::Auto,
-            };
-            return crate::agent::authenticate(handle, &config.username, provider).await;
-        }
-    }
-    .map_err(|error| protocol_error("SSH authentication", error))?;
-    if !result.success() {
-        return Err(SshError::AuthFailed(
-            config.username.clone(),
-            "server rejected the configured authentication method".into(),
+    let hop = crate::SshConnectionRole::Jump.config(config)?;
+    let current = jump
+        .trust
+        .reload(&hop, store)
+        .await
+        .map_err(|error| jump_error("host verification", error))?;
+    if current != jump.trust {
+        return Err(jump_error(
+            "host verification",
+            HostTrust::error(&hop, "jump trust changed; reconnect after verification"),
         ));
     }
     Ok(())
+}
+
+pub(crate) fn protocol_error(context: &str, error: russh::Error) -> SshError {
+    SshError::ConnectionLost(format!("{context}: {error}"))
 }

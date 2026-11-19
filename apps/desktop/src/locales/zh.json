@@ -887,6 +887,10 @@
         "acknowledge": "我已通过独立可信渠道核验此目标的主机指纹。", "scope": "“仅本次”只用于此尝试及其存活连接，断开后需重新确认；“保存并连接”会把公钥写入应用信任库。提交确认后会开始认证，此时不能通过关闭窗口撤回已提交的信任。",
         "once": "仅本次连接", "save": "保存并连接", "cancel": "拒绝并取消", "expires": "本次挑战有效期至", "expired": "挑战已过期，请取消并重新发起连接。", "connecting": "正在验证已确认的密钥并连接…"
       },
+      "authenticationChallenge": {
+        "privateKeyPassphrase": "私钥口令",
+        "title": "SSH 身份验证", "submit": "提交回答", "cancel": "取消连接", "expired": "认证挑战已过期，请重新发起连接。", "submitting": "正在提交回答…"
+      },
       "hostRotation": {
         "unexpected": "轮换响应与当前目标不匹配，已拒绝；请重新发起核验。",
         "title": "主机密钥轮换管理", "direct": "直连目标", "probe": "无认证探测替换密钥", "back": "返回信任列表", "confirm": "撤销旧密钥并保存新信任",
@@ -927,6 +931,38 @@
       "trustLine": "行",
       "trustInspectionHelp": "仅显示本地信任文件中的匹配密钥，不代表远端服务器已通过校验；请通过可信渠道独立核验指纹。此检查不会连接服务器或自动接受密钥。",
       "selectIdentityFile": "点击浏览选择密钥文件",
+      "userCertificate": "OpenSSH 用户证书（可选）",
+      "privateKeyPassphrase": "私钥口令（可选）",
+      "privateKeyContent": "私钥内容",
+      "authenticationChain": "多凭据认证",
+      "authenticationFactor": "凭据 {{index}}",
+      "addFactor": "添加凭据",
+      "removeFactor": "删除",
+      "moveFactorUp": "上移",
+      "moveFactorDown": "下移",
+      "savedCredential": "已保存；留空保留",
+      "clearSavedPassphrase": "清除已保存的私钥口令",
+      "proxy": {
+        "route": "连接路由",
+        "direct": "直连",
+        "host": "代理主机",
+        "port": "代理端口",
+        "username": "代理用户名（可选）",
+        "password": "代理密码",
+        "clearPassword": "清除已保存的代理密码"
+      },
+      "jump": {
+        "add": "添加跳板机",
+        "remove": "移除跳板机",
+        "title": "跳板机",
+        "host": "跳板主机",
+        "port": "跳板端口",
+        "username": "跳板用户名",
+        "authentication": "跳板认证"
+      },
+      "savedPrivateKeyContent": "已保存私钥；留空保留，输入新内容替换",
+      "unlockPrivateKey": "解锁私钥",
+      "selectUserCertificate": "选择用户证书文件",
       "browse": "浏览",
       "testing": "测试连接中...",
       "test": "测试",

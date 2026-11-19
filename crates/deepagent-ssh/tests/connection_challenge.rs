@@ -13,6 +13,9 @@ async fn challenge(service: &SshService, id: &str) -> SshHostKeyChallenge {
         SshConnectionAttempt::Connected => {
             panic!("unknown host must not connect before a decision")
         }
+        SshConnectionAttempt::AuthenticationRequired { .. } => {
+            panic!("unknown host must be confirmed before authentication")
+        }
     }
 }
 
@@ -35,7 +38,7 @@ async fn unknown_host_has_no_auth_and_once_trust_lasts_only_for_the_live_connect
     assert_eq!(pending.algorithm, "ssh-ed25519");
     assert!(pending.fingerprint.starts_with("SHA256:"));
     assert_eq!(server.auth_count(), 0);
-    let handle = service
+    let outcome = service
         .respond_host_key(
             &connection.id,
             &pending.attempt_id,
@@ -44,6 +47,8 @@ async fn unknown_host_has_no_auth_and_once_trust_lasts_only_for_the_live_connect
         )
         .await
         .unwrap();
+    assert!(matches!(outcome, SshConnectionAttempt::Connected));
+    let handle = service.connect(&connection.id).await.unwrap();
     assert_eq!(
         service.exec(&handle, "fixture").await.unwrap().stdout,
         "ok\n"

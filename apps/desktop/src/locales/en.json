@@ -882,11 +882,47 @@
       "knownHostsHelp": "Before first connection, verify the host fingerprint with a trusted administrator, then put its public key in this file. Use host for port 22, [host]:port otherwise. Save and reopen to see the default path. Unknown or changed keys are rejected, never auto-accepted.",
       "hostKeyError": "Host identity verification failed. Verify the administrator fingerprint and host, port and key in known_hosts; never blindly delete the old key.",
       "selectIdentityFile": "Choose an identity file",
+      "userCertificate": "OpenSSH user certificate (optional)",
+      "privateKeyPassphrase": "Private key passphrase (optional)",
+      "privateKeyContent": "Private key content",
+      "authenticationChain": "Multiple credentials",
+      "authenticationFactor": "Credential {{index}}",
+      "addFactor": "Add credential",
+      "removeFactor": "Remove",
+      "moveFactorUp": "Move up",
+      "moveFactorDown": "Move down",
+      "savedCredential": "Saved; leave blank to keep",
+      "clearSavedPassphrase": "Clear saved key passphrase",
+      "proxy": {
+        "route": "Connection route",
+        "direct": "Direct",
+        "host": "Proxy host",
+        "port": "Proxy port",
+        "username": "Proxy username (optional)",
+        "password": "Proxy password",
+        "clearPassword": "Clear saved proxy password"
+      },
+      "jump": {
+        "add": "Add jump host",
+        "remove": "Remove jump host",
+        "title": "Jump host",
+        "host": "Jump host",
+        "port": "Jump port",
+        "username": "Jump username",
+        "authentication": "Jump authentication"
+      },
+      "savedPrivateKeyContent": "Saved private key; leave blank to keep, enter a replacement to change",
+      "unlockPrivateKey": "Unlock private key",
+      "selectUserCertificate": "Choose a user certificate file",
       "inspectTrust": "Inspect trusted keys",
       "hostChallenge": {
         "title": "First connection: verify host identity", "targetDirect": "Target server · Direct", "warning": "The server presented an untrusted public key. No password or private-key authentication has been sent. Independently verify this fingerprint through a trusted administrator; do not trust this dialog alone.",
         "acknowledge": "I independently verified the host fingerprint for this endpoint.", "scope": "Once authorizes only this attempt and its live connection; reconnecting requires confirmation again. Save and connect stores the public key in application trust. Submitting starts authentication; closing a view cannot undo submitted trust.",
         "once": "Connect once", "save": "Save and connect", "cancel": "Reject and cancel", "expires": "This challenge expires at", "expired": "This challenge expired. Cancel and start a new connection attempt.", "connecting": "Verifying the confirmed key and connecting…"
+      },
+      "authenticationChallenge": {
+        "privateKeyPassphrase": "Private key passphrase",
+        "title": "SSH authentication", "submit": "Submit response", "cancel": "Cancel connection", "expired": "This authentication challenge expired. Start a new connection.", "submitting": "Submitting response…"
       },
       "hostRotation": {
         "unexpected": "Rotation response does not match this target and was rejected. Start verification again.",

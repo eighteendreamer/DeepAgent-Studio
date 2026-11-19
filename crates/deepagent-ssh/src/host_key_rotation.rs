@@ -25,10 +25,16 @@ pub struct SshHostKeyRotationResult {
     pub disconnect_failed_ids: Vec<String>,
 }
 
-async fn probe(config: &crate::SshConnectionConfig) -> SshResult<PublicKey> {
-    timeout(Duration::from_secs(20), SshClient::observe_host_key(config))
-        .await
-        .map_err(|_| SshError::Timeout(Duration::from_secs(20)))?
+async fn probe(
+    config: &crate::SshConnectionConfig,
+    store: std::sync::Arc<crate::SshHostKeyStore>,
+) -> SshResult<PublicKey> {
+    timeout(
+        Duration::from_secs(20),
+        SshClient::observe_host_key(config, Some(store)),
+    )
+    .await
+    .map_err(|_| SshError::Timeout(Duration::from_secs(20)))?
 }
 
 impl SshServiceImpl {
@@ -46,7 +52,7 @@ impl SshServiceImpl {
                     "unknown identity requires first-connection verification, not rotation",
                 ));
             }
-            let key = probe(&config).await?;
+            let key = probe(&config, store.clone()).await?;
             let previous_keys = trust
                 .rotation_previous(&config, &key)?
                 .into_iter()
@@ -90,6 +96,7 @@ impl SshServiceImpl {
         self.ensure_loaded().await;
         let _lifecycle = self.lifecycle.write().await;
         let pending = self.host_challenges.take(id, attempt_id, challenge_id)?;
+        self.host_challenges.discard(id, attempt_id);
         if pending.challenge.kind != "key_rotation" {
             return Err(SshError::InvalidConfig(
                 "not an SSH rotation management challenge".into(),
@@ -107,7 +114,7 @@ impl SshServiceImpl {
         }
         // Re-observe immediately before saving. A second server change is not
         // silently persisted, and neither probe ever reaches authentication.
-        if probe(&config).await? != pending.key
+        if probe(&config, store.clone()).await? != pending.key
             || HostTrust::capture_rotation(&config, store.clone()).await? != pending.trust
         {
             return Err(HostTrust::error(
@@ -122,7 +129,7 @@ impl SshServiceImpl {
             .map(|(_, key)| key)
             .collect::<Vec<_>>();
         let snapshot = pending.trust.store_snapshot()?;
-        let identity = SshHostIdentity::direct(&config.host, config.port)?;
+        let identity = SshHostIdentity::for_config(&config)?;
         let audit = tokio::task::spawn_blocking(move || {
             store.rotate_verified(snapshot, &previous, &pending.key)
         })
@@ -134,8 +141,11 @@ impl SshServiceImpl {
         };
         // Trust identity is shared by aliases. Close their PTY/SFTP clients too.
         for connection in self.list_connections().await {
-            if SshHostIdentity::direct(&connection.host, connection.port)
+            if self
+                .config_for(&connection.id)
+                .await
                 .ok()
+                .and_then(|config| SshHostIdentity::for_config(&config).ok())
                 .as_ref()
                 == Some(&identity)
             {

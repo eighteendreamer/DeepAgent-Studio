@@ -1,3 +1,6 @@
+use super::authentication_challenge::{
+    next_challenge, stale_error as stale_authentication_challenge, AuthenticationChallengeRegistry,
+};
 use super::config::{
     CreateSshConnectionRequest, SshAuthType, SshConnectionConfig, SshConnectionDto, SshStatus,
     UpdateSshConnectionRequest,
@@ -13,10 +16,12 @@ use super::session::{
     SshDirEntry, SshDirListing, SshExecResult, SshFileBinary, SshFileContent, SshSession,
     SshStatusSnapshot, SshTestResult,
 };
-use super::transport::SshClient as Client;
-use super::{SshConfigStore, SshServiceHandle};
+use super::transport::{AuthenticationStep, SshClient as Client, SshClientConnection};
+use super::{SshConfigStore, SshConnectionAttempt, SshServiceHandle};
 use async_trait::async_trait;
 use base64::Engine;
+use deepagent_core::clock::Clock;
+use russh::keys::PublicKey;
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
 use sha2::Digest;
@@ -80,6 +85,7 @@ pub struct SshServiceImpl {
     config_store: Arc<dyn SshConfigStore>,
     pub(super) host_key_store: Option<Arc<crate::SshHostKeyStore>>,
     pub(super) host_challenges: crate::connection_challenge::HostKeyChallenges,
+    pub(super) authentication_challenges: Arc<AuthenticationChallengeRegistry>,
     data_root: PathBuf,
     loaded: AtomicBool,
 }
@@ -101,6 +107,7 @@ impl SshServiceImpl {
             config_store,
             host_key_store: None,
             host_challenges: Default::default(),
+            authentication_challenges: Arc::default(),
             data_root: app_data.join("deepagent-ssh"),
             loaded: AtomicBool::new(false),
         }
@@ -109,12 +116,25 @@ impl SshServiceImpl {
     pub async fn load(&self) -> SshResult<()> {
         let _lifecycle = self.lifecycle.write().await;
         self.host_challenges.clear();
+        self.authentication_challenges.clear().await;
         let configs = self
             .config_store
             .load()
             .await?
             .into_iter()
             .map(|mut config| {
+                self.validate_secret_storage(&config)?;
+                if let Some(proxy) = &config.proxy {
+                    proxy.validate()?;
+                }
+                if let Some(jump) = &mut config.jump {
+                    jump.validate()?;
+                    jump.known_hosts_path =
+                        Some(self.resolve_known_hosts(jump.known_hosts_path.as_deref())?);
+                }
+                if config.auth_type == SshAuthType::Chain {
+                    config.validate_credentials()?;
+                }
                 config.known_hosts_path =
                     Some(self.resolve_known_hosts(config.known_hosts_path.as_deref())?);
                 Ok((config.id.clone(), config))
@@ -132,6 +152,29 @@ impl SshServiceImpl {
         self.config_store.save(&values).await
     }
 
+    fn validate_secret_storage(&self, config: &SshConnectionConfig) -> SshResult<()> {
+        if (config.key_content.is_some()
+            || config
+                .jump
+                .as_ref()
+                .is_some_and(|jump| jump.contains_secret())
+            || config
+                .proxy
+                .as_ref()
+                .is_some_and(|proxy| proxy.password.is_some())
+            || config
+                .authentication_factors
+                .iter()
+                .any(|factor| factor.contains_secret()))
+            && !self.config_store.supports_secret_storage()
+        {
+            return Err(SshError::InvalidConfig(
+                "private-key content, authentication chain, jump and proxy secrets require secure encrypted configuration storage".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn list_connections(&self) -> Vec<SshConnectionDto> {
         self.ensure_loaded().await;
         let configs = self.configs.read().await;
@@ -139,14 +182,15 @@ impl SshServiceImpl {
         let mut out = Vec::with_capacity(configs.len());
         for cfg in configs.values() {
             let (status, last_error, latency_ms) = if let Some(s) = sessions.get(&cfg.id).cloned() {
+                let session_status = s.status().await;
                 let live_status = if let Some(client) = s.client().await {
                     if client.is_closed() {
-                        None
+                        (session_status == SshStatus::Error).then_some(session_status)
                     } else {
-                        Some(s.status().await)
+                        Some(session_status)
                     }
                 } else {
-                    None
+                    (session_status == SshStatus::Error).then_some(session_status)
                 };
                 (
                     live_status.unwrap_or(cfg.cached_status),
@@ -162,20 +206,7 @@ impl SshServiceImpl {
                     cfg.cached_latency_ms,
                 )
             };
-            out.push(SshConnectionDto {
-                id: cfg.id.clone(),
-                name: cfg.name.clone(),
-                host: cfg.host.clone(),
-                port: cfg.port,
-                username: cfg.username.clone(),
-                auth_type: cfg.auth_type,
-                key_path: cfg.key_path.clone(),
-                known_hosts_path: cfg.known_hosts_path.clone(),
-                host_key_policy: cfg.host_key_policy,
-                status,
-                last_error,
-                latency_ms,
-            });
+            out.push(dto_from_config(cfg, status, last_error, latency_ms));
         }
         out.sort_by(|a, b| a.name.cmp(&b.name).then(a.host.cmp(&b.host)));
         out
@@ -195,8 +226,18 @@ impl SshServiceImpl {
             "trust inspection",
             SshAuthType::Agent,
         );
-        validate_config(&config, None, None)?;
+        validate_config(&config)?;
         config.known_hosts_path = Some(self.resolve_known_hosts(known_hosts_path)?);
+        Ok(HostTrust::load(&config).await?.inspection(&config))
+    }
+
+    pub async fn inspect_connection_host_trust(
+        &self,
+        id: &str,
+    ) -> SshResult<SshHostTrustInspection> {
+        self.ensure_loaded().await;
+        let _lifecycle = self.lifecycle.read().await;
+        let config = self.config_for(id).await?;
         Ok(HostTrust::load(&config).await?.inspection(&config))
     }
 
@@ -205,7 +246,7 @@ impl SshServiceImpl {
         let _lifecycle = self.lifecycle.read().await;
         let config = self.config_for(id).await?;
         let store = self.application_trust_store()?;
-        let identity = crate::SshHostIdentity::direct(&config.host, config.port)?;
+        let identity = crate::SshHostIdentity::for_config(&config)?;
         tokio::task::spawn_blocking(move || store.list(&identity))
             .await
             .map_err(|error| SshError::Internal(format!("SSH trust listing task: {error}")))?
@@ -227,7 +268,7 @@ impl SshServiceImpl {
                 "trust preview is stale; inspect and verify again",
             ));
         }
-        let identity = crate::SshHostIdentity::direct(&config.host, config.port)?;
+        let identity = crate::SshHostIdentity::for_config(&config)?;
         let keys = verified.public_keys();
         let source = verified.path;
         let records = tokio::task::spawn_blocking(move || {
@@ -245,7 +286,7 @@ impl SshServiceImpl {
         let _lifecycle = self.lifecycle.write().await;
         let config = self.config_for(id).await?;
         let store = self.application_trust_store()?;
-        let identity = crate::SshHostIdentity::direct(&config.host, config.port)?;
+        let identity = crate::SshHostIdentity::for_config(&config)?;
         let fingerprint = fingerprint.to_owned();
         tokio::task::spawn_blocking(move || store.revoke(&identity, &fingerprint))
             .await
@@ -274,14 +315,29 @@ impl SshServiceImpl {
         config.known_hosts_path =
             Some(self.resolve_known_hosts(request.known_hosts_path.as_deref())?);
         config.host_key_policy = request.host_key_policy;
-        validate_config(
-            &config,
-            request.key_path.as_deref(),
-            request.password.as_deref(),
-        )?;
-        config.key_path = request.key_path.clone();
+        config.key_path = request.key_path;
+        config.key_content = request.key_content;
+        config.certificate_path = request.certificate_path;
         config.password = request.password;
-        config.discard_agent_credentials();
+        config.proxy = crate::proxy::resolve_proxy(request.proxy, None)?;
+        config.jump = crate::jump::resolve_jump(
+            request.jump,
+            None,
+            config.known_hosts_path.as_deref().unwrap_or_default(),
+        )?;
+        if let Some(jump) = &mut config.jump {
+            jump.known_hosts_path =
+                Some(self.resolve_known_hosts(jump.known_hosts_path.as_deref())?);
+        }
+        if config.auth_type == SshAuthType::Chain {
+            config.authentication_factors = crate::authentication_factors::resolve_factors(
+                request.authentication_factors,
+                &[],
+            )?;
+        }
+        config.normalize_credentials();
+        validate_config(&config)?;
+        self.validate_secret_storage(&config)?;
         let id = config.id.clone();
         let mut configs = self.configs.write().await;
         if configs.contains_key(&id) {
@@ -315,8 +371,30 @@ impl SshServiceImpl {
             port: request.port,
             username: request.username,
             auth_type: request.auth_type,
+            proxy: crate::proxy::resolve_proxy(request.proxy, cfg.proxy.as_ref())?,
+            jump: crate::jump::resolve_jump(
+                request.jump,
+                cfg.jump.as_ref(),
+                cfg.known_hosts_path.as_deref().unwrap_or_default(),
+            )?,
+            authentication_factors: if request.auth_type == SshAuthType::Chain {
+                crate::authentication_factors::resolve_factors(
+                    request.authentication_factors,
+                    &cfg.authentication_factors,
+                )?
+            } else {
+                Vec::new()
+            },
             host_key_policy: request.host_key_policy.unwrap_or(cfg.host_key_policy),
             key_path: request.key_path.clone(),
+            key_content: request.key_content.or_else(|| {
+                (cfg.auth_type == SshAuthType::KeyContent && request.auth_type == cfg.auth_type)
+                    .then(|| cfg.key_content.clone())
+                    .flatten()
+            }),
+            certificate_path: request
+                .certificate_path
+                .or_else(|| cfg.certificate_path.clone()),
             known_hosts_path: Some(
                 self.resolve_known_hosts(
                     request
@@ -333,12 +411,13 @@ impl SshServiceImpl {
             cached_latency_ms: None,
             cached_checked_at_ms: None,
         };
-        validate_config(
-            &candidate,
-            candidate.key_path.as_deref(),
-            candidate.password.as_deref(),
-        )?;
-        candidate.discard_agent_credentials();
+        candidate.normalize_credentials();
+        if let Some(jump) = &mut candidate.jump {
+            jump.known_hosts_path =
+                Some(self.resolve_known_hosts(jump.known_hosts_path.as_deref())?);
+        }
+        validate_config(&candidate)?;
+        self.validate_secret_storage(&candidate)?;
         *cfg = candidate.clone();
         drop(configs);
         let _ = self.disconnect(&request.id).await;
@@ -374,22 +453,59 @@ impl SshServiceImpl {
         cfg: &SshConnectionConfig,
         confirmed: Option<HostTrust>,
     ) -> SshResult<SshServiceHandle> {
+        let attempt_id = uuid::Uuid::new_v4().to_string();
+        match self
+            .connect_config_attempt(cfg, confirmed, None, &attempt_id)
+            .await?
+        {
+            SshConnectionAttempt::Connected => Ok(SshServiceHandle::new(&cfg.id, &cfg.id, 80, 24)),
+            SshConnectionAttempt::AuthenticationRequired { challenge } => {
+                self.authentication_challenges.invalidate(&cfg.id).await;
+                Err(SshError::AuthFailed(
+                    cfg.username.clone(),
+                    format!(
+                        "keyboard-interactive authentication is required; resume attempt {} through begin_connection",
+                        challenge.attempt_id
+                    ),
+                ))
+            }
+            SshConnectionAttempt::ConfirmationRequired { .. } => Err(SshError::Internal(
+                "connection configuration unexpectedly requested host confirmation".into(),
+            )),
+        }
+    }
+
+    pub(super) async fn connect_config_attempt(
+        &self,
+        cfg: &SshConnectionConfig,
+        confirmed: Option<HostTrust>,
+        confirmed_jump: Option<HostTrust>,
+        attempt_id: &str,
+    ) -> SshResult<SshConnectionAttempt> {
         let id = cfg.id.as_str();
+        let deadline = self.host_challenges.deadline(id, attempt_id).ok();
+        self.authentication_challenges.invalidate(id).await;
         if let Some((session, _client)) = self.reusable_client(cfg).await? {
             session.set_status(SshStatus::Connected, None).await;
             session.touch_keepalive();
             let _ = self
                 .update_cached_status(id, SshStatus::Connected, None, cfg.cached_latency_ms)
                 .await;
-            return Ok(SshServiceHandle::new(id, id, 80, 24));
+            return Ok(SshConnectionAttempt::Connected);
         }
 
         let session = self.session_for(cfg.clone()).await;
-        session.set_status(SshStatus::Connecting, None).await;
+        session.set_connecting_attempt(attempt_id).await;
         let started = std::time::Instant::now();
-        let (client, trust) = match timeout(
+        let progress = match timeout(
             Duration::from_secs(20),
-            connect_client(cfg, self.host_key_store.clone(), confirmed),
+            connect_client_progress(
+                cfg,
+                self.host_key_store.clone(),
+                confirmed,
+                confirmed_jump,
+                deadline.is_some(),
+            ),
         )
         .await
         {
@@ -425,25 +541,419 @@ impl SshServiceImpl {
                 return Err(err);
             }
         };
+        self.accept_connection_progress(cfg, attempt_id, progress, started.elapsed(), deadline)
+            .await
+    }
+
+    pub(super) async fn accept_connection_progress(
+        &self,
+        cfg: &SshConnectionConfig,
+        attempt_id: &str,
+        progress: SshClientConnection,
+        elapsed: Duration,
+        deadline: Option<tokio::time::Instant>,
+    ) -> SshResult<SshConnectionAttempt> {
+        let id = cfg.id.as_str();
+        if deadline.is_some_and(|deadline| {
+            deadline <= tokio::time::Instant::now()
+                || self.host_challenges.ensure_current(id, attempt_id).is_err()
+        }) {
+            match progress {
+                SshClientConnection::Connected { client, .. } => {
+                    let _ = client.disconnect().await;
+                }
+                SshClientConnection::AuthenticationRequired { mut pending, .. } => {
+                    pending.disconnect().await
+                }
+                SshClientConnection::ConfirmationRequired { .. } => {}
+            }
+            return Err(stale_authentication_challenge());
+        }
+        match progress {
+            ConnectClientProgress::ConfirmationRequired { pending } => {
+                let challenge = self.host_challenges.present_target(
+                    cfg,
+                    attempt_id,
+                    pending,
+                    self.host_key_store.is_some(),
+                )?;
+                Ok(SshConnectionAttempt::ConfirmationRequired {
+                    challenge: Box::new(challenge),
+                })
+            }
+            ConnectClientProgress::Connected {
+                client,
+                trust,
+                server_key,
+            } => {
+                self.publish_connected_client(cfg, client, trust, server_key, elapsed)
+                    .await?;
+                Ok(SshConnectionAttempt::Connected)
+            }
+            ConnectClientProgress::AuthenticationRequired { pending, round } => {
+                let proof = crate::connection_challenge::config_proof(cfg)?;
+                let session = self.session_for(cfg.clone()).await;
+                let challenge = self
+                    .authentication_challenges
+                    .present(
+                        cfg,
+                        attempt_id,
+                        proof,
+                        elapsed,
+                        Arc::clone(&session),
+                        pending,
+                        round,
+                        deadline,
+                    )
+                    .await?;
+                let _ = self
+                    .update_cached_status(
+                        id,
+                        SshStatus::Connecting,
+                        None,
+                        Some(elapsed.as_millis() as u64),
+                    )
+                    .await;
+                Ok(SshConnectionAttempt::AuthenticationRequired {
+                    challenge: Box::new(challenge),
+                })
+            }
+        }
+    }
+
+    pub async fn respond_keyboard_interactive(
+        &self,
+        id: &str,
+        attempt_id: &str,
+        challenge_id: &str,
+        responses: Vec<String>,
+    ) -> SshResult<SshConnectionAttempt> {
+        self.ensure_loaded().await;
+        let _lifecycle = self.lifecycle.write().await;
+        let cfg = self.config_for(id).await?;
+        let proof = crate::connection_challenge::config_proof(&cfg)?;
+        let pending = self
+            .authentication_challenges
+            .get(id, attempt_id, challenge_id)
+            .await?;
+        if !self.authentication_challenges.is_current(id, &pending) {
+            return Err(stale_authentication_challenge());
+        }
+
+        let mut state = pending.state.lock().await;
+        if state.deadline <= tokio::time::Instant::now()
+            || !self.authentication_challenges.is_current(id, &pending)
+        {
+            drop(state);
+            self.authentication_challenges
+                .close_if_current(id, &pending)
+                .await;
+            let error = stale_authentication_challenge();
+            self.set_authentication_status(id, SshStatus::Error, Some(error.to_string()))
+                .await;
+            return Err(error);
+        }
+        if state.config_proof != proof {
+            let error = SshError::InvalidConfig(
+                "SSH connection configuration changed while authentication was pending".into(),
+            );
+            drop(state);
+            self.authentication_challenges
+                .close_if_current(id, &pending)
+                .await;
+            self.set_authentication_status(id, SshStatus::Error, Some(error.to_string()))
+                .await;
+            return Err(error);
+        }
+        let expected_responses = state.challenge.prompts.len();
+        if responses.len() != expected_responses {
+            return Err(SshError::InvalidConfig(format!(
+                "SSH authentication challenge expects {expected_responses} responses"
+            )));
+        }
+        let (trust, active_config) = match state.client.as_ref() {
+            Some(client) => (client.trust.clone(), client.role.config(&cfg)?),
+            None => {
+                drop(state);
+                self.authentication_challenges
+                    .close_if_current(id, &pending)
+                    .await;
+                return Err(stale_authentication_challenge());
+            }
+        };
+        let trust_check = tokio::select! {
+            _ = pending.cancelled.cancelled() => Err(stale_authentication_challenge()),
+            result = trust.reload(&active_config, self.host_key_store.clone()) => result,
+        };
+        match trust_check {
+            Ok(current) if current == trust => {}
+            Ok(_) => {
+                let error = HostTrust::error(
+                    &cfg,
+                    "host trust changed while keyboard-interactive authentication was pending",
+                );
+                drop(state);
+                self.authentication_challenges
+                    .close_if_current(id, &pending)
+                    .await;
+                self.set_authentication_status(id, SshStatus::Error, Some(error.to_string()))
+                    .await;
+                return Err(error);
+            }
+            Err(error) => {
+                drop(state);
+                self.authentication_challenges
+                    .close_if_current(id, &pending)
+                    .await;
+                self.set_authentication_status(id, SshStatus::Error, Some(error.to_string()))
+                    .await;
+                return Err(error);
+            }
+        }
+
+        let response_started = std::time::Instant::now();
+        let cancelled = pending.cancelled.clone();
+        let step = match state.client.as_mut() {
+            Some(client) => {
+                client
+                    .respond(&cancelled, &cfg, self.host_key_store.clone(), responses)
+                    .await
+            }
+            None => Err(stale_authentication_challenge()),
+        };
+        state.elapsed += response_started.elapsed();
+
+        match step {
+            Ok(AuthenticationStep::ConfirmationRequired(continuation)) => {
+                if state.deadline <= tokio::time::Instant::now()
+                    || pending.cancelled.is_cancelled()
+                    || !self.authentication_challenges.is_current(id, &pending)
+                {
+                    drop(state);
+                    self.authentication_challenges
+                        .close_if_current(id, &pending)
+                        .await;
+                    return Err(stale_authentication_challenge());
+                }
+                let challenge = self.host_challenges.present_target(
+                    &cfg,
+                    attempt_id,
+                    continuation,
+                    self.host_key_store.is_some(),
+                )?;
+                state.client.take();
+                if !self
+                    .authentication_challenges
+                    .remove_if_current(id, &pending)
+                {
+                    self.host_challenges.discard(id, attempt_id);
+                    return Err(stale_authentication_challenge());
+                }
+                Ok(SshConnectionAttempt::ConfirmationRequired {
+                    challenge: Box::new(challenge),
+                })
+            }
+            Ok(AuthenticationStep::Continue(round)) => {
+                let current_client = state
+                    .client
+                    .as_ref()
+                    .ok_or_else(stale_authentication_challenge)?;
+                let expected_trust = current_client.trust.clone();
+                let current_config = current_client.role.config(&cfg)?;
+                let role = current_client.role;
+                let current_trust = tokio::select! {
+                    _ = pending.cancelled.cancelled() => Err(stale_authentication_challenge()),
+                    result = expected_trust.reload(&current_config, self.host_key_store.clone()) => result,
+                };
+                if !matches!(&current_trust, Ok(current) if current == &expected_trust)
+                    || state.deadline <= tokio::time::Instant::now()
+                    || !self.authentication_challenges.is_current(id, &pending)
+                {
+                    drop(state);
+                    self.authentication_challenges
+                        .close_if_current(id, &pending)
+                        .await;
+                    let error = current_trust
+                        .err()
+                        .unwrap_or_else(stale_authentication_challenge);
+                    self.set_authentication_status(id, SshStatus::Error, Some(error.to_string()))
+                        .await;
+                    return Err(error);
+                }
+                let challenge = next_challenge(&cfg, attempt_id, state.deadline, round, role)?;
+                *pending
+                    .active_challenge_id
+                    .write()
+                    .unwrap_or_else(|error| error.into_inner()) = challenge.challenge_id.clone();
+                state.challenge = challenge.clone();
+                Ok(SshConnectionAttempt::AuthenticationRequired {
+                    challenge: Box::new(challenge),
+                })
+            }
+            Ok(AuthenticationStep::Connected {
+                client,
+                trust: authenticated_trust,
+                server_key,
+            }) => {
+                let current_trust = tokio::select! {
+                    _ = pending.cancelled.cancelled() => Err(stale_authentication_challenge()),
+                    result = authenticated_trust.reload(&cfg, self.host_key_store.clone()) => result,
+                };
+                if !matches!(&current_trust, Ok(current) if current == &authenticated_trust)
+                    || state.deadline <= tokio::time::Instant::now()
+                    || pending.cancelled.is_cancelled()
+                    || !self.authentication_challenges.is_current(id, &pending)
+                {
+                    let error = current_trust
+                        .err()
+                        .unwrap_or_else(stale_authentication_challenge);
+                    drop(state);
+                    let _ = client.disconnect().await;
+                    self.authentication_challenges
+                        .close_if_current(id, &pending)
+                        .await;
+                    self.set_authentication_status(id, SshStatus::Error, Some(error.to_string()))
+                        .await;
+                    return Err(error);
+                }
+                let elapsed = state.elapsed;
+                state.client.take();
+                if !self
+                    .authentication_challenges
+                    .remove_if_current(id, &pending)
+                {
+                    drop(state);
+                    let _ = client.disconnect().await;
+                    return Err(stale_authentication_challenge());
+                }
+                drop(state);
+                self.host_challenges.discard(id, attempt_id);
+                self.publish_connected_client(
+                    &cfg,
+                    client,
+                    authenticated_trust,
+                    server_key,
+                    elapsed,
+                )
+                .await?;
+                Ok(SshConnectionAttempt::Connected)
+            }
+            Err(error) => {
+                drop(state);
+                self.authentication_challenges
+                    .close_if_current(id, &pending)
+                    .await;
+                self.set_authentication_status(id, SshStatus::Error, Some(error.to_string()))
+                    .await;
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn cancel_connection_attempt(
+        &self,
+        id: &str,
+        attempt_id: &str,
+        challenge_id: &str,
+    ) -> SshResult<()> {
+        self.ensure_loaded().await;
+        self.authentication_challenges
+            .cancel(id, attempt_id, challenge_id)
+            .await?;
+        self.host_challenges.discard(id, attempt_id);
+        self.set_authentication_status(id, SshStatus::Disconnected, None)
+            .await;
+        Ok(())
+    }
+
+    async fn set_authentication_status(
+        &self,
+        id: &str,
+        status: SshStatus,
+        last_error: Option<String>,
+    ) {
+        if let Some(session) = self.sessions.read().await.get(id).cloned() {
+            session.set_status(status, last_error.clone()).await;
+        }
+        if let Err(error) = self
+            .update_cached_status(id, status, last_error, None)
+            .await
+        {
+            tracing::debug!(target: "deepagent_ssh", connection_id = id, %error,
+                "failed to persist SSH authentication status");
+        }
+    }
+
+    pub(super) async fn publish_connected_client(
+        &self,
+        cfg: &SshConnectionConfig,
+        client: Client,
+        trust: HostTrust,
+        server_key: PublicKey,
+        elapsed: Duration,
+    ) -> SshResult<SshServiceHandle> {
+        let id = cfg.id.as_str();
+        if let Err(error) = client
+            .verify_jump_trust(cfg, self.host_key_store.clone())
+            .await
+        {
+            let _ = client.disconnect().await;
+            return Err(error);
+        }
+        let session = self.session_for(cfg.clone()).await;
         *session.host_trust.write().await = Some(trust);
         session.set_client(Some(client)).await;
         session.set_status(SshStatus::Connected, None).await;
         session.touch_keepalive();
+        self.record_successful_authentication(cfg, server_key).await;
         let _ = self
             .update_cached_status(
                 id,
                 SshStatus::Connected,
                 None,
-                Some(started.elapsed().as_millis() as u64),
+                Some(elapsed.as_millis() as u64),
             )
             .await;
         tracing::debug!(
             target: "deepagent_ssh",
             id,
-            elapsed_ms = started.elapsed().as_millis(),
+            elapsed_ms = elapsed.as_millis(),
             "ssh connection established"
         );
         Ok(SshServiceHandle::new(id, id, 80, 24))
+    }
+
+    async fn record_successful_authentication(&self, cfg: &SshConnectionConfig, key: PublicKey) {
+        let Some(store) = self.host_key_store.clone() else {
+            return;
+        };
+        let identity = match crate::SshHostIdentity::for_config(cfg) {
+            Ok(identity) => identity,
+            Err(error) => {
+                tracing::debug!(target: "deepagent_ssh", connection_id = cfg.id, %error,
+                    "failed to identify endpoint for SSH authentication activity");
+                return;
+            }
+        };
+        let result = tokio::task::spawn_blocking(move || {
+            store.record_authentication(&identity, &key, deepagent_core::clock::SystemClock.now())
+        })
+        .await;
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::debug!(
+                target: "deepagent_ssh",
+                connection_id = cfg.id,
+                %error,
+                "failed to record successful SSH authentication activity"
+            ),
+            Err(error) => tracing::debug!(
+                target: "deepagent_ssh",
+                connection_id = cfg.id,
+                %error,
+                "failed to record successful SSH authentication activity"
+            ),
+        }
     }
 
     pub async fn exec(&self, handle: &SshServiceHandle, command: &str) -> SshResult<SshExecResult> {
@@ -750,6 +1260,7 @@ impl SshServiceImpl {
 
     pub async fn disconnect(&self, id: &str) -> SshResult<()> {
         self.host_challenges.invalidate(id);
+        self.authentication_challenges.invalidate(id).await;
         let sessions = self.sessions.read().await;
         let mut disconnected = Ok(());
         if let Some(session) = sessions.get(id) {
@@ -783,16 +1294,40 @@ impl SshServiceImpl {
         let sessions = self.sessions.read().await;
         match sessions.get(id) {
             Some(s) => {
+                let session_status = s.status().await;
+                let session_error = s.last_error().await;
                 if let Some(client) = s.client().await {
-                    if client.is_closed() {
-                        return cached.ok_or_else(|| SshError::NotFound(id.to_string()));
-                    } else {
+                    if !client.is_closed() {
                         return Ok(SshStatusSnapshot {
-                            status: s.status().await,
-                            last_error: s.last_error().await,
+                            status: session_status,
+                            last_error: session_error,
                             latency_ms: cached.and_then(|snap| snap.latency_ms),
                         });
                     }
+                }
+                if session_status == SshStatus::Error {
+                    let last_error = session_error.or_else(|| {
+                        cached
+                            .as_ref()
+                            .and_then(|snapshot| snapshot.last_error.clone())
+                    });
+                    if cached.as_ref().map_or(true, |snapshot| {
+                        snapshot.status != session_status || snapshot.last_error != last_error
+                    }) {
+                        let _ = self
+                            .update_cached_status(
+                                id,
+                                session_status,
+                                last_error.clone(),
+                                cached.as_ref().and_then(|snapshot| snapshot.latency_ms),
+                            )
+                            .await;
+                    }
+                    return Ok(SshStatusSnapshot {
+                        status: session_status,
+                        last_error,
+                        latency_ms: cached.and_then(|snapshot| snapshot.latency_ms),
+                    });
                 }
                 Ok(SshStatusSnapshot {
                     status: cached
@@ -1298,12 +1833,24 @@ impl SshServiceImpl {
             || original.username != cfg.username
             || original.auth_type != cfg.auth_type
             || original.key_path != cfg.key_path
+            || original.key_content != cfg.key_content
+            || original.certificate_path != cfg.certificate_path
             || original.password != cfg.password
+            || original.authentication_factors != cfg.authentication_factors
+            || original.proxy != cfg.proxy
+            || original.jump != cfg.jump
         {
             self.disconnect(&cfg.id).await?;
             return Ok(None);
         }
         let previous = session.host_trust.read().await.clone();
+        if let Err(error) = client
+            .verify_jump_trust(cfg, self.host_key_store.clone())
+            .await
+        {
+            self.disconnect(&cfg.id).await?;
+            return Err(error);
+        }
         let current = match &previous {
             Some(previous) => previous.reload(cfg, self.host_key_store.clone()).await,
             None => HostTrust::load_with_store(cfg, self.host_key_store.clone()).await,
@@ -1560,16 +2107,16 @@ async fn execute_health_check(client: &Client) -> SshResult<()> {
     Ok(())
 }
 
-async fn connect_client(
+type ConnectClientProgress = SshClientConnection;
+
+async fn connect_client_progress(
     config: &SshConnectionConfig,
     store: Option<Arc<crate::SshHostKeyStore>>,
     confirmed: Option<HostTrust>,
-) -> SshResult<(Client, HostTrust)> {
-    validate_config(
-        config,
-        config.key_path.as_deref(),
-        config.password.as_deref(),
-    )?;
+    confirmed_jump: Option<HostTrust>,
+    confirm_unknown: bool,
+) -> SshResult<ConnectClientProgress> {
+    validate_config(config)?;
     let trust = match confirmed {
         Some(trust) => {
             if trust.reload(config, store.clone()).await? != trust {
@@ -1580,28 +2127,84 @@ async fn connect_client(
             }
             trust
         }
+        None if config.jump.is_some()
+            && (confirm_unknown
+                || config.host_key_policy == super::SshHostKeyPolicy::AcceptNew) =>
+        {
+            HostTrust::capture(config, store.clone()).await?
+        }
         None => crate::connection_flow::connection_trust(config, store.clone()).await?,
     };
-    let client = Client::connect(config, &trust, store.clone()).await?;
-    match trust.reload(config, store).await {
-        Ok(current) if current == trust => Ok((client, trust)),
-        result => {
-            let _ = client.disconnect().await;
-            Err(result.err().unwrap_or_else(|| {
-                HostTrust::error(
-                    config,
-                    "trust source changed during authentication; retry after verification",
-                )
-            }))
+    match Client::connect(config, &trust, store.clone(), confirmed_jump).await? {
+        SshClientConnection::ConfirmationRequired { pending } => {
+            Ok(ConnectClientProgress::ConfirmationRequired { pending })
+        }
+        SshClientConnection::Connected {
+            client,
+            trust,
+            server_key,
+        } => match trust.reload(config, store).await {
+            Ok(current) if current == trust => Ok(ConnectClientProgress::Connected {
+                client,
+                trust,
+                server_key,
+            }),
+            result => {
+                let _ = client.disconnect().await;
+                Err(result.err().unwrap_or_else(|| {
+                    HostTrust::error(
+                        config,
+                        "trust source changed during authentication; retry after verification",
+                    )
+                }))
+            }
+        },
+        SshClientConnection::AuthenticationRequired { mut pending, round } => {
+            let pending_trust = pending.trust.clone();
+            let active_config = pending.role.config(config)?;
+            match pending_trust.reload(&active_config, store).await {
+                Ok(current) if current == pending_trust => {
+                    Ok(ConnectClientProgress::AuthenticationRequired { pending, round })
+                }
+                result => {
+                    pending.disconnect().await;
+                    Err(result.err().unwrap_or_else(|| {
+                        HostTrust::error(
+                            config,
+                            "trust source changed during authentication; retry after verification",
+                        )
+                    }))
+                }
+            }
         }
     }
 }
 
-fn validate_config(
+async fn connect_client(
     config: &SshConnectionConfig,
-    key_path: Option<&str>,
-    password: Option<&str>,
-) -> SshResult<()> {
+    store: Option<Arc<crate::SshHostKeyStore>>,
+    confirmed: Option<HostTrust>,
+) -> SshResult<(Client, HostTrust)> {
+    match connect_client_progress(config, store, confirmed, None, false).await? {
+        ConnectClientProgress::ConfirmationRequired { .. } => Err(HostTrust::error(
+            config,
+            "unknown target requires the connection challenge flow",
+        )),
+        ConnectClientProgress::Connected { client, trust, .. } => Ok((client, trust)),
+        ConnectClientProgress::AuthenticationRequired { mut pending, .. } => {
+            pending.disconnect().await;
+            Err(SshError::AuthFailed(
+                config.username.clone(),
+                "server requires keyboard-interactive authentication; use the connection challenge flow".into(),
+            ))
+        }
+    }
+}
+
+fn validate_config(config: &SshConnectionConfig) -> SshResult<()> {
+    if let Some(jump) = &config.jump {
+        jump.validate()?;
+    }
     if config.host.trim().is_empty() {
         return Err(SshError::InvalidConfig("host is required".into()));
     }
@@ -1613,15 +2216,7 @@ fn validate_config(
             "port must be greater than 0".into(),
         ));
     }
-    match config.auth_type {
-        SshAuthType::Password if password.unwrap_or_default().is_empty() => {
-            Err(SshError::InvalidConfig("password is required".into()))
-        }
-        SshAuthType::KeyFile if key_path.unwrap_or_default().is_empty() => {
-            Err(SshError::InvalidConfig("key path is required".into()))
-        }
-        _ => Ok(()),
-    }
+    config.validate_credentials()
 }
 
 fn dto_from_config(
@@ -1637,7 +2232,16 @@ fn dto_from_config(
         port: cfg.port,
         username: cfg.username.clone(),
         auth_type: cfg.auth_type,
+        authentication_factors: cfg
+            .authentication_factors
+            .iter()
+            .map(|factor| factor.dto())
+            .collect(),
+        proxy: cfg.proxy.as_ref().map(crate::SshProxyConfig::dto),
+        jump: cfg.jump.as_ref().map(crate::SshJumpConfig::dto),
         key_path: cfg.key_path.clone(),
+        has_key_content: cfg.key_content.is_some(),
+        certificate_path: cfg.certificate_path.clone(),
         known_hosts_path: cfg.known_hosts_path.clone(),
         host_key_policy: cfg.host_key_policy,
         status,

@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use deepagent_persistence::Database;
 use deepagent_ssh::{SshHostIdentity, SshHostKeyStore};
-use russh::keys::{ssh_key::rand_core::OsRng, Algorithm, HashAlg, PrivateKey};
+use russh::keys::{Algorithm, HashAlg, PrivateKey};
 
 fn key() -> russh::keys::PublicKey {
-    PrivateKey::random(&mut OsRng, Algorithm::Ed25519)
+    PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
         .unwrap()
         .public_key()
         .clone()

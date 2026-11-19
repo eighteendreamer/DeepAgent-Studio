@@ -49,6 +49,9 @@ pub struct SshKnownHostsImportPreview {
     pub connection_id: String,
     pub host: String,
     pub port: u16,
+    pub route: String,
+    pub proxy: Option<crate::SshProxyEndpoint>,
+    pub jump: Option<crate::SshJumpEndpoint>,
     pub known_hosts_path: String,
     pub source_sha256: String,
     pub rows: Vec<SshKnownHostsImportRow>,
@@ -222,6 +225,7 @@ fn classify(
     rows: &mut [Candidate],
     revoked: &[PublicKey],
     store: &SshHostKeyStore,
+    config: &SshConnectionConfig,
 ) -> SshResult<Vec<(SshHostIdentity, Vec<PublicKey>)>> {
     use SshKnownHostsImportStatus as Status;
     let mut targets = BTreeMap::<(String, u16), Vec<usize>>::new();
@@ -241,7 +245,7 @@ fn classify(
     }
     let mut groups = Vec::new();
     for ((host, port), indices) in targets {
-        let identity = SshHostIdentity::direct(&host, port)?;
+        let identity = SshHostIdentity::for_endpoint(config, &host, port)?;
         if !store.snapshot(&identity)?.keys()?.is_empty() {
             for index in indices {
                 rows[index].row.status = Status::ExistingTrust;
@@ -295,7 +299,7 @@ fn prepare(config: &SshConnectionConfig, store: &SshHostKeyStore) -> SshResult<I
         ));
     }
     let (mut rows, revoked) = parse(&bytes)?;
-    let groups = classify(&mut rows, &revoked, store)?;
+    let groups = classify(&mut rows, &revoked, store, config)?;
     let importable = rows
         .iter()
         .filter(|row| row.row.status == SshKnownHostsImportStatus::Ready)
@@ -306,6 +310,9 @@ fn prepare(config: &SshConnectionConfig, store: &SshHostKeyStore) -> SshResult<I
             connection_id: config.id.clone(),
             host: config.host.clone(),
             port: config.port,
+            route: config.route_label().into(),
+            proxy: config.proxy.as_ref().map(crate::SshProxyConfig::endpoint),
+            jump: config.jump.as_ref().map(crate::SshJumpConfig::endpoint),
             known_hosts_path: path.into(),
             source_sha256: format!("{:x}", Sha256::digest(&bytes)),
             rows: rows.into_iter().map(|candidate| candidate.row).collect(),
@@ -365,8 +372,11 @@ impl SshServiceImpl {
         .await
         .map_err(|error| SshError::Internal(format!("SSH import commit task: {error}")))??;
         for connection in self.list_connections().await {
-            if SshHostIdentity::direct(&connection.host, connection.port)
+            if self
+                .config_for(&connection.id)
+                .await
                 .ok()
+                .and_then(|config| SshHostIdentity::for_config(&config).ok())
                 .is_some_and(|identity| identities.contains(&identity))
             {
                 if let Err(error) = self.disconnect(&connection.id).await {

@@ -112,9 +112,9 @@ fn storage_error(error: impl std::fmt::Display) -> SshError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use russh::keys::{ssh_key::rand_core::OsRng, Algorithm, PrivateKey};
+    use russh::keys::{Algorithm, PrivateKey};
     fn public() -> PublicKey {
-        PrivateKey::random(&mut OsRng, Algorithm::Ed25519)
+        PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
             .unwrap()
             .public_key()
             .clone()

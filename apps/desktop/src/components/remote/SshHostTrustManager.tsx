@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { matchesSshRoute, SshRouteLabel } from "./SshProxyFields";
 import { useTranslation } from "react-i18next";
 import {
   sshImportHostTrust, sshInspectHostTrust, sshListHostKeys, sshRevokeHostKey,
@@ -25,7 +26,7 @@ interface Props {
 export function SshHostTrustManager({ connection, onClose, onChanged }: Props) {
   if (!connection) return null;
   // A new endpoint/source gets a new owner; never show another host's first frame.
-  const scope = JSON.stringify([connection.id, connection.host, connection.port, connection.known_hosts_path]);
+  const scope = JSON.stringify([connection.id, connection.host, connection.port, connection.known_hosts_path, connection.proxy?.mode, connection.proxy?.host, connection.proxy?.port, connection.jump?.host, connection.jump?.port, connection.jump?.username]);
   return <HostTrustPanel key={scope} connection={connection} onClose={onClose} onChanged={onChanged} />;
 }
 
@@ -54,6 +55,9 @@ function HostTrustPanel({ connection, onClose, onChanged }: Props & { connection
       if (action === "preview_file") {
         const inspected = await sshPreviewKnownHostsImport(connection.id);
         if (request !== generation.current) return;
+        if (inspected.connection_id !== connection.id || inspected.host !== connection.host || inspected.port !== connection.port || !matchesSshRoute(connection, inspected)) {
+          throw new Error(t("settings.connections.trustAudit.unexpected"));
+        }
         setFilePreview(inspected); setFileResult(null); setPreview(null); setRevoking(null); setAcknowledged(false);
       } else if (action === "import_file") {
         const result = await sshImportKnownHosts(connection.id, filePreview!);
@@ -64,8 +68,11 @@ function HostTrustPanel({ connection, onClose, onChanged }: Props & { connection
         if (request === generation.current) setRecords(next);
       } else
       if (action === "preview") {
-        const inspected = await sshInspectHostTrust(connection.host, connection.port, connection.known_hosts_path);
+        const inspected = await sshInspectHostTrust(connection.host, connection.port, connection.known_hosts_path, connection.id);
         if (request !== generation.current) return;
+        if (inspected.host !== connection.host || inspected.port !== connection.port || !matchesSshRoute(connection, inspected)) {
+          throw new Error(t("settings.connections.trustAudit.unexpected"));
+        }
         setPreview(inspected);
         setFilePreview(null); setFileResult(null);
         setAcknowledged(false);
@@ -114,7 +121,7 @@ function HostTrustPanel({ connection, onClose, onChanged }: Props & { connection
       <DialogContent className="flex max-h-[85vh] w-[min(620px,calc(100vw-32px))] flex-col overflow-hidden" aria-label={label("title")}>
         <DialogHeader>
           <DialogTitle>{label("title")}</DialogTitle>
-          <DialogDescription className="break-all">{connection.host}:{connection.port} · {label("direct")}</DialogDescription>
+          <DialogDescription className="break-all">{connection.host}:{connection.port} · <SshRouteLabel proxy={connection.proxy} jump={connection.jump} /></DialogDescription>
         </DialogHeader>
         <div className="min-h-0 space-y-4 overflow-y-auto px-5 py-4 text-[12px]">
           {busy && <p role="status" aria-live="polite">{label("busy")}</p>}

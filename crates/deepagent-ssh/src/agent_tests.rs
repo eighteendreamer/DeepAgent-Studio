@@ -1,7 +1,5 @@
 use super::*;
-use russh::keys::{
-    signature::Signer, ssh_encoding::Encode, ssh_key::rand_core::OsRng, Algorithm, PrivateKey,
-};
+use russh::keys::{signature::Signer, ssh_encoding::Encode, Algorithm, PrivateKey};
 use std::collections::VecDeque;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -97,7 +95,7 @@ fn fixture(keys: Vec<PrivateKey>, reject_signature: bool) -> (AgentClient, Arc<A
 
 #[tokio::test]
 async fn auto_falls_back_only_from_unavailable_or_empty_and_probe_never_signs() {
-    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
     let (empty, _) = fixture(vec![], false);
     let (ready, signed) = fixture(vec![key.clone()], false);
     let connector = Arc::new(Connector {
@@ -148,7 +146,7 @@ async fn explicit_provider_and_protocol_error_do_not_silently_fall_back() {
 
 #[tokio::test]
 async fn automatic_provider_selection_stops_at_first_ready_and_limits_identity_count() {
-    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
     let (ready, _) = fixture(vec![key.clone()], false);
     let connector = Arc::new(Connector {
         clients: Mutex::new(VecDeque::from([
@@ -208,7 +206,7 @@ async fn windows_openssh_pipe_uses_real_native_transport_without_touching_system
         .first_pipe_instance(true)
         .create(&path)
         .unwrap();
-    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
     let expected = key.public_key().clone();
     let (agent, signed) = fixture(vec![key], false);
     let bridge = tokio::spawn(async move {
@@ -216,14 +214,18 @@ async fn windows_openssh_pipe_uses_real_native_transport_without_touching_system
         tokio::io::copy_bidirectional(&mut pipe, &mut agent.into_inner()).await
     });
     let mut client = connect_openssh_pipe(&path).await.unwrap();
-    let keys = client.request_identities().await.unwrap();
-    assert_eq!(keys.len(), 1);
-    assert_eq!(keys[0].to_bytes().unwrap(), expected.to_bytes().unwrap());
-    assert_eq!(keys[0].comment(), "private comment must not reach DTO");
+    let identities = client.request_identities().await.unwrap();
+    assert_eq!(identities.len(), 1);
+    let agent_key = identities[0].public_key().into_owned();
+    assert_eq!(agent_key.to_bytes().unwrap(), expected.to_bytes().unwrap());
+    assert_eq!(
+        identities[0].comment(),
+        "private comment must not reach DTO"
+    );
     assert_eq!(signed.load(Ordering::SeqCst), 0);
     let data = b"isolated named-pipe signing fixture";
     let signature = client
-        .sign_request_signature(&keys[0], None, data)
+        .sign_request_signature(&agent_key, None, data)
         .await
         .unwrap();
     russh::keys::signature::Verifier::verify(&expected, data, &signature).unwrap();
@@ -232,21 +234,15 @@ async fn windows_openssh_pipe_uses_real_native_transport_without_touching_system
     bridge.abort();
 }
 
-#[tokio::test]
-async fn agent_signature_authenticates_a_real_ssh_session_and_rejection_is_terminal() {
+async fn ssh_agent_session(
+    handler: impl russh::server::Handler<Error = russh::Error> + Send + 'static,
+) -> (
+    Handle<IdentityHandler>,
+    tokio::task::JoinHandle<()>,
+    tempfile::TempDir,
+) {
     use russh::{client, server};
-    struct ServerHandler;
-    impl server::Handler for ServerHandler {
-        type Error = russh::Error;
-        async fn auth_publickey(
-            &mut self,
-            _: &str,
-            _: &PublicKey,
-        ) -> Result<server::Auth, Self::Error> {
-            Ok(server::Auth::Accept)
-        }
-    }
-    let server_key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let server_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
     let public = server_key.public_key().clone();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -275,15 +271,38 @@ async fn agent_signature_authenticates_a_real_ssh_session_and_rejection_is_termi
             keys: vec![server_key],
             ..Default::default()
         });
-        while let Ok((socket, _)) = listener.accept().await {
-            server::run_stream(config.clone(), socket, ServerHandler)
-                .await
-                .unwrap();
-        }
+        let (socket, _) = listener.accept().await.unwrap();
+        let session = server::run_stream(config, socket, handler).await.unwrap();
+        let _ = session.await;
     });
+    let handle = client::connect(
+        Arc::new(client::Config::default()),
+        address,
+        IdentityHandler::verified(trust),
+    )
+    .await
+    .unwrap();
+    (handle, server, temp)
+}
+
+#[tokio::test]
+async fn agent_signature_authenticates_a_real_ssh_session_and_rejection_is_terminal() {
+    use russh::server;
+    struct ServerHandler;
+    impl server::Handler for ServerHandler {
+        type Error = russh::Error;
+        async fn auth_publickey(
+            &mut self,
+            _: &str,
+            _: server::VerifiedPublicKey<'_>,
+        ) -> Result<server::Auth, Self::Error> {
+            Ok(server::Auth::Accept)
+        }
+    }
     for reject in [false, true] {
+        let (mut handle, server, _temp) = ssh_agent_session(ServerHandler).await;
         let (agent, signed) = fixture(
-            vec![PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap()],
+            vec![PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap()],
             reject,
         );
         let connector = Arc::new(Connector {
@@ -291,13 +310,6 @@ async fn agent_signature_authenticates_a_real_ssh_session_and_rejection_is_termi
             ..Default::default()
         });
         let resolution = resolve_agent(SshAgentProvider::Auto, connector.clone()).await;
-        let mut handle = client::connect(
-            Arc::new(client::Config::default()),
-            address,
-            IdentityHandler::verified(trust.clone()),
-        )
-        .await
-        .unwrap();
         let result = authenticate_ready(&mut handle, "fixture", resolution.ready.unwrap()).await;
         assert_eq!(result.is_ok(), !reject);
         assert_eq!(signed.load(Ordering::SeqCst), 1);
@@ -310,6 +322,97 @@ async fn agent_signature_authenticates_a_real_ssh_session_and_rejection_is_termi
             .disconnect(russh::Disconnect::ByApplication, "", "en")
             .await
             .unwrap();
+        server.abort();
     }
-    server.abort();
+}
+
+#[tokio::test]
+async fn agent_obeys_latest_remaining_methods_before_offering_another_identity() {
+    use russh::{client, server, MethodKind, MethodSet};
+    struct ServerHandler {
+        methods: Vec<MethodKind>,
+        partial_success: bool,
+        requests: usize,
+    }
+    impl server::Handler for ServerHandler {
+        type Error = russh::Error;
+        async fn auth_publickey(
+            &mut self,
+            _: &str,
+            _: server::VerifiedPublicKey<'_>,
+        ) -> Result<server::Auth, Self::Error> {
+            self.requests += 1;
+            let methods = if self.requests > 1 {
+                vec![MethodKind::HostBased]
+            } else {
+                self.methods.clone()
+            };
+            Ok(server::Auth::Reject {
+                proceed_with_methods: Some(MethodSet::from(methods.as_slice())),
+                partial_success: self.partial_success,
+            })
+        }
+    }
+    for (methods, partial_success, expected_requests) in [
+        (vec![MethodKind::KeyboardInteractive], false, 1),
+        (vec![MethodKind::HostBased], false, 1),
+        (
+            vec![MethodKind::PublicKey, MethodKind::KeyboardInteractive],
+            false,
+            2,
+        ),
+        (vec![MethodKind::PublicKey], true, 1),
+    ] {
+        let first_methods = methods.clone();
+        let (mut handle, server, _temp) = ssh_agent_session(ServerHandler {
+            methods,
+            partial_success,
+            requests: 0,
+        })
+        .await;
+        let (agent, signed) = fixture(
+            (0..2)
+                .map(|_| PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap())
+                .collect(),
+            false,
+        );
+        let connector = Arc::new(Connector {
+            clients: Mutex::new(VecDeque::from([Ok(agent)])),
+            ..Default::default()
+        });
+        let ready = resolve_agent(SshAgentProvider::Auto, connector)
+            .await
+            .ready
+            .unwrap();
+        let result = authenticate_ready(&mut handle, "fixture", ready)
+            .await
+            .unwrap();
+        assert_eq!(
+            signed.load(Ordering::SeqCst),
+            expected_requests,
+            "methods={first_methods:?}, partial={partial_success}"
+        );
+        match result {
+            client::AuthResult::Failure {
+                remaining_methods,
+                partial_success: actual_partial,
+            } => {
+                let expected = if expected_requests == 2 {
+                    vec![MethodKind::HostBased]
+                } else {
+                    first_methods
+                };
+                assert_eq!(remaining_methods, MethodSet::from(expected.as_slice()));
+                assert_eq!(actual_partial, partial_success);
+            }
+            client::AuthResult::Success => {
+                panic!("partial success must remain an unfinished authentication")
+            }
+        }
+        handle
+            .disconnect(russh::Disconnect::ByApplication, "", "en")
+            .await
+            .unwrap();
+        server.abort();
+    }
 }

@@ -117,6 +117,7 @@ pub struct SshSession {
     client: RwLock<Option<Client>>,
     ptys: RwLock<HashMap<String, Arc<PtyState>>>,
     legacy_pty: RwLock<Option<String>>,
+    connection_attempt_id: RwLock<Option<String>>,
     status: RwLock<SshStatus>,
     last_error: RwLock<Option<String>>,
     keepalive_running: AtomicBool,
@@ -131,6 +132,7 @@ impl SshSession {
             client: RwLock::new(None),
             ptys: RwLock::new(HashMap::new()),
             legacy_pty: RwLock::new(None),
+            connection_attempt_id: RwLock::new(None),
             status: RwLock::new(SshStatus::Disconnected),
             last_error: RwLock::new(None),
             keepalive_running: AtomicBool::new(false),
@@ -161,6 +163,20 @@ impl SshSession {
     pub async fn set_status(&self, status: SshStatus, error: Option<String>) {
         *self.status.write().await = status;
         *self.last_error.write().await = error;
+    }
+
+    pub async fn set_connecting_attempt(&self, attempt_id: &str) {
+        *self.connection_attempt_id.write().await = Some(attempt_id.to_owned());
+        self.set_status(SshStatus::Connecting, None).await;
+    }
+
+    pub async fn fail_attempt_if_current(&self, attempt_id: &str, error: String) -> bool {
+        let current_attempt = self.connection_attempt_id.read().await;
+        if current_attempt.as_deref() != Some(attempt_id) {
+            return false;
+        }
+        self.set_status(SshStatus::Error, Some(error)).await;
+        true
     }
 
     pub fn touch_keepalive(&self) {
