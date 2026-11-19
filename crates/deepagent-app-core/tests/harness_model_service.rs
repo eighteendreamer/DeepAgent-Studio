@@ -332,6 +332,27 @@ fn fetched_models_are_stored_inactive_under_their_provider() {
 }
 
 #[test]
+fn messages_discovery_uses_128k_when_the_provider_omits_the_ceiling() {
+    let (service, _) = service_with_models_response(
+        r#"{"data":[{"id":"claude-opus-5-5"},{"id":"declared","max_output_tokens":131072}]}"#,
+    );
+    let mut provider = input("third-party", Some("synthetic"));
+    provider.protocol = "messages".into();
+    service.save_provider(provider).unwrap();
+
+    let models = futures_block_on(service.fetch_models("third-party")).unwrap();
+    let ceiling = |name| {
+        models
+            .iter()
+            .find(|model| model.model_name == name)
+            .unwrap()
+            .output_limit
+    };
+    assert_eq!(ceiling("claude-opus-5-5"), 128_000);
+    assert_eq!(ceiling("declared"), 131_072);
+}
+
+#[test]
 fn fetching_models_preserves_saved_model_configuration() {
     let (service, _, db) = legacy_provider_service();
     let saved = deepagent_persistence::harness_registry::HarnessModel {

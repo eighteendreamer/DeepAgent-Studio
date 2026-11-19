@@ -21,6 +21,9 @@ use crate::SecretStore;
 /// The user edits them on the model page; no capability guessing happens here.
 const DEFAULT_CONTEXT_WINDOW: i64 = 1_000_000;
 const DEFAULT_OUTPUT_LIMIT: i64 = 131_072;
+// The plan's 128K Messages fallback is decimal. Some compatible providers
+// reject larger requests when their catalog omits the output ceiling.
+const DEFAULT_MESSAGES_OUTPUT_LIMIT: i64 = 128_000;
 
 /// Provider as shown to the UI. Carries presence of a key, never the key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -304,11 +307,15 @@ impl HarnessModelService {
         let key = self.secrets.get(&provider.api_key_ref)?.ok_or_else(|| {
             CoreError::Persistence(format!("provider `{provider_id}` has no API key"))
         })?;
+        let wire_mode = crate::harness_model_resolver::wire_mode_for_protocol(&provider.protocol)?;
+        let output_limit_fallback = if wire_mode == deepagent_models::WireMode::Messages {
+            DEFAULT_MESSAGES_OUTPUT_LIMIT
+        } else {
+            DEFAULT_OUTPUT_LIMIT
+        };
         let discovered =
             ModelDiscovery::with_base_url(self.transport.clone(), provider.model_url.clone())
-                .with_wire_mode(crate::harness_model_resolver::wire_mode_for_protocol(
-                    &provider.protocol,
-                )?)
+                .with_wire_mode(wire_mode)
                 .list_models(&key)
                 .await?;
         let existing: HashMap<_, _> = self
@@ -354,7 +361,7 @@ impl HarnessModelService {
                     model_name: info.id,
                     protocol: None,
                     context_window: capacity(info.context_window, DEFAULT_CONTEXT_WINDOW)?,
-                    output_limit: capacity(info.max_output_tokens, DEFAULT_OUTPUT_LIMIT)?,
+                    output_limit: capacity(info.max_output_tokens, output_limit_fallback)?,
                     capabilities: serde_json::to_string(&capabilities)?,
                     active: false,
                 })
