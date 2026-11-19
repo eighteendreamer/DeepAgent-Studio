@@ -99,6 +99,41 @@ RunAssembler 挂载 snip 工具
 
 后一段包含审批和权限对象构建、项目 Hook 配置读取与组装。三个样本中，Hook 装配完成到用户输入被接纳分别只有 6、1、1 ms，指令加载 Hook 的分发也只有 0、2、0 ms。现有日志可以把这段耗时定位到准备阶段，进一步定位仍需给段内各个操作分别计时。
 
+## 新版桌面及其他协议复验
+
+本轮原生开发构建已完成（8 分 58 秒），复用已登录的隔离数据目录，用 Playwright 经 WebView2 CDP 操作实际桌面窗口。按用户指定将 Responses 路由改为 Layso；两个模型均经胶囊选择、显示余额、发送合成消息，页面收到预期回复，后端均为 `run_completed`。这里不包含首次登录和向导，也没有使用桌面控制插件。
+
+仍以第一次 `model_agent_transport_invoked` 为准备终点，不把同一 turn 后续工具续写的第二次请求误算成首次准备。下列各行互不重叠：
+
+| 阶段 | Layso Responses / gpt-5.6-sol | Layso Messages / claude-opus-5-5 |
+| --- | ---: | ---: |
+| 配置、工具、审批和 Hook 准备及输入接纳 | 2499 ms | 870 ms |
+| 上下文组装 | 1810 ms | 1469 ms |
+| snip 挂载、Surface 准备、压力检查及两次独立用量计量 | 338 ms | 301 ms |
+| 其余准备、持久化、工具结构审计与日志间隙 | 351 ms | 437 ms |
+| **首次调用传输层前合计** | **4998 ms** | **3077 ms** |
+
+对应 run ID 为 `2c72d25c-2669-445f-af68-7b3867373cd1` 和 `18de93b8-f945-44ff-92a8-72d20da727c3`。这两条路线没有使用上述 DeepSeek 精确分词器，仍有秒级本地准备；所以仅预热 DeepSeek 分词器不能解决全部问题。
+
+Responses 这次实际执行了两次模型请求：第一轮返回 `skill` 工具调用，工具记录的执行耗时为 2 ms，之后请求模型继续回复。从 `run_requested` 到第一个文本 token 为 12701 ms，包含两次请求及其间的处理，不能整体归因为本地初始化或一次模型首 token 等待。Messages 只有一次模型请求，传输层调用至首 token 的单调计时为 5089 ms；它和本地准备的 3077 ms 分开统计。
+
+### 本地组件对照与尚未细分的边界
+
+直接链接生产 `deepagent-workspace` 的诊断程序，每个目录执行 8 次 `detect_git_context` 和 `WorkspaceScanner::scan`，只输出耗时、是否 Git 仓库及上下文长度，不输出文件内容：
+
+| 对照 | Git 上下文查询 | 目录扫描 |
+| --- | ---: | ---: |
+| 当前代码仓库 | 225.817–281.856 ms | 17.030–19.803 ms |
+| D 盘仓库外空目录 | 49.511–85.964 ms | 0.095–0.133 ms |
+
+代码仓库内新建的空目录仍属于父级 Git 仓库，不能作为“非仓库”对照；正式结果使用仓库外目录。以上是组件微测，不是对真实 `run_context_built` 的内部计时，不能直接从 1810/1469 ms 中扣除这组数，或把余量归给某个未测操作。
+
+另查到每轮 Hook 装配会调用 `RuntimeBroker::build_process_environment`（`run_assembler.rs`），后者调用 `RuntimeService::build_process_environment`，依次解析 Node、Python、Java；`resolve_runtime` 的 `inspect_runtime` 同步启动候选程序执行 `--version`，当前实现没有复用检查结果。这里是运行环境探测，不是安装或下载资源。它发生在 `registry_ready` 到 `hooks_registered` 区间，两次新样本分别为 1858 和 639 ms，但这个区间还包含权限、配置和 Hook 构造，不能全归给版本探测。
+
+对当前诊断进程 PATH 上可用的程序各做 6 次独立 `--version`：Node 为 81.938–120.001 ms、Python 为 30.162–53.437 ms。此进程 PATH 未找到 Java，且未证明与桌面运行环境相同，故这些值只证明启动探测有持续成本。直接链接整个 AppCore 的环境探针因 `E0463` 未能运行，尚未得到完整生产环境探测函数的独立计时；没有把失败探针写为通过。
+
+本轮仍未修改生产性能行为。新增证据位于 `target/chat-prep-audit-20261119/layso-preparation-analysis.json`、`component-probe/workspace-cost-probe.csv`、`component-probe/path-runtime-version-probe.json` 及 `target/harness-thinking-20261118/h030-native-layso-conversations.json`。Messages 新模型发现的真实复验此次没有取得新增样本：该隔离供应商已有接口返回的全部模型，因此刷新不能证明新默认值入库；已有模型配置保留与成功对话不能替代该项验收。
+
 ## 修复边界与下一步
 
 本轮完成定位和脱敏留痕，未修改生产行为。后续优化应分别处理：
