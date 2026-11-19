@@ -379,7 +379,7 @@ impl SshServiceImpl {
                 .and_then(|config| SshHostIdentity::for_config(&config).ok())
                 .is_some_and(|identity| identities.contains(&identity))
             {
-                if let Err(error) = self.disconnect(&connection.id).await {
+                if let Err(error) = self.disconnect_locked(&connection.id).await {
                     tracing::warn!(target: "deepagent_ssh", connection_id = connection.id, %error, "SSH trust committed but connection cleanup failed");
                     result.disconnect_failed_ids.push(connection.id);
                 }

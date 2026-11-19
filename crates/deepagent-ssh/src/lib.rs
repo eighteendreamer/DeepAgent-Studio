@@ -97,6 +97,7 @@ mod config;
 mod conflict_target;
 mod connection_challenge;
 mod connection_flow;
+mod connection_operation;
 mod default_identities;
 mod directory_plan;
 mod directory_publication;

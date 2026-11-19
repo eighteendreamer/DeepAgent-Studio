@@ -279,12 +279,6 @@ impl HostKeyChallenges {
             attempts.remove(id);
         }
     }
-
-    pub fn clear(&self) {
-        if let Ok(mut attempts) = self.0.lock() {
-            attempts.clear();
-        }
-    }
 }
 
 pub(crate) fn config_proof(cfg: &SshConnectionConfig) -> SshResult<[u8; 32]> {
@@ -305,7 +299,7 @@ pub(crate) fn config_proof(cfg: &SshConnectionConfig) -> SshResult<[u8; 32]> {
         &cfg.proxy,
         &cfg.jump,
         cfg.timing,
-        options,
+        (&cfg.agent_fingerprint, options),
     ))
     .map_err(|_| stale())?;
     Ok(Sha256::digest(bytes).into())

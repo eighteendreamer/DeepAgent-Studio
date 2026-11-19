@@ -65,6 +65,10 @@ pub(crate) struct PendingAuthentication {
 }
 
 impl PendingAuthentication {
+    pub(crate) fn session(&self) -> Arc<SshSession> {
+        Arc::clone(&self.session)
+    }
+
     pub(crate) fn expiration(&self, deadline: ChallengeDeadline) -> Option<SshError> {
         if deadline.instant <= Instant::now() {
             Some(stale())
@@ -321,22 +325,6 @@ impl AuthenticationChallengeRegistry {
             .ok()
             .and_then(|mut entries| entries.remove(connection_id));
         if let Some(pending) = pending {
-            pending.cancel_and_close().await;
-        }
-    }
-
-    pub(crate) async fn clear(&self) {
-        let pending = self
-            .0
-            .lock()
-            .map(|mut entries| {
-                entries
-                    .drain()
-                    .map(|(_, pending)| pending)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        for pending in pending {
             pending.cancel_and_close().await;
         }
     }

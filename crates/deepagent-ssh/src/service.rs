@@ -5,6 +5,7 @@ use super::config::{
     CreateSshConnectionRequest, SshAuthType, SshConnectionConfig, SshConnectionDto, SshStatus,
     UpdateSshConnectionRequest,
 };
+use super::connection_operation::{ConnectionOperations, ConnectionPermit};
 use super::error::{SshError, SshResult};
 use super::host_trust::{HostTrust, SshHostTrustInspection};
 use super::remote::{
@@ -83,6 +84,7 @@ pub struct SshServiceImpl {
     pub(super) lifecycle: RwLock<()>,
     configs: RwLock<HashMap<String, SshConnectionConfig>>,
     pub(super) sessions: RwLock<HashMap<String, Arc<SshSession>>>,
+    pub(super) connection_operations: ConnectionOperations,
     config_store: Arc<dyn SshConfigStore>,
     pub(super) host_key_store: Option<Arc<crate::SshHostKeyStore>>,
     pub(super) host_challenges: crate::connection_challenge::HostKeyChallenges,
@@ -105,6 +107,7 @@ impl SshServiceImpl {
             lifecycle: RwLock::new(()),
             configs: RwLock::new(HashMap::new()),
             sessions: RwLock::new(HashMap::new()),
+            connection_operations: ConnectionOperations::default(),
             config_store,
             host_key_store: None,
             host_challenges: Default::default(),
@@ -116,8 +119,10 @@ impl SshServiceImpl {
 
     pub async fn load(&self) -> SshResult<()> {
         let _lifecycle = self.lifecycle.write().await;
-        self.host_challenges.clear();
-        self.authentication_challenges.clear().await;
+        self.load_locked().await
+    }
+
+    async fn load_locked(&self) -> SshResult<()> {
         let configs = self
             .config_store
             .load()
@@ -142,6 +147,34 @@ impl SshServiceImpl {
                 Ok((config.id.clone(), config))
             })
             .collect::<SshResult<HashMap<_, _>>>()?;
+        let retired = {
+            let previous = self.configs.read().await;
+            let mut retired = Vec::new();
+            for (id, config) in previous.iter() {
+                let unchanged = match configs.get(id) {
+                    Some(next) => {
+                        crate::connection_challenge::config_proof(config)?
+                            == crate::connection_challenge::config_proof(next)?
+                    }
+                    None => false,
+                };
+                if !unchanged {
+                    retired.push(id.clone());
+                }
+            }
+            retired
+        };
+        // Preserve unchanged transports/attempts. Retiring changed identities must
+        // not persist the outgoing configuration over the new input.
+        for id in retired {
+            self.connection_operations.retire(&id);
+            self.host_challenges.invalidate(&id);
+            self.authentication_challenges.invalidate(&id).await;
+            let session = self.sessions.write().await.remove(&id);
+            if let Some(session) = session {
+                Self::close_session(&session).await?;
+            }
+        }
         *self.configs.write().await = configs;
         self.loaded.store(true, Ordering::Relaxed);
         Ok(())
@@ -275,7 +308,7 @@ impl SshServiceImpl {
         })
         .await
         .map_err(|error| SshError::Internal(format!("SSH trust import task: {error}")))??;
-        self.disconnect(id).await?;
+        self.disconnect_locked(id).await?;
         Ok(records)
     }
 
@@ -289,7 +322,7 @@ impl SshServiceImpl {
         tokio::task::spawn_blocking(move || store.revoke(&identity, &fingerprint))
             .await
             .map_err(|error| SshError::Internal(format!("SSH trust revoke task: {error}")))??;
-        self.disconnect(id).await
+        self.disconnect_locked(id).await
     }
 
     pub(super) fn application_trust_store(&self) -> SshResult<Arc<crate::SshHostKeyStore>> {
@@ -426,7 +459,7 @@ impl SshServiceImpl {
         self.validate_secret_storage(&candidate)?;
         *cfg = candidate.clone();
         drop(configs);
-        let _ = self.disconnect(&request.id).await;
+        let _ = self.disconnect_locked(&request.id).await;
         self.persist_configs().await?;
         Ok(dto_from_config(
             &candidate,
@@ -439,7 +472,7 @@ impl SshServiceImpl {
     pub async fn remove_connection(&self, id: &str) -> SshResult<()> {
         self.ensure_loaded().await;
         let _lifecycle = self.lifecycle.write().await;
-        let _ = self.disconnect(id).await;
+        let _ = self.disconnect_locked(id).await;
         let mut configs = self.configs.write().await;
         configs.remove(id);
         drop(configs);
@@ -449,19 +482,20 @@ impl SshServiceImpl {
 
     pub async fn connect(&self, id: &str) -> SshResult<SshServiceHandle> {
         self.ensure_loaded().await;
-        let _lifecycle = self.lifecycle.read().await;
-        let cfg = self.config_for(id).await?;
-        self.connect_config(&cfg, None).await
+        let permit = self.connection_operations.acquire(id).await?;
+        let cfg = self.operation_config(id, &permit).await?;
+        self.connect_config(&cfg, None, &permit).await
     }
 
     pub(super) async fn connect_config(
         &self,
         cfg: &SshConnectionConfig,
         confirmed: Option<HostTrust>,
+        permit: &ConnectionPermit,
     ) -> SshResult<SshServiceHandle> {
         let attempt_id = uuid::Uuid::new_v4().to_string();
         match self
-            .connect_config_attempt(cfg, confirmed, None, &attempt_id)
+            .connect_config_attempt(cfg, confirmed, None, &attempt_id, permit)
             .await?
         {
             SshConnectionAttempt::Connected => Ok(SshServiceHandle::new(&cfg.id, &cfg.id, 80, 24)),
@@ -487,11 +521,14 @@ impl SshServiceImpl {
         confirmed: Option<HostTrust>,
         confirmed_jump: Option<HostTrust>,
         attempt_id: &str,
+        permit: &ConnectionPermit,
     ) -> SshResult<SshConnectionAttempt> {
         let id = cfg.id.as_str();
         let deadline = self.host_challenges.deadline(id, attempt_id).ok();
         self.authentication_challenges.invalidate(id).await;
-        if let Some((session, _client)) = self.reusable_client(cfg).await? {
+        permit.ensure_current()?;
+        if let Some((session, _client)) = self.reusable_client(cfg, permit).await? {
+            let _lifecycle = self.lock_connection_generation(permit, &session).await?;
             session.set_status(SshStatus::Connected, None).await;
             session.touch_keepalive();
             let _ = self
@@ -500,12 +537,11 @@ impl SshServiceImpl {
             return Ok(SshConnectionAttempt::Connected);
         }
 
-        let session = self.session_for(cfg.clone()).await;
+        let session = self.operation_session(cfg, permit).await?;
         session.set_connecting_attempt(attempt_id).await;
         let started = std::time::Instant::now();
-        let progress = match cfg
-            .timing
-            .connecting_until(
+        let progress = match permit
+            .run(cfg.timing.connecting_until(
                 connect_client_progress(
                     cfg,
                     self.host_key_store.clone(),
@@ -514,18 +550,16 @@ impl SshServiceImpl {
                     deadline.is_some(),
                 ),
                 deadline.map(|deadline| deadline.instant),
-            )
+            ))
             .await
         {
             Ok(verified) => verified,
             Err(err) => {
                 let msg = err.to_string();
-                session
-                    .set_status(SshStatus::Error, Some(msg.clone()))
-                    .await;
                 let _ = self
-                    .update_cached_status(
-                        id,
+                    .set_operation_status(
+                        permit,
+                        &session,
                         SshStatus::Error,
                         Some(msg),
                         Some(started.elapsed().as_millis() as u64),
@@ -534,8 +568,16 @@ impl SshServiceImpl {
                 return Err(err);
             }
         };
-        self.accept_connection_progress(cfg, attempt_id, progress, started.elapsed(), deadline)
-            .await
+        self.accept_connection_progress(
+            cfg,
+            attempt_id,
+            progress,
+            started.elapsed(),
+            deadline,
+            &session,
+            permit,
+        )
+        .await
     }
 
     pub(super) async fn accept_connection_progress(
@@ -545,12 +587,16 @@ impl SshServiceImpl {
         progress: SshClientConnection,
         elapsed: Duration,
         deadline: Option<ChallengeDeadline>,
+        session: &Arc<SshSession>,
+        permit: &ConnectionPermit,
     ) -> SshResult<SshConnectionAttempt> {
         let id = cfg.id.as_str();
-        if deadline.is_some_and(|deadline| {
-            deadline.instant <= tokio::time::Instant::now()
-                || self.host_challenges.ensure_current(id, attempt_id).is_err()
-        }) {
+        if permit.ensure_current().is_err()
+            || deadline.is_some_and(|deadline| {
+                deadline.instant <= tokio::time::Instant::now()
+                    || self.host_challenges.ensure_current(id, attempt_id).is_err()
+            })
+        {
             match progress {
                 SshClientConnection::Connected { client, .. } => {
                     let _ = client.disconnect().await;
@@ -564,6 +610,7 @@ impl SshServiceImpl {
         }
         match progress {
             ConnectClientProgress::ConfirmationRequired { pending } => {
+                let _lifecycle = self.lock_connection_generation(permit, session).await?;
                 let challenge = self.host_challenges.present_target(
                     cfg,
                     attempt_id,
@@ -579,13 +626,15 @@ impl SshServiceImpl {
                 trust,
                 server_key,
             } => {
-                self.publish_connected_client(cfg, client, trust, server_key, elapsed)
-                    .await?;
+                self.publish_connected_client(
+                    cfg, client, trust, server_key, elapsed, session, permit,
+                )
+                .await?;
                 Ok(SshConnectionAttempt::Connected)
             }
             ConnectClientProgress::AuthenticationRequired { pending, round } => {
                 let proof = crate::connection_challenge::config_proof(cfg)?;
-                let session = self.session_for(cfg.clone()).await;
+                let _lifecycle = self.lock_connection_generation(permit, session).await?;
                 let challenge = self
                     .authentication_challenges
                     .present(
@@ -593,7 +642,7 @@ impl SshServiceImpl {
                         attempt_id,
                         proof,
                         elapsed,
-                        Arc::clone(&session),
+                        Arc::clone(session),
                         pending,
                         round,
                         deadline,
@@ -622,13 +671,14 @@ impl SshServiceImpl {
         responses: Vec<String>,
     ) -> SshResult<SshConnectionAttempt> {
         self.ensure_loaded().await;
-        let _lifecycle = self.lifecycle.write().await;
-        let cfg = self.config_for(id).await?;
+        let permit = self.connection_operations.acquire(id).await?;
+        let cfg = self.operation_config(id, &permit).await?;
         let proof = crate::connection_challenge::config_proof(&cfg)?;
         let pending = self
             .authentication_challenges
             .get(id, attempt_id, challenge_id)
             .await?;
+        let session = pending.session();
         if !self.authentication_challenges.is_current(id, &pending) {
             return Err(stale_authentication_challenge());
         }
@@ -641,7 +691,14 @@ impl SshServiceImpl {
                 .close_if_current(id, &pending)
                 .await;
             let error = expiration.unwrap_or_else(stale_authentication_challenge);
-            self.set_authentication_status(id, SshStatus::Error, Some(error.to_string()))
+            let _ = self
+                .set_operation_status(
+                    &permit,
+                    &session,
+                    SshStatus::Error,
+                    Some(error.to_string()),
+                    None,
+                )
                 .await;
             return Err(error);
         }
@@ -653,7 +710,14 @@ impl SshServiceImpl {
             self.authentication_challenges
                 .close_if_current(id, &pending)
                 .await;
-            self.set_authentication_status(id, SshStatus::Error, Some(error.to_string()))
+            let _ = self
+                .set_operation_status(
+                    &permit,
+                    &session,
+                    SshStatus::Error,
+                    Some(error.to_string()),
+                    None,
+                )
                 .await;
             return Err(error);
         }
@@ -688,7 +752,14 @@ impl SshServiceImpl {
                 self.authentication_challenges
                     .close_if_current(id, &pending)
                     .await;
-                self.set_authentication_status(id, SshStatus::Error, Some(error.to_string()))
+                let _ = self
+                    .set_operation_status(
+                        &permit,
+                        &session,
+                        SshStatus::Error,
+                        Some(error.to_string()),
+                        None,
+                    )
                     .await;
                 return Err(error);
             }
@@ -697,7 +768,14 @@ impl SshServiceImpl {
                 self.authentication_challenges
                     .close_if_current(id, &pending)
                     .await;
-                self.set_authentication_status(id, SshStatus::Error, Some(error.to_string()))
+                let _ = self
+                    .set_operation_status(
+                        &permit,
+                        &session,
+                        SshStatus::Error,
+                        Some(error.to_string()),
+                        None,
+                    )
                     .await;
                 return Err(error);
             }
@@ -773,7 +851,14 @@ impl SshServiceImpl {
                     let error = current_trust
                         .err()
                         .unwrap_or_else(stale_authentication_challenge);
-                    self.set_authentication_status(id, SshStatus::Error, Some(error.to_string()))
+                    let _ = self
+                        .set_operation_status(
+                            &permit,
+                            &session,
+                            SshStatus::Error,
+                            Some(error.to_string()),
+                            None,
+                        )
                         .await;
                     return Err(error);
                 }
@@ -810,7 +895,14 @@ impl SshServiceImpl {
                     self.authentication_challenges
                         .close_if_current(id, &pending)
                         .await;
-                    self.set_authentication_status(id, SshStatus::Error, Some(error.to_string()))
+                    let _ = self
+                        .set_operation_status(
+                            &permit,
+                            &session,
+                            SshStatus::Error,
+                            Some(error.to_string()),
+                            None,
+                        )
                         .await;
                     return Err(error);
                 }
@@ -832,6 +924,8 @@ impl SshServiceImpl {
                     authenticated_trust,
                     server_key,
                     elapsed,
+                    &session,
+                    &permit,
                 )
                 .await?;
                 Ok(SshConnectionAttempt::Connected)
@@ -841,7 +935,14 @@ impl SshServiceImpl {
                 self.authentication_challenges
                     .close_if_current(id, &pending)
                     .await;
-                self.set_authentication_status(id, SshStatus::Error, Some(error.to_string()))
+                let _ = self
+                    .set_operation_status(
+                        &permit,
+                        &session,
+                        SshStatus::Error,
+                        Some(error.to_string()),
+                        None,
+                    )
                     .await;
                 Err(error)
             }
@@ -889,6 +990,8 @@ impl SshServiceImpl {
         trust: HostTrust,
         server_key: PublicKey,
         elapsed: Duration,
+        session: &Arc<SshSession>,
+        permit: &ConnectionPermit,
     ) -> SshResult<SshServiceHandle> {
         let id = cfg.id.as_str();
         if let Err(error) = client
@@ -898,7 +1001,13 @@ impl SshServiceImpl {
             let _ = client.disconnect().await;
             return Err(error);
         }
-        let session = self.session_for(cfg.clone()).await;
+        let _lifecycle = match self.lock_connection_generation(permit, session).await {
+            Ok(lifecycle) => lifecycle,
+            Err(error) => {
+                let _ = client.disconnect().await;
+                return Err(error);
+            }
+        };
         *session.host_trust.write().await = Some(trust);
         session.set_client(Some(client)).await;
         session.set_status(SshStatus::Connected, None).await;
@@ -1245,8 +1354,10 @@ impl SshServiceImpl {
     }
 
     async fn active_pty_connection(&self, id: &str) -> SshResult<Arc<SshSession>> {
-        let config = self.config_for(id).await?;
-        self.reusable_client(&config)
+        self.ensure_loaded().await;
+        let permit = self.connection_operations.acquire(id).await?;
+        let config = self.operation_config(id, &permit).await?;
+        self.reusable_client(&config, &permit)
             .await?
             .map(|(session, _)| session)
             .ok_or_else(|| {
@@ -1257,26 +1368,61 @@ impl SshServiceImpl {
     }
 
     pub async fn disconnect(&self, id: &str) -> SshResult<()> {
+        // Wake the network owner before waiting for the short publication lock.
+        self.connection_operations.retire(id);
+        let _lifecycle = self.lifecycle.write().await;
+        self.disconnect_locked(id).await
+    }
+
+    pub(super) async fn disconnect_locked(&self, id: &str) -> SshResult<()> {
+        self.connection_operations.retire(id);
         self.host_challenges.invalidate(id);
         self.authentication_challenges.invalidate(id).await;
-        let sessions = self.sessions.read().await;
-        let mut disconnected = Ok(());
-        if let Some(session) = sessions.get(id) {
-            session.close_all_ptys().await;
-            if let Some(client) = session.client().await {
-                disconnected = client.disconnect().await;
-            }
-            session.set_client(None).await;
-            session.set_status(SshStatus::Disconnected, None).await;
-        }
-        drop(sessions);
-        self.sessions.write().await.remove(id);
+        let session = self.sessions.write().await.remove(id);
+        let disconnected = match session {
+            Some(session) => Self::close_session(&session).await,
+            None => Ok(()),
+        };
         // A removed live session must not fall back to a stale Connected cache.
         // Always clear runtime/cache state, but do not swallow transport failures.
         let cached = self
             .update_cached_status(id, SshStatus::Disconnected, None, None)
             .await;
         disconnected.and(cached)
+    }
+
+    async fn close_session(session: &SshSession) -> SshResult<()> {
+        session.close_all_ptys().await;
+        let disconnected = match session.client().await {
+            Some(client) => client.disconnect().await,
+            None => Ok(()),
+        };
+        session.set_client(None).await;
+        session.set_status(SshStatus::Disconnected, None).await;
+        disconnected
+    }
+
+    async fn discard_cached_session(&self, expected: &Arc<SshSession>) -> SshResult<()> {
+        let removed = {
+            let mut sessions = self.sessions.write().await;
+            if sessions
+                .get(expected.key())
+                .is_some_and(|current| Arc::ptr_eq(current, expected))
+            {
+                sessions.remove(expected.key())
+            } else {
+                None
+            }
+        };
+        if let Some(session) = removed {
+            Self::close_session(&session).await?;
+            let sessions = self.sessions.read().await;
+            if !sessions.contains_key(session.key()) {
+                self.update_cached_status(session.key(), SshStatus::Disconnected, None, None)
+                    .await?;
+            }
+        }
+        Ok(())
     }
 
     pub async fn status(&self, id: &str) -> SshResult<SshStatusSnapshot> {
@@ -1342,8 +1488,10 @@ impl SshServiceImpl {
 
     pub async fn test_connection(&self, config: &SshConnectionConfig) -> SshResult<SshTestResult> {
         self.ensure_loaded().await;
-        let _lifecycle = self.lifecycle.read().await;
+        let permit = self.connection_operations.acquire(&config.id).await?;
         let mut cfg = {
+            let _lifecycle = self.lifecycle.read().await;
+            permit.ensure_current()?;
             let configs = self.configs.read().await;
             configs
                 .get(&config.id)
@@ -1352,14 +1500,13 @@ impl SshServiceImpl {
         };
         cfg.known_hosts_path = Some(self.resolve_known_hosts(cfg.known_hosts_path.as_deref())?);
         let start = std::time::Instant::now();
-        let result = match cfg
-            .timing
-            .connecting(async {
+        let result = match permit
+            .run(cfg.timing.connecting(async {
                 let (client, _) = connect_client(&cfg, self.host_key_store.clone(), None).await?;
                 let output = client.execute("echo ok").await?;
                 let _ = client.disconnect().await;
                 Ok::<_, SshError>(output)
-            })
+            }))
             .await
         {
             Ok(output) if output.exit_status == 0 => SshTestResult {
@@ -1387,6 +1534,8 @@ impl SshServiceImpl {
         } else {
             SshStatus::Error
         };
+        let _lifecycle = self.lifecycle.read().await;
+        permit.ensure_current()?;
         let _ = self
             .update_cached_status(&cfg.id, status, result.error.clone(), result.latency_ms)
             .await;
@@ -1395,18 +1544,23 @@ impl SshServiceImpl {
 
     pub async fn refresh_due_statuses(&self) -> SshResult<usize> {
         self.ensure_loaded().await;
-        let _lifecycle = self.lifecycle.read().await;
         let configs = {
             let guard = self.configs.read().await;
             guard.values().cloned().collect::<Vec<_>>()
         };
         let mut refreshed = 0usize;
-        for cfg in configs {
+        for previous in configs {
+            let permit = self.connection_operations.acquire(&previous.id).await?;
+            let cfg = match self.operation_config(&previous.id, &permit).await {
+                Ok(cfg) => cfg,
+                Err(SshError::NotFound(_)) => continue,
+                Err(error) => return Err(error),
+            };
             if !self.should_refresh_status(&cfg).await {
                 continue;
             }
             refreshed += 1;
-            if let Err(err) = self.refresh_connection_status(&cfg).await {
+            if let Err(err) = self.refresh_connection_status(&cfg, &permit).await {
                 tracing::debug!(
                     target: "deepagent_ssh",
                     connection_id = cfg.id,
@@ -1414,6 +1568,7 @@ impl SshServiceImpl {
                     "ssh background health check failed"
                 );
             }
+            drop(permit);
             tokio::time::sleep(Duration::from_millis(STATUS_MONITOR_BETWEEN_CHECKS_MS)).await;
         }
         Ok(refreshed)
@@ -1806,7 +1961,12 @@ impl SshServiceImpl {
     pub(super) async fn reusable_client(
         &self,
         cfg: &SshConnectionConfig,
+        permit: &ConnectionPermit,
     ) -> SshResult<Option<(Arc<SshSession>, Client)>> {
+        // Local trust revalidation and cache retirement must publish before an
+        // identity edit can replace this configuration. No handshake runs here.
+        let _lifecycle = self.lifecycle.read().await;
+        permit.ensure_current()?;
         let session = self.sessions.read().await.get(&cfg.id).cloned();
         let Some(session) = session else {
             return Ok(None);
@@ -1815,25 +1975,13 @@ impl SshServiceImpl {
             return Ok(None);
         };
         if client.is_closed() {
-            self.disconnect(&cfg.id).await?;
+            self.discard_cached_session(&session).await?;
             return Ok(None);
         }
-        let original = session.config();
-        if original.host != cfg.host
-            || original.port != cfg.port
-            || original.username != cfg.username
-            || original.auth_type != cfg.auth_type
-            || original.agent_fingerprint != cfg.agent_fingerprint
-            || original.key_path != cfg.key_path
-            || original.key_content != cfg.key_content
-            || original.certificate_path != cfg.certificate_path
-            || original.password != cfg.password
-            || original.authentication_factors != cfg.authentication_factors
-            || original.proxy != cfg.proxy
-            || original.jump != cfg.jump
-            || original.timing != cfg.timing
+        if crate::connection_challenge::config_proof(session.config())?
+            != crate::connection_challenge::config_proof(cfg)?
         {
-            self.disconnect(&cfg.id).await?;
+            self.discard_cached_session(&session).await?;
             return Ok(None);
         }
         let previous = session.host_trust.read().await.clone();
@@ -1841,7 +1989,7 @@ impl SshServiceImpl {
             .verify_jump_trust(cfg, self.host_key_store.clone())
             .await
         {
-            self.disconnect(&cfg.id).await?;
+            self.discard_cached_session(&session).await?;
             return Err(error);
         }
         let current = match &previous {
@@ -1854,7 +2002,7 @@ impl SshServiceImpl {
             }
             result => {
                 // A changed or revoked source must never inherit the previously authenticated client.
-                self.disconnect(&cfg.id).await?;
+                self.discard_cached_session(&session).await?;
                 tracing::debug!(target: "deepagent_ssh", connection_id = cfg.id,
                     "SSH trust source changed; discarded live connection");
                 if let Err(error) = result {
@@ -1870,6 +2018,57 @@ impl SshServiceImpl {
                 Ok(None)
             }
         }
+    }
+
+    pub(super) async fn operation_config(
+        &self,
+        id: &str,
+        permit: &ConnectionPermit,
+    ) -> SshResult<SshConnectionConfig> {
+        let _lifecycle = self.lifecycle.read().await;
+        permit.ensure_current()?;
+        self.config_for(id).await
+    }
+
+    pub(super) async fn operation_session(
+        &self,
+        cfg: &SshConnectionConfig,
+        permit: &ConnectionPermit,
+    ) -> SshResult<Arc<SshSession>> {
+        let _lifecycle = self.lifecycle.read().await;
+        permit.ensure_current()?;
+        Ok(self.session_for(cfg.clone()).await)
+    }
+
+    pub(super) async fn lock_connection_generation(
+        &self,
+        permit: &ConnectionPermit,
+        session: &Arc<SshSession>,
+    ) -> SshResult<tokio::sync::RwLockReadGuard<'_, ()>> {
+        let lifecycle = self.lifecycle.read().await;
+        permit.ensure_current()?;
+        let sessions = self.sessions.read().await;
+        if !sessions
+            .get(session.key())
+            .is_some_and(|current| Arc::ptr_eq(current, session))
+        {
+            return Err(SshError::ConnectionLost(session.key().into()));
+        }
+        Ok(lifecycle)
+    }
+
+    async fn set_operation_status(
+        &self,
+        permit: &ConnectionPermit,
+        session: &Arc<SshSession>,
+        status: SshStatus,
+        error: Option<String>,
+        latency_ms: Option<u64>,
+    ) -> SshResult<()> {
+        let _lifecycle = self.lock_connection_generation(permit, session).await?;
+        session.set_status(status, error.clone()).await;
+        self.update_cached_status(session.key(), status, error, latency_ms)
+            .await
     }
 
     async fn session_for(&self, cfg: SshConnectionConfig) -> Arc<SshSession> {
@@ -1891,8 +2090,10 @@ impl SshServiceImpl {
 
     pub(super) async fn ensure_loaded(&self) {
         if !self.loaded.load(Ordering::Relaxed) {
-            let _ = self.load().await;
-            self.loaded.store(true, Ordering::Relaxed);
+            let _lifecycle = self.lifecycle.write().await;
+            if !self.loaded.load(Ordering::Relaxed) {
+                let _ = self.load_locked().await;
+            }
         }
     }
 
@@ -1923,103 +2124,82 @@ impl SshServiceImpl {
         }
     }
 
-    async fn refresh_connection_status(&self, cfg: &SshConnectionConfig) -> SshResult<()> {
-        if let Some((session, client)) = self.reusable_client(cfg).await? {
-            let started = std::time::Instant::now();
-            let outcome = timeout(
-                Duration::from_secs(STATUS_REFRESH_TIMEOUT_SECS),
-                execute_health_check(&client),
-            )
-            .await;
-            return match outcome {
-                Ok(Ok(())) => {
-                    session.set_status(SshStatus::Connected, None).await;
-                    session.touch_keepalive();
-                    self.update_cached_status(
-                        &cfg.id,
-                        SshStatus::Connected,
-                        None,
-                        Some(started.elapsed().as_millis() as u64),
-                    )
-                    .await
-                }
-                Ok(Err(err)) => {
-                    let msg = err.to_string();
-                    let _ = client.disconnect().await;
-                    session.close_all_ptys().await;
-                    session.set_client(None).await;
-                    session
-                        .set_status(SshStatus::Error, Some(msg.clone()))
-                        .await;
-                    self.sessions.write().await.remove(&cfg.id);
-                    self.update_cached_status(
-                        &cfg.id,
-                        SshStatus::Error,
-                        Some(msg),
-                        Some(started.elapsed().as_millis() as u64),
-                    )
-                    .await
-                }
-                Err(_) => {
-                    let err = SshError::Timeout(Duration::from_secs(STATUS_REFRESH_TIMEOUT_SECS));
-                    let _ = client.disconnect().await;
-                    session.close_all_ptys().await;
-                    session.set_client(None).await;
-                    session
-                        .set_status(SshStatus::Error, Some(err.to_string()))
-                        .await;
-                    self.sessions.write().await.remove(&cfg.id);
-                    self.update_cached_status(
-                        &cfg.id,
-                        SshStatus::Error,
-                        Some(err.to_string()),
-                        Some(started.elapsed().as_millis() as u64),
-                    )
-                    .await
-                }
-            };
-        }
-
+    async fn refresh_connection_status(
+        &self,
+        cfg: &SshConnectionConfig,
+        permit: &ConnectionPermit,
+    ) -> SshResult<()> {
+        let reusable = permit.run(self.reusable_client(cfg, permit)).await?;
         let started = std::time::Instant::now();
-        let outcome = timeout(Duration::from_secs(STATUS_REFRESH_TIMEOUT_SECS), async {
-            let (client, _) = connect_client(cfg, self.host_key_store.clone(), None).await?;
-            execute_health_check(&client).await?;
-            let _ = client.disconnect().await;
-            Ok::<(), SshError>(())
-        })
-        .await;
-        match outcome {
-            Ok(Ok(())) => {
-                self.update_cached_status(
-                    &cfg.id,
-                    SshStatus::Connected,
-                    None,
-                    Some(started.elapsed().as_millis() as u64),
-                )
-                .await
+        let budget = Duration::from_secs(STATUS_REFRESH_TIMEOUT_SECS);
+        let outcome = match &reusable {
+            Some((_, client)) => {
+                permit
+                    .run(async {
+                        timeout(budget, execute_health_check(client))
+                            .await
+                            .map_err(|_| SshError::Timeout(budget))?
+                    })
+                    .await
             }
-            Ok(Err(err)) => {
-                self.update_cached_status(
-                    &cfg.id,
-                    SshStatus::Error,
-                    Some(err.to_string()),
-                    Some(started.elapsed().as_millis() as u64),
-                )
-                .await
+            None => {
+                permit
+                    .run(async {
+                        timeout(budget, async {
+                            let (client, _) =
+                                connect_client(cfg, self.host_key_store.clone(), None).await?;
+                            let checked = execute_health_check(&client).await;
+                            let _ = client.disconnect().await;
+                            checked
+                        })
+                        .await
+                        .map_err(|_| SshError::Timeout(budget))?
+                    })
+                    .await
             }
-            Err(_) => {
-                let err = SshError::Timeout(Duration::from_secs(STATUS_REFRESH_TIMEOUT_SECS));
-                self.update_cached_status(
-                    &cfg.id,
-                    SshStatus::Error,
-                    Some(err.to_string()),
-                    Some(started.elapsed().as_millis() as u64),
-                )
-                .await
+        };
+        // Only the publication phase owns the configuration lock. An old
+        // probe cannot publish cached status into a replacement epoch.
+        let _lifecycle = match &reusable {
+            Some((session, _)) => self.lock_connection_generation(permit, session).await?,
+            None => {
+                let lifecycle = self.lifecycle.read().await;
+                permit.ensure_current()?;
+                lifecycle
             }
+        };
+        let error = outcome.as_ref().err().map(ToString::to_string);
+        let status = if outcome.is_ok() {
+            SshStatus::Connected
+        } else {
+            SshStatus::Error
+        };
+        if let Some((session, _)) = reusable {
+            if outcome.is_err() {
+                if let Err(cleanup) = Self::close_session(&session).await {
+                    tracing::warn!(target: "deepagent_ssh", connection_id = cfg.id, %cleanup,
+                        "failed to close unhealthy SSH generation");
+                }
+                let mut sessions = self.sessions.write().await;
+                if sessions
+                    .get(&cfg.id)
+                    .is_some_and(|current| Arc::ptr_eq(current, &session))
+                {
+                    sessions.remove(&cfg.id);
+                }
+            } else {
+                session.touch_keepalive();
+            }
+            session.set_status(status, error.clone()).await;
         }
+        self.update_cached_status(
+            &cfg.id,
+            status,
+            error,
+            Some(started.elapsed().as_millis() as u64),
+        )
+        .await
     }
-
     async fn update_cached_status(
         &self,
         id: &str,

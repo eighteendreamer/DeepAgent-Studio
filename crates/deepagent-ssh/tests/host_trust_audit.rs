@@ -178,7 +178,13 @@ async fn whole_file_import_audit_stays_bound_to_each_endpoint_and_is_not_a_login
     let service = SshService::new(temp.path().into()).with_host_key_store(store.clone());
     let c = service.create_connection(serde_json::from_value(serde_json::json!({"name":"fixture","host":"one.invalid","port":22,"username":"fixture","auth_type":"agent","known_hosts_path":path})).unwrap()).await.unwrap();
     let preview = service.preview_known_hosts_import(&c.id).await.unwrap();
-    service.import_known_hosts(&c.id, preview).await.unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        service.import_known_hosts(&c.id, preview),
+    )
+    .await
+    .expect("whole-file import must finish connection cleanup without reentering its writer lock")
+    .unwrap();
     for host in ["one.invalid", "two.invalid"] {
         let events = store
             .audit_history(&SshHostIdentity::direct(host, 22).unwrap())

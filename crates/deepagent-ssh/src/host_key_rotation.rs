@@ -42,52 +42,55 @@ async fn probe(
 impl SshServiceImpl {
     pub async fn begin_host_key_rotation(&self, id: &str) -> SshResult<SshHostKeyRotationPreview> {
         self.ensure_loaded().await;
-        let _lifecycle = self.lifecycle.read().await;
-        let config = self.config_for(id).await?;
+        let permit = self.connection_operations.acquire(id).await?;
+        let config = self.operation_config(id, &permit).await?;
         let store = self.application_trust_store()?;
         let attempt_id = self.host_challenges.reserve(id)?;
-        let result = async {
-            let trust = HostTrust::capture_rotation(&config, store.clone()).await?;
-            if trust.is_unknown() {
-                return Err(HostTrust::error(
+        let result = permit
+            .run(async {
+                let trust = HostTrust::capture_rotation(&config, store.clone()).await?;
+                if trust.is_unknown() {
+                    return Err(HostTrust::error(
+                        &config,
+                        "unknown identity requires first-connection verification, not rotation",
+                    ));
+                }
+                let key = probe(
                     &config,
-                    "unknown identity requires first-connection verification, not rotation",
-                ));
-            }
-            let key = probe(
-                &config,
-                store.clone(),
-                self.host_challenges.deadline(id, &attempt_id)?,
-            )
-            .await?;
-            let previous_keys = trust
-                .rotation_previous(&config, &key)?
-                .into_iter()
-                .map(|(line_number, key)| SshKnownHostKey {
-                    line_number,
-                    algorithm: key.algorithm().as_str().into(),
-                    fingerprint: key.fingerprint(HashAlg::Sha256).to_string(),
+                    store.clone(),
+                    self.host_challenges.deadline(id, &attempt_id)?,
+                )
+                .await?;
+                let previous_keys = trust
+                    .rotation_previous(&config, &key)?
+                    .into_iter()
+                    .map(|(line_number, key)| SshKnownHostKey {
+                        line_number,
+                        algorithm: key.algorithm().as_str().into(),
+                        fingerprint: key.fingerprint(HashAlg::Sha256).to_string(),
+                    })
+                    .collect();
+                if HostTrust::capture_rotation(&config, store).await? != trust {
+                    return Err(HostTrust::error(
+                        &config,
+                        "trust changed during rotation probe; verify again",
+                    ));
+                }
+                let _lifecycle = self.lifecycle.read().await;
+                permit.ensure_current()?;
+                let challenge = self.host_challenges.present(
+                    &config,
+                    &attempt_id,
+                    trust,
+                    key,
+                    HostKeyPurpose::Rotation,
+                )?;
+                Ok(SshHostKeyRotationPreview {
+                    challenge,
+                    previous_keys,
                 })
-                .collect();
-            if HostTrust::capture_rotation(&config, store).await? != trust {
-                return Err(HostTrust::error(
-                    &config,
-                    "trust changed during rotation probe; verify again",
-                ));
-            }
-            let challenge = self.host_challenges.present(
-                &config,
-                &attempt_id,
-                trust,
-                key,
-                HostKeyPurpose::Rotation,
-            )?;
-            Ok(SshHostKeyRotationPreview {
-                challenge,
-                previous_keys,
             })
-        }
-        .await;
+            .await;
         if result.is_err() {
             self.host_challenges.discard(id, &attempt_id);
         }
@@ -156,7 +159,7 @@ impl SshServiceImpl {
                 .as_ref()
                 == Some(&identity)
             {
-                if let Err(error) = self.disconnect(&connection.id).await {
+                if let Err(error) = self.disconnect_locked(&connection.id).await {
                     tracing::warn!(target: "deepagent_ssh", connection_id = connection.id, %error, "SSH rotation committed but cleanup failed");
                     result.disconnect_failed_ids.push(connection.id);
                 }
