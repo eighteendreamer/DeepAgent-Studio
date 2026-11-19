@@ -148,6 +148,12 @@ pub(crate) struct PendingHostVerification {
 }
 
 impl PendingHostVerification {
+    pub(crate) async fn disconnect(&mut self) {
+        if let Some(jump) = self.jump.take() {
+            let _ = jump.client.disconnect().await;
+        }
+    }
+
     pub(crate) async fn resume(
         self,
         config: &SshConnectionConfig,

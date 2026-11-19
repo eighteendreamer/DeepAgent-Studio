@@ -34,6 +34,9 @@ pub struct Counts {
     pub connections: AtomicUsize,
     pub closed_connections: AtomicUsize,
     pub connection_closed: tokio::sync::Notify,
+    pub disconnect_connections: tokio::sync::Notify,
+    pub disconnect_completed: tokio::sync::Notify,
+    pub server_handles: RwLock<Vec<server::Handle>>,
     pub passwords: AtomicUsize,
     pub public_keys: AtomicUsize,
     pub public_key_offers: AtomicUsize,
@@ -603,11 +606,20 @@ impl SshServer {
                         let server_counts_for_close = server_counts.clone();
                         sessions.spawn(async move {
                             if let Ok(session) = server::run_stream(config, stream, handler).await {
+                                server_counts_for_close.server_handles.write().unwrap().push(session.handle());
                                 let _ = session.await;
                             }
                             server_counts_for_close.closed_connections.fetch_add(1, Ordering::SeqCst);
                             server_counts_for_close.connection_closed.notify_one();
                         });
+                    }
+                    _ = server_counts.disconnect_connections.notified() => {
+                        let handles = std::mem::take(&mut *server_counts.server_handles.write().unwrap());
+                        for handle in handles {
+                            let _ = handle.disconnect(russh::Disconnect::ByApplication, "fixture disconnect".into(), "".into()).await;
+                        }
+                        while sessions.join_next().await.is_some() {}
+                        server_counts.disconnect_completed.notify_one();
                     }
                     _ = sessions.join_next(), if !sessions.is_empty() => {}
                 }
@@ -653,6 +665,11 @@ impl SshServer {
     pub fn auth_count(&self) -> usize {
         self.counts.passwords.load(Ordering::SeqCst)
             + self.counts.public_keys.load(Ordering::SeqCst)
+    }
+
+    pub async fn disconnect_clients(&self) {
+        self.counts.disconnect_connections.notify_one();
+        self.counts.disconnect_completed.notified().await;
     }
 }
 

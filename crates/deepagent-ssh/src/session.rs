@@ -10,6 +10,8 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::task::JoinHandle;
 
+static NEXT_TRANSPORT_GENERATION: AtomicU64 = AtomicU64::new(1);
+
 #[cfg(test)]
 #[path = "session_audit.rs"]
 mod audit;
@@ -117,6 +119,7 @@ pub struct SshSession {
     pub(crate) host_trust: RwLock<Option<super::host_trust::HostTrust>>,
     config: SshConnectionConfig,
     client: RwLock<Option<Client>>,
+    transport_generation: AtomicU64,
     ptys: RwLock<HashMap<String, Arc<PtyState>>>,
     legacy_pty: RwLock<Option<String>>,
     connection_attempt_id: RwLock<Option<String>>,
@@ -133,6 +136,7 @@ impl SshSession {
             host_trust: RwLock::new(None),
             config,
             client: RwLock::new(None),
+            transport_generation: AtomicU64::new(0),
             ptys: RwLock::new(HashMap::new()),
             legacy_pty: RwLock::new(None),
             connection_attempt_id: RwLock::new(None),
@@ -152,12 +156,24 @@ impl SshSession {
     }
 
     pub async fn set_client(&self, client: Option<Client>) {
-        if client.is_some() {
+        let mut current = self.client.write().await;
+        if let Some(client) = client {
             self.resources.published();
+            self.transport_generation.store(
+                NEXT_TRANSPORT_GENERATION.fetch_add(1, Ordering::Relaxed),
+                Ordering::Release,
+            );
+            *current = Some(client);
         } else {
             self.resources.retire();
+            self.transport_generation.store(0, Ordering::Release);
+            *current = None;
         }
-        *self.client.write().await = client;
+    }
+
+    pub(crate) fn transport_generation(&self) -> Option<u64> {
+        let generation = self.transport_generation.load(Ordering::Acquire);
+        (generation != 0).then_some(generation)
     }
 
     pub async fn status(&self) -> SshStatus {

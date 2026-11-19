@@ -5831,6 +5831,7 @@ async fn ssh_exec(
         token: connection_id.clone(),
         cols: 80,
         rows: 24,
+        connection_generation: None,
     };
     ssh.exec(&handle, &command)
         .await
@@ -5850,6 +5851,7 @@ async fn ssh_list_dir(
         token: connection_id.clone(),
         cols: 80,
         rows: 24,
+        connection_generation: None,
     };
     ssh.list_dir(&handle, &path)
         .await
@@ -5868,6 +5870,7 @@ async fn ssh_read_file(
         token: connection_id.clone(),
         cols: 80,
         rows: 24,
+        connection_generation: None,
     };
     ssh.read_file(&handle, &path)
         .await
@@ -6006,6 +6009,7 @@ async fn ssh_read_file_base64(
         token: connection_id.clone(),
         cols: 80,
         rows: 24,
+        connection_generation: None,
     };
     ssh.read_file_binary(&handle, &path)
         .await
@@ -6018,6 +6022,7 @@ fn ssh_handle(connection_id: &str) -> DtoSshServiceHandle {
         token: connection_id.to_owned(),
         cols: 80,
         rows: 24,
+        connection_generation: None,
     }
 }
 
@@ -6147,6 +6152,7 @@ async fn ssh_pty_spawn(
         token: connection_id.clone(),
         cols,
         rows,
+        connection_generation: None,
     };
     ssh.pty_spawn(&handle, cols, rows)
         .await
@@ -6171,6 +6177,7 @@ async fn ssh_pty_write(
         token: connection_id.clone(),
         cols: 80,
         rows: 24,
+        connection_generation: None,
     };
     ssh.pty_write(&handle, data.as_bytes())
         .await
@@ -6188,6 +6195,7 @@ async fn ssh_pty_read(
         token: connection_id.clone(),
         cols: 80,
         rows: 24,
+        connection_generation: None,
     };
     ssh.pty_read(&handle).await.map_err(|e| e.to_string())
 }
@@ -6205,6 +6213,7 @@ async fn ssh_pty_resize(
         token: connection_id.clone(),
         cols,
         rows,
+        connection_generation: None,
     };
     ssh.pty_resize(&handle, cols, rows)
         .await

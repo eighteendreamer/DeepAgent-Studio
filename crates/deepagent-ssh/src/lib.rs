@@ -499,6 +499,8 @@ pub struct SshServiceHandle {
     pub token: String,
     pub cols: u16,
     pub rows: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_generation: Option<u64>,
 }
 
 impl SshServiceHandle {
@@ -513,7 +515,13 @@ impl SshServiceHandle {
             token: token.into(),
             cols,
             rows,
+            connection_generation: None,
         }
+    }
+
+    pub fn with_connection_generation(mut self, generation: u64) -> Self {
+        self.connection_generation = Some(generation);
+        self
     }
 }
 
