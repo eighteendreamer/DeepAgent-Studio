@@ -46,6 +46,8 @@ pub mod doctor;
 pub mod dto;
 pub mod file_preview_service;
 pub mod file_transfer_service;
+#[cfg(test)]
+mod git_context_invalidation_tests;
 pub mod git_service;
 pub mod harness_model_resolver;
 pub mod harness_model_service;

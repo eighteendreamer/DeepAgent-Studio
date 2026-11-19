@@ -953,6 +953,7 @@ async fn export_transcript(
 #[tauri::command]
 fn save_text_file(path: String, content: String) -> Result<(), String> {
     let target = PathBuf::from(&path);
+    let _git_context = deepagent_app_core::git_service::GitContextMutation::new(&target);
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -962,6 +963,7 @@ fn save_text_file(path: String, content: String) -> Result<(), String> {
 #[tauri::command]
 fn save_binary_file(path: String, bytes: Vec<u8>) -> Result<(), String> {
     let target = PathBuf::from(&path);
+    let _git_context = deepagent_app_core::git_service::GitContextMutation::new(&target);
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -4102,6 +4104,7 @@ fn set_project_hooks_json(
     }
     let root = resolve_project_root(&state, project_path)?;
     let path = project_hooks_file(&root);
+    let _git_context = deepagent_app_core::git_service::GitContextMutation::new(&path);
     if hooks_json.trim().is_empty() {
         if path.exists() {
             std::fs::remove_file(&path)

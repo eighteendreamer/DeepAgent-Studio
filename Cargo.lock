@@ -1755,6 +1755,7 @@ dependencies = [
  "deepagent-security",
  "deepagent-skills",
  "deepagent-tools",
+ "deepagent-workspace",
  "futures",
  "libc",
  "reqwest 0.12.28",

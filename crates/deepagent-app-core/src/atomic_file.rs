@@ -13,6 +13,7 @@ use deepagent_core::error::{CoreError, Result};
 
 /// Write `contents` to `path` via a temp file in the same directory plus rename.
 pub(crate) fn write_file_atomically(path: &Path, contents: &[u8]) -> Result<()> {
+    let _git_context = deepagent_workspace::GitContextMutation::new(path);
     let parent = path.parent().ok_or_else(|| {
         CoreError::invalid(format!("target path has no parent: {}", path.display()))
     })?;

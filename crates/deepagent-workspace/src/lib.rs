@@ -13,6 +13,7 @@
 //! within a token budget.
 
 pub mod git;
+mod git_cache;
 pub mod scanner;
 pub mod snapshot;
 
@@ -20,5 +21,6 @@ pub use git::{
     detect_git_context, parse_git_status_porcelain_z, CommitSummary, GitContext, GitStatusEntry,
     GitStatusSnapshot,
 };
+pub use git_cache::{cached_git_context, invalidate_git_context, GitContextMutation};
 pub use scanner::{ScanLimits, WorkspaceScanner};
 pub use snapshot::{ManifestInfo, ProjectKind, WorkspaceSnapshot};

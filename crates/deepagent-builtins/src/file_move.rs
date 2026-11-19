@@ -25,6 +25,8 @@ pub(super) fn move_path(
     if let Err(error) = validate_move(root.path(), source, destination) {
         return ToolOutput::failure(format!("invalid move: {error}"));
     }
+    let _source_context = deepagent_workspace::GitContextMutation::new(source);
+    let _destination_context = deepagent_workspace::GitContextMutation::new(destination);
     let source_target = match root.entry_target(source, false) {
         Ok(target) => target,
         Err(error) => return ToolOutput::failure(format!("source authorization failed: {error}")),

@@ -148,7 +148,7 @@ pub(crate) fn build_system_manifest_with_instruction_sources(
         );
 
     observe_phase("system_environment");
-    if let Some(git) = deepagent_workspace::detect_git_context(root) {
+    if let Some(git) = deepagent_workspace::cached_git_context(root) {
         assembler = assembler.push(
             ContextSourceKind::GitContext,
             "deepagent.git_context",
@@ -774,5 +774,59 @@ mod tests {
         assert!(!workspace_scan_allowed(Some(&asked)));
         assert!(workspace_scan_allowed(Some(&allowed)));
         assert!(workspace_scan_allowed(None));
+    }
+
+    #[test]
+    fn git_context_manifest_reuses_snapshot_until_explicit_invalidation() {
+        // Other parallel tests deliberately execute arbitrary commands, which
+        // invalidate every workspace. Check TTL retention in its own process.
+        const CHILD: &str = "DEEPAGENT_GIT_CACHE_MANIFEST_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["system_context::tests::git_context_manifest_reuses_snapshot_until_explicit_invalidation", "--exact", "--nocapture"])
+                .env(CHILD, "1").output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success());
+        let manifest = || {
+            build_system_manifest(
+                root,
+                SandboxMode::WorkspaceWrite,
+                None,
+                None,
+                None,
+                None,
+                Vec::new(),
+                usize::MAX,
+                None,
+            )
+            .entries
+            .into_iter()
+            .find(|entry| entry.source == ContextSourceKind::GitContext)
+            .unwrap()
+            .content
+        };
+        let original = manifest();
+        std::fs::write(root.join("external.txt"), "fixture").unwrap();
+        assert_eq!(
+            manifest(),
+            original,
+            "external edit unexpectedly bypassed the TTL"
+        );
+        deepagent_workspace::invalidate_git_context(root);
+        assert!(manifest().contains("external.txt"));
     }
 }

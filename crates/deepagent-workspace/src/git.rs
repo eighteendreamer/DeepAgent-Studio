@@ -85,41 +85,23 @@ fn git_stdout(root: &Path, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Whether `root` is inside a git work tree.
-fn is_git_repo(root: &Path) -> bool {
-    git_output(root, &["rev-parse", "--is-inside-work-tree"])
-        .map(|s| s == "true")
-        .unwrap_or(false)
-}
-
 /// Detect the git context at `root`. Returns `None` when `git` is unavailable
 /// or `root` is not a repository.
 pub fn detect_git_context(root: &Path) -> Option<GitContext> {
-    if !is_git_repo(root) {
-        return None;
-    }
-
-    // Branch name (detached HEAD prints "HEAD"; fall back to a short hash).
-    let branch = match git_output(root, &["rev-parse", "--abbrev-ref", "HEAD"]) {
-        Some(b) if b != "HEAD" && !b.is_empty() => b,
-        _ => git_output(root, &["rev-parse", "--short", "HEAD"])
-            .unwrap_or_else(|| "(unknown)".to_string()),
-    };
-
-    // Porcelain status → changed files. Keep the status column and NUL record
-    // boundaries intact; a failed status query is unknown, not clean.
+    // One query supplies repository detection, branch and worktree changes.
+    // v2's branch header also works before the first commit. A failed status
+    // query remains unknown rather than being projected as a clean worktree.
     let status = git_stdout(
         root,
-        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        &[
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "-z",
+            "--untracked-files=all",
+        ],
     )?;
-    let status_snapshot = parse_git_status_porcelain_z(&status);
-    let mut changed_files: Vec<String> = status_snapshot
-        .entries
-        .iter()
-        .map(|entry| entry.path.clone())
-        .collect();
-    let has_uncommitted = status_snapshot.has_uncommitted;
-    changed_files.truncate(MAX_CHANGED_FILES);
+    let mut context = parse_context_status(&status)?;
 
     // Recent commits: "<short-hash>\x1f<subject>" per line.
     let log = git_output(
@@ -131,7 +113,7 @@ pub fn detect_git_context(root: &Path) -> Option<GitContext> {
         ],
     )
     .unwrap_or_default();
-    let recent_commits: Vec<CommitSummary> = log
+    context.recent_commits = log
         .lines()
         .filter_map(|line| {
             let (hash, subject) = line.split_once('\x1f')?;
@@ -142,11 +124,48 @@ pub fn detect_git_context(root: &Path) -> Option<GitContext> {
         })
         .collect();
 
+    if context.branch == "(detached)" {
+        context.branch = context
+            .recent_commits
+            .first()
+            .map(|commit| commit.hash.clone())
+            .unwrap_or_else(|| "(unknown)".into());
+    }
+    Some(context)
+}
+
+/// Parse Git's porcelain v2 records; paths can contain spaces, tabs or newlines.
+fn parse_context_status(output: &str) -> Option<GitContext> {
+    let mut branch = None;
+    let mut changed_files = Vec::new();
+    let mut has_uncommitted = false;
+    let mut records = output.split('\0');
+    while let Some(record) = records.next() {
+        if let Some(head) = record.strip_prefix("# branch.head ") {
+            branch = Some(head.to_string());
+            continue;
+        }
+        let path = match record.as_bytes().first() {
+            Some(b'1') => record.splitn(9, ' ').nth(8),
+            Some(b'2') => {
+                let path = record.splitn(10, ' ').nth(9);
+                records.next(); // The rename/copy source is a separate NUL record.
+                path
+            }
+            Some(b'u') => record.splitn(11, ' ').nth(10),
+            Some(b'?') => record.strip_prefix("? "),
+            _ => continue,
+        }?;
+        has_uncommitted = true;
+        if changed_files.len() < MAX_CHANGED_FILES {
+            changed_files.push(path.to_string());
+        }
+    }
     Some(GitContext {
-        branch,
+        branch: branch?,
         has_uncommitted,
         changed_files,
-        recent_commits,
+        recent_commits: Vec::new(),
     })
 }
 
@@ -316,6 +335,41 @@ mod tests {
         let ctx = detect_git_context(root).expect("repo");
         assert!(!ctx.has_uncommitted);
         assert!(ctx.changed_files.is_empty());
+    }
+
+    #[test]
+    fn context_includes_the_branch_before_the_first_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        let context = detect_git_context(dir.path()).unwrap();
+        assert_eq!(context.branch, "main");
+        assert!(context.recent_commits.is_empty());
+        assert!(!context.has_uncommitted);
+    }
+
+    #[test]
+    fn detached_context_and_renamed_paths_are_preserved_from_a_subdirectory() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_repo(root);
+        std::fs::create_dir(root.join("nested")).unwrap();
+        std::fs::write(root.join("old.txt"), "fixture").unwrap();
+        git(root, &["add", "old.txt"]);
+        git(root, &["commit", "-q", "-m", "baseline"]);
+        git(root, &["checkout", "-q", "--detach"]);
+        git(root, &["mv", "old.txt", "中文 renamed.txt"]);
+        std::fs::write(root.join("nested/untracked file.txt"), "fixture").unwrap();
+        let context = detect_git_context(&root.join("nested")).unwrap();
+        assert_eq!(
+            context.branch,
+            git_output(root, &["rev-parse", "--short", "HEAD"]).unwrap()
+        );
+        assert!(context.has_uncommitted);
+        assert_eq!(
+            context.changed_files,
+            ["中文 renamed.txt", "nested/untracked file.txt"]
+        );
+        assert_eq!(context.recent_commits[0].subject, "baseline");
     }
 
     #[test]

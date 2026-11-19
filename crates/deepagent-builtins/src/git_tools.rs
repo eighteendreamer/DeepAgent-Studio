@@ -251,6 +251,8 @@ impl<E: CommandExecutor> Tool for GitCommitTool<E> {
             ));
         }
         let all = args.get("all").and_then(|v| v.as_bool()).unwrap_or(true);
+        let _git_context =
+            deepagent_workspace::GitContextMutation::new(std::path::Path::new(&self.cwd));
 
         if all {
             // Stage everything first (best-effort; report failure if it errors).

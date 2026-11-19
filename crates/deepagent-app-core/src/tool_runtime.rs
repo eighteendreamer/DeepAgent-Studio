@@ -85,6 +85,7 @@ impl deepagent_builtins::bash_tool::CommandExecutor for RuntimeCommandExecutor {
         cwd: &str,
         shell: deepagent_builtins::bash_tool::CommandShell,
     ) -> Result<deepagent_builtins::bash_tool::CommandOutcome> {
+        let _git_context = deepagent_workspace::GitContextMutation::all_workspaces();
         let environment = self.environment(&[]);
         self.inner
             .run_with_environment(command, cwd, shell, &environment)
@@ -98,6 +99,7 @@ impl deepagent_builtins::bash_tool::CommandExecutor for RuntimeCommandExecutor {
         shell: deepagent_builtins::bash_tool::CommandShell,
         environment: &[(String, String)],
     ) -> Result<deepagent_builtins::bash_tool::CommandOutcome> {
+        let _git_context = deepagent_workspace::GitContextMutation::all_workspaces();
         let environment = self.environment(environment);
         self.inner
             .run_with_environment(command, cwd, shell, &environment)
@@ -112,6 +114,7 @@ impl deepagent_builtins::bash_tool::CommandExecutor for RuntimeCommandExecutor {
         cancel: Arc<std::sync::atomic::AtomicBool>,
         timeout: std::time::Duration,
     ) -> Result<deepagent_builtins::bash_tool::CommandOutcome> {
+        let _git_context = deepagent_workspace::GitContextMutation::all_workspaces();
         let environment = self.environment(&[]);
         self.inner
             .run_controlled_with_environment(command, cwd, shell, cancel, timeout, &environment)
@@ -127,6 +130,7 @@ impl deepagent_builtins::bash_tool::CommandExecutor for RuntimeCommandExecutor {
         timeout: std::time::Duration,
         environment: &[(String, String)],
     ) -> Result<deepagent_builtins::bash_tool::CommandOutcome> {
+        let _git_context = deepagent_workspace::GitContextMutation::all_workspaces();
         let environment = self.environment(environment);
         self.inner
             .run_controlled_with_environment(command, cwd, shell, cancel, timeout, &environment)

@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use std::os::windows::process::CommandExt;
 
 use deepagent_core::error::Result;
+pub use deepagent_workspace::GitContextMutation;
 
 use crate::dto::{
     GitBatchCommitPreviewItemDto, GitBatchCommitTargetDto, GitBatchProjectResultDto, GitBranchDto,
@@ -1819,6 +1820,7 @@ fn configure_command(cmd: &mut Command, program: &str) {
 }
 
 fn run_git_operation(repo_root: &Path, args: Vec<String>) -> GitOperationResultDto {
+    let _git_context = GitContextMutation::new(repo_root);
     let command = format!("git {}", args.join(" "));
     match run_command_owned(repo_root, "git", &args) {
         Ok(output) => GitOperationResultDto {
@@ -1841,6 +1843,7 @@ fn run_git_operation_with_stdin(
     args: Vec<String>,
     stdin: &str,
 ) -> GitOperationResultDto {
+    let _git_context = GitContextMutation::new(repo_root);
     let command = format!("git {}", args.join(" "));
     let mut cmd = Command::new("git");
     cmd.current_dir(repo_root)
@@ -2576,6 +2579,31 @@ mod tests {
         GitService::new(Arc::new(ProjectService::new(Arc::new(
             deepagent_persistence::Database::open_in_memory().unwrap(),
         ))))
+    }
+
+    #[test]
+    fn git_operations_invalidate_cached_model_context_before_the_next_turn() {
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path();
+        fixture_git(root, &["init", "-q", "-b", "main"]);
+        fixture_git(root, &["commit", "--allow-empty", "-q", "-m", "initial"]);
+        assert_eq!(
+            deepagent_workspace::cached_git_context(root)
+                .unwrap()
+                .branch,
+            "main"
+        );
+        let service = fixture_service();
+        let result = service
+            .create_branch(&root.display().to_string(), "changed", None)
+            .unwrap();
+        assert!(result.ok, "{result:?}");
+        assert_eq!(
+            deepagent_workspace::cached_git_context(root)
+                .unwrap()
+                .branch,
+            "changed"
+        );
     }
 
     #[test]

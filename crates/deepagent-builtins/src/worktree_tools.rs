@@ -158,6 +158,7 @@ impl<E: CommandExecutor> Tool for EnterWorktreeTool<E> {
     }
 
     async fn invoke(&self, args: serde_json::Value) -> Result<ToolOutput> {
+        let _git_context = deepagent_workspace::GitContextMutation::all_workspaces();
         if let Some(active) = self.state.lock().ok().and_then(|s| s.clone()) {
             return Ok(ToolOutput::failure(format!(
                 "already in a worktree session at {}; call exit_worktree first",
@@ -330,6 +331,7 @@ impl<E: CommandExecutor> Tool for ExitWorktreeTool<E> {
     }
 
     async fn invoke(&self, args: serde_json::Value) -> Result<ToolOutput> {
+        let _git_context = deepagent_workspace::GitContextMutation::all_workspaces();
         let Some(active) = self.state.lock().ok().and_then(|s| s.clone()) else {
             return Ok(ToolOutput::failure(
                 "no active worktree session; only a worktree created by enter_worktree in this \

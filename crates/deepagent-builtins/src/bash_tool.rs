@@ -1113,6 +1113,8 @@ impl<E: CommandExecutor> Tool for BashTool<E> {
             .and_then(CommandShell::parse)
             .unwrap_or_default();
 
+        // Shells may mutate files or Git even when their final exit is nonzero.
+        let _git_context = deepagent_workspace::GitContextMutation::all_workspaces();
         match self
             .executor
             .run_controlled(

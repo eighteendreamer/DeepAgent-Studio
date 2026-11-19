@@ -730,6 +730,7 @@ impl HookCommandRunner for ObservableHookRunner {
         let mut effective_env = self.runtime_environment.clone();
         effective_env.extend(env.clone());
         let process = async {
+            let _git_context = deepagent_workspace::GitContextMutation::all_workspaces();
             if let Some(cwd) = &self.cwd {
                 self.inner
                     .run_in_dir(command, stdin_json, shell, &effective_env, timeout, cwd)

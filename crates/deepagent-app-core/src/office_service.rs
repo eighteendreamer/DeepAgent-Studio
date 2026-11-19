@@ -12,6 +12,7 @@
 //! external runtime and no Python**.
 
 use std::io::Write;
+use std::path::Path;
 use std::sync::Arc;
 
 use deepagent_core::error::{CoreError, Result};
@@ -96,6 +97,7 @@ impl OfficeService {
 
     /// Create a `.docx` from a [`DocSpec`] (Tier C, pure Rust).
     pub fn create_docx(&self, spec: &DocSpec, out_path: &str) -> Result<()> {
+        let _git_context = deepagent_workspace::GitContextMutation::new(Path::new(out_path));
         let document_xml = render_document_xml(spec);
         write_docx_zip(out_path, &document_xml)
     }
@@ -109,6 +111,7 @@ impl OfficeService {
         title: Option<&str>,
         out_path: &str,
     ) -> Result<()> {
+        let _git_context = deepagent_workspace::GitContextMutation::new(Path::new(out_path));
         if let Some(dir) = self.runtime.resolve(DOC_CONVERT_CAPABILITY) {
             if let Some(pandoc) = pandoc_executable(&dir) {
                 return convert_markdown_to_docx_via_pandoc(&pandoc, markdown, title, out_path);
@@ -124,6 +127,7 @@ impl OfficeService {
 
     /// Create an `.xlsx` from named sheets of string rows (Tier C, pure Rust).
     pub fn create_xlsx(&self, sheets: &[(String, Vec<Vec<String>>)], out_path: &str) -> Result<()> {
+        let _git_context = deepagent_workspace::GitContextMutation::new(Path::new(out_path));
         use rust_xlsxwriter::Workbook;
         let mut workbook = Workbook::new();
         for (name, rows) in sheets {

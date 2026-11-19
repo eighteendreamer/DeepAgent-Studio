@@ -30,6 +30,8 @@ impl WriteTarget {
         if path.file_name().is_none() {
             return Err(io::Error::other("write target has no file name"));
         }
+        let _git_context =
+            create_parents.then(|| deepagent_workspace::GitContextMutation::new(&path));
         #[cfg(windows)]
         let parent = super::windows::WriteDirectory::open(parent, create_parents)?;
         #[cfg(not(windows))]
@@ -67,6 +69,7 @@ impl WriteTarget {
     }
 
     pub(crate) fn delete_entry(&self, recursive: bool) -> io::Result<bool> {
+        let _git_context = deepagent_workspace::GitContextMutation::new(&self.path);
         #[cfg(windows)]
         {
             self.parent.delete_entry(&self.path, recursive)
@@ -117,6 +120,7 @@ impl StagedWrite {
     }
 
     pub(crate) fn publish(self, target: &WriteTarget, replace: bool) -> io::Result<()> {
+        let _git_context = deepagent_workspace::GitContextMutation::new(&target.path);
         #[cfg(windows)]
         {
             self.inner.publish(
