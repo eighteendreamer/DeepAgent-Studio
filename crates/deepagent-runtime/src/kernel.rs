@@ -19,7 +19,7 @@ use sha2::Digest;
 use crate::agent::Agent;
 use crate::approval::{ApprovalGate, AutoDenyGate};
 use crate::cancellation::CancellationTree;
-use crate::events::{NullEventSink, RuntimeEvent, RuntimeEventSink};
+use crate::events::{NullEventSink, PreparationObserver, RuntimeEvent, RuntimeEventSink};
 use crate::loop_engine::{RunOutcome, RuntimeConfig, RuntimeEngine, VerificationPlan};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,6 +184,8 @@ struct PersistentEventSink {
     db: Arc<Database>,
     run_id: String,
     delegate: Arc<dyn RuntimeEventSink>,
+    preparation_observer: Option<PreparationObserver>,
+    engine_run_started_at: Mutex<Option<std::time::Instant>>,
     state: Mutex<EventPersistenceState>,
 }
 
@@ -198,10 +200,21 @@ struct EventPersistenceState {
 
 impl PersistentEventSink {
     fn new(db: Arc<Database>, run_id: String, delegate: Arc<dyn RuntimeEventSink>) -> Self {
+        Self::new_with_observer(db, run_id, delegate, None)
+    }
+
+    fn new_with_observer(
+        db: Arc<Database>,
+        run_id: String,
+        delegate: Arc<dyn RuntimeEventSink>,
+        preparation_observer: Option<PreparationObserver>,
+    ) -> Self {
         Self {
             db,
             run_id,
             delegate,
+            preparation_observer,
+            engine_run_started_at: Mutex::new(None),
             state: Mutex::new(EventPersistenceState {
                 delta: DeltaBuffer::default(),
                 phase: RunPhase::Preparing,
@@ -219,6 +232,19 @@ impl PersistentEventSink {
             cancellation.cancel();
         }
         state.cancellation = Some(cancellation);
+    }
+
+    fn mark_engine_run_entered(&self) {
+        *self
+            .engine_run_started_at
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(std::time::Instant::now());
+    }
+
+    fn report_preparation(&self, phase: &'static str, elapsed_ms: u64) {
+        if let Some(observer) = &self.preparation_observer {
+            observer(phase, Some(elapsed_ms));
+        }
     }
 
     fn failure(&self) -> Option<String> {
@@ -357,6 +383,21 @@ impl PersistentEventSink {
 
 impl RuntimeEventSink for PersistentEventSink {
     fn emit(&self, event: RuntimeEvent) {
+        let run_started_event = matches!(&event, RuntimeEvent::RunStarted { .. });
+        let event_persist_started = run_started_event.then(std::time::Instant::now);
+        if run_started_event {
+            let started_at = self
+                .engine_run_started_at
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take();
+            if let Some(started_at) = started_at {
+                self.report_preparation(
+                    "kernel_engine_to_run_started_event",
+                    u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+                );
+            }
+        }
         // Serialize commit and delivery together, including helper events
         // emitted concurrently with the model. Delegates must not re-enter.
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
@@ -442,6 +483,12 @@ impl RuntimeEventSink for PersistentEventSink {
             Ok(())
         })();
         if result.is_ok() {
+            if let Some(persist_started) = event_persist_started {
+                self.report_preparation(
+                    "kernel_run_started_event_persisted",
+                    u64::try_from(persist_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                );
+            }
             if terminal_intent {
                 state.pending_terminal = Some(event);
             } else {
@@ -527,6 +574,7 @@ pub struct AgentKernel<'a, C: Clock> {
     approvals: Arc<dyn ApprovalGate>,
     events: Arc<PersistentEventSink>,
     handle: RunHandle,
+    preparation_observer: Option<PreparationObserver>,
     /// Session-level accumulation of edited files across all turns in this run.
     edited_files: Arc<
         std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, crate::events::EditedFile>>,
@@ -561,8 +609,28 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
                 run_id,
                 cancellation: CancellationTree::new(),
             },
+            preparation_observer: None,
             edited_files: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             _clock: std::marker::PhantomData,
+        }
+    }
+
+    /// Observe content-free setup timings for host diagnostics.
+    pub fn with_preparation_observer(mut self, observer: PreparationObserver) -> Self {
+        self.preparation_observer = Some(observer);
+        self
+    }
+
+    fn report_preparation(&self, phase: &'static str, started_at: std::time::Instant) {
+        if let Some(observer) = &self.preparation_observer {
+            let elapsed_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+            observer(phase, Some(elapsed_ms));
+        }
+    }
+
+    fn mark_preparation(&self, phase: &'static str) {
+        if let Some(observer) = &self.preparation_observer {
+            observer(phase, None);
         }
     }
 
@@ -596,10 +664,11 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
     }
 
     pub fn with_events(mut self, events: Arc<dyn RuntimeEventSink>) -> Self {
-        self.events = Arc::new(PersistentEventSink::new(
+        self.events = Arc::new(PersistentEventSink::new_with_observer(
             self.db.clone(),
             self.handle.run_id.clone(),
             events,
+            self.preparation_observer.clone(),
         ));
         self
     }
@@ -635,6 +704,7 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
         task: TaskId,
         agent: &mut dyn Agent,
     ) -> Result<KernelTerminal> {
+        let run_store_started = std::time::Instant::now();
         let _session_activity = session.acquire_activity()?;
         session.require_open()?;
         self.events
@@ -655,10 +725,24 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
             "setup.started",
             &serde_json::json!({ "component": "agent_kernel" }),
         )?;
+        self.report_preparation("kernel_run_store_prepared", run_store_started);
+
+        let registry_fingerprint_started = std::time::Instant::now();
         let fingerprint = registry_capability_fingerprint(self.registry)?;
+        self.report_preparation(
+            "kernel_registry_fingerprint_computed",
+            registry_fingerprint_started,
+        );
+
+        let registry_persist_started = std::time::Instant::now();
         store.ensure_registry_capabilities(&run_id, &fingerprint, now_ms())?;
         store.transition(&run_id, RunPhase::Preparing.label(), now_ms())?;
+        self.report_preparation(
+            "kernel_registry_capabilities_persisted",
+            registry_persist_started,
+        );
 
+        let engine_setup_started = std::time::Instant::now();
         let persistent = self.events.clone();
         // Provider streaming originates inside the Agent rather than the loop
         // engine. Inject the same canonical sink here so model deltas cannot
@@ -671,6 +755,9 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
                 .with_events(persistent.clone())
                 .with_approvals(self.approvals.clone())
                 .with_edited_files(self.edited_files.clone());
+        if let Some(observer) = self.preparation_observer.clone() {
+            engine = engine.with_preparation_observer(observer);
+        }
         if let Some(hooks) = self.hooks {
             engine = engine.with_hooks(hooks);
         }
@@ -680,7 +767,10 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
         if let Some(verifier) = self.adversarial_verifier.clone() {
             engine = engine.with_adversarial_verifier(verifier);
         }
+        self.report_preparation("kernel_engine_configured", engine_setup_started);
 
+        self.mark_preparation("kernel_engine_run_entered");
+        self.events.mark_engine_run_entered();
         let (result, deadline_reason) = if let Some(deadline) = self.config.task_timeout {
             // Keep the execution future pinned and owned by this scope. A
             // plain timeout(future) drops it on expiry, which skips

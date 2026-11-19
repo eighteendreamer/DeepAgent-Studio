@@ -35,7 +35,7 @@ use deepagent_models::{
 use deepagent_tools::ToolInvocation;
 
 use crate::agent::{Agent, AgentDecision, Observation, ToolAttemptController};
-use crate::events::{RuntimeEvent, RuntimeEventSink};
+use crate::events::{PreparationObserver, RuntimeEvent, RuntimeEventSink};
 use crate::stall_detector::{
     build_stall_nudge, evaluate_stall, render_stall_transcript_from_response_items,
     StallClassifier, StallDecision, MAX_STALL_NUDGES_PER_RUN,
@@ -595,6 +595,16 @@ impl ResponseHistory {
     }
 }
 
+/// One local projection for this agent's immutable provider route. Keep exact
+/// request equality rather than a lossy header hash; history replacements and
+/// in-run tool discovery must refresh pricing too. Never retain image bytes.
+struct RequestMeasurement {
+    request: ResponseRequest,
+    attachment_tokens: usize,
+    fingerprint: u64,
+    surface: deepagent_context::SurfaceTokenBreakdown,
+}
+
 /// An [`Agent`] that delegates decision-making to a model.
 pub struct ModelAgent {
     client: Arc<ModelClient>,
@@ -609,6 +619,7 @@ pub struct ModelAgent {
     /// discovery call can expose schemas within the same run.
     tool_schema_source: Option<ToolSchemaSource>,
     tool_schema_observer: Option<ToolSchemaObserver>,
+    preparation_observer: Option<PreparationObserver>,
     /// Most recent tool call id, used to correlate the next tool result.
     pending_tool_call_id: Option<String>,
     /// Optional live event sink: when set, token/reasoning deltas are forwarded
@@ -644,6 +655,7 @@ pub struct ModelAgent {
     /// Prompt tokens reported by the most recent model call. The next-request
     /// estimate adds the signed native-Surface delta after this anchor.
     context_meter: deepagent_context::ContextMeter,
+    request_measurement: std::sync::Mutex<Option<RequestMeasurement>>,
     context_policy: Option<deepagent_context::ContextPolicy>,
     context_headroom: Option<usize>,
     context_pct_override: Option<f32>,
@@ -772,6 +784,7 @@ impl ModelAgent {
             tools,
             tool_schema_source: None,
             tool_schema_observer: None,
+            preparation_observer: None,
             pending_tool_call_id: None,
             events: None,
             usage: Arc::new(RunUsageTracker::default()),
@@ -787,6 +800,7 @@ impl ModelAgent {
             proactive_compaction_threshold: None,
             autocompact_consecutive_failures: 0,
             context_meter: deepagent_context::ContextMeter::default(),
+            request_measurement: std::sync::Mutex::new(None),
             context_policy: None,
             context_headroom: None,
             context_pct_override: None,
@@ -885,6 +899,32 @@ impl ModelAgent {
     pub fn with_tool_schema_observer(mut self, observer: ToolSchemaObserver) -> Self {
         self.tool_schema_observer = Some(observer);
         self
+    }
+
+    /// Observe local phases between entering a model turn and dispatching its
+    /// provider request. Hosts use this for content-free performance logs.
+    pub fn with_preparation_observer(mut self, observer: PreparationObserver) -> Self {
+        self.preparation_observer = Some(observer);
+        self
+    }
+
+    fn start_preparation_timer(&self) -> Option<std::time::Instant> {
+        self.preparation_observer
+            .as_ref()
+            .map(|_| std::time::Instant::now())
+    }
+
+    fn report_preparation(&self, phase: &'static str, started_at: Option<std::time::Instant>) {
+        if let (Some(observer), Some(started_at)) = (&self.preparation_observer, started_at) {
+            let elapsed_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+            observer(phase, Some(elapsed_ms));
+        }
+    }
+
+    fn mark_preparation(&self, phase: &'static str) {
+        if let Some(observer) = &self.preparation_observer {
+            observer(phase, None);
+        }
     }
 
     fn push_tool_observation(
@@ -1504,7 +1544,12 @@ impl ModelAgent {
         request: &ResponseRequest,
     ) -> (u64, deepagent_context::SurfaceTokenBreakdown) {
         let original_request = request;
-        let request = self.client.prepare_response_request(request.clone());
+        let mut request = self.client.prepare_response_request(request.clone());
+        // Prompt pricing always uses streaming and placeholders for images.
+        // Normalize those transient transport fields before comparing snapshots.
+        request.stream = true;
+        request.attachment_data_urls.clear();
+        request.image_file_ids.clear();
         // A pricing-only resolver may read/encode bytes. Unsupported images
         // must not be materialized even while estimating a doomed request;
         // the execution preflight reports the same authoritative gate's error.
@@ -1512,29 +1557,53 @@ impl ModelAgent {
             .client
             .validate_response_input_modalities(&request)
             .is_ok();
-        let header = serde_json::json!({"model": request.model, "max_output_tokens": request.max_output_tokens,
-            "reasoning_effort": request.reasoning_effort, "tool_choice": request.tool_choice, "text": request.text,
-            "temperature": request.temperature, "top_p": request.top_p, "user": request.user});
-        let surface = deepagent_context::measure_response_request(
-            &self.client,
-            original_request,
-            |attachment| {
-                if images_allowed
+        let attachment_tokens = request
+            .input
+            .iter()
+            .flat_map(ResponseInputItem::image_attachments)
+            .filter(|attachment| {
+                images_allowed
                     && self
                         .attachment_resolver
                         .as_ref()
                         .is_some_and(|resolver| resolver.is_resolvable(attachment))
-                {
-                    self.client.image_token_reserve(&request.model)
-                } else {
-                    0
-                }
-            },
-        );
+            })
+            .map(|_| self.client.image_token_reserve(&request.model))
+            .sum();
+        let mut cached = self.request_measurement.lock().unwrap_or_else(|poisoned| {
+            tracing::warn!("request measurement mutex poisoned; rebuilding local projection");
+            let mut cached = poisoned.into_inner();
+            *cached = None;
+            self.request_measurement.clear_poison();
+            cached
+        });
+        if let Some(cached) = cached.as_ref().filter(|cached| {
+            cached.request == request && cached.attachment_tokens == attachment_tokens
+        }) {
+            return (cached.fingerprint, cached.surface);
+        }
+        let measurement_started = self.start_preparation_timer();
+        let header = serde_json::json!({"model": request.model, "max_output_tokens": request.max_output_tokens,
+            "reasoning_effort": request.reasoning_effort, "tool_choice": request.tool_choice, "text": request.text,
+            "temperature": request.temperature, "top_p": request.top_p, "user": request.user});
+        let mut surface =
+            deepagent_context::measure_response_request(&self.client, original_request, |_| 0);
+        surface.attachments = attachment_tokens;
         let key = deepagent_context::ContextMeter::request_fingerprint(
             &format!("{}:{}", surface.source, header),
             request.instructions.as_deref(),
             &request.tools,
+        );
+        *cached = Some(RequestMeasurement {
+            request,
+            attachment_tokens,
+            fingerprint: key,
+            surface,
+        });
+        drop(cached);
+        self.report_preparation(
+            "model_agent_context_measurement_computed",
+            measurement_started,
         );
         (key, surface)
     }
@@ -2543,6 +2612,7 @@ impl ModelAgent {
         cancel: Option<Arc<AtomicBool>>,
         mut tools: Option<&mut dyn ToolAttemptController>,
     ) -> Result<AgentDecision> {
+        self.mark_preparation("model_agent_think_entered");
         if let Some(sink) = &self.events {
             sink.checkpoint()?;
         }
@@ -2552,6 +2622,7 @@ impl ModelAgent {
         {
             return Err(CoreError::other("request cancelled by user"));
         }
+        let state_refresh_started = self.start_preparation_timer();
         self.request_max_output_override = None;
         self.reasoning_effort = self
             .client
@@ -2562,9 +2633,12 @@ impl ModelAgent {
         if let Some(source) = &self.tool_schema_source {
             self.tools = source()?;
         }
+        self.report_preparation("model_agent_state_refreshed", state_refresh_started);
+
         // Feed back every tool result from the previous step (more than one when
         // the previous turn ran tools in parallel). Order matters: tool results
         // must follow the assistant turn that requested them.
+        let surface_prepare_started = self.start_preparation_timer();
         for obs in last {
             self.record_observation(obs);
         }
@@ -2580,10 +2654,13 @@ impl ModelAgent {
         self.maybe_inject_snip_nudge();
         self.maybe_inject_doom_loop_nudge();
         self.maybe_inject_todo_reminder()?;
+        self.report_preparation("model_agent_surface_prepared", surface_prepare_started);
 
+        let request_projection_started = self.start_preparation_timer();
         let mut request = self
             .request_for_current_history()?
             .with_tools(self.tools.clone());
+        self.report_preparation("model_agent_request_projected", request_projection_started);
         let request_started_at = std::time::Instant::now();
 
         // Stream the turn, forwarding token/reasoning deltas to the event sink
@@ -2614,14 +2691,18 @@ impl ModelAgent {
             self.request_max_output_override = request.max_output_tokens;
             // Run pressure management against the final Surface and this
             // attempt's output ceiling, including nudges and retry changes.
+            let pressure_check_started = self.start_preparation_timer();
             self.maybe_proactive_compact(step, cancel.clone()).await?;
+            self.report_preparation("model_agent_pressure_checked", pressure_check_started);
             if cancel
                 .as_ref()
                 .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
             {
                 return Err(CoreError::other("request cancelled by user"));
             }
+            let history_projection_started = self.start_preparation_timer();
             let canonical = self.request_for_current_history()?;
+            self.report_preparation("model_agent_history_projected", history_projection_started);
             request.replace_history_from(&canonical);
             if attempt == 1 {
                 if let Some(sink) = &self.events {
@@ -2634,6 +2715,9 @@ impl ModelAgent {
                     });
                 }
             }
+            if attempt == 1 {
+                self.mark_preparation("model_agent_request_started_event_emitted");
+            }
             if let (Some(sink), Some(sampling)) =
                 (&self.events, self.client.response_sampling(&request))
             {
@@ -2644,22 +2728,34 @@ impl ModelAgent {
                     sampling,
                 });
             }
+            let context_usage_started = self.start_preparation_timer();
             self.publish_context_usage();
+            self.report_preparation("model_agent_context_usage_published", context_usage_started);
             if let Some(sink) = &self.events {
                 sink.checkpoint()?;
             }
+            let request_measurement_started = self.start_preparation_timer();
             let (request_fingerprint, request_surface) = self.measure_request(&request);
+            self.report_preparation("model_agent_request_measured", request_measurement_started);
+            let tool_schema_observer_started = self.start_preparation_timer();
             if let Some(observer) = &self.tool_schema_observer {
                 let schemas = self
                     .client
                     .project_tool_schemas(&request.model, &request.tools);
                 observer(&request.tools, &schemas)?;
             }
+            self.report_preparation(
+                "model_agent_tool_schema_observed",
+                tool_schema_observer_started,
+            );
             if let Some(tools) = tools.as_deref_mut() {
                 tools.begin(attempt);
             }
             let attempt_started_at = std::time::Instant::now();
             let current_tools = tools.take();
+            if attempt == 1 {
+                self.mark_preparation("model_agent_transport_invoked");
+            }
             let (result, stream_activity_seen, returned_tools) = stream_model_attempt(
                 &self.client,
                 request.clone(),
@@ -3184,6 +3280,8 @@ mod tests {
 
     include!("model_tokenizer_tests.rs");
 
+    include!("model_measurement_reuse_tests.rs");
+
     #[test]
     fn h168_runtime_projection_keeps_middle_system_in_place() {
         let mut history = ResponseHistory::from_messages(&[
@@ -3365,6 +3463,49 @@ mod tests {
             response_text_delta(text),
             response_completed(serde_json::json!([])),
         ]
+    }
+
+    #[tokio::test]
+    async fn preparation_observer_marks_the_provider_transport_boundary() {
+        let phases = Arc::new(Mutex::new(Vec::new()));
+        let observed = phases.clone();
+        let observer = Arc::new(move |phase, _elapsed_ms| {
+            observed.lock().unwrap().push(phase);
+        });
+        let mut agent = ModelAgent::new(
+            client(response_text_completed("done")),
+            "model",
+            "system",
+            "goal",
+            vec![],
+        )
+        .with_preparation_observer(observer);
+
+        agent.think(0, &[]).await.unwrap();
+
+        let phases = phases.lock().unwrap();
+        let ordered = [
+            "model_agent_state_refreshed",
+            "model_agent_surface_prepared",
+            "model_agent_request_projected",
+            "model_agent_pressure_checked",
+            "model_agent_history_projected",
+            "model_agent_request_started_event_emitted",
+            "model_agent_context_usage_published",
+            "model_agent_request_measured",
+            "model_agent_tool_schema_observed",
+            "model_agent_transport_invoked",
+        ];
+        let mut cursor = 0;
+        for phase in phases.iter() {
+            if *phase == ordered[cursor] {
+                cursor += 1;
+                if cursor == ordered.len() {
+                    break;
+                }
+            }
+        }
+        assert_eq!(cursor, ordered.len(), "observed phases: {phases:?}");
     }
 
     fn response_text_incomplete(text: &str) -> Vec<String> {

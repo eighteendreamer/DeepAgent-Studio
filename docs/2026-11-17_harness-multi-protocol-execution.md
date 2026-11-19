@@ -568,3 +568,12 @@ H022 后端 `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --all
 - TypeScript SDK 的 `pnpm test`：204 passed；桌面 `pnpm build`：544 项测试、TypeScript 和 Vite 构建通过，另一次最终 TypeScript 检查与 Vite 构建通过。
 
 本次是定向回归及提交整理，没有重新宣称完整 workspace 测试、全量 clippy 或所有真实供应商验收通过。原始本机验证日志位于忽略目录 `target/commit-audit-20261118/`。
+
+## H031：请求准备复用边界（2026-11-19）
+
+- 已提交运行环境探测持久化 `358a639e`，按用户确认跨软件重启复用，安装、卸载及路径变化后更新。
+- 已提交 Git 上下文缓存与查询合并 `7f9af255`。按用户确认复用 30 秒，系统内文件或 Git 操作后立即失效；外部修改最多滞后 30 秒。目录链接、并发和查询期间失效均已回归，双协议六场景原生验收完成。详见 [Git 报告](reports/2026-11-19-git-context-cache.md)。
+- 本轮进一步消除相同请求在压力检查、用量发布与发送前的重复计量；不改变配置、Skill、Hook 的刷新语义，也不跨 run 复用审批、权限或取消对象。三个行为回归先 RED 后 GREEN，另补三协议、并发及图片边界。详见 [计量复用报告](reports/2026-11-19-request-measurement-reuse.md)。
+- Context 71 项通过；Runtime 全量 501 通过、1 项未修改的 ACL 恢复测试失败，单独复核仍失败；最终排除该项后的 501 项通过。相关范围严格 Clippy、定向 rustfmt 及最终原生构建通过，全仓离线/格式/依赖 lint 的阻塞按报告保留。
+- 最终真实双协议六场景全部完成，运行环境缓存记录未重写。续聊准备为 Responses 760 ms、Messages 918 ms；发送前计量为 2～4 ms。未达到整体 10 ms，不将两轮整体耗时差异全部归因于计量优化。
+- 完整方案、思考参数模型矩阵及其余 Harness 验收继续进行，以上性能工作不代表完整目标已完成。

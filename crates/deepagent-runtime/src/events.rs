@@ -16,6 +16,10 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Content-free local preparation timing shared by the kernel, loop and model.
+/// `None` marks a boundary; `Some` reports elapsed milliseconds for a phase.
+pub type PreparationObserver = std::sync::Arc<dyn Fn(&'static str, Option<u64>) + Send + Sync>;
+
 /// Which spend a ledger row came from. The sampling loop's own calls and the
 /// calls made on the run's behalf (compaction summaries, session-note passes)
 /// are separate rows on purpose; a consumer that has to decide whether the

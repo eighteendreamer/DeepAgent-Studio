@@ -29,7 +29,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::{Agent, AgentDecision, Observation, ToolAttemptController};
 use crate::approval::{ApprovalDecision, ApprovalGate, ApprovalRequest, AutoDenyGate};
-use crate::events::{tool_ui_metadata, NullEventSink, RuntimeEvent, RuntimeEventSink};
+use crate::events::{
+    tool_ui_metadata, NullEventSink, PreparationObserver, RuntimeEvent, RuntimeEventSink,
+};
 use crate::tool_budget::ToolResultBudgetConfig;
 use crate::tool_pipeline::ToolResultPolicy;
 use crate::tool_result_decorator::ToolResultDecorator;
@@ -234,6 +236,7 @@ pub struct RuntimeEngine<'a, C: Clock> {
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     cancel_token: Option<CancellationToken>,
     observations: ToolObservationScope,
+    preparation_observer: Option<PreparationObserver>,
     edited_files: std::sync::Arc<
         std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, crate::events::EditedFile>>,
     >,
@@ -402,6 +405,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             cancel: None,
             cancel_token: None,
             observations: ToolObservationScope::default(),
+            preparation_observer: None,
             edited_files: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
@@ -457,6 +461,31 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
     pub fn with_events(mut self, events: std::sync::Arc<dyn RuntimeEventSink>) -> Self {
         self.events = events;
         self
+    }
+
+    /// Observe content-free runtime setup phases for host performance logs.
+    pub fn with_preparation_observer(mut self, observer: PreparationObserver) -> Self {
+        self.preparation_observer = Some(observer);
+        self
+    }
+
+    fn start_preparation_timer(&self) -> Option<std::time::Instant> {
+        self.preparation_observer
+            .as_ref()
+            .map(|_| std::time::Instant::now())
+    }
+
+    fn report_preparation(&self, phase: &'static str, started_at: Option<std::time::Instant>) {
+        if let (Some(observer), Some(started_at)) = (&self.preparation_observer, started_at) {
+            let elapsed_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+            observer(phase, Some(elapsed_ms));
+        }
+    }
+
+    fn mark_preparation(&self, phase: &'static str) {
+        if let Some(observer) = &self.preparation_observer {
+            observer(phase, None);
+        }
     }
 
     /// Attach an approval gate (builder style). When a tool needs approval
@@ -617,6 +646,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             cancel: self.cancel.clone(),
             cancel_token: self.cancel_token.clone(),
             observations: ToolObservationScope::default(),
+            preparation_observer: self.preparation_observer.clone(),
             edited_files: self.edited_files.clone(),
             _clock: std::marker::PhantomData,
         };
@@ -629,15 +659,18 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         task: TaskId,
         agent: &mut dyn Agent,
     ) -> Result<RunOutcome> {
+        let run_context_started = self.start_preparation_timer();
         let _session_activity = session.acquire_activity()?;
         self.events.checkpoint()?;
         let observations = self.observations.clone();
         agent.set_tool_context_reset(std::sync::Arc::new(move || observations.reset()));
         let session_id = session.id();
         let run_started_at = std::time::Instant::now();
+        self.report_preparation("engine_run_context_prepared", run_context_started);
 
         // The existing flag declares a newly-created session. Continued turns
         // do not become a fabricated "resume" event just to populate metadata.
+        let session_start_hook_started = self.start_preparation_timer();
         if self.config.fire_session_start {
             self.fire_hook(
                 session_id,
@@ -648,6 +681,10 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             )
             .await?;
         }
+        self.report_preparation(
+            "engine_session_start_hook_dispatched",
+            session_start_hook_started,
+        );
 
         self.emit(RuntimeEvent::RunStarted {
             task_id: task.to_string(),
@@ -660,13 +697,23 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             session_id: session_id.to_string(),
             title: session.state().title.clone(),
         });
+        let task_created_hook_started = self.start_preparation_timer();
         self.fire_task_hook(session, session_id, task, HookPoint::TaskCreated)
             .await?;
+        self.report_preparation(
+            "engine_task_created_hook_dispatched",
+            task_created_hook_started,
+        );
 
         // Move the task into Running (validated by the session).
+        let task_transition_started = self.start_preparation_timer();
         if session.state().task(task).map(|t| t.state) == Some(TaskState::Queued) {
             session.transition_task(task, TaskState::Running)?;
         }
+        self.report_preparation(
+            "engine_task_transitioned_to_running",
+            task_transition_started,
+        );
 
         let mut last_observations: Vec<Observation> = Vec::new();
         let mut outcome = RunOutcome::StepLimitReached;
@@ -697,10 +744,15 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             // BeforePlan hook (observational unless denied): fires before the
             // model decides its next move for this step. A Deny ends the run
             // cleanly instead of silently continuing — the hook is vetoable.
-            if let HookOutcome::Deny { reason, .. } = self
+            let before_plan_hook_started = self.start_preparation_timer();
+            let before_plan_outcome = self
                 .fire_hook(session_id, HookPoint::BeforePlan, HookData::None)
-                .await?
-            {
+                .await?;
+            self.report_preparation(
+                "engine_before_plan_hook_dispatched",
+                before_plan_hook_started,
+            );
+            if let HookOutcome::Deny { reason, .. } = before_plan_outcome {
                 session.transition_task(task, TaskState::Failed)?;
                 let reason = format!("run blocked by BeforePlan hook: {reason}");
                 self.emit(RuntimeEvent::RunFailed {
@@ -711,6 +763,9 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 break;
             }
             self.events.checkpoint()?;
+            if step == 0 {
+                self.mark_preparation("engine_first_agent_turn_entered");
+            }
             let mut streaming_tools = StreamingToolAttempt::new(self.registry);
             let decision = match agent
                 .think_streaming_cancelled(
@@ -2926,6 +2981,45 @@ mod tests {
         // Metrics recorded the call.
         assert_eq!(metrics.get(names::TOOL_CALLS), 1);
         assert_eq!(metrics.get(names::TOOL_FAILURES), 0);
+    }
+
+    #[tokio::test]
+    async fn preparation_observer_marks_hooks_before_the_first_agent_turn() {
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, Some("observer-run")).unwrap();
+        let task = session.create_task("complete task").unwrap();
+        let mut agent = ScriptedAgent::new([AgentDecision::Complete("done".into())]);
+        let registry = registry();
+        let phases = Arc::new(std::sync::Mutex::new(Vec::<&'static str>::new()));
+        let observed = phases.clone();
+        let engine = RuntimeEngine::new(&registry, Metrics::new(), RuntimeConfig::default())
+            .with_preparation_observer(Arc::new(move |phase, _elapsed_ms| {
+                observed.lock().unwrap().push(phase);
+            }));
+
+        assert_eq!(
+            engine.run(&mut session, task, &mut agent).await.unwrap(),
+            RunOutcome::Completed("done".into())
+        );
+
+        let phases = phases.lock().unwrap();
+        let expected = [
+            "engine_session_start_hook_dispatched",
+            "engine_task_created_hook_dispatched",
+            "engine_before_plan_hook_dispatched",
+            "engine_first_agent_turn_entered",
+        ];
+        let mut cursor = 0;
+        for phase in phases.iter() {
+            if *phase == expected[cursor] {
+                cursor += 1;
+                if cursor == expected.len() {
+                    break;
+                }
+            }
+        }
+        assert_eq!(cursor, expected.len(), "observed phases: {phases:?}");
     }
 
     // --- §2.2 advisory adversarial verification wiring ----------------------
