@@ -30,6 +30,7 @@ import {
   ChevronDown,
 } from "lucide-react";
 import { Button } from "../../../../components/shadcn/button";
+import { Checkbox } from "../../../../components/shadcn/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -1620,31 +1621,23 @@ export function ModelSettingsTab() {
               {MODEL_SCENARIO_OPTIONS.map((option) => {
                 const checked = draftScenarios.includes(option.value);
                 return (
-                  <button
+                  <Label
                     key={option.value}
-                    type="button"
-                    role="checkbox"
-                    aria-checked={checked}
-                    onClick={() => toggleDraftScenario(option.value)}
+                    htmlFor={`model-scenario-${option.value}`}
                     className={cn(
-                      "flex items-center justify-between rounded-lg border px-3 py-2.5 text-left text-[12px] transition-colors",
+                      "flex cursor-pointer items-center justify-between rounded-lg border px-3 py-2.5 text-left text-[12px] transition-colors",
                       checked
                         ? "border-[#339CFF]/45 bg-[#339CFF]/10 text-[#B9E1FF]"
                         : "border-white/[0.08] bg-white/[0.02] text-white/65 hover:border-white/[0.16] hover:bg-white/[0.05]",
                     )}
                   >
                     <span>{option.label}</span>
-                    <span
-                      className={cn(
-                        "flex h-4 w-4 items-center justify-center rounded border",
-                        checked
-                          ? "border-[#339CFF] bg-[#339CFF] text-white"
-                          : "border-white/20 text-transparent",
-                      )}
-                    >
-                      <Check size={11} strokeWidth={2.5} />
-                    </span>
-                  </button>
+                    <Checkbox
+                      id={`model-scenario-${option.value}`}
+                      checked={checked}
+                      onCheckedChange={() => toggleDraftScenario(option.value)}
+                    />
+                  </Label>
                 );
               })}
             </div>

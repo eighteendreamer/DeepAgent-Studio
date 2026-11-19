@@ -1,4 +1,5 @@
 export default {
+  darkMode: "class",
   content: ["./index.html", "./src/**/*.{ts,tsx}", "../desktop/src/components/shadcn/{button,input,label,checkbox,progress}.tsx"],
   theme: { extend: { colors: {
     primary: "#111827", "primary-hover": "#000000", "text-base": "#1F2937",

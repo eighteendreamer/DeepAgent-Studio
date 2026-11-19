@@ -28,6 +28,7 @@ import type {
 } from "../../types";
 import { getGitUiSettings } from "./gitSettings";
 import { DiffText } from "./GitDiffViewer";
+import { Checkbox } from "../shadcn/checkbox";
 
 interface Props {
   activeProjectPath: string;
@@ -512,11 +513,10 @@ function ProjectStatusRow({
   return (
     <div className="grid gap-2 px-3 py-2 text-[12px] sm:grid-cols-[minmax(0,1fr)_auto]">
       <div className="flex min-w-0 items-start gap-2">
-        <input
-          type="checkbox"
+        <Checkbox
           checked={selected}
-          onChange={(event) => onSelectedChange(event.target.checked)}
-          className="mt-1 h-3.5 w-3.5 rounded border-border-theme"
+          onCheckedChange={(checked) => onSelectedChange(checked === true)}
+          className="mt-1 h-3.5 w-3.5"
           aria-label={t("git.projectsPanel.selectProject", { path: status.project_path })}
         />
         <div className="min-w-0">
@@ -955,11 +955,10 @@ function BatchCommitPanel({
             placeholder={settings.commitInstructions || t("git.commitMessage")}
           />
           <label className="mt-2 flex items-center gap-2 text-[12px] text-text-secondary">
-            <input
-              type="checkbox"
+            <Checkbox
               checked={stageAll}
-              onChange={(event) => setStageAll(event.target.checked)}
-              className="h-3.5 w-3.5 rounded border-border-theme"
+              onCheckedChange={(checked) => setStageAll(checked === true)}
+              className="h-3.5 w-3.5"
             />
             {t("git.projectsPanel.autoStageAll")}
           </label>

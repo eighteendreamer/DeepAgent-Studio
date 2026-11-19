@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Checkbox } from "../../../components/shadcn/checkbox";
 import {
   X, Plus, Search, Trash2, Star, Download, Upload,
   ChevronDown, ChevronRight, Check, FolderOpen, Image as ImageIcon,
@@ -440,13 +441,12 @@ export function CreativeLibraryPanel({ onClose, onUse }: Props) {
 
                     {/* Multi-select checkbox */}
                     {multiSelect && (
-                      <button
-                        onClick={() => toggleSelect(item.id)}
-                        className="absolute top-2 left-2 flex h-5 w-5 items-center justify-center rounded"
-                        style={{ background: selectedIds.has(item.id) ? "#8b5cf6" : "rgba(0,0,0,0.5)", border: "1px solid rgba(255,255,255,0.3)" }}
-                      >
-                        {selectedIds.has(item.id) && <Check className="h-3 w-3" style={{ color: "white" }} />}
-                      </button>
+                      <Checkbox
+                        aria-label={`选择 ${item.name}`}
+                        checked={selectedIds.has(item.id)}
+                        onCheckedChange={() => toggleSelect(item.id)}
+                        className="absolute top-2 left-2 h-5 w-5"
+                      />
                     )}
 
                     {/* Favorite badge */}

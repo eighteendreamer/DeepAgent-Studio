@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { gitCommit, gitCommitMessageDraft, gitStage, gitUnstage } from "../../api";
 import type { GitChangedFile, GitChanges } from "../../types";
 import { GitDiffViewer } from "./GitDiffViewer";
+import { Checkbox } from "../shadcn/checkbox";
 
 interface Props {
   projectPath: string;
@@ -480,13 +481,12 @@ function ChangedFileRow({
 
     >
       {onToggleChecked && (
-        <input
-          type="checkbox"
+        <Checkbox
           checked={Boolean(checked)}
           disabled={busy}
-          onChange={(event) => onToggleChecked(event.target.checked)}
+          onCheckedChange={(checked) => onToggleChecked(checked === true)}
           onClick={(event) => event.stopPropagation()}
-          className="mr-2 h-3.5 w-3.5 flex-shrink-0 rounded border-border-theme accent-text-base"
+          className="mr-2 h-3.5 w-3.5"
           aria-label={file.path}
         />
       )}
