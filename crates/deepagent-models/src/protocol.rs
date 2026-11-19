@@ -18,6 +18,20 @@ pub(crate) trait WireCodec: Send + Sync {
     /// Serialize tools into this protocol's tool vocabulary.
     fn project_tools(&self, tools: &[ToolSchema]) -> Vec<serde_json::Value>;
 
+    fn tool_kind<'a>(&self, schema: &'a serde_json::Value) -> Result<&'a str> {
+        schema
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| deepagent_core::error::CoreError::invalid("wire schema has no kind"))
+    }
+
+    fn tool_name<'a>(&self, schema: &'a serde_json::Value) -> Option<&'a str> {
+        schema
+            .get("name")
+            .or_else(|| schema.get("function")?.get("name"))
+            .and_then(serde_json::Value::as_str)
+    }
+
     /// Build the streaming request body for one prepared turn.
     fn encode_body(&self, client: &ModelClient, request: ResponseRequest) -> Result<String>;
 }
@@ -66,6 +80,25 @@ impl WireCodec for MessagesCodec {
 
     fn project_tools(&self, tools: &[ToolSchema]) -> Vec<serde_json::Value> {
         crate::messages::project_tools(tools)
+    }
+
+    fn tool_kind<'a>(&self, schema: &'a serde_json::Value) -> Result<&'a str> {
+        if let Some(kind) = schema.get("type").and_then(serde_json::Value::as_str) {
+            return Ok(kind);
+        }
+        if schema
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+            && schema
+                .get("input_schema")
+                .is_some_and(serde_json::Value::is_object)
+        {
+            return Ok("custom");
+        }
+        Err(deepagent_core::error::CoreError::invalid(
+            "invalid Messages tool schema",
+        ))
     }
 
     fn encode_body(&self, client: &ModelClient, request: ResponseRequest) -> Result<String> {

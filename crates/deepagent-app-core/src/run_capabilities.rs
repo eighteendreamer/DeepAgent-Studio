@@ -99,6 +99,8 @@ pub(crate) fn capability_context(request: CapabilityContextRequest<'_>) -> Resul
 /// Content-address JSON independently of map insertion order. Array order is
 /// retained, including the actual model tool ordering.
 pub(crate) fn capability_hash(value: &(impl Serialize + ?Sized)) -> Result<String> {
+    #[cfg(test)]
+    tests::HASH_CALLS.with(|calls| calls.set(calls.get() + 1));
     fn canonical(value: Value) -> Value {
         match value {
             Value::Object(map) => Value::Object(
@@ -116,19 +118,45 @@ pub(crate) fn capability_hash(value: &(impl Serialize + ?Sized)) -> Result<Strin
     Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(&value)?)))
 }
 
-struct SchemaGeneration {
+struct CatalogSchema {
+    tool: ToolSchema,
     hash: String,
-    number: u64,
 }
 
-#[derive(Serialize)]
+struct ModelSchemaState {
+    tools: Vec<ToolSchema>,
+    projection: SchemaProjection,
+    serialized: Value,
+}
+
+impl ModelSchemaState {
+    fn new(tools: &[ToolSchema], projection: SchemaProjection) -> Result<Self> {
+        Ok(Self {
+            tools: tools.to_vec(),
+            serialized: serde_json::to_value(&projection)?,
+            projection,
+        })
+    }
+}
+
+struct WireSchemaState {
+    source: Vec<ToolSchema>,
+    model: String,
+    wire_mode: deepagent_models::WireMode,
+    tools: Vec<Value>,
+    hash: String,
+    number: u64,
+    projection: Value,
+}
+
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SchemaReference {
     name: String,
     schema_hash: String,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SchemaProjection {
     generation: u64,
@@ -143,9 +171,9 @@ pub(crate) struct RunCapabilityRecorder {
     db: Arc<Database>,
     run_id: String,
     snapshot_id: String,
-    catalog: BTreeMap<String, String>,
-    state: Mutex<SchemaGeneration>,
-    wire_state: Mutex<Option<SchemaGeneration>>,
+    catalog: BTreeMap<String, CatalogSchema>,
+    state: Mutex<ModelSchemaState>,
+    wire_state: Mutex<Option<WireSchemaState>>,
 }
 
 /// A pure projection, separate from the later durable run binding. Admission
@@ -154,16 +182,16 @@ pub(crate) struct RunCapabilityRecorder {
 pub(crate) struct ResolvedRunCapabilities {
     projection: Value,
     capability_hash: String,
-    catalog: BTreeMap<String, String>,
-    initial_schema_hash: String,
+    catalog: BTreeMap<String, CatalogSchema>,
+    initial_schema: Box<ModelSchemaState>,
 }
 
 /// The exact immutable value carried by the existing admission transaction.
 /// Keeping its recorder state here prevents a second registry resolution.
 pub(crate) struct PreparedCapabilitySnapshot {
     pub(crate) snapshot: Value,
-    catalog: BTreeMap<String, String>,
-    initial_schema_hash: String,
+    catalog: BTreeMap<String, CatalogSchema>,
+    initial_schema: Box<ModelSchemaState>,
 }
 
 impl PreparedCapabilitySnapshot {
@@ -189,10 +217,7 @@ impl PreparedCapabilitySnapshot {
             run_id,
             snapshot_id,
             catalog: self.catalog,
-            state: Mutex::new(SchemaGeneration {
-                hash: self.initial_schema_hash,
-                number: 0,
-            }),
+            state: Mutex::new(*self.initial_schema),
             wire_state: Mutex::new(None),
         })
     }
@@ -211,12 +236,19 @@ impl ResolvedRunCapabilities {
             .iter_specs()
             .map(|spec| {
                 let descriptor = &spec.descriptor;
-                let schema_hash = capability_hash(&ToolSchema::function(
+                let tool = ToolSchema::function(
                     &descriptor.name,
                     &descriptor.description,
                     descriptor.parameters.clone(),
-                ))?;
-                catalog.insert(descriptor.name.clone(), schema_hash.clone());
+                );
+                let schema_hash = capability_hash(&tool)?;
+                catalog.insert(
+                    descriptor.name.clone(),
+                    CatalogSchema {
+                        tool,
+                        hash: schema_hash.clone(),
+                    },
+                );
                 Ok(json!({
                     "name": descriptor.name,
                     "schemaHash": schema_hash,
@@ -250,7 +282,7 @@ impl ResolvedRunCapabilities {
             capability_hash: capability_hash(&projection)?,
             projection,
             catalog,
-            initial_schema_hash: schema.schema_hash,
+            initial_schema: Box::new(ModelSchemaState::new(tools, schema)?),
         })
     }
 
@@ -267,7 +299,7 @@ impl ResolvedRunCapabilities {
         Ok(PreparedCapabilitySnapshot {
             snapshot,
             catalog: self.catalog,
-            initial_schema_hash: self.initial_schema_hash,
+            initial_schema: self.initial_schema,
         })
     }
 
@@ -297,43 +329,38 @@ impl RunCapabilityRecorder {
         source: &[ToolSchema],
         wire: &deepagent_models::ProviderToolSchemas,
     ) -> Result<()> {
-        // Host membership and provider serialization are distinct hash domains.
-        // A native tool can have no wire name; the adapter retains source order.
-        let source = schema_projection(&self.catalog, source, 0)?;
-        if source.tools.len() != wire.tools.len() {
-            return Err(CoreError::invalid(
-                "wire schema does not match source tool count",
-            ));
-        }
-        let tools = source
-            .tools
-            .iter()
-            .zip(&wire.tools)
-            .map(|(source, schema)| {
-                Ok(json!({
-                    "name": source.name,
-                    "kind": schema.get("type").and_then(Value::as_str)
-                        .ok_or_else(|| CoreError::invalid("wire schema has no kind"))?,
-                    "schemaHash": capability_hash(schema)?,
-                }))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let mut projection = json!({
-            "wireMode": match wire.wire_mode {
-                deepagent_models::WireMode::Responses => "responses",
-                deepagent_models::WireMode::ChatCompletions => "chat_completions",
-                deepagent_models::WireMode::Messages => "messages",
-            },
-            "model": wire.model,
-            "sourceSchemaHash": source.schema_hash,
-            "schemaHash": capability_hash(&wire.tools)?,
-            "tools": tools,
-        });
-        let hash = capability_hash(&projection)?;
+        // Serialize projection and publication under one run-local owner.
+        // Reuse never skips the store's live lifecycle/owner transaction.
         let mut state = self
             .wire_state
             .lock()
             .map_err(|_| CoreError::other("wire capability generation mutex poisoned"))?;
+        if let Some(cached) = state.as_ref() {
+            if cached.source == source
+                && cached.model == wire.model
+                && cached.wire_mode == wire.wire_mode
+                && cached.tools == wire.tools
+            {
+                return self.publish_schema(CapabilitySchema::Wire(&cached.projection));
+            }
+        }
+        let source_tools = source;
+        // Host membership and provider serialization are distinct hash domains.
+        // Associate named wire tools by identity: a codec may sort them for
+        // stable prompt caching. Native unnamed tools retain source order.
+        let source = {
+            let model = self
+                .state
+                .lock()
+                .map_err(|_| CoreError::other("capability generation mutex poisoned"))?;
+            if model.tools == source {
+                model.projection.clone()
+            } else {
+                schema_projection(&self.catalog, source, 0)?
+            }
+        };
+        let mut projection = wire_schema_projection(&source, wire)?;
+        let hash = capability_hash(&projection)?;
         let number = match state.as_ref() {
             None => 0,
             Some(state) if state.hash == hash => state.number,
@@ -343,13 +370,16 @@ impl RunCapabilityRecorder {
                 .ok_or_else(|| CoreError::invalid("wire capability generation exhausted"))?,
         };
         projection["generation"] = json!(number);
-        RunStore::new(&self.db).record_capability_schema(
-            &self.run_id,
-            &self.snapshot_id,
-            CapabilitySchema::Wire(&projection),
-            SystemClock.now().as_millis(),
-        )?;
-        *state = Some(SchemaGeneration { hash, number });
+        self.publish_schema(CapabilitySchema::Wire(&projection))?;
+        *state = Some(WireSchemaState {
+            source: source_tools.to_vec(),
+            model: wire.model.clone(),
+            wire_mode: wire.wire_mode,
+            tools: wire.tools.clone(),
+            hash,
+            number,
+            projection,
+        });
         Ok(())
     }
 
@@ -364,22 +394,30 @@ impl RunCapabilityRecorder {
             .state
             .lock()
             .map_err(|_| CoreError::other("capability generation mutex poisoned"))?;
-        let mut schema = schema_projection(&self.catalog, tools, state.number)?;
-        if schema.schema_hash != state.hash {
+        if state.tools == tools {
+            return self.publish_schema(CapabilitySchema::Model(&state.serialized));
+        }
+        let mut schema = schema_projection(&self.catalog, tools, state.projection.generation)?;
+        if schema.schema_hash != state.projection.schema_hash {
             schema.generation = state
-                .number
+                .projection
+                .generation
                 .checked_add(1)
                 .ok_or_else(|| CoreError::invalid("capability schema generation exhausted"))?;
         }
+        let next = ModelSchemaState::new(tools, schema)?;
+        self.publish_schema(CapabilitySchema::Model(&next.serialized))?;
+        *state = next;
+        Ok(())
+    }
+
+    fn publish_schema(&self, schema: CapabilitySchema<'_>) -> Result<()> {
         RunStore::new(&self.db).record_capability_schema(
             &self.run_id,
             &self.snapshot_id,
-            CapabilitySchema::Model(&serde_json::to_value(&schema)?),
+            schema,
             SystemClock.now().as_millis(),
-        )?;
-        state.hash = schema.schema_hash;
-        state.number = schema.generation;
-        Ok(())
+        )
     }
 
     pub(crate) fn schema_source(
@@ -394,8 +432,57 @@ impl RunCapabilityRecorder {
     }
 }
 
+fn wire_schema_projection(
+    source: &SchemaProjection,
+    wire: &deepagent_models::ProviderToolSchemas,
+) -> Result<Value> {
+    if source.tools.len() != wire.tools.len() {
+        return Err(CoreError::invalid(
+            "wire schema does not match source tool count",
+        ));
+    }
+    let source_by_name = source
+        .tools
+        .iter()
+        .map(|tool| (tool.name.as_str(), tool))
+        .collect::<BTreeMap<_, _>>();
+    let mut seen = BTreeSet::new();
+    let tools = wire
+        .tools
+        .iter()
+        .enumerate()
+        .map(|(index, schema)| {
+            let source = match wire.tool_name(schema) {
+                Some(name) => *source_by_name.get(name).ok_or_else(|| {
+                    CoreError::invalid("wire schema names an unknown source tool")
+                })?,
+                None => &source.tools[index],
+            };
+            if !seen.insert(&source.name) {
+                return Err(CoreError::invalid("wire schema repeats a source tool"));
+            }
+            Ok(json!({
+                "name": source.name,
+                "kind": wire.tool_kind(schema)?,
+                "schemaHash": capability_hash(schema)?,
+            }))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(json!({
+        "wireMode": match wire.wire_mode {
+            deepagent_models::WireMode::Responses => "responses",
+            deepagent_models::WireMode::ChatCompletions => "chat_completions",
+            deepagent_models::WireMode::Messages => "messages",
+        },
+        "model": wire.model,
+        "sourceSchemaHash": source.schema_hash,
+        "schemaHash": capability_hash(&wire.tools)?,
+        "tools": tools,
+    }))
+}
+
 fn schema_projection(
-    catalog: &BTreeMap<String, String>,
+    catalog: &BTreeMap<String, CatalogSchema>,
     tools: &[ToolSchema],
     generation: u64,
 ) -> Result<SchemaProjection> {
@@ -404,15 +491,17 @@ fn schema_projection(
         .iter()
         .map(|tool| {
             let name = &tool.function.name;
-            let hash = capability_hash(tool)?;
-            if !seen.insert(name) || catalog.get(name) != Some(&hash) {
-                return Err(CoreError::invalid(
-                    "model schema is not part of the resolved run capability snapshot",
-                ));
-            }
+            let admitted = catalog
+                .get(name)
+                .filter(|schema| schema.tool == *tool && seen.insert(name))
+                .ok_or_else(|| {
+                    CoreError::invalid(
+                        "model schema is not part of the resolved run capability snapshot",
+                    )
+                })?;
             Ok(SchemaReference {
                 name: name.clone(),
-                schema_hash: hash,
+                schema_hash: admitted.hash.clone(),
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -427,6 +516,12 @@ fn schema_projection(
 mod tests {
     use super::*;
     use deepagent_tools::{RiskLevel, Tool, ToolDescriptor, ToolOutput};
+
+    thread_local! {
+        pub(super) static HASH_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    include!("run_capabilities_reuse_tests.rs");
 
     struct CatalogTool(&'static str);
 
@@ -473,6 +568,33 @@ mod tests {
             .unwrap()
             .bind(db.clone(), "h219-unit")
             .unwrap()
+    }
+
+    #[test]
+    fn messages_wire_audit_associates_sorted_schema_with_its_source_name() {
+        let (db, registry, mut tools) = fixture();
+        tools.sort_by(|left, right| right.function.name.cmp(&left.function.name));
+        let recorder = recorder(&db, &registry, &tools);
+        let mut config = deepagent_models::ModelConfig::deepseek("synthetic")
+            .with_wire_mode(deepagent_models::WireMode::Messages);
+        config.base_url = "https://api.anthropic.com".into();
+        let client = deepagent_models::ModelClient::new(
+            Arc::new(deepagent_models::MockTransport::new(Vec::<String>::new())),
+            config,
+        );
+        let mut wire = client.project_tool_schemas("claude-fixture", &tools);
+        // Exercise reordered provider schemas independently of cache policy.
+        wire.tools
+            .sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
+        assert_eq!(wire.tools[0]["name"], "first");
+        recorder.record_wire_tools(&tools, &wire).unwrap();
+        let events = RunStore::new(&db).events_after("h219-unit", None).unwrap();
+        let saved = &events.last().unwrap().data["wireSchema"]["tools"];
+        assert_eq!(saved[0]["name"], "first");
+        assert_eq!(saved[1]["name"], "second");
+        for (index, schema) in wire.tools.iter().enumerate() {
+            assert_eq!(saved[index]["schemaHash"], capability_hash(schema).unwrap());
+        }
     }
 
     #[test]
@@ -568,6 +690,32 @@ mod tests {
     }
 
     #[test]
+    fn h028_messages_custom_tool_kind_is_recorded_without_rewriting_its_wire_schema() {
+        let (db, registry, tools) = fixture();
+        let recorder = recorder(&db, &registry, &tools);
+        let mut config = deepagent_models::ModelConfig::deepseek("synthetic");
+        config.wire_mode = deepagent_models::WireMode::Messages;
+        let client = deepagent_models::ModelClient::new(
+            Arc::new(deepagent_models::MockTransport::new(Vec::<String>::new())),
+            config,
+        );
+        let wire = client.project_tool_schemas("declared", &tools);
+        assert!(wire.tools.iter().all(|schema| schema.get("type").is_none()));
+        recorder.record_wire_tools(&tools, &wire).unwrap();
+        let events = RunStore::new(&db).events_after("h219-unit", None).unwrap();
+        let schema = &events.last().unwrap().data["wireSchema"];
+        assert_eq!(schema["wireMode"], "messages");
+        assert_eq!(schema["tools"][0]["kind"], "custom");
+        assert_eq!(
+            schema["tools"][0]["schemaHash"],
+            capability_hash(&wire.tools[0]).unwrap()
+        );
+        assert!(!serde_json::to_string(&events)
+            .unwrap()
+            .contains("PRIVATE_SCHEMA_DESCRIPTION_NOT_FOR_LOGS"));
+    }
+
+    #[test]
     fn h219_hash_is_key_order_independent_but_schema_and_array_changes_are_distinct() {
         let left: Value = serde_json::from_str(r#"{"a":{"y":2,"x":1},"b":[1,2]}"#).unwrap();
         let right: Value = serde_json::from_str(r#"{"b":[1,2],"a":{"x":1,"y":2}}"#).unwrap();
@@ -658,7 +806,7 @@ mod tests {
             RunStore::new(&db).events_after("h219-unit", None).unwrap(),
             before
         );
-        assert_eq!(recorder.state.lock().unwrap().number, 0);
+        assert_eq!(recorder.state.lock().unwrap().projection.generation, 0);
     }
 
     #[test]

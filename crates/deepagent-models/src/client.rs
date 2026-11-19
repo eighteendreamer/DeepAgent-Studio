@@ -70,6 +70,18 @@ pub struct ProviderToolSchemas {
     pub tools: Vec<serde_json::Value>,
 }
 
+impl ProviderToolSchemas {
+    pub fn tool_kind<'a>(&self, schema: &'a serde_json::Value) -> Result<&'a str> {
+        crate::protocol::codec_for(self.wire_mode).tool_kind(schema)
+    }
+
+    /// Named provider tools may be reordered by their codec for stable caching.
+    /// Native unnamed tools retain the host order used by their serializer.
+    pub fn tool_name<'a>(&self, schema: &'a serde_json::Value) -> Option<&'a str> {
+        crate::protocol::codec_for(self.wire_mode).tool_name(schema)
+    }
+}
+
 /// Connection / endpoint configuration.
 #[derive(Debug, Clone)]
 pub struct ModelConfig {
