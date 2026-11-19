@@ -30,6 +30,8 @@ pub enum SshError {
     CommandFailed { exit_code: i32, stderr: String },
     #[error("connection lost: {0}")]
     ConnectionLost(String),
+    #[error("SSH service is shutting down and no longer accepts work")]
+    ServiceStopped,
     #[error("authentication failed for {0}: {1}")]
     AuthFailed(String, String),
     #[error("invalid configuration: {0}")]

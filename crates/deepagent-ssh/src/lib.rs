@@ -561,6 +561,11 @@ impl SshService {
         self.inner.load().await
     }
 
+    /// Stop admitting SSH work and close all live sessions.
+    pub async fn shutdown(&self) -> SshResult<usize> {
+        self.inner.shutdown().await
+    }
+
     pub async fn persist_configs(&self) -> SshResult<()> {
         self.inner.persist_configs().await
     }

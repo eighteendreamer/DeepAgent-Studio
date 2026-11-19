@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 mod cron_lifecycle;
+mod ssh_lifecycle;
 
 use async_trait::async_trait;
 use deepagent_app_core::{
@@ -7638,6 +7639,9 @@ pub fn run() {
                 SshService::with_config_store(paths.root.clone(), ssh_store)
                     .with_host_key_store(host_keys),
             );
+            let ssh_lifecycle = ssh_lifecycle::SshLifecycle::new(ssh.clone());
+            let ssh_monitor_stop = ssh_lifecycle.stop_token();
+            app.manage(ssh_lifecycle);
             let ssh_terminal_sessions = Arc::new(deepagent_ssh::SshTerminalSessionBackend::for_service(
                 ssh.clone(), Some(Arc::new(deepagent_app_core::SqliteTerminalLeaseStore::new(
                     service.shared_database(), deepagent_app_core::terminal_service::DEFAULT_TERMINAL_LEASE_TTL_MS,
@@ -7648,10 +7652,18 @@ pub fn run() {
                 let ssh_monitor = ssh.clone();
                 tauri::async_runtime::spawn(async move {
                     loop {
-                        if let Err(err) = ssh_monitor.refresh_due_statuses().await {
-                            eprintln!("ssh background status refresh loop failed: {err}");
+                        tokio::select! {
+                            _ = ssh_monitor_stop.cancelled() => break,
+                            result = ssh_monitor.refresh_due_statuses() => {
+                                if let Err(err) = result {
+                                    eprintln!("ssh background status refresh loop failed: {err}");
+                                }
+                            }
                         }
-                        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                        tokio::select! {
+                            _ = ssh_monitor_stop.cancelled() => break,
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(15)) => {}
+                        }
                     }
                 });
             }

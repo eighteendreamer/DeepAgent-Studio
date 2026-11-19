@@ -9,6 +9,11 @@ use tokio_util::sync::CancellationToken;
 
 pub(crate) fn on_event(app: &tauri::AppHandle, event: &tauri::RunEvent) {
     if let tauri::RunEvent::ExitRequested { .. } = event {
+        if let Some(ssh) = app.try_state::<crate::ssh_lifecycle::SshLifecycle>() {
+            if let Err(error) = ssh.shutdown() {
+                eprintln!("desktop exit has unresolved SSH sessions: {error}");
+            }
+        }
         if let Some(cron) = app.try_state::<CronLifecycle>() {
             if let Err(error) = cron.shutdown() {
                 eprintln!("desktop exit has unresolved scheduled work: {error}");

@@ -5,6 +5,7 @@ use crate::{SshError, SshResult, SshStatus};
 use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::Notify;
 use tokio::time::Instant;
 
 #[derive(Default)]
@@ -14,12 +15,22 @@ struct ResourceState {
     retired: bool,
 }
 
+#[derive(Default, Clone)]
+pub(crate) struct ConnectionResources(Arc<ResourceTracker>);
+
 #[derive(Default)]
-pub(crate) struct ConnectionResources(Arc<Mutex<ResourceState>>);
+struct ResourceTracker {
+    state: Mutex<ResourceState>,
+    released: Notify,
+}
 
 impl ConnectionResources {
     pub(crate) fn acquire(&self) -> Option<ResourceLease> {
-        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if state.retired {
             return None;
         }
@@ -29,20 +40,32 @@ impl ConnectionResources {
     }
 
     pub(crate) fn published(&self) {
-        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if !state.retired && state.users == 0 {
             state.idle_since = Some(Instant::now());
         }
     }
 
     pub(crate) fn retire(&self) {
-        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         state.retired = true;
         state.idle_since = None;
     }
 
     fn retire_if_idle(&self, timeout: Duration) -> bool {
-        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if state.retired
             || state.users != 0
             || !state
@@ -55,17 +78,55 @@ impl ConnectionResources {
         state.idle_since = None;
         true
     }
+
+    pub(crate) async fn wait_released(&self) {
+        loop {
+            let notified = self.0.released.notified();
+            tokio::pin!(notified);
+            if self
+                .0
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .users
+                == 0
+            {
+                return;
+            }
+            notified.as_mut().enable();
+            if self
+                .0
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .users
+                == 0
+            {
+                return;
+            }
+            notified.await;
+        }
+    }
 }
 
 // This guard owns no session/PTY. Keeping it in PtyState cannot form a cycle.
-pub(crate) struct ResourceLease(Arc<Mutex<ResourceState>>);
+pub(crate) struct ResourceLease(Arc<ResourceTracker>);
 
 impl Drop for ResourceLease {
     fn drop(&mut self) {
-        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         state.users -= 1;
         if state.users == 0 && !state.retired {
             state.idle_since = Some(Instant::now());
+        }
+        let released = state.users == 0;
+        drop(state);
+        if released {
+            self.0.released.notify_waiters();
         }
     }
 }

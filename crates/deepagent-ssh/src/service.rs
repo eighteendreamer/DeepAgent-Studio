@@ -36,7 +36,10 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
+use tokio::task::JoinSet;
 use tokio::time::{timeout, Duration};
+
+const SERVICE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct JsonFileSshConfigStore {
     path: PathBuf,
@@ -121,8 +124,97 @@ impl SshServiceImpl {
     }
 
     pub async fn load(&self) -> SshResult<()> {
+        self.connection_operations.ensure_running()?;
         let _lifecycle = self.lifecycle.write().await;
+        self.connection_operations.ensure_running()?;
         self.load_locked().await
+    }
+
+    pub async fn shutdown(&self) -> SshResult<usize> {
+        self.connection_operations.stop_admission();
+        timeout(SERVICE_SHUTDOWN_TIMEOUT, async {
+            self.connection_operations.wait_for_quiescence().await;
+            let _lifecycle = self.lifecycle.write().await;
+            let sessions = self
+                .sessions
+                .read()
+                .await
+                .values()
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut ids = self
+                .configs
+                .read()
+                .await
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            ids.extend(sessions.iter().map(|session| session.key().to_owned()));
+            ids.sort();
+            ids.dedup();
+            for id in ids {
+                self.host_challenges.invalidate(&id);
+                self.authentication_challenges.invalidate(&id).await;
+            }
+
+            let mut closes = JoinSet::new();
+            for session in &sessions {
+                let session = Arc::clone(session);
+                closes.spawn(async move {
+                    let id = session.key().to_owned();
+                    (id, Self::close_session(&session).await)
+                });
+            }
+            let mut failure = None;
+            while let Some(result) = closes.join_next().await {
+                match result {
+                    Ok((_, Ok(()))) => {}
+                    Ok((_, Err(error))) => {
+                        failure.get_or_insert(error);
+                    }
+                    Err(error) => {
+                        failure.get_or_insert_with(|| {
+                            SshError::Internal(format!("SSH shutdown task failed: {error}"))
+                        });
+                    }
+                }
+            }
+
+            let mut releases = JoinSet::new();
+            for session in &sessions {
+                let resources = session.resources.clone();
+                releases.spawn(async move { resources.wait_released().await });
+            }
+            while let Some(result) = releases.join_next().await {
+                if let Err(error) = result {
+                    failure.get_or_insert_with(|| {
+                        SshError::Internal(format!("SSH resource drain failed: {error}"))
+                    });
+                }
+            }
+
+            for session in &sessions {
+                if let Err(error) = self
+                    .update_cached_status(session.key(), SshStatus::Disconnected, None, None)
+                    .await
+                {
+                    failure.get_or_insert(error);
+                }
+            }
+            let mut current = self.sessions.write().await;
+            for session in &sessions {
+                if current
+                    .get(session.key())
+                    .is_some_and(|found| Arc::ptr_eq(found, session))
+                {
+                    current.remove(session.key());
+                }
+            }
+            drop(current);
+            failure.map_or(Ok(sessions.len()), Err)
+        })
+        .await
+        .map_err(|_| SshError::Timeout(SERVICE_SHUTDOWN_TIMEOUT))?
     }
 
     async fn load_locked(&self) -> SshResult<()> {
@@ -339,6 +431,8 @@ impl SshServiceImpl {
         request: CreateSshConnectionRequest,
     ) -> SshResult<SshConnectionDto> {
         self.ensure_loaded().await;
+        let _lifecycle = self.lifecycle.read().await;
+        self.connection_operations.ensure_running()?;
         let mut config = SshConnectionConfig::new(
             request.name,
             request.host,
@@ -396,6 +490,7 @@ impl SshServiceImpl {
     ) -> SshResult<SshConnectionDto> {
         self.ensure_loaded().await;
         let _lifecycle = self.lifecycle.write().await;
+        self.connection_operations.ensure_running()?;
         let mut configs = self.configs.write().await;
         let cfg = configs
             .get_mut(&request.id)
@@ -475,6 +570,7 @@ impl SshServiceImpl {
     pub async fn remove_connection(&self, id: &str) -> SshResult<()> {
         self.ensure_loaded().await;
         let _lifecycle = self.lifecycle.write().await;
+        self.connection_operations.ensure_running()?;
         let _ = self.disconnect_locked(id).await;
         let mut configs = self.configs.write().await;
         configs.remove(id);
@@ -1554,6 +1650,9 @@ impl SshServiceImpl {
     }
 
     pub async fn refresh_due_statuses(&self) -> SshResult<usize> {
+        if self.connection_operations.ensure_running().is_err() {
+            return Ok(0);
+        }
         self.reap_idle_connections().await?;
         self.ensure_loaded().await;
         let configs = {
@@ -1562,6 +1661,9 @@ impl SshServiceImpl {
         };
         let mut refreshed = 0usize;
         for previous in configs {
+            if self.connection_operations.ensure_running().is_err() {
+                break;
+            }
             let permit = self.connection_operations.acquire(&previous.id).await?;
             let cfg = match self.operation_config(&previous.id, &permit).await {
                 Ok(cfg) => cfg,
