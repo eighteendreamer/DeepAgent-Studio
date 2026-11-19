@@ -36,6 +36,7 @@ import {
 } from "../shadcn/context-menu";
 import { normalizeSshError } from "../settings/ConnectionsSettings";
 import {
+  isTauri,
   pickSshIdentityFile,
   sshCreateConnection,
   sshCreateDir,
@@ -227,6 +228,7 @@ export function RemoteSidebar({
   // Registered once; latest connection is read via selectedRef to avoid
   // re-registering (which races async setup and leaks duplicate listeners).
   useEffect(() => {
+    if (!isTauri()) return;
     let unlisten: (() => void) | undefined;
     let disposed = false;
 
@@ -294,8 +296,8 @@ export function RemoteSidebar({
     };
 
     void setupDragDrop().catch(error => {
-      if (!disposed) setDirError(normalizeSshError(
-        error instanceof Error ? error.message : String(error), t));
+      if (!disposed) message.error(`${t("remote.transfers.dragDropUnavailable")}: ${normalizeSshError(
+        error instanceof Error ? error.message : String(error), t)}`);
     });
 
     return () => {

@@ -144,7 +144,8 @@
       "currentFile": "Current file",
       "skipped": "Skipped",
       "enqueued": "Enqueued {{count}} transfers; check the queue",
-      "enqueueFailed": "Could not enqueue {{count}} tasks"
+      "enqueueFailed": "Could not enqueue {{count}} tasks",
+      "dragDropUnavailable": "Drag-and-drop upload is unavailable"
     },
     "properties": {
       "title": "File properties",

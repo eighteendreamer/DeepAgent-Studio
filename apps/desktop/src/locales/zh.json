@@ -144,7 +144,8 @@
       "currentFile": "当前文件",
       "skipped": "已跳过",
       "enqueued": "已加入 {{count}} 个传输任务，请查看文件传输队列",
-      "enqueueFailed": "{{count}} 个任务未能加入队列"
+      "enqueueFailed": "{{count}} 个任务未能加入队列",
+      "dragDropUnavailable": "拖放上传不可用"
     },
     "properties": {
       "title": "文件属性",

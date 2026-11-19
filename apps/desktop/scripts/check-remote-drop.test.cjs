@@ -15,7 +15,7 @@ const normalizeSshError = vm.runInNewContext(ts.transpileModule(normalize.getTex
   compilerOptions: { target: ts.ScriptTarget.ES2022 },
 }).outputText);
 
-async function harness({ status = 'connected', target = '/目标', submit } = {}) {
+async function harness({ status = 'connected', target = '/目标', submit, desktop = true, subscriptionError } = {}) {
   let effect;
   function visit(node) {
     if (ts.isCallExpression(node) && node.expression.getText(ast) === 'useEffect' &&
@@ -26,17 +26,20 @@ async function harness({ status = 'connected', target = '/目标', submit } = {}
   assert.ok(effect, 'exercise the native subscription used by the production sidebar');
   const calls = [], notices = [], reads = [], errors = [], points = [];
   const selected = { current: { id: 'host-a', status } };
-  let callback, unlistens = 0;
+  let callback, unlistens = 0, nativeLoads = 0;
   const text = ts.transpileModule('const effect = ' + effect.getText(ast) + '; effect;', {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
   }).outputText;
   const fn = vm.runInNewContext(text, {
     require: name => {
       assert.equal(name, '@tauri-apps/api/webview');
+      nativeLoads++;
       return { getCurrentWebview: () => ({ onDragDropEvent: async cb => {
+        if (subscriptionError) throw subscriptionError;
         callback = cb; return () => unlistens++;
       } }) };
     },
+    isTauri: () => desktop,
     selectedRef: selected,
     document: { elementFromPoint: (x, y) => { points.push([x, y]); return {
       closest: () => target === null ? null : { dataset: { remoteDropDir: target } },
@@ -50,10 +53,26 @@ async function harness({ status = 'connected', target = '/目标', submit } = {}
   });
   const cleanup = fn();
   await new Promise(setImmediate);
-  assert.ok(callback);
+  if (desktop && !subscriptionError) assert.ok(callback);
   return { calls, notices, reads, errors, selected, points, cleanup, unlistens: () => unlistens,
+    nativeLoads: () => nativeLoads,
     drop: paths => callback({ payload: { type: 'drop', paths, position: { x: 100, y: 80 } } }) };
 }
+
+test('browser sidebar never subscribes to native drag-drop or reports a directory error', async () => {
+  const h = await harness({ desktop: false });
+  assert.equal(h.nativeLoads(), 0, 'browser must not load a native webview');
+  assert.deepEqual(h.errors, []);
+  assert.deepEqual(h.notices, []);
+  h.cleanup?.();
+});
+
+test('native drag-drop subscription failure identifies upload availability without poisoning the directory state', async () => {
+  const h = await harness({ subscriptionError: Error('fixture subscription rejected') });
+  assert.deepEqual(h.errors, [], 'native listener setup is not a directory read failure');
+  assert.deepEqual(h.notices, [['error', 'remote.transfers.dragDropUnavailable: fixture subscription rejected']]);
+  h.cleanup();
+});
 
 test('mixed real file/directory drop preserves exact paths, asks backend to detect kind and waits for completion refresh', async () => {
   const temp = mkdtempSync(path.join(os.tmpdir(), 'deepagent-drop-'));
