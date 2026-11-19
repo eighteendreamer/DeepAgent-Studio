@@ -5,6 +5,7 @@ import "../../src/i18n";
 import "../../src/icons";
 import "../../src/styles.css";
 import { MessageTurn } from "../../src/components/chat-timeline/MessageTurn";
+import { ChatTimeline } from "../../src/components/chat-timeline/ChatTimeline";
 import { Button } from "../../src/components/shadcn/button";
 import type { Turn } from "../../src/components/chat-timeline/timelineTypes";
 import type { ToolCall } from "../../src/types";
@@ -26,6 +27,7 @@ function Preview() {
   const [dark, setDark] = useState(false);
   const [processing, setProcessing] = useState(true);
   const [single, setSingle] = useState(false);
+  const [waiting, setWaiting] = useState(false);
   const [revision, setRevision] = useState(0);
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
@@ -46,10 +48,14 @@ function Preview() {
         <span style={{ fontSize: 12, marginRight: "auto" }}>生产组件验证 · 本地示例数据</span>
         <Button variant="ghost" size="sm" onClick={() => setDark(!dark)}>{dark ? "切换浅色" : "切换深色"}</Button>
         <Button variant="ghost" size="sm" onClick={() => { setSingle(!single); setRevision(revision + 1); }}>{single ? "查看多条记录" : "查看单条记录"}</Button>
+        <Button variant="ghost" size="sm" onClick={() => { setWaiting(!waiting); setProcessing(true); setRevision(revision + 1); }}>{waiting ? "查看执行过程" : "等待首条输出"}</Button>
         <Button variant="ghost" size="sm" onClick={() => setProcessing(!processing)}>{processing ? "结束回合" : "运行回合"}</Button>
         <Button variant="ghost" size="sm" onClick={() => { setRevision(revision + 1); setProcessing(true); }}>重置</Button>
       </div>
-      <MessageTurn turn={turn} processing={processing} busy={false} onResend={() => {}} />
+      {waiting ? <ChatTimeline messages={[
+        { id: "waiting-user", role: "user", content: "你好", turn: { id: "waiting-" + revision, phase: processing ? "working" : "settled", generation: 0 } },
+        { id: "waiting-assistant", role: "assistant", content: "", parts: [] },
+      ]} busy={processing} onResend={() => {}} /> : <MessageTurn turn={turn} processing={processing} busy={false} onResend={() => {}} />}
     </div>
   </div>;
 }
