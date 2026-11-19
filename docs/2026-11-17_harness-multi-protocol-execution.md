@@ -616,3 +616,14 @@ H022 后端 `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --all
 - Messages 同时携带 API Key、Bearer 和 2023-06-01 版本头；真实回环 HTTP 验证推理与发现行为。原生鉴权客户端只允许同源重定向，错误中的密钥回显与请求 Debug 均脱敏。
 - 初始图片与请求头用例先失败；实现后新增图片/HTTP 与工厂专项 11 通过，模型集成二进制 33 个目标合计 155 通过、4 忽略，独立提交快照严格 Clippy 通过。本轮文件格式通过；全仓格式仍有 `id.rs` 既有差异。workspace 在 `kernel_v2_e2e` 编译时内存不足退出，未完成测试。最终独立提交快照完整 models/http 为 420 通过、0 失败、4 忽略；纯图片空文本块回归先失败后修正，UTF-8 夹具已迁移到受保护的客户端构建器。最终集成专项 12 通过，AppCore 模型服务回归 25 通过。
 - 本轮隔离提交，不纳入工作树已有的思考、缓存、视觉治理或 UI 改动。自定义 Rust 传输的字段/方法兼容说明、完整验证与未覆盖范围见 [本轮报告](reports/2026-11-19-messages-images-native-headers.md)。
+
+## H036：P11 真实矩阵、F0 复核与 F1+ 补齐（2026-11-19）
+
+- 本轮生产 ModelClient/协议工厂/ReqwestTransport 对 Layso Responses、Messages、Chat Completions 完成相同 11 场景，最终 33/33 通过。覆盖文本、历史、工具续写、五档思考参数、图片、取消与缓存观察；三协议均实际读取缓存。此结论限定适配层矩阵，未替代完整桌面验收。
+- 早期失败保留：缺失测试图片能力声明、不合适的 Chat 思考测试配置、一次连接失败；指定工具名的 Responses HTTP 400 经独立 HTTP 请求复现，auto 成功。未新增生产重试或供应商特判。
+- 另加跨协议历史矩阵：首轮 1/3，最终两轮 2/3。Claude 带签名历史→Chat、Responses 历史→Messages 已通过；Claude→Responses 三轮均在来源 /messages 请求阶段收到 api_error，未发到目标 /responses，仍未验收。该矩阵含 item 序列化往返，不能外推完整 SessionStore/origin 或不同供应商迁移。
+- F0 已复核 16 个方法、消费方及连接/steer/终态/审批/游标边界。F1+ 为全部出站机器事件补 protocolVersion；Rust/TS 校验明确错误版本、保留旧 v1 兼容；补全 TS 事件类型和 sandbox/status 专项。
+- 持续回放为明确的本地 SDK 设计：复用 thread/read，追平后每 250ms 查询；checkpoint 绑定线程并分开保存每条持久流的序号。没有新增 turn/stream、存储、自动重连、ACK 或变更重试；真实 CLI 验证重连与去重。
+- TypeScript SDK 212 项、本轮真实 stdio 6 项和真实 JSONL 1 项通过。模型/http 本地 441 通过、0 失败、5 忽略。app-server 138 通过、3 项思考旧断言失败、5 忽略；保留失败，未擅自重写模型规则。
+- Rust SDK 最终单元 88 通过/3 忽略、真实 stdio 15 通过；CLI JSONL 3 通过。workspace、严格 Clippy 和全仓格式门禁未通过；细分结果及原始现象写入报告，没有用专项通过代替完整门禁。
+- 完整命令、最终门禁、测试配置及排除范围见 [本轮报告](reports/2026-11-19-p11-f0-f1-acceptance.md)。不将本轮结果解释为完整方案或全仓门禁完成。

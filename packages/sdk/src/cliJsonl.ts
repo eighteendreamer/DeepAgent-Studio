@@ -2,6 +2,7 @@ import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { createInterface, type Interface } from "node:readline";
 import type { Readable } from "node:stream";
 import type { CliRunOptions, DeepAgentOptions, HarnessEvent } from "./index.js";
+import { PROTOCOL_VERSION } from "./index.js";
 
 type ErrorFactory = (message: string, cause?: unknown) => Error;
 type CliChild = ChildProcessByStdio<null, Readable, Readable>;
@@ -172,6 +173,10 @@ export class CliJsonlTransport {
           let event: HarnessEvent;
           try { event = JSON.parse(line) as HarnessEvent; }
           catch (cause) { throw transport.error("CLI emitted invalid JSONL", cause); }
+          if (event && typeof event === "object" && "protocolVersion" in event
+            && event.protocolVersion !== PROTOCOL_VERSION) {
+            throw transport.error("CLI emitted an incompatible event protocol version");
+          }
           yield event; // A consumer throw is not a JSON parsing error.
         }
         await owner.finish();

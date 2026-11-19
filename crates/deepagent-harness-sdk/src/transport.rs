@@ -91,6 +91,15 @@ pub(crate) fn decode_server_line(line: &str) -> Result<WireMessage, ServerLineEr
                 ),
             ));
         }
+        if object.get("method").and_then(|method| method.as_str()) == Some("harness/event")
+            && !event_version_compatible(&value["params"])
+        {
+            return Err(ServerLineError::Decode(
+                <serde_json::Error as serde::de::Error>::custom(
+                    "unsupported harness event protocol version",
+                ),
+            ));
+        }
     }
     // Keep the original DTO decoder (including duplicate-field rejection).
     // A Value round trip here would silently collapse repeated wire fields.
@@ -112,12 +121,21 @@ pub(crate) fn notification_event(
     if notification.method != "harness/event" {
         return Err("unsupported notification method");
     }
+    if !event_version_compatible(&notification.params) {
+        return Err("unsupported harness event protocol version");
+    }
     let event = serde_json::from_value::<HarnessEvent>(notification.params)
         .map_err(|_| "invalid harness event payload")?;
     Ok(crate::HarnessNotification {
         event,
         event_sequence: notification.event_sequence,
         sequence_status: crate::SequenceStatus::Unavailable,
+    })
+}
+
+fn event_version_compatible(params: &serde_json::Value) -> bool {
+    params.get("protocolVersion").is_none_or(|version| {
+        version.as_u64() == Some(deepagent_harness_protocol::PROTOCOL_VERSION.into())
     })
 }
 
@@ -283,7 +301,10 @@ mod tests {
         });
         let project = |value: serde_json::Value| {
             let WireMessage::Notification(notification) = decode_server_line(&value.to_string())
-                .map_err(|_| "unsupported notification version")?
+                .map_err(|error| match error {
+                    ServerLineError::Version(_) => "unsupported notification version",
+                    ServerLineError::Decode(_) => "unsupported harness event protocol version",
+                })?
             else {
                 panic!("expected notification");
             };
@@ -311,6 +332,18 @@ mod tests {
             let mut value = valid.clone();
             value["jsonrpc"] = version.into();
             assert_eq!(project(value), Err("unsupported notification version"));
+        }
+        for version in [
+            serde_json::json!(2),
+            serde_json::json!("1"),
+            serde_json::Value::Null,
+        ] {
+            let mut value = valid.clone();
+            value["params"]["protocolVersion"] = version;
+            assert_eq!(
+                project(value),
+                Err("unsupported harness event protocol version")
+            );
         }
         for params in [
             serde_json::Value::Null,

@@ -115,7 +115,8 @@ impl EventOutbox {
                 jsonrpc: JSONRPC_VERSION.into(),
                 method: NOTIFICATION_METHOD.into(),
                 event_sequence: Some(sequence),
-                params: serde_json::to_value(event)
+                params: event
+                    .to_wire_value()
                     .map_err(|error| format!("serialize app-server event: {error}"))?,
             };
             let line = serde_json::to_string(&notification)

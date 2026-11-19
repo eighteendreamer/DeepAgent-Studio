@@ -106,11 +106,13 @@ mod connection;
 mod error;
 mod initialize;
 mod notification;
+mod replay;
 mod stream;
 mod transport;
 
 pub use client::{HarnessClient, HarnessProcess, RequestTimeouts};
 pub use error::SdkError;
 pub use notification::{HarnessNotification, SequenceStatus};
+pub use replay::{ReplayCheckpoint, ReplayEvent, ThreadReplay};
 pub use stream::RequestEvents;
 pub use transport::{decode_line, request_line, WireMessage};

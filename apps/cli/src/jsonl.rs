@@ -4,7 +4,10 @@ use deepagent_harness_protocol::{
 use deepagent_runtime::RuntimeEvent;
 
 pub fn event_line(event: &HarnessEvent) -> Result<String, String> {
-    serde_json::to_string(event).map_err(|error| format!("serialize harness event: {error}"))
+    event
+        .to_wire_value()
+        .and_then(|value| serde_json::to_string(&value))
+        .map_err(|error| format!("serialize harness event: {error}"))
 }
 
 pub fn project_runtime_event_line(
@@ -62,6 +65,7 @@ mod tests {
         .unwrap();
 
         let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(value["protocolVersion"], PROTOCOL_VERSION);
         assert_eq!(value["type"], "item.updated");
         assert_eq!(value["threadId"], "thread-1");
         assert_eq!(value["turnId"], "turn-1");

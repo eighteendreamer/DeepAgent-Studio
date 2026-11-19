@@ -51,6 +51,7 @@ test("real CLI early failure is delivered once and reconciles after reconnect wi
     const terminals = events.filter((event) => /^turn\.(completed|failed|interrupted)$/u.test(event.type));
     assert.equal(terminals.length, 1);
     assert.equal(terminals[0].type, "turn.failed");
+    assert.ok(events.every(event => event.protocolVersion === 1), "every real wire event carries the machine version");
     assert.match(terminals[0].reason, /not initialized|API key/iu);
     const turnId = terminals[0].turnId;
     assert.ok(turnId);
@@ -133,5 +134,34 @@ test("real CLI early failure is delivered once and reconciles after reconnect wi
     const controlCapability = await control.listTools();
     assert.deepEqual(controlCapability.tools, []);
     assert.equal(controlCapability.capabilitySnapshot.context.executionDomain, "builtin_control");
+    // Follow the same authoritative event rows while another turn is appended,
+    // then restore the checkpoint across a physical server restart.
+    const replay = agent.watchThreadEvents(control.id);
+    const observed = new Set();
+    const consumeTerminal = async (stream, exceptRun) => {
+      for (let n = 0; n < 30; n++) {
+        const { value: batch } = await stream.next();
+        for (const row of batch.events) {
+          const identity = `${row.runId ?? "session"}:${row.sequence}`;
+          assert.ok(!observed.has(identity), "durable replay must not redeliver a consumed row");
+          observed.add(identity);
+        }
+        const terminal = batch.events.find(row => row.runId && row.runId !== exceptRun && row.event.event_type === "run_terminal");
+        if (terminal) return { checkpoint: batch.checkpoint, runId: terminal.runId };
+      }
+      assert.fail("follow did not reach the durable terminal");
+    };
+    const firstReplay = await consumeTerminal(replay);
+    const nextBatch = consumeTerminal(replay, firstReplay.runId);
+    for await (const _event of control.runStreamed("/help")) { /* producer owns execution */ }
+    const secondReplay = await nextBatch;
+    await replay.return();
+    await agent.reconnect();
+    const restoredControl = await agent.resumeThread(control.id);
+    const restoredReplay = agent.watchThreadEvents(control.id, { checkpoint: JSON.parse(JSON.stringify(secondReplay.checkpoint)) });
+    const thirdBatch = consumeTerminal(restoredReplay, secondReplay.runId);
+    for await (const _event of restoredControl.runStreamed("/help")) { /* explicit new work */ }
+    await thirdBatch;
+    await restoredReplay.return();
   } finally { await agent.close(); }
 });

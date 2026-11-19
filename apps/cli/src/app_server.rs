@@ -60,6 +60,9 @@ mod list_page_tests;
 #[path = "app_server/method_routing_tests.rs"]
 mod method_routing_tests;
 #[cfg(test)]
+#[path = "app_server/sandbox_status_tests.rs"]
+mod sandbox_status_tests;
+#[cfg(test)]
 #[path = "app_server/sequence_tests.rs"]
 mod sequence_tests;
 

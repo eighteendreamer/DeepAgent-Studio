@@ -2,6 +2,37 @@
 
 TypeScript client for the DeepAgent Harness app-server.
 
+## Durable event replay and follow
+
+`agent.watchThreadEvents(threadId, {checkpoint, signal})` replays persisted session
+and run events, then follows newly committed rows using the existing bounded
+`thread/read` API. It polls every 250ms after catching up. This is a local SDK
+design; it adds no server method, event store or execution path. Only one page is
+retained at a time; the checkpoint keeps one watermark per observed run and
+grows with the number of runs. Mutable actions, approvals, artifacts and graph snapshots
+remain available through `readThreadPage`.
+
+```ts
+for await (const batch of agent.watchThreadEvents(threadId, {checkpoint, signal})) {
+  await consume(batch.events);
+  await saveCheckpoint(batch.checkpoint);
+}
+```
+
+Each row retains its session/run identity and durable sequence. Sequence zero is
+valid; streams never share a cursor. Checkpoints are bound to their thread, and
+row stream/run identities are checked before advancing. Save the checkpoint after processing the
+batch. After a transport failure, explicitly reconnect and start a new iterator
+with the saved checkpoint; the SDK does not retry mutations, respawn, ACK events
+or turn a lost connection into a run terminal. Abort stops the local follow wait;
+an already pending read retains the transport request deadline. JavaScript
+rejects sequences outside its safe integer range; Rust preserves full `u64`.
+
+New CLI JSONL events and app-server event payloads include `protocolVersion: 1`.
+SDK readers still accept legacy v1 events without the field, and reject an
+explicit incompatible version. `eventSequence` remains connection-local and
+must never be passed as a durable replay checkpoint.
+
 ## Effective execution configuration
 
 `startThread({reasoningEffort: "none"})` persists an explicit thread default

@@ -880,6 +880,11 @@ async fn h214_owned_real_cli_failure_is_unique_and_durable_after_reopen() {
     assert_eq!(run_rows, *records);
     assert_eq!(graph_rows, *runs[0]["graph"]["nodes"].as_array().unwrap());
     let cursor = records.last().unwrap()["sequence"].as_u64().unwrap();
+    let mut replay = client.watch_thread_events(thread.clone(), Default::default());
+    let mut delivered = std::collections::BTreeSet::new();
+    collect_replayed_terminal(&mut replay, &mut delivered, &turn).await;
+    let saved_checkpoint = serde_json::to_string(replay.checkpoint()).unwrap();
+    drop(replay);
     assert!(process.wait().await.unwrap().success());
     let reopened = HarnessProcess::spawn(&bin, &workspace).await.unwrap();
     let current = reopened.client();
@@ -903,7 +908,7 @@ async fn h214_owned_real_cli_failure_is_unique_and_durable_after_reopen() {
     }
     let incremental = current
         .thread_read(ThreadReadRequest {
-            run_after_sequences: Some([(turn, cursor)].into()),
+            run_after_sequences: Some([(turn.clone(), cursor)].into()),
             ..request()
         })
         .await
@@ -912,7 +917,64 @@ async fn h214_owned_real_cli_failure_is_unique_and_durable_after_reopen() {
         .as_array()
         .unwrap()
         .is_empty());
+    let mut replay = current.watch_thread_events(
+        thread.clone(),
+        serde_json::from_str(&saved_checkpoint).unwrap(),
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), replay.next_batch())
+            .await
+            .is_err(),
+        "restored checkpoint must wait instead of repeating history"
+    );
+    let mut follow_turn = current
+        .turn_start_streamed(
+            serde_json::from_value(serde_json::json!({
+                "threadId":thread,"input":"/help"
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let next_turn = follow_turn.turn_id().unwrap().to_owned();
+    while tokio::time::timeout(Duration::from_secs(5), follow_turn.recv())
+        .await
+        .unwrap()
+        .unwrap()
+        .is_some()
+    {}
+    collect_replayed_terminal(&mut replay, &mut delivered, &next_turn).await;
+    assert_eq!(
+        replay.checkpoint().thread_id.as_deref(),
+        Some(thread.as_str())
+    );
     assert!(reopened.wait().await.unwrap().success());
+}
+
+async fn collect_replayed_terminal(
+    replay: &mut deepagent_harness_sdk::ThreadReplay,
+    delivered: &mut std::collections::BTreeSet<(Option<String>, u64)>,
+    turn: &str,
+) {
+    for _ in 0..30 {
+        let batch = tokio::time::timeout(Duration::from_secs(5), replay.next_batch())
+            .await
+            .unwrap()
+            .unwrap();
+        let terminal = batch.iter().any(|row| {
+            row.run_id.as_deref() == Some(turn) && row.event["event_type"] == "run_terminal"
+        });
+        for row in batch {
+            assert!(
+                delivered.insert((row.run_id, row.sequence)),
+                "durable row delivered twice"
+            );
+        }
+        if terminal {
+            return;
+        }
+    }
+    panic!("durable replay did not reach the terminal");
 }
 
 #[tokio::test]
@@ -934,7 +996,9 @@ async fn introspection_methods_round_trip_without_a_model() {
     assert_eq!(config.result()["configSnapshotVersion"], 1);
     assert_eq!(config.result()["resolutionStatus"], "uninitialized");
     assert_eq!(config.result()["credentialChecked"], false);
-    assert_eq!(config.result()["provider"], "deepseek-official");
+    // The versioned snapshot projects only a resolved model plan. An empty
+    // installation has no plan and must not invent an initialized provider.
+    assert!(config.result()["provider"].is_null());
     assert!(config.result()["model"].is_null());
     let second_config = client.config_read().await.expect("second config/read");
     assert_eq!(second_config.result(), config.result());

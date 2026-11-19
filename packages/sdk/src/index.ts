@@ -3,13 +3,17 @@ import { createInterface, type Interface } from "node:readline";
 import { TurnEventStream } from "./turnStream.js";
 import { CliJsonlTransport } from "./cliJsonl.js";
 import { validateControlResult } from "./controlResults.js";
+import { watchThreadEvents, type ReplayOptions, type ReplayBatch } from "./replay.js";
+export type { ReplayCheckpoint, ReplayEvent, ReplayBatch, ReplayOptions } from "./replay.js";
 export { HarnessResultError } from "./controlResults.js";
 
 export const PROTOCOL_VERSION = 1;
 const JSONRPC_VERSION = "2.0";
 
-export type HarnessEvent =
+export type HarnessEvent = (
   | ThreadStartedEvent
+  | TurnStartedEvent
+  | McpLifecycleEvent
   | ItemUpdatedEvent
   | ItemStartedEvent
   | ItemCompletedEvent
@@ -17,13 +21,36 @@ export type HarnessEvent =
   | TurnCompletedEvent
   | TurnFailedEvent
   | TurnInterruptedEvent
-  | HarnessErrorEvent;
+  | HarnessErrorEvent
+) & { protocolVersion?: number };
 
 export interface ThreadStartedEvent {
   type: "thread.started";
   threadId: string;
   title: string | null;
   protocolVersion: number;
+}
+
+export interface TurnStartedEvent {
+  type: "turn.started";
+  threadId?: string;
+  turnId: string;
+  step?: number;
+}
+
+export interface McpLifecycleEvent {
+  type: "mcp.lifecycle";
+  threadId?: string;
+  turnId?: string;
+  serverId: string;
+  status: string;
+  transport?: string;
+  configHash?: string;
+  toolSchemaHash?: string;
+  startupAttempt: number;
+  degradationCode?: string;
+  reason?: string;
+  toolCount: number;
 }
 
 export interface ItemUpdatedEvent {
@@ -563,6 +590,12 @@ class StdioTransport implements RpcTransport {
       return;
     }
     if ("method" in message && message.method !== undefined) {
+      if (message.method === "harness/event" && message.params
+        && typeof message.params === "object" && "protocolVersion" in message.params
+        && message.params.protocolVersion !== PROTOCOL_VERSION) {
+        this.failPending(new HarnessTransportError("app-server emitted an incompatible event protocol version"));
+        return;
+      }
       for (const handler of this.notificationHandlers) {
         handler(message as RpcNotification);
       }
@@ -893,6 +926,11 @@ export class DeepAgent {
       throw new HarnessTransportError("server did not return a supported bounded history page");
     }
     return page as ThreadHistoryPage;
+  }
+
+  /** Read-only durable replay and follow; explicitly reconnect and restore a checkpoint after errors. */
+  watchThreadEvents(threadId: string, options: ReplayOptions = {}): AsyncGenerator<ReplayBatch> {
+    return watchThreadEvents(this, threadId, options);
   }
 
   async listTools(options: ToolListOptions = {}): Promise<ToolListResult> {

@@ -76,6 +76,9 @@ async fn h101_bad_frames_settle_all_pending_and_retire_clones_without_replay() {
         r#"{"jsonrpc":"2.0","params":{"type":"turn.completed","threadId":"A","turnId":"turn-A","message":"first terminal","reason":"synthetic"}}"#,
         r#"{"jsonrpc":"2.0","method":17,"params":{"type":"turn.completed","threadId":"A","turnId":"turn-A","message":"first terminal","reason":"synthetic"}}"#,
         r#"{"jsonrpc":"2.0","method":null,"params":{"type":"turn.completed","threadId":"A","turnId":"turn-A","message":"first terminal","reason":"synthetic"}}"#,
+        r#"{"jsonrpc":"2.0","method":"harness/event","params":{"type":"turn.completed","message":"PRIVATE_CANARY","protocolVersion":2}}"#,
+        r#"{"jsonrpc":"2.0","method":"harness/event","params":{"type":"turn.completed","message":"PRIVATE_CANARY","protocolVersion":null}}"#,
+        r#"{"jsonrpc":"2.0","method":"harness/event","params":{"type":"turn.completed","message":"PRIVATE_CANARY","protocolVersion":"1"}}"#,
         "[]",
         "",
     ] {

@@ -476,28 +476,28 @@ pub struct BalanceAmount {
 | P3c 过载与备用模型删除 | 已提交，相关回归通过 | `10234777`：过载统一不可重试，明确 503 过载也立即报错；删除运行时 fallback 路径。models lib 240 passed；runtime lib 493 passed / 2 ignored；H55 4 passed；内核 H144 7 passed；采样、计费/预算、输出上限、图像模式及模型快照串行回归通过；真实 HTTP 1 项、CLI 2 项通过。H004 已接入单一 resolver。 |
 | P3b 会话 JSONL 的 `origin` | 已实现，回归通过 | `ResponseItemAppended.origin` 为可选 `ModelOrigin`，由真实模型运行链写入；旧 JSONL 无 `origin` 仍可读。core 往返 2 项、persistence 来源回放 1 项、persistence 全量 221 项、session 27 项、AppCore 注册表真实运行 7 项通过。跨供应商思考签名是否需要降级仍待实测，当前只保留签名与来源，不擅自改变回放语义。 |
 | P4 Responses codec | 已完成（按 P0 类型与序列化边界） | async-openai 0.43.0 的 CreateResponse、消息、工具调用/结果、图片、工具、text 与 tool_choice 类型进入生产序列化；DeepSeek 扩展显式保留。现有 HTTP/SSE、语义组装、取消与 48 MiB 预算复用。验证见 H034。 |
-| P5 Messages codec | 图片与原生请求头已补齐；本地专项通过 | SDK 请求、流式解析、思考签名与用量继续复用。H035 补齐用户/工具结果图片，原始字节与顺序保留；推理与模型发现共用协议鉴权，携带 x-api-key、Bearer 与版本头，并限制凭据重定向。真实供应商远程验收未执行，缓存断点见 P8。 |
+| P5 Messages codec | 图片、原生请求头已补齐；真实 Messages 11 项通过 | H035 的 SDK 请求、流解析、签名、用量、图片与统一鉴权继续复用。H036 对 Layso Claude 实测文本、历史、工具续写、五档发包、图片、取消及缓存读取均通过；不能外推为所有 Anthropic 端点验收，见 [H036 验收报告](reports/2026-11-19-p11-f0-f1-acceptance.md)。 |
 | P6 设置页 | 基础界面与后端已实现；流程待验收 | `ModelsSettings.tsx` 已接供应商 CRUD、模型拉取/激活和配置编辑。H015 保留已存配置，H016 支持协议/容量/思考编辑，服务 19 + resolver 12 项通过；H017 设置页迟到请求回归通过。完整原生 UI 流程仍待验收。 |
 | P7 余额 | 已修复已知解析/UI 缺口；真实 API 待验收 | H009 修复未知形状误判无限、分币换算、display 单位、缺失金额伪造零与错误跨供应商回退；两处 UI 共用查询与金额格式化并丢弃迟到结果。models lib 256、前端余额专项 9 passed。完整桌面与真实余额 API 待验收。 |
-| P8 缓存 | 未完成 | 尚未新增稳定前缀治理或 Messages `cache_control` 断点；继续复用现有上下文压缩阈值。 |
+| P8 缓存 | 断点/用量已有回归；本轮三协议真实缓存读取已证 | H036 最终 Responses 与 Chat 的命中/输入均为 5120/5275，Messages 第二次为 5628/5641；Responses/Chat 前缀此前已使用，不视为冷缓存对照。供应商命中不可保证，不能把这些样本外推为所有模型命中率，详见 [H036 验收报告](reports/2026-11-19-p11-f0-f1-acceptance.md)。 |
 | P9 输入框思考档位 | 五档参数与能力回归通过，原生 UI 验收待完成 | H012 统一 `thinking_levels` / `thinking_distinct` / `thinking_disable`，缺省五档可关闭，兼容显式旧 effort 限制；修正 off 禁用条件与全禁用滑杆，medium 保存不再变为 high。H018 补齐显式等价标注，Composer 18 项与 registry → transport 三协议矩阵通过；原生 UI 流程仍待验收。 |
 | P10 模型列表与切换 | 已接入；桌面手动验收待完成 | Composer 消费激活模型，按 provider 分组；选择写入 harness 注册表，跨供应商触发余额刷新；当前 turn 冻结旧模型，工具续写保持旧模型，下一轮用户消息重新 admission。 |
-| P11 产品验收 | 直接接口探针通过，完整验收未完成 | 用户提供的 Responses / Messages 接口分别关闭与 medium 共四次直接 HTTP SSE 探针成功；未经过 ModelClient/Tauri。首次登录、双协议 UI 流程与性能数据尚未取得，不能宣告可交付。 |
-| F0 协议层盘点 | 已有只读盘点；需按当前代码复核 | 见 9.2；用户已确认不新增 `turn/stream`。 |
-| F1+ 协议层补齐 | SDK 三入口已补齐，其余缺口待继续 | H011 / `a8dd03fc`：公开 forkThread、sandboxStatus、acknowledgeEvents，复用既有服务端方法。SDK 串行全测 204 passed，真实 CLI cold fork 1 passed；H018 默认 pnpm test 复跑 204 passed / 0 failed，保留此前并行超时记录。 |
+| P11 产品验收 | 常规三协议矩阵 33/33；跨协议历史 2/3；产品全量门禁未通过 | H036 使用生产 ModelClient/工厂/ReqwestTransport，覆盖文本、历史、工具续写、五档参数、原生图片、取消和缓存观察。Claude→Responses 三轮均在来源请求阶段失败，未取得目标验收；指定工具名在该 Layso Responses 路由仍 HTTP 400。范围及全部失败见 [H036 验收报告](reports/2026-11-19-p11-f0-f1-acceptance.md)。 |
+| F0 协议层盘点 | 当前 16 个方法及关键边界已复核 | 重新核对方法生产/消费方、连接退出、steer、持久终态、审批、ACK 与独立游标；已有三项思考配置断言冲突未掩盖。见 9.2 和 [H036 验收报告](reports/2026-11-19-p11-f0-f1-acceptance.md)。 |
+| F1+ 协议层补齐 | 本轮版本、SDK 持续增量回放及专项通过；整仓门禁未通过 | 全部出站事件统一 protocolVersion=1，Rust/TS 校验入站版本并兼容旧 v1；SDK 复用 thread/read 做 250ms 持续拉取和 checkpoint 恢复，非服务端推送补发。补 sandbox/status 专项与真实 CLI 重连去重，见 [H036 验收报告](reports/2026-11-19-p11-f0-f1-acceptance.md)。 |
 
-### 9.2 F0 盘点结论
+### 9.2 F0 复核结论（2026-11-19）
 
-- **已有 stdio JSON-RPC 服务**（`apps/cli/src/app_server.rs`，dispatcher 在 `:273-303`）。`thread/start`、`thread/resume`、`thread/read`、`thread/fork`、`thread/list`、`turn/start`、`turn/interrupt`、`turn/steer`、`approval/respond`、`tool/list`、`config/read` 均已实现并有测试。
-- **决策 1（2026-11-17 用户确认）**：流式输出统一沿用 `turn/start` 之后的通知推送（`event_outbox.rs:115-118`），共用内部请求、响应和事件契约，不新增独立 `turn/stream` 方法。F0 仍须验证通知和 replay 的契约。
-- **缺口 2**：`sandbox/status` 没有专门的单元测试，仅在 `method_routing_tests.rs` 中校验方法名存在；线上覆盖来自 `crates/deepagent-harness-sdk/tests/e2e_stdio.rs`。
-- **缺口 3（H011 已补齐）**：TypeScript SDK（`packages/sdk`）现已封装 `thread/fork`、`sandbox/status`、`event/ack`；有公开入口、错误回执、序号精度和真实 CLI fork 回归。Rust 客户端继续沿用现有方法。
-- **缺口 4**：没有实时 replay。`event/ack` 只是连接内回执，不是持久游标；持久回放依赖 `thread/read` 的 `afterSequence` / `runAfterSequence`。
-- **版本**：`PROTOCOL_VERSION = 1`（`crates/deepagent-harness-protocol/src/requests.rs:6`），`initialize` 校验它；只有 `thread.started` 携带该版本，其他事件类型没有版本字段。
-- **DTO 分离已成立**：`crates/deepagent-harness-protocol/` 独立于 Tauri 的 DTO，桌面端未引用它。
-- **审批路由已统一**：CLI 与桌面都调用 `ChatService::resolve_approval_scoped`，最终进入 `RunCoordinator::resolve_approval_scoped`（`run_coordinator.rs:371`）。
-- **未核实**：`apps/cli/src/app_server/connection.rs`、`terminal_audit.rs` 未通读；`turn/steer` 的运行时路径只部分核实。
-- **注意**：子 agent 的盘点依据仅为静态阅读，未运行测试。
+- 现有协议唯一方法声明包含 16 项：initialize；thread/start、resume、list、read、fork、archive、unarchive；turn/start、interrupt、steer；approval/respond；event/ack；tool/list；config/read；sandbox/status。Rust 与 TypeScript 均有调用入口，分发继续复用现有 app_server。
+- 用户决策保持：流式输出沿用 turn/start 后的通知，不新增 turn/stream。
+- 全部 CLI JSONL 与 app-server 出站事件统一携带 protocolVersion=1。SDK 兼容旧 v1 的无字段事件，明确错误版本拒绝交付并报错。
+- event/ack 是连接内已经 flush 的通知回执，不是持久游标，也不触发补发。持久恢复使用 sessionAfterSequence 与每个 run 的 runAfterSequences；续页 cursor 不与新过滤器混用。
+- Rust/TS 新增持续增量回放入口，复用 thread/read；追平后每 250ms 读取一次。它是本地 SDK 拉取设计，不是服务端主动推送的历史追赶；不自动重连、重发 turn 或审批。
+- checkpoint 绑定线程并分开保存会话/run 高水位；验证行身份、有序性和整数边界。真实 CLI 验证追加、重启和断点恢复不重复交付；可变 action/approval/artifact/graph 快照仍用 thread/read 查询。
+- sandbox/status 已补专门测试：初始化门禁、实际 host/协调器能力、查询无准入副作用。
+- connection.rs、terminal_audit.rs 及 steering 关键执行和测试边界已复核：单一 writer、ACK/flush、10s EOF 清理、单次持久替换 claim、真实 shell 副作用和持久终态；继续使用原内核、存储和取消树。
+- 机器协议 DTO 独立于 Tauri UI DTO；审批继续通过 ChatService::resolve_approval_scoped 进入既有协调器。
+- 本轮证据与未通过门禁详见 [H036 验收报告](reports/2026-11-19-p11-f0-f1-acceptance.md)。三项思考配置旧断言仍失败，不能宣称 config/read 与全仓门禁全绿。
 
 ## 10. 待定
 

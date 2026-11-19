@@ -157,6 +157,16 @@ pub enum HarnessEvent {
     },
 }
 
+impl HarnessEvent {
+    /// Add the negotiated machine version at the wire boundary. Business DTOs
+    /// and historical unversioned v1 payloads keep their existing shape.
+    pub fn to_wire_value(&self) -> Result<serde_json::Value, serde_json::Error> {
+        let mut value = serde_json::to_value(self)?;
+        value["protocolVersion"] = PROTOCOL_VERSION.into();
+        Ok(value)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ItemPayload {
