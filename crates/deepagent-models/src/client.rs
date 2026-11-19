@@ -1,7 +1,7 @@
 //! The DeepSeek model client.
 //!
 //! Wires together request building, a pluggable [`HttpTransport`], the
-//! [`SseParser`] framing, and the [`ResponseAccumulator`] streaming assembly into
+//! [`crate::sse::SseParser`] framing, and the [`crate::ResponseAccumulator`] streaming assembly into
 //! a single [`ModelClient::stream_response`] call that returns a complete
 //! [`Response`] with `reasoning_content` preserved.
 
@@ -11,14 +11,15 @@ use std::sync::Arc;
 use deepagent_core::error::{CoreError, Result};
 
 use crate::chat::{ReasoningEffort, Response, ResponseRequest};
-use crate::chat_completions::{ChatCompletionAccumulator, ChatCompletionRequest};
+#[cfg(test)]
+use crate::chat_completions::ChatCompletionAccumulator;
+use crate::chat_completions::ChatCompletionRequest;
 use crate::responses::ResponseInputItem;
-use crate::stream::ResponseAccumulator;
+
 use crate::transport::{HttpTransport, TransportRequest};
 
-mod files;
+pub(crate) mod files;
 pub(crate) mod request_body;
-use files::ImageRequest;
 
 #[cfg(test)]
 #[path = "chat_content_filter_tests.rs"]
@@ -47,18 +48,7 @@ impl WireMode {
     /// contracts. Validate before projection/materialization, never erase an
     /// unsupported image or silently relabel its author.
     pub(crate) fn validate_image_role(self, role: &str) -> Result<()> {
-        match (self, role) {
-            (_, "user") | (Self::Responses, "developer") => Ok(()),
-            (Self::Responses, _) => Err(deepagent_core::error::CoreError::invalid(
-                "image_input_role_unsupported: Responses images require a user or developer message, or a function/custom tool output",
-            )),
-            (Self::ChatCompletions, _) => Err(deepagent_core::error::CoreError::invalid(
-                "image_input_role_unsupported: Chat Completions images require a user message",
-            )),
-            (Self::Messages, _) => Err(deepagent_core::error::CoreError::invalid(
-                "image_input_role_unsupported: Messages image projection is not implemented",
-            )),
-        }
+        crate::protocol::codec_for(self).validate_image_role(role)
     }
 }
 
@@ -209,10 +199,7 @@ impl ModelConfig {
     ) -> Result<Option<ReasoningEffort>> {
         let capability = self.capability(model);
         let effort = self.reasoning_effort_input(&capability, requested);
-        if self.wire_mode != WireMode::Responses && capability.thinking.is_none() {
-            return Ok(effort);
-        }
-        capability.resolve_reasoning_effort(effort)
+        crate::protocol::codec_for(self.wire_mode).resolve_reasoning_effort(&capability, effort)
     }
 
     /// The fully-qualified DeepSeek Responses endpoint.
@@ -250,6 +237,16 @@ pub struct ModelClient {
 }
 
 impl ModelClient {
+    pub(crate) fn config(&self) -> &ModelConfig {
+        &self.config
+    }
+    pub(crate) fn encode_response_body(&self, request: &ResponseRequest) -> Result<String> {
+        request_body::encode(request)
+    }
+    pub(crate) fn encode_chat_body(&self, request: &ChatCompletionRequest) -> Result<String> {
+        request_body::encode(request)
+    }
+
     /// Build a client from a transport and config.
     pub fn new(transport: Arc<dyn HttpTransport>, config: ModelConfig) -> Self {
         Self {
@@ -315,7 +312,7 @@ impl ModelClient {
         Some(capability.bound_output_tokens(requested as usize) as u32)
     }
 
-    fn validate_output_tokens(&self, output: Option<u32>) -> Result<()> {
+    pub(crate) fn validate_output_tokens(&self, output: Option<u32>) -> Result<()> {
         if output == Some(0) {
             return Err(deepagent_core::error::CoreError::invalid(
                 "model output ceiling must be positive within the active capability",
@@ -337,22 +334,14 @@ impl ModelClient {
                 .map(|item| item.image_attachments().len())
                 .sum(),
         )?;
-        if self.config.wire_mode == WireMode::ChatCompletions
-            && request.input.iter().any(|item| {
-                matches!(item,
-                ResponseInputItem::FunctionCallOutput { output, .. }
-                | ResponseInputItem::CustomToolCallOutput { output, .. }
-                if output.attachments().next().is_some())
-            })
-        {
-            return Err(deepagent_core::error::CoreError::invalid(
-                "image_input_tool_output_unsupported: Chat Completions tool output does not support the Responses image contract; select Responses",
-            ));
-        }
+        crate::protocol::codec_for(self.config.wire_mode).validate_tool_images(request)?;
         Ok(())
     }
 
-    fn validate_chat_input_modalities(&self, request: &ChatCompletionRequest) -> Result<()> {
+    pub(crate) fn validate_chat_input_modalities(
+        &self,
+        request: &ChatCompletionRequest,
+    ) -> Result<()> {
         self.validate_image_input(
             &request.model,
             request
@@ -394,7 +383,7 @@ impl ModelClient {
     /// Send a Responses request and assemble the streamed response.
     ///
     /// The request is forced into streaming mode. Each SSE payload is parsed and
-    /// folded by a [`ResponseAccumulator`]; the final assembled [`Response`]
+    /// folded by a [`crate::ResponseAccumulator`]; the final assembled [`Response`]
     /// retains `reasoning_content` for Thinking Mode persistence.
     /// Assembly success preserves typed failure outcomes too. Before adopting
     /// a result, use [`Response::into_generation_result`] and apply the caller's
@@ -419,60 +408,12 @@ impl ModelClient {
     /// live token streaming to a UI or event bus.
     pub async fn stream_response_observed(
         &self,
-        mut request: ResponseRequest,
+        request: ResponseRequest,
         observer: &mut dyn crate::stream::DeltaObserver,
     ) -> Result<Response> {
-        if self.config.wire_mode == WireMode::Messages {
-            return self.stream_messages_observed(request, observer).await;
-        }
-        if matches!(self.config.wire_mode, WireMode::ChatCompletions) {
-            self.validate_response_input_modalities(&request)?;
-            return self
-                .stream_chat_completion_observed(response_to_chat_completion(request)?, observer)
-                .await;
-        }
-        request.stream = true;
-        self.prepare_response_sampling(&mut request)?;
-        request.validate()?;
-        self.validate_output_tokens(request.max_output_tokens)?;
-        self.validate_response_input_modalities(&request)?;
-        log_response_input_pairs(&request);
-        crate::image_input::validate_response_payloads(request.clone(), None).await?;
-        self.prepare_response_files_for_attempt(&mut request, None)
-            .await?;
-        // Ask the provider to include a final usage chunk in the stream.
-        let body = request_body::encode(&request)?;
-        let mut transport_req = TransportRequest {
-            url: self.config.endpoint(),
-            api_key: self.config.api_key.clone(),
-            body,
-        };
-        if !request.image_file_ids.is_empty() {
-            return self
-                .stream_files_aware_attempt(
-                    ImageRequest::Responses(&mut request),
-                    &mut transport_req,
-                    observer,
-                    None,
-                )
-                .await;
-        }
-
-        let mut accumulator = ResponseAccumulator::new();
-
-        // The transport's contract is to deliver already-de-framed SSE payloads
-        // (the reqwest transport runs the SseParser; the mock yields payloads
-        // directly). So we fold each payload straight into the accumulator,
-        // notifying the observer of each semantic fragment.
-        {
-            let acc = &mut accumulator;
-            let mut sink =
-                |data: &str| -> Result<bool> { acc.push_sse_data_observed(data, observer) };
-            self.transport
-                .stream(transport_req.clone(), &mut sink)
-                .await?;
-        }
-        accumulator.finish()
+        crate::protocol::codec_for(self.config.wire_mode)
+            .stream(self, request, observer, None)
+            .await
     }
 
     /// Like [`ModelClient::stream_response_observed`], but aborts promptly when
@@ -481,117 +422,34 @@ impl ModelClient {
     /// on cancellation by dropping the local stream future.
     pub async fn stream_response_observed_cancelled(
         &self,
-        mut request: ResponseRequest,
+        request: ResponseRequest,
         observer: &mut dyn crate::stream::DeltaObserver,
         cancel: Arc<AtomicBool>,
     ) -> Result<Response> {
-        if self.config.wire_mode == WireMode::Messages {
-            return self
-                .stream_messages_observed_cancelled(request, observer, cancel)
-                .await;
-        }
-        if matches!(self.config.wire_mode, WireMode::ChatCompletions) {
-            self.validate_response_input_modalities(&request)?;
-            return self
-                .stream_chat_completion_observed_cancelled(
-                    response_to_chat_completion(request)?,
-                    observer,
-                    cancel,
-                )
-                .await;
-        }
-        request.stream = true;
-        self.prepare_response_sampling(&mut request)?;
-        request.validate()?;
-        self.validate_output_tokens(request.max_output_tokens)?;
-        self.validate_response_input_modalities(&request)?;
-        log_response_input_pairs(&request);
-        crate::image_input::validate_response_payloads(request.clone(), Some(cancel.clone()))
-            .await?;
-        self.prepare_response_files_for_attempt(&mut request, Some(cancel.clone()))
-            .await?;
-        let body = request_body::encode(&request)?;
-        let mut transport_req = TransportRequest {
-            url: self.config.endpoint(),
-            api_key: self.config.api_key.clone(),
-            body,
-        };
-        if !request.image_file_ids.is_empty() {
-            return self
-                .stream_files_aware_attempt(
-                    ImageRequest::Responses(&mut request),
-                    &mut transport_req,
-                    observer,
-                    Some(cancel),
-                )
-                .await;
-        }
-
-        let mut accumulator = ResponseAccumulator::new();
-        {
-            let acc = &mut accumulator;
-            let mut sink =
-                |data: &str| -> Result<bool> { acc.push_sse_data_observed(data, observer) };
-            self.transport
-                .stream_cancelled(transport_req.clone(), &mut sink, cancel.clone())
-                .await?;
-        }
-        accumulator.finish()
+        crate::protocol::codec_for(self.config.wire_mode)
+            .stream(self, request, observer, Some(cancel))
+            .await
     }
 
-    async fn stream_messages_observed(
+    /// One physical send path for every codec and bounded Files retry.
+    pub(crate) async fn stream_attempt(
         &self,
-        mut request: ResponseRequest,
+        codec: &dyn crate::protocol::WireCodec,
+        request: TransportRequest,
         observer: &mut dyn crate::stream::DeltaObserver,
+        cancel: Option<Arc<AtomicBool>>,
     ) -> Result<Response> {
-        request.stream = true;
-        self.prepare_response_sampling(&mut request)?;
-        request.validate()?;
-        self.validate_output_tokens(request.max_output_tokens)?;
-        self.validate_response_input_modalities(&request)?;
-        let body = crate::protocol::codec_for(WireMode::Messages).encode_body(self, request)?;
-        let transport_req = TransportRequest {
-            url: self.config.messages_endpoint(),
-            api_key: self.config.api_key.clone(),
-            body,
-        };
-        let mut accumulator = crate::messages::MessagesAccumulator::new();
-        {
-            let acc = &mut accumulator;
-            let mut sink =
-                |data: &str| -> Result<bool> { acc.push_sse_data_observed(data, observer) };
-            self.transport.stream(transport_req, &mut sink).await?;
+        let mut decoder = codec.decoder();
+        let mut sink = |data: &str| decoder.push(data, observer);
+        match cancel {
+            Some(cancel) => {
+                self.transport
+                    .stream_cancelled(request, &mut sink, cancel)
+                    .await?
+            }
+            None => self.transport.stream(request, &mut sink).await?,
         }
-        accumulator.finish()
-    }
-
-    async fn stream_messages_observed_cancelled(
-        &self,
-        mut request: ResponseRequest,
-        observer: &mut dyn crate::stream::DeltaObserver,
-        cancel: Arc<AtomicBool>,
-    ) -> Result<Response> {
-        request.stream = true;
-        self.prepare_response_sampling(&mut request)?;
-        request.validate()?;
-        self.validate_output_tokens(request.max_output_tokens)?;
-        self.validate_response_input_modalities(&request)?;
-        let body = crate::protocol::codec_for(WireMode::Messages).encode_body(self, request)?;
-        let transport_req = TransportRequest {
-            url: self.config.messages_endpoint(),
-            api_key: self.config.api_key.clone(),
-            body,
-        };
-        let mut accumulator = crate::messages::MessagesAccumulator::new();
-        {
-            let acc = &mut accumulator;
-            let mut sink =
-                |data: &str| -> Result<bool> { acc.push_sse_data_observed(data, observer) };
-            self.transport
-                .stream_cancelled(transport_req, &mut sink, cancel)
-                .await?;
-        }
-        accumulator.finish()
+        decoder.finish()
     }
 
     /// Send a DeepSeek Chat Completions request and assemble its SSE stream.
@@ -604,41 +462,12 @@ impl ModelClient {
     /// the existing Responses path.
     pub async fn stream_chat_completion_observed(
         &self,
-        mut request: ChatCompletionRequest,
+        request: ChatCompletionRequest,
         observer: &mut dyn crate::stream::DeltaObserver,
     ) -> Result<Response> {
-        request.stream = true;
-        self.apply_chat_defaults(&mut request)?;
-        request.validate()?;
-        self.validate_output_tokens(request.max_tokens)?;
-        self.validate_chat_input_modalities(&request)?;
-        crate::image_input::validate_chat_payloads(request.clone(), None).await?;
-        self.prepare_chat_files_for_attempt(&mut request, None)
-            .await?;
-        let body = request_body::encode(&request)?;
-        let mut transport_req = TransportRequest {
-            url: self.config.chat_endpoint(),
-            api_key: self.config.api_key.clone(),
-            body,
-        };
-        if !request.image_file_ids.is_empty() {
-            return self
-                .stream_files_aware_attempt(
-                    ImageRequest::Chat(&mut request),
-                    &mut transport_req,
-                    observer,
-                    None,
-                )
-                .await;
-        }
-        let mut accumulator = ChatCompletionAccumulator::new();
-        {
-            let acc = &mut accumulator;
-            let mut sink =
-                move |data: &str| -> Result<bool> { acc.push_sse_data_observed(data, observer) };
-            self.transport.stream(transport_req, &mut sink).await?;
-        }
-        accumulator.finish()
+        crate::protocol::CHAT_COMPLETIONS
+            .stream_chat(self, request, observer, None)
+            .await
     }
 
     /// Cancel-aware Chat Completions streaming.
@@ -658,44 +487,13 @@ impl ModelClient {
     /// Cancel-aware Chat Completions streaming with semantic observation.
     pub async fn stream_chat_completion_observed_cancelled(
         &self,
-        mut request: ChatCompletionRequest,
+        request: ChatCompletionRequest,
         observer: &mut dyn crate::stream::DeltaObserver,
         cancel: Arc<AtomicBool>,
     ) -> Result<Response> {
-        request.stream = true;
-        self.apply_chat_defaults(&mut request)?;
-        request.validate()?;
-        self.validate_output_tokens(request.max_tokens)?;
-        self.validate_chat_input_modalities(&request)?;
-        crate::image_input::validate_chat_payloads(request.clone(), Some(cancel.clone())).await?;
-        self.prepare_chat_files_for_attempt(&mut request, Some(cancel.clone()))
-            .await?;
-        let body = request_body::encode(&request)?;
-        let mut transport_req = TransportRequest {
-            url: self.config.chat_endpoint(),
-            api_key: self.config.api_key.clone(),
-            body,
-        };
-        if !request.image_file_ids.is_empty() {
-            return self
-                .stream_files_aware_attempt(
-                    ImageRequest::Chat(&mut request),
-                    &mut transport_req,
-                    observer,
-                    Some(cancel),
-                )
-                .await;
-        }
-        let mut accumulator = ChatCompletionAccumulator::new();
-        {
-            let acc = &mut accumulator;
-            let mut sink =
-                move |data: &str| -> Result<bool> { acc.push_sse_data_observed(data, observer) };
-            self.transport
-                .stream_cancelled(transport_req, &mut sink, cancel)
-                .await?;
-        }
-        accumulator.finish()
+        crate::protocol::CHAT_COMPLETIONS
+            .stream_chat(self, request, observer, Some(cancel))
+            .await
     }
 
     /// Project defaults for budgeting and UI; this is not request validation.
@@ -765,28 +563,10 @@ impl ModelClient {
         &self,
         request: &ResponseRequest,
     ) -> Option<crate::EffectiveSamplingConfig> {
-        if self.config.wire_mode != WireMode::Responses {
-            return None;
-        }
-        // Tool kind is explicit; evidence and dispatch must not infer it by name.
-        let supported_tools = request.tools.iter().any(|tool| {
-            tool.kind == "function"
-                || (tool.kind == "custom" && tool.function.name == "apply_patch")
-                || (tool.kind == "web_search" && request.model == "deepseek-v4-pro")
-        });
-        Some(crate::resolve_responses_sampling(
-            &request.model,
-            request.top_p.or(self.config.defaults.top_p),
-            self.reasoning_effort_hint(&request.model, request.reasoning_effort),
-            supported_tools,
-            request
-                .tool_choice
-                .as_ref()
-                .or(self.config.defaults.tool_choice.as_ref()),
-        ))
+        crate::protocol::codec_for(self.config.wire_mode).sampling(self, request)
     }
 
-    fn prepare_response_sampling(&self, request: &mut ResponseRequest) -> Result<()> {
+    pub(crate) fn prepare_response_sampling(&self, request: &mut ResponseRequest) -> Result<()> {
         self.apply_defaults(request);
         request.reasoning_effort =
             self.effective_reasoning_effort(&request.model, request.reasoning_effort)?;
@@ -803,7 +583,7 @@ impl ModelClient {
         _model: &str,
         tools: &[crate::ToolSchema],
     ) -> ProviderToolSchemas {
-        let tools = crate::protocol::codec_for(self.config.wire_mode).project_tools(tools);
+        let tools = crate::protocol::codec_for(self.config.wire_mode).project_tools(self, tools);
         ProviderToolSchemas {
             model: _model.to_owned(),
             wire_mode: self.config.wire_mode,
@@ -848,7 +628,7 @@ impl ModelClient {
 
     /// An infallible projection only: unknown labels remain in the capability
     /// and are rejected by `effective_reasoning_effort`, not treated as absent.
-    fn reasoning_effort_hint(
+    pub(crate) fn reasoning_effort_hint(
         &self,
         model: &str,
         requested: Option<ReasoningEffort>,
@@ -857,16 +637,8 @@ impl ModelClient {
         self.config
             .reasoning_effort_input(&capability, requested)
             .or_else(|| {
-                if self.config.wire_mode != WireMode::Responses {
-                    return None;
-                }
-                capability
-                    .effort
-                    .as_ref()?
-                    .default_level
-                    .as_deref()
-                    .and_then(ReasoningEffort::parse_responses)
-                    .filter(|effort| *effort != ReasoningEffort::None)
+                crate::protocol::codec_for(self.config.wire_mode)
+                    .legacy_reasoning_default(&capability)
             })
     }
 
@@ -923,7 +695,7 @@ impl ModelClient {
 /// before serialization.  Runtime/session logs contain the durable events, but
 /// this is the provider-boundary view and therefore catches projection bugs
 /// where the persisted tool result differs from the actual request input.
-fn log_response_input_pairs(request: &ResponseRequest) {
+pub(crate) fn log_response_input_pairs(request: &ResponseRequest) {
     use std::collections::{HashMap, HashSet};
 
     let mut calls = Vec::new();

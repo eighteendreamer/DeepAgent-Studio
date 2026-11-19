@@ -219,249 +219,35 @@ pub struct ResponseRequest {
 }
 
 impl Serialize for ResponseRequest {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        use serde::ser::SerializeMap;
-        self.validate_responses_parameters()
-            .map_err(serde::ser::Error::custom)?;
-        self.validate_message_roles()
-            .map_err(serde::ser::Error::custom)?;
-        validate_response_tool_schemas(&self.tools).map_err(serde::ser::Error::custom)?;
-        self.validate_tool_choice()
-            .map_err(serde::ser::Error::custom)?;
-        self.validate_tool_image_resolution()
-            .map_err(serde::ser::Error::custom)?;
-        let input = response_input_items_to_wire(
-            &self.input,
-            &self.attachment_data_urls,
-            &self.image_file_ids,
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.serialize_with_effort(
+            serializer,
+            self.reasoning_effort.map(ReasoningEffort::label),
         )
-        .map_err(serde::ser::Error::custom)?;
-        let mut map = serializer.serialize_map(None)?;
-        map.serialize_entry("model", &self.model)?;
-        if let Some(value) = &self.instructions {
-            map.serialize_entry("instructions", &value)?;
-        }
-        map.serialize_entry("input", &input)?;
-        map.serialize_entry("stream", &self.stream)?;
-        if let Some(value) = self.temperature {
-            map.serialize_entry("temperature", &value)?;
-        }
-        if let Some(value) = self.top_p {
-            map.serialize_entry("top_p", &value)?;
-        }
-        if let Some(value) = self.max_output_tokens {
-            map.serialize_entry("max_output_tokens", &value)?;
-        }
-        if let Some(value) = self.top_logprobs {
-            map.serialize_entry("top_logprobs", &value)?;
-        }
-        if let Some(value) = self.reasoning_effort {
-            map.serialize_entry("reasoning", &serde_json::json!({"effort": value.label()}))?;
-        }
-        if !self.tools.is_empty() {
-            map.serialize_entry("tools", &response_tools_to_wire(&self.tools))?;
-        }
-        if let Some(value) = &self.tool_choice {
-            map.serialize_entry("tool_choice", value)?;
-        }
-        if let Some(value) = &self.text {
-            map.serialize_entry("text", value)?;
-        }
-        if let Some(value) = &self.user {
-            map.serialize_entry("user", value)?;
-        }
-        map.end()
     }
 }
 
-/// The one Responses tool serializer, also used by read-only wire evidence.
-pub(crate) fn response_tools_to_wire(tools: &[ToolSchema]) -> Vec<serde_json::Value> {
-    tools.iter().map(|tool| match tool.kind.as_str() {
-        "function" => serde_json::json!({"type":"function","name":tool.function.name,"description":tool.function.description,"parameters":tool.function.parameters}),
-        "custom" => serde_json::json!({"type":"custom","name":tool.function.name}),
-        "web_search" => serde_json::json!({"type":"web_search"}),
-        _ => serde_json::json!({"type": tool.kind}),
-    }).collect()
-}
+impl ResponseRequest {
+    pub(crate) fn serialize_with_effort<S: Serializer>(
+        &self,
+        serializer: S,
+        effort: Option<&str>,
+    ) -> Result<S::Ok, S::Error> {
+        crate::protocol::serialize_response_request(self, serializer, effort)
+    }
 
-fn response_input_items_to_wire(
-    items: &[ResponseInputItem],
-    data_urls: &std::collections::BTreeMap<String, String>,
-    file_ids: &std::collections::BTreeMap<String, String>,
-) -> Result<Vec<serde_json::Value>> {
-    items
-        .iter()
-        .map(|item| {
-            Ok(match item {
-                ResponseInputItem::Message { role, content } => {
-                    serde_json::json!({
-                        "type": "message",
-                        "role": role,
-                        "content": content,
-                    })
-                }
-                ResponseInputItem::InputMessage {
-                    role,
-                    content,
-                    attachments,
-                } => {
-                    response_input_message_to_wire(role, content, attachments, data_urls, file_ids)?
-                }
-                ResponseInputItem::Reasoning { id, content, .. } => {
-                    let mut value = serde_json::json!({
-                        "type": "reasoning",
-                        "content": [{
-                            "type": "reasoning_text",
-                            "text": content,
-                        }],
-                    });
-                    if let Some(id) = id {
-                        value["id"] = serde_json::Value::String(id.clone());
-                    }
-                    value
-                }
-                ResponseInputItem::FunctionCall {
-                    call_id,
-                    name,
-                    arguments,
-                } => {
-                    serde_json::json!({
-                        "type": "function_call",
-                        "call_id": call_id,
-                        "name": name,
-                        "arguments": arguments,
-                    })
-                }
-                ResponseInputItem::FunctionCallOutput { call_id, output } => {
-                    serde_json::json!({
-                        "type": "function_call_output",
-                        "call_id": call_id,
-                        "output": tool_output_to_wire(output, data_urls, file_ids),
-                    })
-                }
-                ResponseInputItem::CustomToolCall {
-                    call_id,
-                    name,
-                    input,
-                } => {
-                    serde_json::json!({
-                        "type": "custom_tool_call",
-                        "call_id": call_id,
-                        "name": name,
-                        "input": input,
-                    })
-                }
-                ResponseInputItem::CustomToolCallOutput { call_id, output } => {
-                    serde_json::json!({
-                        "type": "custom_tool_call_output",
-                        "call_id": call_id,
-                        "output": tool_output_to_wire(output, data_urls, file_ids),
-                    })
-                }
-                ResponseInputItem::WebSearchCall { id, status, action } => {
-                    let mut value = serde_json::json!({
-                        "type": "web_search_call",
-                        "id": id,
-                        "status": status,
-                    });
-                    if let Some(action) = action {
-                        value["action"] = action.clone();
-                    }
-                    value
-                }
-                ResponseInputItem::ToolSearchCall { .. }
-                | ResponseInputItem::ToolSearchOutput { .. } => serde_json::to_value(item)
-                    .expect("native discovery items contain serializable data"),
-            })
-        })
-        .collect()
-}
-
-/// Map the neutral durable tool content at the existing Responses wire seam.
-fn tool_output_to_wire(
-    output: &deepagent_core::tool_content::ToolResultBody,
-    data_urls: &std::collections::BTreeMap<String, String>,
-    file_ids: &std::collections::BTreeMap<String, String>,
-) -> serde_json::Value {
-    use deepagent_core::tool_content::{ToolResultBody, ToolResultPart};
-    match output {
-        ToolResultBody::Text(text) => text.clone().into(),
-        ToolResultBody::Parts(parts) => parts
-            .iter()
-            .map(|part| match part {
-                ToolResultPart::Text { text } => {
-                    serde_json::json!({"type":"input_text", "text":text})
-                }
-                ToolResultPart::Image { attachment } => {
-                    image_part(&attachment.id, data_urls, file_ids)
-                }
-            })
-            .collect(),
+    pub(crate) fn validate_wire_parameters(&self) -> Result<()> {
+        self.validate_responses_parameters()?;
+        self.validate_message_roles()?;
+        validate_response_tool_schemas(&self.tools)?;
+        self.validate_tool_choice()?;
+        self.validate_tool_image_resolution()
     }
 }
 
-/// Render a validated Responses image message without dropping references.
-fn response_input_message_to_wire(
-    role: &str,
-    content: &str,
-    attachments: &[deepagent_core::message::MessageAttachment],
-    data_urls: &std::collections::BTreeMap<String, String>,
-    file_ids: &std::collections::BTreeMap<String, String>,
-) -> Result<serde_json::Value> {
-    let mut image_parts = Vec::new();
-    for attachment in attachments
-        .iter()
-        .filter(|attachment| attachment.kind == "image")
-    {
-        crate::client::WireMode::Responses.validate_image_role(role)?;
-        if !file_ids.contains_key(&attachment.id)
-            && data_urls
-                .get(&attachment.id)
-                .is_none_or(|url| url.trim().is_empty())
-        {
-            return Err(CoreError::invalid(
-                "image_input_message_unresolved: image message requires a resolved image reference; no image was sent",
-            ));
-        }
-        image_parts.push(image_part(&attachment.id, data_urls, file_ids));
-    }
-    if image_parts.is_empty() {
-        return Ok(serde_json::json!({
-            "type": "message",
-            "role": role,
-            "content": content,
-        }));
-    }
-    let mut parts = Vec::new();
-    if !content.is_empty() {
-        // Per the DeepSeek Vision guide, Responses content parts use the
-        // `input_text` type name (OpenAI Responses semantics), not the Chat
-        // Completions `text` type. A `text`-typed block inside the parts
-        // array is not recognized by the provider and breaks image messages.
-        parts.push(serde_json::json!({ "type": "input_text", "text": content }));
-    }
-    parts.extend(image_parts);
-    Ok(serde_json::json!({
-        "type": "message",
-        "role": role,
-        "content": parts,
-    }))
-}
-
-fn image_part(
-    attachment_id: &str,
-    data_urls: &std::collections::BTreeMap<String, String>,
-    file_ids: &std::collections::BTreeMap<String, String>,
-) -> serde_json::Value {
-    if let Some(file_id) = file_ids.get(attachment_id) {
-        serde_json::json!({"type":"input_image","file_id":file_id})
-    } else {
-        serde_json::json!({"type":"input_image","image_url":data_urls.get(attachment_id),"detail":"auto"})
-    }
-}
+#[cfg(test)]
+use crate::protocol::response_input_items_to_wire;
+pub(crate) use crate::protocol::response_tools_to_wire;
 
 impl ResponseRequest {
     /// Build a non-streaming request for `model` with `messages`.

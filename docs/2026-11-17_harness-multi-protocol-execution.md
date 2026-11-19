@@ -598,3 +598,13 @@ H022 后端 `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --all
 - 当前集成工作树原生构建成功，真实 Tauri 双协议四场景均完成且回复预期，运行环境两份缓存未改写。Responses / Messages 续聊准备分别为 929 / 1050 ms；工具构建为 65～100 ms、能力元数据为 33～105 ms、能力快照为 73～120 ms、模型绑定为 1～29 ms。首次 Git 查询仍为约 1.61 秒。
 - 完整 AppCore 库为 1743 通过、2 失败、36 忽略：已知宿主 Node 优先级断言仍失败；验证生命周期夹具等待共享构建目录超时，取消继承目标目录后独立复跑通过。整仓格式仍有未修改的 `id.rs` 排版差异，不宣称门禁全绿。
 - Git 规则继续保持 30 秒复用、系统内操作立即失效、外部修改最多滞后 30 秒。当前没有每轮重新探测运行环境的证据；尚未完成同负载端到端 A/B，不能把整体差异全部归因于扫描优化。详见 [扫描与计时报告](reports/2026-11-19-workspace-entry-scan.md)。完整目标继续进行。
+
+## H034：完整协议工厂与 Responses SDK 类型层（2026-11-19）
+
+- 对照 DeepSeek Harness 的 `PROTOCOLS`、`buildProvider` 和 `createProvider`，由单一协议表选择完整 codec。Responses、Chat Completions、Messages 的请求准备、编码、发送入口及 decoder 均归属 codec，普通发送、取消和 Files 有限回退共用一条物理传输路径；每次物理发送创建独立解析器。
+- 生产 Responses 序列化接入精确固定的 `async-openai 0.43.0`，仅启用 `response-types`。标准请求、消息、工具调用与结果、图片、工具、reasoning、text、tool_choice 使用 SDK 类型；DeepSeek 的 `user`、非 SDK effort、reasoning 历史及原生工具扩展集中显式适配。
+- 沿用 P0 已确定的类型与序列化边界，HTTP/SSE、UTF-8、语义聚合、取消、usage、终态及 48 MiB 完整体预算继续复用。未引入 SDK 网络客户端，没有新增过载重试。
+- 工厂架构边界先 RED 后 GREEN；迁移中复现并修复 `f32 -> Value -> f64` 导致的采样参数精度变化。集成工作树 models/http 全量 432 通过、0 失败、4 忽略；独立提交快照新增专项 7 通过，不依赖其他待提交的思考、缓存或 UI 改动。
+- 其余验证、独立提交版本边界和未覆盖范围见 [本轮报告](reports/2026-11-19-protocol-factory-responses-sdk.md)。本轮文件定向格式检查通过，全仓格式仍有未修改 `id.rs` 的既有差异；不以模型专项通过宣称完整方案或全仓门禁完成。
+
+- 独立快照既有回归再通过 307 项，与新增专项合计 314 项；独立快照严格 Clippy 通过。完整 workspace 实际结束为 5757 通过、61 失败、130 忽略，13 个目标失败；仓库外 TEMP 复核解释其中 9 项，但不改写完整命令结果。集成工作树严格 Clippy 被本轮基线已有的 `thinking.rs` 单元素循环阻断。其余固定路径、平台权限、配置/思考/容量及进程测试失败完整留在报告，未全部归因，不宣称全仓门禁通过。

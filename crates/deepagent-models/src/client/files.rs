@@ -1,7 +1,7 @@
 //! Files API projection and bounded retry at the existing provider boundary.
 use super::*;
 
-pub(super) enum ImageRequest<'a> {
+pub(crate) enum ImageRequest<'a> {
     Responses(&'a mut ResponseRequest),
     Chat(&'a mut ChatCompletionRequest),
 }
@@ -56,38 +56,6 @@ impl ImageRequest<'_> {
                 request.validate()?;
                 request_body::encode(request)
             }
-        }
-    }
-}
-
-enum AttemptAccumulator {
-    Responses(ResponseAccumulator),
-    Chat(ChatCompletionAccumulator),
-}
-
-impl AttemptAccumulator {
-    fn for_request(request: &ImageRequest<'_>) -> Self {
-        match request {
-            ImageRequest::Responses(_) => Self::Responses(ResponseAccumulator::new()),
-            ImageRequest::Chat(_) => Self::Chat(ChatCompletionAccumulator::new()),
-        }
-    }
-
-    fn push(
-        &mut self,
-        data: &str,
-        observer: &mut dyn crate::stream::DeltaObserver,
-    ) -> Result<bool> {
-        match self {
-            Self::Responses(accumulator) => accumulator.push_sse_data_observed(data, observer),
-            Self::Chat(accumulator) => accumulator.push_sse_data_observed(data, observer),
-        }
-    }
-
-    fn finish(self) -> Result<Response> {
-        match self {
-            Self::Responses(accumulator) => accumulator.finish(),
-            Self::Chat(accumulator) => accumulator.finish(),
         }
     }
 }
@@ -276,14 +244,11 @@ impl ModelClient {
         Ok(())
     }
 
-    pub(super) async fn prepare_response_files_for_attempt(
+    pub(crate) async fn prepare_response_files_for_attempt(
         &self,
         request: &mut ResponseRequest,
         cancel: Option<Arc<AtomicBool>>,
     ) -> Result<()> {
-        if self.config.wire_mode != WireMode::Responses {
-            return Ok(());
-        }
         let images: Vec<_> = request
             .input
             .iter()
@@ -312,7 +277,7 @@ impl ModelClient {
         Ok(())
     }
 
-    pub(super) async fn prepare_chat_files_for_attempt(
+    pub(crate) async fn prepare_chat_files_for_attempt(
         &self,
         request: &mut ChatCompletionRequest,
         cancel: Option<Arc<AtomicBool>>,
@@ -381,35 +346,23 @@ impl ModelClient {
         }
     }
 
-    pub(super) async fn stream_files_aware_attempt(
+    pub(crate) async fn stream_files_aware_attempt(
         &self,
+        codec: &dyn crate::protocol::WireCodec,
         mut request: ImageRequest<'_>,
         transport_request: &mut TransportRequest,
         observer: &mut dyn crate::stream::DeltaObserver,
         cancel: Option<Arc<AtomicBool>>,
     ) -> Result<Response> {
-        let mut accumulator = AttemptAccumulator::for_request(&request);
         let mut retry_observer = FileReferenceRetryObserver::new(observer);
-        let sent = {
-            let acc = &mut accumulator;
-            let mut sink = |data: &str| -> Result<bool> { acc.push(data, &mut retry_observer) };
-            match cancel.as_ref() {
-                Some(cancel) => {
-                    self.transport
-                        .stream_cancelled(transport_request.clone(), &mut sink, cancel.clone())
-                        .await
-                }
-                None => {
-                    self.transport
-                        .stream(transport_request.clone(), &mut sink)
-                        .await
-                }
-            }
-        };
-        let result = match sent {
-            Ok(()) => accumulator.finish(),
-            Err(error) => Err(error),
-        };
+        let result = self
+            .stream_attempt(
+                codec,
+                transport_request.clone(),
+                &mut retry_observer,
+                cancel.clone(),
+            )
+            .await;
         let invalid_file_reference = result.as_ref().is_err_and(Self::invalid_file_reference);
         let can_retry = invalid_file_reference
             && retry_observer.safe_to_retry
@@ -437,21 +390,8 @@ impl ModelClient {
             return Err(CoreError::other("request cancelled"));
         }
         transport_request.body = request.fallback_body()?;
-        let mut accumulator = AttemptAccumulator::for_request(&request);
-        let mut sink = |data: &str| -> Result<bool> { accumulator.push(data, observer) };
-        match cancel {
-            Some(cancel) => {
-                self.transport
-                    .stream_cancelled(transport_request.clone(), &mut sink, cancel)
-                    .await?;
-            }
-            None => {
-                self.transport
-                    .stream(transport_request.clone(), &mut sink)
-                    .await?
-            }
-        }
-        accumulator.finish()
+        self.stream_attempt(codec, transport_request.clone(), observer, cancel)
+            .await
     }
 
     fn invalid_file_reference(error: &CoreError) -> bool {

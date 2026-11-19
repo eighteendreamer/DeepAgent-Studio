@@ -16,6 +16,8 @@ default = []
 http = ["dep:reqwest", "dep:time"]
 
 [dependencies]
+# Responses DTOs only. Keep HTTP/SSE, cancellation and request budgets in our transport.
+async-openai = { version = "=0.43.0", default-features = false, features = ["response-types"] }
 # Plan P0/P5: SDK DTOs only; HttpTransport owns networking and cancellation.
 # This SDK version is not published on crates.io. Pin its audited MIT source.
 anthropic-sdk = { git = "https://github.com/Haleclipse/anthropic-sdk-rs.git", rev = "16dc3e424e7c5041bcc952ebb54d9ec4b2b1ced7" }

@@ -1,22 +1,26 @@
 //! Wire protocol factory (plan §5).
 //!
 //! `codec_for` is the single production dispatch point from a `WireMode` to
-//! its codec. Codecs own protocol-specific projection; `ModelClient` must not
-//! carry `WireMode::<variant> =>` match arms.
+//! its complete codec: preparation, encoding, sending and semantic decoding.
+//! `ModelClient` owns shared transport and delegates protocol behavior here.
 
 use deepagent_core::error::Result;
 
-use crate::chat::ResponseRequest;
-use crate::client::{request_body, response_to_chat_completion, ModelClient, WireMode};
+use std::sync::{atomic::AtomicBool, Arc};
+
+use crate::chat::{ReasoningEffort, Response, ResponseRequest};
+use crate::client::{response_to_chat_completion, ModelClient, WireMode};
+use crate::stream::DeltaObserver;
 use crate::ToolSchema;
 
 /// Protocol-specific behaviour behind one `WireMode`.
+#[async_trait::async_trait]
 pub(crate) trait WireCodec: Send + Sync {
     /// Stable protocol name for logs and diagnostics.
     fn name(&self) -> &'static str;
 
     /// Serialize tools into this protocol's tool vocabulary.
-    fn project_tools(&self, tools: &[ToolSchema]) -> Vec<serde_json::Value>;
+    fn project_tools(&self, client: &ModelClient, tools: &[ToolSchema]) -> Vec<serde_json::Value>;
 
     fn tool_kind<'a>(&self, schema: &'a serde_json::Value) -> Result<&'a str> {
         schema
@@ -32,98 +36,105 @@ pub(crate) trait WireCodec: Send + Sync {
             .and_then(serde_json::Value::as_str)
     }
 
+    /// Own request preparation and stream decoding; the host owns transport/cancellation.
+    async fn stream(
+        &self,
+        client: &ModelClient,
+        request: ResponseRequest,
+        observer: &mut dyn DeltaObserver,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Result<Response>;
+
+    fn decoder(&self) -> Box<dyn StreamDecoder>;
+
+    fn validate_image_role(&self, role: &str) -> Result<()>;
+
+    fn validate_tool_images(&self, _request: &ResponseRequest) -> Result<()> {
+        Ok(())
+    }
+
+    fn sampling(
+        &self,
+        _client: &ModelClient,
+        _request: &ResponseRequest,
+    ) -> Option<crate::EffectiveSamplingConfig> {
+        None
+    }
+
+    fn legacy_reasoning_default(
+        &self,
+        _capability: &crate::ModelCapability,
+    ) -> Option<ReasoningEffort> {
+        None
+    }
+
+    fn resolve_reasoning_effort(
+        &self,
+        capability: &crate::ModelCapability,
+        requested: Option<ReasoningEffort>,
+    ) -> Result<Option<ReasoningEffort>> {
+        if capability.thinking.is_none() {
+            Ok(requested)
+        } else {
+            capability.resolve_reasoning_effort(requested)
+        }
+    }
+
     /// Build the streaming request body for one prepared turn.
     fn encode_body(&self, client: &ModelClient, request: ResponseRequest) -> Result<String>;
 }
 
-struct ResponsesCodec;
-
-impl WireCodec for ResponsesCodec {
-    fn name(&self) -> &'static str {
-        "responses"
-    }
-
-    fn project_tools(&self, tools: &[ToolSchema]) -> Vec<serde_json::Value> {
-        crate::chat::response_tools_to_wire(tools)
-    }
-
-    fn encode_body(&self, client: &ModelClient, request: ResponseRequest) -> Result<String> {
-        request_body::encode(&client.prepare_response_request(request))
-    }
+/// Stateful semantic stream, including protocol-owned usage and stop mapping.
+pub(crate) trait StreamDecoder: Send {
+    fn push(&mut self, data: &str, observer: &mut dyn DeltaObserver) -> Result<bool>;
+    fn finish(self: Box<Self>) -> Result<Response>;
 }
 
-struct ChatCompletionsCodec;
-
-impl WireCodec for ChatCompletionsCodec {
-    fn name(&self) -> &'static str {
-        "chat_completions"
-    }
-
-    fn project_tools(&self, tools: &[ToolSchema]) -> Vec<serde_json::Value> {
-        crate::chat_completions::chat_tools_to_wire(tools)
-    }
-
-    fn encode_body(&self, client: &ModelClient, request: ResponseRequest) -> Result<String> {
-        let mut chat = response_to_chat_completion(request)?;
-        chat.stream = true;
-        client.apply_chat_defaults(&mut chat)?;
-        request_body::encode(&chat)
-    }
-}
-
-struct MessagesCodec;
-
-impl WireCodec for MessagesCodec {
-    fn name(&self) -> &'static str {
-        "messages"
-    }
-
-    fn project_tools(&self, tools: &[ToolSchema]) -> Vec<serde_json::Value> {
-        crate::messages::project_tools(tools)
-    }
-
-    fn tool_kind<'a>(&self, schema: &'a serde_json::Value) -> Result<&'a str> {
-        if let Some(kind) = schema.get("type").and_then(serde_json::Value::as_str) {
-            return Ok(kind);
+macro_rules! decoder {
+    ($($accumulator:ty),+ $(,)?) => { $(
+        impl StreamDecoder for $accumulator {
+            fn push(&mut self, data: &str, observer: &mut dyn DeltaObserver) -> Result<bool> {
+                self.push_sse_data_observed(data, observer)
+            }
+            fn finish(self: Box<Self>) -> Result<Response> { (*self).finish() }
         }
-        if schema
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .is_some()
-            && schema
-                .get("input_schema")
-                .is_some_and(serde_json::Value::is_object)
-        {
-            return Ok("custom");
-        }
-        Err(deepagent_core::error::CoreError::invalid(
-            "invalid Messages tool schema",
-        ))
-    }
-
-    fn encode_body(&self, client: &ModelClient, request: ResponseRequest) -> Result<String> {
-        let request = client.prepare_response_request(request);
-        let max_tokens = request.max_output_tokens.ok_or_else(|| {
-            deepagent_core::error::CoreError::invalid(
-                "Messages requests require a positive max_output_tokens value",
-            )
-        })?;
-        crate::messages::encode_request(&request, max_tokens)
-    }
+    )+ };
 }
+decoder!(
+    crate::ResponseAccumulator,
+    crate::ChatCompletionAccumulator,
+    crate::messages::MessagesAccumulator
+);
+
+mod chat;
+mod messages;
+mod responses;
+use chat::ChatCompletionsCodec;
+use messages::MessagesCodec;
+#[cfg(test)]
+pub(crate) use responses::request::response_input_items_to_wire;
+pub(crate) use responses::request::{
+    response_tools_to_wire, serialize as serialize_response_request,
+};
+use responses::ResponsesCodec;
 
 static RESPONSES: ResponsesCodec = ResponsesCodec;
-static CHAT_COMPLETIONS: ChatCompletionsCodec = ChatCompletionsCodec;
+pub(crate) static CHAT_COMPLETIONS: ChatCompletionsCodec = ChatCompletionsCodec;
 static MESSAGES: MessagesCodec = MessagesCodec;
 
-/// The one production match on wire protocol. Add a protocol here and nowhere
-/// else in the client path.
+/// DeepSeek Harness provider.ts:48-53: configured protocols select a complete implementation.
+static PROTOCOLS: &[(WireMode, &dyn WireCodec)] = &[
+    (WireMode::Responses, &RESPONSES),
+    (WireMode::ChatCompletions, &CHAT_COMPLETIONS),
+    (WireMode::Messages, &MESSAGES),
+];
+
 pub(crate) fn codec_for(mode: WireMode) -> &'static dyn WireCodec {
-    match mode {
-        WireMode::Responses => &RESPONSES,
-        WireMode::ChatCompletions => &CHAT_COMPLETIONS,
-        WireMode::Messages => &MESSAGES,
-    }
+    PROTOCOLS
+        .iter()
+        .find(|(protocol, _)| *protocol == mode)
+        .map(|(_, codec)| *codec)
+        .expect("every WireMode must be registered in PROTOCOLS")
 }
 
 #[cfg(test)]
@@ -144,6 +155,10 @@ mod tests {
 
     #[test]
     fn codec_tool_projection_matches_the_existing_serializers() {
+        let client = ModelClient::new(
+            std::sync::Arc::new(crate::MockTransport::default()),
+            crate::ModelConfig::deepseek("synthetic"),
+        );
         let tools = vec![ToolSchema::function(
             "read_file",
             "Read one file",
@@ -151,27 +166,12 @@ mod tests {
         )];
 
         assert_eq!(
-            codec_for(WireMode::Responses).project_tools(&tools),
+            codec_for(WireMode::Responses).project_tools(&client, &tools),
             crate::chat::response_tools_to_wire(&tools)
         );
         assert_eq!(
-            codec_for(WireMode::ChatCompletions).project_tools(&tools),
+            codec_for(WireMode::ChatCompletions).project_tools(&client, &tools),
             crate::chat_completions::chat_tools_to_wire(&tools)
         );
-    }
-
-    #[test]
-    fn client_production_code_has_no_protocol_match_arms() {
-        // Audit only the production half of client.rs (before its test modules).
-        let production = include_str!("client.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .expect("client.rs has a production section");
-        for arm in ["WireMode::Responses =>", "WireMode::ChatCompletions =>"] {
-            assert!(
-                !production.contains(arm),
-                "client.rs still dispatches on `{arm}`; route it through protocol::codec_for"
-            );
-        }
     }
 }

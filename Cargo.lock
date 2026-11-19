@@ -246,6 +246,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-openai"
+version = "0.43.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c30702b56c3a8e7d9b01c94b0d7927019f3fe6aa2d7af7d2f1968bbdb858eec"
+dependencies = [
+ "derive_builder",
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "async-ssh2-tokio"
 version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2044,6 +2056,7 @@ name = "deepagent-models"
 version = "0.1.0"
 dependencies = [
  "anthropic-sdk",
+ "async-openai",
  "async-trait",
  "base64 0.22.1",
  "deepagent-core",

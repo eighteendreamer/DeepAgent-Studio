@@ -464,18 +464,19 @@ pub struct BalanceAmount {
 
 ---
 
-### 9.1 执行状态（截至 2026-11-18）
+### 9.1 执行状态（截至 2026-11-19）
 
 | 批次 | 状态 | 证据 / 与原计划的偏差 |
 |---|---|---|
-| G0 工程门禁 | 编译检查通过；完整门禁未通过 | H024 最后完整 workspace 测试在 AppCore lib 停止：1714 passed / 7 failed / 44 ignored；串行复核仍有 6 项失败，不能沿用此前“仅剩 1 项”的结论。H022 原生 all-targets check 通过；H025 models/http 321、AppCore 模型服务 20、内核终态 5 passed。桌面完整 `pnpm build` 已通过；全仓 fmt/clippy 问题仍待处理。远程连接由另一会话负责。 |
-| P0 可测性验证 | 已记录结论，采用 (a) | §10-1；SDK 只承担类型与序列化，复用现有 HTTP/SSE/取消/预算边界。anthropic-sdk 已进入生产依赖；async-openai 尚未接入。 |
+| G0 工程门禁 | 编译检查通过；完整门禁未通过 | H024 最后完整 workspace 测试在 AppCore lib 停止：1714 passed / 7 failed / 44 ignored；串行复核仍有 6 项失败，不能沿用此前“仅剩 1 项”的结论。H022 原生 all-targets check 通过；H025 models/http 321、AppCore 模型服务 20、内核终态 5 passed。桌面完整 `pnpm build` 已通过；全仓 fmt/clippy 问题仍待处理。远程连接由另一会话负责。 H034 最新完整命令为 5757 passed / 61 failed / 130 ignored，13 个目标失败；其中 9 项因仓库内 TEMP 受影响，仓库外复核通过，未覆盖原失败结论。 |
+| P0 可测性验证 | 已记录结论，采用 (a) | §10-1；SDK 只承担类型与序列化，复用现有 HTTP/SSE/取消/预算边界。anthropic-sdk 与 async-openai 0.43.0 均已进入生产依赖；Responses 仅启用 response-types。 |
 | P1 中性内容层 + 五档映射 | 五档已贯通，家族映射接入待完成 | `b6774635` 增加 `ThinkingLevel` / `map_thinking` 和 `ResponseItem::Reasoning.signature`。H012 将 medium 独立保留到三协议请求体，默认能力与显式能力共用解析与校验；`map_thinking` 家族映射仍待接入 provider adapter。 |
-| P2 协议表 + 工厂 | 部分完成 | `protocol::codec_for` 已收口 Responses / Chat Completions / Messages 的请求体与工具投影；Messages 请求、流式解码、usage、签名、错误和工具结果顺序已接入 ModelClient。统一 codec 流式边界和 Responses SDK 类型层仍需继续收敛。 |
+| P2 协议表 + 工厂 | 已完成 | 参考 DeepSeek Harness 的完整协议工厂：Responses / Chat Completions / Messages 均由 codec 负责准备、编码、发送入口与解析器；客户端与 Files 重试共用一条物理传输路径。验证见 H034。 |
 | P3 数据模型 + 迁移 | 运行链已接入，消费方回归中 | V24 表、CRUD、激活列表、AppCore DTO、7 个 Tauri command 与 TS API 均已落地。`9c9046be` 修复密钥引用；`b1de6059` 完成一次性 Chat 种子迁移。H004 将 admission、执行绑定、工具续写、技能审查和标题调用接入注册表；解析、真实运行链、内核相关和 persistence 回归均通过。模型选择已持久化并由下一轮 admission 读取，旧 Chat 字段仅作迁移/兼容回退。 |
 | P3c 过载与备用模型删除 | 已提交，相关回归通过 | `10234777`：过载统一不可重试，明确 503 过载也立即报错；删除运行时 fallback 路径。models lib 240 passed；runtime lib 493 passed / 2 ignored；H55 4 passed；内核 H144 7 passed；采样、计费/预算、输出上限、图像模式及模型快照串行回归通过；真实 HTTP 1 项、CLI 2 项通过。H004 已接入单一 resolver。 |
 | P3b 会话 JSONL 的 `origin` | 已实现，回归通过 | `ResponseItemAppended.origin` 为可选 `ModelOrigin`，由真实模型运行链写入；旧 JSONL 无 `origin` 仍可读。core 往返 2 项、persistence 来源回放 1 项、persistence 全量 221 项、session 27 项、AppCore 注册表真实运行 7 项通过。跨供应商思考签名是否需要降级仍待实测，当前只保留签名与来源，不擅自改变回放语义。 |
-| P4 / P5 SDK 与双协议 codec | Messages SDK 请求/解析已接入；真实传输复验中 | H008 修复重复工具结果、required→any、显式关闭思考。H025 查证 deepseek-harness 的第三方 pi-ai 路由，修复扩展通知进入 Responses 序号门禁及输出前重复 created；Messages 基础 URL 统一补 `/v1`，系统追加 `/messages`，模型发现复用同一根地址。DeepSeek Messages 支持 Bearer；原生 Anthropic 请求头仍待适配。async-openai 尚未进入生产依赖；Messages 图片与缓存断点待补齐。 |
+| P4 Responses codec | 已完成（按 P0 类型与序列化边界） | async-openai 0.43.0 的 CreateResponse、消息、工具调用/结果、图片、工具、text 与 tool_choice 类型进入生产序列化；DeepSeek 扩展显式保留。现有 HTTP/SSE、语义组装、取消与 48 MiB 预算复用。验证见 H034。 |
+| P5 Messages codec | Messages SDK 请求/解析已接入；真实传输复验中 | H008 修复重复工具结果、required→any、显式关闭思考。H025 查证 deepseek-harness 的第三方 pi-ai 路由，修复扩展通知进入 Responses 序号门禁及输出前重复 created；Messages 基础 URL 统一补 `/v1`，系统追加 `/messages`，模型发现复用同一根地址。DeepSeek Messages 支持 Bearer；原生 Anthropic 请求头仍待适配。Messages 图片与缓存断点待补齐。 |
 | P6 设置页 | 基础界面与后端已实现；流程待验收 | `ModelsSettings.tsx` 已接供应商 CRUD、模型拉取/激活和配置编辑。H015 保留已存配置，H016 支持协议/容量/思考编辑，服务 19 + resolver 12 项通过；H017 设置页迟到请求回归通过。完整原生 UI 流程仍待验收。 |
 | P7 余额 | 已修复已知解析/UI 缺口；真实 API 待验收 | H009 修复未知形状误判无限、分币换算、display 单位、缺失金额伪造零与错误跨供应商回退；两处 UI 共用查询与金额格式化并丢弃迟到结果。models lib 256、前端余额专项 9 passed。完整桌面与真实余额 API 待验收。 |
 | P8 缓存 | 未完成 | 尚未新增稳定前缀治理或 Messages `cache_control` 断点；继续复用现有上下文压缩阈值。 |
