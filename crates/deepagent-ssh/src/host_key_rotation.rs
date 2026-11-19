@@ -1,13 +1,14 @@
 //! Explicit management workflow; normal connection decisions cannot rotate keys.
 //! Shares enrollment's bounded, expiring, single-use challenge registry.
 
-use crate::connection_challenge::{config_proof, HostKeyPurpose};
+use crate::connection_challenge::{config_proof, HostKeyPurpose, PendingHostKey};
+use crate::connection_operation::ConnectionPermit;
 use crate::host_trust::HostTrust;
 use crate::service::SshServiceImpl;
 use crate::timing::ChallengeDeadline;
 use crate::{
-    SshClient, SshError, SshHostIdentity, SshHostKeyChallenge, SshHostKeyRotationRecord,
-    SshKnownHostKey, SshResult,
+    SshClient, SshConnectionConfig, SshError, SshHostIdentity, SshHostKeyChallenge,
+    SshHostKeyRotationRecord, SshKnownHostKey, SshResult,
 };
 use russh::keys::{HashAlg, PublicKey};
 use serde::Serialize;
@@ -104,42 +105,84 @@ impl SshServiceImpl {
         challenge_id: &str,
     ) -> SshResult<SshHostKeyRotationResult> {
         self.ensure_loaded().await;
-        let _lifecycle = self.lifecycle.write().await;
-        let pending = self.host_challenges.take(id, attempt_id, challenge_id)?;
+        let permit = self.connection_operations.acquire(id).await?;
+        let config = self.operation_config(id, &permit).await?;
+        let pending = {
+            let _lifecycle = self.lifecycle.read().await;
+            permit.ensure_current()?;
+            self.host_challenges.take(id, attempt_id, challenge_id)?
+        };
+        let result = async {
+            if pending.challenge.kind != "key_rotation" {
+                return Err(SshError::InvalidConfig(
+                    "not an SSH rotation management challenge".into(),
+                ));
+            }
+            let store = self.application_trust_store()?;
+            // Both observations reject the key without authenticating.
+            permit
+                .run(async {
+                    if config_proof(&config)? != pending.config_proof
+                        || HostTrust::capture_rotation(&config, store.clone()).await?
+                            != pending.trust
+                    {
+                        return Err(HostTrust::error(
+                            &config,
+                            "configuration or trust changed since rotation preview",
+                        ));
+                    }
+                    if probe(&config, store, pending.deadline).await? != pending.key {
+                        return Err(HostTrust::error(
+                            &config,
+                            "server key changed before rotation commit",
+                        ));
+                    }
+                    Ok(())
+                })
+                .await?;
+            self.commit_host_key_rotation(&config, pending, &permit)
+                .await
+        }
+        .await;
         self.host_challenges.discard(id, attempt_id);
-        if pending.challenge.kind != "key_rotation" {
-            return Err(SshError::InvalidConfig(
-                "not an SSH rotation management challenge".into(),
-            ));
-        }
-        let config = self.config_for(id).await?;
+        result
+    }
+
+    async fn commit_host_key_rotation(
+        &self,
+        config: &SshConnectionConfig,
+        pending: PendingHostKey,
+        permit: &ConnectionPermit,
+    ) -> SshResult<SshHostKeyRotationResult> {
+        // No network I/O owns this writer. Once the local CAS starts, retain
+        // its receipt and finish alias cleanup even if disconnect is requested.
+        let _lifecycle = permit
+            .run(async { Ok(self.lifecycle.write().await) })
+            .await?;
+        permit.ensure_current()?;
+        self.host_challenges
+            .ensure_current(&config.id, &pending.challenge.attempt_id)?;
         let store = self.application_trust_store()?;
-        if config_proof(&config)? != pending.config_proof
-            || HostTrust::capture_rotation(&config, store.clone()).await? != pending.trust
+        let current = self.config_for(&config.id).await?;
+        if config_proof(&current)? != pending.config_proof
+            || HostTrust::capture_rotation(&current, store.clone()).await? != pending.trust
         {
             return Err(HostTrust::error(
-                &config,
-                "configuration or trust changed since rotation preview",
+                config,
+                "configuration or trust changed before rotation commit",
             ));
         }
-        // Re-observe immediately before saving. A second server change is not
-        // silently persisted, and neither probe ever reaches authentication.
-        if probe(&config, store.clone(), pending.deadline).await? != pending.key
-            || HostTrust::capture_rotation(&config, store.clone()).await? != pending.trust
-        {
-            return Err(HostTrust::error(
-                &config,
-                "server key or trust changed before rotation commit",
-            ));
-        }
+        permit.ensure_current()?;
+        self.host_challenges
+            .ensure_current(&config.id, &pending.challenge.attempt_id)?;
         let previous = pending
             .trust
-            .rotation_previous(&config, &pending.key)?
+            .rotation_previous(config, &pending.key)?
             .into_iter()
             .map(|(_, key)| key)
             .collect::<Vec<_>>();
         let snapshot = pending.trust.store_snapshot()?;
-        let identity = SshHostIdentity::for_config(&config)?;
+        let identity = SshHostIdentity::for_config(config)?;
         let audit = tokio::task::spawn_blocking(move || {
             store.rotate_verified(snapshot, &previous, &pending.key)
         })
