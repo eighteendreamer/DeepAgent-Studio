@@ -4,7 +4,7 @@ use super::*;
 use crate::run_capabilities::PreparedCapabilitySnapshot;
 use deepagent_tools::ToolRegistry;
 use prepared_tools::PreparedMainRunTools;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 pub(super) struct PreparedChatEnvironment {
     pub(super) configuration: super::execution_config::ResolvedExecutionConfig,
@@ -254,6 +254,15 @@ impl RunAssembler<'_> {
         prior_events: &[deepagent_core::event::Event],
         prepared: &mut PreparedChatEnvironment,
     ) -> Result<PreparedChatTools> {
+        let mut preparation_timings_us = BTreeMap::new();
+        let mut phase_started = std::time::Instant::now();
+        let mut observe_phase = |phase| {
+            let now = std::time::Instant::now();
+            let elapsed_us =
+                u64::try_from(now.duration_since(phase_started).as_micros()).unwrap_or(u64::MAX);
+            preparation_timings_us.insert(phase, elapsed_us);
+            phase_started = now;
+        };
         let environment = &prepared.configuration.environment;
         let plan = self.plan_mode_for_session(session_id)?;
         plan.is_active()?;
@@ -294,6 +303,7 @@ impl RunAssembler<'_> {
             session_id,
         });
         base.project = session_project;
+        observe_phase("execution_requests");
         let tools = self.prepare_main_run_tools(MainRunPreparationRequest {
             base,
             sub_base,
@@ -304,6 +314,7 @@ impl RunAssembler<'_> {
             search_mode,
             search_threshold,
         })?;
+        observe_phase("main_toolset");
         let mut context = capability_context(CapabilityContextRequest {
             root,
             profile: environment.profile,
@@ -314,6 +325,7 @@ impl RunAssembler<'_> {
             tool_search_threshold: search_threshold,
             mcp_lifecycle: &tools.toolset.lifecycle,
         })?;
+        observe_phase("capability_context");
         // Hash the exact frozen inputs, never a second live service lookup.
         // Skill schemas are constant even when their bodies/enablement change.
         context["skillCatalogHash"] = tools
@@ -344,6 +356,7 @@ impl RunAssembler<'_> {
             .configuration
             .bind_mcp_generation(tools.toolset.mcp_generation.as_deref())?;
         context["executionConfig"] = prepared.configuration.snapshot.clone();
+        observe_phase("capability_metadata");
         let capabilities = ResolvedRunCapabilities::resolve(
             context,
             &tools.toolset.registry,
@@ -351,6 +364,17 @@ impl RunAssembler<'_> {
             policy,
         )?
         .prepare(run_id, session_id)?;
+        observe_phase("capability_snapshot");
+        // Keep diagnostic I/O outside the disjoint preparation spans, including
+        // when this registry is prepared at admission rather than in the worker.
+        append_runtime_log(
+            self.runtime_logs,
+            NewRuntimeLogEntry::info("performance", "run_tools_preparation_profile")
+                .with_run_id(run_id)
+                .with_session_id(session_id)
+                .with_source("deepagent-app-core::run_assembler::prepared_chat")
+                .with_data(serde_json::json!({ "phases_us": preparation_timings_us })),
+        );
         Ok(PreparedChatTools {
             tools,
             plan,

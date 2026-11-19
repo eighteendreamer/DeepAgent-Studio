@@ -2825,6 +2825,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tool_preparation_profile_separates_registry_costs_without_logging_content() {
+        let (db, settings, dir) = seeded().await;
+        std::fs::write(dir.path().join("AGENTS.md"), "private-instruction-canary").unwrap();
+        let logs = Arc::new(
+            deepagent_persistence::runtime_log_store::RuntimeLogStore::open_in_memory().unwrap(),
+        );
+        let chat = ChatService::new(db, settings, chat_transport(), dir.path())
+            .with_runtime_logs(logs.clone());
+        let session_id = chat
+            .run("private-prompt-canary", |_| {}, |_| {})
+            .await
+            .unwrap();
+        let entries = logs.recent_for_session(&session_id, 1000).unwrap();
+        let profiles: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.event == "run_tools_preparation_profile")
+            .collect();
+        assert_eq!(profiles.len(), 1, "one profile per prepared tool registry");
+        let profile = profiles[0];
+        assert_eq!(profile.category, "performance");
+        assert!(profile.run_id.is_some());
+        assert_eq!(profile.data.as_object().unwrap().len(), 1);
+        let phases = profile.data["phases_us"].as_object().unwrap();
+        for phase in [
+            "execution_requests",
+            "main_toolset",
+            "capability_context",
+            "capability_metadata",
+            "capability_snapshot",
+        ] {
+            assert!(phases[phase].as_u64().is_some(), "missing timer: {phase}");
+        }
+        assert_eq!(phases.len(), 5);
+        assert!(!profile.data.to_string().contains("private-"));
+        assert!(!profile
+            .data
+            .to_string()
+            .contains(&dir.path().display().to_string()));
+        let registry = entries
+            .iter()
+            .find(|entry| entry.event == "registry_ready")
+            .unwrap();
+        assert_eq!(registry.run_id, profile.run_id);
+        assert!(registry.data["model_bind_us"].as_u64().is_some());
+
+        let run_id = format!("run_{}", deepagent_core::id::EventId::new());
+        let prepared = chat
+            .admit_prepared_input(
+                &run_id,
+                &session_id,
+                "private-prepared-prompt-canary",
+                HarnessRunOverrides::default(),
+            )
+            .unwrap();
+        let profiles_for_admitted_run = || {
+            logs.recent_for_session(&session_id, 1000)
+                .unwrap()
+                .into_iter()
+                .filter(|entry| {
+                    entry.run_id.as_deref() == Some(&run_id)
+                        && entry.event == "run_tools_preparation_profile"
+                })
+                .collect::<Vec<_>>()
+        };
+        let admission_profiles = profiles_for_admitted_run();
+        assert_eq!(admission_profiles.len(), 1, "measure at actual preparation");
+        chat.run_prepared(prepared, "private-prepared-prompt-canary", |_| {}, |_| {})
+            .await
+            .unwrap();
+        let consumed_profiles = profiles_for_admitted_run();
+        assert_eq!(
+            consumed_profiles.len(),
+            1,
+            "consumption must not rebuild tools"
+        );
+        assert_eq!(consumed_profiles[0].data, admission_profiles[0].data);
+    }
+
+    #[tokio::test]
     async fn preflight_tools_are_persisted_as_session_tool_events() {
         let (db, settings, dir) = seeded().await;
         let chat = ChatService::new(db.clone(), settings, chat_transport(), dir.path());

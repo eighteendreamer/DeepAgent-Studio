@@ -651,11 +651,14 @@ impl<'a> RunAssembler<'a> {
         } = prepared;
         let capabilities = Arc::new(capabilities.consume(self.db.clone())?);
 
+        let model_bind_started = std::time::Instant::now();
         let run_model = prepared_environment
             .configuration
             .model_plan?
             .ok_or_else(|| CoreError::invalid("project not initialized: set an API key first"))?
             .bind(self.settings, self.transport.clone())?;
+        let model_bind_us =
+            u64::try_from(model_bind_started.elapsed().as_micros()).unwrap_or(u64::MAX);
         let client = run_model.client;
         let model = run_model.model;
         let reasoning_effort = run_model.reasoning_effort;
@@ -750,6 +753,7 @@ impl<'a> RunAssembler<'a> {
                 .with_message("tool registry prepared")
                 .with_data(serde_json::json!({
                     "registered_tools": registry.len(),
+                    "model_bind_us": model_bind_us,
                     "visible_tools": tools.len(),
                     "deferred_tools": tool_manifest.deferred_tool_names.clone(),
                     "tool_search_mode": tool_search_mode.label(),

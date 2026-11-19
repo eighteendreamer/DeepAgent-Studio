@@ -132,18 +132,21 @@ impl WorkspaceScanner {
             return Ok(());
         }
 
-        let mut entries: Vec<PathBuf> = match fs::read_dir(dir) {
-            Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).collect(),
+        let mut entries: Vec<(PathBuf, bool)> = match fs::read_dir(dir) {
+            Ok(rd) => rd
+                .filter_map(|entry| {
+                    let path = entry.ok()?.path();
+                    let is_dir = entry_is_dir(&path);
+                    Some((path, is_dir))
+                })
+                .collect(),
             Err(_) => return Ok(()), // unreadable dir: skip, don't fail the scan
         };
         // Deterministic order: directories first, then files, alphabetical.
-        entries.sort_by(|a, b| {
-            let ad = a.is_dir();
-            let bd = b.is_dir();
-            bd.cmp(&ad).then(a.file_name().cmp(&b.file_name()))
-        });
+        entries
+            .sort_by(|(a, ad), (b, bd)| bd.cmp(ad).then_with(|| a.file_name().cmp(&b.file_name())));
 
-        for path in entries {
+        for (path, is_dir) in entries {
             if state.entries >= self.limits.max_entries {
                 state.truncated = true;
                 break;
@@ -153,7 +156,7 @@ impl WorkspaceScanner {
                 None => continue,
             };
 
-            if path.is_dir() {
+            if is_dir {
                 if IGNORED_DIRS.contains(&name.as_str()) || name.starts_with('.') {
                     continue;
                 }
@@ -245,6 +248,12 @@ impl WorkspaceScanner {
     }
 }
 
+fn entry_is_dir(path: &Path) -> bool {
+    #[cfg(test)]
+    tests::DIRECTORY_PROBES.with(|calls| calls.set(calls.get() + 1));
+    path.is_dir()
+}
+
 #[derive(Default)]
 struct WalkState {
     entries: usize,
@@ -317,6 +326,97 @@ fn summarize_package_json(content: &str) -> String {
 mod tests {
     use super::*;
     use std::fs;
+
+    thread_local! {
+        pub(super) static DIRECTORY_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    #[test]
+    fn classifies_each_entry_once_without_changing_sorted_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        for index in 0..16 {
+            write(dir.path(), &format!("dir_{index:02}/child.txt"), "child");
+        }
+        for index in 0..32 {
+            write(dir.path(), &format!("file_{index:02}.txt"), "file");
+        }
+        write(dir.path(), "target/debug/ignored.txt", "ignored");
+        write(dir.path(), ".hidden/ignored.txt", "ignored");
+        let scanner = WorkspaceScanner::new(ScanLimits {
+            max_depth: 1,
+            ..Default::default()
+        });
+        DIRECTORY_PROBES.with(|calls| calls.set(0));
+        let snapshot = scanner.scan(dir.path()).unwrap();
+        let expected = (0..16)
+            .map(|index| format!("dir_{index:02}/"))
+            .chain((0..32).map(|index| format!("file_{index:02}.txt")))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(snapshot.tree, expected);
+        assert_eq!((snapshot.dir_count, snapshot.file_count), (16, 32));
+        assert!(!snapshot.truncated);
+        assert_eq!(
+            DIRECTORY_PROBES.with(|calls| calls.get()),
+            50,
+            "directory classification must not be repeated by sorting or rendering"
+        );
+    }
+
+    #[test]
+    fn subsequent_scan_observes_file_replaced_by_directory_and_updated_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "entry", "before");
+        write(dir.path(), "Cargo.toml", "[package]\nname = \"before\"");
+        let scanner = WorkspaceScanner::default();
+        let before = scanner.scan(dir.path()).unwrap();
+        fs::remove_file(dir.path().join("entry")).unwrap();
+        write(dir.path(), "entry/child.txt", "after");
+        write(dir.path(), "Cargo.toml", "[package]\nname = \"after\"");
+        let after = scanner.scan(dir.path()).unwrap();
+        assert_eq!(before.dir_count, 0);
+        assert_eq!(after.dir_count, 1);
+        assert!(after.tree.contains("entry/\n  child.txt"));
+        assert_eq!(before.manifests[0].summary, "name = before");
+        assert_eq!(after.manifests[0].summary, "name = after");
+    }
+
+    #[test]
+    #[ignore = "explicit local scan benchmark; no timing assertion"]
+    fn directory_scan_latency_probe() {
+        let fixture = tempfile::tempdir().unwrap();
+        for directory in 0..16 {
+            for file in 0..12 {
+                write(
+                    fixture.path(),
+                    &format!("dir_{directory:02}/file_{file:02}.txt"),
+                    "synthetic",
+                );
+            }
+        }
+        for file in 0..256 {
+            write(fixture.path(), &format!("file_{file:03}.txt"), "synthetic");
+        }
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for (name, root) in [
+            ("wide_fixture", fixture.path()),
+            ("repository", &repository),
+        ] {
+            let scanner = WorkspaceScanner::default();
+            DIRECTORY_PROBES.with(|calls| calls.set(0));
+            let started = std::time::Instant::now();
+            let mut rendered_bytes = 0;
+            for _ in 0..20 {
+                let snapshot = scanner.scan(root).unwrap();
+                rendered_bytes += snapshot.to_context_block().len();
+            }
+            println!(
+                "scan_probe: source={name} calls=20 directory_probes={} elapsed_us={} rendered_bytes={rendered_bytes}",
+                DIRECTORY_PROBES.with(|calls| calls.get()),
+                started.elapsed().as_micros(),
+            );
+        }
+    }
 
     fn write(root: &Path, rel: &str, content: &str) {
         let path = root.join(rel);
