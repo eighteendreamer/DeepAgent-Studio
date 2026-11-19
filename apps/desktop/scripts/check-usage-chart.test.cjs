@@ -4,7 +4,7 @@ const path = require("node:path");
 const test = require("node:test");
 const ts = require("typescript");
 
-test("usage runtime renders and updates stacked line data with real ECharts modules", async () => {
+test("usage runtime renders and updates calendar total tokens with real ECharts modules", async () => {
   const dependencies = new Map(await Promise.all(
     ["echarts/core", "echarts/charts", "echarts/components", "echarts/renderers"]
       .map(async name => [name, await import(name)]),
@@ -23,20 +23,19 @@ test("usage runtime renders and updates stacked line data with real ECharts modu
   core.use(dependencies.get("echarts/renderers").SVGRenderer);
   const chart = runtime.init(null, null, { renderer: "svg", ssr: true, width: 640, height: 320 });
   try {
-    const data = [[100, 0, 300], [80, 0, 120], [20, 0, 50]];
+    const data = [200, 0, 470];
     chart.setOption({ animation: false, tooltip: { trigger: "axis" },
       xAxis: { type: "category", data: ["11/17", "11/18", "11/19"] },
       yAxis: { type: "value" },
-      series: data.map((values, index) => ({ id: String(index), type: "line",
-        stack: "tokens", areaStyle: {}, data: values })),
+      series: [{ id: "total", type: "line", areaStyle: { opacity: .07 }, data }],
     });
-    assert.deepEqual(chart.getOption().series.map(series => series.data), data);
+    assert.deepEqual(chart.getOption().series[0].data, data);
     assert.match(chart.renderToSVGString(), /<path\b/);
-    const updated = [[0, 50], [0, 30], [0, 20]];
+    const updated = [0, 100];
     chart.setOption({ xAxis: { data: ["10月", "11月"] },
-      series: updated.map((values, index) => ({ id: String(index), data: values })),
+      series: [{ id: "total", data: updated }],
     });
-    assert.deepEqual(chart.getOption().series.map(series => series.data), updated);
+    assert.deepEqual(chart.getOption().series[0].data, updated);
     assert.match(chart.renderToSVGString(), /11月/);
   } finally {
     chart.dispose();

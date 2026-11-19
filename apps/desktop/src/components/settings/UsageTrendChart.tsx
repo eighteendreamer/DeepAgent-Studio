@@ -15,7 +15,7 @@ function loadTrendRuntime() {
 interface Props {
   points: readonly UsagePoint[];
   locale: string;
-  labels: { input: string; cache: string; output: string; summary: string; error: string };
+  labels: { total: string; summary: string; error: string };
 }
 
 export function UsageTrendChart({ points, locale, labels }: Props) {
@@ -35,7 +35,7 @@ export function UsageTrendChart({ points, locale, labels }: Props) {
       setError(null);
       const styles = getComputedStyle(element);
       const color = (token: string) => styles.getPropertyValue(token).trim();
-      const colors = [color("--usage-chart-input"), color("--usage-chart-cache"), color("--usage-chart-output")];
+      const input = color("--usage-chart-input");
       const foreground = color("--theme-fg"), secondary = color("--theme-text-secondary");
       const border = color("--theme-border"), background = color("--theme-elevated");
       const number = new Intl.NumberFormat(locale);
@@ -44,7 +44,7 @@ export function UsageTrendChart({ points, locale, labels }: Props) {
         : new Intl.DateTimeFormat(locale, { month: "numeric", day: "numeric", timeZone: "UTC" }).format(Date.parse(`${date}T00:00:00Z`));
       const option: EChartsCoreOption = {
         animation: !reduced, animationDuration: 0, animationDurationUpdate: 300,
-        color: colors, textStyle: { fontFamily: getComputedStyle(element).fontFamily },
+        color: [input], textStyle: { fontFamily: getComputedStyle(element).fontFamily },
         tooltip: { trigger: "axis", confine: true, backgroundColor: background, borderColor: border,
           textStyle: { color: foreground, fontSize: 12 },
           valueFormatter: (value: unknown) => `${number.format(Number(value))} Token` },
@@ -56,13 +56,8 @@ export function UsageTrendChart({ points, locale, labels }: Props) {
           nameTextStyle: { color: secondary, fontSize: 11, align: "left" },
           axisLabel: { color: secondary, fontSize: 11, formatter: formatTokens },
           splitLine: { lineStyle: { color: border, opacity: .45 } } },
-        series: [
-          { id: "uncached-input", name: labels.input, data: points.map(point => point.input - point.cacheRead) },
-          { id: "cached-input", name: labels.cache, data: points.map(point => point.cacheRead) },
-          { id: "output", name: labels.output, data: points.map(point => point.output) },
-        ].map((series, index) => ({ ...series, type: "line", stack: "tokens", smooth: .25, symbol: "none",
-          lineStyle: { width: index === 0 ? 1.8 : 1 }, areaStyle: { opacity: index === 0 ? .14 : .55 },
-          emphasis: { focus: "series" } })),
+        series: [{ id: "total", name: labels.total, type: "line", data: points.map(point => point.total),
+          smooth: .3, symbol: "none", lineStyle: { width: 2 }, areaStyle: { opacity: .07 } }],
       };
       instance.current ??= core.init(element);
       instance.current.setOption(option);

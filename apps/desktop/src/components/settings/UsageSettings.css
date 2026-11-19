@@ -1,5 +1,4 @@
 .usage-page {
-  --usage-chart-cache: #82a38f;
   --usage-line: color-mix(in srgb, var(--theme-border) 75%, transparent);
   display: flex;
   flex-direction: column;
@@ -42,38 +41,41 @@
 .usage-dropdown > svg { color: var(--theme-text-secondary); }
 .usage-date-line { margin-top: 12px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; color: var(--theme-text-secondary); font-size: 11px; }
 .usage-date-line > span + span { padding-left: 12px; border-left: 1px solid var(--usage-line); opacity: .8; }
-.usage-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-.usage-metric { min-width: 0; padding: 19px 18px; border: 1px solid var(--usage-line); border-radius: 12px; display: flex; flex-direction: column; gap: 12px; }
-.usage-metric.primary { background: color-mix(in srgb, var(--theme-fg) 2.5%, var(--theme-bg)); }
-.usage-metric-label { font-size: 11px; color: var(--theme-text-secondary); }
-.usage-metric-value { font-size: clamp(25px, 3cqi, 34px); font-weight: 600; letter-spacing: -1px; line-height: 1.1; }
-.usage-metric-detail { color: var(--theme-text-secondary); font-size: 10px; line-height: 1.6; }
-.usage-metric-detail strong { font-weight: 500; color: var(--theme-fg); }
 .usage-panel { min-width: 0; border: 1px solid var(--usage-line); border-radius: 12px; padding: 20px; }
 .usage-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
 .usage-panel-heading h2 { font-size: 13px; font-weight: 600; }
 .usage-panel-heading p { font-size: 11px; color: var(--theme-text-secondary); margin-top: 6px; }
 .usage-muted { color: var(--theme-text-secondary); font-size: 10px; }
-.usage-bottom-grid { display: grid; grid-template-columns: minmax(0, 1.8fr) minmax(0, 1fr); gap: 16px; }
-.usage-chart-legend { display: flex; gap: 16px; flex-wrap: wrap; color: var(--theme-text-secondary); font-size: 10px; }
-.usage-chart-legend > span, .usage-model-label > span:first-child { display: inline-flex; align-items: center; gap: 6px; }
-.usage-dot { width: 7px; height: 7px; border-radius: 2px; flex-shrink: 0; display: inline-block; }
-.usage-dot.input { background: var(--usage-chart-input); }
-.usage-dot.cache { background: var(--usage-chart-cache); }
-.usage-dot.output { background: var(--usage-chart-output); }
-.usage-trend-chart { width: 100%; height: 224px; margin-top: 8px; }
+.usage-calendar { padding: 25px; }
+.usage-calendar-intro { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
+.usage-calendar-total p { color: var(--theme-text-secondary); font-size: 11px; margin-bottom: 10px; }
+.usage-calendar-total > div, .usage-day-total { display: flex; align-items: baseline; gap: 7px; }
+.usage-calendar-total strong { font-size: 39px; line-height: 1.2; font-weight: 550; letter-spacing: -1.7px; }
+.usage-calendar-total span, .usage-day-total > span { color: var(--theme-text-secondary); font-size: 11px; }
+.usage-calendar-stats { display: flex; gap: 32px; padding-bottom: 4px; }
+.usage-calendar-stats dt { color: var(--theme-text-secondary); font-size: 11px; }
+.usage-calendar-stats dd { margin-top: 7px; font-size: 23px; font-weight: 500; line-height: 1.25; }
+.usage-calendar-stats small { color: var(--theme-text-secondary); font-size: 10px; font-weight: 400; margin-left: 4px; }
+.usage-calendar-activity { border-top: 1px solid var(--usage-line); margin-top: 24px; padding-top: 22px; }
+.usage-calendar-summary { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px 18px; border-top: 1px solid var(--usage-line); padding-top: 15px; margin-top: 17px; color: var(--theme-text-secondary); font-size: 10px; }
+.usage-calendar-summary strong { font-weight: 550; color: var(--theme-fg); }
+.usage-calendar-lower { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 20px; }
+.usage-day-panel { background: color-mix(in srgb, var(--theme-fg) 3%, var(--theme-bg)); border-color: transparent; padding: 21px; }
+.usage-day-date { font-size: 11px; font-weight: 400; color: var(--theme-text-secondary); }
+.usage-day-total { margin-top: 9px; margin-bottom: 22px; }
+.usage-day-total strong { font-size: 28px; font-weight: 500; letter-spacing: -1px; }
+.usage-day-details { display: flex; flex-direction: column; gap: 14px; }
+.usage-day-details > div { display: flex; justify-content: space-between; gap: 10px; font-size: 11px; }
+.usage-day-details dt { color: var(--theme-text-secondary); }
+.usage-day-details dd { font-weight: 500; }
+.usage-day-help { margin-top: 20px; color: var(--theme-text-secondary); font-size: 10px; line-height: 1.7; }
+.usage-trend-chart { width: 100%; height: 155px; }
 .usage-chart-error { color: var(--theme-text-secondary); font-size: 11px; }
-.usage-model-total { display: flex; align-items: baseline; gap: 6px; margin-top: 4px; }
-.usage-model-total strong { font-size: 27px; line-height: 1; font-weight: 600; letter-spacing: -.8px; }
-.usage-model-total > span { color: var(--theme-text-secondary); font-size: 10px; }
-.usage-model-list { display: flex; flex-direction: column; gap: 22px; margin-top: 26px; }
-.usage-model-label { display: flex; justify-content: space-between; gap: 12px; font-size: 11px; }
-.usage-model-label > span:last-child { color: var(--theme-text-secondary); }
-.usage-model-progress { height: 5px; margin-top: 9px; background: var(--theme-hover); }
-.usage-model-progress > div { background: var(--usage-chart-input); }
-.usage-model-row.reasoner .usage-model-progress > div { background: var(--usage-chart-cache); }
-.usage-model-value { margin-top: 6px; color: var(--theme-text-secondary); font-size: 10px; }
-.usage-model-note { margin-top: 25px; color: var(--theme-text-secondary); font-size: 10px; line-height: 1.7; }
+.usage-model-table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 18px; text-align: left; }
+.usage-model-table th { font-weight: 400; }
+.usage-model-table thead th { color: var(--theme-text-secondary); border-bottom: 1px solid var(--usage-line); padding-bottom: 10px; }
+.usage-model-table tbody th, .usage-model-table td { padding-top: 12px; color: var(--theme-text-secondary); }
+.usage-model-table th:last-child, .usage-model-table td { text-align: right; }
 .usage-footnote { display: flex; align-items: flex-start; gap: 7px; font-size: 10px; line-height: 1.7; color: var(--theme-text-secondary); }
 .usage-footnote > svg { margin-top: 1px; }
 
@@ -138,9 +140,9 @@
 .activity-heatmap-tooltip > span { font-size: 10px; color: var(--theme-text-secondary); }
 @keyframes usage-cell-reveal { from { transform: translateY(3px) scale(.75); } to { transform: none; } }
 @container usage (max-width: 740px) {
-  .usage-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .usage-bottom-grid { grid-template-columns: minmax(0, 1fr); }
-  .usage-metric-value { font-size: 28px; }
+  .usage-calendar-intro { flex-wrap: wrap; }
+  .usage-calendar-stats { gap: 28px; }
+  .usage-calendar-lower { grid-template-columns: 210px minmax(0, 1fr); gap: 16px; }
 }
 @container usage (max-width: 480px) {
   .usage-toolbar { align-items: flex-start; }
@@ -148,6 +150,10 @@
   .usage-panel { padding: 16px; }
   .usage-panel-heading { align-items: flex-start; }
   .usage-panel-heading p { max-width: 220px; line-height: 1.6; }
+  .usage-calendar-total strong { font-size: 33px; }
+  .usage-calendar-stats { width: 100%; justify-content: space-between; gap: 16px; }
+  .usage-calendar-stats dd { font-size: 21px; }
+  .usage-calendar-lower { grid-template-columns: minmax(0, 1fr); }
   .activity-heatmap-footer { align-items: flex-start; flex-direction: column; }
 }
 @media (prefers-reduced-motion: reduce) {

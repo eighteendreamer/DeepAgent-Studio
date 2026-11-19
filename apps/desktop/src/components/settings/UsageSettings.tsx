@@ -4,7 +4,6 @@ import { useTranslation } from "react-i18next";
 import { useThemeContext } from "../../theme/ThemeProvider";
 import { mixHex } from "../../theme/colorUtils";
 import { Button } from "../shadcn/button";
-import { Progress } from "../shadcn/progress";
 import { ActivityHeatmap } from "../shadcn/activity-heatmap";
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuGroup,
@@ -14,7 +13,7 @@ import { SurfaceVisibility } from "../ui/SurfaceVisibility";
 import { formatTokens } from "../chat-timeline/format";
 import { UsageTrendChart } from "./UsageTrendChart";
 import {
-  createDemoUsageDays, dailyUsage, localUsageDate, previousUsageRange, sumUsage,
+  createDemoUsageDays, dailyUsage, localUsageDate, sumUsage,
   usageRange, usageTrend, USAGE_MODELS, type UsageModelFilter, type UsagePeriod,
 } from "./usageStatistics";
 import "./UsageSettings.css";
@@ -49,23 +48,12 @@ function UsageDropdown<T extends string>({ value, onChange, options, label, icon
   </DropdownMenu>;
 }
 
-function UsageMetric({ label, value, detail, primary = false }: {
-  label: string; value: string; detail: ReactNode; primary?: boolean;
-}) {
-  return <div className={`usage-metric${primary ? " primary" : ""}`}>
-    <span className="usage-metric-label">{label}</span>
-    <strong className="usage-metric-value">{value}</strong>
-    <span className="usage-metric-detail">{detail}</span>
-  </div>;
-}
-
 export function UsageSettings() {
   const { t, i18n } = useTranslation();
   const { activePalette } = useThemeContext();
-  // One set of hex colors serves both the CSS legends and the canvas renderer.
+  // Resolve the themed line color to hex for the canvas renderer.
   const chartColors = useMemo(() => ({
     "--usage-chart-input": mixHex(activePalette.foreground, activePalette.background, .16),
-    "--usage-chart-output": mixHex(activePalette.foreground, activePalette.background, .72),
   } as CSSProperties), [activePalette]);
   const locale = i18n.resolvedLanguage ?? i18n.language;
   const [today] = useState(() => localUsageDate(new Date()));
@@ -73,22 +61,22 @@ export function UsageSettings() {
   const [period, setPeriod] = useState<UsagePeriod>("30");
   const [model, setModel] = useState<UsageModelFilter>("all");
   const [year, setYear] = useState(String(currentYear));
-  const [selectedDate, setSelectedDate] = useState<string | null>(today);
+  const [selectedDate, setSelectedDate] = useState(today);
   const days = useMemo(() => createDemoUsageDays(today), [today]);
   const range = useMemo(() => usageRange(today, period), [today, period]);
   const points = useMemo(() => dailyUsage(days, range, model), [days, range, model]);
   const totals = useMemo(() => sumUsage(points), [points]);
-  const previous = useMemo(() => sumUsage(dailyUsage(days, previousUsageRange(range), model)), [days, range, model]);
   const trend = useMemo(() => usageTrend(points, period === "year"), [points, period]);
   const annualPoints = useMemo(() => dailyUsage(days, {
     start: `${year}-01-01`, end: Number(year) === currentYear ? today : `${year}-12-31`,
   }, model), [days, year, currentYear, today, model]);
   const annualDays = useMemo(() => annualPoints.map(point => ({ date: point.date, count: point.total })), [annualPoints]);
   const annualTotal = useMemo(() => sumUsage(annualPoints).total, [annualPoints]);
+  const selectedDay = annualPoints.find(point => point.date === selectedDate)!;
   const modelTotals = useMemo(() => USAGE_MODELS.filter(key => model === "all" || key === model)
-    .map(key => ({ key, ...sumUsage(dailyUsage(days, range, key)) })), [days, range, model]);
-  const chartLabels = useMemo(() => ({ input: t("settings.usage.uncachedInput"),
-    cache: t("settings.usage.cachedInput"), output: t("settings.usage.output"),
+    .map(key => ({ key, ...sumUsage(dailyUsage(days, range, key)) }))
+    .sort((a, b) => b.total - a.total), [days, range, model]);
+  const chartLabels = useMemo(() => ({ total: t("settings.usage.total"),
     summary: t("settings.usage.chartSummary"),
     error: t("settings.usage.chartError") }), [t]);
   const number = useMemo(() => new Intl.NumberFormat(locale), [locale]);
@@ -99,7 +87,6 @@ export function UsageSettings() {
   }), [locale]);
   const formatDate = (value: string) => date.format(Date.parse(`${value}T00:00:00Z`));
   const cacheRate = totals.input ? totals.cacheRead / totals.input : 0;
-  const change = previous.total ? (totals.total - previous.total) / previous.total : null;
   const periods: { value: UsagePeriod; label: string }[] = [
     { value: "7", label: t("settings.usage.lastDays", { count: 7 }) },
     { value: "30", label: t("settings.usage.lastDays", { count: 30 }) },
@@ -133,67 +120,72 @@ export function UsageSettings() {
       </div>
     </div>
 
-    <div className="usage-metrics" aria-live="polite">
-      <UsageMetric primary label={t("settings.usage.total")} value={formatTokens(totals.total)} detail={<>
-        {change === null ? "—" : <strong>{change >= 0 ? "↑" : "↓"} {percentage.format(Math.abs(change))}</strong>}
-        {" "}{t("settings.usage.compared")}
-      </>} />
-      <UsageMetric label={t("settings.usage.input")} value={formatTokens(totals.input)}
-        detail={t("settings.usage.includesCache", { value: formatTokens(totals.cacheRead) })} />
-      <UsageMetric label={t("settings.usage.output")} value={formatTokens(totals.output)}
-        detail={t("settings.usage.outputDescription")} />
-      <UsageMetric label={t("settings.usage.cacheRate")} value={percentage.format(cacheRate)}
-        detail={`${formatTokens(totals.cacheRead)} / ${formatTokens(totals.input)} ${t("settings.usage.inputShort")}`} />
-    </div>
-
-    <section className="usage-panel usage-activity" aria-labelledby="usage-activity-title">
-      <div className="usage-panel-heading">
-        <div><h2 id="usage-activity-title">{t("settings.usage.activity")}</h2>
-          <p>{t("settings.usage.annualSummary", { year, days: annualPoints.filter(point => point.total > 0).length,
-            total: formatTokens(annualTotal) })}</p>
+    <section className="usage-panel usage-calendar" aria-labelledby="usage-activity-title">
+      <div className="usage-calendar-intro">
+        <div className="usage-calendar-total">
+          <p>{t("settings.usage.rangeTotal")}</p>
+          <div><strong>{formatTokens(totals.total)}</strong><span>Token</span></div>
         </div>
-        <UsageDropdown value={year} label={t("settings.usage.heatmapYear")}
-          onChange={value => { setYear(value); setSelectedDate(null); }}
-          options={[currentYear, currentYear - 1].map(value => ({ value: String(value), label: String(value) }))} />
+        <dl className="usage-calendar-stats">
+          <div><dt>{t("settings.usage.activeDays")}</dt>
+            <dd>{number.format(points.filter(point => point.total > 0).length)}<small>{t("settings.usage.daysUnit")}</small></dd></div>
+          <div><dt>{t("settings.usage.dailyAverage")}</dt>
+            <dd>{formatTokens(totals.total / Math.max(1, points.length))}</dd></div>
+          <div><dt>{t("settings.usage.cacheRate")}</dt><dd>{percentage.format(cacheRate)}</dd></div>
+        </dl>
       </div>
-      <ActivityHeatmap days={annualDays} year={Number(year)} today={today} locale={locale}
-        label={t("settings.usage.activityLabel", { year })} selectedDate={selectedDate}
-        onSelectDate={setSelectedDate} formatValue={value => number.format(value)} labels={{
-          less: t("settings.usage.less"), more: t("settings.usage.more"),
-          chooseDay: t("settings.usage.chooseDay"), future: t("settings.usage.future"),
-          level: (level, count) => t("settings.usage.level", { level, count }),
-        }} />
+      <div className="usage-calendar-activity">
+        <div className="usage-panel-heading">
+          <div><h2 id="usage-activity-title">{t("settings.usage.activity", { year })}</h2>
+            <p>{t("settings.usage.annualSummary", { year, days: annualPoints.filter(point => point.total > 0).length,
+              total: formatTokens(annualTotal) })}</p>
+          </div>
+          <UsageDropdown value={year} label={t("settings.usage.heatmapYear")}
+            onChange={value => { setYear(value); setSelectedDate(Number(value) === currentYear ? today : `${value}-12-31`); }}
+            options={[currentYear, currentYear - 1].map(value => ({ value: String(value), label: String(value) }))} />
+        </div>
+        <ActivityHeatmap days={annualDays} year={Number(year)} today={today} locale={locale}
+          label={t("settings.usage.activityLabel", { year })} selectedDate={selectedDate}
+          onSelectDate={setSelectedDate} formatValue={value => number.format(value)} labels={{
+            less: t("settings.usage.less"), more: t("settings.usage.more"),
+            chooseDay: t("settings.usage.chooseDay"), future: t("settings.usage.future"),
+            level: (level, count) => t("settings.usage.level", { level, count }),
+          }} />
+        <div className="usage-calendar-summary">
+          <span>{t("settings.usage.activeDays")} <strong>{number.format(annualPoints.filter(point => point.total > 0).length)}</strong></span>
+          <span>{t("settings.usage.annualTotal")} <strong>{formatTokens(annualTotal)}</strong> Token</span>
+          <span>{t("settings.usage.heatmapHint")}</span>
+        </div>
+      </div>
     </section>
 
-    <div className="usage-bottom-grid">
+    <div className="usage-calendar-lower">
+      <section className="usage-panel usage-day-panel" aria-label={t("settings.usage.selectedDay")} aria-live="polite" aria-atomic="true">
+        <h2 className="usage-day-date">{formatDate(selectedDate)}</h2>
+        <div className="usage-day-total"><strong>{formatTokens(selectedDay.total)}</strong><span>Token</span></div>
+        <dl className="usage-day-details">
+          <div><dt>{t("settings.usage.input")}</dt><dd>{formatTokens(selectedDay.input)}</dd></div>
+          <div><dt>{t("settings.usage.output")}</dt><dd>{formatTokens(selectedDay.output)}</dd></div>
+          <div><dt>{t("settings.usage.dayCache")}</dt><dd>{formatTokens(selectedDay.cacheRead)}</dd></div>
+          <div><dt>{t("settings.usage.cacheRate")}</dt>
+            <dd>{percentage.format(selectedDay.input ? selectedDay.cacheRead / selectedDay.input : 0)}</dd></div>
+        </dl>
+        <p className="usage-day-help">{t(selectedDay.total ? "settings.usage.dayHint" : "settings.usage.emptyDay")}</p>
+      </section>
       <section className="usage-panel" aria-labelledby="usage-trend-title">
-        <div className="usage-panel-heading"><h2 id="usage-trend-title">{t("settings.usage.trend")}</h2>
-          <span className="usage-muted">{t(period === "year" ? "settings.usage.monthly" : "settings.usage.daily")}</span>
-        </div>
-        <div className="usage-chart-legend">
-          {(["input", "cache", "output"] as const).map(key => <span key={key}>
-            <i className={`usage-dot ${key}`} />{chartLabels[key]}
-          </span>)}
+        <div className="usage-panel-heading">
+          <div><h2 id="usage-trend-title">{t("settings.usage.trend")}</h2>
+            <p>{t(period === "year" ? "settings.usage.monthly" : "settings.usage.daily")}</p></div>
+          <span className="usage-muted">{formatTokens(totals.total)} Token</span>
         </div>
         <UsageTrendChart points={trend} locale={locale} labels={chartLabels} />
-      </section>
-      <section className="usage-panel usage-models" aria-labelledby="usage-models-title">
-        <div className="usage-panel-heading"><h2 id="usage-models-title">{t("settings.usage.modelDistribution")}</h2>
-          <span className="usage-muted">{t("settings.usage.currentRange")}</span>
-        </div>
-        <div className="usage-model-total"><strong>{formatTokens(totals.total)}</strong><span>Token</span></div>
-        <div className="usage-model-list">
-          {modelTotals.map(item => {
-            const share = totals.total ? item.total / totals.total * 100 : 0;
-            return <div key={item.key} className={`usage-model-row ${item.key}`}>
-              <div className="usage-model-label"><span><i className={`usage-dot ${item.key === "chat" ? "input" : "cache"}`} />deepseek-{item.key}</span>
-                <span>{percentage.format(share / 100)}</span></div>
-              <Progress value={share} aria-label={`deepseek-${item.key}`} className="usage-model-progress" />
-              <div className="usage-model-value">{number.format(item.total)} Token</div>
-            </div>;
-          })}
-        </div>
-        <p className="usage-model-note">{t("settings.usage.distributionNote")}</p>
+        <table className="usage-model-table" aria-label={t("settings.usage.rangeModels")}>
+          <thead><tr><th scope="col">{t("settings.usage.rangeModels")}</th>
+            <th scope="col">{t("settings.usage.tokenUsage")}</th></tr></thead>
+          <tbody>{modelTotals.map(item => <tr key={item.key}>
+            <th scope="row">deepseek-{item.key}</th><td>{formatTokens(item.total)}</td>
+          </tr>)}</tbody>
+        </table>
       </section>
     </div>
     <footer className="usage-footnote"><Info className="size-3.5 shrink-0" />
