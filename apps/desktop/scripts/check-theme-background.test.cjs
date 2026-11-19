@@ -8,6 +8,15 @@ const ts = require("typescript");
 const image = { dataUrl: "data:image/webp;base64,UklGRg==", name: "wallpaper.webp" };
 const plain = value => JSON.parse(JSON.stringify(value));
 
+test("the main native window permits the sidebar material to show through the webview", () => {
+  const config = JSON.parse(fs.readFileSync(
+    path.resolve(__dirname, "../src-tauri/tauri.conf.json"), "utf8",
+  ));
+  const main = config.app.windows.find(window => window.label === "main");
+  assert.equal(main.transparent, true,
+    "Mica requires a transparent native window, even when CSS backgrounds are transparent");
+});
+
 test("wallpaper translations coexist with the theme background color label", () => {
   for (const language of ["zh", "en"]) {
     const appearance = JSON.parse(fs.readFileSync(
