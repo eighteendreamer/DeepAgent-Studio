@@ -205,7 +205,7 @@ impl SshService {
         {
             return Err(fail("invalid"));
         }
-        let (_, sftp) = operation(&cancel, self.inner.file_session(connection_id)).await?;
+        let (owner, sftp) = operation(&cancel, self.inner.file_session(connection_id)).await?;
         let result = match request.direction {
             FileTransferDirection::Upload => {
                 upload(&sftp, &request, &local, &cancel, &progress, None).await
@@ -215,6 +215,9 @@ impl SshService {
             }
         };
         let _ = tokio::time::timeout(Duration::from_secs(3), sftp.close()).await;
+        if result.is_ok() {
+            owner.touch_keepalive();
+        }
         result
     }
 }

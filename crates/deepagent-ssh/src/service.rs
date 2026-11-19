@@ -5,6 +5,7 @@ use super::config::{
     CreateSshConnectionRequest, SshAuthType, SshConnectionConfig, SshConnectionDto, SshStatus,
     UpdateSshConnectionRequest,
 };
+use super::connection_lease::SessionLease;
 use super::connection_operation::{ConnectionOperations, ConnectionPermit};
 use super::error::{SshError, SshResult};
 use super::host_trust::{HostTrust, SshHostTrustInspection};
@@ -85,6 +86,7 @@ pub struct SshServiceImpl {
     configs: RwLock<HashMap<String, SshConnectionConfig>>,
     pub(super) sessions: RwLock<HashMap<String, Arc<SshSession>>>,
     pub(super) connection_operations: ConnectionOperations,
+    pub(super) connection_idle_timeout: Duration,
     config_store: Arc<dyn SshConfigStore>,
     pub(super) host_key_store: Option<Arc<crate::SshHostKeyStore>>,
     pub(super) host_challenges: crate::connection_challenge::HostKeyChallenges,
@@ -108,6 +110,7 @@ impl SshServiceImpl {
             configs: RwLock::new(HashMap::new()),
             sessions: RwLock::new(HashMap::new()),
             connection_operations: ConnectionOperations::default(),
+            connection_idle_timeout: Duration::from_secs(60),
             config_store,
             host_key_store: None,
             host_challenges: Default::default(),
@@ -530,6 +533,7 @@ impl SshServiceImpl {
         if let Some((session, _client)) = self.reusable_client(cfg, permit).await? {
             let _lifecycle = self.lock_connection_generation(permit, &session).await?;
             session.set_status(SshStatus::Connected, None).await;
+            session.resources.published();
             session.touch_keepalive();
             let _ = self
                 .update_cached_status(id, SshStatus::Connected, None, cfg.cached_latency_ms)
@@ -1170,7 +1174,7 @@ impl SshServiceImpl {
     pub(crate) async fn file_session(
         &self,
         connection_id: &str,
-    ) -> SshResult<(Arc<SshSession>, SftpSession)> {
+    ) -> SshResult<(SessionLease, SftpSession)> {
         let (session, client) = self.file_client(connection_id).await?;
         let sftp = sftp_open(&client, None).await?;
         Ok((session, sftp))
@@ -1179,7 +1183,7 @@ impl SshServiceImpl {
     pub(crate) async fn file_client(
         &self,
         connection_id: &str,
-    ) -> SshResult<(Arc<SshSession>, Client)> {
+    ) -> SshResult<(SessionLease, Client)> {
         let session = self.connected_session(connection_id).await?;
         let client = session
             .client()
@@ -1276,7 +1280,13 @@ impl SshServiceImpl {
             .await
             .ok_or_else(|| SshError::ConnectionLost(handle.connection_id.clone()))?;
 
-        let pty = crate::pty::open(&client, &handle.connection_id, cols, rows).await?;
+        let mut pty = crate::pty::open(&client, &handle.connection_id, cols, rows).await?;
+        pty._resource = Some(
+            session
+                .resources
+                .acquire()
+                .ok_or_else(|| SshError::ConnectionLost(handle.connection_id.clone()))?,
+        );
         session.insert_pty(token.clone(), pty, legacy).await;
         Ok(SshServiceHandle::new(
             handle.connection_id.clone(),
@@ -1391,7 +1401,8 @@ impl SshServiceImpl {
         disconnected.and(cached)
     }
 
-    async fn close_session(session: &SshSession) -> SshResult<()> {
+    pub(super) async fn close_session(session: &SshSession) -> SshResult<()> {
+        session.resources.retire();
         session.close_all_ptys().await;
         let disconnected = match session.client().await {
             Some(client) => client.disconnect().await,
@@ -1543,6 +1554,7 @@ impl SshServiceImpl {
     }
 
     pub async fn refresh_due_statuses(&self) -> SshResult<usize> {
+        self.reap_idle_connections().await?;
         self.ensure_loaded().await;
         let configs = {
             let guard = self.configs.read().await;
@@ -2079,13 +2091,15 @@ impl SshServiceImpl {
             .clone()
     }
 
-    async fn connected_session(&self, id: &str) -> SshResult<Arc<SshSession>> {
+    async fn connected_session(&self, id: &str) -> SshResult<SessionLease> {
         let _ = self.connect(id).await?;
+        let _lifecycle = self.lifecycle.read().await;
         let sessions = self.sessions.read().await;
-        sessions
+        let session = sessions
             .get(id)
             .cloned()
-            .ok_or_else(|| SshError::NotFound(id.to_string()))
+            .ok_or_else(|| SshError::NotFound(id.to_string()))?;
+        SessionLease::new(session)
     }
 
     pub(super) async fn ensure_loaded(&self) {
@@ -2200,7 +2214,7 @@ impl SshServiceImpl {
         )
         .await
     }
-    async fn update_cached_status(
+    pub(super) async fn update_cached_status(
         &self,
         id: &str,
         status: SshStatus,

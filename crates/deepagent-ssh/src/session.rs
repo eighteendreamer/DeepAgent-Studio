@@ -98,6 +98,7 @@ pub enum PtyCommand {
 }
 
 pub struct PtyState {
+    pub(crate) _resource: Option<crate::connection_lease::ResourceLease>,
     pub output_signal: deepagent_terminal::TerminalOutputSignal,
     pub stdin: mpsc::Sender<Vec<u8>>,
     pub commands: mpsc::UnboundedSender<PtyCommand>,
@@ -112,6 +113,7 @@ pub struct PtyState {
 }
 
 pub struct SshSession {
+    pub(crate) resources: crate::connection_lease::ConnectionResources,
     pub(crate) host_trust: RwLock<Option<super::host_trust::HostTrust>>,
     config: SshConnectionConfig,
     client: RwLock<Option<Client>>,
@@ -127,6 +129,7 @@ pub struct SshSession {
 impl SshSession {
     pub fn new(config: SshConnectionConfig) -> Arc<Self> {
         Arc::new(Self {
+            resources: Default::default(),
             host_trust: RwLock::new(None),
             config,
             client: RwLock::new(None),
@@ -149,6 +152,11 @@ impl SshSession {
     }
 
     pub async fn set_client(&self, client: Option<Client>) {
+        if client.is_some() {
+            self.resources.published();
+        } else {
+            self.resources.retire();
+        }
         *self.client.write().await = client;
     }
 

@@ -97,6 +97,7 @@ mod config;
 mod conflict_target;
 mod connection_challenge;
 mod connection_flow;
+mod connection_lease;
 mod connection_operation;
 mod default_identities;
 mod directory_plan;
@@ -522,6 +523,22 @@ pub struct SshService {
 }
 
 impl SshService {
+    /// Set the application's idle resource retention policy before sharing it.
+    pub fn with_connection_idle_timeout(mut self, timeout: std::time::Duration) -> SshResult<Self> {
+        if timeout.is_zero() || timeout > std::time::Duration::from_secs(86_400) {
+            return Err(SshError::InvalidConfig(
+                "SSH connection idle timeout must be positive and at most one day".into(),
+            ));
+        }
+        self.inner.connection_idle_timeout = timeout;
+        Ok(self)
+    }
+
+    /// Reclaim expired connections after all owned resources have been released.
+    pub async fn reap_idle_connections(&self) -> SshResult<usize> {
+        self.inner.reap_idle_connections().await
+    }
+
     pub fn new(app_data: PathBuf) -> Self {
         Self {
             inner: SshServiceImpl::new(app_data),

@@ -121,6 +121,7 @@ pub(super) async fn open(
         tracing::debug!(target:"deepagent_ssh", connection_id, "SSH PTY actor ended");
     });
     let state = PtyState {
+        _resource: None,
         output_signal,
         stdin,
         commands,

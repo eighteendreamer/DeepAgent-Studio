@@ -26,18 +26,7 @@ pub(crate) struct ConnectionPermit {
 
 impl ConnectionOperations {
     pub(crate) async fn acquire(&self, id: &str) -> SshResult<ConnectionPermit> {
-        let operation = {
-            let mut entries = self.0.lock().unwrap_or_else(|error| error.into_inner());
-            entries.retain(|_, entry| entry.strong_count() > 0);
-            match entries.get(id).and_then(Weak::upgrade) {
-                Some(operation) if !operation.retired.is_cancelled() => operation,
-                _ => {
-                    let operation = Arc::new(Operation::default());
-                    entries.insert(id.to_owned(), Arc::downgrade(&operation));
-                    operation
-                }
-            }
-        };
+        let operation = self.operation(id);
         let guard = tokio::select! {
             biased;
             _ = operation.retired.cancelled() => return Err(retired(id)),
@@ -50,6 +39,31 @@ impl ConnectionOperations {
         };
         permit.ensure_current()?;
         Ok(permit)
+    }
+
+    pub(crate) fn try_acquire(&self, id: &str) -> Option<ConnectionPermit> {
+        let operation = self.operation(id);
+        let guard = Arc::clone(&operation.gate).try_lock_owned().ok()?;
+        let permit = ConnectionPermit {
+            id: id.to_owned(),
+            operation,
+            _guard: guard,
+        };
+        permit.ensure_current().ok()?;
+        Some(permit)
+    }
+
+    fn operation(&self, id: &str) -> Arc<Operation> {
+        let mut entries = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        entries.retain(|_, entry| entry.strong_count() > 0);
+        match entries.get(id).and_then(Weak::upgrade) {
+            Some(operation) if !operation.retired.is_cancelled() => operation,
+            _ => {
+                let operation = Arc::new(Operation::default());
+                entries.insert(id.to_owned(), Arc::downgrade(&operation));
+                operation
+            }
+        }
     }
 
     pub(crate) fn retire(&self, id: &str) {

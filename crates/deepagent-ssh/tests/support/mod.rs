@@ -40,6 +40,7 @@ pub struct Counts {
     pub trusted_user_ca: RwLock<Option<Fingerprint>>,
     pub user_certificates: AtomicUsize,
     pub commands: AtomicUsize,
+    pub exec_gate: RwLock<Option<Arc<tokio::sync::Notify>>>,
     pub closed_channels: AtomicUsize,
     pub reject_shell: AtomicBool,
     pub pty_size: RwLock<Option<(u32, u32)>>,
@@ -503,6 +504,10 @@ impl server::Handler for Handler {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         self.counts.commands.fetch_add(1, Ordering::SeqCst);
+        let gate = self.counts.exec_gate.read().unwrap().clone();
+        if let Some(gate) = gate {
+            gate.notified().await;
+        }
         if command == b"fixture-rejected" {
             session.channel_failure(channel)?;
             return Ok(()); // Client must close this rejected channel itself.
