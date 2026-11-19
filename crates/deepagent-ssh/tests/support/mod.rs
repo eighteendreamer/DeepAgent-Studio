@@ -30,6 +30,7 @@ pub struct Counts {
     pub keyboard_interactive_response_rounds: AtomicUsize,
     pub accept_gate: RwLock<Option<Arc<tokio::sync::Notify>>>,
     pub auth_gate: RwLock<Option<Arc<tokio::sync::Notify>>>,
+    pub auth_rejection_time: RwLock<Option<std::time::Duration>>,
     pub connections: AtomicUsize,
     pub closed_connections: AtomicUsize,
     pub connection_closed: tokio::sync::Notify,
@@ -573,14 +574,18 @@ impl SshServer {
                         if let Some(gate) = gate {
                             gate.notified().await;
                         }
-                        let config = Arc::new(server::Config {
+                        let mut config = server::Config {
                             keys: vec![server_key.read().expect("fixture key").clone()],
                             inactivity_timeout: None,
                             // Method discovery is not a rejected credential. Keep the real
                             // rejection delay for subsequent password/key/MFA failures.
                             auth_rejection_time_initial: Some(std::time::Duration::ZERO),
                             ..Default::default()
-                        });
+                        };
+                        if let Some(delay) = *server_counts.auth_rejection_time.read().unwrap() {
+                            config.auth_rejection_time = delay;
+                        }
+                        let config = Arc::new(config);
                         let handler = Handler {
                             counts: server_counts.clone(),
                             channels: HashMap::new(),

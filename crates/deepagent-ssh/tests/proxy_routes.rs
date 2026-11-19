@@ -478,49 +478,65 @@ async fn malformed_or_excessive_http_replies_stop_before_the_ssh_handshake() {
 #[tokio::test]
 async fn stalled_proxy_times_out_and_closes_the_socket_without_direct_fallback() {
     for mode in ["http_connect", "socks5"] {
-        let server = support::SshServer::start("127.0.0.1").await;
-        let proxy = Proxy::start(server.addr, mode, false, Reply::Stall).await;
-        let root = tempfile::tempdir().unwrap();
-        server.write_trust(&root.path().join("known_hosts"));
-        let ssh = Arc::new(SshService::with_config_store(
-            root.path().into(),
-            Arc::new(SecretStore::default()),
-        ));
-        let saved = ssh
-            .create_connection(
-                serde_json::from_value(request(&server, root.path(), proxy.config(mode, false)))
-                    .unwrap(),
-            )
+        for seconds in [1, 30] {
+            let server = support::SshServer::start("127.0.0.1").await;
+            let proxy = Proxy::start(server.addr, mode, false, Reply::Stall).await;
+            let root = tempfile::tempdir().unwrap();
+            server.write_trust(&root.path().join("known_hosts"));
+            let ssh = Arc::new(SshService::with_config_store(
+                root.path().into(),
+                Arc::new(SecretStore::default()),
+            ));
+            let mut input = request(&server, root.path(), proxy.config(mode, false));
+            input["timing"] = json!({"connect_timeout_secs":seconds});
+            let saved = ssh
+                .create_connection(serde_json::from_value(input).unwrap())
+                .await
+                .unwrap();
+            let connecting = tokio::spawn({
+                let ssh = ssh.clone();
+                async move { ssh.connect(&saved.id).await }
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                while proxy.requests.load(Ordering::SeqCst) == 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
             .await
             .unwrap();
-        let connecting = tokio::spawn({
-            let ssh = ssh.clone();
-            async move { ssh.connect(&saved.id).await }
-        });
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            while proxy.requests.load(Ordering::SeqCst) == 0 {
+            tokio::time::pause();
+            if seconds > 10 {
+                tokio::time::advance(std::time::Duration::from_secs(11)).await;
                 tokio::task::yield_now().await;
+                assert!(
+                    !connecting.is_finished(),
+                    "proxy retained an independent ten-second cutoff"
+                );
+                tokio::time::advance(std::time::Duration::from_secs(seconds - 10)).await;
+            } else {
+                tokio::time::advance(std::time::Duration::from_secs(2)).await;
             }
-        })
-        .await
-        .unwrap();
-        tokio::time::pause();
-        tokio::time::advance(std::time::Duration::from_secs(11)).await;
-        tokio::time::resume();
-        let error = connecting.await.unwrap().unwrap_err().to_string();
-        assert!(
-            error.contains("proxy connect") && error.contains("10 seconds"),
-            "{error}"
-        );
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            while proxy.closed.load(Ordering::SeqCst) == 0 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-        assert_eq!(server.auth_count(), 0);
-        assert_eq!(server.counts.connections.load(Ordering::SeqCst), 0);
+            tokio::time::resume();
+            let error = tokio::time::timeout(std::time::Duration::from_secs(1), connecting)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(&format!("timeout after {seconds}s")),
+                "{error}"
+            );
+            tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                while proxy.closed.load(Ordering::SeqCst) == 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(server.auth_count(), 0);
+            assert_eq!(server.counts.connections.load(Ordering::SeqCst), 0);
+        }
     }
 }
 

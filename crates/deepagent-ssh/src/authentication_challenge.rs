@@ -2,13 +2,14 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use deepagent_core::clock::{Clock, SystemClock};
 use serde::Serialize;
+use tokio::sync::watch;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::session::SshSession;
+use crate::timing::ChallengeDeadline;
 use crate::transport::{PendingClientAuthentication, SshAuthenticationRound};
 use crate::{SshConnectionConfig, SshError, SshResult};
 
@@ -47,7 +48,7 @@ pub struct SshAuthenticationChallenge {
 pub(crate) struct PendingAuthenticationState {
     pub challenge: SshAuthenticationChallenge,
     pub config_proof: [u8; 32],
-    pub deadline: Instant,
+    pub deadline: ChallengeDeadline,
     pub elapsed: Duration,
     pub client: Option<PendingClientAuthentication>,
 }
@@ -59,9 +60,46 @@ pub(crate) struct PendingAuthentication {
     pub state: tokio::sync::Mutex<PendingAuthenticationState>,
     pub(crate) cancelled: CancellationToken,
     expiry: CancellationToken,
+    waiting_timeout: Option<Duration>,
+    waiting_until: watch::Sender<Option<Instant>>,
 }
 
 impl PendingAuthentication {
+    pub(crate) fn expiration(&self, deadline: ChallengeDeadline) -> Option<SshError> {
+        if deadline.instant <= Instant::now() {
+            Some(stale())
+        } else if self
+            .waiting_until
+            .borrow()
+            .is_some_and(|until| until <= Instant::now())
+        {
+            Some(SshError::InvalidConfig(
+                "SSH inactivity timeout while waiting for authentication".into(),
+            ))
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn resume_network(&self) {
+        self.waiting_until.send_replace(None);
+    }
+
+    pub(crate) fn await_user(&self, deadline: ChallengeDeadline) -> ChallengeDeadline {
+        let waiting_until = self
+            .waiting_timeout
+            .map(|duration| Instant::now() + duration);
+        self.waiting_until.send_replace(waiting_until);
+        waiting_until.map_or(deadline, |until| deadline.capped_at(until))
+    }
+
+    async fn fail_and_close(&self, error: &SshError) {
+        self.session
+            .fail_attempt_if_current(&self.attempt_id, error.to_string())
+            .await;
+        self.cancel_and_close().await;
+    }
+
     async fn cancel_and_close(&self) {
         self.cancelled.cancel();
         self.expiry.cancel();
@@ -87,15 +125,27 @@ impl AuthenticationChallengeRegistry {
         session: Arc<SshSession>,
         client: PendingClientAuthentication,
         round: SshAuthenticationRound,
-        deadline: Option<Instant>,
+        deadline: Option<ChallengeDeadline>,
     ) -> SshResult<SshAuthenticationChallenge> {
-        let deadline = deadline.unwrap_or_else(|| Instant::now() + CHALLENGE_TTL);
-        if deadline <= Instant::now() {
+        let deadline = deadline.unwrap_or_else(|| ChallengeDeadline::new(CHALLENGE_TTL));
+        if deadline.instant <= Instant::now() {
             let mut client = client;
             client.disconnect().await;
             return Err(stale());
         }
-        let challenge = challenge(config, attempt_id, deadline, round, client.role)?;
+        // russh waits inside its MFA packet handler, suspending the protocol
+        // loop's native inactivity timer. The existing challenge expiry task
+        // owns this user-wait boundary; native timers own active network work.
+        let waiting_timeout = config
+            .timing
+            .inactivity_timeout_secs
+            .map(|seconds| Duration::from_secs(u64::from(seconds)));
+        let waiting_until = waiting_timeout.map(|duration| Instant::now() + duration);
+        let (waiting_until, mut waiting_updates) = watch::channel(waiting_until);
+        let challenge_deadline = waiting_until
+            .borrow()
+            .map_or(deadline, |until| deadline.capped_at(until));
+        let challenge = challenge(config, attempt_id, challenge_deadline, round, client.role)?;
         let pending = Arc::new(PendingAuthentication {
             attempt_id: attempt_id.to_owned(),
             active_challenge_id: RwLock::new(challenge.challenge_id.clone()),
@@ -109,6 +159,8 @@ impl AuthenticationChallengeRegistry {
             }),
             cancelled: CancellationToken::new(),
             expiry: CancellationToken::new(),
+            waiting_timeout,
+            waiting_until,
         });
 
         let (previous, at_capacity) = {
@@ -136,22 +188,25 @@ impl AuthenticationChallengeRegistry {
         let pending_for_expiry = Arc::clone(&pending);
         let connection_id = config.id.clone();
         tokio::spawn(async move {
-            tokio::select! {
-                _ = pending_for_expiry.expiry.cancelled() => {},
-                _ = tokio::time::sleep_until(deadline) => {
-                    if let Some(registry) = registry.upgrade() {
-                        if registry.remove_if_current(&connection_id, &pending_for_expiry) {
-                            pending_for_expiry
-                                .session
-                                .fail_attempt_if_current(
-                                    &pending_for_expiry.attempt_id,
-                                    stale().to_string(),
-                                )
-                                .await;
+            loop {
+                let until = (*waiting_updates.borrow_and_update())
+                    .map_or(deadline.instant, |until| until.min(deadline.instant));
+                tokio::select! {
+                    biased;
+                    _ = pending_for_expiry.expiry.cancelled() => break,
+                    _ = waiting_updates.changed() => continue,
+                    _ = tokio::time::sleep_until(until) => {
+                        let Some(error) = pending_for_expiry.expiration(deadline) else {
+                            continue;
+                        };
+                        if let Some(registry) = registry.upgrade() {
+                            if registry.remove_if_current(&connection_id, &pending_for_expiry) {
+                                pending_for_expiry.fail_and_close(&error).await;
+                            }
+                        } else {
                             pending_for_expiry.cancel_and_close().await;
                         }
-                    } else {
-                        pending_for_expiry.cancel_and_close().await;
+                        break;
                     }
                 }
             }
@@ -179,11 +234,12 @@ impl AuthenticationChallengeRegistry {
             return Err(stale());
         }
         let state = pending.state.lock().await;
-        if state.deadline <= Instant::now() {
+        if let Some(error) = pending.expiration(state.deadline) {
             drop(state);
-            self.remove_if_current(connection_id, &pending);
-            pending.cancel_and_close().await;
-            return Err(stale());
+            if self.remove_if_current(connection_id, &pending) {
+                pending.fail_and_close(&error).await;
+            }
+            return Err(error);
         }
         drop(state);
         Ok(pending)
@@ -289,7 +345,7 @@ impl AuthenticationChallengeRegistry {
 pub(crate) fn next_challenge(
     config: &SshConnectionConfig,
     attempt_id: &str,
-    deadline: Instant,
+    deadline: ChallengeDeadline,
     round: SshAuthenticationRound,
     role: crate::SshConnectionRole,
 ) -> SshResult<SshAuthenticationChallenge> {
@@ -299,7 +355,7 @@ pub(crate) fn next_challenge(
 fn challenge(
     config: &SshConnectionConfig,
     attempt_id: &str,
-    deadline: Instant,
+    deadline: ChallengeDeadline,
     round: SshAuthenticationRound,
     role: crate::SshConnectionRole,
 ) -> SshResult<SshAuthenticationChallenge> {
@@ -316,10 +372,7 @@ fn challenge(
         name: round.name,
         instructions: round.instructions,
         prompts: round.prompts,
-        expires_at_ms: SystemClock.now().as_millis()
-            + deadline
-                .saturating_duration_since(Instant::now())
-                .as_millis() as i64,
+        expires_at_ms: deadline.expires_at_ms,
     })
 }
 

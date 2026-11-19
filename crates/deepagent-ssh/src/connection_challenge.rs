@@ -5,7 +5,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use deepagent_core::clock::{Clock, SystemClock};
 use russh::keys::{HashAlg, PublicKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -13,6 +12,7 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::host_trust::HostTrust;
+use crate::timing::ChallengeDeadline;
 use crate::{SshAuthenticationChallenge, SshConnectionConfig, SshError, SshResult};
 
 const CHALLENGE_TTL: Duration = Duration::from_secs(120);
@@ -61,7 +61,7 @@ pub(crate) struct PendingHostKey {
     pub trust: HostTrust,
     pub key: PublicKey,
     pub config_proof: [u8; 32],
-    pub deadline: Instant,
+    pub deadline: ChallengeDeadline,
     pub continuation: Option<crate::transport::PendingHostVerification>,
 }
 
@@ -72,7 +72,7 @@ pub(crate) enum HostKeyPurpose {
 
 struct Attempt {
     id: String,
-    deadline: Instant,
+    deadline: ChallengeDeadline,
     pending: Option<PendingHostKey>,
     expiry: tokio_util::sync::CancellationToken,
 }
@@ -89,7 +89,7 @@ pub(crate) struct HostKeyChallenges(Arc<Mutex<HashMap<String, Attempt>>>);
 impl HostKeyChallenges {
     pub fn reserve(&self, id: &str) -> SshResult<String> {
         let mut attempts = self.0.lock().map_err(|_| stale())?;
-        attempts.retain(|_, attempt| attempt.deadline > Instant::now());
+        attempts.retain(|_, attempt| attempt.deadline.instant > Instant::now());
         if !attempts.contains_key(id) && attempts.len() >= MAX_ATTEMPTS {
             return Err(SshError::InvalidConfig(
                 "too many pending SSH connection attempts".into(),
@@ -101,7 +101,7 @@ impl HostKeyChallenges {
             id.into(),
             Attempt {
                 id: attempt_id.clone(),
-                deadline: Instant::now() + CHALLENGE_TTL,
+                deadline: ChallengeDeadline::new(CHALLENGE_TTL),
                 pending: None,
                 expiry: expiry.clone(),
             },
@@ -113,7 +113,7 @@ impl HostKeyChallenges {
         tokio::spawn(async move {
             tokio::select! {
                 _ = expiry.cancelled() => return,
-                _ = tokio::time::sleep_until(deadline) => {},
+                _ = tokio::time::sleep_until(deadline.instant) => {},
             }
             if let Some(registry) = registry.upgrade() {
                 if let Ok(mut attempts) = registry.lock() {
@@ -129,12 +129,12 @@ impl HostKeyChallenges {
         Ok(attempt_id)
     }
 
-    pub(crate) fn deadline(&self, id: &str, attempt_id: &str) -> SshResult<Instant> {
+    pub(crate) fn deadline(&self, id: &str, attempt_id: &str) -> SshResult<ChallengeDeadline> {
         self.0
             .lock()
             .map_err(|_| stale())?
             .get(id)
-            .filter(|attempt| attempt.id == attempt_id && attempt.deadline > Instant::now())
+            .filter(|attempt| attempt.id == attempt_id && attempt.deadline.instant > Instant::now())
             .map(|attempt| attempt.deadline)
             .ok_or_else(stale)
     }
@@ -194,7 +194,7 @@ impl HostKeyChallenges {
         let mut attempts = self.0.lock().map_err(|_| stale())?;
         let attempt = attempts
             .get_mut(&cfg.id)
-            .filter(|attempt| attempt.id == attempt_id && attempt.deadline > Instant::now())
+            .filter(|attempt| attempt.id == attempt_id && attempt.deadline.instant > Instant::now())
             .ok_or_else(stale)?;
         let (kind, can_save) = match purpose {
             HostKeyPurpose::Enrollment { can_save } => ("unknown_host", can_save),
@@ -217,11 +217,7 @@ impl HostKeyChallenges {
             kind,
             algorithm: key.algorithm().as_str().into(),
             fingerprint: key.fingerprint(HashAlg::Sha256).to_string(),
-            expires_at_ms: SystemClock.now().as_millis()
-                + attempt
-                    .deadline
-                    .saturating_duration_since(Instant::now())
-                    .as_millis() as i64,
+            expires_at_ms: attempt.deadline.expires_at_ms,
             can_save,
         };
         attempt.pending = Some(PendingHostKey {
@@ -246,7 +242,7 @@ impl HostKeyChallenges {
             .get_mut(id)
             .filter(|attempt| attempt.id == attempt_id)
             .ok_or_else(stale)?;
-        if attempt.deadline <= Instant::now() {
+        if attempt.deadline.instant <= Instant::now() {
             attempts.remove(id);
             return Err(stale());
         }
@@ -262,7 +258,7 @@ impl HostKeyChallenges {
         let attempts = self.0.lock().map_err(|_| stale())?;
         attempts
             .get(id)
-            .filter(|attempt| attempt.id == attempt_id && attempt.deadline > Instant::now())
+            .filter(|attempt| attempt.id == attempt_id && attempt.deadline.instant > Instant::now())
             .map(|_| ())
             .ok_or_else(stale)
     }
@@ -308,6 +304,7 @@ pub(crate) fn config_proof(cfg: &SshConnectionConfig) -> SshResult<[u8; 32]> {
         &cfg.authentication_factors,
         &cfg.proxy,
         &cfg.jump,
+        cfg.timing,
         options,
     ))
     .map_err(|_| stale())?;

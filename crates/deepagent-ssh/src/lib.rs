@@ -79,6 +79,7 @@ pub use session::{
     SshDirEntry, SshDirListing, SshExecResult, SshFileBinary, SshFileContent, SshPtyHandle,
     SshSession, SshStatusSnapshot, SshTestResult,
 };
+pub use timing::SshConnectionTiming;
 pub use transport::{SshClient, SshCommandOutput};
 
 mod agent;
@@ -109,6 +110,7 @@ mod remote;
 mod service;
 mod session;
 mod sftp_packet_stream;
+mod timing;
 mod transport;
 mod transport_authentication;
 
@@ -805,6 +807,7 @@ impl SshService {
             auth_type: dto.auth_type,
             authentication_factors: Vec::new(),
             jump: None,
+            timing: dto.timing,
             proxy: dto.proxy.as_ref().map(|proxy| SshProxyConfig {
                 mode: proxy.mode,
                 host: proxy.host.clone(),
@@ -977,6 +980,7 @@ mod tests {
                 authentication_factors: None,
                 proxy: None,
                 jump: None,
+                timing: Default::default(),
                 key_path: None,
                 key_content: None,
                 certificate_path: None,

@@ -454,6 +454,40 @@ async fn two_unknown_hops_accept_once_without_persisting_or_repeating_jump_authe
 }
 
 #[tokio::test]
+async fn host_key_expiry_stays_fixed_when_wall_clock_advances_without_monotonic_time() {
+    let fixture = Fixture::start().await;
+    std::fs::write(fixture.root.path().join("jump_known_hosts"), "").unwrap();
+    std::fs::write(fixture.root.path().join("target_known_hosts"), "").unwrap();
+    let dto = fixture
+        .ssh
+        .create_connection(serde_json::from_value(fixture.request()).unwrap())
+        .await
+        .unwrap();
+    let deepagent_ssh::SshConnectionAttempt::ConfirmationRequired { challenge: jump } =
+        fixture.ssh.begin_connection(&dto.id).await.unwrap()
+    else {
+        panic!("expected jump verification");
+    };
+    tokio::time::pause();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    tokio::time::resume();
+    let deepagent_ssh::SshConnectionAttempt::ConfirmationRequired { challenge: target } = fixture
+        .ssh
+        .respond_host_key(
+            &dto.id,
+            &jump.attempt_id,
+            &jump.challenge_id,
+            deepagent_ssh::SshHostKeyDecision::Once,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("expected target verification");
+    };
+    assert_eq!(target.expires_at_ms, jump.expires_at_ms);
+}
+
+#[tokio::test]
 async fn unknown_target_verification_continues_after_jump_mfa_without_restarting_it() {
     let fixture = Fixture::start().await;
     fixture
@@ -833,4 +867,57 @@ async fn target_accept_new_continues_after_jump_mfa_and_uses_the_routed_applicat
     assert_eq!(audit["route"], "jump");
     assert_eq!(audit["records"][0]["action"], "accept_new");
     ssh.disconnect(&dto.id).await.unwrap();
+}
+#[tokio::test]
+async fn jump_inherits_the_connections_native_inactivity_policy() {
+    let fixture = Fixture::start().await;
+    *fixture.jump.counts.auth_rejection_time.write().unwrap() = Some(std::time::Duration::ZERO);
+    fixture
+        .jump
+        .counts
+        .require_keyboard_interactive
+        .store(true, Ordering::SeqCst);
+    let mut input = fixture.request();
+    input["timing"] = json!({"connect_timeout_secs":5,"inactivity_timeout_secs":1});
+    let dto = fixture
+        .ssh
+        .create_connection(serde_json::from_value(input).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(dto.timing.inactivity_timeout_secs, Some(1));
+    assert_eq!(fixture.store.0.lock().unwrap()[0].timing, dto.timing);
+    let deepagent_ssh::SshConnectionAttempt::AuthenticationRequired { challenge } =
+        fixture.ssh.begin_connection(&dto.id).await.unwrap()
+    else {
+        panic!("jump must await its own MFA");
+    };
+    assert_eq!(challenge.role, deepagent_ssh::SshConnectionRole::Jump);
+    // Observe the socket closing while the jump is still awaiting user input.
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while fixture
+            .jump
+            .counts
+            .closed_connections
+            .load(Ordering::SeqCst)
+            == 0
+        {
+            fixture.jump.counts.connection_closed.notified().await;
+        }
+    })
+    .await
+    .expect("jump transport did not close after its one-second inactivity limit");
+    let status = fixture.ssh.status(&dto.id).await.unwrap();
+    assert_eq!(status.status, deepagent_ssh::SshStatus::Error);
+    assert!(status.last_error.unwrap().contains("inactivity"));
+    assert_eq!(fixture.target.auth_count(), 0);
+    let late_response = fixture
+        .ssh
+        .respond_keyboard_interactive(
+            &dto.id,
+            &challenge.attempt_id,
+            &challenge.challenge_id,
+            vec!["482901".into(), "terminal".into()],
+        )
+        .await;
+    assert!(late_response.is_err());
 }

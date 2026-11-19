@@ -16,6 +16,7 @@ use super::session::{
     SshDirEntry, SshDirListing, SshExecResult, SshFileBinary, SshFileContent, SshSession,
     SshStatusSnapshot, SshTestResult,
 };
+use super::timing::ChallengeDeadline;
 use super::transport::{AuthenticationStep, SshClient as Client, SshClientConnection};
 use super::{SshConfigStore, SshConnectionAttempt, SshServiceHandle};
 use async_trait::async_trait;
@@ -124,6 +125,7 @@ impl SshServiceImpl {
             .into_iter()
             .map(|mut config| {
                 self.validate_secret_storage(&config)?;
+                config.timing.validate()?;
                 if let Some(proxy) = &config.proxy {
                     proxy.validate()?;
                 }
@@ -183,12 +185,8 @@ impl SshServiceImpl {
         for cfg in configs.values() {
             let (status, last_error, latency_ms) = if let Some(s) = sessions.get(&cfg.id).cloned() {
                 let session_status = s.status().await;
-                let live_status = if let Some(client) = s.client().await {
-                    if client.is_closed() {
-                        (session_status == SshStatus::Error).then_some(session_status)
-                    } else {
-                        Some(session_status)
-                    }
+                let live_status = if s.client().await.is_some() {
+                    Some(session_status)
                 } else {
                     (session_status == SshStatus::Error).then_some(session_status)
                 };
@@ -319,6 +317,7 @@ impl SshServiceImpl {
         config.key_content = request.key_content;
         config.certificate_path = request.certificate_path;
         config.password = request.password;
+        config.timing = request.timing;
         config.proxy = crate::proxy::resolve_proxy(request.proxy, None)?;
         config.jump = crate::jump::resolve_jump(
             request.jump,
@@ -386,6 +385,7 @@ impl SshServiceImpl {
                 Vec::new()
             },
             host_key_policy: request.host_key_policy.unwrap_or(cfg.host_key_policy),
+            timing: request.timing.unwrap_or(cfg.timing),
             key_path: request.key_path.clone(),
             key_content: request.key_content.or_else(|| {
                 (cfg.auth_type == SshAuthType::KeyContent && request.auth_type == cfg.auth_type)
@@ -497,20 +497,22 @@ impl SshServiceImpl {
         let session = self.session_for(cfg.clone()).await;
         session.set_connecting_attempt(attempt_id).await;
         let started = std::time::Instant::now();
-        let progress = match timeout(
-            Duration::from_secs(20),
-            connect_client_progress(
-                cfg,
-                self.host_key_store.clone(),
-                confirmed,
-                confirmed_jump,
-                deadline.is_some(),
-            ),
-        )
-        .await
+        let progress = match cfg
+            .timing
+            .connecting_until(
+                connect_client_progress(
+                    cfg,
+                    self.host_key_store.clone(),
+                    confirmed,
+                    confirmed_jump,
+                    deadline.is_some(),
+                ),
+                deadline.map(|deadline| deadline.instant),
+            )
+            .await
         {
-            Ok(Ok(verified)) => verified,
-            Ok(Err(err)) => {
+            Ok(verified) => verified,
+            Err(err) => {
                 let msg = err.to_string();
                 session
                     .set_status(SshStatus::Error, Some(msg.clone()))
@@ -520,21 +522,6 @@ impl SshServiceImpl {
                         id,
                         SshStatus::Error,
                         Some(msg),
-                        Some(started.elapsed().as_millis() as u64),
-                    )
-                    .await;
-                return Err(err);
-            }
-            Err(_) => {
-                let err = SshError::Timeout(Duration::from_secs(20));
-                session
-                    .set_status(SshStatus::Error, Some(err.to_string()))
-                    .await;
-                let _ = self
-                    .update_cached_status(
-                        id,
-                        SshStatus::Error,
-                        Some(err.to_string()),
                         Some(started.elapsed().as_millis() as u64),
                     )
                     .await;
@@ -551,11 +538,11 @@ impl SshServiceImpl {
         attempt_id: &str,
         progress: SshClientConnection,
         elapsed: Duration,
-        deadline: Option<tokio::time::Instant>,
+        deadline: Option<ChallengeDeadline>,
     ) -> SshResult<SshConnectionAttempt> {
         let id = cfg.id.as_str();
         if deadline.is_some_and(|deadline| {
-            deadline <= tokio::time::Instant::now()
+            deadline.instant <= tokio::time::Instant::now()
                 || self.host_challenges.ensure_current(id, attempt_id).is_err()
         }) {
             match progress {
@@ -641,14 +628,13 @@ impl SshServiceImpl {
         }
 
         let mut state = pending.state.lock().await;
-        if state.deadline <= tokio::time::Instant::now()
-            || !self.authentication_challenges.is_current(id, &pending)
-        {
+        let expiration = pending.expiration(state.deadline);
+        if expiration.is_some() || !self.authentication_challenges.is_current(id, &pending) {
             drop(state);
             self.authentication_challenges
                 .close_if_current(id, &pending)
                 .await;
-            let error = stale_authentication_challenge();
+            let error = expiration.unwrap_or_else(stale_authentication_challenge);
             self.set_authentication_status(id, SshStatus::Error, Some(error.to_string()))
                 .await;
             return Err(error);
@@ -711,12 +697,17 @@ impl SshServiceImpl {
             }
         }
 
+        pending.resume_network();
         let response_started = std::time::Instant::now();
+        let deadline = state.deadline;
         let cancelled = pending.cancelled.clone();
         let step = match state.client.as_mut() {
             Some(client) => {
-                client
-                    .respond(&cancelled, &cfg, self.host_key_store.clone(), responses)
+                cfg.timing
+                    .connecting_until(
+                        client.respond(&cancelled, &cfg, self.host_key_store.clone(), responses),
+                        Some(deadline.instant),
+                    )
                     .await
             }
             None => Err(stale_authentication_challenge()),
@@ -725,7 +716,7 @@ impl SshServiceImpl {
 
         match step {
             Ok(AuthenticationStep::ConfirmationRequired(continuation)) => {
-                if state.deadline <= tokio::time::Instant::now()
+                if state.deadline.instant <= tokio::time::Instant::now()
                     || pending.cancelled.is_cancelled()
                     || !self.authentication_challenges.is_current(id, &pending)
                 {
@@ -766,7 +757,7 @@ impl SshServiceImpl {
                     result = expected_trust.reload(&current_config, self.host_key_store.clone()) => result,
                 };
                 if !matches!(&current_trust, Ok(current) if current == &expected_trust)
-                    || state.deadline <= tokio::time::Instant::now()
+                    || state.deadline.instant <= tokio::time::Instant::now()
                     || !self.authentication_challenges.is_current(id, &pending)
                 {
                     drop(state);
@@ -780,7 +771,8 @@ impl SshServiceImpl {
                         .await;
                     return Err(error);
                 }
-                let challenge = next_challenge(&cfg, attempt_id, state.deadline, round, role)?;
+                let waiting_deadline = pending.await_user(state.deadline);
+                let challenge = next_challenge(&cfg, attempt_id, waiting_deadline, round, role)?;
                 *pending
                     .active_challenge_id
                     .write()
@@ -800,7 +792,7 @@ impl SshServiceImpl {
                     result = authenticated_trust.reload(&cfg, self.host_key_store.clone()) => result,
                 };
                 if !matches!(&current_trust, Ok(current) if current == &authenticated_trust)
-                    || state.deadline <= tokio::time::Instant::now()
+                    || state.deadline.instant <= tokio::time::Instant::now()
                     || pending.cancelled.is_cancelled()
                     || !self.authentication_challenges.is_current(id, &pending)
                 {
@@ -1330,10 +1322,7 @@ impl SshServiceImpl {
                     });
                 }
                 Ok(SshStatusSnapshot {
-                    status: cached
-                        .as_ref()
-                        .map(|snap| snap.status)
-                        .unwrap_or(SshStatus::Disconnected),
+                    status: session_status,
                     last_error: s
                         .last_error()
                         .await
@@ -1357,37 +1346,33 @@ impl SshServiceImpl {
         };
         cfg.known_hosts_path = Some(self.resolve_known_hosts(cfg.known_hosts_path.as_deref())?);
         let start = std::time::Instant::now();
-        let result = match timeout(Duration::from_secs(20), async {
-            let (client, _) = connect_client(&cfg, self.host_key_store.clone(), None).await?;
-            let output = client.execute("echo ok").await?;
-            let _ = client.disconnect().await;
-            Ok::<_, SshError>(output)
-        })
-        .await
+        let result = match cfg
+            .timing
+            .connecting(async {
+                let (client, _) = connect_client(&cfg, self.host_key_store.clone(), None).await?;
+                let output = client.execute("echo ok").await?;
+                let _ = client.disconnect().await;
+                Ok::<_, SshError>(output)
+            })
+            .await
         {
-            Ok(Ok(output)) if output.exit_status == 0 => SshTestResult {
+            Ok(output) if output.exit_status == 0 => SshTestResult {
                 ok: true,
                 latency_ms: Some(start.elapsed().as_millis() as u64),
                 banner: Some(output.stdout.trim().to_string()),
                 error: None,
             },
-            Ok(Ok(output)) => SshTestResult {
+            Ok(output) => SshTestResult {
                 ok: false,
                 latency_ms: Some(start.elapsed().as_millis() as u64),
                 banner: None,
                 error: Some(output.stderr),
             },
-            Ok(Err(err)) => SshTestResult {
+            Err(err) => SshTestResult {
                 ok: false,
                 latency_ms: Some(start.elapsed().as_millis() as u64),
                 banner: None,
                 error: Some(err.to_string()),
-            },
-            Err(_) => SshTestResult {
-                ok: false,
-                latency_ms: Some(start.elapsed().as_millis() as u64),
-                banner: None,
-                error: Some(SshError::Timeout(Duration::from_secs(20)).to_string()),
             },
         };
 
@@ -1839,6 +1824,7 @@ impl SshServiceImpl {
             || original.authentication_factors != cfg.authentication_factors
             || original.proxy != cfg.proxy
             || original.jump != cfg.jump
+            || original.timing != cfg.timing
         {
             self.disconnect(&cfg.id).await?;
             return Ok(None);
@@ -2202,6 +2188,7 @@ async fn connect_client(
 }
 
 fn validate_config(config: &SshConnectionConfig) -> SshResult<()> {
+    config.timing.validate()?;
     if let Some(jump) = &config.jump {
         jump.validate()?;
     }
@@ -2239,6 +2226,7 @@ fn dto_from_config(
             .collect(),
         proxy: cfg.proxy.as_ref().map(crate::SshProxyConfig::dto),
         jump: cfg.jump.as_ref().map(crate::SshJumpConfig::dto),
+        timing: cfg.timing,
         key_path: cfg.key_path.clone(),
         has_key_content: cfg.key_content.is_some(),
         certificate_path: cfg.certificate_path.clone(),

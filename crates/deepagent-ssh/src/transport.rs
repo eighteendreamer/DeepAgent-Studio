@@ -50,6 +50,7 @@ pub(crate) struct IdentityHandler {
     trust: Option<HostTrust>,
     rejected: Arc<Mutex<Option<PublicKey>>>,
     accepted: Arc<Mutex<Option<PublicKey>>>,
+    closed_by_timer: Arc<Mutex<Option<&'static str>>>,
 }
 
 impl IdentityHandler {
@@ -58,6 +59,7 @@ impl IdentityHandler {
             trust: Some(trust),
             rejected: Arc::new(Mutex::new(None)),
             accepted: Arc::new(Mutex::new(None)),
+            closed_by_timer: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -83,6 +85,27 @@ impl client::Handler for IdentityHandler {
             .unwrap_or_else(|error| error.into_inner()) = Some(presented_key);
         Ok(accepted)
     }
+
+    async fn disconnected(
+        &mut self,
+        reason: client::DisconnectReason<Self::Error>,
+    ) -> Result<(), Self::Error> {
+        match reason {
+            client::DisconnectReason::ReceivedDisconnect(_) => Ok(()),
+            client::DisconnectReason::Error(error) => {
+                let message = match error {
+                    russh::Error::InactivityTimeout => Some("SSH inactivity timeout"),
+                    russh::Error::KeepaliveTimeout => Some("SSH keepalive response limit exceeded"),
+                    _ => None,
+                };
+                *self
+                    .closed_by_timer
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) = message;
+                Err(error)
+            }
+        }
+    }
 }
 
 /// A verified, authenticated native connection. Clones share its channel owner.
@@ -91,6 +114,7 @@ impl client::Handler for IdentityHandler {
 pub struct SshClient {
     handle: Arc<Handle<IdentityHandler>>,
     jump: Option<Arc<VerifiedJump>>,
+    closed_by_timer: Arc<Mutex<Option<&'static str>>>,
 }
 
 pub(crate) struct SshAuthenticationRound {
@@ -155,6 +179,7 @@ pub(crate) struct PendingClientAuthentication {
     pub server_key: PublicKey,
     negotiation: AuthenticationNegotiation,
     jump: Option<Arc<VerifiedJump>>,
+    closed_by_timer: Arc<Mutex<Option<&'static str>>>,
 }
 
 pub(crate) enum AuthenticationStep {
@@ -213,6 +238,7 @@ impl PendingClientAuthentication {
                 client: SshClient {
                     handle: Arc::new(handle),
                     jump: None,
+                    closed_by_timer: self.closed_by_timer.clone(),
                 },
                 trust: self.trust.clone(),
             });
@@ -262,6 +288,7 @@ impl PendingClientAuthentication {
             client: SshClient {
                 handle: Arc::new(handle),
                 jump: self.jump.take(),
+                closed_by_timer: self.closed_by_timer.clone(),
             },
             trust: self.trust.clone(),
             server_key: self.server_key.clone(),
@@ -338,12 +365,13 @@ impl SshClient {
     ) -> SshResult<PublicKey> {
         let observed = Arc::new(Mutex::new(None));
         let result = client::connect_stream(
-            Arc::new(client::Config::default()),
+            Arc::new(config.timing.protocol_config()),
             stream,
             IdentityHandler {
                 trust: None,
                 rejected: observed.clone(),
                 accepted: Arc::new(Mutex::new(None)),
+                closed_by_timer: Arc::new(Mutex::new(None)),
             },
         )
         .await;
@@ -487,8 +515,9 @@ impl SshClient {
         let handler = IdentityHandler::verified(trust.clone());
         let rejected = handler.rejected.clone();
         let accepted = handler.accepted.clone();
+        let closed_by_timer = handler.closed_by_timer.clone();
         let mut handle =
-            client::connect_stream(Arc::new(client::Config::default()), stream, handler)
+            client::connect_stream(Arc::new(config.timing.protocol_config()), stream, handler)
                 .await
                 .map_err(|error| {
                     let rejected = rejected.lock().unwrap_or_else(|error| error.into_inner());
@@ -527,6 +556,7 @@ impl SshClient {
                     server_key: key,
                     negotiation,
                     jump,
+                    closed_by_timer,
                 },
                 round,
             }),
@@ -534,6 +564,7 @@ impl SshClient {
                 client: Self {
                     handle: Arc::new(handle),
                     jump,
+                    closed_by_timer,
                 },
                 trust: trust.clone(),
                 server_key: key,
@@ -551,6 +582,18 @@ impl SshClient {
                 .jump
                 .as_ref()
                 .is_some_and(|jump| jump.client.is_closed())
+    }
+
+    pub(crate) fn timing_error(&self) -> Option<String> {
+        self.closed_by_timer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .map(str::to_owned)
+            .or_else(|| {
+                self.jump
+                    .as_ref()
+                    .and_then(|jump| jump.client.timing_error())
+            })
     }
 
     pub async fn get_channel(&self) -> SshResult<Channel<Msg>> {

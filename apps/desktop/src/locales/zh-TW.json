@@ -473,6 +473,15 @@
       "noAllowed": "沒有允許的網域"
     },
     "connections": {
+      "timing": {
+        "inactivityExpired": "連線已達設定的閒置逾時，已中斷。",
+        "keepaliveExpired": "保活連續未回應已達設定上限，連線已中斷。",
+        "connectTimeout": "連線逾時（秒）",
+        "inactivityTimeout": "閒置逾時（秒）",
+        "keepaliveInterval": "保活間隔（秒）",
+        "keepaliveMax": "保活未回應上限",
+        "off": "關閉"
+      },
       "title": "連線",
       "desc1": "將 Codex 連接到外部服務。",
       "desc2": "了解更多。",

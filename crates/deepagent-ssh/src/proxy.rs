@@ -5,11 +5,9 @@ use crate::{SshConnectionConfig, SshError, SshHostIdentity, SshResult};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
-use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-const PROXY_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_HTTP_HEADER: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -195,25 +193,20 @@ pub(crate) async fn open_tcp(config: &SshConnectionConfig) -> SshResult<TcpStrea
     };
     proxy.validate()?;
     let target = validate_host(&config.host, config.port)?;
-    tokio::time::timeout(PROXY_TIMEOUT, async {
-        let mut stream = TcpStream::connect((proxy.host.as_str(), proxy.port))
-            .await
-            .map_err(|error| {
-                failure(
-                    "connect",
-                    format!("TCP connection failed ({:?})", error.kind()),
-                )
-            })?;
-        match proxy.mode {
-            SshProxyType::HttpConnect => {
-                http_connect(&mut stream, proxy, &target, config.port).await?
-            }
-            SshProxyType::Socks5 => socks_connect(&mut stream, proxy, &target, config.port).await?,
-        }
-        Ok(stream)
-    })
-    .await
-    .map_err(|_| failure("connect", "TCP/protocol handshake exceeded 10 seconds"))?
+    // The caller bounds the entire route, SSH handshake and authentication together.
+    let mut stream = TcpStream::connect((proxy.host.as_str(), proxy.port))
+        .await
+        .map_err(|error| {
+            failure(
+                "connect",
+                format!("TCP connection failed ({:?})", error.kind()),
+            )
+        })?;
+    match proxy.mode {
+        SshProxyType::HttpConnect => http_connect(&mut stream, proxy, &target, config.port).await?,
+        SshProxyType::Socks5 => socks_connect(&mut stream, proxy, &target, config.port).await?,
+    }
+    Ok(stream)
 }
 
 async fn http_connect(

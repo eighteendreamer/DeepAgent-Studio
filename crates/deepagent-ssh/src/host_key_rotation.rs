@@ -4,13 +4,13 @@
 use crate::connection_challenge::{config_proof, HostKeyPurpose};
 use crate::host_trust::HostTrust;
 use crate::service::SshServiceImpl;
+use crate::timing::ChallengeDeadline;
 use crate::{
     SshClient, SshError, SshHostIdentity, SshHostKeyChallenge, SshHostKeyRotationRecord,
     SshKnownHostKey, SshResult,
 };
 use russh::keys::{HashAlg, PublicKey};
 use serde::Serialize;
-use tokio::time::{timeout, Duration};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SshHostKeyRotationPreview {
@@ -28,13 +28,15 @@ pub struct SshHostKeyRotationResult {
 async fn probe(
     config: &crate::SshConnectionConfig,
     store: std::sync::Arc<crate::SshHostKeyStore>,
+    deadline: ChallengeDeadline,
 ) -> SshResult<PublicKey> {
-    timeout(
-        Duration::from_secs(20),
-        SshClient::observe_host_key(config, Some(store)),
-    )
-    .await
-    .map_err(|_| SshError::Timeout(Duration::from_secs(20)))?
+    config
+        .timing
+        .connecting_until(
+            SshClient::observe_host_key(config, Some(store)),
+            Some(deadline.instant),
+        )
+        .await
 }
 
 impl SshServiceImpl {
@@ -52,7 +54,12 @@ impl SshServiceImpl {
                     "unknown identity requires first-connection verification, not rotation",
                 ));
             }
-            let key = probe(&config, store.clone()).await?;
+            let key = probe(
+                &config,
+                store.clone(),
+                self.host_challenges.deadline(id, &attempt_id)?,
+            )
+            .await?;
             let previous_keys = trust
                 .rotation_previous(&config, &key)?
                 .into_iter()
@@ -114,7 +121,7 @@ impl SshServiceImpl {
         }
         // Re-observe immediately before saving. A second server change is not
         // silently persisted, and neither probe ever reaches authentication.
-        if probe(&config, store.clone()).await? != pending.key
+        if probe(&config, store.clone(), pending.deadline).await? != pending.key
             || HostTrust::capture_rotation(&config, store.clone()).await? != pending.trust
         {
             return Err(HostTrust::error(

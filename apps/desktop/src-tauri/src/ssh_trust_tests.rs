@@ -310,6 +310,7 @@ async fn agent_providers_survive_encrypted_store_reopen_and_frontend_projection(
                 authentication_factors: None,
                 proxy: None,
                 jump: None,
+                timing: Default::default(),
                 name: to_dto_auth_type(auth).into(),
                 host: "agent.invalid".into(),
                 port: 2222,
@@ -376,6 +377,7 @@ async fn user_certificate_survives_encrypted_store_reopen_without_exposing_the_p
                 authentication_factors: None,
                 proxy: None,
                 jump: None,
+                timing: Default::default(),
                 name: "user certificate".into(),
                 host: "fixture.invalid".into(),
                 port: 22,
@@ -454,6 +456,7 @@ async fn h125_ssh_trust_survives_encrypted_store_reopen_and_frontend_projection(
                 authentication_factors: None,
                 proxy: None,
                 jump: None,
+                timing: Default::default(),
                 host_key_policy: deepagent_ssh::SshHostKeyPolicy::AcceptNew,
                 name: "fixture".into(),
                 host: "127.0.0.1".into(),
@@ -602,4 +605,56 @@ async fn host_trust_audit_projects_v2_history_without_exporting_source_or_authen
     assert!(!text.contains("known_hosts"));
     assert!(!text.contains("public_key"));
     assert!(!text.contains("password"));
+}
+#[tokio::test]
+async fn connection_timing_survives_encrypted_storage_and_frontend_projection() {
+    let data = tempfile::tempdir().unwrap();
+    let path = data.path().join("app.sqlite");
+    let wrapping = Arc::new(deepagent_app_core::MemorySecretStore::new());
+    let timing = serde_json::json!({"connect_timeout_secs":7,"inactivity_timeout_secs":90,
+        "keepalive_interval_secs":15,"keepalive_max":4});
+    let id;
+    {
+        let app = AppService::open(&path).unwrap();
+        let store = Arc::new(SqliteSshConfigStore {
+            secrets: Arc::new(SqliteSecretStore::new(
+                app.shared_database(),
+                wrapping.clone(),
+            )),
+            legacy_path: data.path().join("absent.json"),
+        });
+        let ssh = SshService::with_config_store(data.path().to_owned(), store);
+        let saved = ssh
+            .create_connection(
+                serde_json::from_value(serde_json::json!({
+                    "name":"timing fixture","host":"fixture.invalid","port":22,"username":"fixture",
+                    "auth_type":"agent","timing":timing
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        id = saved.id.clone();
+        assert_eq!(
+            serde_json::to_value(SshConnectionFrontendDto::from(saved)).unwrap()["timing"],
+            timing
+        );
+    }
+    let app = AppService::open(&path).unwrap();
+    let store = Arc::new(SqliteSshConfigStore {
+        secrets: Arc::new(SqliteSecretStore::new(app.shared_database(), wrapping)),
+        legacy_path: data.path().join("absent.json"),
+    });
+    let ssh = SshService::with_config_store(data.path().to_owned(), store);
+    ssh.load().await.unwrap();
+    let saved = ssh
+        .list_connections()
+        .await
+        .into_iter()
+        .find(|c| c.id == id)
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(SshConnectionFrontendDto::from(saved)).unwrap()["timing"],
+        timing
+    );
 }

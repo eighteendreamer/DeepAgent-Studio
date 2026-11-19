@@ -39,6 +39,7 @@ async fn pty_shell_streams_prompt_and_echoes_input() {
             authentication_factors: None,
             proxy: None,
             jump: None,
+            timing: Default::default(),
             name: "pty-shell-it".into(),
             host: host.clone(),
             port,

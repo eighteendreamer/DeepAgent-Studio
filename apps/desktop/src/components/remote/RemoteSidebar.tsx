@@ -1,3 +1,4 @@
+import { SshTimingFields, sshTimingFromDto, sshTimingRequest, type SshTimingForm } from "./SshTimingFields";
 import { authenticationFactorRequests, authenticationFactorsFromDto, canSaveSshConnection, SshAuthenticationFields, type SshFormAuthType, type SshAuthenticationFactorForm } from "./SshAuthenticationFields";
 import { SshHostTrustField } from "./SshHostTrustField";
 import { SshProxyFields, sshProxyFromDto, sshProxyRequest, type SshProxyForm } from "./SshProxyFields";
@@ -68,6 +69,7 @@ interface RemoteSidebarProps {
 interface ConnectionForm {
   proxy: SshProxyForm;
   jump: SshJumpForm;
+  timing: SshTimingForm;
   authenticationFactors: SshAuthenticationFactorForm[];
   name: string;
   host: string;
@@ -86,6 +88,7 @@ interface ConnectionForm {
 const emptyForm: ConnectionForm = {
   proxy: sshProxyFromDto(),
   jump: sshJumpFromDto(),
+  timing: sshTimingFromDto(),
   authenticationFactors: [],
   name: "",
   host: "",
@@ -548,6 +551,7 @@ export function RemoteSidebar({
           form.authType === "chain" ? authenticationFactorRequests(form.authenticationFactors) : undefined,
           sshProxyRequest(form.proxy),
           sshJumpRequest(form.jump),
+          sshTimingRequest(form.timing),
         );
       } else {
         const created = await sshCreateConnection(
@@ -565,6 +569,7 @@ export function RemoteSidebar({
           form.authType === "chain" ? authenticationFactorRequests(form.authenticationFactors) : undefined,
           sshProxyRequest(form.proxy),
           sshJumpRequest(form.jump),
+          sshTimingRequest(form.timing),
         );
         void handleSelect(created);
       }
@@ -595,6 +600,7 @@ export function RemoteSidebar({
       authenticationFactors: authenticationFactorsFromDto(conn.authentication_factors ?? []),
       proxy: sshProxyFromDto(conn.proxy),
       jump: sshJumpFromDto(conn.jump),
+      timing: sshTimingFromDto(conn.timing),
       keyPath: conn.key_path || "",
       keyContent: "",
       hasKeyContent: conn.has_key_content ?? false,
@@ -1203,6 +1209,9 @@ export function RemoteSidebar({
                       </section>
                       <section className="border-t border-border-theme pt-3">
                         <SshJumpFields value={form.jump} onChange={(jump) => setForm((previous) => ({ ...previous, jump }))} />
+                      </section>
+                      <section className="border-t border-border-theme pt-3">
+                        <SshTimingFields value={form.timing} onChange={(timing) => setForm((previous) => ({ ...previous, timing }))} />
                       </section>
                       <section className="border-t border-border-theme pt-3">
                     <SshAuthenticationFields value={form} onChange={(change) => setForm((previous) => ({ ...previous, ...change }))} onPickKeyFile={() => void handlePickKeyFile()} onPickCertificateFile={() => void handlePickCertificateFile()} />

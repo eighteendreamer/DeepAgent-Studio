@@ -239,3 +239,182 @@ async fn host_key_confirmation_continues_into_mfa_on_the_same_attempt() {
     );
     assert_eq!(auth_challenge.attempt_id, host_challenge.attempt_id);
 }
+async fn one_second_network_timeout(
+    ssh: &SshService,
+    server: &support::SshServer,
+    root: &std::path::Path,
+    id: &str,
+) {
+    // These cases measure the client deadline, not the fixture's deliberate
+    // credential rejection delay (which also applies to partial success).
+    *server.counts.auth_rejection_time.write().unwrap() = Some(std::time::Duration::ZERO);
+    ssh.update_connection(serde_json::from_value(serde_json::json!({
+        "id":id,"name":"MFA timing","host":"127.0.0.1","port":server.addr.port(),"username":"fixture",
+        "auth_type":"password","password":"temporary-fixture-only","known_hosts_path":root.join("known_hosts"),
+        "timing":{"connect_timeout_secs":1}
+    })).unwrap()).await.unwrap();
+}
+
+#[tokio::test]
+async fn waiting_for_the_user_does_not_consume_the_network_timeout() {
+    let (server, root, ssh, id) = fixture().await;
+    one_second_network_timeout(&ssh, &server, root.path(), &id).await;
+    let first = authentication_challenge(ssh.begin_connection(&id).await.unwrap());
+    tokio::time::pause();
+    tokio::time::advance(std::time::Duration::from_secs(5)).await;
+    tokio::time::resume();
+    let second = authentication_challenge(
+        ssh.respond_keyboard_interactive(
+            &id,
+            &first.attempt_id,
+            &first.challenge_id,
+            vec!["482901".into(), "terminal".into()],
+        )
+        .await
+        .unwrap(),
+    );
+    tokio::time::pause();
+    tokio::time::advance(std::time::Duration::from_secs(5)).await;
+    tokio::time::resume();
+    assert!(matches!(
+        ssh.respond_keyboard_interactive(
+            &id,
+            &second.attempt_id,
+            &second.challenge_id,
+            vec!["731604".into()]
+        )
+        .await
+        .unwrap(),
+        SshConnectionAttempt::Connected
+    ));
+    ssh.disconnect(&id).await.unwrap();
+}
+
+#[tokio::test]
+async fn mfa_expiry_stays_fixed_when_wall_clock_advances_without_monotonic_time() {
+    let (_server, _root, ssh, id) = fixture().await;
+    let first = authentication_challenge(ssh.begin_connection(&id).await.unwrap());
+    tokio::time::pause();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    tokio::time::resume();
+    let second = authentication_challenge(
+        ssh.respond_keyboard_interactive(
+            &id,
+            &first.attempt_id,
+            &first.challenge_id,
+            vec!["482901".into(), "terminal".into()],
+        )
+        .await
+        .unwrap(),
+    );
+    assert_eq!(second.expires_at_ms, first.expires_at_ms);
+}
+
+#[tokio::test]
+async fn mfa_followup_authentication_has_its_own_bounded_network_phase() {
+    let (server, root, ssh, id) = fixture().await;
+    server
+        .counts
+        .require_password_after_interactive
+        .store(true, Ordering::SeqCst);
+    one_second_network_timeout(&ssh, &server, root.path(), &id).await;
+    let ssh = std::sync::Arc::new(ssh);
+    let first = authentication_challenge(ssh.begin_connection(&id).await.unwrap());
+    let second = authentication_challenge(
+        ssh.respond_keyboard_interactive(
+            &id,
+            &first.attempt_id,
+            &first.challenge_id,
+            vec!["482901".into(), "terminal".into()],
+        )
+        .await
+        .unwrap(),
+    );
+    let gate = std::sync::Arc::new(tokio::sync::Notify::new());
+    *server.counts.auth_gate.write().unwrap() = Some(gate.clone());
+    let before = server.counts.passwords.load(Ordering::SeqCst);
+    let next = ssh.clone();
+    let task = tokio::spawn(async move {
+        next.respond_keyboard_interactive(
+            &id,
+            &second.attempt_id,
+            &second.challenge_id,
+            vec!["731604".into()],
+        )
+        .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while server.counts.passwords.load(Ordering::SeqCst) == before {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::pause();
+    tokio::time::advance(std::time::Duration::from_secs(1)).await;
+    let error = tokio::time::timeout(std::time::Duration::from_millis(100), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert!(error.to_string().contains("1s"));
+    gate.notify_one();
+}
+
+#[tokio::test]
+async fn mfa_inactivity_is_rearmed_for_each_user_wait() {
+    let (server, root, ssh, id) = fixture().await;
+    *server.counts.auth_rejection_time.write().unwrap() = Some(std::time::Duration::ZERO);
+    ssh.update_connection(serde_json::from_value(serde_json::json!({
+        "id":id,"name":"MFA inactivity","host":"127.0.0.1","port":server.addr.port(),"username":"fixture",
+        "auth_type":"password","password":"temporary-fixture-only","known_hosts_path":root.path().join("known_hosts"),
+        "timing":{"connect_timeout_secs":5,"inactivity_timeout_secs":1}
+    })).unwrap()).await.unwrap();
+    let first = authentication_challenge(ssh.begin_connection(&id).await.unwrap());
+    tokio::time::pause();
+    tokio::time::advance(std::time::Duration::from_millis(600)).await;
+    tokio::time::resume();
+    let second = authentication_challenge(
+        ssh.respond_keyboard_interactive(
+            &id,
+            &first.attempt_id,
+            &first.challenge_id,
+            vec!["482901".into(), "terminal".into()],
+        )
+        .await
+        .unwrap(),
+    );
+    tokio::time::pause();
+    tokio::time::advance(std::time::Duration::from_millis(600)).await;
+    tokio::time::resume();
+    assert_eq!(server.counts.closed_connections.load(Ordering::SeqCst), 0);
+    tokio::time::pause();
+    tokio::time::advance(std::time::Duration::from_millis(410)).await;
+    tokio::time::resume();
+    tokio::time::timeout(std::time::Duration::from_millis(500), async {
+        while server.counts.closed_connections.load(Ordering::SeqCst) == 0 {
+            server.counts.connection_closed.notified().await;
+        }
+    })
+    .await
+    .expect("MFA socket must close after the second user wait becomes idle");
+    let status = ssh.status(&id).await.unwrap();
+    assert_eq!(status.status, SshStatus::Error);
+    assert!(status.last_error.unwrap().contains("inactivity"));
+    assert!(ssh
+        .respond_keyboard_interactive(
+            &id,
+            &second.attempt_id,
+            &second.challenge_id,
+            vec!["731604".into()],
+        )
+        .await
+        .is_err());
+    assert_eq!(
+        server
+            .counts
+            .keyboard_interactive_response_rounds
+            .load(Ordering::SeqCst),
+        1
+    );
+}

@@ -1,6 +1,6 @@
 //! User-initiated host enrollment wraps the existing connection publication path.
 
-use tokio::time::{timeout, Duration};
+use tokio::time::Duration;
 
 use crate::connection_challenge::{config_proof, HostKeyPurpose};
 use crate::host_trust::HostTrust;
@@ -41,12 +41,13 @@ impl SshServiceImpl {
         let cfg = self.config_for(id).await?;
         self.authentication_challenges.invalidate(id).await;
         let attempt_id = self.host_challenges.reserve(id)?;
+        let deadline = self.host_challenges.deadline(id, &attempt_id)?;
         let result = async {
             if let Some(jump) = &cfg.jump {
                 let hop = jump.config(&cfg);
                 let trust = HostTrust::capture(&hop, self.host_key_store.clone()).await?;
                 if hop.host_key_policy == SshHostKeyPolicy::Strict && trust.is_unknown() {
-                    let key = timeout(Duration::from_secs(20), SshClient::probe_host_key(&hop, &trust, self.host_key_store.clone())).await.map_err(|_| SshError::Timeout(Duration::from_secs(20)))??;
+                    let key = cfg.timing.connecting_until(SshClient::probe_host_key(&hop, &trust, self.host_key_store.clone()), Some(deadline.instant)).await?;
                     if HostTrust::capture(&hop, self.host_key_store.clone()).await? != trust {
                         return Err(HostTrust::error(&hop, "jump trust changed during probe"));
                     }
@@ -64,8 +65,7 @@ impl SshServiceImpl {
                 self.host_challenges.ensure_current(id, &attempt_id)?;
                 return self.connect_config_attempt(&cfg, None, None, &attempt_id).await;
             }
-            let key = timeout(Duration::from_secs(20), SshClient::probe_host_key(&cfg, &trust, self.host_key_store.clone())).await
-                .map_err(|_| SshError::Timeout(Duration::from_secs(20)))??;
+            let key = cfg.timing.connecting_until(SshClient::probe_host_key(&cfg, &trust, self.host_key_store.clone()), Some(deadline.instant)).await?;
             if HostTrust::capture(&cfg, self.host_key_store.clone()).await? != trust {
                 return Err(HostTrust::error(&cfg, "trust changed during host-key probe; retry after verification"));
             }
@@ -138,9 +138,10 @@ impl SshServiceImpl {
         };
         tracing::info!(target: "deepagent_ssh", connection_id = id, attempt_id, ?decision, "SSH host-key decision accepted for one attempt");
         if let Some(continuation) = pending.continuation {
-            let progress = tokio::time::timeout_at(pending.deadline,
-                continuation.resume(&cfg, trust, self.host_key_store.clone()))
-                .await.map_err(|_| SshError::Timeout(Duration::from_secs(120)))??;
+            let progress = cfg.timing.connecting_until(
+                continuation.resume(&cfg, trust, self.host_key_store.clone()),
+                Some(pending.deadline.instant),
+            ).await?;
             return self.accept_connection_progress(&cfg, attempt_id, progress, Duration::ZERO, Some(pending.deadline)).await;
         }
         match role {

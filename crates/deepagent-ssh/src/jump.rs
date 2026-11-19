@@ -147,6 +147,7 @@ impl SshJumpConfig {
         config.known_hosts_path = self.known_hosts_path.clone();
         config.host_key_policy = self.host_key_policy;
         config.proxy = parent.proxy.clone();
+        config.timing = parent.timing;
         config
     }
 

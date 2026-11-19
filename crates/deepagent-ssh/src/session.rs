@@ -153,6 +153,22 @@ impl SshSession {
     }
 
     pub async fn status(&self) -> SshStatus {
+        if *self.status.read().await == SshStatus::Connected {
+            if let Some(client) = self.client().await {
+                if client.is_closed() {
+                    let error = client.timing_error();
+                    self.set_status(
+                        if error.is_some() {
+                            SshStatus::Error
+                        } else {
+                            SshStatus::Disconnected
+                        },
+                        error,
+                    )
+                    .await;
+                }
+            }
+        }
         *self.status.read().await
     }
 

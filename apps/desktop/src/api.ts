@@ -3863,6 +3863,13 @@ export interface SshAuthenticationFactor {
   has_passphrase: boolean;
 }
 
+export interface SshConnectionTiming {
+  connect_timeout_secs: number;
+  inactivity_timeout_secs: number | null;
+  keepalive_interval_secs: number | null;
+  keepalive_max: number;
+}
+
 export interface SshConnection {
   id: string;
   name: string;
@@ -3873,6 +3880,7 @@ export interface SshConnection {
   authentication_factors?: SshAuthenticationFactor[];
   proxy?: SshProxy | null;
   jump?: SshJump | null;
+  timing?: SshConnectionTiming;
   key_path?: string;
   has_key_content?: boolean;
   certificate_path?: string;
@@ -4222,6 +4230,7 @@ export async function sshCreateConnection(
   authenticationFactors?: SshAuthenticationFactorRequest[],
   proxy?: SshProxyRequest,
   jump?: SshJumpRequest,
+  timing?: SshConnectionTiming,
 ): Promise<SshConnection> {
   const invoke = getInvoke();
   if (invoke)
@@ -4240,8 +4249,9 @@ export async function sshCreateConnection(
       authenticationFactors,
       proxy,
       jump,
+      timing,
     });
-  return { id: "mock", name, host, port, username, auth_type: authType, authentication_factors: mockAuthenticationFactors(authenticationFactors), proxy: mockProxy(proxy), jump: mockJump(jump), key_path: keyPath, has_key_content: authType === "key_content" && Boolean(keyContent), certificate_path: certificatePath, known_hosts_path: knownHostsPath, host_key_policy: hostKeyPolicy, status: "disconnected" };
+  return { id: "mock", name, host, port, username, auth_type: authType, authentication_factors: mockAuthenticationFactors(authenticationFactors), proxy: mockProxy(proxy), jump: mockJump(jump), timing, key_path: keyPath, has_key_content: authType === "key_content" && Boolean(keyContent), certificate_path: certificatePath, known_hosts_path: knownHostsPath, host_key_policy: hostKeyPolicy, status: "disconnected" };
 }
 
 export async function sshUpdateConnection(
@@ -4260,6 +4270,7 @@ export async function sshUpdateConnection(
   authenticationFactors?: SshAuthenticationFactorRequest[],
   proxy?: SshProxyRequest,
   jump?: SshJumpRequest,
+  timing?: SshConnectionTiming,
 ): Promise<SshConnection> {
   const invoke = getInvoke();
   if (invoke)
@@ -4279,8 +4290,9 @@ export async function sshUpdateConnection(
       authenticationFactors,
       proxy,
       jump,
+      timing,
     });
-  return { id, name, host, port, username, auth_type: authType, authentication_factors: mockAuthenticationFactors(authenticationFactors), proxy: mockProxy(proxy), jump: mockJump(jump), key_path: keyPath, has_key_content: authType === "key_content" && Boolean(keyContent), certificate_path: certificatePath, known_hosts_path: knownHostsPath, host_key_policy: hostKeyPolicy, status: "disconnected" };
+  return { id, name, host, port, username, auth_type: authType, authentication_factors: mockAuthenticationFactors(authenticationFactors), proxy: mockProxy(proxy), jump: mockJump(jump), timing, key_path: keyPath, has_key_content: authType === "key_content" && Boolean(keyContent), certificate_path: certificatePath, known_hosts_path: knownHostsPath, host_key_policy: hostKeyPolicy, status: "disconnected" };
 }
 
 export async function sshRemoveConnection(id: string): Promise<void> {

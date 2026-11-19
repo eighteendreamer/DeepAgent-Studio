@@ -56,6 +56,8 @@ pub struct SshConnectionConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jump: Option<crate::SshJumpConfig>,
     #[serde(default)]
+    pub timing: crate::SshConnectionTiming,
+    #[serde(default)]
     pub extra_options: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub control_path: Option<String>,
@@ -93,6 +95,8 @@ pub struct SshConnectionDto {
     pub proxy: Option<crate::SshProxyDto>,
     #[serde(default)]
     pub jump: Option<crate::SshJumpDto>,
+    #[serde(default)]
+    pub timing: crate::SshConnectionTiming,
     pub key_path: Option<String>,
     #[serde(default)]
     pub has_key_content: bool,
@@ -120,6 +124,8 @@ pub struct CreateSshConnectionRequest {
     pub proxy: Option<crate::SshProxyRequest>,
     #[serde(default)]
     pub jump: Option<crate::SshJumpRequest>,
+    #[serde(default)]
+    pub timing: crate::SshConnectionTiming,
     pub key_path: Option<String>,
     #[serde(default)]
     pub key_content: Option<String>,
@@ -148,6 +154,9 @@ pub struct UpdateSshConnectionRequest {
     pub proxy: Option<crate::SshProxyRequest>,
     #[serde(default)]
     pub jump: Option<crate::SshJumpRequest>,
+    /// Omitted preserves the saved policy; explicit null timers disable those timers.
+    #[serde(default)]
+    pub timing: Option<crate::SshConnectionTiming>,
     pub key_path: Option<String>,
     /// Omitted content preserves the saved identity only when its source is unchanged.
     #[serde(default)]
@@ -223,6 +232,7 @@ impl SshConnectionConfig {
             authentication_factors: Vec::new(),
             proxy: None,
             jump: None,
+            timing: Default::default(),
             extra_options: HashMap::new(),
             control_path: None,
             cached_status: SshStatus::Disconnected,

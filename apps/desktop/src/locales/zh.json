@@ -951,6 +951,15 @@
         "password": "代理密码",
         "clearPassword": "清除已保存的代理密码"
       },
+      "timing": {
+        "inactivityExpired": "连接已达到设置的空闲超时，已断开。",
+        "keepaliveExpired": "保活连续未响应已达到设置上限，连接已断开。",
+        "connectTimeout": "连接超时（秒）",
+        "inactivityTimeout": "空闲超时（秒）",
+        "keepaliveInterval": "保活间隔（秒）",
+        "keepaliveMax": "保活未响应上限",
+        "off": "关闭"
+      },
       "jump": {
         "add": "添加跳板机",
         "remove": "移除跳板机",

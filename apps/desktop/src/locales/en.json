@@ -902,6 +902,15 @@
         "password": "Proxy password",
         "clearPassword": "Clear saved proxy password"
       },
+      "timing": {
+        "inactivityExpired": "Connection closed after the configured inactivity timeout.",
+        "keepaliveExpired": "Connection closed after the configured missed keepalive limit.",
+        "connectTimeout": "Connection timeout (s)",
+        "inactivityTimeout": "Inactivity timeout (s)",
+        "keepaliveInterval": "Keepalive interval (s)",
+        "keepaliveMax": "Missed keepalive limit",
+        "off": "Off"
+      },
       "jump": {
         "add": "Add jump host",
         "remove": "Remove jump host",

@@ -139,6 +139,7 @@ wasm = ["deepagent-tools/wasm"]
 [dev-dependencies]
 russh = { version = "0.55.0", default-features = false, features = ["rsa", "flate2", "ring"] }
 russh-sftp = "=2.1.1"
+rand = "0.10"
 tokio = { workspace = true }
 wat = "1"
 # Real raster encoders for cross-layer image admission fixtures.

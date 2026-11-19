@@ -1,3 +1,4 @@
+import { canSaveSshTiming, type SshTimingForm } from "./SshTimingFields";
 import { useEffect, useId, useState } from "react";
 import { canSaveSshProxy, type SshProxyForm } from "./SshProxyFields";
 import { useTranslation } from "react-i18next";
@@ -72,7 +73,8 @@ interface Props {
   factorMode?: boolean;
 }
 
-export function canSaveSshConnection(value: AuthenticationValue & { name: string; host: string; username: string; proxy?: SshProxyForm }): boolean {
+export function canSaveSshConnection(value: AuthenticationValue & { name: string; host: string; username: string; proxy?: SshProxyForm; timing?: SshTimingForm }): boolean {
+  if (!canSaveSshTiming(value.timing)) return false;
   if (!canSaveSshProxy(value.proxy)) return false;
   if (!canSaveSshJump(value.jump)) return false;
   if (!value.name.trim() || !value.host.trim() || !value.username.trim()) return false;
