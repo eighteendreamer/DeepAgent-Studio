@@ -2360,6 +2360,7 @@ dependencies = [
  "deepagent-core",
  "deepagent-persistence",
  "deepagent-terminal",
+ "dirs",
  "flate2",
  "httparse",
  "rand 0.10.2",

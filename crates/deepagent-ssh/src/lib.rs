@@ -36,6 +36,10 @@ pub use config::{
     SshHostKeyPolicy, SshStatus, UpdateSshConnectionRequest,
 };
 pub use connection_challenge::{SshConnectionAttempt, SshHostKeyChallenge, SshHostKeyDecision};
+pub use default_identities::{
+    discover_default_ssh_identities, discover_default_ssh_identities_in, SshDefaultIdentity,
+    SshDefaultIdentityState,
+};
 pub use directory_plan::{DirectoryTransferEntry, DirectoryTransferPlan};
 pub use directory_transfer::{
     DirectoryConflictPolicy, DirectoryConflictResolver, DirectoryFileConflict,
@@ -89,6 +93,7 @@ mod config;
 mod conflict_target;
 mod connection_challenge;
 mod connection_flow;
+mod default_identities;
 mod directory_plan;
 mod directory_publication;
 mod directory_transfer;

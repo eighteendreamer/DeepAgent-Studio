@@ -3813,6 +3813,19 @@ export async function sshProbeAgent(provider: SshAgentProvider): Promise<SshAgen
   return invoke<SshAgentProbe[]>("ssh_probe_agent", { provider });
 }
 
+export interface SshDefaultIdentity {
+  name: string;
+  path: string;
+  state: "available" | "missing" | "unavailable";
+  reason?: string | null;
+}
+
+export async function sshDiscoverDefaultIdentities(): Promise<SshDefaultIdentity[]> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("SSH identity discovery requires the desktop application.");
+  return invoke<SshDefaultIdentity[]>("ssh_discover_default_identities");
+}
+
 
 export interface SshProxy {
   mode: "http_connect" | "socks5";

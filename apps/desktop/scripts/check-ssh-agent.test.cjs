@@ -43,6 +43,7 @@ function production(file, name, context = {}) {
     isSshRoute: value => production('components/remote/SshProxyFields.tsx', 'isSshRoute')(value),
     mockProxy: value => production('api.ts', 'mockProxy')(value),
     mockJump: value => production('api.ts', 'mockJump')(value),
+    SshDefaultIdentityPicker: () => null,
     ...context,
   });
 }
@@ -348,5 +349,118 @@ test('shared Agent fields have readable initial labels, no private credential co
     assert.ok(html.includes(translate(`settings.connections.agent.states.${state}`)));
     assert.ok(!html.includes(translate('settings.connections.agent.help')));
     assert.ok(html.includes(translate('settings.connections.agent.refresh')));
+  }
+});
+
+test('default identity discovery requires native IPC and never invents browser candidates', async () => {
+  await assert.rejects(production('api.ts', 'sshDiscoverDefaultIdentities', { getInvoke: () => null })(), /desktop|桌面/i);
+  const calls = [];
+  const expected = [{ name: 'id_ed25519', path: 'D:/fixture/.ssh/id_ed25519', state: 'available' }];
+  const result = await production('api.ts', 'sshDiscoverDefaultIdentities', {
+    getInvoke: () => async (...args) => { calls.push(args); return expected; },
+  })();
+  assert.equal(calls[0][0], 'ssh_discover_default_identities');
+  assert.equal(calls[0][1], undefined, 'frontend cannot substitute a home directory');
+  assert.deepEqual(result, expected);
+});
+
+function defaultIdentityPicker(discover) {
+  let state;
+  let cleanup;
+  const request = { current: 0 };
+  const selected = [];
+  const Picker = production('components/remote/SshDefaultIdentityPicker.tsx', 'SshDefaultIdentityPicker', {
+    React, useTranslation: () => ({ t: key => key }), useId: () => 'default-identity-picker',
+    useState: initial => [state ??= initial, next => { state = next; }],
+    useRef: () => request,
+    useEffect: effect => { cleanup ??= effect(); },
+    sshDiscoverDefaultIdentities: discover,
+    Button: 'button', Select: 'select', SelectTrigger: 'trigger', SelectContent: 'content',
+    SelectItem: 'option', SelectValue: 'value', Label: 'label',
+  });
+  return {
+    render() {
+      const elements = [];
+      const visit = element => {
+        if (!React.isValidElement(element)) return;
+        elements.push(element);
+        React.Children.forEach(element.props.children, visit);
+      };
+      visit(Picker({ value: '', onSelect: value => selected.push(value) }));
+      return elements;
+    },
+    state: () => state, selected, unmount: () => cleanup?.(),
+  };
+}
+
+test('default identity picker waits for an explicit usable choice and preserves error explanations', async () => {
+  let resolve;
+  const picker = defaultIdentityPicker(() => new Promise(done => { resolve = done; }));
+  const button = picker.render().find(element => element.type === 'button');
+  assert.ok(button, 'discovery must be user initiated');
+  const pending = button.props.onClick();
+  assert.equal(picker.state().status, 'loading');
+  assert.equal(picker.render().find(element => element.type === 'button').props.disabled, true);
+  resolve([
+    { name: 'id_ed25519', path: 'D:/fixture/.ssh/id_ed25519', state: 'available' },
+    { name: 'id_rsa', path: 'D:/fixture/.ssh/id_rsa', state: 'unavailable', reason: 'fixture read denied' },
+    { name: 'id_ecdsa', path: 'D:/fixture/.ssh/id_ecdsa', state: 'missing' },
+  ]);
+  await pending;
+  assert.equal(picker.selected.length, 0);
+  const elements = picker.render();
+  assert.equal(elements.filter(element => element.type === 'option').length, 1);
+  assert.ok(elements.some(element => element.props.children === 'id_rsa: fixture read denied'));
+  const select = elements.find(element => element.type === 'select');
+  select.props.onValueChange('D:/fixture/.ssh/id_rsa');
+  assert.equal(picker.selected.length, 0, 'an unusable row cannot be selected');
+  select.props.onValueChange('D:/fixture/.ssh/id_ed25519');
+  assert.deepEqual(picker.selected, ['D:/fixture/.ssh/id_ed25519']);
+});
+
+test('default identity picker reports rejection and ignores a result after unmount', async () => {
+  const failed = defaultIdentityPicker(async () => { throw Error('native discovery unavailable'); });
+  await failed.render().find(element => element.type === 'button').props.onClick();
+  assert.equal(failed.state().status, 'error');
+  assert.match(failed.state().error, /native discovery unavailable/);
+  let resolve;
+  const stale = defaultIdentityPicker(() => new Promise(done => { resolve = done; }));
+  const pending = stale.render().find(element => element.type === 'button').props.onClick();
+  stale.unmount();
+  resolve([]);
+  await pending;
+  assert.equal(stale.state().status, 'loading', 'unmounted requests cannot publish a result');
+});
+
+test('default identity selection in shared fields clears credentials only when the identity changes', () => {
+  for (const next of ['old-key', 'D:/fixture/.ssh/id_ed25519']) {
+    const changes = [];
+    const passthrough = ({ children }) => React.createElement('div', null, children);
+    const Picker = () => null;
+    const Fields = production('components/remote/SshAuthenticationFields.tsx', 'SshAuthenticationFields', {
+      React, useId: () => 'fixture', useState: initial => [initial, () => {}], useEffect() {}, useTranslation: () => ({ t: key => key }),
+      SshDefaultIdentityPicker: Picker, Select: passthrough, SelectTrigger: passthrough, SelectContent: passthrough,
+      SelectItem: passthrough, SelectValue: passthrough, Label: passthrough, Button: passthrough, Input: passthrough,
+    });
+    const elements = [];
+    const visit = element => {
+      if (!React.isValidElement(element)) return;
+      elements.push(element);
+      React.Children.forEach(element.props.children, visit);
+    };
+    visit(Fields({ value: { authType: 'file', keyPath: 'old-key', password: 'old-unlock', hasPassphrase: true, certificatePath: 'old-cert.pub' },
+      onChange: value => changes.push(value), onPickKeyFile() {}, onPickCertificateFile() {} }));
+    const picker = elements.find(element => element.type === Picker);
+    assert.ok(picker, 'both editors and nested factors need the shared picker');
+    picker.props.onSelect(next);
+    assert.equal(changes[0].keyPath, next);
+    if (next === 'old-key') {
+      assert.equal(changes[0].password, undefined, 'same identity preserves the saved credential');
+    } else {
+      assert.equal(changes[0].password, '');
+      assert.equal(changes[0].certificatePath, '');
+      assert.equal(changes[0].hasPassphrase, false);
+      assert.equal(changes[0].clearPassphrase, true);
+    }
   }
 });

@@ -9,6 +9,7 @@ import { Label } from "../shadcn/label";
 import { Textarea } from "../shadcn/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../shadcn/select";
 import { canSaveSshJump, type SshJumpForm } from "./SshJumpFields";
+import { SshDefaultIdentityPicker } from "./SshDefaultIdentityPicker";
 
 export type SshFormAuthType = "password" | "file" | "content" | "agent" | "openssh_agent" | "pageant" | "chain";
 
@@ -176,6 +177,11 @@ export function SshAuthenticationFields({ value, onChange, onPickKeyFile, onPick
         <Input id={`${id}-key`} value={value.keyPath} onChange={(event) => onChange({ keyPath: event.target.value })} placeholder={t("settings.connections.selectIdentityFile")} />
         <Button type="button" variant="outline" className="shrink-0" onClick={onPickKeyFile}>{t("settings.connections.browse")}</Button>
       </div>
+      <SshDefaultIdentityPicker value={value.keyPath} onSelect={(keyPath) => onChange(
+        keyPath === value.keyPath ? { keyPath } : {
+          keyPath, password: "", hasPassphrase: false, clearPassphrase: true, certificatePath: "",
+        },
+      )} />
     </div>}
     {isPrivateKey && <div className="space-y-1.5">
       <Label htmlFor={`${id}-passphrase`}>{t("settings.connections.privateKeyPassphrase")}</Label>
