@@ -149,14 +149,14 @@ async fn observe_http(fault: InputFault, cancel_aware: bool, mode: WireMode) -> 
             let _ = socket.write_all(b"0\r\n\r\n").await;
         }
     });
-    let transport =
-        ReqwestTransport::with_client(reqwest::Client::builder().no_proxy().build().unwrap())
-            .with_timeouts(TransportTimeouts {
-                connect: Duration::from_secs(2),
-                first_byte: Duration::from_secs(2),
-                idle: Duration::from_secs(2),
-                total: Duration::from_secs(5),
-            });
+    let transport = ReqwestTransport::with_client_builder(reqwest::Client::builder().no_proxy())
+        .unwrap()
+        .with_timeouts(TransportTimeouts {
+            connect: Duration::from_secs(2),
+            first_byte: Duration::from_secs(2),
+            idle: Duration::from_secs(2),
+            total: Duration::from_secs(5),
+        });
     let mut config = ModelConfig::deepseek("synthetic-audit-placeholder").with_wire_mode(mode);
     config.base_url = format!("http://{address}");
     config.defaults.max_output_tokens = Some(32);

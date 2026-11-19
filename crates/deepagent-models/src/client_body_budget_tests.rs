@@ -226,9 +226,10 @@ async fn h69_real_http_transport_sees_only_the_small_control_on_each_route() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mut cfg = config(route);
         cfg.base_url = format!("http://{}", listener.local_addr().unwrap());
-        let transport = crate::reqwest_transport::ReqwestTransport::with_client(
-            reqwest::Client::builder().no_proxy().build().unwrap(),
-        );
+        let transport = crate::reqwest_transport::ReqwestTransport::with_client_builder(
+            reqwest::Client::builder().no_proxy(),
+        )
+        .unwrap();
         let client = ModelClient::new(Arc::new(transport), cfg);
         invalid(
             send(&client, request(&"x".repeat(LIMIT)), route, 3, false)

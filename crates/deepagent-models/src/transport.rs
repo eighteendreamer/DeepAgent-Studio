@@ -12,15 +12,34 @@ use std::sync::Arc;
 use deepagent_core::error::{CoreError, Result};
 use deepagent_tools::ToolExecutionContext;
 
-/// An outbound Responses request at the transport level (already serialized).
-#[derive(Debug, Clone)]
+/// Protocol-owned authentication, independent of the endpoint or model name.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TransportAuth {
+    #[default]
+    Bearer,
+    /// Native API key + version headers, retaining Bearer gateway compatibility.
+    Messages,
+}
+
+/// An outbound model request at the transport level (already serialized).
+#[derive(Clone)]
 pub struct TransportRequest {
     /// Full endpoint URL.
     pub url: String,
-    /// Bearer API key.
+    /// Provider API key. Never include this value in diagnostics.
     pub api_key: String,
+    pub auth: TransportAuth,
     /// JSON request body.
     pub body: String,
+}
+
+impl std::fmt::Debug for TransportRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TransportRequest")
+            .field("auth", &self.auth)
+            .field("body_bytes", &self.body.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// One authenticated DeepSeek Files API upload of original image bytes.
@@ -99,6 +118,22 @@ pub trait HttpTransport: Send + Sync {
             return Err(CoreError::other("request cancelled"));
         }
         self.get_json(url, api_key).await
+    }
+
+    /// Protocol-aware management request. Legacy transports remain compatible
+    /// with Bearer; native Messages support must be implemented explicitly.
+    async fn get_json_authenticated(
+        &self,
+        url: &str,
+        api_key: &str,
+        auth: TransportAuth,
+    ) -> Result<String> {
+        match auth {
+            TransportAuth::Bearer => self.get_json(url, api_key).await,
+            TransportAuth::Messages => Err(CoreError::other(
+                "this transport does not support Messages discovery authentication",
+            )),
+        }
     }
 
     /// POST one original image to the provider's Files API. Existing test and
@@ -197,6 +232,15 @@ impl MockTransport {
 
 #[async_trait]
 impl HttpTransport for MockTransport {
+    async fn get_json_authenticated(
+        &self,
+        url: &str,
+        api_key: &str,
+        _auth: TransportAuth,
+    ) -> Result<String> {
+        self.get_json(url, api_key).await
+    }
+
     async fn stream(&self, _request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
         for ev in &self.events {
             if sink.on_event(ev)? {
@@ -231,6 +275,7 @@ mod tests {
         transport
             .stream(
                 TransportRequest {
+                    auth: crate::transport::TransportAuth::Bearer,
                     url: "x".into(),
                     api_key: "k".into(),
                     body: "{}".into(),
@@ -277,6 +322,7 @@ mod tests {
         };
         let cancel = Arc::new(AtomicBool::new(false));
         let request = TransportRequest {
+            auth: crate::transport::TransportAuth::Bearer,
             url: "offline://test".into(),
             api_key: String::new(),
             body: "{}".into(),

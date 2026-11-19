@@ -37,6 +37,16 @@ async fn h025_messages_discovery_uses_versioned_base_without_resource_path_in_se
             assert_eq!(key, "synthetic");
             Ok(r#"{"data":[{"id":"fixture"}]}"#.into())
         }
+
+        async fn get_json_authenticated(
+            &self,
+            url: &str,
+            key: &str,
+            auth: deepagent_models::TransportAuth,
+        ) -> deepagent_core::Result<String> {
+            assert_eq!(auth, deepagent_models::TransportAuth::Messages);
+            self.get_json(url, key).await
+        }
     }
     for (base, expected) in [
         (

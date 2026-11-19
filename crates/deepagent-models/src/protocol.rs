@@ -19,6 +19,10 @@ pub(crate) trait WireCodec: Send + Sync {
     /// Stable protocol name for logs and diagnostics.
     fn name(&self) -> &'static str;
 
+    fn auth(&self) -> crate::transport::TransportAuth {
+        crate::transport::TransportAuth::Bearer
+    }
+
     /// Serialize tools into this protocol's tool vocabulary.
     fn project_tools(&self, client: &ModelClient, tools: &[ToolSchema]) -> Vec<serde_json::Value>;
 

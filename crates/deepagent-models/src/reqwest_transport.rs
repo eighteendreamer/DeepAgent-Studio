@@ -13,7 +13,7 @@ use deepagent_core::error::{CoreError, Result};
 
 use crate::sse::SseParser;
 use crate::transport::{
-    EventSink, FileUploadRequest, HttpTransport, TransportRequest, UploadedFile,
+    EventSink, FileUploadRequest, HttpTransport, TransportAuth, TransportRequest, UploadedFile,
 };
 
 /// `reqwest`-backed transport with connection reuse.
@@ -21,6 +21,7 @@ use crate::transport::{
 pub struct ReqwestTransport {
     client: reqwest::Client,
     timeouts: TransportTimeouts,
+    sensitive_headers_guarded: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -65,22 +66,48 @@ impl Default for ReqwestTransport {
 impl ReqwestTransport {
     /// Build a transport with a fresh client.
     pub fn new() -> Self {
+        Self::with_client_builder(reqwest::Client::builder())
+            .expect("reqwest client with valid timeout configuration")
+    }
+
+    /// Preserve proxy/TLS/pool settings while enforcing same-origin redirects.
+    /// reqwest 0.12 does not strip x-api-key on cross-origin redirects.
+    pub fn with_client_builder(
+        builder: reqwest::ClientBuilder,
+    ) -> std::result::Result<Self, reqwest::Error> {
         let timeouts = TransportTimeouts::default();
-        Self {
-            client: reqwest::Client::builder()
-                .connect_timeout(timeouts.connect)
-                .build()
-                .expect("reqwest client with valid timeout configuration"),
+        let client = builder
+            .connect_timeout(timeouts.connect)
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 10 {
+                    attempt.error("too many provider redirects")
+                } else if attempt
+                    .previous()
+                    .first()
+                    .is_some_and(|origin| origin.origin() != attempt.url().origin())
+                {
+                    attempt.stop()
+                } else {
+                    attempt.follow()
+                }
+            }))
+            .build()?;
+        Ok(Self {
+            client,
             timeouts,
-        }
+            sensitive_headers_guarded: true,
+        })
     }
 
     /// Build from an existing client (to share pools / config). An explicit
     /// timeout configured on that client remains the caller's additional policy.
+    /// Messages requires `with_client_builder`: a built client's redirect
+    /// policy cannot be inspected or safely changed before sending x-api-key.
     pub fn with_client(client: reqwest::Client) -> Self {
         Self {
             client,
             timeouts: TransportTimeouts::default(),
+            sensitive_headers_guarded: false,
         }
     }
 
@@ -137,7 +164,7 @@ impl HttpTransport for ReqwestTransport {
     async fn get_json(&self, url: &str, api_key: &str) -> Result<String> {
         tokio::time::timeout(
             self.timeouts.total.min(GET_TOTAL_TIMEOUT_CAP),
-            self.get_json_inner(url, api_key, None),
+            self.get_json_inner(url, api_key, TransportAuth::Bearer, None),
         )
         .await
         .map_err(|_| CoreError::other("GET total deadline exceeded"))?
@@ -151,7 +178,7 @@ impl HttpTransport for ReqwestTransport {
     ) -> Result<String> {
         tokio::time::timeout(
             self.timeouts.total.min(GET_TOTAL_TIMEOUT_CAP),
-            self.get_json_inner(url, api_key, Some(cancel)),
+            self.get_json_inner(url, api_key, TransportAuth::Bearer, Some(cancel)),
         )
         .await
         .map_err(|_| CoreError::other("GET total deadline exceeded"))?
@@ -159,6 +186,20 @@ impl HttpTransport for ReqwestTransport {
 
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
         self.stream_inner(request, sink, None).await
+    }
+
+    async fn get_json_authenticated(
+        &self,
+        url: &str,
+        api_key: &str,
+        auth: TransportAuth,
+    ) -> Result<String> {
+        tokio::time::timeout(
+            self.timeouts.total.min(GET_TOTAL_TIMEOUT_CAP),
+            self.get_json_inner(url, api_key, auth, None),
+        )
+        .await
+        .map_err(|_| CoreError::other("GET total deadline exceeded"))?
     }
 
     async fn stream_cancelled(
@@ -172,6 +213,30 @@ impl HttpTransport for ReqwestTransport {
 }
 
 impl ReqwestTransport {
+    fn authenticate(
+        &self,
+        builder: reqwest::RequestBuilder,
+        api_key: &str,
+        auth: TransportAuth,
+    ) -> Result<reqwest::RequestBuilder> {
+        let builder = builder.bearer_auth(api_key);
+        if auth == TransportAuth::Bearer {
+            return Ok(builder);
+        }
+        if !self.sensitive_headers_guarded {
+            return Err(CoreError::invalid("Messages authentication requires ReqwestTransport::with_client_builder to guard credential redirects"));
+        }
+        let mut key = reqwest::header::HeaderValue::from_str(api_key)
+            .map_err(|_| CoreError::invalid("invalid provider API key header"))?;
+        key.set_sensitive(true);
+        // Local compatibility policy: both forms target only the configured
+        // origin. Native Anthropic/DeepSeek use x-api-key; gateways retain Bearer.
+        // Version matches the pinned anthropic-sdk DTOs and Harness adapter.
+        Ok(builder
+            .header("x-api-key", key)
+            .header("anthropic-version", "2023-06-01"))
+    }
+
     async fn delete_file_inner(
         &self,
         url: &str,
@@ -278,6 +343,7 @@ impl ReqwestTransport {
         &self,
         url: &str,
         api_key: &str,
+        auth: TransportAuth,
         cancel: Option<Arc<AtomicBool>>,
     ) -> Result<String> {
         if is_cancelled(cancel.as_ref()) {
@@ -285,9 +351,7 @@ impl ReqwestTransport {
         }
 
         let send = self
-            .client
-            .get(url)
-            .bearer_auth(api_key)
+            .authenticate(self.client.get(url), api_key, auth)?
             .header("accept", "application/json")
             .send();
         let response = self
@@ -309,7 +373,7 @@ impl ReqwestTransport {
                 .await?;
             return Err(provider_error_with_metadata(
                 status.as_u16(),
-                &detail,
+                &redact_credential(&detail, api_key),
                 retry_after_ms,
                 request_id,
             ));
@@ -330,9 +394,11 @@ impl ReqwestTransport {
         }
 
         let send = self
-            .client
-            .post(&request.url)
-            .bearer_auth(&request.api_key)
+            .authenticate(
+                self.client.post(&request.url),
+                &request.api_key,
+                request.auth,
+            )?
             .header("content-type", "application/json")
             .header("accept", "text/event-stream")
             .body(request.body)
@@ -355,7 +421,7 @@ impl ReqwestTransport {
             let detail = self.read_provider_error_body(response, cancel).await?;
             return Err(provider_error_with_metadata(
                 status.as_u16(),
-                &detail,
+                &redact_credential(&detail, &request.api_key),
                 retry_after_ms,
                 request_id,
             ));
@@ -526,6 +592,14 @@ impl ReqwestTransport {
 
         String::from_utf8(body)
             .map_err(|error| CoreError::other(format!("GET response body is not UTF-8: {error}")))
+    }
+}
+
+fn redact_credential(detail: &str, api_key: &str) -> String {
+    if api_key.is_empty() {
+        detail.to_owned()
+    } else {
+        detail.replace(api_key, "[redacted]")
     }
 }
 
@@ -950,6 +1024,7 @@ mod tests {
                     total: Duration::from_millis(250),
                 });
         let request = TransportRequest {
+            auth: crate::transport::TransportAuth::Bearer,
             url: format!("http://{address}/responses"),
             api_key: "audit-placeholder".to_string(),
             body: "{}".to_string(),
@@ -1404,6 +1479,7 @@ mod tests {
             let request_cancel = cancel.clone();
             let mut operation = tokio::spawn(async move {
                 let request = TransportRequest {
+                    auth: crate::transport::TransportAuth::Bearer,
                     url: format!("http://{address}/v1/chat/completions"),
                     api_key: "audit-placeholder".to_string(),
                     body: "{}".to_string(),

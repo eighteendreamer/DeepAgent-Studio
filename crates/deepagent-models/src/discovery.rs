@@ -253,6 +253,7 @@ fn is_deprecated_model_id(id: &str) -> bool {
 pub struct ModelDiscovery {
     transport: Arc<dyn HttpTransport>,
     base_url: String,
+    auth: crate::transport::TransportAuth,
 }
 
 impl ModelDiscovery {
@@ -261,6 +262,7 @@ impl ModelDiscovery {
         Self {
             transport,
             base_url: DEEPSEEK_BASE_URL.to_string(),
+            auth: crate::transport::TransportAuth::Bearer,
         }
     }
 
@@ -269,11 +271,13 @@ impl ModelDiscovery {
         Self {
             transport,
             base_url: base_url.into(),
+            auth: crate::transport::TransportAuth::Bearer,
         }
     }
 
     /// Select the protocol's listing root without changing the configured inference root.
     pub fn with_wire_mode(mut self, wire_mode: crate::WireMode) -> Self {
+        self.auth = crate::protocol::codec_for(wire_mode).auth();
         if wire_mode == crate::WireMode::Messages {
             // The official DeepSeek Messages route lists models at its origin,
             // as llm-deepseek::modelListingURL does. Other Anthropic-compatible
@@ -303,7 +307,7 @@ impl ModelDiscovery {
     pub async fn list_models(&self, api_key: &str) -> Result<Vec<ModelInfo>> {
         let body = self
             .transport
-            .get_json(&self.models_endpoint(), api_key)
+            .get_json_authenticated(&self.models_endpoint(), api_key, self.auth)
             .await?;
         let parsed: ModelsResponse = serde_json::from_str(&body)
             .map_err(|e| CoreError::Serialization(format!("bad /models response: {e}")))?;

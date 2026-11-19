@@ -86,6 +86,7 @@ impl ChatCompletionsCodec {
             .await?;
         let body = client.encode_chat_body(&request)?;
         let mut transport = TransportRequest {
+            auth: self.auth(),
             url: client.config().chat_endpoint(),
             api_key: client.config().api_key.clone(),
             body,

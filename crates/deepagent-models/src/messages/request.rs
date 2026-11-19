@@ -1,7 +1,12 @@
 //! Messages request projection from the canonical Responses item surface.
-use anthropic_sdk::{MessageCreateParams, OutputConfig, SystemPrompt, ThinkingConfig, ToolChoice};
+use anthropic_sdk::{
+    ContentBlockParam, ImageBlockParam, ImageSource, MessageCreateParams, OutputConfig,
+    SystemPrompt, ThinkingConfig, ToolChoice,
+};
 use deepagent_core::error::{CoreError, Result};
+use deepagent_core::message::MessageAttachment;
 use deepagent_core::response_item::ResponseItem;
+use deepagent_core::tool_content::{ToolResultBody, ToolResultPart};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
@@ -87,6 +92,7 @@ fn messages_tool_choice(choice: &Value) -> Result<ToolChoice> {
 }
 
 fn project_messages(request: &ResponseRequest) -> Result<(Option<String>, Vec<Value>)> {
+    request.validate_image_roles(crate::WireMode::Messages)?;
     let mut systems = Vec::new();
     if let Some(instructions) = request
         .instructions
@@ -111,10 +117,10 @@ fn project_messages(request: &ResponseRequest) -> Result<(Option<String>, Vec<Va
                 attachments,
             } => {
                 ensure_no_pending_tools(&pending_tool_ids)?;
-                if !attachments.is_empty() {
-                    return Err(invalid("Messages image attachments are not implemented"));
-                }
                 push_message(&mut messages, role, json!({"type":"text","text":content}))?;
+                for attachment in attachments {
+                    push_message(&mut messages, role, image_block(request, attachment)?)?;
+                }
             }
             ResponseItem::Reasoning {
                 content, signature, ..
@@ -171,10 +177,7 @@ fn project_messages(request: &ResponseRequest) -> Result<(Option<String>, Vec<Va
                         }
                         _ => break,
                     };
-                    if output.attachments().next().is_some() {
-                        return Err(invalid("Messages tool result images are not implemented"));
-                    }
-                    results.push((call_id, output.text()));
+                    results.push((call_id, tool_result_content(request, output)?));
                     index += 1;
                 }
                 let order: HashMap<&str, usize> = pending_tool_ids
@@ -234,6 +237,57 @@ fn project_messages(request: &ResponseRequest) -> Result<(Option<String>, Vec<Va
     ))
 }
 
+/// The shared raster gate validates bytes before dispatch. Projection only
+/// separates the data URL envelope; it never fetches or re-encodes an image.
+fn image_block(request: &ResponseRequest, attachment: &MessageAttachment) -> Result<Value> {
+    if attachment.kind != "image" {
+        return Err(invalid("only image attachments are supported"));
+    }
+    let url = request
+        .attachment_data_urls
+        .get(&attachment.id)
+        .filter(|url| !url.is_empty())
+        .ok_or_else(|| {
+            invalid("image_input_unresolved: Messages requires an inline or remote image source")
+        })?;
+    let source = if url.starts_with("https://") || url.starts_with("http://") {
+        ImageSource::Url { url: url.clone() }
+    } else {
+        let (header, data) = url
+            .split_once(',')
+            .ok_or_else(|| invalid("image_input_invalid: expected an image data URL"))?;
+        let media_type = header
+            .strip_prefix("data:")
+            .and_then(|header| header.strip_suffix(";base64"))
+            .filter(|mime| crate::image_input::SUPPORTED_IMAGE_MIMES.contains(mime))
+            .ok_or_else(|| invalid("image_input_unsupported_format: unsupported image data URL"))?;
+        ImageSource::Base64 {
+            data: data.to_owned(),
+            media_type: media_type.to_owned(),
+        }
+    };
+    serde_json::to_value(ContentBlockParam::Image(ImageBlockParam {
+        source,
+        cache_control: None,
+    }))
+    .map_err(Into::into)
+}
+
+fn tool_result_content(request: &ResponseRequest, output: &ToolResultBody) -> Result<Value> {
+    match output {
+        ToolResultBody::Text(text) => Ok(Value::String(text.clone())),
+        ToolResultBody::Parts(parts) => parts
+            .iter()
+            .filter(|part| !matches!(part, ToolResultPart::Text { text } if text.is_empty()))
+            .map(|part| match part {
+                ToolResultPart::Text { text } => Ok(json!({"type":"text","text":text})),
+                ToolResultPart::Image { attachment } => image_block(request, attachment),
+            })
+            .collect::<Result<Vec<_>>>()
+            .map(Value::Array),
+    }
+}
+
 fn ensure_no_pending_tools(pending_tool_ids: &[String]) -> Result<()> {
     if pending_tool_ids.is_empty() {
         Ok(())
@@ -255,6 +309,11 @@ fn push_message(messages: &mut Vec<Value>, role: &str, block: Value) -> Result<(
         "tool" => return Err(invalid("Messages tool role must use tool_result blocks")),
         _ => return Err(invalid("Messages message role is unsupported")),
     };
+    // Harness also omits empty text blocks. Image-only input must remain a
+    // valid image block array rather than acquire an invalid empty text block.
+    if block["type"] == "text" && block["text"].as_str() == Some("") {
+        return Ok(());
+    }
     let needs_new = messages
         .last()
         .and_then(Value::as_object)

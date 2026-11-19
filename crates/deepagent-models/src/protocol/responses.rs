@@ -27,6 +27,7 @@ impl WireCodec for ResponsesCodec {
             .await?;
         let body = client.encode_response_body(&request)?;
         let mut transport = TransportRequest {
+            auth: self.auth(),
             url: client.config().endpoint(),
             api_key: client.config().api_key.clone(),
             body,

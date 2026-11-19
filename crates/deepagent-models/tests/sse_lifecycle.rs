@@ -221,6 +221,7 @@ async fn h131_headers_and_dripping_error_bodies_keep_their_bounded_failure_guard
             limits.first_byte = Duration::from_millis(100);
             let transport = fixture::Fixture::transport().with_timeouts(limits);
             let request = TransportRequest {
+                auth: deepagent_models::TransportAuth::Bearer,
                 url: format!("{}/responses", server.base_url),
                 api_key: "synthetic".into(),
                 body: "{}".into(),

@@ -96,7 +96,8 @@ impl Fixture {
     }
 
     pub fn transport() -> ReqwestTransport {
-        ReqwestTransport::with_client(reqwest::Client::builder().no_proxy().build().unwrap())
+        ReqwestTransport::with_client_builder(reqwest::Client::builder().no_proxy())
+            .unwrap()
             .with_timeouts(TransportTimeouts {
                 connect: Duration::from_secs(3),
                 first_byte: Duration::from_secs(3),

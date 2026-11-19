@@ -5,6 +5,10 @@ pub(super) struct MessagesCodec;
 
 #[async_trait::async_trait]
 impl WireCodec for MessagesCodec {
+    fn auth(&self) -> crate::transport::TransportAuth {
+        crate::transport::TransportAuth::Messages
+    }
+
     async fn stream(
         &self,
         client: &ModelClient,
@@ -17,11 +21,13 @@ impl WireCodec for MessagesCodec {
         request.validate()?;
         client.validate_output_tokens(request.max_output_tokens)?;
         client.validate_response_input_modalities(&request)?;
+        crate::image_input::validate_response_payloads(request.clone(), cancel.clone()).await?;
         let body = self.encode_body(client, request)?;
         client
             .stream_attempt(
                 self,
                 TransportRequest {
+                    auth: self.auth(),
                     url: client.config().messages_endpoint(),
                     api_key: client.config().api_key.clone(),
                     body,
@@ -41,7 +47,7 @@ impl WireCodec for MessagesCodec {
             return Ok(());
         }
         Err(deepagent_core::error::CoreError::invalid(
-            "image_input_role_unsupported: Messages image projection is not implemented",
+            "image_input_role_unsupported: Messages images require a user message or a tool_result",
         ))
     }
 

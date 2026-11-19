@@ -82,7 +82,7 @@ pub use sampling::{resolve_responses_sampling, EffectiveSamplingConfig, Sampling
 pub use stream::{DeltaObserver, ModelStreamEvent, NoopObserver, ResponseAccumulator};
 pub use tool_choice::validate_responses_tool_choice;
 pub use transport::{
-    FileUploadRequest, HttpTransport, MockTransport, TransportRequest, UploadedFile,
+    FileUploadRequest, HttpTransport, MockTransport, TransportAuth, TransportRequest, UploadedFile,
 };
 
 #[cfg(feature = "http")]

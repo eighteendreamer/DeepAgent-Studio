@@ -95,6 +95,14 @@ async fn every_factory_route_keeps_pricing_send_decode_and_usage_in_agreement() 
             .unwrap();
             let sent = transport.0.lock().unwrap();
             assert_eq!(sent.len(), 1, "{mode:?}");
+            assert_eq!(
+                sent[0].auth,
+                if mode == WireMode::Messages {
+                    deepagent_models::TransportAuth::Messages
+                } else {
+                    deepagent_models::TransportAuth::Bearer
+                }
+            );
             assert_eq!(sent[0].body.len(), size, "{mode:?}");
             assert_eq!(response.output_text_projection(), "中文 🦀");
             assert_eq!(observer.text, "中文 🦀");
