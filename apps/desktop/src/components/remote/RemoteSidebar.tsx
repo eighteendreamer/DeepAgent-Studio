@@ -1,4 +1,5 @@
 import { SshTimingFields, sshTimingFromDto, sshTimingRequest, type SshTimingForm } from "./SshTimingFields";
+import { SshConfigImporter, type SshConfigImportForm } from "./SshConfigImport";
 import { authenticationFactorRequests, authenticationFactorsFromDto, canSaveSshConnection, SshAuthenticationFields, type SshFormAuthType, type SshAuthenticationFactorForm } from "./SshAuthenticationFields";
 import { SshHostTrustField } from "./SshHostTrustField";
 import { SshProxyFields, sshProxyFromDto, sshProxyRequest, type SshProxyForm } from "./SshProxyFields";
@@ -66,7 +67,7 @@ interface RemoteSidebarProps {
   onBack: () => void;
 }
 
-interface ConnectionForm {
+interface ConnectionForm extends SshConfigImportForm {
   proxy: SshProxyForm;
   jump: SshJumpForm;
   timing: SshTimingForm;
@@ -595,6 +596,7 @@ export function RemoteSidebar({
   // 密码型连接保存时必须重填（validate_config 拒绝空密码）。
   const startEdit = (conn: SshConnection) => {
     setForm({
+      importPortExplicit: true, importAuthExplicit: true, importJumpExplicit: true,
       name: conn.name,
       host: conn.host,
       port: String(conn.port),
@@ -1140,6 +1142,7 @@ export function RemoteSidebar({
                     }}
                   >
                     <div className="space-y-3 px-5 py-4">
+                      <SshConfigImporter value={form} onApply={setForm} />
                       <div>
                         <label className="mb-1.5 block text-[11px] font-medium text-text-base">
                           {t("settings.connections.displayName")}
@@ -1179,7 +1182,7 @@ export function RemoteSidebar({
                             type="text"
                             value={form.port}
                             onChange={(event) =>
-                              setForm({ ...form, port: event.target.value })
+                              setForm({ ...form, port: event.target.value, importPortExplicit: true })
                             }
                             className="h-[34px] w-full rounded-[14px] border border-border-theme bg-white px-3 text-[13px] text-text-base outline-none transition-colors focus:border-blue-500"
                           />
@@ -1212,13 +1215,13 @@ export function RemoteSidebar({
                         <SshProxyFields value={form.proxy} onChange={(proxy) => setForm((previous) => ({ ...previous, proxy }))} />
                       </section>
                       <section className="border-t border-border-theme pt-3">
-                        <SshJumpFields value={form.jump} onChange={(jump) => setForm((previous) => ({ ...previous, jump }))} />
+                        <SshJumpFields value={form.jump} onChange={(jump) => setForm((previous) => ({ ...previous, jump, importJumpExplicit: true }))} />
                       </section>
                       <section className="border-t border-border-theme pt-3">
                         <SshTimingFields value={form.timing} onChange={(timing) => setForm((previous) => ({ ...previous, timing }))} />
                       </section>
                       <section className="border-t border-border-theme pt-3">
-                    <SshAuthenticationFields value={form} onChange={(change) => setForm((previous) => ({ ...previous, ...change }))} onPickKeyFile={() => void handlePickKeyFile()} onPickCertificateFile={() => void handlePickCertificateFile()} />
+                    <SshAuthenticationFields value={form} onChange={(change) => setForm((previous) => ({ ...previous, ...change, importAuthExplicit: true }))} onPickKeyFile={() => void handlePickKeyFile()} onPickCertificateFile={() => void handlePickCertificateFile()} />
                   </section>
                     </div>
                     <div className="flex justify-between border-t border-border-theme px-5 py-3">

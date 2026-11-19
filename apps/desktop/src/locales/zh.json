@@ -826,6 +826,18 @@
       "noAllowed": "无允许域名"
     },
     "connections": {
+      "configImport": {
+        "title": "导入 OpenSSH 配置",
+        "browse": "选择文件",
+        "alias": "Host 别名",
+        "chooseAlias": "选择配置中的别名",
+        "loading": "正在解析…",
+        "preview": "预览配置",
+        "effective": "最终生效配置",
+        "authentication": "认证方式",
+        "apply": "应用到表单",
+        "noAliases": "配置中没有可列出的 Host 别名"
+      },
       "agent": {
         "autoPublicKey": "自动公钥（Agent 与默认密钥）",
         "identity": "公钥身份",

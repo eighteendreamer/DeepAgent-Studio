@@ -3070,13 +3070,13 @@ export async function pickPreviewFile(): Promise<string | null> {
  * Open the OS-native "open file" dialog for selecting an SSH identity file.
  * Returns the chosen absolute path or null if the user cancelled.
  */
-export async function pickSshIdentityFile(kind: "identity" | "certificate" = "identity"): Promise<string | null> {
+export async function pickSshIdentityFile(kind: "identity" | "certificate" | "config" = "identity"): Promise<string | null> {
   if (!isTauri()) return null;
   const mod = await import("@tauri-apps/plugin-dialog");
   const selected = await mod.open({
     directory: false,
     multiple: false,
-    title: kind === "certificate" ? "Select SSH User Certificate" : "Select SSH Identity File",
+    title: kind === "config" ? "Select OpenSSH Config" : kind === "certificate" ? "Select SSH User Certificate" : "Select SSH Identity File",
   });
   if (typeof selected === "string") return selected;
   return null;
@@ -3824,6 +3824,40 @@ export async function sshDiscoverDefaultIdentities(): Promise<SshDefaultIdentity
   const invoke = getInvoke();
   if (!invoke) throw new Error("SSH identity discovery requires the desktop application.");
   return invoke<SshDefaultIdentity[]>("ssh_discover_default_identities");
+}
+
+export interface SshConfigOverrides {
+  host?: string;
+  port?: number;
+  username?: string;
+  identity_files?: string[];
+  proxy_jump?: string;
+}
+
+export interface SshConfigImportedEndpoint {
+  host: string;
+  port: number;
+  username: string;
+  identity_files: string[];
+  default_identities: boolean;
+}
+
+export interface SshConfigImportedConnection {
+  alias: string;
+  target: SshConfigImportedEndpoint;
+  jump?: SshConfigImportedEndpoint | null;
+}
+
+export interface SshConfigImportPreview {
+  path: string;
+  aliases: string[];
+  connection?: SshConfigImportedConnection | null;
+}
+
+export async function sshPreviewConfigImport(path?: string, alias?: string, overrides: SshConfigOverrides = {}): Promise<SshConfigImportPreview> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("SSH config import requires the desktop application.");
+  return invoke<SshConfigImportPreview>("ssh_preview_config_import", { path, alias, overrides });
 }
 
 

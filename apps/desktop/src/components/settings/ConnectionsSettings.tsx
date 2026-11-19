@@ -1,4 +1,5 @@
 import { SshTimingFields, sshTimingFromDto, sshTimingRequest, type SshTimingForm } from "../remote/SshTimingFields";
+import { SshConfigImporter, type SshConfigImportForm } from "../remote/SshConfigImport";
 import { authenticationFactorRequests, authenticationFactorsFromDto, canSaveSshConnection, SshAuthenticationFields, type SshFormAuthType, type SshAuthenticationFactorForm } from "../remote/SshAuthenticationFields";
 import { SshHostTrustField } from "../remote/SshHostTrustField";
 import { SshProxyFields, sshProxyFromDto, sshProxyRequest, type SshProxyForm } from "../remote/SshProxyFields";
@@ -25,7 +26,7 @@ import {
 
 type AuthType = SshFormAuthType;
 
-interface FormData {
+interface FormData extends SshConfigImportForm {
   proxy: SshProxyForm;
   jump: SshJumpForm;
   timing: SshTimingForm;
@@ -152,6 +153,7 @@ export function ConnectionsSettings() {
   const openEdit = (conn: SshConnection) => {
     setEditingId(conn.id);
     setForm({
+      importPortExplicit: true, importAuthExplicit: true, importJumpExplicit: true,
       name: conn.name,
       host: conn.host,
       port: String(conn.port),
@@ -523,6 +525,7 @@ export function ConnectionsSettings() {
               }}
             >
               <div className="space-y-3 px-5 py-4">
+                <SshConfigImporter value={form} onApply={setForm} />
                 <SshHostTrustField
                   id="settings-known-hosts"
                   host={form.host}
@@ -569,7 +572,7 @@ export function ConnectionsSettings() {
                       <input
                         type="text"
                         value={form.port}
-                        onChange={(e) => setForm({ ...form, port: e.target.value })}
+                        onChange={(e) => setForm({ ...form, port: e.target.value, importPortExplicit: true })}
                         className="h-[34px] w-full rounded-[14px] border border-border-theme bg-white px-3 text-[13px] text-text-base outline-none transition-colors focus:border-blue-500"
                       />
                     </div>
@@ -592,13 +595,13 @@ export function ConnectionsSettings() {
                   <SshProxyFields value={form.proxy} onChange={(proxy) => setForm((previous) => ({ ...previous, proxy }))} />
                 </section>
                 <section className="border-t border-border-theme pt-3">
-                  <SshJumpFields value={form.jump} onChange={(jump) => setForm((previous) => ({ ...previous, jump }))} />
+                  <SshJumpFields value={form.jump} onChange={(jump) => setForm((previous) => ({ ...previous, jump, importJumpExplicit: true }))} />
                 </section>
                 <section className="border-t border-border-theme pt-3">
                   <SshTimingFields value={form.timing} onChange={(timing) => setForm((previous) => ({ ...previous, timing }))} />
                 </section>
                 <section className="border-t border-border-theme pt-3">
-                    <SshAuthenticationFields value={form} onChange={(change) => setForm((previous) => ({ ...previous, ...change }))} onPickKeyFile={() => void handlePickKeyFile()} onPickCertificateFile={() => void handlePickCertificateFile()} />
+                    <SshAuthenticationFields value={form} onChange={(change) => setForm((previous) => ({ ...previous, ...change, importAuthExplicit: true }))} onPickKeyFile={() => void handlePickKeyFile()} onPickCertificateFile={() => void handlePickCertificateFile()} />
                   </section>
               </div>
 

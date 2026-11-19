@@ -69,6 +69,10 @@ pub use known_hosts_import::{
     SshKnownHostsImportPreview, SshKnownHostsImportResult, SshKnownHostsImportRow,
     SshKnownHostsImportStatus,
 };
+pub use openssh_config::{
+    preview_ssh_config, preview_ssh_config_in, resolve_ssh_config, SshConfigImportPreview,
+    SshConfigImportedConnection, SshConfigImportedEndpoint, SshConfigOverrides,
+};
 pub use proxy::{
     SshProxyConfig, SshProxyDto, SshProxyEndpoint, SshProxyRequest, SshProxySettingsRequest,
     SshProxyType,
@@ -108,6 +112,7 @@ mod host_trust;
 mod host_trust_audit;
 mod jump;
 mod known_hosts_import;
+mod openssh_config;
 mod private_identity;
 mod proxy;
 mod pty;

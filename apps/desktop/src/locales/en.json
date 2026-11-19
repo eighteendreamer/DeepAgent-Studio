@@ -826,6 +826,18 @@
       "noAllowed": "No allowed domains"
     },
     "connections": {
+      "configImport": {
+        "title": "Import OpenSSH config",
+        "browse": "Choose file",
+        "alias": "Host alias",
+        "chooseAlias": "Choose a configured alias",
+        "loading": "Resolving…",
+        "preview": "Preview config",
+        "effective": "Effective configuration",
+        "authentication": "Authentication",
+        "apply": "Apply to form",
+        "noAliases": "No literal Host aliases in this config"
+      },
       "agent": {
         "autoPublicKey": "Automatic public key (Agent and default keys)",
         "identity": "Public-key identity",

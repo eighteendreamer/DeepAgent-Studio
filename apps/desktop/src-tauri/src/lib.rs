@@ -5555,6 +5555,17 @@ async fn ssh_discover_default_identities() -> Result<Vec<deepagent_ssh::SshDefau
 }
 
 #[tauri::command]
+async fn ssh_preview_config_import(
+    path: Option<String>,
+    alias: Option<String>,
+    overrides: deepagent_ssh::SshConfigOverrides,
+) -> Result<deepagent_ssh::SshConfigImportPreview, String> {
+    deepagent_ssh::preview_ssh_config(path, alias, overrides)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn ssh_list_connections(
     state: State<'_, AppState>,
 ) -> Result<Vec<SshConnectionFrontendDto>, String> {
@@ -8193,6 +8204,7 @@ pub fn run() {
             ssh_list_connections,
             ssh_probe_agent,
             ssh_discover_default_identities,
+            ssh_preview_config_import,
             ssh_inspect_host_trust,
             ssh_list_host_keys,
             ssh_import_host_trust,
