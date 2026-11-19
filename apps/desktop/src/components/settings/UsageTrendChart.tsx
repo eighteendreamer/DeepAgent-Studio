@@ -6,17 +6,10 @@ import { SurfaceVisibility } from "../ui/SurfaceVisibility";
 import { formatTokens } from "../chat-timeline/format";
 import type { UsagePoint } from "./usageStatistics";
 
-let runtime: Promise<typeof import("echarts/core")> | undefined;
+let runtime: Promise<typeof import("./usageChartRuntime")> | undefined;
 function loadTrendRuntime() {
-  return runtime ??= Promise.all([
-    import("echarts/core"), import("echarts/lib/chart/line/install.js"),
-    import("echarts/lib/component/grid/install.js"), import("echarts/lib/component/tooltip/install.js"),
-    import("echarts/lib/renderer/installCanvasRenderer.js"),
-  ]).then(([core, line, grid, tooltip, canvas]) => {
-    // Internal module declarations expose install as unknown; these are ECharts installers.
-    core.use([line.install, grid.install, tooltip.install, canvas.install] as Parameters<typeof core.use>[0]);
-    return core;
-  }).catch(error => { runtime = undefined; throw error; });
+  return runtime ??= import("./usageChartRuntime")
+    .catch(error => { runtime = undefined; throw error; });
 }
 
 interface Props {
@@ -76,7 +69,12 @@ export function UsageTrendChart({ points, locale, labels }: Props) {
       observer = new ResizeObserver(() => { if (element.clientWidth > 0) instance.current?.resize(); });
       observer.observe(element);
       instance.current.resize();
-    }).catch(reason => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); });
+    }).catch(reason => {
+      if (!cancelled) {
+        console.error("Usage trend chart rendering failed:", reason);
+        setError(reason instanceof Error ? reason.message : String(reason));
+      }
+    });
     return () => { cancelled = true; observer?.disconnect(); };
   }, [points, locale, labels, visible, reduced, activePalette, activeIsDark]);
   useEffect(() => () => { instance.current?.dispose(); instance.current = null; }, []);

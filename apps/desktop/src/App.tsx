@@ -2,7 +2,7 @@ import { summarizeWebSearch } from "./components/chat-timeline/webSearchSummary"
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { SurfaceVisibility } from "./components/ui/SurfaceVisibility";
 import { SettingsView } from "./components/SettingsView";
-import { SettingsSidebar } from "./components/SettingsSidebar";
+import { DEFAULT_SETTINGS_CATEGORY, SettingsSidebar } from "./components/SettingsSidebar";
 import { SpringDisclosure } from "./components/ui/SpringDisclosure";
 import { MessageSendMotionContext, useMessageSendMotionController } from "./components/ui/MessageSendMotionContext";
 import { ProcessStoreContext } from "./components/chat-timeline/ProcessDisclosureContext";
@@ -2530,7 +2530,7 @@ export function App() {
   const [isSearchOpen, setIsSearchOpen] = useState(false);
 
   // Settings State
-  const [activeSettingsCategory, setActiveSettingsCategory] = useState("general");
+  const [activeSettingsCategory, setActiveSettingsCategory] = useState(DEFAULT_SETTINGS_CATEGORY);
 
   // Remote Connection State
   const [remoteConnection, setRemoteConnection] = useState<SshConnection | null>(null);

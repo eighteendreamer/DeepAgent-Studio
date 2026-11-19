@@ -53,6 +53,8 @@ const CATEGORIES: Category[] = [
   { id: "about", label: "关于", icon: Info },
 ];
 
+export const DEFAULT_SETTINGS_CATEGORY = CATEGORIES[0].id;
+
 interface Props {
   onBack: () => void;
   activeCategoryId: string;
