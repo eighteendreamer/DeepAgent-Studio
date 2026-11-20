@@ -18,7 +18,7 @@ export function PetWindow() {
   const [visible, setVisible] = useState(false);
   const [work, setWork] = useState<WorkState>("idle");
   const [completion, setCompletion] = useState<Completion | null>(null);
-  const [gesture, setGesture] = useState<"click" | "drag" | null>(null);
+  const [playingClick, setPlayingClick] = useState(false);
   const [manualAction, setManualAction] = useState<string>();
   const [variant, setVariant] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -26,8 +26,7 @@ export function PetWindow() {
   const ready = useRef(false);
   const body = useRef<HTMLButtonElement>(null);
   const bubble = useRef<HTMLDivElement>(null);
-  const pointer = useRef<{ x: number; y: number; dragged: boolean } | null>(null);
-  const gestureTimer = useRef<number>();
+  const pointer = useRef<{ id: number; x: number; y: number; dragged: boolean } | null>(null);
   const completionTimer = useRef<number>();
 
   useEffect(() => {
@@ -92,8 +91,8 @@ export function PetWindow() {
   }, [follow]);
 
   const cue = work === "idle" && completion ? completion === "completed" ? "success" : "error" : work;
-  const animation = manualAction ? "idle" : gesture ?? cue;
-  const showBubble = prefs?.bubbles && !manualAction && !gesture && (cue === "waiting" || cue === "success" || cue === "error");
+  const animation = manualAction ? "idle" : playingClick ? "click" : cue;
+  const showBubble = prefs?.bubbles && !manualAction && !playingClick && (cue === "waiting" || cue === "success" || cue === "error");
   useLayoutEffect(() => {
     if (!character || !awake) return;
     const reportRegions = () => {
@@ -112,7 +111,6 @@ export function PetWindow() {
     reportRegions();
     return () => observer.disconnect();
   }, [character, awake, menuOpen, showBubble, snapshot?.stageTop, snapshot?.stageLeft]);
-  useEffect(() => () => window.clearTimeout(gestureTimer.current), []);
 
   if (!snapshot || !character) return null;
   const hit = character.hitBox;
@@ -123,7 +121,7 @@ export function PetWindow() {
         if (!ready.current) { ready.current = true; void petReady().catch(error => { ready.current = false; report(error); }); }
       }} onEnded={() => {
         if (manualAction) setManualAction(undefined);
-        else if (gesture) setGesture(null);
+        else if (playingClick) setPlayingClick(false);
         else if (cue === "success" || cue === "error") setCompletion(null);
       }} onFailure={report} />
     {showBubble && <div ref={bubble} role="status" className="pet-bubble">{t(`desktopPet.${cue}`)}</div>}
@@ -133,33 +131,31 @@ export function PetWindow() {
           left: `${hit.x / canvas.width * 100}%`, top: `${hit.y / canvas.height * 100}%`,
           width: `${hit.width / canvas.width * 100}%`, height: `${hit.height / canvas.height * 100}%`,
         }} onPointerDown={event => {
-          if (event.button !== 0) return;
-          pointer.current = { x: event.clientX, y: event.clientY, dragged: false };
+          if (event.button !== 0 || !event.isPrimary) return;
+          pointer.current = { id: event.pointerId, x: event.clientX, y: event.clientY, dragged: false };
           event.currentTarget.setPointerCapture(event.pointerId);
         }} onPointerMove={event => {
           const start = pointer.current;
-          if (!start || start.dragged || !(event.buttons & 1) || Math.hypot(event.clientX - start.x, event.clientY - start.y) < 5) return;
+          if (!start || start.id !== event.pointerId || start.dragged || !(event.buttons & 1)
+              || Math.hypot(event.clientX - start.x, event.clientY - start.y) < 5) return;
           start.dragged = true;
           event.currentTarget.releasePointerCapture(event.pointerId);
-          setManualAction(undefined);
-          setGesture("drag");
-          window.clearTimeout(gestureTimer.current);
-          gestureTimer.current = window.setTimeout(() => { pointer.current = null; setGesture(null); }, 1400);
-          void petDrag().catch(error => { report(error); setGesture(null); });
-        }} onPointerCancel={() => { pointer.current = null; }} onClick={() => {
-          const dragged = pointer.current?.dragged;
+          // The OS owns the drag; switching videos here can finish loading after release.
+          void petDrag().catch(report);
+        }} onPointerCancel={event => {
+          if (pointer.current?.id === event.pointerId) pointer.current = null;
+        }} onClick={event => {
+          const start = pointer.current;
           pointer.current = null;
-          if (!dragged) {
-            window.clearTimeout(gestureTimer.current);
-            setManualAction(undefined);
-            setVariant(value => value + 1);
-            setGesture("click");
-          }
+          // A keyboard click has no pointer; a mouse click must come from a completed press.
+          if (event.detail !== 0 && (!start || start.dragged)) return;
+          setManualAction(undefined);
+          setVariant(value => value + 1);
+          setPlayingClick(true);
         }} />
       } />
       <PetMenu character={character} open={menuOpen} bounds={menuBounds} onError={report} onPlay={name => {
-        window.clearTimeout(gestureTimer.current);
-        setGesture(null);
+        setPlayingClick(false);
         setManualAction(name);
         setVariant(value => value + 1);
       }} />
