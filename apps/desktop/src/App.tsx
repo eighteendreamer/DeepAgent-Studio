@@ -327,6 +327,9 @@ function buildMentionContexts(mentions: ComposerMention[]): string {
     if (mention.kind === "goal") {
       return `<context-item index="${index + 1}" kind="goal">${escapeXmlText(mention.text)}</context-item>`;
     }
+    if (mention.kind === "plugin") {
+      return `<context-item index="${index + 1}" kind="plugin" id="${escapeXmlAttr(mention.id)}" name="${escapeXmlAttr(mention.name)}">Use this plugin's available capabilities when relevant to the request.</context-item>`;
+    }
     const kind = mention.kind === "folder" ? "folder" : "file";
     const relPath = mention.relPath || mention.name;
     const lines = [
@@ -1026,6 +1029,17 @@ export function App() {
       }).catch(error => message.error(`退出失败：${String(error)}`));
   }, []);
 
+  const updateSessionPlanMode = useCallback(async (sessionId: string, requested: boolean) => {
+    try {
+      const active = await setSessionPlanMode(sessionId, requested);
+      if (visibleSessionIdRef.current === sessionId) setPlanMode(active);
+      return true;
+    } catch (error) {
+      message.error(`${requested ? "开启" : "退出"}计划模式失败：${String(error)}`);
+      return false;
+    }
+  }, []);
+
   const onSubmit = useCallback(
     async (
       text: string,
@@ -1072,16 +1086,11 @@ export function App() {
         void changeSidebarPreferences({ type: "set_section", session_id: sid, section_id: newSessionSectionId })
           .catch((error) => message.error(`新会话归入分区失败：${String(error)}`));
       };
-      const requestedPlanMode = mentions.some((mention) => mention.kind === "plan_mode");
-      if (continueId && requestedPlanMode) {
-        try {
-          const active = await setSessionPlanMode(continueId, true);
-          setPlanMode(active);
-        } catch {
-          message.error("开启计划模式失败");
-          return;
-        }
-      } else if (!continueId && requestedPlanMode) {
+      const requestedGoal = mentions.some((mention) => mention.kind === "goal");
+      const requestedPlanMode = !requestedGoal && mentions.some((mention) => mention.kind === "plan_mode");
+      if (continueId && (requestedGoal || requestedPlanMode)) {
+        if (!(await updateSessionPlanMode(continueId, requestedPlanMode))) return;
+      } else if (requestedPlanMode) {
         setPlanMode(true);
       }
 
@@ -1950,7 +1959,7 @@ export function App() {
           finishRun();
         });
     },
-    [activeId, view, refreshSessions, runningSessionIds, activePendingRunKey, messageSendMotion, chatFrameKey]
+    [activeId, view, refreshSessions, runningSessionIds, activePendingRunKey, messageSendMotion, chatFrameKey, updateSessionPlanMode]
   );
 
   const onChatSend = useCallback(
@@ -2488,6 +2497,7 @@ export function App() {
                   onStop={onStopRun}
                   stopping={activeRunIsStopping}
                   planMode={planMode}
+                  onExitPlanMode={activeId ? () => { void updateSessionPlanMode(activeId, false); } : undefined}
                   activeProjectPath={activeProjectPath}
                   projectMapOpenSignal={projectMapOpenSignal}
                   contextUsage={activeContextUsage}

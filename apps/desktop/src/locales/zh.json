@@ -1153,6 +1153,13 @@
     "effortSmarter": "更深入",
     "thinkingSwitchFailed": "切换思考档位失败",
     "send": "发送",
+    "pluginsGroup": "插件",
+    "plan": {
+      "title": "计划模式",
+      "description": "先制定计划，暂不修改文件",
+      "placeholder": "描述你想规划的任务…",
+      "exitHint": "计划模式 · 点击退出"
+    },
     "goal": {
       "title": "目标模式",
       "description": "设置要持续追求的目标",

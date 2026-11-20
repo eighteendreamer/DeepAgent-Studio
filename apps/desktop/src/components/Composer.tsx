@@ -1,7 +1,7 @@
 import { HoverInfo } from "./ui/HoverInfo";
 import { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo, useId } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { Brain, BrainCircuit, Check, ChevronDown, CircleAlert, Feather, Hand, Lightbulb, Layers, Loader2, Puzzle, ShieldHalf, Sparkles, createLucideIcon } from "lucide-react";
+import { Brain, BrainCircuit, Check, ChevronDown, CircleAlert, Feather, Hand, Lightbulb, Layers, ListChecks, Loader2, Puzzle, ShieldHalf, Sparkles, createLucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ContextCapacityIndicator } from "./ContextCapacityIndicator";
 import { ComposerSuggestPanel } from "./ComposerSuggestPanel";
@@ -19,12 +19,14 @@ import { MENU_ITEM_ATTR, SlidingMenuList } from "./ui/SlidingMenuList";
 import { Button } from "./shadcn/button";
 import { cn } from "./shadcn/utils";
 import {
+  PLUGINS_CHANGED_EVENT,
   SETTINGS_CHANGED_EVENT,
   attachmentIngest,
   attachmentRemove,
   getActivePermissionPreset,
   getCommands,
   getPermissionPresetVisibility,
+  listPlugins,
   listSkills,
   searchProjectFiles,
   setActivePermissionPreset,
@@ -37,6 +39,7 @@ import type {
   ComposerMention,
   ComposerSkillSelection,
   ContextUsageSnapshot,
+  PluginSummary,
   ProjectFileEntry,
   Skill,
 } from "../types";
@@ -66,6 +69,7 @@ type SlashToken = {
   query: string;
 };
 type AtToken = SlashToken;
+type InlineMention = Exclude<ComposerMention, { kind: "goal" | "plan_mode" }>;
 type SelectionRange = {
   start: number;
   end: number;
@@ -89,7 +93,6 @@ type AtChoice =
       type: "plan-mode";
       title: string;
       description: string;
-      icon: "list-check";
     }
   | {
       id: string;
@@ -101,10 +104,10 @@ type AtChoice =
     }
   | {
       id: string;
-      type: "skill";
+      type: "plugin";
       title: string;
       description: string;
-      skill: Skill;
+      pluginId: string;
     };
 type AtSection = {
   key: string;
@@ -178,12 +181,6 @@ function findActiveAtToken(value: string, cursor: number): AtToken | null {
   };
 }
 
-function mentionLabel(mention: ComposerMention): string {
-  if (mention.kind === "plan_mode") return "计划模式";
-  if (mention.kind === "goal") return "目标";
-  return mention.relPath || mention.name;
-}
-
 interface Props {
   value: string;
   onChange: (v: string) => void;
@@ -202,6 +199,7 @@ interface Props {
   stopping?: boolean;
   /** True when the current session is in read-only Plan mode. */
   planMode?: boolean | null;
+  onExitPlanMode?: () => void;
   /** Active project path used for @ file/folder search. */
   activeProjectPath?: string | null;
   /** Optional footer content rendered seamlessly at the bottom of the composer. */
@@ -227,6 +225,7 @@ export function Composer({
   onStop,
   stopping = false,
   planMode = false,
+  onExitPlanMode,
   activeProjectPath = null,
   footer,
   contextUsage = null,
@@ -266,8 +265,10 @@ export function Composer({
   const [atSections, setAtSections] = useState<AtSection[]>([]);
   const [atSelected, setAtSelected] = useState(0);
   const [selectedSkills, setSelectedSkills] = useState<ComposerSkillSelection[]>([]);
-  const [selectedMentions, setSelectedMentions] = useState<ComposerMention[]>([]);
-  const [goalMode, setGoalMode] = useState(false);
+  const [selectedMentions, setSelectedMentions] = useState<InlineMention[]>([]);
+  const [draftMode, setDraftMode] = useState<"goal" | "plan" | null>(null);
+  const mode = draftMode ?? (planMode === true ? "plan" : null);
+  const [plugins, setPlugins] = useState<PluginSummary[]>([]);
   const [draftValue, setDraftValue] = useState(value);
   const [cursorPos, setCursorPos] = useState(value.length);
   const [selectionRange, setSelectionRange] = useState<SelectionRange | null>(null);
@@ -318,7 +319,7 @@ export function Composer({
     setAtSections([]);
     setAtSelected(0);
     setSelectedMentions([]);
-    setGoalMode(false);
+    setDraftMode(null);
     pendingDraftValueRef.current = value;
   }, [draftValue, value]);
 
@@ -429,11 +430,11 @@ export function Composer({
   );
 
   const activeSlashToken = useMemo(
-    () => goalMode ? null : findActiveSlashToken(draftValue, cursorPos),
-    [cursorPos, draftValue, goalMode],
+    () => findActiveSlashToken(draftValue, cursorPos),
+    [cursorPos, draftValue],
   );
 
-  const hasSlashInput = !goalMode && (draftValue.startsWith("/") || activeSlashToken !== null);
+  const hasSlashInput = draftValue.startsWith("/") || activeSlashToken !== null;
   useEffect(() => {
     if (!hasSlashInput) return;
     let currentRequest = 0;
@@ -456,7 +457,7 @@ export function Composer({
   }, [activeProjectPath, hasSlashInput]);
 
   const slashTitles = useMemo(() => new Set(slashCommands.map((command) => command.title)), [slashCommands]);
-  const committedSlash = goalMode ? null : findCommittedSlash(draftValue, slashTitles);
+  const committedSlash = findCommittedSlash(draftValue, slashTitles);
   const slashPrefix = committedSlash?.prefix ?? "";
   const editorValue = projectSlashDraft(draftValue, slashPrefix);
 
@@ -473,7 +474,7 @@ export function Composer({
   }, [cursorPos, selectionRange, slashPrefix]);
 
   const focusEditorAt = (nextDraft: string, caret: number) => {
-    const prefix = goalMode ? "" : findCommittedSlash(nextDraft, slashTitles)?.prefix ?? "";
+    const prefix = findCommittedSlash(nextDraft, slashTitles)?.prefix ?? "";
     const editorCaret = toSlashEditorOffset(caret, prefix);
     requestAnimationFrame(() => {
       textareaRef.current?.setSelectionRange(editorCaret, editorCaret);
@@ -486,8 +487,30 @@ export function Composer({
     [cursorPos, draftValue],
   );
 
-  const slashOpen = !goalMode && Boolean((draftValue.startsWith("/") || activeSlashToken) && slashEntries.length > 0);
+  const slashOpen = Boolean((draftValue.startsWith("/") || activeSlashToken) && slashEntries.length > 0);
   const atOpen = Boolean(!slashOpen && activeAtToken && atEntries.length > 0);
+  const hasAtToken = activeAtToken !== null;
+  useEffect(() => {
+    if (!hasAtToken) return;
+    let currentRequest = 0;
+    const refresh = () => {
+      const request = ++currentRequest;
+      void listPlugins().then((rows) => {
+        if (request === currentRequest) setPlugins(rows);
+      }).catch((error) => {
+        if (request === currentRequest) {
+          setPlugins([]);
+          console.error("Failed to load composer plugins", error);
+        }
+      });
+    };
+    refresh();
+    window.addEventListener(PLUGINS_CHANGED_EVENT, refresh);
+    return () => {
+      currentRequest += 1;
+      window.removeEventListener(PLUGINS_CHANGED_EVENT, refresh);
+    };
+  }, [hasAtToken]);
 
   const resizeTextarea = useCallback(() => {
     const textarea = textareaRef.current;
@@ -566,7 +589,7 @@ export function Composer({
   }, [resizeTextarea]);
 
   useEffect(() => {
-    if (!goalMode && draftValue.startsWith("/")) {
+    if (draftValue.startsWith("/")) {
       const body = draftValue.slice(1);
       const firstSpace = body.search(/\s/);
       const commandName = firstSpace >= 0 ? body.slice(0, firstSpace) : body;
@@ -643,7 +666,7 @@ export function Composer({
     );
     setSlashResults([...slash, ...skillChoices]);
     setSlashSelected(0);
-  }, [activeSlashToken, draftValue, activeModelOptions, selectedModel, selectedSkills, skills, slashCommands, goalMode]);
+  }, [activeSlashToken, draftValue, activeModelOptions, selectedModel, selectedSkills, skills, slashCommands]);
 
   useEffect(() => {
     if (!activeAtToken || slashOpen) {
@@ -673,9 +696,8 @@ export function Composer({
       {
         id: "plan-mode",
         type: "plan-mode",
-        title: "计划模式",
-        description: "开启计划模式",
-        icon: "list-check",
+        title: t("composer.plan.title"),
+        description: t("composer.plan.description"),
       },
     ];
     const addItems = addChoices.filter((item) => matches(item.title) || matches(item.description));
@@ -683,24 +705,20 @@ export function Composer({
       sections.push({ key: "add", label: "添加", items: addItems });
     }
 
-    const selectedSkillIds = new Set(selectedSkills.map((skill) => skill.id));
-    const skillItems: AtChoice[] = skills
-      .filter(
-        (skill) =>
-          !selectedSkillIds.has(skill.id) &&
-          (matches(skill.id) || matches(skill.name) || matches(skill.description ?? "")),
-      )
-      .sort((a, b) => a.id.localeCompare(b.id))
-      .slice(0, 6)
-      .map((skill) => ({
-        id: `at-skill.${skill.id}`,
-        type: "skill",
-        title: skill.name || skill.id,
-        description: skill.description,
-        skill,
+    const selectedPluginIds = new Set(selectedMentions.flatMap((mention) => mention.kind === "plugin" ? [mention.id] : []));
+    const pluginItems: AtChoice[] = plugins
+      .filter((plugin) => plugin.installed && plugin.enabled && plugin.available && !selectedPluginIds.has(plugin.id) &&
+        (matches(plugin.name) || matches(plugin.display_name) || matches(plugin.description)))
+      .sort((a, b) => a.display_name.localeCompare(b.display_name))
+      .map((plugin) => ({
+        id: `at-plugin.${plugin.id}`,
+        type: "plugin",
+        title: plugin.display_name,
+        description: plugin.description,
+        pluginId: plugin.id,
       }));
-    if (skillItems.length > 0) {
-      sections.push({ key: "skills", label: t("composer.skillsGroup"), items: skillItems });
+    if (pluginItems.length > 0) {
+      sections.push({ key: "plugins", label: t("composer.pluginsGroup"), items: pluginItems });
     }
 
     if (!q) {
@@ -717,10 +735,10 @@ export function Composer({
           },
         ],
       });
-      setAtSections(sections);
-      setAtSelected(0);
-      return;
     }
+    setAtSections(sections);
+    setAtSelected(0);
+    if (!q) return;
 
     const timer = window.setTimeout(() => {
       searchProjectFiles(activeProjectPath, q, 24).then((result) => {
@@ -742,16 +760,11 @@ export function Composer({
             entry,
           }));
         if (fileItems.length > 0) {
-          sections.push({ key: "files", label: "文件和任务", items: fileItems });
+          setAtSections([...sections, { key: "files", label: "文件和任务", items: fileItems }]);
         }
-        setAtSections(sections);
-        setAtSelected(0);
       })
       .catch(() => {
-        if (!cancelled) {
-          setAtSections(sections);
-          setAtSelected(0);
-        }
+        // Keep mode and plugin matches available when project search fails.
       });
     }, 80);
 
@@ -759,7 +772,7 @@ export function Composer({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [activeAtToken, activeProjectPath, selectedMentions, selectedSkills, skills, slashOpen, t]);
+  }, [activeAtToken, activeProjectPath, plugins, selectedMentions, slashOpen, t]);
 
   const chooseSlash = (cmd: SlashChoice) => {
     const replaceWholeRootSlash = !activeSlashToken && draftValue.startsWith("/");
@@ -814,38 +827,10 @@ export function Composer({
     setSlashSelected(0);
   };
 
-  const insertSkillMarker = (
-    rawStart: number,
-    rawEnd: number,
-    skill: ComposerSkillSelection,
-  ) => {
-    if (selectedSkills.some((item) => item.id === skill.id)) {
-      requestAnimationFrame(() => textareaRef.current?.focus());
-      return;
-    }
-    const prefix = draftValue.slice(0, rawStart);
-    const suffix = draftValue.slice(rawEnd);
-    const spacer = suffix && !/^\s/.test(suffix) ? " " : "";
-    const nextValue = `${prefix}${SKILL_MARKER}${spacer}${suffix}`;
-    const insertAt = countSkillMarkers(prefix);
-    setSelectedSkills((prev) => {
-      const next = [...prev];
-      next.splice(insertAt, 0, skill);
-      return next;
-    });
-    setDraftValue(nextValue);
-    pendingDraftValueRef.current = stripSkillMarkers(nextValue);
-    onChange(stripSkillMarkers(nextValue));
-    const caret = rawStart + 1 + spacer.length;
-    setCursorPos(caret);
-    setSelectionRange(null);
-    focusEditorAt(nextValue, caret);
-  };
-
   const insertMentionMarker = (
     rawStart: number,
     rawEnd: number,
-    mention: ComposerMention,
+    mention: InlineMention,
   ) => {
     const prefix = draftValue.slice(0, rawStart);
     const suffix = draftValue.slice(rawEnd);
@@ -878,23 +863,16 @@ export function Composer({
       return;
     }
 
-    if (choice.type === "goal") {
+    if (choice.type === "goal" || choice.type === "plan-mode") {
       const nextDraft = draftValue.slice(0, rawStart) + draftValue.slice(rawEnd);
-      setGoalMode(true);
+      setDraftMode(choice.type === "goal" ? "goal" : "plan");
       setDraftValue(nextDraft);
       setCursorPos(rawStart);
       setSelectionRange(null);
       const nextText = stripSkillMarkers(nextDraft);
       pendingDraftValueRef.current = nextText;
       onChange(nextText);
-      requestAnimationFrame(() => {
-        textareaRef.current?.setSelectionRange(rawStart, rawStart);
-        textareaRef.current?.focus();
-      });
-    } else if (choice.type === "plan-mode") {
-      if (!selectedMentions.some((mention) => mention.kind === "plan_mode")) {
-        insertMentionMarker(rawStart, rawEnd, { kind: "plan_mode" });
-      }
+      focusEditorAt(nextDraft, rawStart);
     } else if (choice.type === "file") {
       insertMentionMarker(rawStart, rawEnd, {
         kind: choice.entry.is_dir ? "folder" : "file",
@@ -903,10 +881,11 @@ export function Composer({
         name: choice.entry.name,
         isDir: choice.entry.is_dir,
       });
-    } else if (choice.type === "skill") {
-      insertSkillMarker(rawStart, rawEnd, {
-        id: choice.skill.id,
-        name: choice.skill.name,
+    } else if (choice.type === "plugin") {
+      insertMentionMarker(rawStart, rawEnd, {
+        kind: "plugin",
+        id: choice.pluginId,
+        name: choice.title,
       });
     }
 
@@ -946,14 +925,17 @@ export function Composer({
   }, [overlayCloseSignal]);
 
   const draftText = stripSkillMarkers(draftValue).trim();
-  const hasComposerContent = goalMode
+  const hasComposerContent = mode === "goal"
     ? Boolean(draftText)
     : Boolean(draftText || attachments.length || selectedSkills.length || selectedMentions.length);
 
   const submitWithAttachments = () => {
     if (!hasComposerContent) return;
-    // Leave local slash commands (including /model) available before chat setup.
-    if (!selectedModel && (goalMode || !draftText.startsWith("/"))) {
+    // A standalone slash command must still reach the dispatcher without a mode context prefix.
+    // Keep unrecognized slash-prefixed text and drafts with attached context as normal input.
+    const isStandaloneSlash = slashTitles.has(draftText.split(/\s+/, 1)[0]) &&
+      selectedSkills.length === 0 && selectedMentions.length === 0 && attachments.length === 0;
+    if (!selectedModel && !(mode === null ? draftText.startsWith("/") : isStandaloneSlash)) {
       message.warning(t(activeModelOptions.length ? "composer.chooseModelBeforeSend" : "composer.noModels"));
       return;
     }
@@ -962,11 +944,13 @@ export function Composer({
     if (textareaRef.current && mirrorRef.current && surface) {
       messageSendMotion?.prepare(textareaRef.current, mirrorRef.current, surface, draftValue);
     }
-    const mentions: ComposerMention[] = goalMode
-      ? [...selectedMentions, { kind: "goal", text: draftText }]
-      : selectedMentions;
+    const mentions: ComposerMention[] = [...selectedMentions];
+    if (!isStandaloneSlash) {
+      if (mode === "goal") mentions.push({ kind: "goal", text: draftText });
+      if (draftMode === "plan") mentions.push({ kind: "plan_mode" });
+    }
     onSubmit(readyAttachments, selectedSkills, mentions, draftValue);
-    setGoalMode(false);
+    setDraftMode(null);
     if (readyAttachments.length > 0) setAttachments([]);
     if (selectedSkills.length > 0) setSelectedSkills([]);
     if (selectedMentions.length > 0) setSelectedMentions([]);
@@ -1249,7 +1233,7 @@ export function Composer({
     onChange(stripped);
   };
 
-  const editorPlaceholder = goalMode ? t("composer.goal.placeholder") : placeholder ?? t("composer.placeholder");
+  const editorPlaceholder = mode ? t(`composer.${mode}.placeholder`) : placeholder ?? t("composer.placeholder");
   const mirrorContent = (() => {
     const showMirrorCaret = editorFocused && !selectionRange;
     let caretRendered = false;
@@ -1353,21 +1337,8 @@ export function Composer({
       } else {
         const mention = selectedMentions[mentionIndex];
         if (mention) {
-          const icon =
-            mention.kind === "folder"
-              ? "folder"
-              : mention.kind === "file"
-              ? "file"
-              : mention.kind === "goal"
-              ? "bullseye"
-              : "list-check";
-          const label = mentionLabel(mention);
-          const title =
-            mention.kind === "goal"
-              ? mention.text
-              : mention.kind === "plan_mode"
-              ? "开启计划模式"
-              : mention.path;
+          const label = mention.kind === "plugin" ? mention.name : mention.relPath || mention.name;
+          const title = mention.kind === "plugin" ? mention.id : mention.path;
           nodes.push(
             <HoverInfo key={`mention-${segmentIndex}`} content={title}><span
               className={`mx-0.5 inline-flex h-[20px] max-w-[220px] items-center rounded-[3px] px-1 text-[13px] font-medium leading-none align-baseline ${
@@ -1377,7 +1348,9 @@ export function Composer({
               }`}
 
             >
-              <FontAwesomeIcon icon={["fas", icon as any]} className="mr-1 text-[11px] text-text-secondary" />
+              {mention.kind === "plugin"
+                ? <Puzzle aria-hidden="true" className="mr-1 size-3 text-text-secondary" />
+                : <FontAwesomeIcon icon={["fas", mention.kind === "folder" ? "folder" : "file"]} className="mr-1 text-[11px] text-text-secondary" />}
               <span className="truncate">{label}</span>
             </span></HoverInfo>,
           );
@@ -1496,9 +1469,9 @@ export function Composer({
       setSlashResults([]);
       return;
     }
-    if (goalMode && e.key === "Escape") {
+    if (draftMode && e.key === "Escape") {
       e.preventDefault();
-      setGoalMode(false);
+      setDraftMode(null);
       return;
     }
     if (e.key === "Enter" && !e.shiftKey) {
@@ -1532,11 +1505,10 @@ export function Composer({
             }`}
           >
             <span className="flex h-4 w-4 items-center justify-center text-text-base">
-              {item.type === "skill"
-                ? <Layers aria-hidden="true" className="size-3" />
-                : item.type === "goal"
-                  ? <GoalTarget aria-hidden="true" className="size-4" />
-                  : <FontAwesomeIcon icon={["fas", item.icon]} className="text-[12px]" />}
+              {item.type === "plugin" ? <Puzzle aria-hidden="true" className="size-4" />
+                : item.type === "goal" ? <GoalTarget aria-hidden="true" className="size-4" />
+                : item.type === "plan-mode" ? <ListChecks aria-hidden="true" className="size-4" />
+                : <FontAwesomeIcon icon={["fas", item.icon]} className="text-[12px]" />}
             </span>
             <span className="min-w-0">
               <span className="block truncate font-medium text-text-base">{item.title}</span>
@@ -1587,13 +1559,6 @@ export function Composer({
           </div>
         )}
       />
-      {planMode === true && (
-        <div className="mb-2 inline-flex w-fit items-center rounded-full bg-amber-500/10 px-3 py-1.5 text-[11px] font-medium text-amber-700">
-          <FontAwesomeIcon icon={["fas", "list-check"]} className="mr-1.5 text-[10px]" />
-          Plan Mode
-        </div>
-      )}
-
       <ComposerAttachmentList attachments={attachments} onRemove={removeAttachment} />
 
       <div className="relative w-full">
@@ -1785,20 +1750,22 @@ export function Composer({
               </MorphingMenuShell>
             </div>
           )}
-          {goalMode && (
-            <HoverInfo content={t("composer.goal.exitHint")}>
+          {mode && (
+            <HoverInfo content={t(`composer.${mode}.exitHint`)}>
               <Button
                 variant="ghost"
                 size="icon"
-                aria-label={t("composer.goal.title")}
+                aria-label={t(`composer.${mode}.title`)}
                 aria-pressed={true}
                 className="size-8 rounded-full bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary"
                 onClick={() => {
-                  setGoalMode(false);
+                  if (mode === "plan" && planMode === true && !busy) onExitPlanMode?.();
+                  setDraftMode(null);
                   textareaRef.current?.focus();
                 }}
               >
-                <GoalTarget aria-hidden="true" className="size-4" />
+                {mode === "goal" ? <GoalTarget aria-hidden="true" className="size-4" />
+                  : <ListChecks aria-hidden="true" className="size-4" />}
               </Button>
             </HoverInfo>
           )}
@@ -1866,7 +1833,7 @@ export function Composer({
                   ? "composer-send-btn--stop"
                   : "composer-send-btn--idle"
                 : hasComposerContent
-                  ? planMode
+                  ? mode === "plan"
                     ? "composer-send-btn--plan"
                     : "composer-send-btn--ready"
                   : "composer-send-btn--idle",

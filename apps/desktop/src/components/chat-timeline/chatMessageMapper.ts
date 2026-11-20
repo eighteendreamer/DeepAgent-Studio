@@ -73,6 +73,10 @@ export function parseMentionContexts(content: string): ComposerMention[] {
       mentions.push({ kind: "plan_mode" });
       continue;
     }
+    if (kind === "plugin") {
+      if (attrs.id) mentions.push({ kind, id: attrs.id, name: attrs.name || attrs.id });
+      continue;
+    }
     if (kind === "goal") {
       const text = unescapeXmlText(item[2].trim());
       if (text) mentions.push({ kind: "goal", text });

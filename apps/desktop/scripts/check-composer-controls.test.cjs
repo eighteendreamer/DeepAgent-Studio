@@ -101,7 +101,6 @@ test("thinking suggestions emit canonical backend efforts while displaying off",
   for (const defaultThinking of ["default", "high"]) {
     vm.runInNewContext(script, {
       draftValue: "/thinking ",
-      goalMode: false,
       activeModelOptions: [{ id: "chosen", defaultThinking, thinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] }],
       selectedModel: "chosen",
       setSlashResults(value) { suggestions = value; },

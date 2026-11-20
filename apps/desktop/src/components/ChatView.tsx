@@ -46,6 +46,7 @@ import {
   type PluginToolCard,
 } from "./plugins/pluginRegistry";
 import { usePluginAppCards } from "./plugins/usePluginAppCards";
+import { parseMentionContexts } from "./chat-timeline/chatMessageMapper";
 import { RightSidebarWorkbench } from "./RightSidebarWorkbench";
 import { ChatTimeline } from "./chat-timeline/ChatTimeline";
 import { useTimelineScroll } from "./chat-timeline/useTimelineScroll";
@@ -109,6 +110,7 @@ interface Props {
   stopping?: boolean;
   /** Current session is in read-only Plan mode. */
   planMode?: boolean | null;
+  onExitPlanMode?: () => void;
   /** Explicitly selected project path. Empty means the chat is not project-bound. */
   activeProjectPath?: string | null;
   /** Authoritative current chat repository path, supplied independently of global selection. */
@@ -453,50 +455,6 @@ function parseSkillContexts(content: string): ComposerSkillSelection[] {
   return skills;
 }
 
-function unescapeXmlText(value: string): string {
-  return value
-    .replace(/&quot;/g, '"')
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&");
-}
-
-function parseMentionContexts(content: string): ComposerMention[] {
-  const match = content.match(/<context-items>\s*([\s\S]*?)\s*<\/context-items>/);
-  if (!match) return [];
-  const mentions: ComposerMention[] = [];
-  const itemRegex = /<context-item\b([^>]*)>([\s\S]*?)<\/context-item>/g;
-  let item: RegExpExecArray | null;
-  while ((item = itemRegex.exec(match[1])) !== null) {
-    const attrs = parseAttachmentAttrs(item[1]);
-    const kind = attrs.kind;
-    if (kind === "plan_mode") {
-      mentions.push({ kind: "plan_mode" });
-      continue;
-    }
-    if (kind === "goal") {
-      const text = unescapeXmlText(item[2].trim());
-      if (text) mentions.push({ kind: "goal", text });
-      continue;
-    }
-    if (kind === "file" || kind === "folder") {
-      const relPath = unescapeXmlText(attrs.path ?? "");
-      const path = unescapeXmlText(attrs.absolute_path ?? relPath);
-      if (!relPath && !path) continue;
-      const normalized = relPath || path.replace(/\\/g, "/");
-      const name = normalized.split(/[\\/]/).filter(Boolean).pop() ?? normalized;
-      mentions.push({
-        kind,
-        path,
-        relPath: normalized,
-        name,
-        isDir: kind === "folder",
-      });
-    }
-  }
-  return mentions;
-}
-
 function parseAttachmentContext(content: string): ComposerAttachment[] {
   const match = content.match(/<attachments>\s*([\s\S]*?)\s*<\/attachments>/);
   if (!match) return [];
@@ -665,15 +623,18 @@ export function UserContextChips({
     if (mention.kind === "folder") return "folder";
     if (mention.kind === "file") return "file";
     if (mention.kind === "goal") return "bullseye";
+    if (mention.kind === "plugin") return "puzzle-piece";
     return "list-check";
   };
   const mentionLabel = (mention: ComposerMention) => {
     if (mention.kind === "goal") return "目标";
+    if (mention.kind === "plugin") return mention.name;
     if (mention.kind === "plan_mode") return "计划模式";
     return mention.relPath || mention.name;
   };
   const mentionTitle = (mention: ComposerMention) => {
     if (mention.kind === "goal") return mention.text;
+    if (mention.kind === "plugin") return mention.id;
     if (mention.kind === "plan_mode") return "开启计划模式";
     return mention.path;
   };
@@ -718,15 +679,18 @@ function UserInlineContent({
     if (mention.kind === "folder") return "folder";
     if (mention.kind === "file") return "file";
     if (mention.kind === "goal") return "bullseye";
+    if (mention.kind === "plugin") return "puzzle-piece";
     return "list-check";
   };
   const mentionLabel = (mention: ComposerMention) => {
     if (mention.kind === "goal") return "目标";
+    if (mention.kind === "plugin") return mention.name;
     if (mention.kind === "plan_mode") return "计划模式";
     return mention.relPath || mention.name;
   };
   const mentionTitle = (mention: ComposerMention) => {
     if (mention.kind === "goal") return mention.text;
+    if (mention.kind === "plugin") return mention.id;
     if (mention.kind === "plan_mode") return "开启计划模式";
     return mention.path;
   };
@@ -957,6 +921,7 @@ export function ChatView({
   onStop,
   stopping = false,
   planMode = false,
+  onExitPlanMode,
   activeProjectPath = null,
   repositoryPath = null,
   projectMapOpenSignal = 0,
@@ -1397,6 +1362,7 @@ export function ChatView({
               onStop={onStop}
               stopping={stopping}
               planMode={planMode}
+              onExitPlanMode={onExitPlanMode}
               activeProjectPath={activeProjectPath}
               contextUsage={contextUsage}
               contextUsageFallbackTokens={contextUsageFallbackTokens}

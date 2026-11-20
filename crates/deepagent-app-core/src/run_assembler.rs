@@ -613,7 +613,8 @@ impl<'a> RunAssembler<'a> {
         };
 
         let plan = self.plan_mode_for_session(&session_id_str)?;
-        if continue_session.is_none() && initial_plan_mode {
+        // Desktop can allocate the session before admitting its first turn.
+        if initial_plan_mode {
             plan.set(true)?;
         }
         // Reject unknown/corrupt recovery before issuing a model request.

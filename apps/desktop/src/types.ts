@@ -1656,6 +1656,11 @@ export interface ProjectFileSearchResult {
 
 export type ComposerMention =
   | {
+      kind: "plugin";
+      id: string;
+      name: string;
+    }
+  | {
       kind: "file" | "folder";
       path: string;
       relPath: string;

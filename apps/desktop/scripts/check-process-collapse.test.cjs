@@ -297,3 +297,12 @@ test("old transport cleanup keeps the new run busy and preserves its ownership",
   assert.equal(completed.running().has("session-a"), false);
   assert.equal(completed.stopping().has("run-a"), false);
 });
+
+test("saved plugin mentions restore the plugin ID and label for display and resend", () => {
+  const [block] = chatMessagesToBlocks([{
+    id: "saved", role: "user",
+    content: '<context-items><context-item index="1" kind="plugin" id="checker" name="Check &amp; Review">Use the plugin.</context-item></context-items>Inspect changes',
+  }]);
+  assert.equal(block.text, "Inspect changes");
+  assert.equal(JSON.stringify(block.mentions), JSON.stringify([{ kind: "plugin", id: "checker", name: "Check & Review" }]));
+});

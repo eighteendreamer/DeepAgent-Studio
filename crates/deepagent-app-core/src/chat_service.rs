@@ -3089,6 +3089,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn initial_plan_mode_applies_to_preallocated_desktop_session() {
+        let (db, settings, dir) = seeded().await;
+        let chat = ChatService::new(db, settings, chat_transport(), dir.path());
+        let session_id = chat.create_session(None).unwrap();
+        assert!(!chat.is_plan_mode(&session_id).unwrap());
+        chat.admit_run_input("desktop-planning", &session_id, "Draft a plan")
+            .unwrap();
+
+        let completed_session = chat
+            .run_in_session_with_attachments(
+                "Draft a plan",
+                Some(&session_id),
+                None,
+                None,
+                Vec::new(),
+                None,
+                true,
+                Some("desktop-planning"),
+                Vec::new(),
+                |_| {},
+                |_| {},
+            )
+            .await
+            .unwrap();
+        assert_eq!(completed_session, session_id);
+        assert!(chat.is_plan_mode(&session_id).unwrap());
+    }
+
+    #[tokio::test]
     async fn slash_plan_and_execute_toggle_session_state_without_model() {
         let (db, settings, dir) = seeded().await;
         let chat = ChatService::new(db.clone(), settings, chat_transport(), dir.path());

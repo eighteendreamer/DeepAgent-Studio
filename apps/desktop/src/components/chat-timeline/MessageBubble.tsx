@@ -17,21 +17,24 @@ const USER_BUBBLE_READ =
 const USER_SKILL_MARKER = "\uE000";
 const USER_MENTION_MARKER = "\uE001";
 
-function mentionIcon(mention: ComposerMention): "folder" | "file" | "bullseye" | "list-check" {
+function mentionIcon(mention: ComposerMention): "folder" | "file" | "bullseye" | "list-check" | "puzzle-piece" {
   if (mention.kind === "folder") return "folder";
   if (mention.kind === "file") return "file";
   if (mention.kind === "goal") return "bullseye";
+  if (mention.kind === "plugin") return "puzzle-piece";
   return "list-check";
 }
 
 function mentionLabel(mention: ComposerMention): string {
   if (mention.kind === "goal") return "目标";
+  if (mention.kind === "plugin") return mention.name;
   if (mention.kind === "plan_mode") return "计划模式";
   return mention.relPath || mention.name;
 }
 
 function mentionTitle(mention: ComposerMention): string | undefined {
   if (mention.kind === "goal") return mention.text;
+  if (mention.kind === "plugin") return mention.id;
   if (mention.kind === "plan_mode") return "开启计划模式";
   return mention.path;
 }

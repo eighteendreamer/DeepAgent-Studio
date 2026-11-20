@@ -1155,6 +1155,13 @@
     "effortSmarter": "Deeper",
     "thinkingSwitchFailed": "Failed to change thinking level",
     "send": "Send",
+    "pluginsGroup": "Plugins",
+    "plan": {
+      "title": "Plan mode",
+      "description": "Plan the task before making changes",
+      "placeholder": "Describe what you want to plan…",
+      "exitHint": "Plan mode · Click to exit"
+    },
     "goal": {
       "title": "Goal mode",
       "description": "Set a goal to work toward",
