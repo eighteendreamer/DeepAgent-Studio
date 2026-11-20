@@ -280,11 +280,11 @@ pub(crate) fn browser_tab_access(
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 enum Action {
     Navigate { url: String },
-    Snapshot,
+    Snapshot {},
     Click { target: String },
     Fill { target: String, text: String },
     Scroll { delta_y: i32 },
-    Screenshot,
+    Screenshot {},
 }
 
 struct BrowserTool {
@@ -396,13 +396,13 @@ impl BrowserTool {
         }
         let code = match action {
             Action::Navigate { .. } => unreachable!(),
-            Action::Screenshot => return self.screenshot(&view, &url).await,
+            Action::Screenshot {} => return self.screenshot(&view, &url).await,
             Action::Click { target } => json!({"action":"click","target":target}),
             Action::Fill { target, text } => json!({"action":"fill","target":target,"text":text}),
             Action::Scroll { delta_y } => {
                 json!({"action":"scroll","delta_y":delta_y.clamp(-4000,4000)})
             }
-            Action::Snapshot => json!({"action":"snapshot"}),
+            Action::Snapshot {} => json!({"action":"snapshot"}),
         };
         let value = eval(&view, format!("({PAGE})({code})")).await?;
         if let Some(error) = value.get("error").and_then(Value::as_str) {
