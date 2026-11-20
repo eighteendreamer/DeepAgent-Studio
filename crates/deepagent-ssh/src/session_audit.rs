@@ -22,6 +22,7 @@ async fn session_with_output(bytes: &[u8]) -> Arc<SshSession> {
         .insert_pty(
             "fixture-pty".into(),
             PtyState {
+                shared_owner: false,
                 _resource: None,
                 output_signal: Default::default(),
                 stdin,

@@ -350,6 +350,41 @@ impl TerminalSessionBackend for SshTerminalSessionBackend {
         "ssh"
     }
 
+    async fn lock(
+        &self,
+        session: &TerminalSession,
+        lease: &TerminalInputLease,
+        password: &str,
+        hide_output: bool,
+    ) -> deepagent_terminal::TerminalResult<()> {
+        let gate = self.input_gate(&session.session_id);
+        let _control = gate.lock().await;
+        self.validate(session, lease)?;
+        self.validate_transport(session).await?;
+        self.leases.lock(lease, password, hide_output)
+    }
+
+    async fn unlock(
+        &self,
+        session: &TerminalSession,
+        lease: &TerminalInputLease,
+        password: &str,
+    ) -> deepagent_terminal::TerminalResult<()> {
+        let gate = self.input_gate(&session.session_id);
+        let _control = gate.lock().await;
+        self.validate(session, lease)?;
+        self.validate_transport(session).await?;
+        self.leases.unlock(lease, password)
+    }
+
+    async fn lock_status(
+        &self,
+        session: &TerminalSession,
+    ) -> deepagent_terminal::TerminalResult<Option<bool>> {
+        self.validate_transport(session).await?;
+        self.leases.lock_status(&session.session_id)
+    }
+
     async fn subscribe_output(
         &self,
         session: &TerminalSession,
@@ -459,8 +494,10 @@ impl TerminalSessionBackend for SshTerminalSessionBackend {
         let gate = self.input_gate(&session.session_id);
         let _control = gate.lock().await;
         self.validate(session, lease)?;
+        self.leases.validate_input(lease)?;
         let handle = self.handle(session)?;
         self.service
+            .inner
             .pty_write(&handle, data)
             .await
             .map_err(|e| TerminalError::Backend(e.to_string()))
@@ -509,8 +546,10 @@ impl TerminalSessionBackend for SshTerminalSessionBackend {
         let gate = self.input_gate(&session.session_id);
         let _control = gate.lock().await;
         self.validate(session, lease)?;
+        self.leases.validate_input(lease)?;
         let handle = self.handle(session)?;
         self.service
+            .inner
             .pty_resize(&handle, cols, rows)
             .await
             .map_err(|e| TerminalError::Backend(e.to_string()))
@@ -525,6 +564,7 @@ impl TerminalSessionBackend for SshTerminalSessionBackend {
         let gate = self.input_gate(&session.session_id);
         let _control = gate.lock().await;
         self.validate(session, lease)?;
+        self.leases.validate_input(lease)?;
         let data = match signal {
             TerminalSignal::Interrupt => vec![3],
             TerminalSignal::Terminate | TerminalSignal::Kill => {
@@ -536,6 +576,7 @@ impl TerminalSessionBackend for SshTerminalSessionBackend {
         };
         let handle = self.handle(session)?;
         self.service
+            .inner
             .pty_write(&handle, &data)
             .await
             .map_err(|e| TerminalError::Backend(e.to_string()))
@@ -907,6 +948,7 @@ impl SshService {
     }
 
     pub async fn pty_write(&self, handle: &SshServiceHandle, data: &[u8]) -> SshResult<()> {
+        self.inner.ensure_legacy_pty_control(handle).await?;
         self.inner.pty_write(handle, data).await
     }
 
@@ -932,6 +974,7 @@ impl SshService {
         cols: u16,
         rows: u16,
     ) -> SshResult<()> {
+        self.inner.ensure_legacy_pty_control(handle).await?;
         self.inner.pty_resize(handle, cols, rows).await
     }
 

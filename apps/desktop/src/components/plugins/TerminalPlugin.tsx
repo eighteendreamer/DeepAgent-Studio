@@ -1,21 +1,34 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { sshStatus, type SshConnection } from "../../api";
+import { sshStatus, sshConnectionDetails, type SshConnection, type SshConnectionDetails } from "../../api";
 import { useTranslation } from "react-i18next";
 import { Button } from "../shadcn/button";
 import { TerminalSessionController, type TerminalControllerState } from "./terminalSessionController";
 import type { Terminal as XTerm } from "@xterm/xterm";
 import type { FitAddon, ITerminalDimensions } from "@xterm/addon-fit";
-import type { PluginDefinition } from "./pluginTypes";
 import { useThemeContext } from "../../theme/ThemeProvider";
 import { mixHex } from "../../theme/colorUtils";
 import type { ThemePalette } from "../../theme/themeTypes";
+import { TerminalMetadata, safeTerminalLabel, type TerminalMetadataEvent } from "../terminal/terminalMetadata";
+import { bracketPaste } from "../terminal/terminalInputPolicy";
+import { TerminalRecording, downloadArtifact } from "../terminal/terminalRecording";
+import { TerminalZmodem } from "../terminal/terminalZmodem";
+import { shellIntegrationCommand } from "../terminal/terminalShellIntegration";
+import { TerminalHighlighter } from "../terminal/terminalHighlight";
+import type { HighlightRule } from "../terminal/terminalPreferences";
+import type { TerminalViewHandle, TerminalViewStatus } from "../terminal/terminalViewTypes";
 
-interface TerminalPluginProps {
+export interface TerminalPluginProps {
   mode?: "local" | "remote";
   connectionId?: string | null;
   active?: boolean;
   initialCwd?: string;
   onDirectoryChange?: (path: string) => void;
+  onMetadata?: (event: TerminalMetadataEvent) => void;
+  onControls?: (controls: TerminalViewHandle | null) => void;
+  onStatus?: (status: TerminalViewStatus) => void;
+  onUserInput?: (data: string, source: "keys" | "paste" | "direct") => void;
+  onUnlockRequest?: () => void;
+  highlights?: HighlightRule[];
 }
 
 type TerminalRuntime = {
@@ -78,16 +91,22 @@ function buildTerminalTheme(palette: ThemePalette, isDark: boolean) {
   };
 }
 
-export function TerminalPlugin({ mode = "local", connectionId = null, active = true, initialCwd, onDirectoryChange }: TerminalPluginProps) {
+export function TerminalPlugin({ mode = "local", connectionId = null, active = true, initialCwd, onDirectoryChange, onMetadata, onControls, onStatus, onUserInput, onUnlockRequest, highlights = [] }: TerminalPluginProps) {
   const { activePalette, activeIsDark } = useThemeContext();
   const { t } = useTranslation();
   const texts = useRef(t);
   const activeRef = useRef(active);
   const directoryChanged = useRef(onDirectoryChange);
   directoryChanged.current = onDirectoryChange;
+  const callbacks = useRef({ onMetadata, onControls, onStatus, onUserInput, onUnlockRequest });
+  callbacks.current = { onMetadata, onControls, onStatus, onUserInput, onUnlockRequest };
+  const rules = useRef(highlights); rules.current = highlights;
+  const highlighterRef = useRef<TerminalHighlighter | null>(null);
+  const [lockDisplay, setLockDisplay] = useState({ locked: false, hideOutput: false });
   texts.current = t;
   activeRef.current = active;
   const [remoteConn, setRemoteConn] = useState<SshConnection | null>(null);
+  const [forwarding, setForwarding] = useState<SshConnectionDetails | null>(null);
   const [state, setState] = useState<TerminalControllerState>("starting");
   const [error, setError] = useState<string>();
   const [retry, setRetry] = useState(0);
@@ -111,6 +130,12 @@ export function TerminalPlugin({ mode = "local", connectionId = null, active = t
     }
     return () => { current = false; };
   }, [isRemote, connectionId]);
+
+  useEffect(() => {
+    let current = true; setForwarding(null);
+    if (isRemote && connectionId && state === "running") void sshConnectionDetails(connectionId).then(value => { if (current) setForwarding(value); }, error => { if (current) setError(String(error)); });
+    return () => { current = false; };
+  }, [isRemote, connectionId, state]);
 
   const syncLayout = useCallback((notifyPty: boolean): ITerminalDimensions | null => {
     const term = termRef.current, fit = fitRef.current, container = containerRef.current;
@@ -149,6 +174,7 @@ export function TerminalPlugin({ mode = "local", connectionId = null, active = t
     void loadTerminalRuntime().then(async ({ Terminal, FitAddon }) => {
       if (cancelled || !containerRef.current) return;
       const term = new Terminal({
+        allowProposedApi: true,
         cursorBlink: true, cursorStyle: "bar", cursorWidth: 1,
         fontFamily: '\"Cascadia Mono\", \"Consolas\", \"Courier New\", monospace',
         fontSize: 13, lineHeight: 1.35, theme: terminalTheme, scrollback: 3000, convertEol: false,
@@ -156,50 +182,121 @@ export function TerminalPlugin({ mode = "local", connectionId = null, active = t
       const fit = new FitAddon();
       term.loadAddon(fit);
       term.open(containerRef.current);
-      const directorySignal = term.parser.registerOscHandler(7, value => {
-        try {
-          const url = new URL(value);
-          if (url.protocol === "file:") {
-            let path = decodeURIComponent(url.pathname);
-            if (!isRemote && /^\/[A-Za-z]:\//.test(path)) path = path.slice(1);
-            if (path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path)) directoryChanged.current?.(path);
-          }
-        } catch { /* Ignore malformed shell integration sequences. */ }
-        return true;
-      });
+      let integrationTimer: ReturnType<typeof setTimeout> | null = null;
+      const metadata = new TerminalMetadata(event => {
+        if (event.kind === "directory") directoryChanged.current?.(event.path);
+        if (event.kind === "integration" && event.status !== "waiting" && integrationTimer) { clearTimeout(integrationTimer); integrationTimer = null; }
+        callbacks.current.onMetadata?.(event);
+      }, isRemote);
+      const signals = [
+        term.parser.registerOscHandler(7, value => metadata.osc(7, value)),
+        term.parser.registerOscHandler(777, value => metadata.osc(777, value)),
+        term.onTitleChange(title => callbacks.current.onMetadata?.({ kind: "title", title: safeTerminalLabel(title) })),
+        term.onBell(() => metadata.bell()),
+      ];
       termRef.current = term;
       fitRef.current = fit;
       let acceptsInput = false;
+      setLockDisplay({ locked: false, hideOutput: false });
+      const status: TerminalViewStatus = { state: "starting", locked: false, hideOutput: false, recording: false, hasRecording: false, zmodem: null };
+      const publish = () => { if (!cancelled) callbacks.current.onStatus?.({ ...status }); };
+      const showError = (detail: unknown) => { if (!cancelled) setError(String(detail)); };
+      let recorder: TerminalRecording | null = null;
+      const highlighter = new TerminalHighlighter(term, rules.current, showError); highlighterRef.current = highlighter;
+      const display = async (text: string) => {
+        if (cancelled) return;
+        if (status.recording && recorder && !status.locked) {
+          try { recorder.output(text); } catch (error) { status.recording = false; publish(); showError(error); }
+        }
+        await new Promise<void>(resolve => term.write(text, resolve));
+        if (activeRef.current) highlighter.schedule();
+      };
+      let binary: TerminalZmodem;
       const controller = new TerminalSessionController(
         isRemote && connectionId ? { kind: "ssh", connectionId } : { kind: "local" },
         `ui-terminal:${crypto.randomUUID()}`,
         {
-          write: text => new Promise<void>(resolve => {
-            if (cancelled) { resolve(); return; }
-            term.write(text, resolve);
-          }),
+          write: display,
+          bytes: (bytes, eof) => binary.consume(bytes, eof),
+          inputError: showError,
           state: (next, detail) => {
             if (cancelled) return;
             acceptsInput = next === "running";
             setState(next);
             setError(detail);
+            status.state = next; publish();
           },
           gap: () => {
             if (cancelled) return;
             term.reset();
+            metadata.gap();
+            binary.cancel();
             term.writeln(`[${texts.current("terminalSession.historyGap")}]`);
           },
         },
         initialCwd,
       );
+      const makeBinary = () => new TerminalZmodem(controller, display, value => { status.zmodem = value; publish(); }, (name, chunks) => {
+        if (!cancelled) downloadArtifact(name, new Blob(chunks.map(bytes => bytes.slice().buffer)));
+      }, showError);
+      binary = makeBinary();
       controllerRef.current = controller;
+      const controls: TerminalViewHandle = {
+        send: async data => { if (!acceptsInput || status.locked || binary.busy) throw new Error("Terminal input is unavailable"); await controller.write(data); },
+        paste: async (text, execute = false) => { if (!acceptsInput || status.locked || binary.busy) throw new Error("Terminal input is unavailable"); await controller.write(bracketPaste(text, term.modes.bracketedPasteMode) + (execute ? "\r" : "")); },
+        lock: async (password, hideOutput) => {
+          binary.cancel();
+          await controller.setLock(password, hideOutput); status.locked = true; status.hideOutput = hideOutput; status.recording = false;
+          term.options.disableStdin = true; setLockDisplay({ locked: true, hideOutput }); publish();
+        },
+        unlock: async password => { await controller.unlock(password); status.locked = false; status.hideOutput = false; term.options.disableStdin = false; setError(undefined); setLockDisplay({ locked: false, hideOutput: false }); publish(); scheduleLayout(true); },
+        integrate: async shell => {
+          if (!acceptsInput || status.locked || binary.busy) throw new Error("Terminal input is unavailable");
+          const nonce = crypto.randomUUID(); metadata.expectIntegration(nonce);
+          if (integrationTimer) clearTimeout(integrationTimer);
+          integrationTimer = setTimeout(() => { metadata.gap(); integrationTimer = null; }, 10_000);
+          await controller.write(shellIntegrationCommand(shell, nonce));
+        },
+        record: enabled => {
+          if (enabled && status.locked) throw new Error("Terminal session is locked");
+          if (enabled) { recorder?.dispose(); recorder = new TerminalRecording(term.cols, term.rows); status.hasRecording = true; }
+          status.recording = enabled; publish();
+        },
+        recording: () => recorder?.export() ?? null,
+        discardRecording: () => { recorder?.dispose(); recorder = null; status.recording = false; status.hasRecording = false; publish(); },
+        focus: () => term.focus(),
+        confirmTransfer: () => binary.confirm(), acceptTransfer: () => binary.acceptReceive(), skipTransfer: () => binary.skip(),
+        cancelTransfer: () => binary.cancel(),
+        sendFiles: files => binary.sendFiles(files),
+      };
+      callbacks.current.onControls?.(controls);
+      let userKey = "";
+      const key = term.onKey(event => { userKey = event.key; });
+      const beforeInput = (event: InputEvent) => { if (event.data && event.inputType !== "insertFromPaste") userKey = event.data; };
+      containerRef.current.addEventListener("beforeinput", beforeInput as EventListener, true);
       const input = term.onData(data => {
-        if (acceptsInput && !cancelled) void controller.write(data).catch(() => {});
+        if (!acceptsInput || cancelled || status.locked || binary.busy) return;
+        const source = userKey === data ? "keys" : "direct"; userKey = "";
+        if (callbacks.current.onUserInput) callbacks.current.onUserInput(data, source);
+        else void controls.send(data).catch(showError);
       });
+      const binaryInput = term.onBinary(data => { if (acceptsInput && !cancelled && !status.locked && !binary.busy) void controller.writeBytes(Uint8Array.from(data, c => c.charCodeAt(0) & 255)).catch(showError); });
+      const paste = (event: ClipboardEvent) => {
+        event.preventDefault(); event.stopImmediatePropagation();
+        if (acceptsInput && !status.locked && !binary.busy) callbacks.current.onUserInput?.(event.clipboardData?.getData("text/plain") ?? "", "paste");
+      };
+      containerRef.current.addEventListener("paste", paste, true);
+      const surface = containerRef.current;
+      const resize = term.onResize(size => { if (status.recording && recorder) { try { recorder.resize(size.cols, size.rows); } catch (error) { status.recording = false; publish(); showError(error); } } highlighter.schedule(); });
+      const scroll = term.onScroll(() => { if (activeRef.current) highlighter.schedule(); });
       const observer = new ResizeObserver(() => scheduleLayout(true));
       observer.observe(containerRef.current);
       cleanup = () => {
-        input.dispose(); directorySignal.dispose(); observer.disconnect();
+        input.dispose(); key.dispose(); binaryInput.dispose(); resize.dispose(); scroll.dispose(); signals.forEach(signal => signal.dispose()); observer.disconnect();
+        surface.removeEventListener("beforeinput", beforeInput as EventListener, true);
+        surface.removeEventListener("paste", paste, true); highlighter.dispose(); binary.dispose(); recorder?.dispose();
+        if (integrationTimer) clearTimeout(integrationTimer);
+        callbacks.current.onControls?.(null);
         if (layoutFrame.current !== null) window.cancelAnimationFrame(layoutFrame.current);
         if (resizeTimer.current !== null) window.clearTimeout(resizeTimer.current);
         layoutFrame.current = resizeTimer.current = null;
@@ -227,9 +324,12 @@ export function TerminalPlugin({ mode = "local", connectionId = null, active = t
     if (termRef.current) termRef.current.options.theme = terminalTheme;
   }, [terminalTheme]);
 
+  useEffect(() => { highlighterRef.current?.configure(highlights); }, [highlights]);
+
   useEffect(() => {
     if (active) {
       scheduleLayout(true);
+      highlighterRef.current?.schedule();
       termRef.current?.refresh(0, Math.max(0, termRef.current.rows - 1));
       termRef.current?.focus();
     }
@@ -238,36 +338,15 @@ export function TerminalPlugin({ mode = "local", connectionId = null, active = t
   if (isRemote && !connectionId) {
     return <div className="flex h-full items-center justify-center text-text-secondary">{t("remote.emptyTitle")}</div>;
   }
-  return <div className="relative h-full w-full overflow-hidden bg-bg-base">
+  return <div className="relative flex h-full w-full flex-col overflow-hidden bg-bg-base">
+    {isRemote && remoteConn && <div className="flex shrink-0 flex-wrap gap-x-2 border-b border-border-theme bg-elevated-bg/90 px-3 py-1 text-[11px] text-text-secondary"><span>{remoteConn.username}@{remoteConn.host}</span>{forwarding && <span>Agent {t(`terminalWorkbench.${forwarding.agent_forwarding_enabled ? "enabled" : "disabled"}`)} · X11 {t(`terminalWorkbench.${forwarding.x11_forwarding_enabled ? "enabled" : "disabled"}`)}</span>}</div>}
     {state === "starting" && <div role="status" className="absolute inset-0 z-10 flex items-center justify-center bg-bg-base/80 text-[12px] text-text-secondary">{t("terminalSession.starting")}</div>}
-    <div ref={containerRef} className="terminal-surface h-full w-full px-3 py-2" />
-    {isRemote && remoteConn && <div className="pointer-events-none absolute right-3 top-2 rounded-full bg-elevated-bg/90 px-2 py-0.5 text-[11px] text-text-secondary">{remoteConn.username}@{remoteConn.host}</div>}
+    <div ref={containerRef} className="terminal-surface min-h-0 w-full flex-1 px-3 py-2" style={{ visibility: lockDisplay.locked && lockDisplay.hideOutput ? "hidden" : undefined }} />
+    {lockDisplay.locked && <div className={`absolute inset-0 z-20 flex items-center justify-center ${lockDisplay.hideOutput ? "bg-bg-base" : "bg-bg-base/40"}`}><Button variant="outline" onClick={() => callbacks.current.onUnlockRequest?.()}>{t("terminalWorkbench.unlock")}</Button></div>}
+    {error && state === "running" && <div role="alert" className="absolute bottom-1 left-2 right-2 z-10 flex items-center justify-between rounded bg-elevated-bg px-2 text-xs text-red-500"><span>{error}</span><Button size="sm" variant="ghost" onClick={() => setError(undefined)}>×</Button></div>}
     {(state === "error" || state === "exited") && <div role="status" className={`absolute left-3 bottom-2 ${isRemote ? "right-16" : "right-3"} flex items-center justify-between gap-2 rounded-lg bg-elevated-bg/95 px-3 py-2 text-[12px] text-text-secondary shadow-sm`}>
       <span className="min-w-0 break-words">{t(`terminalSession.${state}`)}{error ? `: ${error}` : ""}</span>
       <Button variant="outline" size="sm" onClick={() => setRetry(value => value + 1)}>{t("terminalSession.retry")}</Button>
     </div>}
   </div>;
 }
-
-export const terminalPluginDefinition: PluginDefinition = {
-  type: "terminal",
-  icon: ["fas", "terminal"],
-  titleKey: "terminal",
-  descKey: "terminalDesc",
-  fallbackTitle: "Terminal",
-  fallbackDesc: "Launch interactive shell",
-  getTabTitle: ({ activeProjectPath, envMode = "local", selectedConnection }) => {
-    if (envMode === "remote") {
-      if (selectedConnection?.name) return selectedConnection.name;
-      if (selectedConnection?.username && selectedConnection?.host) {
-        return `${selectedConnection.username}@${selectedConnection.host}`;
-      }
-      return "SSH Terminal";
-    }
-    const path = activeProjectPath?.trim();
-    return path && path.length > 0 ? path : "Terminal";
-  },
-  render: ({ envMode = "local", selectedConnectionId }) => (
-    <TerminalPlugin mode={envMode} connectionId={selectedConnectionId} />
-  ),
-};

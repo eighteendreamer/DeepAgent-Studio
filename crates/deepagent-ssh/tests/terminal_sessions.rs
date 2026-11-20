@@ -535,3 +535,96 @@ async fn output_notifications_are_per_pty_non_destructive_and_include_final_eof(
     .await
     .expect("loopback notification flow must settle");
 }
+
+#[tokio::test]
+async fn session_lock_blocks_shared_writers_and_lease_handoffs_without_stopping_other_ptys() {
+    use deepagent_terminal::{TerminalError, TerminalSignal};
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let server = support::SshServer::start("127.0.0.1").await;
+        let data = tempfile::tempdir().unwrap();
+        let trust = data.path().join("known_hosts");
+        server.write_trust(&trust);
+        let service = Arc::new(SshService::new(data.path().to_path_buf()));
+        let connection = server.create(&service, Some(&trust)).await;
+        let backend = SshTerminalSessionBackend::for_service(service.clone(), None);
+        let request = || TerminalOpenRequest {
+            target: deepagent_terminal::TerminalTarget::Ssh {
+                connection_id: connection.id.clone(),
+            },
+            run_id: "terminal-lock".into(),
+            cwd: String::new(),
+            cols: 80,
+            rows: 24,
+            initial_holder: TerminalInputHolder::User,
+        };
+        let (a, lease_a) = backend.open(request()).await.unwrap();
+        let (b, lease_b) = backend.open(request()).await.unwrap();
+        backend
+            .lock(&a, &lease_a, "fixture-only", true)
+            .await
+            .unwrap();
+        let raw_handle = deepagent_ssh::SshServiceHandle::new(
+            connection.id.clone(),
+            a.session_id.rsplit(':').next().unwrap(),
+            80,
+            24,
+        )
+        .with_connection_generation(a.connection_generation.unwrap());
+        let raw_write = service.pty_write(&raw_handle, b"bypass").await;
+        let raw_resize = service.pty_resize(&raw_handle, 100, 30).await;
+        let write = backend.write(&a, &lease_a, &[0, 255, 24]).await;
+        let signal = backend
+            .signal(&a, &lease_a, TerminalSignal::Interrupt)
+            .await;
+        let resize = backend.resize(&a, &lease_a, 120, 40).await;
+        let takeover = backend.takeover(&a, TerminalInputHolder::Runtime).await;
+        let release = backend
+            .release(&a, &lease_a, TerminalInputHolder::Runtime)
+            .await;
+        let renew = backend.renew(&a, &lease_a).await;
+        let hidden = backend.lock_status(&a).await;
+        let wrong_password = backend.unlock(&a, &lease_a, "wrong").await;
+        let wrong_session = backend.unlock(&a, &lease_b, "fixture-only").await;
+        let read = backend.read(&a, 0).await;
+        backend.write(&b, &lease_b, &[0, 255, 24]).await.unwrap();
+        backend.unlock(&a, &lease_a, "fixture-only").await.unwrap();
+        backend.write(&a, &lease_a, &[0, 255, 24]).await.unwrap();
+        let mut binary = Vec::new();
+        while !binary.ends_with(&[0, 255, 24]) {
+            binary.extend(
+                backend
+                    .read(&a, read.as_ref().unwrap().cursor)
+                    .await
+                    .unwrap()
+                    .data,
+            );
+            tokio::task::yield_now().await;
+        }
+        backend
+            .lock(&a, &lease_a, "fixture-only", false)
+            .await
+            .unwrap();
+        backend.close(&a, &lease_a).await.unwrap();
+        backend.close(&b, &lease_b).await.unwrap();
+        service.disconnect(&connection.id).await.unwrap();
+        for result in [write, signal, resize] {
+            assert!(matches!(result, Err(TerminalError::Locked)));
+        }
+        assert!(
+            takeover.is_err()
+                && release.is_err()
+                && wrong_password.is_err()
+                && wrong_session.is_err()
+        );
+        assert!(
+            raw_write.is_err() && raw_resize.is_err(),
+            "legacy API must not control a shared PTY"
+        );
+        assert!(renew.is_ok() && read.is_ok());
+        assert_eq!(hidden.unwrap(), Some(true));
+        assert!(binary.ends_with(&[0, 255, 24]));
+        assert_eq!(server.auth_count(), 1);
+    })
+    .await
+    .expect("locked terminal scenario must settle");
+}

@@ -2873,6 +2873,26 @@ export async function terminalSessionWrite(
 /** Renew before expiry (production TTL: 30 minutes). Never revives an old token.
  * After expiry, use terminalSessionTakeover and discard the old lease instead.
  */
+export async function terminalSessionWriteBytes(session: TerminalSession, lease: TerminalInputLease, bytes: Uint8Array): Promise<void> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("terminal sessions require the desktop app");
+  if (bytes.length > 64 * 1024) throw new Error("Terminal binary input exceeds 64 KiB");
+  return invoke<void>("terminal_session_write_bytes", { session, lease, data: Array.from(bytes) });
+}
+
+export async function terminalSessionLock(session: TerminalSession, lease: TerminalInputLease, password: string, hideOutput: boolean): Promise<void> {
+  const invoke = getInvoke(); if (!invoke) throw new Error("terminal sessions require the desktop app");
+  return invoke<void>("terminal_session_lock", { session, lease, password, hideOutput });
+}
+export async function terminalSessionUnlock(session: TerminalSession, lease: TerminalInputLease, password: string): Promise<void> {
+  const invoke = getInvoke(); if (!invoke) throw new Error("terminal sessions require the desktop app");
+  return invoke<void>("terminal_session_unlock", { session, lease, password });
+}
+export async function terminalSessionLockStatus(session: TerminalSession): Promise<boolean | null> {
+  const invoke = getInvoke(); if (!invoke) throw new Error("terminal sessions require the desktop app");
+  return invoke<boolean | null>("terminal_session_lock_status", { session });
+}
+
 export async function terminalSessionRenew(
   session: TerminalSession,
   lease: TerminalInputLease,

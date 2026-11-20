@@ -98,6 +98,92 @@ async fn open_pty(service: &SshService, handle: &SshServiceHandle) -> SshService
     pty
 }
 
+async fn wait_shared_output(
+    backend: &impl deepagent_terminal::TerminalSessionBackend,
+    session: &deepagent_terminal::TerminalSession,
+    mut cursor: u64,
+    needles: &[&[u8]],
+) -> u64 {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let mut output = Vec::new();
+        loop {
+            let batch = backend.read(session, cursor).await.unwrap();
+            cursor = batch.cursor;
+            output.extend(batch.data);
+            assert!(output.len() < 1024 * 1024, "bounded shared PTY output");
+            if needles
+                .iter()
+                .all(|needle| output.windows(needle.len()).any(|part| part == *needle))
+            {
+                return cursor;
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+    })
+    .await
+    .expect("expected shared PTY output; contents redacted")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an explicitly supplied real SSH endpoint and pinned host key"]
+async fn real_terminal_lock_and_metadata() {
+    use deepagent_ssh::SshTerminalSessionBackend;
+    use deepagent_terminal::{
+        TerminalError, TerminalInputHolder, TerminalOpenRequest, TerminalSessionBackend,
+        TerminalSignal, TerminalTarget,
+    };
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let data = tempfile::tempdir().unwrap();
+        let service = Arc::new(service(data.path()));
+        let connection = service.create_connection(request()).await.unwrap();
+        let backend = SshTerminalSessionBackend::for_service(service.clone(), None);
+        let (session, lease) = backend
+            .open(TerminalOpenRequest {
+                target: TerminalTarget::Ssh { connection_id: connection.id.clone() },
+                run_id: "external-terminal-workbench".into(), cwd: String::new(),
+                cols: 80, rows: 24, initial_holder: TerminalInputHolder::User,
+            })
+            .await.unwrap();
+        let nonce = uuid::Uuid::new_v4().simple().to_string();
+        let marker = format!("\x1b]2;R073-{nonce}\x07\x1b]7;file://localhost/tmp\x07\x07");
+        let command = format!("unset HISTFILE; set -o history 2>/dev/null; printf '\\033]2;R073-%s\\007\\033]7;file://localhost/tmp\\007\\007' '{nonce}'\r");
+        backend.write(&session, &lease, command.as_bytes()).await.unwrap();
+        let mut cursor = wait_shared_output(&backend, &session, 0, &[marker.as_bytes()]).await;
+        if let Ok(bootstrap) = std::env::var("DEEPAGENT_TERMINAL_BASH_BOOTSTRAP") {
+            let shell_nonce = std::env::var("DEEPAGENT_TERMINAL_SHELL_NONCE").expect("bootstrap nonce");
+            assert!(bootstrap.len() <= 3900, "bounded production bootstrap");
+            backend.write(&session, &lease, bootstrap.as_bytes()).await.unwrap();
+            let ready = format!("\x1b]777;deepagent;{shell_nonce};ready;bash\x07");
+            cursor = wait_shared_output(&backend, &session, cursor, &[ready.as_bytes()]).await;
+            backend.write(&session, &lease, b"cd /tmp; false\r").await.unwrap();
+            let begin = format!("\x1b]777;deepagent;{shell_nonce};begin;");
+            let end = format!("\x1b]777;deepagent;{shell_nonce};end;1;L3RtcA==\x07");
+            cursor = wait_shared_output(&backend, &session, cursor, &[begin.as_bytes(), end.as_bytes()]).await;
+            println!("ACCEPTANCE real Bash production bootstrap / command boundary / exit / cwd PASS");
+        }
+        backend.lock(&session, &lease, "fixture-only", true).await.unwrap();
+        assert!(matches!(backend.write(&session, &lease, b"echo blocked\r").await, Err(TerminalError::Locked)));
+        assert!(matches!(backend.signal(&session, &lease, TerminalSignal::Interrupt).await, Err(TerminalError::Locked)));
+        assert!(matches!(backend.resize(&session, &lease, 100, 30).await, Err(TerminalError::Locked)));
+        let raw = SshServiceHandle::new(connection.id.clone(), session.session_id.rsplit(':').next().unwrap(), 80, 24)
+            .with_connection_generation(session.connection_generation.unwrap());
+        assert!(service.pty_write(&raw, b"echo bypass\r").await.is_err());
+        assert!(service.pty_resize(&raw, 100, 30).await.is_err());
+        assert!(backend.takeover(&session, TerminalInputHolder::Runtime).await.is_err());
+        backend.renew(&session, &lease).await.unwrap();
+        assert_eq!(backend.lock_status(&session).await.unwrap(), Some(true));
+        assert!(backend.unlock(&session, &lease, "wrong").await.is_err());
+        backend.unlock(&session, &lease, "fixture-only").await.unwrap();
+        assert_eq!(backend.lock_status(&session).await.unwrap(), None);
+        let expected = format!("UNLOCKED_{nonce}\r\n");
+        backend.write(&session, &lease, format!("printf 'UNLOCKED_%s\\n' '{nonce}'\r").as_bytes()).await.unwrap();
+        wait_shared_output(&backend, &session, cursor, &[expected.as_bytes()]).await;
+        backend.close(&session, &lease).await.unwrap();
+        service.disconnect(&connection.id).await.unwrap();
+        println!("ACCEPTANCE real shared terminal metadata / lock / legacy refusal / unlock PASS");
+    }).await.expect("bounded real terminal acceptance");
+}
+
 fn forward(kind: SshForwardKind, target_port: u16) -> SshForwardRequest {
     SshForwardRequest {
         kind,

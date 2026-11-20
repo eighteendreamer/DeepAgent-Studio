@@ -15,6 +15,9 @@ function harness(overrides = {}, sinkOverrides = {}) {
     terminalSessionOpen: async (...args) => { calls.push(['open', ...args]); const id = `pty-${++sequence}`; return [{ sessionId: id, runId: args[0], backend: 'ssh', cols: 80, rows: 24 }, { sessionId: id, runId: args[0], leaseId: id, epoch: 1, holder: 'user' }]; },
     terminalSessionRead: async (...args) => { calls.push(['read', ...args]); return chunk; },
     terminalSessionWrite: async (...args) => { calls.push(['write', ...args]); },
+    terminalSessionWriteBytes: async (...args) => { calls.push(['binary', ...args]); },
+    terminalSessionLock: async (...args) => { calls.push(['lock', ...args]); },
+    terminalSessionUnlock: async (...args) => { calls.push(['unlock', ...args]); },
     terminalSessionResize: async (...args) => { calls.push(['resize', ...args]); },
     terminalSessionRenew: async (...args) => { calls.push(['renew', ...args]); },
     terminalSessionClose: async (...args) => { calls.push(['close', ...args]); },
@@ -235,4 +238,39 @@ test('late subscription is disposed after close, and notification failures stop 
   assert.equal(bad.unsubscribed, 1);
   assert.equal(bad.timers.size, 0);
   await bad.controller.close();
+});
+
+test('binary output bypasses text decoding and retains parser backpressure', async () => {
+  const batches = [];
+  const h = harness({}, { bytes: async (bytes,eof) => batches.push({bytes:[...bytes],eof}) });
+  await h.controller.open(80,24);
+  h.setChunk({cursor:4,data:[0,255,24,27],truncated:false,eof:true}); await h.tick();
+  assert.deepEqual(batches[0].bytes,[0,255,24,27]); assert.equal(batches[0].eof,true); assert.equal(h.output.length,0);
+  await h.controller.close();
+});
+test('lock fences ordered text and binary input while output and renewal remain alive', async () => {
+  const errors=[];
+  const h = harness({}, { inputError:error=>errors.push(String(error)) });
+  await h.controller.open(80,24);
+  await h.controller.write('before'); await h.controller.setLock('fixture',true);
+  await assert.rejects(h.controller.write('after'),/locked/);
+  await assert.rejects(h.controller.writeBytes(new Uint8Array([0,255])),/locked/);
+  h.setChunk({cursor:3,data:[111,117,116],eof:false,truncated:false}); await h.tick();
+  assert.equal(h.output.join(''),'out'); assert.equal(h.states.at(-1).state,'running');
+  assert.equal(h.calls.filter(call=>call[0]==='write').length,1);
+  assert.equal(h.calls.filter(call=>call[0]==='binary').length,0); assert.equal(errors.length,2);
+  await h.controller.unlock('fixture'); await h.controller.writeBytes(new Uint8Array([0,255]));
+  assert.equal(h.calls.filter(call=>call[0]==='binary').length,1); await h.controller.close();
+});
+test('binary write copies mutable input and bounds the pending byte queue', async () => {
+  let complete; const data=[];
+  const h = harness({ terminalSessionWriteBytes:async (_,__,bytes)=>{data.push([...bytes]);await new Promise(resolve=>{complete=resolve});} });
+  await h.controller.open(80,24);
+  const original=new Uint8Array(65536); original[0]=255;
+  const writes=[h.controller.writeBytes(original)]; original[0]=0;
+  for(let i=0;i<3;i++) writes.push(h.controller.writeBytes(new Uint8Array(65536)));
+  await assert.rejects(h.controller.writeBytes(new Uint8Array([1])),/limit/);
+  await Promise.resolve(); await Promise.resolve(); assert.equal(data[0][0],255);
+  for(let i=0;i<4;i++){complete();await writes[i];await Promise.resolve();}
+  await h.controller.close();
 });

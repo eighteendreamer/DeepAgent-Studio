@@ -5,10 +5,10 @@ import type { FileEndpoint } from "./filePanelModel";
 import { SshForwardPanel } from "./SshForwardPanel";
 import { Button } from "../shadcn/button";
 import { HoverInfo } from "../ui/HoverInfo";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { FileText, Loader2, Plus, Server, Terminal, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { TerminalPlugin } from "../plugins/TerminalPlugin";
+import { TerminalWorkspace, type TerminalOpenIntent } from "../terminal/TerminalWorkspace";
 import { PreviewBody } from "../plugins/FilePreviewPlugin";
 import { FloatingChat } from "./FloatingChat";
 import { RemoteTransfersPanel } from "./RemoteTransfersPanel";
@@ -30,13 +30,6 @@ interface FileTab {
   id: string;
   connectionId: string;
   path: string;
-  name: string;
-}
-
-interface TerminalTab {
-  endpoint?: FileEndpoint;
-  cwd?: string;
-  id: string;
   name: string;
 }
 
@@ -93,44 +86,26 @@ export function RemoteView({ connection, openFile }: RemoteViewProps) {
   const [fileAction, setFileAction] = useState<FileAction | null>(null);
   const [terminalDirectory, setTerminalDirectory] = useState<{ endpoint: FileEndpoint; path: string; token: number }>();
   const [showForwarding, setShowForwarding] = useState(false);
-  const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
+  const [terminalIntent, setTerminalIntent] = useState<TerminalOpenIntent>();
   const [fileTabs, setFileTabs] = useState<FileTab[]>([]);
   const [activeKey, setActiveKey] = useState<string>("terminal-1");
   const [fileStates, setFileStates] = useState<Record<string, FileTabState>>({});
-  const terminalCounter = useRef(1);
 
   const connectionId = connection?.id ?? null;
   const connected = connection?.status === "connected";
 
   useEffect(() => {
-    setTerminalTabs([{ id: "terminal-1", name: t("remote.tabTerminal") }]);
+    setTerminalIntent(undefined);
     setShowForwarding(false);
     setFileAction(null); setTerminalDirectory(undefined);
     setFileTabs([]);
     setFileStates({});
     setActiveKey("terminal-1");
-    terminalCounter.current = 1;
   }, [connectionId]);
 
-  useEffect(() => {
-    setTerminalTabs(previous => previous.map(tab => ({
-      ...tab, name: tab.id === "terminal-1" ? t("remote.tabTerminal") : `${t("remote.tabTerminal")} ${tab.id.slice("terminal-".length)}`,
-    })));
-  }, [t]);
-
   const addTerminalTab = (endpoint?: FileEndpoint, cwd?: string) => {
-    terminalCounter.current += 1;
-    const id = `terminal-${terminalCounter.current}`;
-    const tab = { id, endpoint, cwd, name: `${t("remote.tabTerminal")} ${terminalCounter.current}` };
-    setTerminalTabs(previous => [...previous, tab]);
-    setActiveKey(id);
-  };
-
-  const closeTerminalTab = (id: string) => {
-    if (terminalTabs.length === 1) return;
-    const next = terminalTabs.filter(tab => tab.id !== id);
-    setTerminalTabs(next);
-    setActiveKey(previous => previous === id ? next[0].id : previous);
+    setTerminalIntent({ token: crypto.randomUUID(), endpoint: endpoint ?? { kind: "ssh", connectionId: connectionId! }, cwd });
+    setActiveKey("terminal-1");
   };
 
   const isTerminalTab = (key: string) => key.startsWith("terminal-");
@@ -245,7 +220,7 @@ export function RemoteView({ connection, openFile }: RemoteViewProps) {
     });
     setActiveKey((prev) => {
       if (prev !== path) return prev;
-      return terminalTabs[0]?.id ?? "terminal-1";
+      return "terminal-1";
     });
   };
 
@@ -264,42 +239,7 @@ export function RemoteView({ connection, openFile }: RemoteViewProps) {
       >
         <Button type="button" variant="ghost" size="sm" aria-pressed={showForwarding} onClick={() => setShowForwarding(value => !value)}>{t("remote.forwarding.title")}</Button>
         <Button variant="ghost" size="sm" onClick={() => setActiveKey("files")}>{t("remote.files.title")}</Button>
-        {terminalTabs.map((tab) => (
-          <ContextMenu key={tab.id}>
-            <ContextMenuTrigger asChild>
-              <button
-                type="button"
-                className={tabButtonClassName(activeKey === tab.id)}
-                onClick={() => setActiveKey(tab.id)}
-              >
-                <Terminal className="h-3.5 w-3.5" />
-                <span className="max-w-[120px] truncate">{tab.name}</span>
-                {terminalTabs.length > 1 && (
-                  <span
-                    role="button"
-                    tabIndex={-1}
-                    aria-label="close"
-                    className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full hover:bg-black/10"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      closeTerminalTab(tab.id);
-                    }}
-                  >
-                    <X className="h-3 w-3" />
-                  </span>
-                )}
-              </button>
-            </ContextMenuTrigger>
-            <ContextMenuContent>
-              <ContextMenuItem
-                disabled={terminalTabs.length === 1}
-                onSelect={() => closeTerminalTab(tab.id)}
-              >
-                {t("remote.tabClose")}
-              </ContextMenuItem>
-            </ContextMenuContent>
-          </ContextMenu>
-        ))}
+        <Button size="sm" variant={isTerminalTab(activeKey) ? "secondary" : "ghost"} onClick={() => setActiveKey("terminal-1")}><Terminal className="h-3.5 w-3.5" />{t("remote.tabTerminal")}</Button>
         <HoverInfo content={t("remote.tabNewTerminal")}><button
           type="button"
           className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-black/5 hover:text-text-base"
@@ -344,12 +284,9 @@ export function RemoteView({ connection, openFile }: RemoteViewProps) {
       {showForwarding && <SshForwardPanel key={connection.id} connectionId={connection.id} />}
       <div className="min-h-0 flex-1">
         <div className="h-full" style={{ display: activeKey === "files" ? undefined : "none" }}><FileWorkspace key={connection.id} connection={connection} terminalDirectory={terminalDirectory} onOpenTerminal={(endpoint, cwd) => addTerminalTab(endpoint, cwd)} onOpenFile={openEndpointFile} onCopy={(source, destination) => setFileAction({ kind: "copy", source, destination })} onExternalEdit={(connectionId, path) => setFileAction({ kind: "editor", connectionId, path })} onExtract={(connectionId, path, directory) => setFileAction({ kind: "extract", connectionId, path, directory })} /></div>
-        {terminalTabs.map(tab => (
-          <div key={`${connection.id}:${tab.id}`} hidden={activeKey !== tab.id}
-            className="h-full" style={{ display: activeKey === tab.id ? undefined : "none" }}>
-            <TerminalPlugin mode={tab.endpoint?.kind === "local" ? "local" : "remote"} connectionId={tab.endpoint?.kind === "ssh" ? tab.endpoint.connectionId : connection.id} initialCwd={tab.cwd} active={activeKey === tab.id} onDirectoryChange={path => setTerminalDirectory({ endpoint: tab.endpoint ?? { kind: "ssh", connectionId: connection.id }, path, token: Date.now() })} />
-          </div>
-        ))}
+        <div className="h-full" style={{ display: isTerminalTab(activeKey) ? undefined : "none" }}>
+          <TerminalWorkspace key={connection.id} mode="remote" connectionId={connection.id} active={isTerminalTab(activeKey)} openIntent={terminalIntent} onDirectoryChange={(endpoint, path) => setTerminalDirectory({ endpoint, path, token: Date.now() })} />
+        </div>
         {activeTab && !isTerminalTab(activeKey) && (
           <div className="flex h-full flex-col overflow-hidden">
             {activeState?.status === "loading" && (

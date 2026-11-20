@@ -1,6 +1,7 @@
 import {
   terminalSessionOpen, terminalSessionRead, terminalSessionWrite, terminalSessionResize,
   terminalSessionRenew, terminalSessionClose, terminalSessionSubscribe,
+  terminalSessionWriteBytes, terminalSessionLock, terminalSessionUnlock,
   type TerminalSession, type TerminalInputLease, type TerminalTarget,
 } from "../../api";
 
@@ -11,6 +12,8 @@ interface TerminalSink {
   write(text: string): Promise<void>;
   state(state: TerminalControllerState, error?: string): void;
   gap(): void;
+  bytes?(data: Uint8Array, eof: boolean): Promise<void>;
+  inputError?(error: unknown): void;
 }
 
 /** One mounted UI tab, one backend session, one byte cursor and one streaming decoder. */
@@ -29,6 +32,8 @@ export class TerminalSessionController {
   private readRequested = false;
   private inputs: Promise<void> = Promise.resolve();
   private lastSize: { cols: number; rows: number } | null = null;
+  private locked = false;
+  private queuedBytes = 0;
 
   constructor(
     private target: TerminalTarget,
@@ -86,8 +91,11 @@ export class TerminalSessionController {
         this.decoder = new TextDecoder("utf-8");
         this.sink.gap();
       }
-      const text = this.decoder.decode(new Uint8Array(chunk.data), { stream: !chunk.eof });
-      if (text) await this.sink.write(text);
+      if (this.sink.bytes) await this.sink.bytes(new Uint8Array(chunk.data), !!chunk.eof);
+      else {
+        const text = this.decoder.decode(new Uint8Array(chunk.data), { stream: !chunk.eof });
+        if (text) await this.sink.write(text);
+      }
       if (this.disposed || this.stopped || this.current !== current) return;
       this.cursor = chunk.cursor;
       if (chunk.eof) {
@@ -130,18 +138,38 @@ export class TerminalSessionController {
     // Retain a settled ordering tail; the returned operation still rejects and displays its error.
     this.inputs = work.catch(() => {});
     return work.catch((error: unknown) => {
-      if (!this.disposed) this.fail(error);
+      if (!this.disposed) { if (this.sink.inputError) this.sink.inputError(error); else this.fail(error); }
       throw error;
     });
   }
 
   write(data: string): Promise<void> {
-    return this.enqueue((session, lease) => terminalSessionWrite(session, lease, data));
+    return this.enqueue((session, lease) => {
+      if (this.locked) throw new Error("Terminal session is locked");
+      return terminalSessionWrite(session, lease, data);
+    });
+  }
+
+  writeBytes(data: Uint8Array): Promise<void> {
+    if (data.length > 64 * 1024 || this.queuedBytes + data.length > 256 * 1024) return Promise.reject(new Error("Terminal binary input queue limit exceeded"));
+    const bytes = data.slice(); this.queuedBytes += bytes.length;
+    return this.enqueue((session, lease) => {
+      if (this.locked) throw new Error("Terminal session is locked");
+      return terminalSessionWriteBytes(session, lease, bytes);
+    }).finally(() => { this.queuedBytes -= bytes.length; });
+  }
+  async flushInputs(): Promise<void> { await this.inputs; }
+  setLock(password: string, hideOutput: boolean): Promise<void> {
+    return this.enqueue(async (session, lease) => { await terminalSessionLock(session, lease, password, hideOutput); this.locked = true; });
+  }
+  unlock(password: string): Promise<void> {
+    return this.enqueue(async (session, lease) => { await terminalSessionUnlock(session, lease, password); this.locked = false; });
   }
 
   resize(cols: number, rows: number): Promise<void> {
     return this.enqueue(async (session, lease) => {
       if (this.lastSize?.cols === cols && this.lastSize.rows === rows) return;
+      if (this.locked) return;
       await terminalSessionResize(session, lease, cols, rows);
       this.lastSize = { cols, rows };
     });

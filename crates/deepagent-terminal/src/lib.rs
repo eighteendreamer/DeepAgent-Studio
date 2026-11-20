@@ -14,6 +14,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 mod output;
+mod session_lock;
 pub use output::{TerminalOutputNotice, TerminalOutputSignal, TerminalOutputSubscription};
 
 #[derive(Debug, Error)]
@@ -24,6 +25,8 @@ pub enum TerminalError {
     SessionExists(String),
     #[error("terminal input lease is stale or belongs to another scope")]
     InvalidLease,
+    #[error("terminal session is locked")]
+    Locked,
     #[error("terminal capability is unsupported by backend {backend}: {capability}")]
     UnsupportedCapability { backend: String, capability: String },
     #[error("terminal backend failed: {0}")]
@@ -126,6 +129,7 @@ pub struct TerminalRecoveryStatus {
 pub struct TerminalLeaseRegistry {
     leases: Mutex<HashMap<String, TerminalInputLease>>,
     durable: Option<Arc<dyn TerminalLeasePersistence>>,
+    locks: session_lock::SessionLocks,
 }
 
 pub trait TerminalLeasePersistence: Send + Sync {
@@ -187,6 +191,7 @@ impl Default for TerminalLeaseRegistry {
         Self {
             leases: Mutex::new(HashMap::new()),
             durable: None,
+            locks: Default::default(),
         }
     }
 }
@@ -196,6 +201,7 @@ impl TerminalLeaseRegistry {
         Self {
             leases: Mutex::new(HashMap::new()),
             durable: Some(persistence),
+            locks: Default::default(),
         }
     }
 
@@ -240,6 +246,48 @@ impl TerminalLeaseRegistry {
         Ok(())
     }
 
+    /// Backend adapters call this inside the same control gate as the actual write.
+    /// Renewal and read ownership intentionally remain valid while locked.
+    pub fn validate_input(&self, lease: &TerminalInputLease) -> TerminalResult<()> {
+        self.validate(lease)?;
+        self.locks.ensure_unlocked(&lease.session_id)
+    }
+
+    pub fn lock(
+        &self,
+        lease: &TerminalInputLease,
+        password: &str,
+        hide_output: bool,
+    ) -> TerminalResult<()> {
+        let leases = self.leases.lock().unwrap_or_else(|p| p.into_inner());
+        Self::validate_identity(&leases, lease)?;
+        if let Some(store) = &self.durable {
+            if !store.validate(lease, unix_now())? {
+                return Err(TerminalError::InvalidLease);
+            }
+        }
+        self.locks.lock(&lease.session_id, password, hide_output)
+    }
+
+    pub fn unlock(&self, lease: &TerminalInputLease, password: &str) -> TerminalResult<()> {
+        let leases = self.leases.lock().unwrap_or_else(|p| p.into_inner());
+        Self::validate_identity(&leases, lease)?;
+        if let Some(store) = &self.durable {
+            if !store.validate(lease, unix_now())? {
+                return Err(TerminalError::InvalidLease);
+            }
+        }
+        self.locks.unlock(&lease.session_id, password)
+    }
+
+    pub fn lock_status(&self, session_id: &str) -> TerminalResult<Option<bool>> {
+        let leases = self.leases.lock().unwrap_or_else(|p| p.into_inner());
+        if !leases.contains_key(session_id) {
+            return Err(TerminalError::SessionNotFound(session_id.into()));
+        }
+        Ok(self.locks.status(session_id))
+    }
+
     pub fn renew(&self, lease: &TerminalInputLease) -> TerminalResult<()> {
         let leases = self.leases.lock().unwrap_or_else(|p| p.into_inner());
         Self::validate_identity(&leases, lease)?;
@@ -255,6 +303,7 @@ impl TerminalLeaseRegistry {
         holder: TerminalInputHolder,
     ) -> TerminalResult<TerminalInputLease> {
         let mut leases = self.leases.lock().unwrap_or_else(|p| p.into_inner());
+        self.locks.ensure_unlocked(session_id)?;
         let current = leases
             .get(session_id)
             .cloned()
@@ -279,6 +328,7 @@ impl TerminalLeaseRegistry {
     ) -> TerminalResult<TerminalInputLease> {
         let mut leases = self.leases.lock().unwrap_or_else(|p| p.into_inner());
         Self::validate_identity(&leases, lease)?;
+        self.locks.ensure_unlocked(&lease.session_id)?;
         let mut next = new_lease(
             &lease.session_id,
             &lease.run_id,
@@ -299,6 +349,7 @@ impl TerminalLeaseRegistry {
             durable.revoke(lease, unix_now(), "terminal_closed")?;
         }
         leases.remove(&lease.session_id);
+        self.locks.remove(&lease.session_id);
         Ok(())
     }
 
@@ -374,6 +425,38 @@ fn new_lease(
 #[async_trait]
 pub trait TerminalSessionBackend: Send + Sync {
     fn backend_kind(&self) -> &'static str;
+
+    async fn lock(
+        &self,
+        _session: &TerminalSession,
+        _lease: &TerminalInputLease,
+        _password: &str,
+        _hide_output: bool,
+    ) -> TerminalResult<()> {
+        Err(TerminalError::UnsupportedCapability {
+            backend: self.backend_kind().into(),
+            capability: "session_lock".into(),
+        })
+    }
+
+    async fn unlock(
+        &self,
+        _session: &TerminalSession,
+        _lease: &TerminalInputLease,
+        _password: &str,
+    ) -> TerminalResult<()> {
+        Err(TerminalError::UnsupportedCapability {
+            backend: self.backend_kind().into(),
+            capability: "session_lock".into(),
+        })
+    }
+
+    async fn lock_status(&self, _session: &TerminalSession) -> TerminalResult<Option<bool>> {
+        Err(TerminalError::UnsupportedCapability {
+            backend: self.backend_kind().into(),
+            capability: "session_lock".into(),
+        })
+    }
 
     /// Subscribe before the first cursor read. Notices contain no output and
     /// cannot consume history or grant input ownership.

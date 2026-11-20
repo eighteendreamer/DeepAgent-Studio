@@ -100,6 +100,7 @@ pub enum PtyCommand {
 }
 
 pub struct PtyState {
+    pub(crate) shared_owner: bool,
     pub(crate) _resource: Option<crate::connection_lease::ResourceLease>,
     pub output_signal: deepagent_terminal::TerminalOutputSignal,
     pub stdin: mpsc::Sender<Vec<u8>>,
@@ -237,7 +238,8 @@ impl SshSession {
         self.keepalive_running.store(running, Ordering::Relaxed);
     }
 
-    pub async fn insert_pty(&self, token: String, next: PtyState, legacy: bool) {
+    pub async fn insert_pty(&self, token: String, mut next: PtyState, legacy: bool) {
+        next.shared_owner = !legacy;
         self.ptys
             .write()
             .await
@@ -264,6 +266,15 @@ impl SshSession {
         self.pty(token)
             .await
             .is_some_and(|pty| !pty.join.is_finished())
+    }
+
+    pub(super) async fn ensure_legacy_pty_control(&self, token: &str) -> crate::SshResult<()> {
+        if self.pty(token).await.is_some_and(|pty| pty.shared_owner) {
+            return Err(crate::SshError::Pty(
+                "shared terminal requires its input lease".into(),
+            ));
+        }
+        Ok(())
     }
 
     pub(super) async fn subscribe_output(

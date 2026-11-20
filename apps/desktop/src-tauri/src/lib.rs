@@ -5196,6 +5196,60 @@ async fn terminal_session_renew(
 }
 
 #[tauri::command]
+async fn terminal_session_write_bytes(
+    state: State<'_, AppState>,
+    session: TerminalSession,
+    lease: TerminalInputLease,
+    data: Vec<u8>,
+) -> Result<(), String> {
+    if data.len() > 64 * 1024 {
+        return Err("Terminal binary input exceeds 64 KiB".into());
+    }
+    terminal_backend(&state, &session.backend)?
+        .write(&session, &lease, &data)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn terminal_session_lock(
+    state: State<'_, AppState>,
+    session: TerminalSession,
+    lease: TerminalInputLease,
+    password: String,
+    hide_output: bool,
+) -> Result<(), String> {
+    terminal_backend(&state, &session.backend)?
+        .lock(&session, &lease, &password, hide_output)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn terminal_session_unlock(
+    state: State<'_, AppState>,
+    session: TerminalSession,
+    lease: TerminalInputLease,
+    password: String,
+) -> Result<(), String> {
+    terminal_backend(&state, &session.backend)?
+        .unlock(&session, &lease, &password)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn terminal_session_lock_status(
+    state: State<'_, AppState>,
+    session: TerminalSession,
+) -> Result<Option<bool>, String> {
+    terminal_backend(&state, &session.backend)?
+        .lock_status(&session)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn terminal_session_read(
     state: State<'_, AppState>,
     session: TerminalSession,
@@ -8344,6 +8398,10 @@ pub fn run() {
             terminal_session_open,
             coordinator_readiness,
             terminal_session_write,
+            terminal_session_write_bytes,
+            terminal_session_lock,
+            terminal_session_unlock,
+            terminal_session_lock_status,
             terminal_session_renew,
             terminal_session_read,
             terminal_session_wait,

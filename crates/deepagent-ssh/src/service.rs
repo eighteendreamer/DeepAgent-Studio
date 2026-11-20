@@ -1597,6 +1597,16 @@ impl SshServiceImpl {
         }
     }
 
+    pub(super) async fn ensure_legacy_pty_control(
+        &self,
+        handle: &SshServiceHandle,
+    ) -> SshResult<()> {
+        self.active_pty_connection(handle)
+            .await?
+            .ensure_legacy_pty_control(&handle.token)
+            .await
+    }
+
     pub async fn pty_read(&self, handle: &SshServiceHandle) -> SshResult<Vec<u8>> {
         let session = self.active_pty_connection(handle).await?;
         session

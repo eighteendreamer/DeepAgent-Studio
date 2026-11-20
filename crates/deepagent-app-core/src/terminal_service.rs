@@ -188,7 +188,7 @@ impl DirectTerminalSessionBackend {
         let lease = lease.clone();
         self.service
             .with_pty_control(&session.session_id, owner, move |state, control| {
-                leases.validate(&lease)?;
+                leases.validate_input(&lease)?;
                 control.ensure_live()?;
                 operation(state)
             })
@@ -581,6 +581,55 @@ impl TerminalService {
 impl TerminalSessionBackend for DirectTerminalSessionBackend {
     fn backend_kind(&self) -> &'static str {
         "direct"
+    }
+
+    async fn lock(
+        &self,
+        session: &TerminalSession,
+        lease: &TerminalInputLease,
+        password: &str,
+        hide_output: bool,
+    ) -> deepagent_terminal::TerminalResult<()> {
+        let owner = self.input_owner(session, lease)?;
+        let leases = self.leases.clone();
+        let lease = lease.clone();
+        let password = password.to_owned();
+        self.service
+            .with_pty_control(&session.session_id, owner, move |_, _| {
+                leases.lock(&lease, &password, hide_output)
+            })
+            .await
+    }
+
+    async fn unlock(
+        &self,
+        session: &TerminalSession,
+        lease: &TerminalInputLease,
+        password: &str,
+    ) -> deepagent_terminal::TerminalResult<()> {
+        let owner = self.input_owner(session, lease)?;
+        let leases = self.leases.clone();
+        let lease = lease.clone();
+        let password = password.to_owned();
+        self.service
+            .with_pty_control(&session.session_id, owner, move |_, _| {
+                leases.unlock(&lease, &password)
+            })
+            .await
+    }
+
+    async fn lock_status(
+        &self,
+        session: &TerminalSession,
+    ) -> deepagent_terminal::TerminalResult<Option<bool>> {
+        let owner = self.owner(session)?;
+        let leases = self.leases.clone();
+        let id = session.session_id.clone();
+        self.service
+            .with_pty_control(&session.session_id, owner, move |_, _| {
+                leases.lock_status(&id)
+            })
+            .await
     }
 
     async fn subscribe_output(
