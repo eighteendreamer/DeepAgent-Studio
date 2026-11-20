@@ -5,7 +5,7 @@ import { ContextMenu, ContextMenuTrigger } from "../components/shadcn/base-conte
 import { PetMenu } from "./PetMenu";
 import { PetPlayer } from "./PetPlayer";
 import { getPet, getWork, isPetAwake, listenPet, petDrag, petReady, renderFailed, setPetInteraction,
-  workState, type Completion, type PetSnapshot, type Preferences, type WorkState } from "./api";
+  workState, type Completion, type PetSnapshot, type Preferences, type Rect, type WorkState } from "./api";
 
 function report(problem: unknown) {
   console.error("Desktop pet:", problem);
@@ -22,6 +22,7 @@ export function PetWindow() {
   const [manualAction, setManualAction] = useState<string>();
   const [variant, setVariant] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [menuBounds, setMenuBounds] = useState<Rect | null>(null);
   const ready = useRef(false);
   const body = useRef<HTMLButtonElement>(null);
   const bubble = useRef<HTMLDivElement>(null);
@@ -38,6 +39,7 @@ export function PetWindow() {
         if (live) setSnapshot(current => current && { ...current, preferences });
       }),
       listenPet<boolean>("visibility", value => { if (live) setVisible(value); }),
+      listenPet<Rect | null>("menu-bounds", bounds => { if (live) setMenuBounds(bounds); }),
     ];
     void Promise.all(listeners).then(getPet).then(value => {
       if (live) {
@@ -109,13 +111,13 @@ export function PetWindow() {
     observer.observe(document.documentElement);
     reportRegions();
     return () => observer.disconnect();
-  }, [character, awake, menuOpen, showBubble, snapshot?.stageTop]);
+  }, [character, awake, menuOpen, showBubble, snapshot?.stageTop, snapshot?.stageLeft]);
   useEffect(() => () => window.clearTimeout(gestureTimer.current), []);
 
   if (!snapshot || !character) return null;
   const hit = character.hitBox;
   const canvas = character.canvas;
-  return <main className="pet-stage" style={{ top: snapshot.stageTop, aspectRatio: `${canvas.width}/${canvas.height}` }}>
+  return <main className="pet-stage" style={{ top: snapshot.stageTop, left: snapshot.stageLeft, right: snapshot.stageLeft, aspectRatio: `${canvas.width}/${canvas.height}` }}>
     <PetPlayer key={character.id} character={character} root={snapshot.resourceRoot} state={animation} actionName={manualAction} variant={variant} active={awake}
       onReady={() => {
         if (!ready.current) { ready.current = true; void petReady().catch(error => { ready.current = false; report(error); }); }
@@ -155,7 +157,7 @@ export function PetWindow() {
           }
         }} />
       } />
-      <PetMenu character={character} open={menuOpen} onError={report} onPlay={name => {
+      <PetMenu character={character} open={menuOpen} bounds={menuBounds} onError={report} onPlay={name => {
         window.clearTimeout(gestureTimer.current);
         setGesture(null);
         setManualAction(name);

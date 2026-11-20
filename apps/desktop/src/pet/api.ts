@@ -30,6 +30,7 @@ export interface PetSnapshot {
   resourceRoot: string;
   preferences: Preferences;
   stageTop: number;
+  stageLeft: number;
   sizeMin: number;
   sizeMax: number;
   visible: boolean;

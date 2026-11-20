@@ -15,6 +15,42 @@ use crate::pet_store::{
 const WINDOW_LABEL: &str = "desktop-pet";
 const STAGE_TOP: f64 = 88.0;
 const STAGE_BOTTOM: f64 = 40.0;
+// A 192 px menu, with room for the cursor offset and collision padding.
+const MENU_GUTTER_X: f64 = 208.0;
+const MENU_GUTTER_Y: f64 = 64.0;
+
+fn pet_frame(size: u32) -> tauri::LogicalSize<f64> {
+    let width = f64::from(size);
+    tauri::LogicalSize::new(width, width * 9.0 / 16.0 + STAGE_TOP + STAGE_BOTTOM)
+}
+
+// Preferences store the original pet frame's origin, without menu gutters.
+fn offset_position(position: Position, scale: f64, direction: f64) -> Position {
+    Position {
+        x: position.x + (MENU_GUTTER_X * scale * direction).round() as i32,
+        y: position.y + (MENU_GUTTER_Y * scale * direction).round() as i32,
+    }
+}
+
+fn visible_menu_bounds(
+    origin: Position,
+    size: tauri::PhysicalSize<u32>,
+    scale: f64,
+    area: Rect,
+) -> Option<Rect> {
+    let wx = f64::from(origin.x);
+    let wy = f64::from(origin.y);
+    let x = wx.max(area.x);
+    let y = wy.max(area.y);
+    let width = (wx + f64::from(size.width)).min(area.x + area.width) - x;
+    let height = (wy + f64::from(size.height)).min(area.y + area.height) - y;
+    (width > 0.0 && height > 0.0).then_some(Rect {
+        x: (x - wx) / scale,
+        y: (y - wy) / scale,
+        width: width / scale,
+        height: height / scale,
+    })
+}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +60,7 @@ pub struct PetSnapshot {
     preferences: Preferences,
     visible: bool,
     stage_top: f64,
+    stage_left: f64,
     size_min: u32,
     size_max: u32,
 }
@@ -61,7 +98,8 @@ impl PetManager {
             preferences,
             catalog,
             resource_root: resource_root.to_string_lossy().into_owned(),
-            stage_top: STAGE_TOP,
+            stage_top: STAGE_TOP + MENU_GUTTER_Y,
+            stage_left: MENU_GUTTER_X,
             size_min: MIN_SIZE,
             size_max: MAX_SIZE,
             visible: app
@@ -80,7 +118,11 @@ impl PetManager {
             return Ok(());
         }
         self.store.lock().map_err(|e| e.to_string())?.install()?;
-        let height = f64::from(preferences.size) * 9.0 / 16.0 + STAGE_TOP + STAGE_BOTTOM;
+        let frame = pet_frame(preferences.size);
+        let overlay = tauri::LogicalSize::new(
+            frame.width + 2.0 * MENU_GUTTER_X,
+            frame.height + 2.0 * MENU_GUTTER_Y,
+        );
         let window = match app.get_webview_window(WINDOW_LABEL) {
             Some(window) => window,
             None => {
@@ -92,7 +134,7 @@ impl PetManager {
                     tauri::WebviewUrl::App("pet.html".into()),
                 )
                 .title("DeepAgent Studio · 桌宠")
-                .inner_size(f64::from(preferences.size), height)
+                .inner_size(overlay.width, overlay.height)
                 .transparent(true)
                 .background_color(tauri::webview::Color(0, 0, 0, 0))
                 .decorations(false)
@@ -111,49 +153,18 @@ impl PetManager {
         window
             .set_always_on_top(preferences.always_on_top)
             .map_err(|e| e.to_string())?;
+        let (origin, scale) = restore_position(&window, &preferences, frame, reset)?;
         window
-            .set_size(tauri::LogicalSize::new(f64::from(preferences.size), height))
+            .set_position(tauri::PhysicalPosition::new(origin.x, origin.y))
             .map_err(|e| e.to_string())?;
-        self.restore_position(&window, reset)?;
+        window
+            .set_size(overlay.to_physical::<u32>(scale))
+            .map_err(|e| e.to_string())?;
         if self.ready.load(Ordering::Acquire) {
             window.show().map_err(|e| e.to_string())?;
             emit_to_pet(app, "pet://visibility", true).map_err(|e| e.to_string())?;
         }
         Ok(())
-    }
-
-    fn restore_position(&self, window: &tauri::WebviewWindow, reset: bool) -> Result<(), String> {
-        let areas = monitor_areas(window)?;
-        let size = window.outer_size().map_err(|e| e.to_string())?;
-        let preferences = self.preferences()?;
-        let requested = if !reset { preferences.position } else { None };
-        let position = requested.unwrap_or_else(|| {
-            let area = window
-                .primary_monitor()
-                .ok()
-                .flatten()
-                .map(|monitor| monitor_rect(&monitor))
-                .or_else(|| areas.first().copied())
-                .unwrap_or(Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 1920.0,
-                    height: 1080.0,
-                });
-            Position {
-                x: (area.x + area.width - f64::from(size.width) - 24.0) as i32,
-                y: (area.y + area.height - f64::from(size.height) - 24.0) as i32,
-            }
-        });
-        let position = clamp_position(
-            position,
-            f64::from(size.width),
-            f64::from(size.height),
-            &areas,
-        );
-        window
-            .set_position(tauri::PhysicalPosition::new(position.x, position.y))
-            .map_err(|e| e.to_string())
     }
 
     fn update(
@@ -193,6 +204,45 @@ fn monitor_areas(window: &tauri::WebviewWindow) -> Result<Vec<Rect>, String> {
         .available_monitors()
         .map(|monitors| monitors.iter().map(monitor_rect).collect())
         .map_err(|e| e.to_string())
+}
+
+fn restore_position(
+    window: &tauri::WebviewWindow,
+    preferences: &Preferences,
+    frame: tauri::LogicalSize<f64>,
+    reset: bool,
+) -> Result<(Position, f64), String> {
+    let requested = preferences.position.filter(|_| !reset);
+    let primary = window.primary_monitor().map_err(|e| e.to_string())?;
+    let target = if let Some(position) = requested {
+        window
+            .monitor_from_point(f64::from(position.x), f64::from(position.y))
+            .map_err(|e| e.to_string())?
+    } else {
+        None
+    };
+    let monitor = target.as_ref().or(primary.as_ref());
+    let scale = monitor
+        .map(tauri::Monitor::scale_factor)
+        .unwrap_or(window.scale_factor().map_err(|e| e.to_string())?);
+    let area = monitor.map(monitor_rect).unwrap_or(Rect {
+        x: 0.0,
+        y: 0.0,
+        width: 1920.0,
+        height: 1080.0,
+    });
+    let size = frame.to_physical::<u32>(scale);
+    let position = requested.unwrap_or_else(|| Position {
+        x: (area.x + area.width - f64::from(size.width) - 24.0) as i32,
+        y: (area.y + area.height - f64::from(size.height) - 24.0) as i32,
+    });
+    let clamped = clamp_position(
+        position,
+        f64::from(size.width),
+        f64::from(size.height),
+        &monitor_areas(window)?,
+    );
+    Ok((offset_position(clamped, scale, -1.0), scale))
 }
 
 fn authorize(window: &tauri::WebviewWindow) -> Result<(), String> {
@@ -410,12 +460,16 @@ async fn pointer_loop(app: tauri::AppHandle) {
     let mut moved_at = Instant::now();
     let mut checked_at = Instant::now();
     let mut saved_position = None;
+    let mut geometry = None;
+    let mut menu_bounds = None;
     loop {
         tokio::time::sleep(Duration::from_millis(80)).await;
         let Some(window) = app.get_webview_window(WINDOW_LABEL) else {
             ignoring = None;
             last_position = None;
             saved_position = None;
+            geometry = None;
+            menu_bounds = None;
             tokio::time::sleep(Duration::from_millis(400)).await;
             continue;
         };
@@ -442,10 +496,29 @@ async fn pointer_loop(app: tauri::AppHandle) {
                     .map_err(|e| e.to_string())?;
                 ignoring = Some(ignore);
             }
-            let position = Position {
+            let origin = Position {
                 x: origin.x,
                 y: origin.y,
             };
+            let position = offset_position(origin, scale, 1.0);
+            let size = window.inner_size().map_err(|e| e.to_string())?;
+            let refresh = checked_at.elapsed() >= Duration::from_secs(3);
+            let current_geometry = (origin, size, scale);
+            if geometry != Some(current_geometry) || refresh {
+                let center_x = f64::from(origin.x) + f64::from(size.width) / 2.0;
+                let center_y = f64::from(origin.y) + f64::from(size.height) / 2.0;
+                let bounds = window
+                    .monitor_from_point(center_x, center_y)
+                    .map_err(|e| e.to_string())?
+                    .and_then(|monitor| {
+                        visible_menu_bounds(origin, size, scale, monitor_rect(&monitor))
+                    });
+                if menu_bounds != bounds {
+                    emit_to_pet(&app, "pet://menu-bounds", bounds).map_err(|e| e.to_string())?;
+                    menu_bounds = bounds;
+                }
+                geometry = Some(current_geometry);
+            }
             if last_position != Some(position) {
                 last_position = Some(position);
                 moved_at = Instant::now();
@@ -460,17 +533,18 @@ async fn pointer_loop(app: tauri::AppHandle) {
                 }
                 saved_position = Some(position);
             }
-            if checked_at.elapsed() >= Duration::from_secs(3) {
-                let size = window.outer_size().map_err(|e| e.to_string())?;
+            if refresh {
+                let offset = offset_position(Position { x: 0, y: 0 }, scale, 1.0);
                 let clamped = clamp_position(
                     position,
-                    f64::from(size.width),
-                    f64::from(size.height),
+                    f64::from(size.width) - 2.0 * f64::from(offset.x),
+                    f64::from(size.height) - 2.0 * f64::from(offset.y),
                     &monitor_areas(&window)?,
                 );
                 if clamped != position {
+                    let next_origin = offset_position(clamped, scale, -1.0);
                     window
-                        .set_position(tauri::PhysicalPosition::new(clamped.x, clamped.y))
+                        .set_position(tauri::PhysicalPosition::new(next_origin.x, next_origin.y))
                         .map_err(|e| e.to_string())?;
                 }
                 checked_at = Instant::now();
@@ -561,5 +635,47 @@ pub fn limit_invoke(
                 .reject("This command is unavailable in the desktop pet window");
             true
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlay_padding_preserves_saved_pet_position_at_fractional_scale() {
+        let saved = Position { x: -320, y: 734 };
+        let origin = offset_position(saved, 1.25, -1.0);
+        assert_eq!(origin, Position { x: -580, y: 654 });
+        assert_eq!(offset_position(origin, 1.25, 1.0), saved);
+    }
+
+    #[test]
+    fn menu_bounds_exclude_offscreen_gutters_and_taskbar_at_fractional_scale() {
+        let origin = Position { x: -2180, y: 770 };
+        let work_area = Rect {
+            x: -1920.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1040.0,
+        };
+        assert_eq!(
+            visible_menu_bounds(origin, tauri::PhysicalSize::new(870, 520), 1.25, work_area),
+            Some(Rect {
+                x: 208.0,
+                y: 0.0,
+                width: 488.0,
+                height: 216.0
+            })
+        );
+        assert_eq!(
+            visible_menu_bounds(
+                Position { x: 40, y: 770 },
+                tauri::PhysicalSize::new(870, 520),
+                1.25,
+                work_area
+            ),
+            None
+        );
     }
 }

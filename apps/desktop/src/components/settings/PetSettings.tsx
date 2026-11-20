@@ -5,6 +5,7 @@ import { Button } from "../shadcn/button";
 import { Checkbox } from "../shadcn/checkbox";
 import { Input } from "../shadcn/input";
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "../shadcn/popover";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../shadcn/tooltip";
 import { cn } from "../shadcn/utils";
 import { getPet, isPetAwake, listenPet, nativePet, petAsset, resetPet, resolveAction, updatePet,
   type Character, type PetSnapshot, type Preferences } from "../../pet/api";
@@ -119,9 +120,23 @@ export function PetSettings() {
                     </label>
                   ))}
                 </div>
-                <div className="mt-3 flex flex-wrap gap-1 border-t border-border-theme pt-2">
-                  <Button variant="ghost" size="sm" disabled={busy} onClick={() => void run(resetPet)}><RotateCcw size={14} />{t("desktopPet.reset")}</Button>
-                  <Button variant="ghost" size="sm" disabled><MessageCircle size={14} />{t("desktopPet.chat")}</Button>
+                <div className="mt-3 flex items-center gap-1 border-t border-border-theme pt-2">
+                  <TooltipProvider delay={250}>
+                    <Tooltip>
+                      <TooltipTrigger render={<Button variant="ghost" size="icon" className="size-8"
+                        aria-label={t("desktopPet.reset")} disabled={busy} onClick={() => void run(resetPet)} />}>
+                        <RotateCcw size={15} aria-hidden="true" />
+                      </TooltipTrigger>
+                      <TooltipContent>{t("desktopPet.reset")}</TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger render={<Button variant="ghost" size="icon" className="size-8 opacity-45 hover:bg-transparent hover:text-text-secondary"
+                        aria-label={t("desktopPet.chat")} aria-disabled="true" />}>
+                        <MessageCircle size={15} aria-hidden="true" />
+                      </TooltipTrigger>
+                      <TooltipContent>{t("desktopPet.chat")}</TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
                 </div>
                 {error && <p role="alert" className="mt-2 text-xs text-red-500">{error}</p>}
               </PopoverContent>

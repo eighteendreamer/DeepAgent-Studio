@@ -1,5 +1,5 @@
 html, body, #root { background: transparent !important; overflow: hidden; width: 100%; height: 100%; margin: 0; }
-.pet-stage { position: absolute; left: 0; width: 100%; pointer-events: none; user-select: none; }
+.pet-stage { position: absolute; left: 0; right: 0; pointer-events: none; user-select: none; }
 .pet-video, .pet-poster { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
 .pet-video { opacity: 0; }
 .pet-poster { padding: 10% 26%; }

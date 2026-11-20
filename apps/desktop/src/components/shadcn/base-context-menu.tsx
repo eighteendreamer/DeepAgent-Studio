@@ -7,11 +7,12 @@ import "../ui/menuSurface.css";
 const ContextMenu = MenuPrimitive.Root;
 const ContextMenuTrigger = MenuPrimitive.Trigger;
 
-function ContextMenuContent({ className, ...props }: MenuPrimitive.Popup.Props) {
+function ContextMenuContent({ className, collisionBoundary, ...props }: MenuPrimitive.Popup.Props &
+  Pick<MenuPrimitive.Positioner.Props, "collisionBoundary">) {
   return (
     <MenuPrimitive.Portal>
       <MenuPrimitive.Positioner className="isolate z-[20000]" side="right" sideOffset={4}
-        collisionPadding={8} collisionAvoidance={{ side: "flip", align: "shift", fallbackAxisSide: "end" }}>
+        collisionBoundary={collisionBoundary} collisionPadding={8} collisionAvoidance={{ side: "flip", align: "shift", fallbackAxisSide: "end" }}>
         <MenuPrimitive.Popup data-slot="context-menu-content" {...props} className={state => cn(
           "ui-menu-surface max-h-[var(--available-height)] overflow-x-hidden overflow-y-auto rounded-lg bg-elevated-bg p-1 text-text-base shadow-md",
           typeof className === "function" ? className(state) : className,

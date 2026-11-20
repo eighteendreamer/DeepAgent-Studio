@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "../components/shadcn/base-context-menu";
-import { openMain, resetPet, updatePet, type Character } from "./api";
+import { openMain, resetPet, updatePet, type Character, type Rect } from "./api";
 
 const actionGroups = [
   { id: "click", label: "desktopPet.clickActions" },
@@ -18,11 +18,12 @@ type View = "main" | "groups" | { group: string };
 interface Props {
   character: Character;
   open: boolean;
+  bounds?: Rect | null;
   onPlay: (name: string) => void;
   onError: (error: unknown) => void;
 }
 
-export function PetMenu({ character, open, onPlay, onError }: Props) {
+export function PetMenu({ character, open, bounds, onPlay, onError }: Props) {
   const { t } = useTranslation();
   const [view, setView] = useState<View>("main");
   const first = useRef<HTMLElement>(null);
@@ -50,7 +51,7 @@ export function PetMenu({ character, open, onPlay, onError }: Props) {
   const left = <ChevronLeft size={13} className="text-neutral-500" aria-hidden="true" />;
   const right = <ChevronRight size={13} className="ml-auto text-neutral-500" aria-hidden="true" />;
 
-  return <ContextMenuContent className="pet-context-menu bg-white text-neutral-900 shadow-none [--ui-menu-border:#e4e4e7]">
+  return <ContextMenuContent collisionBoundary={bounds ?? undefined} className="pet-context-menu bg-white text-neutral-900 shadow-none [--ui-menu-border:#e4e4e7]">
     {view === "main" ? <>
       {groups.length > 0 && <>
         <ContextMenuItem ref={first} closeOnClick={false} onClick={go("groups")}>
