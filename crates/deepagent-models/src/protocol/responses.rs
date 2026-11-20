@@ -1,3 +1,5 @@
+#[cfg(debug_assertions)]
+mod cache_audit;
 pub(super) mod request;
 
 use super::*;
@@ -43,6 +45,13 @@ impl WireCodec for ResponsesCodec {
                 )
                 .await;
         }
+        #[cfg(debug_assertions)]
+        cache_audit::record(
+            request.cache_session,
+            &transport.url,
+            &transport.body,
+            &request.input,
+        );
         client
             .stream_attempt(self, transport, observer, cancel)
             .await
