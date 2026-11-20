@@ -13,6 +13,29 @@ export function createTransferObserver(read: typeof remoteTransfersWatch) {
   let running = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
+  function report(listener: Listener, error: unknown) {
+    try {
+      listener.error(error);
+    } catch {
+      console.error("Remote transfer listener failed while reporting an error");
+    }
+  }
+
+  function deliver(listener: Listener, snapshot: TransferSnapshot) {
+    try {
+      listener.next(snapshot);
+    } catch (error) {
+      report(listener, error);
+    }
+  }
+
+  function publish(notify: (listener: Listener) => void) {
+    // New subscriptions replay latest themselves; detached views receive nothing.
+    for (const listener of [...listeners]) {
+      if (listeners.has(listener)) notify(listener);
+    }
+  }
+
   async function load() {
     timer = undefined;
     running = true;
@@ -22,12 +45,12 @@ export function createTransferObserver(read: typeof remoteTransfersWatch) {
       const changed = snapshot.revision !== cursor;
       cursor = snapshot.revision;
       latest = snapshot;
-      if (changed) for (const listener of listeners) listener.next(snapshot);
+      if (changed) publish(listener => deliver(listener, snapshot));
     } catch (error) {
       cursor = undefined;
       latest = undefined;
       delay = 1000;
-      for (const listener of listeners) listener.error(error);
+      publish(listener => report(listener, error));
     } finally {
       running = false;
       // Throttle progress bursts, not the transfer itself. Slow IPC stays serial.
@@ -37,7 +60,7 @@ export function createTransferObserver(read: typeof remoteTransfersWatch) {
 
   return (listener: Listener) => {
     listeners.add(listener);
-    if (latest) listener.next(latest);
+    if (latest) deliver(listener, latest);
     if (!running && timer === undefined) void load();
     return () => {
       listeners.delete(listener);
