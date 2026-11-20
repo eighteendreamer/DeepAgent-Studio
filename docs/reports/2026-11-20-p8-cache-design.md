@@ -77,3 +77,21 @@ Layso `gpt-5.4-mini`，使用 `ModelAgent` 的最终请求预算检查和生产 
 cargo test --offline -p deepagent-models --features http --test prompt_cache_live extended_history_reports_real_provider_cache_usage -- --exact --ignored --nocapture
 cargo test --offline -p deepagent-app-core --features web --lib context_runtime::cache_live_tests::real_request_budget_compaction_survives_reopen_and_reports_cache -- --exact --ignored --nocapture
 ```
+
+## 桌面截图实测复核（2026-11-20）
+
+用只读 SQLite 成本账本、会话的 run cost receipt 和 Responses usage 交叉核对。该对话选择的是 DeepSeek 官方供应商的 `deepseek-flash` / Responses / `high`，每个可见回合暴露 50 个工具。前面的 Layso 长会话使用其他模型和合成稳定前缀，没有覆盖这个桌面载荷。第一个对话回合出现在当天 05:47，后两个在 14:26–14:27；不把这三轮当作同一构建下的受控对照。
+
+| 对话回合 | 读取 / 输入 | 未命中 | 读取率 |
+|---|---:|---:|---:|
+| 图上第一条回复 | 13,440 / 18,268 | 4,828 | 73.57% |
+| 图上第二条回复 | 18,048 / 21,914 | 3,866 | 82.36% |
+| 图上第三条回复 | 18,048 / 21,831 | 3,783 | 82.67% |
+
+主对话账本三笔合计 49,536 / 62,013（79.88%）。会话总账另外还有两条不属于这三条主对话回执的模型用量记录，分别为 0 / 110 与 13,184 / 18,349；加总 62,720 / 80,472（77.94%），与底栏 77.9% 一致。因此是两种统计范围，也确实存在单轮命中率低于 90% 的情况。
+
+回放事件显示稳定系统规则摘要没有变。第二轮追加了动态运行环境快照的整份更新：新快照正文 12,604 字节，逐行比较有 11,673 字节与上一版相同（92.61%，为 UTF-8 字节比例，不是 token 比例）。第三轮没有新快照，但仍未命中 3,783 token；这三轮没有压缩边界。现有日志未记录最终出站前缀的分段差异，无法把第三轮未命中归因于某个区块或供应商侧缓存。工具数相同也不能证明工具定义及顺序完全一致。
+
+后续以同一构建、同一供应商、模型、思考档位和工作区的桌面续写作为验收基线。参考天枢 `cache-diagnostic.ts` 把最终出站的系统规则、工具、历史、动态附录区分开，仅比较本地的摘要、位置及数量，不收集提示词正文。再以单个字段变化的回归验证 `buildAppendixBody` 对应的增量规则，并覆盖字段移除、压缩及重开后的基线重建。纯文本长会话和桌面端命中率分开报告。
+
+`node --test apps/desktop/scripts/check-session-usage.test.cjs apps/desktop/scripts/audit-live-reload-turn-usage.test.cjs`：17 项通过。本次复核没有发送新供应商请求，也没有改变生产逻辑。
