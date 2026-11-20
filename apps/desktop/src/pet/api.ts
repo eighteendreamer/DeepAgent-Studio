@@ -30,6 +30,8 @@ export interface PetSnapshot {
   resourceRoot: string;
   preferences: Preferences;
   stageTop: number;
+  sizeMin: number;
+  sizeMax: number;
   visible: boolean;
 }
 export interface WorkSnapshot { activeRuns: number; pendingApprovals: number; runningActions: number }
@@ -38,6 +40,8 @@ export type Completion = "completed" | "failed";
 
 export const nativePet = isTauri();
 export const getPet = () => invoke<PetSnapshot>("pet_get_state");
+export const getPetPreferences = () => invoke<Preferences>("pet_get_preferences");
+export const isPetAwake = (preferences?: Preferences) => Boolean(preferences?.enabled && !preferences.sleeping);
 export const updatePet = (patch: Partial<Preferences>) => invoke<Preferences>("pet_update_preferences", { patch });
 export const resetPet = () => invoke<void>("pet_reset_position");
 export const petReady = () => invoke<void>("pet_ready");

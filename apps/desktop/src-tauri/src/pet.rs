@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
 use crate::pet_store::{
-    clamp_position, Catalog, PetStore, Position, Preferences, PreferencesPatch, Rect,
+    clamp_position, Catalog, PetStore, Position, Preferences, PreferencesPatch, Rect, MAX_SIZE,
+    MIN_SIZE,
 };
 
 const WINDOW_LABEL: &str = "desktop-pet";
@@ -23,6 +24,8 @@ pub struct PetSnapshot {
     preferences: Preferences,
     visible: bool,
     stage_top: f64,
+    size_min: u32,
+    size_max: u32,
 }
 
 #[derive(Default, Deserialize)]
@@ -59,6 +62,8 @@ impl PetManager {
             catalog,
             resource_root: resource_root.to_string_lossy().into_owned(),
             stage_top: STAGE_TOP,
+            size_min: MIN_SIZE,
+            size_max: MAX_SIZE,
             visible: app
                 .get_webview_window(WINDOW_LABEL)
                 .is_some_and(|w| w.is_visible().unwrap_or(false)),
@@ -218,6 +223,15 @@ pub async fn pet_get_state(
     tauri::async_runtime::spawn_blocking(move || app.state::<PetManager>().snapshot(&app))
         .await
         .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn pet_get_preferences(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<Preferences, String> {
+    authorize(&window)?;
+    crate::run_blocking(move || app.state::<PetManager>().preferences()).await
 }
 
 #[tauri::command]

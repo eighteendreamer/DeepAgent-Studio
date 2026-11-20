@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "../components/shadcn/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "../components/shadcn/context-menu";
 import { PetPlayer } from "./PetPlayer";
-import { getPet, getWork, listenPet, openMain, petDrag, petReady, renderFailed, resetPet, setPetInteraction,
+import { getPet, getWork, isPetAwake, listenPet, openMain, petDrag, petReady, renderFailed, resetPet, setPetInteraction,
   updatePet, workState, type Completion, type PetSnapshot, type Preferences, type WorkState } from "./api";
 
 function report(problem: unknown) {
@@ -51,7 +51,7 @@ export function PetWindow() {
 
   const prefs = snapshot?.preferences;
   const character = snapshot?.catalog.characters.find(item => item.id === prefs?.characterId);
-  const awake = Boolean(prefs?.enabled && !prefs.sleeping);
+  const awake = isPetAwake(prefs);
   const follow = visible && Boolean(prefs?.followWork);
   useEffect(() => {
     if (!follow) { setWork("idle"); setCompletion(null); return; }

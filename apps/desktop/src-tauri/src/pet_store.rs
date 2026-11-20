@@ -6,6 +6,9 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+pub const MIN_SIZE: u32 = 280;
+pub const MAX_SIZE: u32 = 800;
+
 pub const CATALOG_JSON: &str = include_str!("../resources/pets/dsh-pet/catalog.json");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,8 +126,10 @@ impl Preferences {
     }
 
     pub fn validate(&self, catalog: &Catalog) -> Result<(), String> {
-        if self.version != 1 || !(280..=800).contains(&self.size) {
-            return Err("桌宠配置版本或尺寸无效（允许 280–800）".into());
+        if self.version != 1 || !(MIN_SIZE..=MAX_SIZE).contains(&self.size) {
+            return Err(format!(
+                "桌宠配置版本或尺寸无效（允许 {MIN_SIZE}–{MAX_SIZE}）"
+            ));
         }
         if !catalog
             .characters

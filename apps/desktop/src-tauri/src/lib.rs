@@ -7789,6 +7789,7 @@ pub fn run() {
         })
         .invoke_handler(pet::limit_invoke(tauri::generate_handler![
             pet::pet_get_state,
+            pet::pet_get_preferences,
             pet::pet_update_preferences,
             pet::pet_ready,
             pet::pet_set_interaction,

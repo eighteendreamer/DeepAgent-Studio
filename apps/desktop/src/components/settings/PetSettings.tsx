@@ -1,101 +1,148 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { MessageCircle, Moon, RotateCcw, Sparkles } from "lucide-react";
+import { Check, MessageCircle, RotateCcw } from "lucide-react";
 import { Button } from "../shadcn/button";
 import { Checkbox } from "../shadcn/checkbox";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../shadcn/select";
-import { getPet, listenPet, nativePet, petAsset, resetPet, updatePet, type PetSnapshot, type Preferences } from "../../pet/api";
+import { Input } from "../shadcn/input";
+import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "../shadcn/popover";
+import { cn } from "../shadcn/utils";
+import { getPet, isPetAwake, listenPet, nativePet, petAsset, resetPet, resolveAction, updatePet,
+  type Character, type PetSnapshot, type Preferences } from "../../pet/api";
+
+function PetPreview({ pet, root }: { pet: Character; root: string }) {
+  const [failed, setFailed] = useState(false);
+  const idle = resolveAction(pet, "idle");
+  const thumbnail = petAsset(root, pet.thumbnail);
+  return idle && !failed
+    ? <video src={petAsset(root, idle.file)} poster={thumbnail} aria-label={pet.name}
+        autoPlay muted loop playsInline onError={() => setFailed(true)} className="h-40 w-full object-contain" />
+    : <img src={thumbnail} alt={pet.name} className="h-40 w-full object-contain" />;
+}
 
 export function PetSettings() {
   const { t } = useTranslation();
   const [snapshot, setSnapshot] = useState<PetSnapshot>();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [action, setAction] = useState("");
+  const [customize, setCustomize] = useState(false);
+  const [size, setSize] = useState("");
   const [load, setLoad] = useState(0);
 
   useEffect(() => {
     if (!nativePet) return;
     let active = true;
-    const cleanup = listenPet<Preferences>("preferences", preferences => {
+    let latest: Preferences | undefined;
+    const listener = listenPet<Preferences>("preferences", preferences => {
+      latest = preferences;
       if (active) setSnapshot(current => current && { ...current, preferences });
     });
-    void cleanup.then(() => getPet()).then(value => {
-      if (active) setSnapshot(value);
+    void listener.then(getPet).then(value => {
+      if (active) setSnapshot(latest ? { ...value, preferences: latest } : value);
     }).catch(reason => { if (active) setError(String(reason)); });
-    return () => { active = false; void cleanup.then(unlisten => unlisten(), () => undefined); };
+    return () => { active = false; void listener.then(unlisten => unlisten(), () => undefined); };
   }, [load]);
 
   const run = async (task: () => Promise<unknown>) => {
     setBusy(true);
     setError("");
-    try { await task(); }
-    catch (reason) { setError(String(reason)); }
+    try { await task(); return true; }
+    catch (reason) { setError(String(reason)); return false; }
     finally { setBusy(false); }
   };
-  const change = (patch: Partial<Preferences>) => void run(async () => {
+  const change = (patch: Partial<Preferences>) => run(async () => {
     const preferences = await updatePet(patch);
     setSnapshot(current => current && { ...current, preferences });
   });
   const prefs = snapshot?.preferences;
   const pet = snapshot?.catalog.characters.find(item => item.id === prefs?.characterId);
-  const awake = Boolean(prefs?.enabled && !prefs.sleeping);
-  const preview = pet?.actions[action];
-  const selectedSize = String(prefs?.size ?? 462);
-  const sizes = Array.from(new Set([330, pet?.defaultSize ?? 462, 620, Number(selectedSize)])).sort((a, b) => a - b);
+  const awake = isPetAwake(prefs);
+  const pixels = Number(size);
+  const validSize = snapshot && Number.isInteger(pixels) && pixels >= snapshot.sizeMin && pixels <= snapshot.sizeMax;
+  const saveSize = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!validSize || busy) return;
+    if (await change({ size: pixels })) setCustomize(false);
+  };
 
   return (
     <section className="max-w-[700px] text-text-base">
-      <h1 className="mb-2 text-2xl font-semibold">{t("settings.tabs.pet")}</h1>
-      <p className="mb-6 text-[13px] text-text-secondary">{t("desktopPet.description")}</p>
+      <div className="mb-6 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="mb-2 text-2xl font-semibold">{t("settings.tabs.pet")}</h1>
+          <p className="text-[13px] text-text-secondary">{t("desktopPet.description")}</p>
+        </div>
+        {prefs && <Button variant="outline" size="sm" className="mt-0.5 bg-elevated-bg hover:bg-ui-tint"
+          disabled={busy} onClick={() => void change({ enabled: !awake })}>
+          {t(awake ? "desktopPet.turnOff" : "desktopPet.turnOn")}
+        </Button>}
+      </div>
       {!nativePet && <p className="text-sm text-text-secondary">{t("desktopPet.desktopOnly")}</p>}
       {nativePet && !snapshot && !error && <p role="status" className="text-sm text-text-secondary">{t("desktopPet.loading")}</p>}
-      {error && <div role="alert" className="mb-4 rounded-lg border border-border-theme p-3 text-sm">
+      {error && !customize && <div role="alert" className="mb-4 rounded-lg border border-border-theme p-3 text-sm">
         <p className="text-red-500">{error}</p>
         {!snapshot && <Button size="sm" variant="ghost" className="mt-2" onClick={() => { setError(""); setLoad(n => n + 1); }}>{t("desktopPet.retry")}</Button>}
       </div>}
       {snapshot && prefs && pet && <>
-        <div className="overflow-hidden rounded-xl border border-border-theme bg-elevated-bg">
-          <div className="grid gap-4 p-4 sm:grid-cols-[200px_minmax(0,1fr)]">
-            <div className="flex h-36 items-center justify-center overflow-hidden rounded-lg border border-border-theme bg-sidebar-bg">
-              {preview ? <video key={preview.file} src={petAsset(snapshot.resourceRoot, preview.file)} autoPlay muted playsInline
-                className="h-full w-full object-contain" onEnded={() => setAction("")} onError={() => { setAction(""); setError(t("desktopPet.previewFailed")); }} /> :
-                <img src={petAsset(snapshot.resourceRoot, pet.thumbnail)} alt={pet.name} className="h-full w-full object-contain" />}
-            </div>
-            <div className="flex min-w-0 flex-col justify-center gap-3">
-              <div><div className="text-sm font-semibold">{pet.name}</div><div className="mt-1 text-xs text-text-secondary">{t("desktopPet.characterSource", { count: Object.keys(pet.actions).length })}</div></div>
-              {snapshot.catalog.characters.length > 1 && <Select value={pet.id} onValueChange={characterId => { setAction(""); change({ characterId }); }}>
-                <SelectTrigger disabled={busy} aria-label={t("desktopPet.character")}><SelectValue placeholder={pet.name} /></SelectTrigger>
-                <SelectContent>{snapshot.catalog.characters.map(item => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent>
-              </Select>}
-              <Select value={action} onValueChange={setAction}>
-                <SelectTrigger className="w-full max-w-56" aria-label={t("desktopPet.preview")}><SelectValue placeholder={action || t("desktopPet.preview")} /></SelectTrigger>
-                <SelectContent className="max-h-[min(18rem,var(--radix-dropdown-menu-content-available-height))] overflow-y-auto">{Object.keys(pet.actions).map(name => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent>
-              </Select>
-            </div>
+        <div className="rounded-xl border border-border-theme bg-elevated-bg px-4 pb-3 pt-4">
+          <div className="mx-auto flex min-h-48 max-w-sm flex-col items-center justify-center gap-1 text-center">
+            <PetPreview key={pet.id} pet={pet} root={snapshot.resourceRoot} />
+            <div className="text-sm font-semibold">{pet.name}</div>
           </div>
-          <div className="flex flex-wrap gap-2 border-t border-border-theme p-4">
-            <Button variant="outline" size="sm" disabled={busy} onClick={() => change(awake ? { sleeping: true } : { enabled: true, sleeping: false })}>
-              {awake ? <Moon size={14} /> : <Sparkles size={14} />}{t(awake ? "desktopPet.sleep" : "desktopPet.wake")}
-            </Button>
-            <Button variant="ghost" size="sm" disabled={busy} onClick={() => void run(resetPet)}><RotateCcw size={14} />{t("desktopPet.reset")}</Button>
-            <Button variant="ghost" size="sm" disabled><MessageCircle size={14} />{t("desktopPet.chat")}</Button>
+          <div className="flex justify-end">
+            <Popover open={customize} onOpenChange={open => {
+              if (open) { setSize(String(prefs.size)); setError(""); }
+              setCustomize(open);
+            }}>
+              <PopoverTrigger render={<Button variant="outline" size="sm" className="bg-elevated-bg hover:bg-ui-tint" />}>
+                {t("desktopPet.customize")}
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-[min(19rem,calc(100vw-2rem))] p-4">
+                <PopoverTitle className="mb-3 text-sm font-semibold">{t("desktopPet.customize")}</PopoverTitle>
+                <form onSubmit={event => void saveSize(event)}>
+                  <label className="block text-[13px]">
+                    {t("desktopPet.size")}
+                    <div className="mt-1.5 flex items-center gap-2">
+                      <Input type="number" min={snapshot.sizeMin} max={snapshot.sizeMax} step={1} value={size}
+                        disabled={busy} onChange={event => setSize(event.target.value)} className="h-8 bg-elevated-bg" />
+                      <span className="text-text-secondary" aria-hidden="true">px</span>
+                    </div>
+                  </label>
+                  <div className="mt-1.5 text-xs text-text-secondary">{snapshot.sizeMin}–{snapshot.sizeMax} px</div>
+                  <div className="mt-3 flex justify-end">
+                    <Button type="submit" variant="outline" size="sm" className="bg-elevated-bg hover:bg-ui-tint"
+                      disabled={!validSize || busy}>{t("desktopPet.apply")}</Button>
+                  </div>
+                </form>
+                <div className="mt-3 space-y-2 border-t border-border-theme pt-3">
+                  {(["alwaysOnTop", "followWork", "bubbles"] as const).map(key => (
+                    <label key={key} className="flex items-center justify-between gap-3 text-[13px]">
+                      <span>{t(`desktopPet.${key}`)}</span>
+                      <Checkbox checked={prefs[key]} disabled={busy} onCheckedChange={checked => void change({ [key]: checked === true })} />
+                    </label>
+                  ))}
+                </div>
+                <div className="mt-3 flex flex-wrap gap-1 border-t border-border-theme pt-2">
+                  <Button variant="ghost" size="sm" disabled={busy} onClick={() => void run(resetPet)}><RotateCcw size={14} />{t("desktopPet.reset")}</Button>
+                  <Button variant="ghost" size="sm" disabled><MessageCircle size={14} />{t("desktopPet.chat")}</Button>
+                </div>
+                {error && <p role="alert" className="mt-2 text-xs text-red-500">{error}</p>}
+              </PopoverContent>
+            </Popover>
           </div>
         </div>
-        <div className="mt-4 divide-y divide-border-theme rounded-xl border border-border-theme bg-elevated-bg">
-          {(["enabled", "alwaysOnTop", "followWork", "bubbles"] as const).map(key => (
-            <label key={key} className="flex items-center justify-between gap-3 px-4 py-3 text-[13px]">
-              <span>{t(`desktopPet.${key}`)}</span>
-              <Checkbox checked={prefs[key]} disabled={busy} onCheckedChange={checked => change({ [key]: checked === true })} />
-            </label>
-          ))}
-          <div className="flex items-center justify-between gap-3 px-4 py-3 text-[13px]">
-            <span>{t("desktopPet.size")}</span>
-            <Select value={selectedSize} onValueChange={value => change({ size: Number(value) })}>
-              <SelectTrigger disabled={busy} aria-label={t("desktopPet.size")} className="w-28"><SelectValue placeholder={`${selectedSize} px`} /></SelectTrigger>
-              <SelectContent>{sizes.map(size => <SelectItem key={size} value={String(size)}>{size} px</SelectItem>)}</SelectContent>
-            </Select>
-          </div>
+        <h2 className="mb-3 mt-6 text-sm font-semibold">{t("desktopPet.collection")}</h2>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          {snapshot.catalog.characters.map(character => {
+            const selected = character.id === pet.id;
+            return <Button key={character.id} variant="outline" aria-pressed={selected} disabled={busy}
+              onClick={() => { if (!selected) void change({ characterId: character.id }); }}
+              className={cn("relative h-auto min-h-36 flex-col gap-2 rounded-xl bg-elevated-bg p-3 shadow-none hover:bg-ui-tint",
+                selected && "ring-1 ring-border-theme")}>
+              {selected && <Check size={14} className="absolute right-3 top-3 text-text-secondary" aria-hidden="true" />}
+              <img src={petAsset(snapshot.resourceRoot, character.thumbnail)} alt="" className="h-20 w-full object-contain" />
+              <span className="text-center">{character.name}</span>
+            </Button>;
+          })}
         </div>
       </>}
     </section>

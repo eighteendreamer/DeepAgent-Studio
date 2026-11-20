@@ -1,12 +1,14 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CircleUser, LogOut, Settings } from "lucide-react";
+import { CircleUser, LogOut, PawPrint, Settings } from "lucide-react";
 import { MENU_ITEM_ATTR, SlidingMenuList } from "./ui/SlidingMenuList";
 import { MENU_LIST, MOTION } from "./ui/motion";
 import { MorphingMenuShell } from "./ui/MorphingMenuShell";
 import { HoverInfo } from "./ui/HoverInfo";
 import { cn } from "./shadcn/utils";
 import { Button } from "./shadcn/button";
+import { message } from "./message";
+import { getPetPreferences, isPetAwake, listenPet, nativePet, updatePet, type Preferences } from "../pet/api";
 
 const SETTINGS_MENU = {
   pad: "px-2 py-1.5",
@@ -27,6 +29,38 @@ type Props = {
 export function SidebarSettingsMenu({ onOpenSettings, onLogout, compact = false }: Props) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  const [petPreferences, setPetPreferences] = useState<Preferences>();
+  const [petBusy, setPetBusy] = useState(false);
+  useEffect(() => {
+    if (!nativePet || !open) return;
+    let live = true;
+    let receivedUpdate = false;
+    const listener = listenPet<Preferences>("preferences", preferences => {
+      receivedUpdate = true;
+      if (live) setPetPreferences(preferences);
+    });
+    void listener.then(getPetPreferences).then(preferences => {
+      if (live && !receivedUpdate) setPetPreferences(preferences);
+    }).catch(error => { if (live) message.error(String(error)); });
+    return () => {
+      live = false;
+      setPetPreferences(undefined);
+      void listener.then(unlisten => unlisten(), () => undefined);
+    };
+  }, [open]);
+  const petAwake = isPetAwake(petPreferences);
+  const togglePet = async () => {
+    if (!petPreferences || petBusy) return;
+    setPetBusy(true);
+    try {
+      await updatePet({ enabled: !petAwake });
+      setOpen(false);
+    } catch (error) {
+      message.error(String(error));
+    } finally {
+      setPetBusy(false);
+    }
+  };
   const layoutId = useId().replace(/:/g, "");
   const run = (action: () => void) => { setOpen(false); action(); };
   const menuContent = (
@@ -45,6 +79,16 @@ export function SidebarSettingsMenu({ onOpenSettings, onLogout, compact = false 
           <Settings className={SETTINGS_MENU.icon} />
           {t("sidebar.settings")}
         </div>
+        {nativePet && <Button
+          {...{ [MENU_ITEM_ATTR]: "desktop-pet" }}
+          variant="ghost"
+          className={cn(SETTINGS_MENU.row, "h-auto justify-start gap-0 font-normal", MOTION.fast)}
+          disabled={!petPreferences || petBusy}
+          onClick={() => void togglePet()}
+        >
+          <PawPrint className={SETTINGS_MENU.icon} />
+          {t(!petPreferences ? "desktopPet.enabled" : petAwake ? "desktopPet.turnOff" : "desktopPet.turnOn")}
+        </Button>}
         <div
           {...{ [MENU_ITEM_ATTR]: "logout" }}
           className={cn(SETTINGS_MENU.row, MOTION.fast)}
