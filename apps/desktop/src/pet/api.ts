@@ -47,6 +47,8 @@ export const updatePet = (patch: Partial<Preferences>) => invoke<Preferences>("p
 export const resetPet = () => invoke<void>("pet_reset_position");
 export const petReady = () => invoke<void>("pet_ready");
 export const petDrag = () => invoke<void>("pet_start_drag");
+export const petRoam = (request: { preferRight: boolean; durationMs: number } | null) =>
+  invoke<boolean | null>("pet_roam", { request });
 export const openMain = () => invoke<void>("pet_open_main");
 export const getWork = () => invoke<WorkSnapshot>("pet_work_snapshot");
 export const renderFailed = (error: string) => invoke<void>("pet_render_failed", { error });

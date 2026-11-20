@@ -9,18 +9,19 @@ interface Props {
   variant: number;
   active: boolean;
   onReady: () => void;
+  onPlaying?: (video: HTMLVideoElement, actionName: string) => void;
   onEnded: () => void;
   onFailure: (error: string) => void;
 }
 
-export function PetPlayer({ character, root, state, actionName, variant, active, onReady, onEnded, onFailure }: Props) {
+export function PetPlayer({ character, root, state, actionName, variant, active, onReady, onPlaying, onEnded, onFailure }: Props) {
   const first = useRef<HTMLVideoElement>(null);
   const second = useRef<HTMLVideoElement>(null);
   const front = useRef<HTMLVideoElement | null>(null);
   const requestedVideo = useRef<HTMLVideoElement | null>(null);
   const [showPoster, setShowPoster] = useState(true);
-  const callbacks = useRef({ onReady, onEnded, onFailure });
-  callbacks.current = { onReady, onEnded, onFailure };
+  const callbacks = useRef({ onReady, onPlaying, onEnded, onFailure });
+  callbacks.current = { onReady, onPlaying, onEnded, onFailure };
 
   useEffect(() => {
     const slots = [first.current, second.current];
@@ -63,6 +64,7 @@ export function PetPlayer({ character, root, state, actionName, variant, active,
     const loadVideo = (path: string) => {
       requestedVideo.current = video;
       video.loop = Boolean(action?.loop);
+      video.style.transform = "";
       video.src = path;
       video.load();
       void video.play().catch(reason => {
@@ -91,6 +93,7 @@ export function PetPlayer({ character, root, state, actionName, variant, active,
       video.style.opacity = "1";
       setShowPoster(false);
       callbacks.current.onReady();
+      if (action) callbacks.current.onPlaying?.(video, action.name);
     };
     const error = () => { if (!outdated) fallback(video.error?.message || "Video could not be decoded"); };
     video.addEventListener("playing", playing);

@@ -55,3 +55,22 @@ test('missing or unplayable animations fall back to an available loop', () => {
   assert.equal(resolveAction(result, 'result', 0, failed).name, result.states.idle.actions[0]);
   assert.equal(resolveAction(result, 'idle', 0, result.states.idle.actions[0]), null);
 });
+
+const idleFile = path.join(__dirname, '../src/pet/idle-actions.ts');
+const idleModule = { exports: {} };
+new Function('exports', ts.transpileModule(fs.readFileSync(idleFile, 'utf8'), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+}).outputText)(idleModule.exports);
+const { chooseIdleAction, idleDelay, RUNNING_ACTION } = idleModule.exports;
+
+test('the idle rotation uses existing clips and does not repeat a clip when alternatives exist', () => {
+  const all = Array.from({ length: 100 }, (_, i) => chooseIdleAction(character, undefined, i / 100));
+  for (const name of ['东张西望', '原地小憩沉眠', RUNNING_ACTION, '吃白饭', '原地专心玩魔方']) {
+    assert.ok(all.includes(name), name);
+  }
+  assert.ok(all.filter(name => name === '东张西望').length > all.filter(name => name === RUNNING_ACTION).length);
+  assert.notEqual(chooseIdleAction(character, '东张西望', 0), '东张西望');
+  assert.equal(chooseIdleAction({ actions: {} }), undefined);
+  assert.equal(idleDelay(0), 45000);
+  assert.equal(idleDelay(1), 90000);
+});

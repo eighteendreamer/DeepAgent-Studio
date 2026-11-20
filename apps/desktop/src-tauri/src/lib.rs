@@ -7794,6 +7794,7 @@ pub fn run() {
             pet::pet_ready,
             pet::pet_set_interaction,
             pet::pet_start_drag,
+            pet::pet_roam,
             pet::pet_reset_position,
             pet::pet_work_snapshot,
             pet::pet_open_main,

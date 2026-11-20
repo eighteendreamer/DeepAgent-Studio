@@ -4,6 +4,7 @@ import { Button } from "../components/shadcn/button";
 import { ContextMenu, ContextMenuTrigger } from "../components/shadcn/base-context-menu";
 import { PetMenu } from "./PetMenu";
 import { PetPlayer } from "./PetPlayer";
+import { useIdleAction } from "./useIdleAction";
 import { getPet, getWork, isPetAwake, listenPet, petDrag, petReady, renderFailed, setPetInteraction,
   workState, type Completion, type PetSnapshot, type Preferences, type Rect, type WorkState } from "./api";
 
@@ -19,6 +20,7 @@ export function PetWindow() {
   const [work, setWork] = useState<WorkState>("idle");
   const [completion, setCompletion] = useState<Completion | null>(null);
   const [playingClick, setPlayingClick] = useState(false);
+  const [pointerHeld, setPointerHeld] = useState(false);
   const [manualAction, setManualAction] = useState<string>();
   const [variant, setVariant] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -55,9 +57,10 @@ export function PetWindow() {
   const prefs = snapshot?.preferences;
   const character = snapshot?.catalog.characters.find(item => item.id === prefs?.characterId);
   const awake = isPetAwake(prefs);
-  const follow = visible && Boolean(prefs?.followWork);
+  const follow = Boolean(prefs?.followWork);
   useEffect(() => {
-    if (!follow) { setWork("idle"); setCompletion(null); return; }
+    if (!visible) { setWork("idle"); setCompletion(null); return; }
+    if (!follow) setCompletion(null);
     let live = true;
     let pending = false;
     let failureReported = false;
@@ -72,25 +75,28 @@ export function PetWindow() {
         if (live && !failureReported) { report(error); failureReported = true; }
       } finally { pending = false; }
     };
-    const listener = listenPet<Completion>("completed", status => {
+    const listener = follow ? listenPet<Completion>("completed", status => {
       if (!live) return;
       setCompletion(status);
       window.clearTimeout(completionTimer.current);
       completionTimer.current = window.setTimeout(() => setCompletion(null), 7000);
       void poll();
-    });
-    void listener.catch(report);
+    }) : undefined;
+    void listener?.catch(report);
     void poll();
     const timer = window.setInterval(() => void poll(), 1200);
     return () => {
       live = false;
-      void listener.then(stop => stop(), () => undefined);
+      void listener?.then(stop => stop(), () => undefined);
       window.clearInterval(timer);
       window.clearTimeout(completionTimer.current);
     };
-  }, [follow]);
+  }, [visible, follow]);
 
-  const cue = work === "idle" && completion ? completion === "completed" ? "success" : "error" : work;
+  const cue = !follow ? "idle" : work === "idle" && completion ? completion === "completed" ? "success" : "error" : work;
+  const canIdle = awake && visible && work === "idle" && cue === "idle"
+    && !manualAction && !playingClick && !pointerHeld && !menuOpen;
+  const idle = useIdleAction(character, canIdle, report);
   const animation = manualAction ? "idle" : playingClick ? "click" : cue;
   const showBubble = prefs?.bubbles && !manualAction && !playingClick && (cue === "waiting" || cue === "success" || cue === "error");
   useLayoutEffect(() => {
@@ -116,22 +122,29 @@ export function PetWindow() {
   const hit = character.hitBox;
   const canvas = character.canvas;
   return <main className="pet-stage" style={{ top: snapshot.stageTop, left: snapshot.stageLeft, right: snapshot.stageLeft, aspectRatio: `${canvas.width}/${canvas.height}` }}>
-    <PetPlayer key={character.id} character={character} root={snapshot.resourceRoot} state={animation} actionName={manualAction} variant={variant} active={awake}
+    <PetPlayer key={character.id} character={character} root={snapshot.resourceRoot} state={animation} actionName={manualAction ?? idle.name} variant={variant} active={awake}
+      onPlaying={idle.onPlaying}
       onReady={() => {
         if (!ready.current) { ready.current = true; void petReady().catch(error => { ready.current = false; report(error); }); }
       }} onEnded={() => {
         if (manualAction) setManualAction(undefined);
         else if (playingClick) setPlayingClick(false);
+        else if (idle.name) idle.stop();
         else if (cue === "success" || cue === "error") setCompletion(null);
       }} onFailure={report} />
     {showBubble && <div ref={bubble} role="status" className="pet-bubble">{t(`desktopPet.${cue}`)}</div>}
-    <ContextMenu onOpenChange={setMenuOpen}>
+    <ContextMenu onOpenChange={open => {
+      if (open) idle.stop();
+      setMenuOpen(open);
+    }}>
       <ContextMenuTrigger render={
         <Button ref={body} aria-label={character.name} variant="ghost" className="pet-hit" style={{
           left: `${hit.x / canvas.width * 100}%`, top: `${hit.y / canvas.height * 100}%`,
           width: `${hit.width / canvas.width * 100}%`, height: `${hit.height / canvas.height * 100}%`,
         }} onPointerDown={event => {
           if (event.button !== 0 || !event.isPrimary) return;
+          idle.stop();
+          setPointerHeld(true);
           pointer.current = { id: event.pointerId, x: event.clientX, y: event.clientY, dragged: false };
           event.currentTarget.setPointerCapture(event.pointerId);
         }} onPointerMove={event => {
@@ -141,20 +154,28 @@ export function PetWindow() {
           start.dragged = true;
           event.currentTarget.releasePointerCapture(event.pointerId);
           // The OS owns the drag; switching videos here can finish loading after release.
-          void petDrag().catch(report);
+          void petDrag().catch(report).finally(() => {
+            if (pointer.current === start || !pointer.current) setPointerHeld(false);
+          });
+        }} onPointerUp={event => {
+          if (pointer.current?.id === event.pointerId && !pointer.current.dragged) setPointerHeld(false);
         }} onPointerCancel={event => {
-          if (pointer.current?.id === event.pointerId) pointer.current = null;
+          if (pointer.current?.id !== event.pointerId) return;
+          if (!pointer.current.dragged) setPointerHeld(false);
+          pointer.current = null;
         }} onClick={event => {
           const start = pointer.current;
           pointer.current = null;
           // A keyboard click has no pointer; a mouse click must come from a completed press.
           if (event.detail !== 0 && (!start || start.dragged)) return;
+          idle.stop();
           setManualAction(undefined);
           setVariant(value => value + 1);
           setPlayingClick(true);
         }} />
       } />
       <PetMenu character={character} open={menuOpen} bounds={menuBounds} onError={report} onPlay={name => {
+        idle.stop();
         setPlayingClick(false);
         setManualAction(name);
         setVariant(value => value + 1);

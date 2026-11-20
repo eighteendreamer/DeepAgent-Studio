@@ -12,6 +12,9 @@ use crate::pet_store::{
     MIN_SIZE,
 };
 
+#[path = "pet_motion.rs"]
+mod motion;
+
 const WINDOW_LABEL: &str = "desktop-pet";
 const STAGE_TOP: f64 = 88.0;
 const STAGE_BOTTOM: f64 = 40.0;
@@ -77,9 +80,15 @@ pub struct PetManager {
     interaction: Mutex<Interaction>,
     ready: AtomicBool,
     lifecycle: Mutex<()>,
+    roam: Mutex<Option<motion::Roam>>,
 }
 
 impl PetManager {
+    fn stop_roam(&self) -> Result<(), String> {
+        *self.roam.lock().map_err(|e| e.to_string())? = None;
+        Ok(())
+    }
+
     fn preferences(&self) -> Result<Preferences, String> {
         self.store.lock().map_err(|e| e.to_string())?.preferences()
     }
@@ -109,6 +118,7 @@ impl PetManager {
     }
 
     fn sync_window(&self, app: &tauri::AppHandle, reset: bool) -> Result<(), String> {
+        self.stop_roam()?;
         let preferences = self.preferences()?;
         if !preferences.awake() {
             if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
@@ -331,14 +341,135 @@ pub fn pet_set_interaction(
     {
         return Err("桌宠交互区域无效".into());
     }
+    if interaction.menu_open {
+        manager.stop_roam()?;
+    }
     *manager.interaction.lock().map_err(|e| e.to_string())? = interaction;
     Ok(())
 }
 
+// Native Windows dragging owns pointer capture; WebView2 doesn't always see the release.
+#[cfg(windows)]
+fn mouse_button_held() -> bool {
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetAsyncKeyState(key: i32) -> i16;
+    }
+    const VK_LBUTTON: i32 = 0x01;
+    const VK_RBUTTON: i32 = 0x02;
+    // Check both physical buttons so swapped primary buttons also work.
+    unsafe { GetAsyncKeyState(VK_LBUTTON) < 0 || GetAsyncKeyState(VK_RBUTTON) < 0 }
+}
+
 #[tauri::command]
-pub fn pet_start_drag(window: tauri::WebviewWindow) -> Result<(), String> {
+pub async fn pet_start_drag(window: tauri::WebviewWindow) -> Result<(), String> {
     pet_window(&window)?;
-    window.start_dragging().map_err(|e| e.to_string())
+    window.state::<PetManager>().stop_roam()?;
+    window.start_dragging().map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    while mouse_button_held() && window.is_visible().unwrap_or(false) {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn pet_roam(
+    window: tauri::WebviewWindow,
+    request: Option<motion::Request>,
+) -> Result<Option<bool>, String> {
+    pet_window(&window)?;
+    let manager = window.state::<PetManager>();
+    manager.stop_roam()?;
+    let Some(request) = request else {
+        return Ok(None);
+    };
+    if !window.is_visible().map_err(|e| e.to_string())?
+        || manager
+            .interaction
+            .lock()
+            .map_err(|e| e.to_string())?
+            .menu_open
+    {
+        return Ok(None);
+    }
+    #[cfg(windows)]
+    if mouse_button_held() {
+        return Ok(None);
+    }
+    let origin = window.inner_position().map_err(|e| e.to_string())?;
+    let origin = Position {
+        x: origin.x,
+        y: origin.y,
+    };
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let frame = offset_position(origin, scale, 1.0);
+    let width = pet_frame(manager.preferences()?.size)
+        .to_physical::<u32>(scale)
+        .width;
+    let Some(monitor) = window
+        .monitor_from_point(
+            f64::from(frame.x) + f64::from(width) / 2.0,
+            f64::from(frame.y),
+        )
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(None);
+    };
+    let Some(roam) =
+        motion::Roam::plan(origin, frame, width, monitor_rect(&monitor), scale, request)
+    else {
+        return Ok(None);
+    };
+    let started = roam.started;
+    let right = roam.goes_right();
+    *manager.roam.lock().map_err(|e| e.to_string())? = Some(roam);
+    tauri::async_runtime::spawn(advance_roam(window.clone(), started));
+    Ok(Some(right))
+}
+
+async fn advance_roam(window: tauri::WebviewWindow, started: Instant) {
+    loop {
+        tokio::time::sleep(Duration::from_millis(16)).await;
+        // Keep only one tick queued if the desktop thread is busy.
+        let (completed, tick) = tokio::sync::oneshot::channel();
+        let target = window.clone();
+        if let Err(error) = window.run_on_main_thread(move || {
+            let _ = completed.send(roam_tick(&target, started));
+        }) {
+            if let Ok(mut slot) = window.state::<PetManager>().roam.lock() {
+                slot.take_if(|roam| roam.started == started);
+            }
+            report(window.app_handle(), "pet_roam_failed", &error.to_string());
+            return;
+        }
+        if !matches!(tick.await, Ok(true)) {
+            return;
+        }
+    }
+}
+
+fn roam_tick(window: &tauri::WebviewWindow, started: Instant) -> bool {
+    let manager = window.state::<PetManager>();
+    let Ok(mut active) = manager.roam.lock() else {
+        return false;
+    };
+    let Some(roam) = active.as_mut().filter(|roam| roam.started == started) else {
+        return false;
+    };
+    let (next, done) = roam.advance(started.elapsed());
+    let moved = next.map_or(Ok(()), |next| {
+        window.set_position(tauri::PhysicalPosition::new(next.x, next.y))
+    });
+    if done || moved.is_err() {
+        *active = None;
+    }
+    drop(active);
+    if let Err(error) = moved {
+        report(window.app_handle(), "pet_roam_failed", &error.to_string());
+        return false;
+    }
+    !done
 }
 
 #[tauri::command]
@@ -426,6 +557,7 @@ pub fn setup(app: &tauri::AppHandle, root: PathBuf) {
         interaction: Mutex::new(Interaction::default()),
         ready: AtomicBool::new(false),
         lifecycle: Mutex::new(()),
+        roam: Mutex::new(None),
     });
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -614,6 +746,7 @@ fn allow_invoke(invoke: &tauri::ipc::Invoke<tauri::Wry>) -> bool {
                 | "pet_ready"
                 | "pet_set_interaction"
                 | "pet_start_drag"
+                | "pet_roam"
                 | "pet_reset_position"
                 | "pet_work_snapshot"
                 | "pet_open_main"
