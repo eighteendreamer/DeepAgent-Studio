@@ -1,5 +1,8 @@
 import { useMemo } from "react";
-import { BookOpen, Bot, ChevronRight, FileCode, Folder, GitBranch, Globe, ListChecks, Search, Terminal, Wrench } from "lucide-react";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { useTranslation } from "react-i18next";
+import { ImagePreviewTrigger } from "../ImagePreviewTrigger";
+import { BookOpen, Bot, ChevronRight, FileCode, Folder, GitBranch, Globe, ImageIcon, ListChecks, Search, Terminal, Wrench } from "lucide-react";
 import type { ToolCall } from "../../types";
 import type { DagExecution } from "../../types/dag";
 import { Button } from "../shadcn/button";
@@ -33,15 +36,19 @@ export function ProcessToolRow({ tool }: { tool: ToolCall }) {
 function StandardToolRow({ tool }: { tool: ToolCall }) {
   const [open, toggle] = useProcessDetail("tool:" + tool.call_id);
   const summary = useMemo(() => presentTool(tool), [tool]);
+  const { t } = useTranslation();
+  const images = tool.status === "ok" ? (tool.images ?? []).flatMap(({ id, path }) => path ? [{ id, path }] : []) : [];
   const status = statuses[tool.status];
-  const Icon = icons[summary.kind as keyof typeof icons] || Wrench;
-  const canOpen = Boolean(summary.raw || summary.read || summary.command || summary.changes.length || summary.skillBody || summary.entries);
+  const label = images.length ? t("composer.attachments.viewedImages", { count: images.length })
+    : tool.name === "screen_capture" ? t("composer.attachments.captureImage") : summary.label;
+  const Icon = images.length || tool.name === "screen_capture" ? ImageIcon : icons[summary.kind as keyof typeof icons] || Wrench;
+  const canOpen = Boolean(images.length || summary.raw || summary.read || summary.command || summary.changes.length || summary.skillBody || summary.entries);
   return <div className="min-w-0">
     <Button variant="ghost" aria-expanded={open && canOpen} onClick={() => canOpen && toggle()}
-      aria-label={[summary.label, summary.target, status.label].filter(Boolean).join(" · ")}
+      aria-label={[label, summary.target, status.label].filter(Boolean).join(" · ")}
       className="group/tool h-auto w-full min-w-0 justify-start gap-2 rounded-md px-1 py-1 text-left text-[13px] font-normal leading-5 hover:bg-hover-bg">
       <Icon size={13} className="shrink-0 text-text-secondary/80" />
-      <span className="shrink-0 text-text-base">{summary.label}</span>
+      <span className="shrink-0 text-text-base">{label}</span>
       {summary.target && <HoverInfo content={summary.target}><code className="min-w-0 truncate rounded border border-border-theme bg-hover-bg/40 px-1.5 py-0.5 font-mono text-[11px] text-text-secondary">{summary.target}</code></HoverInfo>}
       {summary.kind === "read" && summary.description && <span className="shrink-0 text-[11px] text-text-secondary">{summary.description}</span>}
       <span className="ml-auto flex shrink-0 items-center gap-2 text-[11px]">
@@ -51,7 +58,15 @@ function StandardToolRow({ tool }: { tool: ToolCall }) {
       </span>
     </Button>
     <CollapseBlurPanel open={open && canOpen} innerClassName="ml-5 mt-1 mb-2 min-w-0">
-      {open && <ToolDetail summary={summary} tool={tool} />}
+      {open && (images.length ? <div className="flex flex-wrap gap-2">
+        {images.map((image, index) => <ImagePreviewTrigger
+          key={`${image.id}:${index}`}
+          src={convertFileSrc(image.path)}
+          alt={summary.target || label}
+          triggerClassName="max-w-full rounded-lg border border-border-theme"
+          imageClassName="block max-h-32 w-auto object-contain"
+        />)}
+      </div> : <ToolDetail summary={summary} tool={tool} />)}
     </CollapseBlurPanel>
   </div>;
 }

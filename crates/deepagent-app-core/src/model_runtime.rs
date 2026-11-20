@@ -26,7 +26,10 @@ pub(crate) struct RunModelPlan {
 }
 
 impl RunModelPlan {
-    #[cfg(all(windows, feature = "desktop-screen"))]
+    #[cfg(all(
+        feature = "desktop-screen",
+        any(windows, target_os = "macos", target_os = "linux")
+    ))]
     pub(crate) fn accepts_tool_images(&self) -> bool {
         matches!(
             self.config.wire_mode,

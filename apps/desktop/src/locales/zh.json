@@ -1068,6 +1068,9 @@
     "attachments": {
       "limit": "最多可添加 {{count}} 个附件",
       "recognizing": "识别中",
+      "captureImage": "截取图像",
+      "viewedImages_one": "已查看 {{count}} 张图像",
+      "viewedImages_other": "已查看 {{count}} 张图像",
       "processing": "处理中",
       "failed": "处理失败",
       "readFailed": "读取文件失败",

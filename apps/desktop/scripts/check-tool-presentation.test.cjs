@@ -70,6 +70,11 @@ function timelineFixture(tools) {
     "CodeBlockActions", "CodeBlockCopyButton"];
   const dependencies = {
     react: { useMemo: fn => fn() },
+    "@tauri-apps/api/core": { convertFileSrc: value => `asset:${value}` },
+    "react-i18next": { useTranslation: () => ({ t: (key, options) =>
+      key.endsWith(".viewedImages") ? `Viewed ${options.count} image` : "Capture screenshot",
+    }) },
+    "../ImagePreviewTrigger": { ImagePreviewTrigger: "image-preview" },
     "lucide-react": new Proxy({}, { get: (_, key) => `icon-${key}` }),
     "../shadcn/button": { Button: "button" },
     "../ui/HoverInfo": { HoverInfo: ({ children }) => children },
@@ -120,6 +125,19 @@ function text(tree) {
   if (typeof tree !== "object") return String(tree);
   return text(tree.props.children);
 }
+
+test("a screenshot step opens one preview for the stored image", () => {
+  const draw = timelineFixture([tool({ name: "screen_capture", output: { window_title: "Test window" },
+    images: [{ kind: "image", id: "screen_1", path: "fixture/capture.png" }],
+  })]);
+  const step = nodes(draw()).find(node => node.type === "button");
+  assert.match(text(step), /Viewed 1 image.*Test window/);
+  assert.equal(nodes(draw()).filter(node => node.type === "image-preview").length, 0);
+  step.props.onClick();
+  const previews = nodes(draw()).filter(node => node.type === "image-preview");
+  assert.equal(previews.length, 1);
+  assert.equal(previews[0].props.src, "asset:fixture/capture.png");
+});
 
 test("one click on a singleton skill, file, directory or command reveals its content", () => {
   for (const [fields, expected] of [

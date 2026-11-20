@@ -192,6 +192,16 @@ function asObjectRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+function toolResultImages(content: unknown) {
+  return Array.isArray(content) ? content.flatMap((value) => {
+    const part = asObjectRecord(value);
+    if (part?.type !== "image") return [];
+    const image = asObjectRecord(part.attachment);
+    if (image?.kind !== "image" || typeof image.id !== "string" || typeof image.path !== "string") return [];
+    return [{ id: image.id, path: image.path, kind: "image" as const }];
+  }) : undefined;
+}
+
 function mapUsageBuckets(usage: ConversationUsageBuckets): TokenUsageRequest {
   return {
     promptTokens: usage.prompt_tokens,
@@ -243,6 +253,7 @@ function mapConversationToChatMessages(conversation: ConversationMessage[]): Cha
             durationMs: p.duration_ms ?? undefined,
             detail: p.detail ?? undefined,
             output: p.output ?? undefined,
+            images: p.images,
             toolKind: p.tool_kind ?? undefined,
             filePath: p.file_path ?? undefined,
             summary: p.summary ?? undefined,
@@ -1370,6 +1381,7 @@ export function App() {
                 durationMs: patch.durationMs,
                 detail: patch.detail,
                 output: patch.output,
+                images: patch.images,
                 toolKind: patch.toolKind,
                 filePath: patch.filePath,
                 summary: patch.summary,
@@ -1715,6 +1727,7 @@ export function App() {
                   ? event.summary
                   : summarize(String(event.name ?? "tool"), event.output),
               output: event.output,
+              images: event.ok ? toolResultImages(event.content) : undefined,
               toolKind: typeof event.tool_kind === "string" ? event.tool_kind : undefined,
               filePath: typeof event.file_path === "string" ? event.file_path : undefined,
               summary: typeof event.summary === "string" ? event.summary : undefined,

@@ -41,7 +41,8 @@ export function presentTool(tool: ToolCall): ToolPresentation {
   const data = record(tool.output ?? tool.detail);
   const meta = record(tool.meta);
   const name = tool.name.toLowerCase();
-  const path = tool.filePath || string(data.path) || string(args.path) || string(args.file_path) || string(meta.path);
+  const target = name === "screen_capture" ? string(data.window_title) || string(args.window_title) : "";
+  const path = target || tool.filePath || string(data.path) || string(args.path) || string(args.file_path) || string(meta.path);
   const kind = name === "skill" ? "skill" : name === "list_dir" || name === "glob" ? "directory"
     : name === "read_file" ? "read" : ["write_file", "edit_file", "multi_edit"].includes(name) ? "change"
     : ["bash", "shell"].includes(name) || tool.toolKind === "command_execution" ? "command"

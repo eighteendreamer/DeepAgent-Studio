@@ -80,7 +80,10 @@ impl ApprovalScope {
     /// prefix can stand in for (see [`deepagent_builtins::command_prefix_for`]),
     /// so no button ever offers something that silently does nothing.
     pub fn offered(tool: &str, command: Option<&str>) -> Vec<Self> {
-        #[cfg(all(windows, feature = "desktop-screen"))]
+        #[cfg(all(
+            feature = "desktop-screen",
+            any(windows, target_os = "macos", target_os = "linux")
+        ))]
         if tool == crate::screen_capture::NAME {
             return vec![Self::SingleCall];
         }
@@ -397,7 +400,10 @@ impl PendingApprovals {
             .then(|| command_of(&request.arguments))
             .flatten()
             .and_then(command_prefix_for);
-        #[cfg(all(windows, feature = "desktop-screen"))]
+        #[cfg(all(
+            feature = "desktop-screen",
+            any(windows, target_os = "macos", target_os = "linux")
+        ))]
         let screen_capture = request.tool == crate::screen_capture::NAME;
         ApprovalRequestDto {
             call_id: request.call_id.clone(),
@@ -406,13 +412,19 @@ impl PendingApprovals {
             arguments: serde_json::to_string_pretty(&request.arguments)
                 .unwrap_or_else(|_| request.arguments.to_string()),
             reason: {
-                #[cfg(all(windows, feature = "desktop-screen"))]
+                #[cfg(all(
+                    feature = "desktop-screen",
+                    any(windows, target_os = "macos", target_os = "linux")
+                ))]
                 if screen_capture {
                     crate::screen_capture::APPROVAL_REASON.into()
                 } else {
                     request.reason.clone()
                 }
-                #[cfg(not(all(windows, feature = "desktop-screen")))]
+                #[cfg(not(all(
+                    feature = "desktop-screen",
+                    any(windows, target_os = "macos", target_os = "linux")
+                )))]
                 request.reason.clone()
             },
             scopes: scopes

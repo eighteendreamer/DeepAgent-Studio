@@ -110,7 +110,10 @@ impl PlanExecutor for RunToolServices {
 pub(super) struct MainRunPreparationRequest<'a> {
     pub(super) base: ToolRegistryBuildRequest<'a>,
     pub(super) sub_base: ToolRegistryBuildRequest<'a>,
-    #[cfg(all(windows, feature = "desktop-screen"))]
+    #[cfg(all(
+        feature = "desktop-screen",
+        any(windows, target_os = "macos", target_os = "linux")
+    ))]
     pub(super) screen_capture: bool,
     pub(super) plugin_projection: Option<&'a crate::plugin_runtime::PluginRuntimeProjection>,
     pub(super) plugin_registry: Option<Arc<deepagent_mcp::McpRegistry>>,
@@ -173,7 +176,10 @@ impl RunAssembler<'_> {
             task_agent_types,
             plan_executor: Some(Arc::new(services.clone())),
             memory_backend,
-            #[cfg(all(windows, feature = "desktop-screen"))]
+            #[cfg(all(
+                feature = "desktop-screen",
+                any(windows, target_os = "macos", target_os = "linux")
+            ))]
             screen_capture: request.screen_capture,
             plan: request.plan,
             skills: self.skills.as_ref(),

@@ -282,7 +282,10 @@ async fn h219_real_main_registry_can_prepare_without_model_credentials_admission
         .prepare_main_run_tools(MainRunPreparationRequest {
             base: base(),
             sub_base: base(),
-            #[cfg(all(windows, feature = "desktop-screen"))]
+            #[cfg(all(
+                feature = "desktop-screen",
+                any(windows, target_os = "macos", target_os = "linux")
+            ))]
             screen_capture: true,
             plugin_projection: None,
             plugin_registry: None,
@@ -292,7 +295,10 @@ async fn h219_real_main_registry_can_prepare_without_model_credentials_admission
             search_threshold: 100,
         })
         .unwrap();
-    #[cfg(all(windows, feature = "desktop-screen"))]
+    #[cfg(all(
+        feature = "desktop-screen",
+        any(windows, target_os = "macos", target_os = "linux")
+    ))]
     {
         assert!(prepared.toolset.registry.get("screen_capture").is_some());
         assert!(prepared.sub_registry.get("screen_capture").is_none());

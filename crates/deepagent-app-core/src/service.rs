@@ -815,6 +815,7 @@ impl AppService {
                         duration_ms: None,
                         detail: None,
                         output: None,
+                        images: Vec::new(),
                         tool_kind: metadata.tool_kind,
                         file_path: metadata.file_path,
                         summary: metadata.summary,
@@ -827,7 +828,7 @@ impl AppService {
                     ok,
                     output,
                     duration_ms,
-                    ..
+                    content,
                 } => {
                     if let Some(&(idx, part_idx)) = tool_pos.get(call_id) {
                         if let Some(ConversationPartDto::Tool {
@@ -837,6 +838,7 @@ impl AppService {
                             duration_ms: dm,
                             detail,
                             output: tool_output,
+                            images,
                             tool_kind,
                             file_path,
                             summary,
@@ -852,6 +854,19 @@ impl AppService {
                             *dm = Some(*duration_ms);
                             *detail = Some(summarize_output_for_tool(name, output));
                             *tool_output = Some(output.clone());
+                            if *ok {
+                                *images = content
+                                    .iter()
+                                    .filter_map(|part| match part {
+                                        deepagent_core::tool_content::ToolResultPart::Image {
+                                            attachment,
+                                        } => Some(attachment.clone()),
+                                        _ => None,
+                                    })
+                                    .collect();
+                            } else {
+                                images.clear();
+                            }
                             let arguments =
                                 serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
                             let metadata = tool_ui_metadata(name, &arguments, Some(output));

@@ -556,7 +556,10 @@ where
     /// leaves the tools unregistered (headless/tests).
     pub(crate) memory_backend: Option<Arc<dyn deepagent_builtins::MemoryBackend>>,
     pub(crate) plan: deepagent_builtins::PlanMode,
-    #[cfg(all(windows, feature = "desktop-screen"))]
+    #[cfg(all(
+        feature = "desktop-screen",
+        any(windows, target_os = "macos", target_os = "linux")
+    ))]
     pub(crate) screen_capture: bool,
     pub(crate) skills: Option<&'a Arc<Mutex<crate::skills_service::SkillsService>>>,
     pub(crate) tool_search_mode: deepagent_builtins::ToolSearchMode,
@@ -583,7 +586,10 @@ where
         ),
     ));
     let cron = request.base.cron.clone();
-    #[cfg(all(windows, feature = "desktop-screen"))]
+    #[cfg(all(
+        feature = "desktop-screen",
+        any(windows, target_os = "macos", target_os = "linux")
+    ))]
     let screenshot_root = request
         .screen_capture
         .then(|| crate::data_root::UserPaths::under(request.base.db.data_root()).attachments);
@@ -607,7 +613,10 @@ where
     register_plan_execute_tool(&mut registry, request.plan_executor)?;
     register_memory_tools(&mut registry, request.memory_backend)?;
     register_knowledge_write_tool(&mut registry, knowledge.as_ref())?;
-    #[cfg(all(windows, feature = "desktop-screen"))]
+    #[cfg(all(
+        feature = "desktop-screen",
+        any(windows, target_os = "macos", target_os = "linux")
+    ))]
     if let Some(root) = screenshot_root {
         registry.register(Arc::new(crate::screen_capture::ScreenCaptureTool::new(
             root,

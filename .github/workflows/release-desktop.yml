@@ -68,6 +68,8 @@ jobs:
             patchelf \
             pkg-config \
             libasound2-dev \
+            libpipewire-0.3-dev \
+            libclang-dev \
             libdbus-1-dev
 
       - name: Install frontend dependencies

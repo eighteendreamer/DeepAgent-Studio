@@ -1,8 +1,6 @@
-//! Windows host screenshot. Registered only for local, human-approved chat runs
+//! Desktop application window screenshot. Registered only for local, human-approved chat runs
 //! that have an image-capable tool-result protocol.
-use std::ffi::c_void;
 use std::path::{Path, PathBuf};
-use std::ptr::null_mut;
 
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -12,22 +10,23 @@ use deepagent_core::tool_content::ToolResultPart;
 use deepagent_tools::{
     Permission, PermissionSet, RiskLevel, Tool, ToolDescriptor, ToolExecutionContext, ToolOutput,
 };
-use image::{codecs::png::PngEncoder, ExtendedColorType, ImageEncoder};
+use image::{codecs::png::PngEncoder, ExtendedColorType, ImageEncoder, RgbaImage};
 use serde_json::{json, Value};
-use windows_sys::Win32::Graphics::Gdi::{
-    BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GdiFlush, GetDC,
-    GetDeviceCaps, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT,
-    DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ, HORZRES, SRCCOPY, VERTRES,
-};
+
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(windows)]
+mod windows;
 
 use crate::attachment_service::AttachmentService;
 use crate::dto::AttachmentIngestDto;
 
 pub(crate) const NAME: &str = "screen_capture";
 pub(crate) const APPROVAL_REASON: &str =
-    "Capture the Windows primary display and send the screenshot to the current model for analysis.";
+    "Capture the specified application window and send the screenshot to the current model for analysis.";
 const BUCKET: &str = "screen-captures";
-const MAX_PIXELS: usize = 16 * 1024 * 1024;
 
 pub(crate) struct ScreenCaptureTool {
     attachments: PathBuf,
@@ -44,11 +43,14 @@ impl Tool for ScreenCaptureTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: NAME.into(),
-            description: "Capture the visible Windows primary display as an image for analysis. Use only if the user asks you to inspect their screen. The screenshot is sent to the current model after approval and saved in DeepAgent local attachment storage.".into(),
+            description: "Capture one application window as an image for analysis. Use only at the user’s request. Pass its exact title (ASCII case-insensitive); ask for the title if unknown. On Wayland, the user picks the window in the system dialog. No desktop or other windows are included. The screenshot is sent to the current model after approval and stored as a local attachment.".into(),
             parameters: json!({
                 "type": "object",
-                "properties": {"display": {"type": "string", "enum": ["primary"]}},
-                "required": ["display"],
+                "properties": {"window_title": {
+                    "type": "string", "minLength": 1, "maxLength": 512,
+                    "description": "Exact title of the window to capture, as shown in its title bar."
+                }},
+                "required": ["window_title"],
                 "additionalProperties": false
             }),
             risk: RiskLevel::High,
@@ -66,29 +68,100 @@ impl Tool for ScreenCaptureTool {
         arguments: Value,
         context: ToolExecutionContext,
     ) -> Result<ToolOutput> {
-        if arguments.get("display").and_then(Value::as_str) != Some("primary") {
-            return Err(CoreError::invalid(
-                "screen capture requires display=primary",
-            ));
-        }
+        let title = arguments
+            .get("window_title")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|title| !title.is_empty() && title.encode_utf16().count() <= 512)
+            .ok_or_else(|| CoreError::invalid("screen_capture requires a non-empty window_title"))?
+            .to_owned();
+        #[cfg(target_os = "linux")]
+        let (image, captured_title) = if linux::is_wayland() {
+            (
+                linux::capture_portal(&context).await?,
+                "window selected by the user".to_owned(),
+            )
+        } else {
+            (capture_named_window(&title, &context).await?, title)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let (image, captured_title) = (capture_named_window(&title, &context).await?, title);
+
         let attachments = self.attachments.clone();
-        let (png, width, height) = tokio::task::spawn_blocking(move || {
-            if context.is_cancelled() {
-                return Err(CoreError::other("screen capture cancelled"));
-            }
-            let result = capture_primary_display()?;
-            if context.is_cancelled() {
-                return Err(CoreError::other("screen capture cancelled"));
-            }
-            Ok(result)
+        tokio::task::spawn_blocking(move || {
+            check_cancelled(&context)?;
+            let (width, height) = image.dimensions();
+            check_dimensions(width, height)?;
+            let mut png = Vec::new();
+            PngEncoder::new(&mut png)
+                .write_image(image.as_raw(), width, height, ExtendedColorType::Rgba8)
+                .map_err(|error| capture_error("encode window screenshot", error))?;
+            check_cancelled(&context)?;
+            admit_capture(&attachments, &captured_title, &png, width, height)
         })
         .await
-        .map_err(|error| CoreError::other(format!("screen capture worker: {error}")))??;
-        admit_capture(&attachments, &png, width, height)
+        .map_err(|error| capture_error("store window screenshot", error))?
     }
 }
 
-fn admit_capture(root: &Path, png: &[u8], width: u32, height: u32) -> Result<ToolOutput> {
+async fn capture_named_window(title: &str, context: &ToolExecutionContext) -> Result<RgbaImage> {
+    let title = title.to_owned();
+    let context = context.clone();
+    tokio::task::spawn_blocking(move || {
+        check_cancelled(&context)?;
+        #[cfg(windows)]
+        return windows::capture(&title);
+        #[cfg(target_os = "macos")]
+        return macos::capture(&title);
+        #[cfg(target_os = "linux")]
+        return linux::capture_x11(&title);
+    })
+    .await
+    .map_err(|error| capture_error("window capture worker", error))?
+}
+
+fn unique_window<T>(mut matches: impl Iterator<Item = T>) -> Result<T> {
+    let window = matches
+        .next()
+        .ok_or_else(|| CoreError::not_found("no open window matches the exact title"))?;
+    if matches.next().is_some() {
+        return Err(CoreError::invalid(
+            "more than one window has that title; rename or close the duplicate and retry",
+        ));
+    }
+    Ok(window)
+}
+
+fn check_cancelled(context: &ToolExecutionContext) -> Result<()> {
+    if context.is_cancelled() {
+        return Err(CoreError::other("window capture cancelled"));
+    }
+    Ok(())
+}
+
+fn check_dimensions(width: u32, height: u32) -> Result<()> {
+    if !(1..=8192).contains(&width)
+        || !(1..=8192).contains(&height)
+        || u64::from(width) * u64::from(height) > 16 * 1024 * 1024
+    {
+        return Err(CoreError::invalid(
+            "window dimensions exceed the screenshot limit",
+        ));
+    }
+    Ok(())
+}
+
+fn capture_error(step: &str, error: impl std::fmt::Display) -> CoreError {
+    CoreError::other(format!("{step}: {error}"))
+}
+
+fn admit_capture(
+    root: &Path,
+    title: &str,
+    png: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<ToolOutput> {
     let store = AttachmentService::new(root.to_path_buf());
     let id = format!("screen_{}", uuid::Uuid::new_v4().simple());
     let encoded = base64::engine::general_purpose::STANDARD.encode(png);
@@ -112,10 +185,10 @@ fn admit_capture(root: &Path, png: &[u8], width: u32, height: u32) -> Result<Too
         }
     };
     let mut output =
-        ToolOutput::success(json!({"display": "primary", "width": width, "height": height}));
+        ToolOutput::success(json!({"window_title": title, "width": width, "height": height}));
     output.content = vec![
         ToolResultPart::Text {
-            text: format!("Windows primary display screenshot ({width} × {height})."),
+            text: format!("Screenshot of window {title:?} ({width} × {height})."),
         },
         ToolResultPart::Image {
             attachment: MessageAttachment {
@@ -128,120 +201,6 @@ fn admit_capture(root: &Path, png: &[u8], width: u32, height: u32) -> Result<Too
         },
     ];
     Ok(output)
-}
-
-#[derive(Default)]
-struct CaptureHandles {
-    display: HDC,
-    memory: HDC,
-    bitmap: HBITMAP,
-    previous: HGDIOBJ,
-}
-
-impl Drop for CaptureHandles {
-    fn drop(&mut self) {
-        // SAFETY: All non-null handles were acquired on the current thread.
-        // Restore the original selection before freeing the bitmap.
-        unsafe {
-            if !self.previous.is_null() {
-                SelectObject(self.memory, self.previous);
-            }
-            if !self.memory.is_null() {
-                DeleteDC(self.memory);
-            }
-            if !self.bitmap.is_null() {
-                DeleteObject(self.bitmap);
-            }
-            if !self.display.is_null() {
-                ReleaseDC(null_mut(), self.display);
-            }
-        }
-    }
-}
-
-fn capture_primary_display() -> Result<(Vec<u8>, u32, u32)> {
-    let failed = |step| CoreError::other(format!("primary display capture failed at {step}"));
-    // SAFETY: The DC and DIB stay on the current thread. The mapped pixel
-    // buffer is read only after GdiFlush and only while the bitmap is alive.
-    let (rgb, width, height) = unsafe {
-        let mut handles = CaptureHandles {
-            display: GetDC(null_mut()),
-            ..Default::default()
-        };
-        if handles.display.is_null() {
-            return Err(failed("GetDC"));
-        }
-        let width = GetDeviceCaps(handles.display, HORZRES as i32);
-        let height = GetDeviceCaps(handles.display, VERTRES as i32);
-        let pixels = (width as usize).saturating_mul(height as usize);
-        if !(1..=8192).contains(&width) || !(1..=8192).contains(&height) || pixels > MAX_PIXELS {
-            return Err(CoreError::invalid(
-                "primary display dimensions exceed the screenshot limit",
-            ));
-        }
-        handles.memory = CreateCompatibleDC(handles.display);
-        if handles.memory.is_null() {
-            return Err(failed("CreateCompatibleDC"));
-        }
-        let mut info: BITMAPINFO = std::mem::zeroed();
-        info.bmiHeader = BITMAPINFOHEADER {
-            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: width,
-            biHeight: -height,
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB,
-            ..std::mem::zeroed()
-        };
-        let mut bits: *mut c_void = null_mut();
-        handles.bitmap = CreateDIBSection(
-            handles.display,
-            &info,
-            DIB_RGB_COLORS,
-            &mut bits,
-            null_mut(),
-            0,
-        );
-        if handles.bitmap.is_null() || bits.is_null() {
-            return Err(failed("CreateDIBSection"));
-        }
-        handles.previous = SelectObject(handles.memory, handles.bitmap);
-        if handles.previous.is_null() {
-            return Err(failed("SelectObject"));
-        }
-        if BitBlt(
-            handles.memory,
-            0,
-            0,
-            width,
-            height,
-            handles.display,
-            0,
-            0,
-            SRCCOPY | CAPTUREBLT,
-        ) == 0
-            || GdiFlush() == 0
-        {
-            return Err(failed("copying pixels"));
-        }
-        // A 32-bit BI_RGB DIB has four bytes per pixel with no row padding.
-        let bgrx = std::slice::from_raw_parts(bits.cast::<u8>(), pixels * 4);
-        let rgb = bgrx
-            .chunks_exact(4)
-            .flat_map(|pixel| [pixel[2], pixel[1], pixel[0]])
-            .collect::<Vec<_>>();
-        (rgb, width as u32, height as u32)
-    };
-    let mut png = Vec::new();
-    PngEncoder::new(&mut png)
-        .write_image(&rgb, width, height, ExtendedColorType::Rgb8)
-        .map_err(|error| CoreError::other(format!("encode screenshot PNG: {error}")))?;
-    if png.len() > deepagent_models::image_input::MAX_IMAGE_BYTES {
-        return Err(CoreError::invalid(
-            "screenshot exceeds the image input size limit",
-        ));
-    }
-    Ok((png, width, height))
 }
 
 #[cfg(test)]
@@ -277,13 +236,49 @@ mod tests {
     }
 
     #[test]
+    fn window_selection_refuses_missing_and_ambiguous_targets() {
+        assert!(unique_window(std::iter::empty::<()>()).is_err());
+        assert_eq!(unique_window([17].into_iter()).unwrap(), 17);
+        assert!(unique_window([17, 42].into_iter()).is_err());
+    }
+
+    /// Run with a script-owned test window. It deliberately never scans or
+    /// captures a user's desktop when the normal test suite is run.
+    #[tokio::test]
+    #[ignore = "requires a visible test window on the local desktop"]
+    async fn captures_native_fixture_window() {
+        let title = std::env::var("DEEPAGENT_CAPTURE_TEST_WINDOW").unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let output = ScreenCaptureTool::new(root.path().into())
+            .invoke(json!({"window_title": &title}))
+            .await
+            .unwrap();
+        assert_eq!(output.value["window_title"], title);
+        let [_, ToolResultPart::Image { attachment }] = output.content.as_slice() else {
+            panic!("missing screenshot image");
+        };
+        let image = image::open(attachment.path.as_deref().unwrap())
+            .unwrap()
+            .into_rgb8();
+        assert!(image.width() >= 180 && image.height() >= 100);
+        assert!(
+            image
+                .pixels()
+                .filter(|pixel| pixel.0 == [31, 139, 197])
+                .count()
+                > 2_000,
+            "capture must contain the fixture's distinctive solid background"
+        );
+    }
+
+    #[test]
     fn screenshot_bytes_are_resolved_from_a_structured_tool_image() {
         let root = tempfile::tempdir().unwrap();
         let mut png = Vec::new();
         PngEncoder::new(&mut png)
             .write_image(&[0, 127, 255], 1, 1, ExtendedColorType::Rgb8)
             .unwrap();
-        let output = admit_capture(root.path(), &png, 1, 1).unwrap();
+        let output = admit_capture(root.path(), "Test window", &png, 1, 1).unwrap();
         assert!(output.ok);
         let ToolResultPart::Image { attachment } = &output.content[1] else {
             panic!("missing screenshot image")
@@ -299,6 +294,47 @@ mod tests {
                 base64::engine::general_purpose::STANDARD.encode(png)
             )
         );
+        use deepagent_core::clock::FixedClock;
+        use deepagent_core::{event::EventPayload, message::ToolCall};
+        use deepagent_persistence::Database;
+        use deepagent_session::Session;
+
         assert!(!serde_json::to_string(&output).unwrap().contains("base64,"));
+        let path = root.path().join("history.sqlite");
+        let id = {
+            let db = Database::open(&path).unwrap();
+            let clock = FixedClock::new(1_000);
+            let mut session = Session::create(&db, &clock, None).unwrap();
+            session
+                .append(EventPayload::ToolCallRequested {
+                    call: ToolCall {
+                        id: "capture-1".into(),
+                        name: NAME.into(),
+                        arguments: json!({"window_title": "Test window"}),
+                    },
+                })
+                .unwrap();
+            session
+                .append(EventPayload::ToolCallCompleted {
+                    call_id: "capture-1".into(),
+                    ok: true,
+                    output: output.value.clone(),
+                    content: output.content.clone(),
+                    duration_ms: 50,
+                })
+                .unwrap();
+            session.id().to_string()
+        };
+        let service = crate::service::AppService::new(Database::open(&path).unwrap());
+        let conversation = service.session_conversation(&id).unwrap();
+        let images = conversation
+            .iter()
+            .flat_map(|message| &message.parts)
+            .find_map(|part| match part {
+                crate::dto::ConversationPartDto::Tool { images, .. } => Some(images),
+                _ => None,
+            })
+            .expect("screenshot tool card");
+        assert_eq!(images.as_slice(), std::slice::from_ref(attachment));
     }
 }

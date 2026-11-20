@@ -174,7 +174,8 @@ function liveAccumulator() {
     scheduleTranscriptRender() {}, console: { log() {} },
     asObjectRecord: value => value, summarize: (_, output) => String(output ?? ""),
   });
-  const script = "let modelAttemptBaseParts = null;\nlet observedTerminal = null;\nlet settledErrorReported = false;\n" + names.map(name => `const ${name} = ${declarations.get(name)};`).join("\n") + "\nglobalThis.dispatch = onEvent; globalThis.finish = finishRun; globalThis.appendSettledRunError = appendSettledRunError;";
+  const parseImages = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "toolResultImages");
+  const script = parseImages.getText(ast) + "\nlet modelAttemptBaseParts = null;\nlet observedTerminal = null;\nlet settledErrorReported = false;\n" + names.map(name => `const ${name} = ${declarations.get(name)};`).join("\n") + "\nglobalThis.dispatch = onEvent; globalThis.finish = finishRun; globalThis.appendSettledRunError = appendSettledRunError;";
   vm.runInContext(ts.transpileModule(script, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText, context);
   return {
     dispatch: context.dispatch, finish: context.finish,
@@ -210,6 +211,17 @@ test("real live events fold output, reopen tools/approval/retry, preserve marker
   assert.equal(live.latest().turn.phase, "settled");
   assert.equal(live.user().turn, live.latest().turn);
   assert.match(live.latest().turn.finalAnswer, /network stopped/);
+});
+
+test("structured screenshot completion retains its file reference and ignores ordinary output", () => {
+  const live = liveAccumulator();
+  const attachment = { id: "screen_1", kind: "image", path: "fixture/capture.png" };
+  live.dispatch({ type: "tool_started", name: "screen_capture", call_id: "s1" });
+  live.dispatch({ type: "tool_completed", name: "screen_capture", call_id: "s1", ok: true,
+    output: { images: [{ id: "fake", path: "never-shown.png" }] },
+    content: [{ type: "text", text: "captured" }, { type: "image", attachment }],
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(live.latest().parts[0].tool.images)), [attachment]);
 });
 
 test("authoritative completion is displayed even when earlier narration already streamed", () => {

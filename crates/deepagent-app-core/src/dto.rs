@@ -502,6 +502,9 @@ pub enum ConversationPartDto {
         /// `detail` as a compact fallback.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         output: Option<serde_json::Value>,
+        /// Image references from the durable tool result. Binary data stays in the attachment store.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<deepagent_core::message::MessageAttachment>,
         /// Coarse UI category for row-based rendering.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tool_kind: Option<String>,

@@ -94,15 +94,20 @@ portable-pty = "0.8"
 # ships no backend by default, so we must enable one explicitly or `set` becomes
 # a no-op that never persists. These are additive features on the same crate.
 [target.'cfg(windows)'.dependencies]
+xcap = { version = "=0.9.10", features = ["wgc"], optional = true }
 keyring = { version = "3", optional = true, features = ["windows-native"] }
 # The confined SDK profile uses the already-locked Win32 bindings, not shell
 # launchers or machine-wide sandbox configuration.
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Authorization", "Win32_Security_Isolation", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_SystemInformation", "Win32_System_WindowsProgramming"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+screencapturekit = { version = "=10.0.3", features = ["macos_14_0"], optional = true }
 keyring = { version = "3", optional = true, features = ["apple-native"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "=0.13.13", features = ["screencast"], optional = true }
+pipewire = { version = "=0.10.1", optional = true }
+x11rb = { version = "=0.13.2", features = ["composite"], optional = true }
 keyring = { version = "3", optional = true, features = ["sync-secret-service"] }
 
 [features]
@@ -121,8 +126,8 @@ web = ["deepagent-builtins/http", "deepagent-mcp/http", "deepagent-models/http"]
 # RuntimeService core (registry / resolve / sha256 verify / extract) is always
 # compiled; this enables the optional image support used by the desktop app.
 runtimes = ["dep:image"]
-# Host screenshot capability is explicitly selected by the Windows desktop shell.
-desktop-screen = ["dep:image", "windows-sys/Win32_Graphics_Gdi"]
+# Host screenshot capability is explicitly selected by the desktop shell.
+desktop-screen = ["dep:image", "dep:xcap", "dep:screencapturekit", "dep:ashpd", "dep:pipewire", "dep:x11rb"]
 # Real microphone capture for the recording panel (office-agent). The desktop
 # app turns it on; without it the RecordingService state machine still compiles
 # and runs (capture returns an "audio not enabled" error).

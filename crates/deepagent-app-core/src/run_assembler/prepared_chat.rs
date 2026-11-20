@@ -313,7 +313,10 @@ impl RunAssembler<'_> {
             discovered: discovered.clone(),
             search_mode,
             search_threshold,
-            #[cfg(all(windows, feature = "desktop-screen"))]
+            #[cfg(all(
+                feature = "desktop-screen",
+                any(windows, target_os = "macos", target_os = "linux")
+            ))]
             screen_capture: effective_env_mode != Some("remote")
                 && environment.policy == crate::settings::ApprovalPolicy::AlwaysAsk
                 && environment.sandbox_backend != Some(SandboxBackendKind::WindowsSandbox)

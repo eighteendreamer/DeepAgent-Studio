@@ -114,7 +114,10 @@ pub mod runtime_service;
 mod runtime_snapshot;
 pub mod sandbox_backend;
 pub mod sandboxie_service;
-#[cfg(all(windows, feature = "desktop-screen"))]
+#[cfg(all(
+    feature = "desktop-screen",
+    any(windows, target_os = "macos", target_os = "linux")
+))]
 mod screen_capture;
 pub mod secret_store;
 pub mod service;

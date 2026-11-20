@@ -163,6 +163,15 @@ export interface DiffResult {
   removed: number;
 }
 
+/** Image reference from a structured tool result, with bytes stored separately. */
+export interface ToolImageReference {
+  id: string;
+  kind: "image";
+  media_type?: string;
+  path?: string;
+  sha256?: string;
+}
+
 /** A live tool-call card shown inline in an assistant message. */
 export interface ToolCall {
   /** Correlation id from the runtime (matches started→completed events). */
@@ -180,6 +189,7 @@ export interface ToolCall {
   /** Raw tool output, when available, for richer tool cards. */
   output?: unknown;
   /** Coarse backend-provided category for row-based rendering. */
+  images?: ToolImageReference[];
   toolKind?: string;
   /** Primary file path / URL / target, when known. */
   filePath?: string;
@@ -231,6 +241,7 @@ export type ConversationPart =
       duration_ms: number | null;
       detail: string | null;
       output?: unknown | null;
+      images?: ToolImageReference[];
       tool_kind?: string | null;
       file_path?: string | null;
       summary?: string | null;
