@@ -97,7 +97,6 @@ import type {
   WebSearchSettings,
   WebSearchEngineId,
   WebSearchEngineTestResult,
-  ResponsesApiSettings,
   RunAttachment,
 } from "./types";
 
@@ -143,7 +142,6 @@ export type SettingsChangedReason =
   | "models"
   | "chat_model"
   | "reasoning_effort"
-  | "responses_settings"
   | "terminal_shell"
   | "skill_catalog"
   | "skill_ai_review"
@@ -407,29 +405,6 @@ export async function setReasoningEffort(
     return view;
   }
   throw new Error("changing reasoning effort requires the desktop app");
-}
-
-/** Validate and persist the global DeepSeek Responses developer JSON. */
-export async function setResponsesDeveloperJson(json: string): Promise<SettingsView> {
-  const invoke = getInvoke();
-  if (!invoke) throw new Error("Responses developer settings require the desktop app");
-  const view = await invoke<SettingsView>("set_responses_developer_json", { json });
-  emitSettingsChanged({ reason: "responses_settings" });
-  return view;
-}
-
-export async function getResponsesSettings(): Promise<ResponsesApiSettings> {
-  const invoke = getInvoke();
-  if (!invoke) throw new Error("Responses settings require the desktop app");
-  return await invoke<ResponsesApiSettings>("get_responses_settings");
-}
-
-export async function setResponsesSettings(settings: ResponsesApiSettings): Promise<SettingsView> {
-  const invoke = getInvoke();
-  if (!invoke) throw new Error("Responses settings require the desktop app");
-  const view = await invoke<SettingsView>("set_responses_settings", { settings });
-  emitSettingsChanged({ reason: "responses_settings" });
-  return view;
 }
 
 /** Persist the preferred integrated-terminal shell. */

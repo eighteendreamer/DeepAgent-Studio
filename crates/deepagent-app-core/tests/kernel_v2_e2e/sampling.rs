@@ -59,15 +59,13 @@ async fn h166_kernel_sampling_matches_wire_and_survives_sqlite_cold_reopen() {
             .harness_models()
             .select_model("deepseek", "deepseek-flash")
             .unwrap();
-        settings
-            .set_responses_settings(ResponsesApiSettings {
-                top_p: Some(0.2),
-                reasoning_effort: Some("none".into()),
-                ..Default::default()
-            })
-            .unwrap();
-        settings
-            .set_responses_developer_json(r#"{"top_p":0.96,"reasoning":{"effort":"high"}}"#)
+        db.seed_responses_settings(ResponsesApiSettings {
+            top_p: Some(0.2),
+            reasoning_effort: Some("none".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        db.seed_responses_developer_json(r#"{"top_p":0.96,"reasoning":{"effort":"high"}}"#)
             .unwrap();
         let live = Arc::new(Mutex::new(Vec::new()));
         let captured = live.clone();
@@ -92,7 +90,7 @@ async fn h166_kernel_sampling_matches_wire_and_survives_sqlite_cold_reopen() {
         )
         .await
         .unwrap();
-        assert_eq!(settings.responses_settings().unwrap().top_p, Some(0.2));
+        assert_eq!(settings.load().unwrap().unwrap().responses.top_p, Some(0.2));
         let events = chat.run_events("h166-sampling", None).unwrap();
         let resolved: Vec<_> = events
             .iter()

@@ -981,9 +981,6 @@ export interface SettingsView {
   sandbox_mode: "read_only" | "workspace_write" | "full_access";
   terminal_shell: "powershell" | "command_prompt" | "git_bash" | "wsl";
   reasoning_effort: "default" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-  responses: ResponsesApiSettings;
-  /** Backend-computed scenarios, not the actual tool set of a future run. */
-  responses_sampling?: ResponsesSamplingPreview[];
   web_search: WebSearchSettings;
   execution_features: ExecutionFeatures;
   /** Built-in output style (§7.1): default | explanatory | learning. */
@@ -1018,36 +1015,6 @@ export interface WebSearchSettings {
   engines: WebSearchEngineSettings[];
   ranking: { method: WebSearchRankingMethod; profile: WebSearchRankingProfile };
   engine_statuses?: WebSearchEngineStatus[];
-}
-
-export interface ResponsesApiSettings {
-  creativity: number | null;
-  scene: "code" | "email" | "analysis" | "creative" | null;
-  temperature: number | null;
-  top_p: number | null;
-  max_output_tokens: number | null;
-  top_logprobs: number | null;
-  reasoning_effort: string | null;
-  text: unknown | null;
-  tool_choice: unknown | null;
-  user: string | null;
-  developer: Record<string, unknown>;
-  ineffective: Record<string, unknown>;
-}
-
-export interface ResponsesSamplingPreview {
-  model: string;
-  advertised_tools: boolean;
-  sampling: {
-    configured_top_p: number | null;
-    effective_top_p: number | null;
-    wire_top_p: number | null;
-    thinking_enabled: boolean;
-    tools_enabled: boolean;
-    reason: "flash_thinking_floor" | "flash_non_thinking_fixed"
-      | "pro_thinking_tools_fixed" | "pro_thinking_no_tools_fixed"
-      | "pro_non_thinking_requested" | "unpublished_model" | "unvalidated_input";
-  };
 }
 
 export interface AnySearchApiKeyInfo {

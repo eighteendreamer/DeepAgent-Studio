@@ -55,12 +55,11 @@ async fn h49_selected_model_matches_wire_context_and_reopened_terminals() {
             .harness_models()
             .select_model("deepseek", FALLBACK)
             .unwrap();
-        settings
-            .set_responses_settings(ResponsesApiSettings {
-                max_output_tokens: Some(32_768),
-                ..Default::default()
-            })
-            .unwrap();
+        db.seed_responses_settings(ResponsesApiSettings {
+            max_output_tokens: Some(32_768),
+            ..Default::default()
+        })
+        .unwrap();
         let transport = Arc::new(CapabilityGate {
             fallback_limit: limit,
             requests: Mutex::new(Vec::new()),

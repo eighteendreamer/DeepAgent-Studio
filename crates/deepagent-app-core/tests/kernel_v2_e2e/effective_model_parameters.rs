@@ -37,7 +37,7 @@ impl HttpTransport for Attempts {
 
 async fn configured_settings(db: Arc<Database>) -> Arc<SettingsService> {
     let settings = Arc::new(SettingsService::new(
-        db,
+        db.clone(),
         Arc::new(MockTransport::with_get_json(
             r#"{"data":[{"id":"deepseek-v4-flash","context_window":1000000,"max_output_tokens":131072}]}"#,
         )),
@@ -47,15 +47,13 @@ async fn configured_settings(db: Arc<Database>) -> Arc<SettingsService> {
         .await
         .unwrap();
     settings.set_reasoning_effort(ReasoningEffort::Max).unwrap();
-    settings
-        .set_responses_settings(ResponsesApiSettings {
-            reasoning_effort: Some("high".into()),
-            max_output_tokens: Some(512),
-            ..Default::default()
-        })
-        .unwrap();
-    settings
-        .set_responses_developer_json(r#"{"reasoning":{"effort":"none"},"max_output_tokens":768}"#)
+    db.seed_responses_settings(ResponsesApiSettings {
+        reasoning_effort: Some("high".into()),
+        max_output_tokens: Some(512),
+        ..Default::default()
+    })
+    .unwrap();
+    db.seed_responses_developer_json(r#"{"reasoning":{"effort":"none"},"max_output_tokens":768}"#)
         .unwrap();
     settings
 }

@@ -3274,73 +3274,6 @@ fn set_reasoning_effort(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-fn set_responses_developer_json(
-    state: State<'_, AppState>,
-    json: String,
-) -> Result<SettingsView, String> {
-    match state.settings.set_responses_developer_json(&json) {
-        Ok(view) => {
-            log_responses_ineffective_settings(state.inner(), &view.responses.ineffective);
-            Ok(view)
-        }
-        Err(error) => {
-            log_responses_parameter_rejected(state.inner(), &error.to_string());
-            Err(error.to_string())
-        }
-    }
-}
-
-#[tauri::command]
-fn get_responses_settings(
-    state: State<'_, AppState>,
-) -> Result<deepagent_app_core::settings::ResponsesApiSettings, String> {
-    state
-        .settings
-        .responses_settings()
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn set_responses_settings(
-    state: State<'_, AppState>,
-    settings: deepagent_app_core::settings::ResponsesApiSettings,
-) -> Result<SettingsView, String> {
-    match state.settings.set_responses_settings(settings) {
-        Ok(view) => {
-            log_responses_ineffective_settings(state.inner(), &view.responses.ineffective);
-            Ok(view)
-        }
-        Err(error) => {
-            log_responses_parameter_rejected(state.inner(), &error.to_string());
-            Err(error.to_string())
-        }
-    }
-}
-
-fn log_responses_parameter_rejected(state: &AppState, reason: &str) {
-    let _ = state.runtime_logs.append(
-        NewRuntimeLogEntry::info("model", "responses_parameter_rejected")
-            .with_source("desktop-tauri")
-            .with_message("Responses parameter validation rejected the submitted configuration")
-            .with_data(serde_json::json!({ "reason": reason })),
-    );
-}
-
-fn log_responses_ineffective_settings(
-    state: &AppState,
-    ineffective: &serde_json::Map<String, serde_json::Value>,
-) {
-    for field in ineffective.keys() {
-        let _ = state.runtime_logs.append(
-            NewRuntimeLogEntry::info("model", "responses_parameter_ignored")
-                .with_source("desktop-tauri")
-                .with_message("Responses parameter is persisted but ineffective for DeepSeek")
-                .with_data(serde_json::json!({ "field": field, "provider": "deepseek" })),
-        );
-    }
-}
-
 // ---- opt-in advanced execution safeguards (§2.2/§2.3/§6.1/§6.2) -----------
 
 #[tauri::command]
@@ -7973,9 +7906,6 @@ pub fn run() {
             set_permission_preset_visibility,
             set_terminal_shell,
             set_reasoning_effort,
-            set_responses_developer_json,
-            get_responses_settings,
-            set_responses_settings,
             get_verification_policy,
             set_verification_policy,
             get_execution_features,

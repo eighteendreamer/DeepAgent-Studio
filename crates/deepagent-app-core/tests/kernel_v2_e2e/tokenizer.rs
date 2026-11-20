@@ -54,12 +54,11 @@ async fn h297_kernel_cold_reopen_keeps_history_but_not_a_stale_usage_anchor() {
                 .await
                 .unwrap();
         }
-        settings
-            .set_responses_settings(ResponsesApiSettings {
-                max_output_tokens: Some(output),
-                ..Default::default()
-            })
-            .unwrap();
+        db.seed_responses_settings(ResponsesApiSettings {
+            max_output_tokens: Some(output),
+            ..Default::default()
+        })
+        .unwrap();
         let snapshots = Arc::new(Mutex::new(Vec::new()));
         let model = Arc::new(Recorder {
             requests: Mutex::new(Vec::new()),

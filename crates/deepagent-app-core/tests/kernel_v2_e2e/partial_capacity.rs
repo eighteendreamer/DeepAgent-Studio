@@ -47,12 +47,11 @@ async fn h296_partial_capacity_survives_reopen_and_refresh_changes_next_kernel_r
             crate::registry_fixture::configure(&settings, "synthetic-h296")
                 .await
                 .unwrap();
-            settings
-                .set_responses_settings(ResponsesApiSettings {
-                    max_output_tokens: Some(32_768),
-                    ..Default::default()
-                })
-                .unwrap();
+            db.seed_responses_settings(ResponsesApiSettings {
+                max_output_tokens: Some(32_768),
+                ..Default::default()
+            })
+            .unwrap();
         } else {
             let models = settings.harness_models().list_models("deepseek").unwrap();
             assert_eq!(models[0].output_limit, 8_192);

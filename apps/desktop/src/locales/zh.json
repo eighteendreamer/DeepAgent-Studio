@@ -359,6 +359,7 @@
       "models": "模型",
       "personalize": "个性化",
       "shortcuts": "键盘快捷键",
+      "resources": "按需下载资源",
       "mcp": "MCP 服务器",
       "hooks": "钩子",
       "connections": "连接",
@@ -780,58 +781,6 @@
           "searxngDesc": "使用你的 SearXNG 完整网页桥接，然后回退到 DuckDuckGo",
           "duckduckgo": "DuckDuckGo",
           "duckduckgoDesc": "使用无需 key 的 DuckDuckGo HTML 作为最终回退"
-        }
-      },
-      "responses": {
-        "title": "DeepSeek Responses 参数",
-        "desc": "所有生成请求使用 Responses API；系统统一校验参数并记录生效状态。",
-        "creativity": "创意程度",
-        "creativityDesc": "影响默认 temperature；代码、分类等内部调用仍受后端硬上限保护。",
-        "scenes": {
-          "code": "写代码",
-          "email": "写邮件",
-          "analysis": "分析",
-          "creative": "创意写作"
-        },
-        "advanced": "高级参数",
-        "advancedDesc": "temperature · top_p · 输出上限 · reasoning · text.format",
-        "advancedMeta": "6 项",
-        "temperature": "温度",
-        "topP": "Top P",
-        "maxOutputTokens": "最大输出 Token",
-        "topLogprobs": "Top logprobs",
-        "reasoningEffort": "推理强度",
-        "textFormat": "文本格式",
-        "providerDefault": "提供方默认",
-        "developer": "开发者 Responses JSON",
-        "developerDesc": "严格校验；未知和系统管理字段会拒绝，无效果字段会警告。",
-        "developerMeta": "JSON",
-        "validateSave": "校验并保存",
-        "saved": "Responses JSON 已保存",
-        "saveFailed": "Responses 设置保存失败：{{error}}",
-        "ineffective": "已保存但 DeepSeek 不产生实际效果：{{fields}}",
-        "previewTitle": "配置优先级预览",
-        "previewDesc": "展示配置合并顺序；top_p 的模型有效值见采样情景，实际运行以逐次请求诊断为准。",
-        "previewReady": "Responses",
-        "requestTitle": "请求骨架（top_p 为规范化前的配置值）",
-        "sampling": {
-          "title": "top_p 配置值与有效值",
-          "description": "当前所选模型的情景预览，不代表未来运行的实际工具集合。运行覆盖、动态工具与备用模型切换会重新计算；未配置时不向请求添加 top_p。",
-          "unavailable": "预览尚未就绪或配置未保存；不沿用旧有效值。",
-          "withTools": "提供工具定义",
-          "withoutTools": "未提供工具定义",
-          "values": "配置：{{configured}} → 有效：{{effective}}",
-          "notConfigured": "未配置",
-          "unknown": "未公布",
-          "reasons": {
-            "flash_thinking_floor": "Flash 思考模式：低于 0.95 按 0.95 处理。",
-            "flash_non_thinking_fixed": "Flash 非思考模式：有效值固定为 1.0。",
-            "pro_thinking_tools_fixed": "Pro 思考模式且允许工具调用：有效值固定为 0.95。",
-            "pro_thinking_no_tools_fixed": "Pro 思考模式且未允许工具调用：有效值固定为 1.0；tool_choice=none 也关闭工具调用。",
-            "pro_non_thinking_requested": "Pro 非思考模式：使用配置值，未配置时默认为 1.0。",
-            "unpublished_model": "该模型没有已核实的采样规则；保留配置，不推测有效值。",
-            "unvalidated_input": "配置超出有效取值范围；不将其伪装成合法采样值。"
-          }
         }
       }
     },

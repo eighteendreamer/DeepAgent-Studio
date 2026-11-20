@@ -20,6 +20,10 @@ use deepagent_models::transport::{EventSink, HttpTransport, MockTransport, Trans
 use deepagent_persistence::Database;
 use deepagent_subagents::WorktreeProvider;
 
+#[path = "support/persisted_responses.rs"]
+mod persisted_responses;
+use persisted_responses::PersistedResponsesFixture;
+
 #[path = "../../deepagent-models/tests/support/sequence.rs"]
 pub mod sequence_fixture;
 
@@ -3078,84 +3082,6 @@ async fn audit_skill_catalog_survives_continuation_on_wire() {
 }
 
 #[tokio::test]
-async fn responses_reasoning_effort_settings_accepts_official_aliases_and_normalizes() {
-    use deepagent_app_core::settings::ResponsesApiSettings;
-
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let settings = SettingsService::new(
-        db,
-        Arc::new(MockTransport::with_get_json(
-            r#"{"object":"list","data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#,
-        )),
-        Arc::new(MemorySecretStore::new()),
-    );
-    crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
-        .await
-        .unwrap();
-
-    for effort in ["none", "low", "medium", "high", "max"] {
-        settings
-            .set_responses_settings(ResponsesApiSettings {
-                reasoning_effort: Some(effort.to_string()),
-                ..ResponsesApiSettings::default()
-            })
-            .unwrap();
-        let effective = settings
-            .responses_settings()
-            .unwrap()
-            .effective_reasoning_effort();
-        assert_eq!(effective, deepagent_models::ReasoningEffort::parse(effort));
-    }
-
-    for (alias, canonical) in [
-        ("minimal", "minimal"),
-        ("medium", "medium"),
-        ("xhigh", "xhigh"),
-    ] {
-        settings
-            .set_responses_settings(ResponsesApiSettings {
-                reasoning_effort: Some(alias.to_string()),
-                ..ResponsesApiSettings::default()
-            })
-            .expect("official Responses aliases must be accepted");
-        assert_eq!(
-            settings
-                .responses_settings()
-                .unwrap()
-                .reasoning_effort
-                .as_deref(),
-            Some(canonical)
-        );
-        let raw = serde_json::json!({"reasoning": {"effort": alias}}).to_string();
-        settings
-            .set_responses_developer_json(&raw)
-            .expect("developer JSON must normalize official Responses aliases");
-        assert_eq!(
-            settings.responses_settings().unwrap().developer["reasoning"]["effort"],
-            canonical
-        );
-        assert_eq!(
-            settings
-                .responses_settings()
-                .unwrap()
-                .effective_reasoning_effort(),
-            deepagent_models::ReasoningEffort::parse(canonical)
-        );
-    }
-    for alias in ["simple", "deep"] {
-        assert!(
-            settings
-                .set_responses_settings(ResponsesApiSettings {
-                    reasoning_effort: Some(alias.to_string()),
-                    ..ResponsesApiSettings::default()
-                })
-                .is_err(),
-            "non-provider legacy labels must remain rejected: {alias}"
-        );
-    }
-}
-
-#[tokio::test]
 async fn selected_model_reasoning_effort_reaches_provider_wire() {
     use deepagent_app_core::settings::ResponsesApiSettings;
     use deepagent_models::ReasoningEffort;
@@ -3199,12 +3125,11 @@ async fn selected_model_reasoning_effort_reaches_provider_wire() {
         ("medium", "high"),
         ("xhigh", "max"),
     ] {
-        settings
-            .set_responses_settings(ResponsesApiSettings {
-                reasoning_effort: Some("medium".into()),
-                ..ResponsesApiSettings::default()
-            })
-            .unwrap();
+        db.seed_responses_settings(ResponsesApiSettings {
+            reasoning_effort: Some("medium".into()),
+            ..ResponsesApiSettings::default()
+        })
+        .unwrap();
         settings
             .set_reasoning_effort(ReasoningEffort::parse(effort).unwrap())
             .unwrap();
@@ -3282,48 +3207,38 @@ async fn responses_user_identifier_is_validated_before_transport() {
         crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
             .await
             .unwrap();
-        let raw = serde_json::json!({"user": user}).to_string();
-        let saved = settings.set_responses_developer_json(&raw);
-        let save_error = saved.as_ref().err().map(ToString::to_string);
-
+        db.seed_responses_developer_json(&serde_json::json!({"user": user}).to_string())
+            .unwrap();
         let transport = Arc::new(ObservedModel(Mutex::new(Vec::new())));
-        let run = if saved.is_ok() {
-            let chat = ChatService::new(db, settings, transport.clone(), root.path());
-            Some(
-                chat.run_in_session(
-                    "Reply with audit complete without using tools.",
-                    None,
-                    None,
-                    None,
-                    Vec::new(),
-                    None,
-                    false,
-                    None,
-                    |_| {},
-                    |_| {},
-                )
-                .await,
+        let chat = ChatService::new(db, settings, transport.clone(), root.path());
+        let run = chat
+            .run_in_session(
+                "Reply with audit complete without using tools.",
+                None,
+                None,
+                None,
+                Vec::new(),
+                None,
+                false,
+                None,
+                |_| {},
+                |_| {},
             )
-        } else {
-            None
-        };
+            .await;
         let requests = transport.0.lock().unwrap();
         let wire_user = requests
             .first()
             .and_then(|body| body.get("user"))
             .and_then(serde_json::Value::as_str);
         let wire_matches = wire_user.is_some_and(|actual| actual == user);
-        let run_ok = run.as_ref().is_some_and(|result| result.is_ok());
         eprintln!(
-            "Responses user validation: case={label} bytes={} should_accept={should_accept} saved={} run_ok={run_ok} transport_calls={} wire_matches={wire_matches} error={save_error:?}",
-            user.len(),
-            saved.is_ok(),
+            "Responses user validation: case={label} should_accept={should_accept} transport_calls={} wire_matches={wire_matches}",
             requests.len()
         );
         matches.push(if should_accept {
-            saved.is_ok() && run_ok && requests.len() == 1 && wire_matches
+            run.is_ok() && requests.len() == 1 && wire_matches
         } else {
-            saved.is_err() && requests.is_empty()
+            requests.is_empty()
         });
     }
 
@@ -3379,23 +3294,23 @@ async fn audit_configured_output_limit_reaches_provider_request() {
             .await
             .unwrap();
         settings.set_reasoning_effort(depth).unwrap();
-        settings
-            .set_responses_settings(ResponsesApiSettings {
-                max_output_tokens: panel,
-                ..Default::default()
-            })
-            .unwrap();
+        db.seed_responses_settings(ResponsesApiSettings {
+            max_output_tokens: panel,
+            ..Default::default()
+        })
+        .unwrap();
         if let Some(limit) = developer {
-            settings
-                .set_responses_developer_json(
-                    &serde_json::json!({"max_output_tokens": limit}).to_string(),
-                )
-                .unwrap();
+            db.seed_responses_developer_json(
+                &serde_json::json!({"max_output_tokens": limit}).to_string(),
+            )
+            .unwrap();
         }
         assert_eq!(
             settings
-                .responses_settings()
+                .load()
                 .unwrap()
+                .unwrap()
+                .responses
                 .effective_max_output_tokens(),
             developer.or(panel)
         );

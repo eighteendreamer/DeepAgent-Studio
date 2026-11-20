@@ -134,12 +134,11 @@ async fn observe_incomplete_reason(
         .unwrap();
     // Start below the registry ceiling so this fixture exercises escalation,
     // then continuation, rather than starting with a fully reserved capacity.
-    settings
-        .set_responses_settings(deepagent_app_core::settings::ResponsesApiSettings {
-            max_output_tokens: Some(32_768),
-            ..Default::default()
-        })
-        .unwrap();
+    db.seed_responses_settings(deepagent_app_core::settings::ResponsesApiSettings {
+        max_output_tokens: Some(32_768),
+        ..Default::default()
+    })
+    .unwrap();
     let model = Arc::new(IncompleteModel {
         reason,
         incomplete_responses,

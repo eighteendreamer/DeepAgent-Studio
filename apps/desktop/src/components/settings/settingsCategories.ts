@@ -9,6 +9,7 @@ const loaders = {
   models: () => import("./ModelsSettings").then(module => ({ default: module.ModelsSettings })),
   personalize: () => import("./PersonalizeSettings").then(module => ({ default: module.PersonalizeSettings })),
   shortcuts: () => import("./ShortcutsSettings").then(module => ({ default: module.ShortcutsSettings })),
+  resources: () => import("./RuntimeResourceSettings").then(module => ({ default: module.RuntimeResourceSettings })),
   mcp: () => import("./MCPSettings").then(module => ({ default: module.MCPSettings })),
   hooks: () => import("./HooksSettings").then(module => ({ default: module.HooksSettings })),
   connections: () => import("./ConnectionsSettings").then(module => ({ default: module.ConnectionsSettings })),

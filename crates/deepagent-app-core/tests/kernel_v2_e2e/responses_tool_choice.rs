@@ -45,27 +45,9 @@ async fn unsupported_responses_named_tool_choices_are_rejected_before_transport(
 
     let mut violations = Vec::new();
     for (raw, tool) in cases {
-        let parsed = ResponsesApiSettings::from_developer_json(raw);
-        let accepted = parsed.is_ok();
-        let transport = Arc::new(CountingTransport::default());
-
-        if let Ok(settings) = parsed {
-            let config = ModelConfig::deepseek("audit-placeholder");
-            let client = ModelClient::new(transport.clone(), config);
-            let request = ResponseRequest::new(
-                "deepseek-v4-pro",
-                vec![deepagent_core::message::Message::user("Audit tool choice")],
-            )
-            .with_tools(vec![tool])
-            .with_tool_choice(settings.effective_tool_choice().unwrap());
-            client.stream_response(request).await.unwrap();
-        }
-
-        let requests = transport.requests.lock().unwrap();
-        eprintln!(
-            "Responses tool_choice audit: accepted={accepted} wire={:?}",
-            requests.first()
-        );
+        let stored: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let (accepted, requests) =
+            observe_choice(stored["tool_choice"].clone(), vec![tool], true, false).await;
         if accepted || !requests.is_empty() {
             violations.push((raw.to_string(), requests.first().cloned()));
         }
@@ -222,8 +204,7 @@ async fn observe_saved_chat_choice(choice: serde_json::Value) -> (bool, Vec<serd
     crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
         .await
         .unwrap();
-    settings
-        .set_responses_developer_json(&serde_json::json!({"tool_choice":choice}).to_string())
+    db.seed_responses_developer_json(&serde_json::json!({"tool_choice":choice}).to_string())
         .unwrap();
     let transport = Arc::new(CountingTransport::default());
     let chat = ChatService::new(db, settings, transport.clone(), root.path());
@@ -292,7 +273,7 @@ async fn audit_saved_named_choice_without_matching_chat_tool_is_rejected() {
 }
 
 #[tokio::test]
-async fn responses_choice_settings_reopen_and_rejected_updates_keep_last_successful_value() {
+async fn persisted_responses_tool_choice_survives_restart() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("settings.sqlite");
     let secrets = Arc::new(MemorySecretStore::new());
@@ -302,66 +283,36 @@ async fn responses_choice_settings_reopen_and_rejected_updates_keep_last_success
     let valid = serde_json::json!({"type":"function","name":"read_file"});
     for developer in [false, true] {
         {
-            let settings = SettingsService::new(
-                Arc::new(Database::open(&path).unwrap()),
-                discovery.clone(),
-                secrets.clone(),
-            );
+            let db = Arc::new(Database::open(&path).unwrap());
+            let settings = SettingsService::new(db.clone(), discovery.clone(), secrets.clone());
             crate::registry_fixture::configure(&settings, "synthetic-key")
                 .await
                 .unwrap();
-            settings
-                .set_responses_settings(ResponsesApiSettings::default())
+            db.seed_responses_settings(ResponsesApiSettings::default())
                 .unwrap();
             if developer {
-                settings
-                    .set_responses_developer_json(
-                        &serde_json::json!({"tool_choice":valid}).to_string(),
-                    )
-                    .unwrap();
+                db.seed_responses_developer_json(
+                    &serde_json::json!({"tool_choice":valid}).to_string(),
+                )
+                .unwrap();
             } else {
-                settings
-                    .set_responses_settings(ResponsesApiSettings {
-                        tool_choice: Some(valid.clone()),
-                        ..ResponsesApiSettings::default()
-                    })
-                    .unwrap();
+                db.seed_responses_settings(ResponsesApiSettings {
+                    tool_choice: Some(valid.clone()),
+                    ..ResponsesApiSettings::default()
+                })
+                .unwrap();
             }
         }
-        let settings = SettingsService::new(
-            Arc::new(Database::open(&path).unwrap()),
-            discovery.clone(),
-            secrets.clone(),
-        );
+        let db = Arc::new(Database::open(&path).unwrap());
+        let settings = SettingsService::new(db.clone(), discovery.clone(), secrets.clone());
         assert_eq!(
             settings
-                .responses_settings()
+                .load()
                 .unwrap()
+                .unwrap()
+                .responses
                 .effective_tool_choice(),
             Some(valid.clone())
         );
-        for invalid in [
-            serde_json::json!({"type":"custom","name":"apply_patch"}),
-            serde_json::json!({"type":"web_search"}),
-        ] {
-            assert!(settings
-                .set_responses_developer_json(
-                    &serde_json::json!({"tool_choice":invalid}).to_string(),
-                )
-                .is_err());
-            assert!(settings
-                .set_responses_settings(ResponsesApiSettings {
-                    tool_choice: Some(invalid),
-                    ..ResponsesApiSettings::default()
-                })
-                .is_err());
-            assert_eq!(
-                settings
-                    .responses_settings()
-                    .unwrap()
-                    .effective_tool_choice(),
-                Some(valid.clone())
-            );
-        }
     }
 }

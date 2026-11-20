@@ -10,7 +10,6 @@ use deepagent_builtins::prefix_covers;
 use deepagent_core::clock::Timestamp;
 use deepagent_core::error::{CoreError, Result};
 use deepagent_hooks::{bash_prefix_rule, rule_command_prefix, PermissionRules};
-use deepagent_models::chat::validate_responses_user_identifier;
 use deepagent_models::transport::HttpTransport;
 use deepagent_models::ReasoningEffort;
 use deepagent_persistence::document_store::DocumentStore;
@@ -294,13 +293,11 @@ impl TerminalShell {
     }
 }
 
-/// Global DeepSeek Responses controls. Unknown or provider-managed fields are
-/// rejected before persistence; ineffective fields are retained with warnings
-/// by the UI but never silently dropped.
+/// Legacy DeepSeek Responses overrides retained for existing settings documents.
+/// Only explicitly supported fields are read by the model runtime.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ResponsesApiSettings {
-    /// User-level creativity control. `None` preserves the provider/runtime
-    /// default until the user explicitly moves the control.
+    /// Saved creativity control; `None` leaves the provider/runtime default.
     #[serde(default)]
     pub creativity: Option<u8>,
     /// Application-level scene preset. This is never accepted from developer
@@ -323,8 +320,7 @@ pub struct ResponsesApiSettings {
     pub tool_choice: Option<serde_json::Value>,
     #[serde(default)]
     pub user: Option<String>,
-    /// Strictly validated developer JSON, kept separate so editing it never
-    /// destroys ordinary/advanced product-layer settings.
+    /// Saved overrides from the former developer settings editor.
     #[serde(default)]
     pub developer: serde_json::Map<String, serde_json::Value>,
     #[serde(default)]
@@ -359,19 +355,6 @@ impl ResponsesApiSettings {
             .or(self.top_logprobs)
     }
 
-    pub fn effective_reasoning_effort(&self) -> Option<ReasoningEffort> {
-        self.developer
-            .get("reasoning")
-            .and_then(|value| value.get("effort"))
-            .and_then(serde_json::Value::as_str)
-            .and_then(ReasoningEffort::parse_responses)
-            .or_else(|| {
-                self.reasoning_effort
-                    .as_deref()
-                    .and_then(ReasoningEffort::parse_responses)
-            })
-    }
-
     pub fn effective_text(&self) -> Option<serde_json::Value> {
         self.developer
             .get("text")
@@ -400,330 +383,6 @@ impl ResponsesApiSettings {
             .and_then(serde_json::Value::as_f64)
             .map(|value| value as f32)
     }
-
-    pub fn validate(&self) -> Result<()> {
-        if self.creativity.is_some_and(|value| value > 100) {
-            return Err(CoreError::invalid(
-                "Responses creativity must be between 0 and 100",
-            ));
-        }
-        if let Some(value) = self.temperature {
-            if !(0.0..=2.0).contains(&value) {
-                return Err(CoreError::invalid(
-                    "Responses temperature must be between 0 and 2",
-                ));
-            }
-        }
-        if let Some(value) = self.top_p {
-            if !(0.0..=1.0).contains(&value) {
-                return Err(CoreError::invalid(
-                    "Responses top_p must be between 0 and 1",
-                ));
-            }
-        }
-        if let Some(value) = self.top_logprobs {
-            if value > 20 {
-                return Err(CoreError::invalid(
-                    "Responses top_logprobs must be between 0 and 20",
-                ));
-            }
-        }
-        if let Some(value) = &self.reasoning_effort {
-            if ReasoningEffort::parse_responses(value).is_none() {
-                return Err(CoreError::invalid(
-                    "Responses reasoning_effort must be none, low, high, max, minimal, medium, or xhigh",
-                ));
-            }
-        }
-        if let Some(text) = &self.text {
-            validate_developer_responses_fields(&serde_json::Map::from_iter([(
-                "text".to_string(),
-                text.clone(),
-            )]))?;
-        }
-        if let Some(tool_choice) = &self.tool_choice {
-            validate_developer_responses_fields(&serde_json::Map::from_iter([(
-                "tool_choice".to_string(),
-                tool_choice.clone(),
-            )]))?;
-        }
-        if let Some(user) = &self.user {
-            validate_responses_user_identifier(user)?;
-        }
-        if !self.developer.is_empty() {
-            let raw = serde_json::Value::Object(self.developer.clone()).to_string();
-            Self::from_developer_json(&raw)?;
-        }
-        Ok(())
-    }
-
-    pub fn from_developer_json(raw: &str) -> Result<Self> {
-        let value: serde_json::Value = serde_json::from_str(raw)
-            .map_err(|e| CoreError::invalid(format!("invalid Responses JSON: {e}")))?;
-        let mut object = value
-            .as_object()
-            .ok_or_else(|| CoreError::invalid("Responses JSON must be an object"))?
-            .clone();
-        let allowed = [
-            "temperature",
-            "top_p",
-            "max_output_tokens",
-            "top_logprobs",
-            "reasoning",
-            "text",
-            "tool_choice",
-            "user",
-            "verbosity",
-            "parallel_tool_calls",
-            "max_tool_calls",
-            "store",
-        ];
-        let rejected = [
-            "model",
-            "input",
-            "instructions",
-            "tools",
-            "stream",
-            "previous_response_id",
-            "conversation",
-            "background",
-            "metadata",
-            "include",
-            "prompt",
-            "truncation",
-            "service_tier",
-            "safety_identifier",
-            "prompt_cache_key",
-            "prompt_cache_retention",
-            "context_management",
-            "stream_options",
-            "stop",
-        ];
-        for key in object.keys() {
-            if rejected.contains(&key.as_str()) {
-                return Err(CoreError::invalid(format!(
-                    "Responses field `{key}` is system-managed or unsupported by DeepSeek"
-                )));
-            }
-            if !allowed.contains(&key.as_str()) {
-                return Err(CoreError::invalid(format!(
-                    "unknown Responses field `{key}`"
-                )));
-            }
-        }
-        normalize_responses_reasoning_effort(&mut object)?;
-        validate_developer_responses_fields(&object)?;
-        let mut settings = Self {
-            developer: object.clone(),
-            ..Self::default()
-        };
-        for key in [
-            "verbosity",
-            "parallel_tool_calls",
-            "max_tool_calls",
-            "store",
-        ] {
-            if let Some(v) = object.get(key) {
-                settings.ineffective.insert(key.to_string(), v.clone());
-            }
-        }
-        Ok(settings)
-    }
-}
-
-fn validate_developer_responses_fields(
-    object: &serde_json::Map<String, serde_json::Value>,
-) -> Result<()> {
-    if let Some(value) = object.get("temperature") {
-        if value
-            .as_f64()
-            .map(|value| !(0.0..=2.0).contains(&value))
-            .unwrap_or(true)
-        {
-            return Err(CoreError::invalid(
-                "Responses temperature must be a number between 0 and 2",
-            ));
-        }
-    }
-    if let Some(value) = object.get("top_p") {
-        if value
-            .as_f64()
-            .map(|value| !(0.0..=1.0).contains(&value))
-            .unwrap_or(true)
-        {
-            return Err(CoreError::invalid(
-                "Responses top_p must be a number between 0 and 1",
-            ));
-        }
-    }
-    if object.get("max_output_tokens").is_some_and(|value| {
-        value
-            .as_u64()
-            .map(|tokens| tokens == 0 || tokens > u64::from(u32::MAX))
-            .unwrap_or(true)
-    }) {
-        return Err(CoreError::invalid(
-            "Responses max_output_tokens must be a positive integer",
-        ));
-    }
-    if object
-        .get("top_logprobs")
-        .is_some_and(|value| value.as_u64().map(|count| count > 20).unwrap_or(true))
-    {
-        return Err(CoreError::invalid(
-            "Responses top_logprobs must be an integer between 0 and 20",
-        ));
-    }
-    if let Some(reasoning) = object.get("reasoning") {
-        let Some(reasoning) = reasoning.as_object() else {
-            return Err(CoreError::invalid("Responses reasoning must be an object"));
-        };
-        if reasoning.keys().any(|key| key != "effort") {
-            return Err(CoreError::invalid(
-                "DeepSeek Responses reasoning only supports `effort`",
-            ));
-        }
-        if reasoning
-            .get("effort")
-            .and_then(serde_json::Value::as_str)
-            .and_then(ReasoningEffort::parse_responses)
-            .is_none()
-        {
-            return Err(CoreError::invalid(
-                "Responses reasoning.effort must be none, minimal, low, medium, high, xhigh, or max",
-            ));
-        }
-    }
-    if let Some(text) = object.get("text") {
-        let Some(text) = text.as_object() else {
-            return Err(CoreError::invalid("Responses text must be an object"));
-        };
-        if text.keys().any(|key| key != "format") {
-            return Err(CoreError::invalid(
-                "DeepSeek Responses text only supports `format`",
-            ));
-        }
-        let Some(format) = text.get("format").and_then(serde_json::Value::as_object) else {
-            return Err(CoreError::invalid(
-                "Responses text.format must be an object",
-            ));
-        };
-        let format_type = format
-            .get("type")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| CoreError::invalid("Responses text.format.type is required"))?;
-        match format_type {
-            "text" | "json_object" => {
-                if format.keys().any(|key| key != "type") {
-                    return Err(CoreError::invalid(format!(
-                        "Responses text.format `{format_type}` has unknown fields"
-                    )));
-                }
-            }
-            "json_schema" => {
-                if format.keys().any(|key| {
-                    !matches!(
-                        key.as_str(),
-                        "type" | "name" | "description" | "schema" | "strict"
-                    )
-                }) {
-                    return Err(CoreError::invalid(
-                        "Responses text.format json_schema has unknown fields",
-                    ));
-                }
-                if format
-                    .get("name")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::is_empty)
-                    .unwrap_or(true)
-                    || format
-                        .get("schema")
-                        .map(|value| !value.is_object())
-                        .unwrap_or(true)
-                {
-                    return Err(CoreError::invalid(
-                        "Responses text.format json_schema requires a non-empty name and object schema",
-                    ));
-                }
-                if format
-                    .get("strict")
-                    .is_some_and(|value| !value.is_boolean())
-                {
-                    return Err(CoreError::invalid(
-                        "Responses text.format.strict must be boolean",
-                    ));
-                }
-            }
-            _ => {
-                return Err(CoreError::invalid(
-                    "Responses text.format.type must be text, json_object, or json_schema",
-                ));
-            }
-        }
-    }
-    if let Some(choice) = object.get("tool_choice") {
-        deepagent_models::validate_responses_tool_choice(choice)?;
-    }
-    if let Some(value) = object.get("user") {
-        let user = value
-            .as_str()
-            .ok_or_else(|| CoreError::invalid("Responses user must be a string"))?;
-        validate_responses_user_identifier(user)?;
-    }
-    if object
-        .get("verbosity")
-        .is_some_and(|value| !matches!(value.as_str(), Some("low" | "medium" | "high")))
-    {
-        return Err(CoreError::invalid(
-            "Responses verbosity must be low, medium, or high",
-        ));
-    }
-    if object
-        .get("parallel_tool_calls")
-        .is_some_and(|value| !value.is_boolean())
-    {
-        return Err(CoreError::invalid(
-            "Responses parallel_tool_calls must be boolean",
-        ));
-    }
-    if object
-        .get("max_tool_calls")
-        .is_some_and(|value| value.as_u64().map(|count| count == 0).unwrap_or(true))
-    {
-        return Err(CoreError::invalid(
-            "Responses max_tool_calls must be a positive integer",
-        ));
-    }
-    if object.get("store").is_some_and(|value| !value.is_boolean()) {
-        return Err(CoreError::invalid("Responses store must be boolean"));
-    }
-    Ok(())
-}
-
-/// Normalize the provider's documented Responses aliases before storing the
-/// developer JSON, so persisted settings and all subsequent wires are stable.
-fn normalize_responses_reasoning_effort(
-    object: &mut serde_json::Map<String, serde_json::Value>,
-) -> Result<()> {
-    let Some(reasoning) = object.get_mut("reasoning") else {
-        return Ok(());
-    };
-    let Some(reasoning) = reasoning.as_object_mut() else {
-        return Ok(());
-    };
-    let Some(effort) = reasoning.get("effort").and_then(serde_json::Value::as_str) else {
-        return Ok(());
-    };
-    let canonical = ReasoningEffort::parse_responses(effort).ok_or_else(|| {
-        CoreError::invalid(
-            "Responses reasoning.effort must be none, low, high, max, minimal, medium, or xhigh",
-        )
-    })?;
-    reasoning.insert(
-        "effort".to_string(),
-        serde_json::Value::String(canonical.label().to_string()),
-    );
-    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -978,12 +637,6 @@ pub struct SettingsView {
     pub terminal_shell: String,
     /// Current canonical DeepSeek Responses reasoning effort.
     pub reasoning_effort: String,
-    #[serde(default)]
-    pub responses: ResponsesApiSettings,
-    /// Read-only scenarios for the selected role models, not persisted settings
-    /// or a claim about a future run's dynamic tool set/model overrides.
-    #[serde(default)]
-    pub responses_sampling: Vec<ResponsesSamplingPreview>,
     /// Current web-search settings.
     pub web_search: WebSearchSettings,
     /// Opt-in advanced execution safeguards (§2.2/§2.3/§6.1/§6.2).
@@ -1705,42 +1358,6 @@ impl SettingsService {
         ))
     }
 
-    pub fn responses_settings(&self) -> Result<ResponsesApiSettings> {
-        Ok(self.load()?.map(|s| s.responses).unwrap_or_default())
-    }
-
-    pub fn set_responses_settings(
-        &self,
-        mut settings_next: ResponsesApiSettings,
-    ) -> Result<SettingsView> {
-        settings_next.validate()?;
-        if let Some(value) = settings_next.reasoning_effort.as_deref() {
-            let canonical = ReasoningEffort::parse_responses(value)
-                .expect("ResponsesApiSettings::validate checked reasoning effort");
-            settings_next.reasoning_effort = Some(canonical.label().to_string());
-        }
-        let canonical_developer = ResponsesApiSettings::from_developer_json(
-            &serde_json::Value::Object(settings_next.developer.clone()).to_string(),
-        )?;
-        settings_next.developer = canonical_developer.developer;
-        settings_next.ineffective = canonical_developer.ineffective;
-        let settings = self.update_settings(|settings| {
-            settings.responses = settings_next.clone();
-            Ok(())
-        })?;
-        self.view_from_settings(&settings)
-    }
-
-    pub fn set_responses_developer_json(&self, raw: &str) -> Result<SettingsView> {
-        let developer = ResponsesApiSettings::from_developer_json(raw)?;
-        let settings = self.update_settings(|settings| {
-            settings.responses.developer = developer.developer.clone();
-            settings.responses.ineffective = developer.ineffective.clone();
-            Ok(())
-        })?;
-        self.view_from_settings(&settings)
-    }
-
     /// Set the approval policy, persisting it. Returns the redacted view.
     pub fn set_approval_policy(&self, policy: ApprovalPolicy) -> Result<SettingsView> {
         let settings = self.update_settings(|settings| {
@@ -1886,8 +1503,6 @@ impl SettingsService {
             sandbox_mode: settings.sandbox_mode.label().to_string(),
             terminal_shell: settings.terminal_shell.label().to_string(),
             reasoning_effort,
-            responses: settings.responses.clone(),
-            responses_sampling: responses_sampling_preview(&self.db, settings),
             web_search: normalized_web_search_settings(settings.web_search.clone()),
             execution_features: settings.execution_features,
             output_style: settings.output_style.as_str().to_string(),
@@ -1932,10 +1547,6 @@ mod persistence;
 
 #[path = "settings/harness_registry.rs"]
 mod harness_registry;
-
-mod sampling;
-use sampling::responses_sampling_preview;
-pub use sampling::ResponsesSamplingPreview;
 
 #[cfg(test)]
 #[path = "settings/reasoning_tests.rs"]
@@ -2615,135 +2226,6 @@ mod tests {
         assert_eq!(svc.hooks_json().unwrap(), json);
     }
 }
-#[test]
-fn responses_developer_json_rejects_system_fields_and_unknowns() {
-    assert!(ResponsesApiSettings::from_developer_json(r#"{"model":"x"}"#).is_err());
-    assert!(ResponsesApiSettings::from_developer_json(r#"{"unknown":true}"#).is_err());
-}
-
-#[test]
-fn responses_developer_json_preserves_ineffective_fields() {
-    let settings = ResponsesApiSettings::from_developer_json(
-        r#"{"temperature":0.4,"reasoning":{"effort":"high"},"user":"account-1","parallel_tool_calls":false,"store":true}"#,
-    )
-    .unwrap();
-    assert_eq!(settings.temperature, None);
-    assert_eq!(settings.effective_temperature(), Some(0.4));
-    assert_eq!(settings.developer["temperature"], 0.4);
-    assert_eq!(
-        settings.effective_reasoning_effort(),
-        Some(ReasoningEffort::High)
-    );
-    assert_eq!(settings.effective_user().as_deref(), Some("account-1"));
-    assert!(settings.ineffective.contains_key("parallel_tool_calls"));
-    assert!(settings.ineffective.contains_key("store"));
-}
-
-#[test]
-fn responses_developer_json_uses_official_nested_reasoning_shape() {
-    assert!(ResponsesApiSettings::from_developer_json(r#"{"reasoning_effort":"high"}"#).is_err());
-    assert!(
-        ResponsesApiSettings::from_developer_json(r#"{"reasoning":{"effort":"extreme"}}"#).is_err()
-    );
-    assert!(ResponsesApiSettings::from_developer_json(
-        r#"{"reasoning":{"effort":"high","summary":"auto"}}"#
-    )
-    .is_err());
-}
-
-#[test]
-fn reasoning_effort_accepts_official_aliases_but_rejects_legacy_labels() {
-    for (value, canonical) in [
-        ("minimal", "minimal"),
-        ("medium", "medium"),
-        ("xhigh", "xhigh"),
-    ] {
-        let settings = ResponsesApiSettings {
-            reasoning_effort: Some(value.to_string()),
-            ..ResponsesApiSettings::default()
-        };
-        assert!(settings.validate().is_ok());
-        let developer = ResponsesApiSettings::from_developer_json(&format!(
-            r#"{{"reasoning":{{"effort":"{value}"}}}}"#
-        ))
-        .unwrap();
-        assert_eq!(
-            developer.effective_reasoning_effort(),
-            ReasoningEffort::parse(canonical)
-        );
-    }
-    for value in ["simple", "deep"] {
-        assert!(ResponsesApiSettings {
-            reasoning_effort: Some(value.to_string()),
-            ..ResponsesApiSettings::default()
-        }
-        .validate()
-        .is_err());
-        assert!(
-            ResponsesApiSettings::from_developer_json(&format!(
-                r#"{{"reasoning":{{"effort":"{value}"}}}}"#
-            ))
-            .is_err(),
-            "developer JSON must reject {value}"
-        );
-        assert!(
-            ReasoningEffort::parse(value).is_none(),
-            "must reject {value}"
-        );
-    }
-    for value in ["none", "low", "medium", "high", "max"] {
-        assert!(ResponsesApiSettings::from_developer_json(&format!(
-            r#"{{"reasoning":{{"effort":"{value}"}}}}"#
-        ))
-        .is_ok());
-        assert!(ReasoningEffort::parse(value).is_some());
-    }
-}
-
-#[test]
-fn responses_user_identifier_validates_both_settings_surfaces() {
-    let max_length = "a".repeat(512);
-    for user in ["A1-_z", max_length.as_str()] {
-        assert!(ResponsesApiSettings {
-            user: Some(user.to_string()),
-            ..ResponsesApiSettings::default()
-        }
-        .validate()
-        .is_ok());
-        assert!(ResponsesApiSettings::from_developer_json(
-            &serde_json::json!({"user": user}).to_string()
-        )
-        .is_ok());
-    }
-
-    let too_long = "a".repeat(513);
-    for user in [
-        "",
-        "account 1",
-        "account/1",
-        "用户-1",
-        "account\n1",
-        too_long.as_str(),
-    ] {
-        assert!(
-            ResponsesApiSettings {
-                user: Some(user.to_string()),
-                ..ResponsesApiSettings::default()
-            }
-            .validate()
-            .is_err(),
-            "ordinary settings must reject {user:?}"
-        );
-        assert!(
-            ResponsesApiSettings::from_developer_json(
-                &serde_json::json!({"user": user}).to_string()
-            )
-            .is_err(),
-            "developer JSON must reject {user:?}"
-        );
-    }
-}
-
 #[tokio::test]
 async fn load_preserves_explicit_responses_wire_values() {
     let db = Arc::new(Database::open_in_memory().unwrap());
@@ -2784,6 +2266,10 @@ async fn load_preserves_explicit_responses_wire_values() {
     assert_eq!(loaded.responses.developer["reasoning"]["effort"], "xhigh");
     assert_eq!(loaded.responses.effective_temperature(), Some(0.4));
 
+    let view = serde_json::to_value(svc.view().unwrap().unwrap()).unwrap();
+    assert!(view.get("responses").is_none());
+    assert!(view.get("responses_sampling").is_none());
+
     let cleaned = store
         .get(SETTINGS_COLLECTION, SETTINGS_ID)
         .unwrap()
@@ -2797,71 +2283,6 @@ async fn load_preserves_explicit_responses_wire_values() {
         "xhigh"
     );
     assert_eq!(cleaned["responses"]["developer"]["temperature"], 0.4);
-}
-
-#[test]
-fn responses_tool_choice_settings_use_only_supported_shapes_and_shared_names() {
-    for choice in [
-        serde_json::json!({"type":"custom","name":"apply_patch"}),
-        serde_json::json!({"type":"web_search"}),
-        serde_json::json!({"type":"function","name":""}),
-        serde_json::json!({"type":"function","name":"private/value"}),
-        serde_json::json!({"type":"function","name":"x".repeat(129)}),
-        serde_json::json!({"type":"function","name":"read_file","extra":true}),
-        serde_json::json!({"type":"function","function":{"name":"read_file"}}),
-        serde_json::json!(true),
-    ] {
-        let settings = ResponsesApiSettings {
-            tool_choice: Some(choice.clone()),
-            ..ResponsesApiSettings::default()
-        };
-        assert!(settings.validate().is_err());
-        assert!(ResponsesApiSettings::from_developer_json(
-            &serde_json::json!({"tool_choice":choice}).to_string()
-        )
-        .is_err());
-    }
-    for choice in [
-        serde_json::json!("auto"),
-        serde_json::json!("none"),
-        serde_json::json!("required"),
-        serde_json::json!({"type":"function","name":"read_file"}),
-        serde_json::json!({"type":"function","name":"x".repeat(128)}),
-    ] {
-        ResponsesApiSettings {
-            tool_choice: Some(choice.clone()),
-            ..ResponsesApiSettings::default()
-        }
-        .validate()
-        .unwrap();
-        let settings = ResponsesApiSettings::from_developer_json(
-            &serde_json::json!({"tool_choice":choice}).to_string(),
-        )
-        .unwrap();
-        assert_eq!(settings.effective_tool_choice(), Some(choice));
-    }
-}
-
-#[test]
-fn responses_developer_json_validates_numeric_ranges() {
-    assert!(ResponsesApiSettings::from_developer_json(r#"{"temperature":2.1}"#).is_err());
-    assert!(ResponsesApiSettings::from_developer_json(r#"{"temperature":"high"}"#).is_err());
-    assert!(ResponsesApiSettings::from_developer_json(r#"{"top_p":1.1}"#).is_err());
-    assert!(ResponsesApiSettings::from_developer_json(r#"{"top_p":true}"#).is_err());
-    assert!(ResponsesApiSettings::from_developer_json(r#"{"max_output_tokens":0}"#).is_err());
-    assert!(ResponsesApiSettings::from_developer_json(r#"{"top_logprobs":21}"#).is_err());
-}
-
-#[test]
-fn responses_developer_json_rejects_nested_unknowns() {
-    assert!(ResponsesApiSettings::from_developer_json(
-        r#"{"text":{"format":{"type":"json_schema","name":"answer","schema":{},"unknown":true}}}"#
-    )
-    .is_err());
-    assert!(ResponsesApiSettings::from_developer_json(
-        r#"{"tool_choice":{"type":"function","name":"read_file","unknown":true}}"#
-    )
-    .is_err());
 }
 
 #[test]
