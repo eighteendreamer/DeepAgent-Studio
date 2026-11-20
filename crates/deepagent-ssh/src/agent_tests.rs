@@ -7,6 +7,143 @@ use std::sync::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+fn add_request(key: &PrivateKey) -> SshAgentAddRequest {
+    SshAgentAddRequest {
+        provider: SshAgentProvider::OpenSsh,
+        key_path: None,
+        key_content: Some(
+            key.to_openssh(keys::ssh_key::LineEnding::LF)
+                .unwrap()
+                .to_string(),
+        ),
+        passphrase: None,
+        expected_fingerprint: key.public_key().fingerprint(HashAlg::Sha256).to_string(),
+        lifetime_secs: 60,
+        authorized: true,
+    }
+}
+
+#[tokio::test]
+async fn adding_requires_authorization_fingerprint_and_valid_lifetime_before_agent_access() {
+    let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+    let connector = Arc::new(Connector::default());
+    for kind in 0..4 {
+        let mut request = add_request(&key);
+        match kind {
+            0 => request.authorized = false,
+            1 => request.expected_fingerprint = "SHA256:changed".into(),
+            2 => request.lifetime_secs = 0,
+            _ => request.lifetime_secs = 86401,
+        }
+        assert!(add_identity_with(request, connector.clone()).await.is_err());
+    }
+    assert!(connector.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn adding_existing_identity_preserves_original_agent_constraints() {
+    let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+    let (client, signed) = fixture(vec![key.clone()], false);
+    let connector = Arc::new(Connector {
+        clients: Mutex::new(VecDeque::from([Ok(client)])),
+        ..Default::default()
+    });
+    let result = add_identity_with(add_request(&key), connector)
+        .await
+        .unwrap();
+    assert!(result.already_present);
+    assert_eq!(result.lifetime_secs, None);
+    assert_eq!(signed.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn adding_new_identity_sends_constrained_add_without_unconstrained_fallback() {
+    let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+    for reject in [false, true] {
+        let (client, mut server) = tokio::io::duplex(8192);
+        let agent = keys::agent::client::AgentClient::connect(client).dynamic();
+        let connector = Arc::new(Connector {
+            clients: Mutex::new(VecDeque::from([Ok(agent)])),
+            ..Default::default()
+        });
+        let observed = tokio::spawn(async move {
+            assert_eq!(server.read_u32().await.unwrap(), 1);
+            assert_eq!(server.read_u8().await.unwrap(), 11);
+            server
+                .write_all(&[0, 0, 0, 5, 12, 0, 0, 0, 0])
+                .await
+                .unwrap();
+            let size = server.read_u32().await.unwrap();
+            let mut request = vec![0; size as usize];
+            server.read_exact(&mut request).await.unwrap();
+            assert_eq!(request[0], 25);
+            assert_eq!(&request[request.len() - 5..], &[1, 0, 0, 0, 60]);
+            server
+                .write_all(&[0, 0, 0, 1, if reject { 5 } else { 6 }])
+                .await
+                .unwrap();
+        });
+        let result = add_identity_with(add_request(&key), connector).await;
+        if reject {
+            assert!(result.is_err());
+        } else {
+            let result = result.unwrap();
+            assert!(!result.already_present);
+            assert_eq!(result.lifetime_secs, Some(60));
+        }
+        observed.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn forwarded_agent_rejects_mutation_and_preserves_identity_query() {
+    let (client, _) = fixture(vec![], false);
+    let mut local = client.into_inner();
+    let (mut remote, mut bridge) = tokio::io::duplex(8192);
+    let actor = tokio::spawn(async move {
+        bridge_agent(&mut bridge, &mut local).await.unwrap();
+    });
+    remote.write_all(&[0, 0, 0, 1, 19]).await.unwrap();
+    let mut response = [0; 5];
+    remote.read_exact(&mut response).await.unwrap();
+    assert_eq!(response, [0, 0, 0, 1, 5]);
+    remote.write_all(&[0, 0, 0, 1, 11]).await.unwrap();
+    assert_eq!(remote.read_u32().await.unwrap(), 5);
+    let mut identities = [0; 5];
+    remote.read_exact(&mut identities).await.unwrap();
+    assert_eq!(identities, [12, 0, 0, 0, 0]);
+    drop(remote);
+    actor.await.unwrap();
+}
+
+#[tokio::test]
+async fn forwarded_agent_returns_valid_signature_without_mutating_identities() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+        let public = key.public_key().clone();
+        let (local, signatures) = fixture(vec![key], false);
+        let mut local = local.into_inner();
+        let (remote, mut stream) = tokio::io::duplex(8192);
+        let bridge = tokio::spawn(async move {
+            bridge_agent(&mut stream, &mut local).await.unwrap();
+        });
+        let mut remote = keys::agent::client::AgentClient::connect(remote);
+        assert_eq!(remote.request_identities().await.unwrap().len(), 1);
+        let message = b"remote second-hop signature";
+        let signature = remote
+            .sign_request_signature(&public, None, message)
+            .await
+            .unwrap();
+        russh::keys::signature::Verifier::verify(&public, message, &signature).unwrap();
+        assert_eq!(signatures.load(Ordering::SeqCst), 1);
+        assert_eq!(remote.request_identities().await.unwrap().len(), 1);
+        drop(remote);
+        bridge.await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
 #[derive(Default)]
 struct Connector {
     clients: Mutex<VecDeque<Result<AgentClient, AgentIssue>>>,
@@ -618,11 +755,11 @@ async fn agent_active_budget_remains_cumulative_across_public_key_calls() {
     let attempt = tokio::spawn(async move {
         let first = ready.take_next().unwrap();
         ready
-            .authenticate_identity(&mut handle, "fixture", first)
+            .authenticate_identity(&mut handle, "fixture", first, &Default::default())
             .await?;
         let second = ready.take_next().unwrap();
         ready
-            .authenticate_identity(&mut handle, "fixture", second)
+            .authenticate_identity(&mut handle, "fixture", second, &Default::default())
             .await
     });
     observed.recv().await.unwrap();

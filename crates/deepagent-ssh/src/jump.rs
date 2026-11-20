@@ -154,6 +154,7 @@ impl SshJumpConfig {
         config.host_key_policy = self.host_key_policy;
         config.proxy = parent.proxy.clone();
         config.timing = parent.timing;
+        config.advanced.allow_legacy_algorithms = parent.advanced.allow_legacy_algorithms;
         config
     }
 

@@ -289,6 +289,7 @@ impl SshServiceImpl {
             .map(|mut config| {
                 self.validate_secret_storage(&config)?;
                 config.timing.validate()?;
+                config.advanced.validate()?;
                 if let Some(proxy) = &config.proxy {
                     proxy.validate()?;
                 }
@@ -513,6 +514,7 @@ impl SshServiceImpl {
         config.certificate_path = request.certificate_path;
         config.password = request.password;
         config.timing = request.timing;
+        config.advanced = request.advanced;
         config.proxy = crate::proxy::resolve_proxy(request.proxy, None)?;
         config.jump = crate::jump::resolve_jump(
             request.jump,
@@ -587,6 +589,7 @@ impl SshServiceImpl {
             },
             host_key_policy: request.host_key_policy.unwrap_or(cfg.host_key_policy),
             timing: request.timing.unwrap_or(cfg.timing),
+            advanced: request.advanced.unwrap_or_else(|| cfg.advanced.clone()),
             key_path: request.key_path.clone(),
             key_content: request.key_content.or_else(|| {
                 (cfg.auth_type == SshAuthType::KeyContent && request.auth_type == cfg.auth_type)
@@ -1263,6 +1266,87 @@ impl SshServiceImpl {
             stderr: output.stderr,
             duration_ms,
         })
+    }
+
+    async fn extension_session(
+        &self,
+        id: &str,
+        expected: Option<u64>,
+    ) -> SshResult<(SessionLease, Client, u64)> {
+        self.connection_operations.ensure_running()?;
+        let session = self
+            .sessions
+            .read()
+            .await
+            .get(id)
+            .cloned()
+            .ok_or_else(|| SshError::ConnectionLost(id.into()))?;
+        let lease = SessionLease::new(session)?;
+        let generation = lease
+            .transport_generation()
+            .ok_or_else(|| SshError::ConnectionLost(id.into()))?;
+        if expected.is_some_and(|expected| expected != generation) {
+            return Err(SshError::ConnectionLost(
+                "SSH transport changed; refresh the connection details".into(),
+            ));
+        }
+        let client = lease
+            .client()
+            .await
+            .filter(|client| !client.is_closed())
+            .ok_or_else(|| SshError::ConnectionLost(id.into()))?;
+        Ok((lease, client, generation))
+    }
+
+    pub async fn connection_details(&self, id: &str) -> SshResult<crate::SshConnectionDetails> {
+        let (_lease, client, generation) = self.extension_session(id, None).await?;
+        let algorithms = client
+            .extensions
+            .algorithms
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        Ok(crate::SshConnectionDetails {
+            transport_generation: generation,
+            algorithms,
+            agent_forwarding_enabled: client.extensions.options.forward_agent,
+            x11_forwarding_enabled: client.extensions.options.x11.is_some(),
+        })
+    }
+
+    pub async fn list_forwards(
+        &self,
+        id: &str,
+        generation: u64,
+    ) -> SshResult<Vec<crate::SshForwardTask>> {
+        let (_lease, client, _) = self.extension_session(id, Some(generation)).await?;
+        Ok(client.extensions.forwards.list())
+    }
+
+    pub async fn start_forward(
+        &self,
+        id: &str,
+        generation: u64,
+        request: crate::SshForwardRequest,
+    ) -> SshResult<crate::SshForwardTask> {
+        let (lease, client, _) = self.extension_session(id, Some(generation)).await?;
+        let resource = lease
+            .resources
+            .acquire()
+            .ok_or_else(|| SshError::ConnectionLost(id.into()))?;
+        client
+            .start_forward(id, generation, request, resource)
+            .await
+    }
+
+    pub async fn stop_forward(
+        &self,
+        id: &str,
+        generation: u64,
+        task_id: &str,
+    ) -> SshResult<crate::SshForwardTask> {
+        let (_lease, client, _) = self.extension_session(id, Some(generation)).await?;
+        client.stop_forward(task_id).await
     }
 
     pub async fn list_dir(
@@ -2770,6 +2854,7 @@ async fn connect_client(
 
 fn validate_config(config: &SshConnectionConfig) -> SshResult<()> {
     config.timing.validate()?;
+    config.advanced.validate()?;
     if let Some(jump) = &config.jump {
         jump.validate()?;
     }
@@ -2809,6 +2894,7 @@ fn dto_from_config(
         proxy: cfg.proxy.as_ref().map(crate::SshProxyConfig::dto),
         jump: cfg.jump.as_ref().map(crate::SshJumpConfig::dto),
         timing: cfg.timing,
+        advanced: cfg.advanced.clone(),
         key_path: cfg.key_path.clone(),
         has_key_content: cfg.key_content.is_some(),
         certificate_path: cfg.certificate_path.clone(),

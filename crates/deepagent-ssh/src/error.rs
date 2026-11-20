@@ -6,6 +6,8 @@ pub type SshResult<T> = Result<T, SshError>;
 
 #[derive(Debug, Error)]
 pub enum SshError {
+    #[error("SSH forwarding {stage}: {reason}")]
+    Forwarding { stage: &'static str, reason: String },
     #[error("SSH jump {stage}: {source}")]
     Jump {
         stage: &'static str,

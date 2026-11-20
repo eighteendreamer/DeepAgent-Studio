@@ -14,9 +14,10 @@ const INSPECTION_TIMEOUT: Duration = Duration::from_secs(2);
 const AUTHENTICATION_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_IDENTITIES: usize = 64;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SshAgentProvider {
+    #[default]
     Auto,
     OpenSsh,
     Pageant,
@@ -45,6 +46,220 @@ pub struct SshAgentProbe {
     pub state: SshAgentState,
     pub identities: Vec<SshAgentIdentity>,
     pub reason: Option<String>,
+}
+
+/// Secret fields are never included in Debug, returned DTOs, or persisted by this API.
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SshAgentAddRequest {
+    pub provider: SshAgentProvider,
+    pub key_path: Option<String>,
+    pub key_content: Option<String>,
+    pub passphrase: Option<String>,
+    pub lifetime_secs: u32,
+    pub expected_fingerprint: String,
+    pub authorized: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SshAgentAddResult {
+    pub provider: SshAgentProvider,
+    pub identity: SshAgentIdentity,
+    pub already_present: bool,
+    /// None means an existing identity was left untouched, including its original constraints.
+    pub lifetime_secs: Option<u32>,
+}
+
+impl std::fmt::Debug for SshAgentAddRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SshAgentAddRequest")
+            .field("provider", &self.provider)
+            .field("lifetime_secs", &self.lifetime_secs)
+            .finish_non_exhaustive()
+    }
+}
+
+async fn identity_for_agent(request: &SshAgentAddRequest) -> SshResult<keys::PrivateKey> {
+    if request.key_path.is_some() == request.key_content.is_some() {
+        return Err(SshError::InvalidConfig(
+            "select exactly one private-key source".into(),
+        ));
+    }
+    let mut config = crate::SshConnectionConfig::new(
+        "Agent identity",
+        "localhost",
+        22,
+        "local",
+        if request.key_path.is_some() {
+            crate::SshAuthType::KeyFile
+        } else {
+            crate::SshAuthType::KeyContent
+        },
+    );
+    config.key_path = request.key_path.clone();
+    config.key_content = request.key_content.clone();
+    let identity =
+        crate::private_identity::read_private_identity(&config, request.passphrase.as_deref())
+            .await?
+            .ok_or_else(|| SshError::InvalidConfig("private-key passphrase is required".into()))?;
+    Ok(identity.key)
+}
+
+pub async fn preview_agent_identity(request: SshAgentAddRequest) -> SshResult<SshAgentIdentity> {
+    let key = identity_for_agent(&request).await?;
+    Ok(SshAgentIdentity {
+        algorithm: key.algorithm().to_string(),
+        fingerprint: key.public_key().fingerprint(HashAlg::Sha256).to_string(),
+    })
+}
+
+pub async fn add_ssh_agent_identity(request: SshAgentAddRequest) -> SshResult<SshAgentAddResult> {
+    add_identity_with(request, Arc::new(SystemAgentConnector)).await
+}
+
+async fn connect_for_extension(
+    provider: SshAgentProvider,
+    connector: Arc<dyn AgentConnector>,
+) -> SshResult<(SshAgentProvider, AgentClient)> {
+    let providers = if provider == SshAgentProvider::Auto {
+        connector.automatic_providers().to_vec()
+    } else {
+        vec![provider]
+    };
+    let mut last = "no supported Agent provider".to_owned();
+    for selected in providers {
+        match tokio::time::timeout(INSPECTION_TIMEOUT, connector.connect(selected)).await {
+            Ok(Ok(client)) => return Ok((selected, client)),
+            Ok(Err(issue)) => {
+                last = issue.reason;
+                if provider != SshAgentProvider::Auto
+                    || !matches!(
+                        issue.state,
+                        SshAgentState::Unavailable | SshAgentState::Unsupported
+                    )
+                {
+                    break;
+                }
+            }
+            Err(_) => {
+                last = "Agent connection timed out".into();
+                break;
+            }
+        }
+    }
+    Err(SshError::InvalidConfig(last))
+}
+
+pub(crate) async fn forwarding_stream(
+    provider: SshAgentProvider,
+) -> SshResult<Box<dyn keys::agent::client::AgentStream + Send + Unpin>> {
+    let (_, client) = connect_for_extension(provider, Arc::new(SystemAgentConnector)).await?;
+    Ok(client.into_inner())
+}
+
+async fn add_identity_with(
+    request: SshAgentAddRequest,
+    connector: Arc<dyn AgentConnector>,
+) -> SshResult<SshAgentAddResult> {
+    // Validate authorization before touching Agent or reading a private key.
+    if !request.authorized
+        || request.expected_fingerprint.is_empty()
+        || !(1..=86400).contains(&request.lifetime_secs)
+    {
+        return Err(SshError::InvalidConfig(
+            "explicit fingerprint confirmation and Agent lifetime of 1..86400 seconds are required"
+                .into(),
+        ));
+    }
+    let key = identity_for_agent(&request).await?;
+    let identity = SshAgentIdentity {
+        algorithm: key.algorithm().to_string(),
+        fingerprint: key.public_key().fingerprint(HashAlg::Sha256).to_string(),
+    };
+    if identity.fingerprint != request.expected_fingerprint {
+        return Err(SshError::InvalidConfig(
+            "private-key identity changed; preview and confirm again".into(),
+        ));
+    }
+    let (provider, mut client) = connect_for_extension(request.provider, connector).await?;
+    let mutation = async {
+        let identities = client
+            .request_identities()
+            .await
+            .map_err(|_| SshError::InvalidConfig("Agent identity query failed".into()))?;
+        if identities.len() > MAX_IDENTITIES {
+            return Err(SshError::InvalidConfig(
+                "Agent identity limit exceeded".into(),
+            ));
+        }
+        let already_present = identities
+            .iter()
+            .any(|existing| existing.public_key().as_ref() == key.public_key());
+        if !already_present {
+            client.add_identity(&key, &[keys::agent::Constraint::KeyLifetime { seconds: request.lifetime_secs }]).await
+                .map_err(|_| SshError::InvalidConfig("Agent refused the constrained identity; no unconstrained fallback was attempted".into()))?;
+        }
+        Ok(SshAgentAddResult {
+            provider,
+            identity,
+            already_present,
+            lifetime_secs: (!already_present).then_some(request.lifetime_secs),
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(5), mutation)
+        .await
+        .map_err(|_| {
+            SshError::InvalidConfig(
+                "Agent operation timed out; inspect Agent before retrying".into(),
+            )
+        })?
+}
+
+fn allowed_forwarded_request(request: &[u8]) -> bool {
+    match request.first() {
+        Some(11 | 13) => true,
+        Some(27) if request.len() >= 5 => {
+            let size = u32::from_be_bytes(request[1..5].try_into().unwrap()) as usize;
+            request.get(5..5usize.saturating_add(size))
+                == Some(b"session-bind@openssh.com".as_slice())
+        }
+        _ => false,
+    }
+}
+
+/// Forward identity queries and signatures; remote peers cannot add/remove/unlock local identities.
+pub(crate) async fn bridge_agent<R, L>(remote: &mut R, local: &mut L) -> std::io::Result<()>
+where
+    R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    L: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + ?Sized,
+{
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    loop {
+        let size = match remote.read_u32().await {
+            Ok(value) if (1..=256 * 1024).contains(&value) => value,
+            Ok(_) => return Err(std::io::ErrorKind::InvalidData.into()),
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        let mut request = vec![0; size as usize];
+        remote.read_exact(&mut request).await?;
+        if !allowed_forwarded_request(&request) {
+            remote.write_all(&[0, 0, 0, 1, 5]).await?;
+            continue;
+        }
+        local.write_u32(size).await?;
+        local.write_all(&request).await?;
+        local.flush().await?;
+        let size = local.read_u32().await?;
+        if !(1..=256 * 1024).contains(&size) {
+            return Err(std::io::ErrorKind::InvalidData.into());
+        }
+        let mut response = vec![0; size as usize];
+        local.read_exact(&mut response).await?;
+        remote.write_u32(size).await?;
+        remote.write_all(&response).await?;
+        remote.flush().await?;
+    }
 }
 
 struct AgentIssue {
@@ -321,21 +536,19 @@ impl ReadyAgent {
         handle: &mut Handle<IdentityHandler>,
         username: &str,
         identity: AgentIdentity,
+        options: &crate::SshAdvancedOptions,
     ) -> SshResult<russh::client::AuthResult> {
         // Human challenges suspend the negotiator between calls. Only active
         // Agent authentication consumes the attempt's shared signing budget.
         let started = tokio::time::Instant::now();
         let result = tokio::time::timeout(self.remaining_authentication_time, async {
-            let hash = handle
-                .best_supported_rsa_hash()
-                .await
-                .map_err(|error| {
-                    SshError::AuthFailed(
-                        username.into(),
-                        format!("SSH Agent RSA negotiation: {error}"),
-                    )
-                })?
-                .flatten();
+            let hash = handle.best_supported_rsa_hash().await.map_err(|error| {
+                SshError::AuthFailed(
+                    username.into(),
+                    format!("SSH Agent RSA negotiation: {error}"),
+                )
+            })?;
+            let hash = options.authentication_hash(identity.public_key().algorithm(), hash)?;
             handle
                 .authenticate_publickey_with(
                     username.to_owned(),
@@ -377,7 +590,7 @@ async fn authenticate_ready(
     )?;
     while let Some(identity) = ready.take_next() {
         let result = ready
-            .authenticate_identity(handle, username, identity)
+            .authenticate_identity(handle, username, identity, &Default::default())
             .await?;
         if !ready.has_next()
             || !matches!(&result, russh::client::AuthResult::Failure {

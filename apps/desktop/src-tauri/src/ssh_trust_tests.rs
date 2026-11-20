@@ -307,6 +307,7 @@ async fn agent_providers_survive_encrypted_store_reopen_and_frontend_projection(
         let ssh = SshService::with_config_store(data.path().to_path_buf(), store);
         let saved = ssh
             .create_connection(DtoCreateSshConnectionRequest {
+                advanced: Default::default(),
                 authentication_factors: None,
                 proxy: None,
                 jump: None,
@@ -375,6 +376,7 @@ async fn user_certificate_survives_encrypted_store_reopen_without_exposing_the_p
         let ssh = SshService::with_config_store(data.path().to_owned(), store);
         let created = ssh
             .create_connection(DtoCreateSshConnectionRequest {
+                advanced: Default::default(),
                 authentication_factors: None,
                 proxy: None,
                 jump: None,
@@ -455,6 +457,7 @@ async fn h125_ssh_trust_survives_encrypted_store_reopen_and_frontend_projection(
         let ssh = SshService::with_config_store(data.path().to_path_buf(), store);
         let created = ssh
             .create_connection(DtoCreateSshConnectionRequest {
+                advanced: Default::default(),
                 authentication_factors: None,
                 proxy: None,
                 jump: None,

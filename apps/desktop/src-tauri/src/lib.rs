@@ -5361,6 +5361,8 @@ struct SshConnectionFrontendDto {
     pub jump: Option<deepagent_ssh::SshJumpDto>,
     #[serde(default)]
     pub timing: deepagent_ssh::SshConnectionTiming,
+    #[serde(default)]
+    pub advanced: deepagent_ssh::SshAdvancedOptions,
     pub key_path: Option<String>,
     pub has_key_content: bool,
     pub certificate_path: Option<String>,
@@ -5386,6 +5388,7 @@ impl From<DtoSshConnectionDto> for SshConnectionFrontendDto {
             proxy: dto.proxy,
             jump: dto.jump,
             timing: dto.timing,
+            advanced: dto.advanced,
             key_path: dto.key_path,
             has_key_content: dto.has_key_content,
             certificate_path: dto.certificate_path,
@@ -5541,6 +5544,82 @@ async fn ssh_confirm_host_key_rotation(
 }
 
 #[tauri::command]
+async fn ssh_preview_agent_identity(
+    request: deepagent_ssh::SshAgentAddRequest,
+) -> Result<deepagent_ssh::SshAgentIdentity, String> {
+    deepagent_ssh::preview_agent_identity(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn ssh_add_agent_identity(
+    request: deepagent_ssh::SshAgentAddRequest,
+) -> Result<deepagent_ssh::SshAgentAddResult, String> {
+    deepagent_ssh::add_ssh_agent_identity(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn ssh_probe_x11(options: deepagent_ssh::SshX11Options) -> deepagent_ssh::SshX11Probe {
+    deepagent_ssh::probe_x11(options).await
+}
+
+#[tauri::command]
+async fn ssh_connection_details(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<deepagent_ssh::SshConnectionDetails, String> {
+    state
+        .ssh
+        .connection_details(&id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn ssh_list_forwards(
+    state: State<'_, AppState>,
+    id: String,
+    generation: u64,
+) -> Result<Vec<deepagent_ssh::SshForwardTask>, String> {
+    state
+        .ssh
+        .list_forwards(&id, generation)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn ssh_start_forward(
+    state: State<'_, AppState>,
+    id: String,
+    generation: u64,
+    request: deepagent_ssh::SshForwardRequest,
+) -> Result<deepagent_ssh::SshForwardTask, String> {
+    state
+        .ssh
+        .start_forward(&id, generation, request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn ssh_stop_forward(
+    state: State<'_, AppState>,
+    id: String,
+    generation: u64,
+    task_id: String,
+) -> Result<deepagent_ssh::SshForwardTask, String> {
+    state
+        .ssh
+        .stop_forward(&id, generation, &task_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn ssh_probe_agent(
     provider: deepagent_ssh::SshAgentProvider,
 ) -> Vec<deepagent_ssh::SshAgentProbe> {
@@ -5589,6 +5668,7 @@ async fn ssh_create_connection(
     proxy: Option<deepagent_ssh::SshProxyRequest>,
     jump: Option<deepagent_ssh::SshJumpRequest>,
     timing: Option<deepagent_ssh::SshConnectionTiming>,
+    advanced: Option<deepagent_ssh::SshAdvancedOptions>,
     key_path: Option<String>,
     key_content: Option<String>,
     certificate_path: Option<String>,
@@ -5600,6 +5680,7 @@ async fn ssh_create_connection(
     let auth: DtoSshAuthType = serde_json::from_value(serde_json::Value::String(auth_type))
         .map_err(|error| format!("Invalid SSH authentication method: {error}"))?;
     ssh.create_connection(DtoCreateSshConnectionRequest {
+        advanced: advanced.unwrap_or_default(),
         name,
         host,
         port,
@@ -5637,6 +5718,7 @@ async fn ssh_update_connection(
     proxy: Option<deepagent_ssh::SshProxyRequest>,
     jump: Option<deepagent_ssh::SshJumpRequest>,
     timing: Option<deepagent_ssh::SshConnectionTiming>,
+    advanced: Option<deepagent_ssh::SshAdvancedOptions>,
     key_path: Option<String>,
     key_content: Option<String>,
     certificate_path: Option<String>,
@@ -5648,6 +5730,7 @@ async fn ssh_update_connection(
     let auth: DtoSshAuthType = serde_json::from_value(serde_json::Value::String(auth_type))
         .map_err(|error| format!("Invalid SSH authentication method: {error}"))?;
     ssh.update_connection(DtoUpdateSshConnectionRequest {
+        advanced,
         id,
         name,
         host,
@@ -8223,6 +8306,13 @@ pub fn run() {
             terminal_session_release,
             terminal_session_close,
             ssh_list_connections,
+            ssh_preview_agent_identity,
+            ssh_add_agent_identity,
+            ssh_probe_x11,
+            ssh_connection_details,
+            ssh_list_forwards,
+            ssh_start_forward,
+            ssh_stop_forward,
             ssh_probe_agent,
             ssh_discover_default_identities,
             ssh_preview_config_import,

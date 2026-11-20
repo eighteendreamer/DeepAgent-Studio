@@ -51,6 +51,7 @@ pub(crate) struct IdentityHandler {
     rejected: Arc<Mutex<Option<PublicKey>>>,
     accepted: Arc<Mutex<Option<PublicKey>>>,
     closed_by_timer: Arc<Mutex<Option<&'static str>>>,
+    pub(crate) extensions: Arc<crate::extensions::ConnectionExtensions>,
 }
 
 impl IdentityHandler {
@@ -60,6 +61,7 @@ impl IdentityHandler {
             rejected: Arc::new(Mutex::new(None)),
             accepted: Arc::new(Mutex::new(None)),
             closed_by_timer: Arc::new(Mutex::new(None)),
+            extensions: crate::extensions::ConnectionExtensions::new(Default::default()),
         }
     }
 }
@@ -86,10 +88,68 @@ impl client::Handler for IdentityHandler {
         Ok(accepted)
     }
 
+    async fn kex_done(
+        &mut self,
+        _shared_secret: Option<&[u8]>,
+        names: &russh::Names,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        *self
+            .extensions
+            .algorithms
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(names.into());
+        Ok(())
+    }
+
+    async fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        address: &str,
+        port: u32,
+        _origin: &str,
+        _origin_port: u32,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        crate::forwarding::accept_remote(
+            self.extensions.clone(),
+            channel,
+            reply,
+            address.to_owned(),
+            port,
+        )
+        .await;
+        Ok(())
+    }
+
+    async fn server_channel_open_agent_forward(
+        &mut self,
+        channel: Channel<Msg>,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        self.extensions.accept_agent(channel, reply).await;
+        Ok(())
+    }
+
+    async fn server_channel_open_x11(
+        &mut self,
+        channel: Channel<Msg>,
+        _origin: &str,
+        _port: u32,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        self.extensions.accept_x11(channel, reply).await;
+        Ok(())
+    }
+
     async fn disconnected(
         &mut self,
         reason: client::DisconnectReason<Self::Error>,
     ) -> Result<(), Self::Error> {
+        self.extensions.stop();
         match reason {
             client::DisconnectReason::ReceivedDisconnect(_) => Ok(()),
             client::DisconnectReason::Error(error) => {
@@ -112,9 +172,10 @@ impl client::Handler for IdentityHandler {
 /// No authentication configuration or secrets are retained in this handle.
 #[derive(Clone)]
 pub struct SshClient {
-    handle: Arc<Handle<IdentityHandler>>,
+    pub(crate) handle: Arc<Handle<IdentityHandler>>,
     jump: Option<Arc<VerifiedJump>>,
     closed_by_timer: Arc<Mutex<Option<&'static str>>>,
+    pub(crate) extensions: Arc<crate::extensions::ConnectionExtensions>,
 }
 
 pub(crate) struct SshAuthenticationRound {
@@ -186,6 +247,7 @@ pub(crate) struct PendingClientAuthentication {
     negotiation: AuthenticationNegotiation,
     jump: Option<Arc<VerifiedJump>>,
     closed_by_timer: Arc<Mutex<Option<&'static str>>>,
+    pub(crate) extensions: Arc<crate::extensions::ConnectionExtensions>,
 }
 
 pub(crate) enum AuthenticationStep {
@@ -245,6 +307,7 @@ impl PendingClientAuthentication {
                     handle: Arc::new(handle),
                     jump: None,
                     closed_by_timer: self.closed_by_timer.clone(),
+                    extensions: self.extensions.clone(),
                 },
                 trust: self.trust.clone(),
             });
@@ -295,6 +358,7 @@ impl PendingClientAuthentication {
                 handle: Arc::new(handle),
                 jump: self.jump.take(),
                 closed_by_timer: self.closed_by_timer.clone(),
+                extensions: self.extensions.clone(),
             },
             trust: self.trust.clone(),
             server_key: self.server_key.clone(),
@@ -371,13 +435,14 @@ impl SshClient {
     ) -> SshResult<PublicKey> {
         let observed = Arc::new(Mutex::new(None));
         let result = client::connect_stream(
-            Arc::new(config.timing.protocol_config()),
+            Arc::new(config.advanced.protocol_config(config.timing)),
             stream,
             IdentityHandler {
                 trust: None,
                 rejected: observed.clone(),
                 accepted: Arc::new(Mutex::new(None)),
                 closed_by_timer: Arc::new(Mutex::new(None)),
+                extensions: crate::extensions::ConnectionExtensions::new(Default::default()),
             },
         )
         .await;
@@ -518,27 +583,32 @@ impl SshClient {
             }
             return Ok(SshClientConnection::ConfirmationRequired { pending });
         }
-        let handler = IdentityHandler::verified(trust.clone());
+        let mut handler = IdentityHandler::verified(trust.clone());
+        handler.extensions = crate::extensions::ConnectionExtensions::new(config.advanced.clone());
+        let extensions = handler.extensions.clone();
         let rejected = handler.rejected.clone();
         let accepted = handler.accepted.clone();
         let closed_by_timer = handler.closed_by_timer.clone();
-        let mut handle =
-            client::connect_stream(Arc::new(config.timing.protocol_config()), stream, handler)
-                .await
-                .map_err(|error| {
-                    let rejected = rejected.lock().unwrap_or_else(|error| error.into_inner());
-                    match rejected.as_ref() {
-                        Some(key) => HostTrust::error(
-                            config,
-                            &format!(
+        let mut handle = client::connect_stream(
+            Arc::new(config.advanced.protocol_config(config.timing)),
+            stream,
+            handler,
+        )
+        .await
+        .map_err(|error| {
+            let rejected = rejected.lock().unwrap_or_else(|error| error.into_inner());
+            match rejected.as_ref() {
+                Some(key) => HostTrust::error(
+                    config,
+                    &format!(
                         "server key changed or does not match the verified entry; presented {} {}",
                         key.algorithm().as_str(),
                         key.fingerprint(HashAlg::Sha256)
                     ),
-                        ),
-                        None => protocol_error("SSH handshake", error),
-                    }
-                })?;
+                ),
+                None => protocol_error("SSH handshake", error),
+            }
+        })?;
 
         let key = accepted
             .lock()
@@ -563,6 +633,7 @@ impl SshClient {
                     negotiation,
                     jump,
                     closed_by_timer,
+                    extensions,
                 },
                 round,
             }),
@@ -571,6 +642,7 @@ impl SshClient {
                     handle: Arc::new(handle),
                     jump,
                     closed_by_timer,
+                    extensions,
                 },
                 trust: trust.clone(),
                 server_key: key,
@@ -583,7 +655,8 @@ impl SshClient {
     }
 
     pub fn is_closed(&self) -> bool {
-        self.handle.is_closed()
+        self.extensions.cancelled.is_cancelled()
+            || self.handle.is_closed()
             || self
                 .jump
                 .as_ref()
@@ -645,6 +718,7 @@ impl SshClient {
     }
 
     pub async fn disconnect(&self) -> SshResult<()> {
+        self.extensions.shutdown().await;
         let result = if self.handle.is_closed() {
             Ok(())
         } else {

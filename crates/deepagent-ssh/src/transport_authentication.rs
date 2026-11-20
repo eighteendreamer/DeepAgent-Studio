@@ -253,7 +253,7 @@ impl AuthenticationNegotiation {
                     .ok_or_else(|| {
                         SshError::InvalidConfig("Agent identity source is unavailable".into())
                     })?
-                    .authenticate_identity(handle, &config.username, identity)
+                    .authenticate_identity(handle, &config.username, identity, &config.advanced)
                     .await?
             }
             PublicKeyCandidate::Private(identity) => {
@@ -459,6 +459,8 @@ async fn authenticate_private_identity(
     identity: crate::private_identity::PrivateIdentity,
 ) -> SshResult<client::AuthResult> {
     let crate::private_identity::PrivateIdentity { key, certificate } = identity;
+    // Validate DSA even when an identity carries a user certificate.
+    config.advanced.authentication_hash(key.algorithm(), None)?;
     if let Some(certificate) = certificate {
         handle
             .authenticate_openssh_cert(&config.username, Arc::new(key), certificate)
@@ -467,8 +469,8 @@ async fn authenticate_private_identity(
         let hash = handle
             .best_supported_rsa_hash()
             .await
-            .map_err(|error| protocol_error("SSH RSA negotiation", error))?
-            .flatten();
+            .map_err(|error| protocol_error("SSH RSA negotiation", error))?;
+        let hash = config.advanced.authentication_hash(key.algorithm(), hash)?;
         handle
             .authenticate_publickey(
                 &config.username,

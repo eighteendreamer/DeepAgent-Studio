@@ -299,7 +299,7 @@ pub(crate) fn config_proof(cfg: &SshConnectionConfig) -> SshResult<[u8; 32]> {
         &cfg.proxy,
         &cfg.jump,
         cfg.timing,
-        (&cfg.agent_fingerprint, options),
+        (&cfg.agent_fingerprint, &cfg.advanced, options),
     ))
     .map_err(|_| stale())?;
     Ok(Sha256::digest(bytes).into())

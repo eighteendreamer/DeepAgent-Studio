@@ -3799,10 +3799,14 @@ function mockDiff(oldText: string, newText: string): DiffResult {
 export type SshHostKeyPolicy = "strict" | "accept_new";
 
 export type SshAgentProvider = "auto" | "open_ssh" | "pageant";
+export interface SshAgentIdentity {
+  algorithm: string;
+  fingerprint: string;
+}
 export interface SshAgentProbe {
   provider: Exclude<SshAgentProvider, "auto">;
   state: "available" | "empty" | "unavailable" | "unsupported" | "timed_out" | "error";
-  identities: { algorithm: string; fingerprint: string }[];
+  identities: SshAgentIdentity[];
   reason?: string | null;
 }
 
@@ -3912,6 +3916,71 @@ export interface SshAuthenticationFactor {
   has_passphrase: boolean;
 }
 
+export interface SshX11Options { display: string; xauthority_path?: string | null }
+export interface SshAdvancedOptions {
+  forward_agent: boolean;
+  agent_provider: SshAgentProvider;
+  allow_legacy_algorithms: boolean;
+  x11: SshX11Options | null;
+}
+export interface SshConnectionDetails {
+  transport_generation: number;
+  algorithms: { kex: string; host_key: string; cipher: string; client_mac: string; server_mac: string } | null;
+  agent_forwarding_enabled: boolean;
+  x11_forwarding_enabled: boolean;
+}
+export interface SshForwardRequest {
+  kind: "local" | "remote" | "dynamic";
+  bind_host: string;
+  bind_port: number;
+  target_host: string | null;
+  target_port: number | null;
+  allow_non_loopback: boolean;
+}
+export interface SshForwardTask {
+  id: string; connection_id: string; transport_generation: number;
+  kind: SshForwardRequest["kind"]; bind_host: string; bind_port: number;
+  target_host: string | null; target_port: number | null;
+  status: "starting" | "running" | "stopped" | "error";
+  active_channels: number; completed_channels: number;
+  bytes_to_target: number; bytes_from_target: number; events: string[];
+}
+export interface SshAgentAddRequest {
+  provider: SshAgentProvider; key_path: string | null; key_content: string | null; passphrase: string | null;
+  lifetime_secs: number; expected_fingerprint: string; authorized: boolean;
+}
+export interface SshAgentAddResult {
+  provider: SshAgentProvider; identity: SshAgentIdentity; already_present: boolean; lifetime_secs: number | null;
+}
+export async function sshPreviewAgentIdentity(request: SshAgentAddRequest): Promise<SshAgentIdentity> {
+  const invoke = getInvoke(); if (!invoke) throw new Error("Agent management requires the desktop app");
+  return invoke("ssh_preview_agent_identity", { request });
+}
+export async function sshAddAgentIdentity(request: SshAgentAddRequest): Promise<SshAgentAddResult> {
+  const invoke = getInvoke(); if (!invoke) throw new Error("Agent management requires the desktop app");
+  return invoke("ssh_add_agent_identity", { request });
+}
+export async function sshProbeX11(options: SshX11Options): Promise<{available: boolean; display: string; reason: string | null}> {
+  const invoke = getInvoke(); if (!invoke) throw new Error("X11 requires the desktop app");
+  return invoke("ssh_probe_x11", { options });
+}
+export async function sshConnectionDetails(id: string): Promise<SshConnectionDetails> {
+  const invoke = getInvoke(); if (!invoke) throw new Error("Connection details require the desktop app");
+  return invoke("ssh_connection_details", { id });
+}
+export async function sshListForwards(id: string, generation: number): Promise<SshForwardTask[]> {
+  const invoke = getInvoke(); if (!invoke) throw new Error("Forwarding requires the desktop app");
+  return invoke("ssh_list_forwards", { id, generation });
+}
+export async function sshStartForward(id: string, generation: number, request: SshForwardRequest): Promise<SshForwardTask> {
+  const invoke = getInvoke(); if (!invoke) throw new Error("Forwarding requires the desktop app");
+  return invoke("ssh_start_forward", { id, generation, request });
+}
+export async function sshStopForward(id: string, generation: number, taskId: string): Promise<SshForwardTask> {
+  const invoke = getInvoke(); if (!invoke) throw new Error("Forwarding requires the desktop app");
+  return invoke("ssh_stop_forward", { id, generation, taskId });
+}
+
 export interface SshConnectionTiming {
   connect_timeout_secs: number;
   inactivity_timeout_secs: number | null;
@@ -3931,6 +4000,7 @@ export interface SshConnection {
   proxy?: SshProxy | null;
   jump?: SshJump | null;
   timing?: SshConnectionTiming;
+  advanced?: SshAdvancedOptions;
   key_path?: string;
   has_key_content?: boolean;
   certificate_path?: string;
@@ -4282,6 +4352,7 @@ export async function sshCreateConnection(
   jump?: SshJumpRequest,
   timing?: SshConnectionTiming,
   agentFingerprint?: string,
+  advanced?: SshAdvancedOptions,
 ): Promise<SshConnection> {
   const invoke = getInvoke();
   if (invoke)
@@ -4302,8 +4373,9 @@ export async function sshCreateConnection(
       jump,
       timing,
       agentFingerprint,
+      advanced,
     });
-  return { id: "mock", name, host, port, username, auth_type: authType, agent_fingerprint: agentFingerprint || undefined, authentication_factors: mockAuthenticationFactors(authenticationFactors), proxy: mockProxy(proxy), jump: mockJump(jump), timing, key_path: keyPath, has_key_content: authType === "key_content" && Boolean(keyContent), certificate_path: certificatePath, known_hosts_path: knownHostsPath, host_key_policy: hostKeyPolicy, status: "disconnected" };
+  return { id: "mock", name, host, port, username, auth_type: authType, agent_fingerprint: agentFingerprint || undefined, authentication_factors: mockAuthenticationFactors(authenticationFactors), proxy: mockProxy(proxy), jump: mockJump(jump), timing, advanced, key_path: keyPath, has_key_content: authType === "key_content" && Boolean(keyContent), certificate_path: certificatePath, known_hosts_path: knownHostsPath, host_key_policy: hostKeyPolicy, status: "disconnected" };
 }
 
 export async function sshUpdateConnection(
@@ -4324,6 +4396,7 @@ export async function sshUpdateConnection(
   jump?: SshJumpRequest,
   timing?: SshConnectionTiming,
   agentFingerprint?: string,
+  advanced?: SshAdvancedOptions,
 ): Promise<SshConnection> {
   const invoke = getInvoke();
   if (invoke)
@@ -4345,8 +4418,9 @@ export async function sshUpdateConnection(
       jump,
       timing,
       agentFingerprint,
+      advanced,
     });
-  return { id, name, host, port, username, auth_type: authType, agent_fingerprint: agentFingerprint || undefined, authentication_factors: mockAuthenticationFactors(authenticationFactors), proxy: mockProxy(proxy), jump: mockJump(jump), timing, key_path: keyPath, has_key_content: authType === "key_content" && Boolean(keyContent), certificate_path: certificatePath, known_hosts_path: knownHostsPath, host_key_policy: hostKeyPolicy, status: "disconnected" };
+  return { id, name, host, port, username, auth_type: authType, agent_fingerprint: agentFingerprint || undefined, authentication_factors: mockAuthenticationFactors(authenticationFactors), proxy: mockProxy(proxy), jump: mockJump(jump), timing, advanced, key_path: keyPath, has_key_content: authType === "key_content" && Boolean(keyContent), certificate_path: certificatePath, known_hosts_path: knownHostsPath, host_key_policy: hostKeyPolicy, status: "disconnected" };
 }
 
 export async function sshRemoveConnection(id: string): Promise<void> {

@@ -1,4 +1,32 @@
 {
+  "remote": {
+    "forwarding": {
+      "title": "SSH 转发与协商信息",
+      "kind": "转发类型",
+      "local": "本地转发",
+      "remote": "远程转发",
+      "dynamic": "动态 SOCKS5",
+      "bindHost": "监听地址",
+      "bindPort": "监听端口（0 自动分配）",
+      "targetHost": "目标地址",
+      "targetPort": "目标端口",
+      "expose": "允许非回环监听，向其它设备开放端口",
+      "start": "启动",
+      "stop": "停止",
+      "starting": "启动中",
+      "running": "运行中",
+      "stopped": "已停止",
+      "error": "错误",
+      "channels": "活动连接",
+      "events": "活动记录",
+      "remoteDns": "SOCKS5 仅支持 CONNECT；域名由 SSH 远端解析。",
+      "kex": "密钥交换",
+      "host_key": "主机密钥",
+      "cipher": "加密",
+      "client_mac": "上行 MAC",
+      "server_mac": "下行 MAC"
+    }
+  },
   "sidebar": {
     "projects": "專案",
     "pinned": "已釘選",
@@ -473,6 +501,29 @@
       "noAllowed": "沒有允許的網域"
     },
     "connections": {
+        "advanced": {
+          "title": "SSH 高级选项",
+          "legacy": "允许旧算法（DSA / RSA-SHA1 / SHA1 密钥交换与 MAC）",
+            "legacyHint": "舊演算法會降低連線安全性，僅對需要相容的主機開啟；連線失敗不會自動降級。",
+            "forwardAgentHint": "開啟後，遠端可在終端機工作階段期間使用本機 Agent 身分進行驗證。關閉最後一個終端機或中斷連線後結束轉送。",
+          "forwardAgent": "允许远端通过本机 Agent 签名",
+          "provider": "本机 Agent",
+          "x11": "启用 X11 转发",
+          "display": "本机 X Display",
+          "authority": "Xauthority 文件（可选）",
+          "probe": "检查 X11",
+          "available": "本机 X11 可用",
+          "unavailable": "本机 X11 不可用",
+          "addTitle": "向本机 Agent 加入私钥身份",
+          "key": "私钥文件",
+          "passphrase": "私钥口令",
+          "lifetime": "驻留时间（秒）",
+          "preview": "预览身份指纹",
+          "authorize": "已核对指纹，同意按指定驻留时间加入 Agent",
+          "alreadyPresent": "身份已存在，保留其原有约束",
+          "added": "身份已加入 Agent，到期由 Agent 移除",
+          "add": "确认加入 Agent"
+        },
       "timing": {
         "inactivityExpired": "連線已達設定的閒置逾時，已中斷。",
         "keepaliveExpired": "保活連續未回應已達設定上限，連線已中斷。",

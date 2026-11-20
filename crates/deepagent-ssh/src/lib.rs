@@ -21,8 +21,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+pub use advanced::{SshAdvancedOptions, SshNegotiatedAlgorithms};
 pub use agent::{
-    probe_ssh_agent, SshAgentIdentity, SshAgentProbe, SshAgentProvider, SshAgentState,
+    add_ssh_agent_identity, preview_agent_identity, probe_ssh_agent, SshAgentAddRequest,
+    SshAgentAddResult, SshAgentIdentity, SshAgentProbe, SshAgentProvider, SshAgentState,
 };
 pub use authentication_challenge::{
     SshAuthenticationChallenge, SshAuthenticationKind, SshAuthenticationPrompt,
@@ -48,11 +50,13 @@ pub use directory_transfer::{
 };
 pub use directory_walk::{DirectoryWalkLimits, RemoteDirectoryEntry, RemoteDirectoryTree};
 pub use error::{SshError, SshResult};
+pub use extensions::SshConnectionDetails;
 pub use file_transfer::{
     FileConflictPolicy, FileTransferDirection, FileTransferError, FileTransferProgress,
     FileTransferReceipt, FileTransferRequest,
 };
 pub use files::{RemoteFileKind, RemoteFileMetadata, RemoteRealpath};
+pub use forwarding::{SshForwardKind, SshForwardRequest, SshForwardStatus, SshForwardTask};
 pub use host_key_rotation::{SshHostKeyRotationPreview, SshHostKeyRotationResult};
 pub use host_key_store::{
     SshHostIdentity, SshHostKeyRecord, SshHostKeyRotationRecord, SshHostKeyStore,
@@ -89,7 +93,9 @@ pub use session::{
 };
 pub use timing::SshConnectionTiming;
 pub use transport::{SshClient, SshCommandOutput};
+pub use x11::{probe_x11, SshX11Options, SshX11Probe};
 
+mod advanced;
 mod agent;
 mod authentication_challenge;
 mod authentication_factors;
@@ -105,8 +111,10 @@ mod directory_publication;
 mod directory_transfer;
 mod directory_walk;
 mod error;
+mod extensions;
 mod file_transfer;
 mod files;
+mod forwarding;
 mod host_key_activity;
 mod host_key_rotation;
 mod host_key_store;
@@ -126,6 +134,7 @@ mod sftp_packet_stream;
 mod timing;
 mod transport;
 mod transport_authentication;
+mod x11;
 
 use async_trait::async_trait;
 use deepagent_terminal::{
@@ -531,6 +540,28 @@ pub struct SshService {
 }
 
 impl SshService {
+    pub async fn connection_details(&self, id: &str) -> SshResult<SshConnectionDetails> {
+        self.inner.connection_details(id).await
+    }
+    pub async fn list_forwards(&self, id: &str, generation: u64) -> SshResult<Vec<SshForwardTask>> {
+        self.inner.list_forwards(id, generation).await
+    }
+    pub async fn start_forward(
+        &self,
+        id: &str,
+        generation: u64,
+        request: SshForwardRequest,
+    ) -> SshResult<SshForwardTask> {
+        self.inner.start_forward(id, generation, request).await
+    }
+    pub async fn stop_forward(
+        &self,
+        id: &str,
+        generation: u64,
+        task_id: &str,
+    ) -> SshResult<SshForwardTask> {
+        self.inner.stop_forward(id, generation, task_id).await
+    }
     /// Set the application's idle resource retention policy before sharing it.
     pub fn with_connection_idle_timeout(mut self, timeout: std::time::Duration) -> SshResult<Self> {
         if timeout.is_zero() || timeout > std::time::Duration::from_secs(86_400) {
@@ -851,6 +882,7 @@ impl SshService {
             authentication_factors: Vec::new(),
             jump: None,
             timing: dto.timing,
+            advanced: dto.advanced.clone(),
             proxy: dto.proxy.as_ref().map(|proxy| SshProxyConfig {
                 mode: proxy.mode,
                 host: proxy.host.clone(),
@@ -1015,6 +1047,7 @@ mod tests {
         );
         let created = service
             .create_connection(CreateSshConnectionRequest {
+                advanced: Default::default(),
                 name: "test".into(),
                 host: "127.0.0.1".into(),
                 port: 22,

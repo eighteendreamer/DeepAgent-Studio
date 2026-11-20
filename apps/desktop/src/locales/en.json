@@ -76,6 +76,32 @@
     "logout": "Logout"
   },
   "remote": {
+      "forwarding": {
+        "title": "SSH forwarding and negotiation",
+        "kind": "Forward type",
+        "local": "Local forward",
+        "remote": "Remote forward",
+        "dynamic": "Dynamic SOCKS5",
+        "bindHost": "Bind address",
+        "bindPort": "Bind port (0 allocates automatically)",
+        "targetHost": "Target host",
+        "targetPort": "Target port",
+        "expose": "Allow a non-loopback listener accessible to other devices",
+        "start": "Start",
+        "stop": "Stop",
+        "starting": "Starting",
+        "running": "Running",
+        "stopped": "Stopped",
+        "error": "Error",
+        "channels": "Active channels",
+        "events": "Activity log",
+        "remoteDns": "SOCKS5 supports CONNECT only; the SSH server resolves domain names.",
+        "kex": "Key exchange",
+        "host_key": "Host key",
+        "cipher": "Cipher",
+        "client_mac": "Client MAC",
+        "server_mac": "Server MAC"
+      },
     "transfers": {
       "title": "File transfers",
       "upload": "Upload file",
@@ -826,6 +852,29 @@
       "noAllowed": "No allowed domains"
     },
     "connections": {
+        "advanced": {
+          "title": "SSH advanced options",
+          "legacy": "Allow legacy algorithms (DSA / RSA-SHA1 / SHA1 key exchange and MAC)",
+            "legacyHint": "Legacy algorithms weaken connection security. Enable only for compatible hosts; failed connections never downgrade automatically.",
+            "forwardAgentHint": "While a terminal is open, the remote host can use local Agent identities to authenticate. Forwarding ends when the last terminal closes or the connection disconnects.",
+          "forwardAgent": "Allow remote signing through the local Agent",
+          "provider": "Local Agent",
+          "x11": "Enable X11 forwarding",
+          "display": "Local X Display",
+          "authority": "Xauthority file (optional)",
+          "probe": "Check X11",
+          "available": "Local X11 available",
+          "unavailable": "Local X11 unavailable",
+          "addTitle": "Add a private-key identity to local Agent",
+          "key": "Private-key file",
+          "passphrase": "Private-key passphrase",
+          "lifetime": "Lifetime (seconds)",
+          "preview": "Preview identity fingerprint",
+          "authorize": "I verified the fingerprint and authorize adding it for this lifetime",
+          "alreadyPresent": "Identity already present; original constraints preserved",
+          "added": "Identity added; Agent will remove it when its lifetime expires",
+          "add": "Confirm adding to Agent"
+        },
       "configImport": {
         "title": "Import OpenSSH config",
         "browse": "Choose file",

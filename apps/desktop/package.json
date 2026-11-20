@@ -38,7 +38,7 @@
     "test:workflow": "node --test scripts/check-workflow.test.cjs scripts/check-workflow-documents.test.cjs scripts/audit-workflow-isolation.test.cjs",
     "test:canvas-ipc": "node --test scripts/check-canvas-ipc.test.cjs scripts/check-canvas-media-scope.test.cjs scripts/check-virtual-list.test.cjs scripts/check-canvas-persistence.test.cjs scripts/check-canvas-overlay-events.test.cjs scripts/audit-canvas-preference-read-failure.test.cjs scripts/audit-canvas-preference-legacy-migration-loss.test.cjs scripts/audit-canvas-preference-edit-during-hydration.test.cjs",
     "test:terminal-session": "node --test scripts/check-terminal-session.test.cjs scripts/check-terminal-controller.test.cjs scripts/check-remote-terminal-view.test.cjs",
-    "test:ssh-host-trust": "node --test scripts/check-ssh-host-trust.test.cjs scripts/check-ssh-agent.test.cjs scripts/check-ssh-proxy.test.cjs scripts/check-ssh-timing.test.cjs scripts/check-ssh-config-import.test.cjs",
+    "test:ssh-host-trust": "node --test scripts/check-ssh-host-trust.test.cjs scripts/check-ssh-agent.test.cjs scripts/check-ssh-proxy.test.cjs scripts/check-ssh-timing.test.cjs scripts/check-ssh-config-import.test.cjs scripts/check-ssh-advanced.test.cjs",
     "test:dev-watch": "node --test scripts/check-vite-watch.test.cjs",
     "test:remote-files": "node --test scripts/check-remote-files.test.cjs scripts/check-transfer-queue.test.cjs scripts/check-transfer-observer.test.cjs scripts/check-remote-directory-race.test.cjs scripts/check-remote-drop.test.cjs",
     "test:video-edit-persistence": "node --test scripts/check-video-edit-persistence.test.cjs",

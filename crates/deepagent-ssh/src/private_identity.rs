@@ -20,7 +20,7 @@ pub(crate) async fn read_private_identity(
         .or_else(|| config.password.clone());
     tokio::task::spawn_blocking(move || {
         let content = match config.auth_type {
-            SshAuthType::KeyFile => std::fs::read_to_string(
+            SshAuthType::KeyFile => read_bounded_private_key(
                 config
                     .key_path
                     .as_deref()
@@ -42,6 +42,11 @@ pub(crate) async fn read_private_identity(
                 ))
             }
         };
+        if content.len() > MAX_PRIVATE_KEY_BYTES {
+            return Err(SshError::InvalidConfig(
+                "SSH private key exceeds 1 MiB".into(),
+            ));
+        }
         let key = match keys::decode_secret_key(&content, passphrase.as_deref()) {
             Ok(key) => key,
             Err(keys::Error::KeyIsEncrypted) if passphrase.is_none() => return Ok(None),
@@ -87,4 +92,15 @@ pub(crate) async fn read_private_identity(
     })
     .await
     .map_err(|error| SshError::Internal(format!("SSH identity reader: {error}")))?
+}
+
+const MAX_PRIVATE_KEY_BYTES: usize = 1024 * 1024;
+
+fn read_bounded_private_key(path: &str) -> std::io::Result<String> {
+    use std::io::Read;
+    let mut content = String::new();
+    std::fs::File::open(path)?
+        .take((MAX_PRIVATE_KEY_BYTES + 1) as u64)
+        .read_to_string(&mut content)?;
+    Ok(content)
 }

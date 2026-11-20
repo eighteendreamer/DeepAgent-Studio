@@ -36,6 +36,7 @@ async fn pty_shell_streams_prompt_and_echoes_input() {
     let service = SshService::new(app_data.path().to_path_buf());
     let connection = service
         .create_connection(CreateSshConnectionRequest {
+            advanced: Default::default(),
             authentication_factors: None,
             proxy: None,
             jump: None,

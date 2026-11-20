@@ -19,13 +19,19 @@ impl Drop for OpeningChannel {
     }
 }
 
-async fn acknowledged(reader: &mut ChannelReadHalf, pending: &mut Vec<Vec<u8>>) -> SshResult<()> {
+async fn acknowledged(
+    reader: &mut ChannelReadHalf,
+    pending: &mut Vec<Vec<u8>>,
+    operation: &str,
+) -> SshResult<()> {
     let mut buffered = 0;
     loop {
         match reader.wait().await {
             Some(ChannelMsg::Success) => return Ok(()),
             Some(ChannelMsg::Failure) => {
-                return Err(SshError::Pty("server rejected PTY or shell request".into()))
+                return Err(SshError::Pty(format!(
+                    "server rejected {operation} request"
+                )))
             }
             Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
                 buffered += data.len();
@@ -60,17 +66,47 @@ pub(super) async fn open(
     let writer = Arc::new(writer);
     let mut opening = OpeningChannel(Some(writer.clone()));
     let mut pending = Vec::new();
+    let extension_lease = client.extensions.pty_lease();
     tokio::time::timeout(Duration::from_secs(5), async {
+        if client.extensions.options.forward_agent {
+            // Check the explicitly selected provider before requesting remote forwarding.
+            drop(crate::agent::forwarding_stream(client.extensions.options.agent_provider).await?);
+            writer
+                .agent_forward(true)
+                .await
+                .map_err(|error| SshError::Pty(format!("request Agent forwarding: {error}")))?;
+            acknowledged(&mut reader, &mut pending, "Agent forwarding").await?;
+        }
+        if let Some(options) = &client.extensions.options.x11 {
+            let mut runtime = client.extensions.x11.lock().await;
+            let x11 = match runtime.as_ref() {
+                Some(x11) => x11.clone(),
+                None => crate::x11::X11Runtime::prepare(options).await?,
+            };
+            *runtime = Some(x11.clone());
+            drop(runtime);
+            writer
+                .request_x11(
+                    true,
+                    false,
+                    "MIT-MAGIC-COOKIE-1",
+                    x11.cookie_hex(),
+                    x11.screen(),
+                )
+                .await
+                .map_err(|error| SshError::Pty(format!("request X11 forwarding: {error}")))?;
+            acknowledged(&mut reader, &mut pending, "X11 forwarding").await?;
+        }
         writer
             .request_pty(true, "xterm-256color", cols.into(), rows.into(), 0, 0, &[])
             .await
             .map_err(|error| SshError::Pty(format!("request PTY: {error}")))?;
-        acknowledged(&mut reader, &mut pending).await?;
+        acknowledged(&mut reader, &mut pending, "PTY").await?;
         writer
             .request_shell(true)
             .await
             .map_err(|error| SshError::Pty(format!("request shell: {error}")))?;
-        acknowledged(&mut reader, &mut pending).await
+        acknowledged(&mut reader, &mut pending, "shell").await
     })
     .await
     .map_err(|_| SshError::Pty("PTY/shell acknowledgement exceeded 5 seconds".into()))??;
@@ -82,6 +118,7 @@ pub(super) async fn open(
     let channel = writer.clone();
     let connection_id = connection_id.to_owned();
     let join = tokio::spawn(async move {
+        let _extension_lease = extension_lease;
         for bytes in pending {
             if output.send(bytes).await.is_err() {
                 let _ = writer.close().await;

@@ -12,6 +12,14 @@ use tokio::task::{JoinHandle, JoinSet};
 
 #[derive(Default)]
 pub struct Counts {
+    pub preferred: RwLock<Option<russh::Preferred>>,
+    pub remote_forwards: RwLock<Vec<(String, u32)>>,
+    pub remote_cancels: AtomicUsize,
+    pub reject_remote_forward: AtomicBool,
+    pub agent_requests: AtomicUsize,
+    pub reject_agent_forward: AtomicBool,
+    pub x11_requests: RwLock<Vec<(String, String, u32)>>,
+    pub reject_x11_forward: AtomicBool,
     pub forward_target: RwLock<Option<SocketAddr>>,
     pub forward_requests: RwLock<Vec<(String, u32)>>,
     pub reject_forward: AtomicBool,
@@ -78,6 +86,7 @@ struct Handler {
     counts: Arc<Counts>,
     channels: HashMap<ChannelId, Channel<Msg>>,
     forward_channels: std::collections::HashSet<ChannelId>,
+    forward_listeners: HashMap<(String, u32), tokio_util::sync::CancellationToken>,
     tasks: JoinSet<()>,
     interactive_verified: bool,
     factor_index: usize,
@@ -407,6 +416,93 @@ impl server::Handler for Handler {
         Ok(())
     }
 
+    async fn tcpip_forward(
+        &mut self,
+        address: &str,
+        port: &mut u32,
+        session: &mut Session,
+    ) -> Result<bool, Self::Error> {
+        if self.counts.reject_remote_forward.load(Ordering::SeqCst) {
+            return Ok(false);
+        }
+        let listener = match TcpListener::bind((address, *port as u16)).await {
+            Ok(listener) => listener,
+            Err(_) => return Ok(false),
+        };
+        *port = u32::from(listener.local_addr().unwrap().port());
+        self.counts
+            .remote_forwards
+            .write()
+            .unwrap()
+            .push((address.into(), *port));
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        self.forward_listeners
+            .insert((address.into(), *port), cancellation.clone());
+        let handle = session.handle();
+        let address = address.to_owned();
+        let port = *port;
+        self.tasks.spawn(async move {
+            let mut streams=JoinSet::new();
+            loop {
+                tokio::select! {biased;_=cancellation.cancelled()=>break,
+                    accepted=listener.accept()=>{
+                        let Ok((mut socket,origin))=accepted else{break;};
+                        let handle=handle.clone();let address=address.clone();let cancel=cancellation.clone();
+                        streams.spawn(async move {tokio::select! {biased;_=cancel.cancelled()=>{},_=async {
+                            if let Ok(channel)=handle.channel_open_forwarded_tcpip(address,port,origin.ip().to_string(),u32::from(origin.port())).await {
+                                let mut stream=channel.into_stream();let _=tokio::io::copy_bidirectional(&mut socket,&mut stream).await;
+                            }
+                        }=>{}}});
+                    },
+                    _=streams.join_next(),if !streams.is_empty()=>{}
+                }
+            }
+        });
+        Ok(true)
+    }
+
+    async fn cancel_tcpip_forward(
+        &mut self,
+        address: &str,
+        port: u32,
+        _: &mut Session,
+    ) -> Result<bool, Self::Error> {
+        self.counts.remote_cancels.fetch_add(1, Ordering::SeqCst);
+        if let Some(cancel) = self.forward_listeners.remove(&(address.into(), port)) {
+            cancel.cancel();
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    async fn agent_request(&mut self, _: ChannelId, _: &mut Session) -> Result<bool, Self::Error> {
+        self.counts.agent_requests.fetch_add(1, Ordering::SeqCst);
+        Ok(!self.counts.reject_agent_forward.load(Ordering::SeqCst))
+    }
+
+    async fn x11_request(
+        &mut self,
+        channel: ChannelId,
+        _: bool,
+        protocol: &str,
+        cookie: &str,
+        screen: u32,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.counts
+            .x11_requests
+            .write()
+            .unwrap()
+            .push((protocol.into(), cookie.into(), screen));
+        if self.counts.reject_x11_forward.load(Ordering::SeqCst) {
+            session.channel_failure(channel)?;
+        } else {
+            session.channel_success(channel)?;
+        }
+        Ok(())
+    }
+
     async fn channel_close(
         &mut self,
         channel: ChannelId,
@@ -596,11 +692,13 @@ impl SshServer {
                         if let Some(delay) = *server_counts.auth_rejection_time.read().unwrap() {
                             config.auth_rejection_time = delay;
                         }
+                        if let Some(preferred)=server_counts.preferred.read().unwrap().clone() {config.preferred=preferred;}
                         let config = Arc::new(config);
                         let handler = Handler {
                             counts: server_counts.clone(),
                             channels: HashMap::new(),
                             forward_channels: Default::default(),
+                            forward_listeners: Default::default(),
                             tasks: JoinSet::new(),
                             interactive_verified: false,
                             factor_index: 0,

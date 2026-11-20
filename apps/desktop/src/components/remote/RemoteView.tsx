@@ -1,3 +1,5 @@
+import { SshForwardPanel } from "./SshForwardPanel";
+import { Button } from "../shadcn/button";
 import { HoverInfo } from "../ui/HoverInfo";
 import { useEffect, useRef, useState } from "react";
 import { FileText, Loader2, Plus, Server, Terminal, X } from "lucide-react";
@@ -80,6 +82,7 @@ const languageForFile = (name: string) => {
 
 export function RemoteView({ connection, openFile }: RemoteViewProps) {
   const { t } = useTranslation();
+  const [showForwarding, setShowForwarding] = useState(false);
   const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
   const [fileTabs, setFileTabs] = useState<FileTab[]>([]);
   const [activeKey, setActiveKey] = useState<string>("terminal-1");
@@ -91,6 +94,7 @@ export function RemoteView({ connection, openFile }: RemoteViewProps) {
 
   useEffect(() => {
     setTerminalTabs([{ id: "terminal-1", name: t("remote.tabTerminal") }]);
+    setShowForwarding(false);
     setFileTabs([]);
     setFileStates({});
     setActiveKey("terminal-1");
@@ -248,6 +252,7 @@ export function RemoteView({ connection, openFile }: RemoteViewProps) {
         className="flex h-[34px] shrink-0 items-center gap-1 overflow-x-auto border-b border-border-theme bg-black/[0.03] px-1.5"
         data-custom-contextmenu="1"
       >
+        <Button type="button" variant="ghost" size="sm" aria-pressed={showForwarding} onClick={() => setShowForwarding(value => !value)}>{t("remote.forwarding.title")}</Button>
         {terminalTabs.map((tab) => (
           <ContextMenu key={tab.id}>
             <ContextMenuTrigger asChild>
@@ -325,6 +330,7 @@ export function RemoteView({ connection, openFile }: RemoteViewProps) {
           </ContextMenu>
         ))}
       </div>
+      {showForwarding && <SshForwardPanel key={connection.id} connectionId={connection.id} />}
       <div className="min-h-0 flex-1">
         {terminalTabs.map(tab => (
           <div key={`${connection.id}:${tab.id}`} hidden={activeKey !== tab.id}

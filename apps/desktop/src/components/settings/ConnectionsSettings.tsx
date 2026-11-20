@@ -1,3 +1,5 @@
+import { SshAdvancedFields } from "../remote/SshAdvancedFields";
+import type { SshAdvancedOptions } from "../../api";
 import { SshTimingFields, sshTimingFromDto, sshTimingRequest, type SshTimingForm } from "../remote/SshTimingFields";
 import { SshConfigImporter, type SshConfigImportForm } from "../remote/SshConfigImport";
 import { authenticationFactorRequests, authenticationFactorsFromDto, canSaveSshConnection, SshAuthenticationFields, type SshFormAuthType, type SshAuthenticationFactorForm } from "../remote/SshAuthenticationFields";
@@ -30,6 +32,7 @@ interface FormData extends SshConfigImportForm {
   proxy: SshProxyForm;
   jump: SshJumpForm;
   timing: SshTimingForm;
+  advanced: SshAdvancedOptions;
   authenticationFactors: SshAuthenticationFactorForm[];
   name: string;
   host: string;
@@ -50,6 +53,7 @@ const emptyForm: FormData = {
   proxy: sshProxyFromDto(),
   jump: sshJumpFromDto(),
   timing: sshTimingFromDto(),
+  advanced: { forward_agent: false, agent_provider: "auto", allow_legacy_algorithms: false, x11: null },
   authenticationFactors: [],
   name: "",
   host: "",
@@ -164,6 +168,7 @@ export function ConnectionsSettings() {
       proxy: sshProxyFromDto(conn.proxy),
       jump: sshJumpFromDto(conn.jump),
       timing: sshTimingFromDto(conn.timing),
+      advanced: conn.advanced ?? { forward_agent: false, agent_provider: "auto", allow_legacy_algorithms: false, x11: null },
       keyPath: conn.key_path || "",
       keyContent: "",
       hasKeyContent: conn.has_key_content ?? false,
@@ -210,6 +215,7 @@ export function ConnectionsSettings() {
         sshJumpRequest(form.jump),
         sshTimingRequest(form.timing),
         ["agent", "openssh_agent", "pageant"].includes(form.authType) ? form.agentFingerprint ?? "" : undefined,
+        form.advanced,
       );
     } else {
       await sshCreateConnection(
@@ -229,6 +235,7 @@ export function ConnectionsSettings() {
         sshJumpRequest(form.jump),
         sshTimingRequest(form.timing),
         ["agent", "openssh_agent", "pageant"].includes(form.authType) ? form.agentFingerprint ?? "" : undefined,
+        form.advanced,
       );
     }
 
@@ -599,6 +606,7 @@ export function ConnectionsSettings() {
                 </section>
                 <section className="border-t border-border-theme pt-3">
                   <SshTimingFields value={form.timing} onChange={(timing) => setForm((previous) => ({ ...previous, timing }))} />
+                  <SshAdvancedFields value={form.advanced} onChange={(advanced) => setForm((previous) => ({ ...previous, advanced }))} />
                 </section>
                 <section className="border-t border-border-theme pt-3">
                     <SshAuthenticationFields value={form} onChange={(change) => setForm((previous) => ({ ...previous, ...change, importAuthExplicit: true }))} onPickKeyFile={() => void handlePickKeyFile()} onPickCertificateFile={() => void handlePickCertificateFile()} />
