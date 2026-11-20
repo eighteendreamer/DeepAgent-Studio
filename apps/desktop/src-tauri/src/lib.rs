@@ -24,7 +24,7 @@ use deepagent_app_core::{
     builtin_resources, data_root, migrate,
     mobile_service::{AppMobileService, ArtifactRefDto, BackendStatusDto, DeviceDto},
     AppService, ArchiveProjectResultDto, ArchiveService, ArchivedConversationDto, AttachmentDto,
-    AttachmentIngestDto, AttachmentService, BalanceDto, BudgetConfig, ChatService, CommandDto,
+    AttachmentIngestDto, AttachmentService, BudgetConfig, ChatService, CommandDto,
     ConversationMessageDto, CostService, CostSummary, CreatePluginDraftDto, DiagnosticResult,
     DiffResult, DirectSandboxBackend, DirectTerminalSessionBackend, FilePreviewService,
     ForkResultDto, GitBatchCommitPreviewItemDto, GitBatchCommitTargetDto, GitBatchProjectResultDto,
@@ -45,9 +45,8 @@ use deepagent_app_core::{
     SessionSummaryDto, SessionUiPrefsDto, SettingsService, SettingsView, SkillActivationDto,
     SkillDto, SkillsMpClientHandle, SkillsRoots, SkillsService, SpeechService, SqliteSecretStore,
     StoredRunEvent, TerminalResultDto, TerminalService, TerminalShell, TranscriptDto,
-    TranscriptSegmentDto, TrustService, VisionRecognizeRequestDto, VisionRecognizeResultDto,
-    VisionService, VisionSettings, WebSearchSettings, WebSearchSettingsView, WindowsSandboxBackend,
-    WorkspaceInfoDto, WorkspaceService,
+    TranscriptSegmentDto, TrustService, WebSearchSettings, WebSearchSettingsView,
+    WindowsSandboxBackend, WorkspaceInfoDto, WorkspaceService,
 };
 use deepagent_models::ReqwestTransport;
 use deepagent_ssh::SshService;
@@ -416,8 +415,6 @@ struct AppState {
     /// Managed-runtime download/install manager (office-agent).
     runtime: Arc<RuntimeService>,
     video_trim_operations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
-    /// Local system-vision image recognition.
-    vision: Arc<VisionService>,
     /// Windows software sandbox integration (Sandboxie-Plus).
     sandboxie: Arc<SandboxieService>,
     /// Speech transcription + meeting-minutes (office-agent).
@@ -973,36 +970,6 @@ fn save_binary_file(path: String, bytes: Vec<u8>) -> Result<(), String> {
 // ---- settings / initialization commands -----------------------------------
 
 #[tauri::command]
-async fn initialize_project(
-    state: State<'_, AppState>,
-    api_key: String,
-) -> Result<SettingsView, String> {
-    let settings = state.settings.clone();
-    let rt = state.rt.handle().clone();
-    let projects = state.projects.clone();
-    let sandboxie = state.sandboxie.clone();
-    run_blocking(move || {
-        let view = rt
-            .block_on(settings.initialize(&api_key))
-            .map_err(|e| e.to_string())?;
-
-        let project_root = projects
-            .active()
-            .ok()
-            .flatten()
-            .map(PathBuf::from)
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_else(std::env::temp_dir);
-        if let Err(err) = sandboxie.initialize_for_project(project_root) {
-            eprintln!("sandboxie initialize after login failed: {err}");
-        }
-
-        Ok(view)
-    })
-    .await
-}
-
-#[tauri::command]
 fn set_window_translucent(window: tauri::Window, enable: bool) -> Result<(), String> {
     if enable {
         let effects = EffectsBuilder::new().effect(WindowEffect::Mica).build();
@@ -1078,31 +1045,6 @@ fn sandboxie_initialize(state: State<'_, AppState>) -> Result<SandboxieStatusDto
 #[tauri::command]
 fn sandboxie_install(state: State<'_, AppState>) -> Result<SandboxieStatusDto, String> {
     state.sandboxie.install_bundled().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn refresh_models(state: State<'_, AppState>) -> Result<SettingsView, String> {
-    let settings = state.settings.clone();
-    let rt = state.rt.handle().clone();
-    run_blocking(move || {
-        rt.block_on(settings.refresh_models())
-            .map_err(|e| e.to_string())
-    })
-    .await
-}
-
-/// Query the user's DeepSeek balance via the official `GET /user/balance`
-/// endpoint, using the API key from the secret store. Async so the network
-/// call doesn't block the main thread.
-#[tauri::command]
-async fn get_balance(state: State<'_, AppState>) -> Result<BalanceDto, String> {
-    let settings = state.settings.clone();
-    settings.query_balance().await.map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn clear_api_key(state: State<'_, AppState>) -> Result<(), String> {
-    state.settings.clear_key().map_err(|e| e.to_string())
 }
 
 /// AnySearch API-key state surfaced to the web-search settings panel.
@@ -1189,16 +1131,6 @@ async fn test_web_search_engine(
         },
     );
     Ok(result)
-}
-
-/// Switch the active chat model to a discovered model id. Returns the updated
-/// (redacted) settings view. The id must be one of `available_models`.
-#[tauri::command]
-fn set_chat_model(state: State<'_, AppState>, model_id: String) -> Result<SettingsView, String> {
-    state
-        .settings
-        .set_model(deepagent_models::ModelRole::Chat, &model_id)
-        .map_err(|e| e.to_string())
 }
 
 // ---- skill commands -------------------------------------------------------
@@ -2102,6 +2034,14 @@ struct CanvasCandidateDto {
 
 /// Harness "模型" page: every provider, with key presence only.
 #[tauri::command]
+fn harness_credentials_clear(state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .harness_models
+        .clear_credentials()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn harness_providers_list(
     state: State<'_, AppState>,
 ) -> Result<Vec<deepagent_app_core::harness_model_service::HarnessProviderView>, String> {
@@ -2203,10 +2143,11 @@ fn harness_model_select(
     state: State<'_, AppState>,
     provider_id: String,
     model_name: String,
+    reasoning_effort: Option<String>,
 ) -> Result<deepagent_app_core::harness_model_service::ActiveModelView, String> {
     state
         .harness_models
-        .select_model(&provider_id, &model_name)
+        .select_model_with_reasoning(&provider_id, &model_name, reasoning_effort.as_deref())
         .map_err(|e| e.to_string())
 }
 
@@ -3487,47 +3428,6 @@ fn set_web_search_settings(
     state
         .settings
         .web_search_settings_view()
-        .map_err(|e| e.to_string())
-}
-
-// ---- vision settings ------------------------------------------------------
-
-#[tauri::command]
-fn get_vision_settings(state: State<'_, AppState>) -> Result<VisionSettings, String> {
-    state.settings.vision_settings().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn set_vision_settings(
-    state: State<'_, AppState>,
-    settings: VisionSettings,
-) -> Result<VisionSettings, String> {
-    state
-        .settings
-        .set_vision_settings(settings)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn vision_recognize_image(
-    state: State<'_, AppState>,
-    request: VisionRecognizeRequestDto,
-) -> Result<VisionRecognizeResultDto, String> {
-    state
-        .vision
-        .recognize_image(request)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn vision_test_connection(
-    state: State<'_, AppState>,
-) -> Result<VisionRecognizeResultDto, String> {
-    state
-        .vision
-        .test_connection()
-        .await
         .map_err(|e| e.to_string())
 }
 
@@ -7176,7 +7076,6 @@ pub fn run() {
             let skills_dir = paths.skills.clone();
             let runtimes_dir = paths.runtimes.clone();
             let cache_dir = paths.cache.clone();
-            let vision_cache_dir = paths.vision_cache.clone();
             let mcp_dir = paths.mcp.clone();
             let tool_results_dir = paths.tool_results.clone();
             let artifacts_dir = paths.artifacts.clone();
@@ -7279,11 +7178,6 @@ pub fn run() {
             // key remains in the keychain; migrated plaintext entries are
             // removed only after the SQLite write succeeds.
             let legacy_keychain = KeychainStore::new(KEYCHAIN_SERVICE);
-            // The API key shares the sign-in/sign-out generation gate. An old
-            // keychain entry must not undo another host's completed sign-out.
-            settings_arc
-                .import_legacy_api_key(&legacy_keychain)
-                .map_err(|e| e.to_string())?;
             for name in [
                 "vision_api_key",
                 "anysearch_api_key",
@@ -7485,10 +7379,6 @@ pub fn run() {
                     .with_runtime(runtime_broker.clone(), projects.clone())
                     .with_builtin_mcp(builtin_mcp_root.clone(), builtin_mcp_data.clone()),
             );
-            let vision = Arc::new(VisionService::new(
-                settings_arc.clone(),
-                vision_cache_dir.clone(),
-            ));
             let bundled_sandboxie_installer = app
                 .path()
                 .resource_dir()
@@ -7860,7 +7750,6 @@ pub fn run() {
                 recording,
                 runtime,
                 video_trim_operations: Arc::new(Mutex::new(HashMap::new())),
-                vision,
                 sandboxie,
                 speech,
                 office,
@@ -7901,7 +7790,6 @@ pub fn run() {
             export_transcript,
             save_text_file,
             save_binary_file,
-            initialize_project,
             get_settings,
             remote_assistant_chat,
             set_window_translucent,
@@ -7910,14 +7798,10 @@ pub fn run() {
             sandboxie_status,
             sandboxie_initialize,
             sandboxie_install,
-            refresh_models,
-            get_balance,
-            clear_api_key,
             get_anysearch_api_key,
             set_anysearch_api_key,
             clear_anysearch_api_key,
             test_web_search_engine,
-            set_chat_model,
             list_skills,
             reload_skills,
             install_skill,
@@ -7976,6 +7860,7 @@ pub fn run() {
             canvas_secret_set,
             canvas_secret_clear,
             canvas_provider_test,
+            harness_credentials_clear,
             harness_providers_list,
             harness_provider_save,
             harness_provider_remove,
@@ -8040,10 +7925,6 @@ pub fn run() {
             set_tool_search_threshold,
             get_web_search_settings,
             set_web_search_settings,
-            get_vision_settings,
-            set_vision_settings,
-            vision_recognize_image,
-            vision_test_connection,
             get_skill_catalog_enabled,
             set_skill_catalog_enabled,
             get_skill_catalog_char_budget,

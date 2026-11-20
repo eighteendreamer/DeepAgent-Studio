@@ -1,7 +1,7 @@
 //! Messages request projection from the canonical Responses item surface.
 use anthropic_sdk::{
     CacheControlEphemeral, ContentBlockParam, ImageBlockParam, ImageSource, MessageCreateParams,
-    OutputConfig, SystemPrompt, TextBlockParam, ThinkingConfig, ToolChoice,
+    SystemPrompt, TextBlockParam, ThinkingConfig, ToolChoice,
 };
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::message::MessageAttachment;
@@ -29,13 +29,25 @@ impl CachePolicy {
 }
 
 #[cfg(test)]
-fn encode_request(request: &ResponseRequest, max_tokens: u32) -> Result<String> {
-    encode_request_with_cache(request, max_tokens, CachePolicy::Explicit)
-}
-
-pub(crate) fn encode_request_with_cache(
+fn encode_request(
     request: &ResponseRequest,
     max_tokens: u32,
+    wire_effort: Option<&str>,
+) -> Result<String> {
+    encode_request_with_format(
+        request,
+        max_tokens,
+        wire_effort,
+        crate::thinking::ThinkingFormat::Adaptive,
+        CachePolicy::Explicit,
+    )
+}
+
+pub(crate) fn encode_request_with_format(
+    request: &ResponseRequest,
+    max_tokens: u32,
+    wire_effort: Option<&str>,
+    format: crate::thinking::ThinkingFormat,
     cache_policy: CachePolicy,
 ) -> Result<String> {
     let (systems, mut messages) = project_messages(request)?;
@@ -68,7 +80,6 @@ pub(crate) fn encode_request_with_cache(
                 .collect(),
         ))
     };
-
     let mut body = MessageCreateParams {
         model: request.model.clone(),
         max_tokens: i64::from(max_tokens),
@@ -83,11 +94,12 @@ pub(crate) fn encode_request_with_cache(
     if let Some(effort) = request.reasoning_effort {
         if effort == crate::ReasoningEffort::None {
             body.thinking = Some(ThinkingConfig::Disabled);
-        } else {
+        } else if format == crate::thinking::ThinkingFormat::Adaptive {
             body.thinking = Some(ThinkingConfig::Adaptive);
-            body.output_config = Some(OutputConfig {
-                effort: Some(serde_json::from_value(json!(effort.label()))?),
-                format: None,
+        } else if format == crate::thinking::ThinkingFormat::Budget {
+            let budget = crate::thinking::thinking_budget(effort.into(), max_tokens)?;
+            body.thinking = Some(ThinkingConfig::Enabled {
+                budget_tokens: i64::from(budget),
             });
         }
     }
@@ -100,7 +112,34 @@ pub(crate) fn encode_request_with_cache(
     if let Some(choice) = request.tool_choice.as_ref() {
         body.tool_choice = Some(messages_tool_choice(choice)?);
     }
-    crate::client::request_body::encode(&body)
+    // SDK effort enums cannot represent custom route wire values (e.g. ultra).
+    // Keep the SDK message/tool schema and serialize this extension explicitly.
+    #[derive(serde::Serialize)]
+    struct EffortConfig<'a> {
+        effort: &'a str,
+    }
+    #[derive(serde::Serialize)]
+    struct Wire<'a> {
+        #[serde(flatten)]
+        body: &'a MessageCreateParams,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output_config: Option<EffortConfig<'a>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        thinking: Option<Value>,
+    }
+    let output_config = wire_effort
+        .filter(|_| request.reasoning_effort != Some(crate::ReasoningEffort::None))
+        .filter(|_| format != crate::thinking::ThinkingFormat::Budget)
+        .map(|effort| EffortConfig { effort });
+    crate::client::request_body::encode(&Wire {
+        body: &body,
+        output_config,
+        thinking: (request
+            .reasoning_effort
+            .is_some_and(|effort| effort != crate::ReasoningEffort::None)
+            && format == crate::thinking::ThinkingFormat::Enabled)
+            .then(|| json!({"type":"enabled"})),
+    })
 }
 
 pub(crate) fn project_tools(tools: &[ToolSchema], cache_policy: CachePolicy) -> Vec<Value> {
@@ -485,7 +524,15 @@ mod tests {
             "Read",
             json!({"type":"object"}),
         )];
-        let body: Value = serde_json::from_str(&encode_request(&request, 128).unwrap()).unwrap();
+        let body: Value = serde_json::from_str(
+            &encode_request(
+                &request,
+                128,
+                request.reasoning_effort.map(crate::ReasoningEffort::label),
+            )
+            .unwrap(),
+        )
+        .unwrap();
         assert_eq!(body["system"][0]["text"], "rules");
         assert_eq!(body["messages"][0]["role"], "user");
         assert_eq!(body["messages"][1]["content"][0]["type"], "thinking");
@@ -525,7 +572,15 @@ mod tests {
                 },
             ],
         );
-        let body: Value = serde_json::from_str(&encode_request(&request, 128).unwrap()).unwrap();
+        let body: Value = serde_json::from_str(
+            &encode_request(
+                &request,
+                128,
+                request.reasoning_effort.map(crate::ReasoningEffort::label),
+            )
+            .unwrap(),
+        )
+        .unwrap();
         let results = body["messages"][2]["content"].as_array().unwrap();
         assert_eq!(results[0]["tool_use_id"], "call-a");
         assert_eq!(results[1]["tool_use_id"], "call-b");
@@ -545,10 +600,14 @@ mod tests {
                 output: deepagent_core::tool_content::ToolResultBody::Text("x".into()),
             },
         ];
-        assert!(encode_request(&request, 128)
-            .unwrap_err()
-            .to_string()
-            .contains("must match"));
+        assert!(encode_request(
+            &request,
+            128,
+            request.reasoning_effort.map(crate::ReasoningEffort::label)
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("must match"));
     }
 
     #[test]
@@ -577,10 +636,14 @@ mod tests {
                 },
             ],
         );
-        assert!(encode_request(&request, 128)
-            .unwrap_err()
-            .to_string()
-            .contains("must match"));
+        assert!(encode_request(
+            &request,
+            128,
+            request.reasoning_effort.map(crate::ReasoningEffort::label)
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("must match"));
     }
 
     #[test]
@@ -595,7 +658,15 @@ mod tests {
             json!({"type":"object"}),
         )];
         request.tool_choice = Some(json!("required"));
-        let body: Value = serde_json::from_str(&encode_request(&request, 128).unwrap()).unwrap();
+        let body: Value = serde_json::from_str(
+            &encode_request(
+                &request,
+                128,
+                request.reasoning_effort.map(crate::ReasoningEffort::label),
+            )
+            .unwrap(),
+        )
+        .unwrap();
         assert_eq!(body["tool_choice"], json!({"type":"any"}));
     }
 
@@ -606,7 +677,15 @@ mod tests {
             vec![deepagent_core::message::Message::user("hello")],
         );
         request.reasoning_effort = Some(crate::ReasoningEffort::None);
-        let body: Value = serde_json::from_str(&encode_request(&request, 128).unwrap()).unwrap();
+        let body: Value = serde_json::from_str(
+            &encode_request(
+                &request,
+                128,
+                request.reasoning_effort.map(crate::ReasoningEffort::label),
+            )
+            .unwrap(),
+        )
+        .unwrap();
         assert_eq!(body["thinking"], json!({"type":"disabled"}));
         assert!(body.get("output_config").is_none());
     }

@@ -1,9 +1,8 @@
 //! Follow one real imported image from the live turn into retained history.
 
 use super::*;
-use deepagent_app_core::{AttachmentIngestDto, AttachmentService, VisionMode, VisionSettings};
+use deepagent_app_core::{AttachmentIngestDto, AttachmentService};
 use deepagent_models::transport::{FileUploadRequest, UploadedFile};
-use deepagent_models::ModelRole;
 use deepagent_runtime::InputAttachment;
 
 #[path = "image_integrity.rs"]
@@ -214,22 +213,16 @@ async fn image_settings_with_secrets(
     let settings = Arc::new(SettingsService::new(
         db,
         Arc::new(MockTransport::with_get_json(
-            r#"{"data":[{"id":"deepseek-flash","object":"model","owned_by":"deepseek"}]}"#,
+            r#"{"data":[{"id":"deepseek-flash","object":"model","owned_by":"deepseek","input_modalities":["text","image"]}]}"#,
         )),
         secrets,
     ));
-    settings
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
         .await
         .unwrap();
-    for role in [ModelRole::Chat, ModelRole::Reasoner] {
-        settings.set_model(role, "deepseek-flash").unwrap();
-    }
     settings
-        .set_vision_settings(VisionSettings {
-            mode: VisionMode::Off,
-            ..VisionSettings::default()
-        })
+        .harness_models()
+        .select_model("deepseek", "deepseek-flash")
         .unwrap();
     settings
 }
@@ -241,7 +234,7 @@ fn reopened_image_settings(
     Arc::new(SettingsService::new(
         db,
         Arc::new(MockTransport::with_get_json(
-            r#"{"data":[{"id":"deepseek-flash","object":"model","owned_by":"deepseek"}]}"#,
+            r#"{"data":[{"id":"deepseek-flash","object":"model","owned_by":"deepseek","input_modalities":["text","image"]}]}"#,
         )),
         secrets,
     ))

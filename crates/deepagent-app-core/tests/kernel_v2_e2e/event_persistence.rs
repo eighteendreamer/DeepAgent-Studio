@@ -4,7 +4,6 @@ mod cursor_range;
 
 use super::*;
 use deepagent_core::{event::EventPayload, id::SessionId};
-use deepagent_models::ModelRole;
 use deepagent_persistence::{
     event_store::EventStore,
     run_control::{RunActionState, RunControlStore},
@@ -87,13 +86,13 @@ pub(super) async fn settings(db: Arc<Database>) -> Arc<SettingsService> {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("offline-persistence-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-persistence-placeholder")
         .await
         .unwrap();
-    for role in [ModelRole::Chat, ModelRole::Reasoner] {
-        settings.set_model(role, "deepseek-flash").unwrap();
-    }
+    settings
+        .harness_models()
+        .select_model("deepseek", "deepseek-flash")
+        .unwrap();
     settings
 }
 

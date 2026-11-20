@@ -59,8 +59,7 @@ impl Fixture {
             )),
             Arc::new(MemorySecretStore::new()),
         ));
-        settings
-            .initialize("h97-synthetic-credential")
+        crate::registry_fixture::configure(&settings, "h97-synthetic-credential")
             .await
             .unwrap();
         let transport = Arc::new(HeldTransport {
@@ -418,8 +417,7 @@ async fn h97_shutdown_while_a_real_tool_waits_uses_the_kernel_cancellation_flag(
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("h97-synthetic-credential")
+    crate::registry_fixture::configure(&settings, "h97-synthetic-credential")
         .await
         .unwrap();
     settings

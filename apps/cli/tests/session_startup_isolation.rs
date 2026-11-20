@@ -22,16 +22,29 @@ fn h89_real_stdio_unknown_selection_fails_before_credentials_and_survives_cold_r
     std::fs::create_dir_all(root.path().join("data")).unwrap();
     let path = root.path().join("data/state.sqlite");
     {
-        // Non-secret catalog only. No encrypted secret record or keychain entry
-        // is created; the actual CLI cannot contact a provider without a key.
+        // Configure the SQLite registry without a credential. The CLI must
+        // resolve the exact route but stop before contacting the provider.
         let db = Database::open(&path).unwrap();
-        let settings: deepagent_app_core::settings::AppSettings = serde_json::from_value(json!({
-            "catalog":{"base_url":deepagent_models::DEEPSEEK_BASE_URL,
-                "available":[{"id":"deepseek-flash"},{"id":"deepseek-pro"}],
-                "chat_model":"deepseek-flash","reasoner_model":"deepseek-pro"},
-            "discovered_at":0,"sandbox_mode":"read_only"
-        }))
+        let settings = deepagent_app_core::settings::AppSettings {
+            sandbox_mode: deepagent_app_core::SandboxMode::ReadOnly,
+            ..Default::default()
+        };
+        db.save_harness_models(
+            "deepseek",
+            &[deepagent_persistence::harness_registry::HarnessModel {
+                provider_id: "deepseek".into(),
+                model_name: "deepseek-flash".into(),
+                display_name: "DeepSeek Flash".into(),
+                protocol: None,
+                context_window: 1_000_000,
+                output_limit: 131_072,
+                capabilities: "{}".into(),
+                active: true,
+            }],
+        )
         .unwrap();
+        db.set_harness_chat_selection("deepseek", "deepseek-flash")
+            .unwrap();
         deepagent_persistence::document_store::DocumentStore::new(&db)
             .put(
                 "settings",
@@ -141,9 +154,9 @@ fn h89_real_stdio_unknown_selection_fails_before_credentials_and_survives_cold_r
                         let reason = event["params"]["reason"].as_str().unwrap();
                         assert!(
                             reason.contains(if model.is_some() {
-                                "API key not set"
+                                "has no API key"
                             } else {
-                                "unknown model 'h89-unknown-thread'"
+                                "unknown model `h89-unknown-thread`"
                             }),
                             "{reason}"
                         );
@@ -208,7 +221,7 @@ fn h89_real_stdio_unknown_selection_fails_before_credentials_and_survives_cold_r
             );
             previous.push((id, events));
         }
-        eprintln!("H89 real stdio pass {pass}: invalid unknown, exact known plan then missing-key failure, native catalog default, unique terminal; no provider dispatch");
+        eprintln!("H89 real stdio pass {pass}: invalid unknown, exact registry selection then missing-key failure, unique terminal; no provider dispatch");
     }
 }
 

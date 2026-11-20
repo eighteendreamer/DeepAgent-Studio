@@ -19,6 +19,40 @@ mod h157_tests {
     }
 
     #[tokio::test]
+    async fn provider_default_is_omitted_on_wire_and_reported_as_default() {
+        #[derive(Default)]
+        struct Events(Mutex<Vec<RuntimeEvent>>);
+        impl RuntimeEventSink for Events {
+            fn emit(&self, event: RuntimeEvent) {
+                self.0.lock().unwrap().push(event);
+            }
+        }
+        let transport = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([response_text_completed("default")])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let mut config = ModelConfig::deepseek("synthetic").with_model_reasoning_defaults(true);
+        let mut capability = ModelCapabilityResolver::new().resolve_model_id("unknown");
+        capability.thinking = Some(deepagent_models::thinking::ThinkingCapabilities::default());
+        config.capabilities = vec![capability];
+        let events = Arc::new(Events::default());
+        let mut agent = ModelAgent::new(
+            Arc::new(ModelClient::new(transport.clone(), config)),
+            "unknown",
+            "synthetic",
+            "synthetic",
+            vec![],
+        )
+        .with_events(events.clone());
+        let _ = complete_items(agent.think(0, &[]).await.unwrap());
+        assert!(transport.requests.lock().unwrap()[0]
+            .get("reasoning")
+            .is_none());
+        assert!(events.0.lock().unwrap().iter().any(|event| matches!(event,
+            RuntimeEvent::ModelRequestStarted { reasoning_effort, .. } if reasoning_effort == "default")));
+    }
+
+    #[tokio::test]
     async fn explicit_unsupported_effort_never_retries() {
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([response_text_completed("not dispatched")])),

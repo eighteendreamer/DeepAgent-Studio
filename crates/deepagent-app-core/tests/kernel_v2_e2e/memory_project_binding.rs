@@ -203,8 +203,7 @@ async fn two_sessions_keep_project_memory_across_ui_switch_child_rebind_resume_a
             )),
             Arc::new(MemorySecretStore::new()),
         ));
-        settings
-            .initialize("offline-fixture-placeholder")
+        crate::registry_fixture::configure(&settings, "offline-fixture-placeholder")
             .await
             .unwrap();
         settings

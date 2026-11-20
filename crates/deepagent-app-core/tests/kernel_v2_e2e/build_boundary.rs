@@ -134,8 +134,7 @@ async fn run_with_route(mutation: Mutation, mode: BackendMode, route: Route) -> 
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
         .await
         .unwrap();
     // Command approval and the executor's filesystem boundary are distinct.

@@ -6,7 +6,6 @@ use super::*;
 use deepagent_app_core::{BudgetConfig, CostSummary};
 use deepagent_core::event::EventPayload;
 use deepagent_core::id::SessionId;
-use deepagent_models::ModelRole;
 use deepagent_persistence::cost_store::CostStore;
 use deepagent_persistence::event_store::EventStore;
 use deepagent_runtime::events::RuntimeEvent;
@@ -138,13 +137,13 @@ async fn hook_settings(db: Arc<Database>, kind: HookKind) -> Arc<SettingsService
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
         .await
         .unwrap();
-    for role in [ModelRole::Chat, ModelRole::Reasoner] {
-        settings.set_model(role, MODEL).unwrap();
-    }
+    settings
+        .harness_models()
+        .select_model("deepseek", MODEL)
+        .unwrap();
     if kind != HookKind::None {
         settings
             .set_hooks_json(

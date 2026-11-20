@@ -7,7 +7,7 @@ mod request;
 mod stream;
 mod usage;
 
-pub(crate) use request::{encode_request_with_cache, project_tools, CachePolicy};
+pub(crate) use request::{encode_request_with_format, project_tools, CachePolicy};
 pub use stream::MessagesAccumulator;
 
 /// Messages API roots may include a provider prefix and an explicit `/v1`.

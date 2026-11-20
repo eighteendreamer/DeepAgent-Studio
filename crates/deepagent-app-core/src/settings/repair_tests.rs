@@ -22,7 +22,9 @@ async fn pair() -> (tempfile::TempDir, SettingsService, SettingsService) {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("settings.sqlite");
     let first = host(&path);
-    first.initialize("h87-synthetic-credential").await.unwrap();
+    crate::registry_fixture::configure(&first, "h87-synthetic-credential")
+        .await
+        .unwrap();
     let second = host(&path);
     assert!(second.load().unwrap().is_some());
     (directory, first, second)
@@ -59,7 +61,7 @@ async fn h87_disjoint_edits_from_warm_hosts_preserve_all_committed_fields() {
     assert_eq!(persisted.hooks_json, r#"{"hooks":{}}"#);
     assert_eq!(persisted.permission_rules.deny, ["Bash(rm:*)"]);
     assert_eq!(persisted.welcome_name, "H87 fixture");
-    assert_eq!(persisted.reasoning_effort, ReasoningEffort::Max);
+    assert_eq!(first.reasoning_effort().unwrap(), ReasoningEffort::Max);
     assert_eq!(persisted.skill_catalog_char_budget, 1024);
 }
 
@@ -79,13 +81,16 @@ async fn h87_corrupt_current_document_is_not_replaced_from_a_warm_cache() {
         .unwrap();
     let loaded = first.load();
     let edited = first.set_sandbox_mode(SandboxMode::ReadOnly);
-    let refreshed = first.refresh_models().await;
+    let refreshed = first.harness_models().fetch_models("deepseek").await;
     assert!(
         loaded.is_err(),
         "cached settings must not conceal current corruption"
     );
     assert!(edited.is_err());
-    assert!(refreshed.is_err());
+    assert!(
+        refreshed.is_ok(),
+        "model refresh no longer reads general settings"
+    );
     assert_eq!(
         store
             .get(SETTINGS_COLLECTION, SETTINGS_ID)
@@ -94,11 +99,7 @@ async fn h87_corrupt_current_document_is_not_replaced_from_a_warm_cache() {
             .body,
         raw
     );
-    for error in [
-        loaded.unwrap_err(),
-        edited.unwrap_err(),
-        refreshed.unwrap_err(),
-    ] {
+    for error in [loaded.unwrap_err(), edited.unwrap_err()] {
         assert!(!error.to_string().contains("H87_PRIVATE_TRUNCATED"));
     }
 }
@@ -108,7 +109,12 @@ async fn h87_sequential_refresh_keeps_normal_preferences_and_prices() {
     let (_directory, first, _second) = pair().await;
     first.set_sandbox_mode(SandboxMode::ReadOnly).unwrap();
     first.set_welcome_name("normal control").unwrap();
-    let view = first.refresh_models().await.unwrap();
+    first
+        .harness_models()
+        .fetch_models("deepseek")
+        .await
+        .unwrap();
+    let view = first.view().unwrap().unwrap();
     assert!(view.configured);
     assert_eq!(view.sandbox_mode, "read_only");
     assert!(!view.pricing_catalog.models.is_empty());
@@ -120,9 +126,12 @@ async fn h87_missing_cache_observes_other_host_initialization() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("settings.sqlite");
     let first = host(&path);
-    assert!(first.load().unwrap().is_none());
+    assert!(first.load().unwrap().is_some());
+    assert!(!first.view().unwrap().unwrap().configured);
     let second = host(&path);
-    second.initialize("h87-synthetic-credential").await.unwrap();
+    crate::registry_fixture::configure(&second, "h87-synthetic-credential")
+        .await
+        .unwrap();
     first.set_sandbox_mode(SandboxMode::ReadOnly).unwrap();
     assert_eq!(second.sandbox_mode().unwrap(), SandboxMode::ReadOnly);
 }
@@ -264,7 +273,11 @@ async fn h87_unrecognized_top_level_fields_survive_setters_and_refresh() {
         )
         .unwrap();
     first.set_welcome_name("extension control").unwrap();
-    first.refresh_models().await.unwrap();
+    first
+        .harness_models()
+        .fetch_models("deepseek")
+        .await
+        .unwrap();
     let saved = store
         .get(SETTINGS_COLLECTION, SETTINGS_ID)
         .unwrap()

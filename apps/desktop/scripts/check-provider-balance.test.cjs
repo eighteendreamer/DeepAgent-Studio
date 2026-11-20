@@ -68,11 +68,12 @@ test("unlimited remains separate from the numeric amount", async () => {
   assert.equal(result.infos[0].total_balance, "");
 });
 
-test("legacy balance is read only when no registry model is selected", async () => {
+test("no model selection leaves balance unknown without a legacy request", async () => {
   const host = balanceApi();
   const result = await host.read();
-  assert.equal(result.infos[0].total_balance, "999");
-  assert.deepEqual(host.calls.map(([command]) => command), ["harness_model_selection", "get_balance"]);
+  assert.equal(result.infos.length, 0);
+  assert.equal(result.is_available, null);
+  assert.deepEqual(host.calls.map(([command]) => command), ["harness_model_selection"]);
 });
 
 test("a provider with balance disabled does not fabricate a displayed amount", async () => {

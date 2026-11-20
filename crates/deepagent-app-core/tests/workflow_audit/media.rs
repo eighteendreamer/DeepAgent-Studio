@@ -1178,7 +1178,9 @@ impl MediaFixture {
             )),
             secrets.clone(),
         ));
-        settings.initialize("sk-audit-placeholder").await.unwrap();
+        crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
+            .await
+            .unwrap();
         let providers = Arc::new(CanvasProviderService::new(db.clone(), secrets));
         let saved = providers
             .save_provider(CanvasProviderInput {

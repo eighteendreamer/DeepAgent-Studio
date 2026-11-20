@@ -2,7 +2,6 @@
 
 use super::*;
 use deepagent_app_core::SandboxMode;
-use deepagent_models::ModelRole;
 use std::process::Command;
 
 const OUTSIDE_CANARY: &str = "AUDIT_JUNCTION_OUTSIDE_6c1e";
@@ -187,8 +186,7 @@ async fn observe_tool_with_root_replacement(
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
         .await
         .unwrap();
     settings.set_sandbox_mode(sandbox_mode).unwrap();
@@ -199,9 +197,10 @@ async fn observe_tool_with_root_replacement(
             .set_approval_policy(deepagent_app_core::ApprovalPolicy::FullAccess)
             .unwrap();
     }
-    for role in [ModelRole::Chat, ModelRole::Reasoner] {
-        settings.set_model(role, "deepseek-flash").unwrap();
-    }
+    settings
+        .harness_models()
+        .select_model("deepseek", "deepseek-flash")
+        .unwrap();
     let model = Arc::new(JunctionModel {
         tool,
         args,

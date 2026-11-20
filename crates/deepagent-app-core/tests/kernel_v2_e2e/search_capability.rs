@@ -3,7 +3,6 @@ use super::*;
 use deepagent_app_core::{
     WebSearchEngineId, WebSearchEngineSettings, WebSearchSettings, WebSearchStrategy,
 };
-use deepagent_models::ModelRole;
 use serde_json::Value;
 use std::sync::Mutex;
 
@@ -40,9 +39,14 @@ async fn run_wire(model: &str, enabled: bool) -> (Value, bool) {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("synthetic").await.unwrap();
-    settings.set_model(ModelRole::Chat, model).unwrap();
-    settings.set_model(ModelRole::Reasoner, model).unwrap();
+    crate::registry_fixture::configure(&settings, "synthetic")
+        .await
+        .unwrap();
+
+    settings
+        .harness_models()
+        .select_model("deepseek", model)
+        .unwrap();
     settings
         .set_tool_search_mode(deepagent_builtins::ToolSearchMode::Disabled)
         .unwrap();
@@ -120,7 +124,9 @@ async fn engine_order_and_strategy_persist_without_model_fields() {
         )),
         Arc::new(MemorySecretStore::new()),
     );
-    settings.initialize("synthetic").await.unwrap();
+    crate::registry_fixture::configure(&settings, "synthetic")
+        .await
+        .unwrap();
     let configured = WebSearchSettings {
         strategy: WebSearchStrategy::Verify,
         engines: vec![
@@ -219,8 +225,7 @@ async fn disabled_search_returns_exact_error_through_kernel_without_http() {
             )),
             Arc::new(MemorySecretStore::new()),
         ));
-        settings
-            .initialize("synthetic-disabled-login")
+        crate::registry_fixture::configure(&settings, "synthetic-disabled-login")
             .await
             .unwrap();
         settings
@@ -330,7 +335,9 @@ async fn real_search_result_reaches_next_model_and_cold_history_without_redispat
         )),
         Arc::new(SqliteSecretStore::new(db.clone(), wrapping.clone())),
     ));
-    settings.initialize("synthetic-login-key").await.unwrap();
+    crate::registry_fixture::configure(&settings, "synthetic-login-key")
+        .await
+        .unwrap();
     settings
         .set_active_permission_preset(PermissionPreset::FullAccess)
         .unwrap();
@@ -478,7 +485,9 @@ async fn cancelling_real_search_closes_the_request_and_never_starts_fallback_or_
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("synthetic-login").await.unwrap();
+    crate::registry_fixture::configure(&settings, "synthetic-login")
+        .await
+        .unwrap();
     settings
         .set_active_permission_preset(PermissionPreset::FullAccess)
         .unwrap();

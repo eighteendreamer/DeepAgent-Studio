@@ -2,7 +2,6 @@
 
 use super::*;
 use deepagent_core::{clock::Timestamp, event::EventPayload, response_item::ResponseItem};
-use deepagent_models::ModelRole;
 use deepagent_persistence::{
     event_store::EventStore, run_control::RunControlStore, run_store::RunStore,
 };
@@ -75,10 +74,13 @@ async fn observe_projected(items: Vec<ResponseItem>, reject: bool, expected: Vec
             discovery.clone(),
             secrets.clone(),
         ));
-        settings.initialize("offline-placeholder").await.unwrap();
-        for role in [ModelRole::Chat, ModelRole::Reasoner] {
-            settings.set_model(role, "deepseek-flash").unwrap();
-        }
+        crate::registry_fixture::configure(&settings, "offline-placeholder")
+            .await
+            .unwrap();
+        settings
+            .harness_models()
+            .select_model("deepseek", "deepseek-flash")
+            .unwrap();
         let chat = ChatService::new(
             db.clone(),
             settings,

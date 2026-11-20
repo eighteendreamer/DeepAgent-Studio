@@ -3,7 +3,6 @@
 use super::*;
 use deepagent_app_core::{AppService, ProjectService};
 use deepagent_core::{clock::Timestamp, event::EventPayload, id::SessionId, message::Message};
-use deepagent_models::ModelRole;
 use deepagent_persistence::event_store::EventStore;
 
 const QUERIES: [&str; 3] = ["检", "缓存", "repairneedle"];
@@ -365,15 +364,13 @@ async fn observe_tool_with_scope(
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
         .await
         .unwrap();
+
     settings
-        .set_model(ModelRole::Chat, "deepseek-flash")
-        .unwrap();
-    settings
-        .set_model(ModelRole::Reasoner, "deepseek-flash")
+        .harness_models()
+        .select_model("deepseek", "deepseek-flash")
         .unwrap();
     let model = Arc::new(SearchModel {
         db: fixture.db.clone(),

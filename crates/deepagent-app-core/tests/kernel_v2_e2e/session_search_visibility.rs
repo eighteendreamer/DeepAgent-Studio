@@ -3,7 +3,6 @@
 use super::*;
 use deepagent_app_core::{AppService, ArchiveService, ProjectService};
 use deepagent_core::{clock::Timestamp, event::EventPayload, id::SessionId, message::Message};
-use deepagent_models::ModelRole;
 use deepagent_persistence::event_store::EventStore;
 
 const BODY: &str = "检 缓存 searchneedle earlier decision";
@@ -202,15 +201,13 @@ async fn observe_tool_visibility(
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
         .await
         .unwrap();
+
     settings
-        .set_model(ModelRole::Chat, "deepseek-flash")
-        .unwrap();
-    settings
-        .set_model(ModelRole::Reasoner, "deepseek-flash")
+        .harness_models()
+        .select_model("deepseek", "deepseek-flash")
         .unwrap();
     let model = Arc::new(SearchModel {
         query,

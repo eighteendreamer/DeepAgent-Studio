@@ -12,6 +12,17 @@
 //! contract stays stable as the kernel evolves.
 
 #[cfg(test)]
+#[path = "../../deepagent-models/tests/support/metadata.rs"]
+mod metadata_fixture;
+
+#[cfg(test)]
+#[path = "../tests/support/model_registry.rs"]
+mod registry_fixture;
+
+#[cfg(test)]
+extern crate self as deepagent_app_core;
+
+#[cfg(test)]
 #[path = "../../deepagent-models/tests/support/sequence.rs"]
 pub mod test_sequence;
 
@@ -129,9 +140,6 @@ mod verification_commands;
 pub mod verification_decorator;
 pub mod verification_dispatcher;
 pub mod verification_panel;
-pub mod vision_cache_service;
-pub mod vision_provider_service;
-pub mod vision_service;
 #[cfg(feature = "wasm")]
 pub(crate) mod wasm_tools;
 mod workflow_code;
@@ -167,7 +175,7 @@ pub use dto::{
     RuntimeProgressDto, RuntimeRootsDto, RuntimeStatusDto, SessionDetailDto, SessionSearchHitDto,
     SessionSearchIssueDto, SessionSearchReportDto, SessionStatsDto, SessionSummaryDto,
     SessionUiPrefsDto, SheetPreviewDto, TerminalResultDto, TimelineEntryDto, TranscriptDto,
-    TranscriptSegmentDto, VisionRecognizeRequestDto, VisionRecognizeResultDto, WorkspaceInfoDto,
+    TranscriptSegmentDto, WorkspaceInfoDto,
 };
 pub use file_preview_service::FilePreviewService;
 pub use git_service::GitService;
@@ -216,10 +224,9 @@ pub use secret_store::{EnvSecretStore, MemorySecretStore, SecretStore, SqliteSec
 pub use service::AppService;
 pub use session_state_service::SessionStateService;
 pub use settings::{
-    AppSettings, ApprovalPolicy, BalanceDto, BalanceInfoDto, EffectivePermissionProfile,
-    ExecutionFeatures, LocalExecutionMode, OutputStyle, PermissionPreset,
-    PermissionPresetVisibility, SandboxMode, SettingsService, SettingsView, TerminalShell,
-    VerificationPolicy, VisionMode, VisionSettings, WebSearchConfigState, WebSearchEngineId,
+    AppSettings, ApprovalPolicy, EffectivePermissionProfile, ExecutionFeatures, LocalExecutionMode,
+    OutputStyle, PermissionPreset, PermissionPresetVisibility, SandboxMode, SettingsService,
+    SettingsView, TerminalShell, VerificationPolicy, WebSearchConfigState, WebSearchEngineId,
     WebSearchEngineSettings, WebSearchEngineStatus, WebSearchRankingMethod,
     WebSearchRankingProfile, WebSearchRankingSettings, WebSearchRequest, WebSearchRuntimeConfig,
     WebSearchSettings, WebSearchSettingsView, WebSearchStrategy,
@@ -251,7 +258,6 @@ pub use terminal_lease::SqliteTerminalLeaseStore;
 pub use terminal_service::{
     DirectTerminalSessionBackend, LocalPtyHandle, PtyReadChunk, TerminalService,
 };
-pub use vision_service::VisionService;
 pub use workspace_service::WorkspaceService;
 
 // Re-export the live runtime event + approval types so the Tauri/web layer can

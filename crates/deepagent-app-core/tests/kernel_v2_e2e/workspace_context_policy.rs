@@ -81,8 +81,7 @@ async fn observe(case: FileCase, deny_read: bool) -> Observation {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
         .await
         .unwrap();
     settings

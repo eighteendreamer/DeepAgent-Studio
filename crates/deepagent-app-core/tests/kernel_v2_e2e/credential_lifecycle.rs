@@ -42,7 +42,11 @@ impl HttpTransport for Model {
     }
 }
 
-struct Pending(tokio::task::JoinHandle<Result<deepagent_app_core::SettingsView>>);
+struct Pending(
+    tokio::task::JoinHandle<
+        Result<Vec<deepagent_app_core::harness_model_service::HarnessModelView>>,
+    >,
+);
 
 impl Drop for Pending {
     fn drop(&mut self) {
@@ -72,7 +76,9 @@ async fn h88_next_kernel_request_never_uses_a_revoked_or_half_committed_credenti
             discovery.clone(),
             Arc::new(SqliteSecretStore::new(db.clone(), wrapping.clone())),
         ));
-        first.initialize(OLD).await.unwrap();
+        crate::registry_fixture::configure(&first, OLD)
+            .await
+            .unwrap();
         let model = Arc::new(Model::default());
         let chat = ChatService::new(db.clone(), first.clone(), model.clone(), &workspace);
         let other_db = Arc::new(Database::open(&path).unwrap());
@@ -83,7 +89,9 @@ async fn h88_next_kernel_request_never_uses_a_revoked_or_half_committed_credenti
         );
         discovery.armed.store(true, Ordering::SeqCst);
         let captured = first.clone();
-        let mut pending = Pending(tokio::spawn(async move { captured.refresh_models().await }));
+        let mut pending = Pending(tokio::spawn(async move {
+            captured.harness_models().fetch_models("deepseek").await
+        }));
         tokio::time::timeout(
             std::time::Duration::from_secs(10),
             discovery.started.notified(),
@@ -93,31 +101,37 @@ async fn h88_next_kernel_request_never_uses_a_revoked_or_half_committed_credenti
         let expected = match case {
             "control" => Some(OLD),
             "logout" => {
-                second.clear_key().unwrap();
+                second.harness_models().clear_credentials().unwrap();
                 None
             }
             "replace" => {
-                second.initialize(NEW).await.unwrap();
+                crate::registry_fixture::configure(&second, NEW)
+                    .await
+                    .unwrap();
                 Some(NEW)
             }
             "aba" => {
-                second.clear_key().unwrap();
-                second.initialize(OLD).await.unwrap();
+                second.harness_models().clear_credentials().unwrap();
+                crate::registry_fixture::configure(&second, OLD)
+                    .await
+                    .unwrap();
                 Some(OLD)
             }
             "failure" => {
                 db.with_conn(|connection| {
                     connection
                         .execute_batch(
-                            "CREATE TRIGGER h88_kernel_reject BEFORE UPDATE ON documents
-                    WHEN NEW.collection='settings' AND NEW.id='app'
+                            "CREATE TRIGGER h88_kernel_reject BEFORE UPDATE ON secret_records
+                    WHEN NEW.name='harness_provider:deepseek'
                     BEGIN SELECT RAISE(ABORT, 'synthetic settings failure'); END;",
                         )
                         .map_err(|error| CoreError::Persistence(error.to_string()))
                 })
                 .unwrap();
-                assert!(second.initialize(NEW).await.is_err());
-                None
+                assert!(crate::registry_fixture::configure(&second, NEW)
+                    .await
+                    .is_err());
+                Some(OLD)
             }
             _ => unreachable!(),
         };
@@ -126,7 +140,10 @@ async fn h88_next_kernel_request_never_uses_a_revoked_or_half_committed_credenti
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(refreshed.is_ok(), case == "control");
+        assert!(
+            refreshed.is_ok(),
+            "metadata refresh is independent of key rotation"
+        );
         let run_id = format!("h88-{case}");
         let result = chat
             .run_in_session(

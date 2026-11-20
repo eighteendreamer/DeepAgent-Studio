@@ -1,156 +1,82 @@
-//! H-157: persisted selection provenance is distinct from the model default.
+//! Reasoning selection is owned by the persisted provider/model route.
 use super::*;
 use crate::MemorySecretStore;
-use deepagent_models::{MockTransport, ModelConfig};
-
-const CATALOG: &str = r#"{"data":[
- {"id":"deepseek-flash","effort":{"supported_levels":["low","high"],"default_level":"low"}},
- {"id":"deepseek-v4-pro","effort":{"supported_levels":["high"],"default_level":"high"}}
-]}"#;
+use deepagent_models::MockTransport;
 
 fn service(db: Arc<Database>, secrets: Arc<MemorySecretStore>) -> SettingsService {
-    SettingsService::new(db, Arc::new(MockTransport::with_get_json(CATALOG)), secrets)
-}
-
-fn config(settings: &SettingsService) -> ModelConfig {
-    crate::model_runtime::model_config(&settings.load().unwrap().unwrap(), ModelRole::Chat, None)
-        .unwrap()
+    SettingsService::new(
+        db,
+        Arc::new(MockTransport::with_get_json(
+            r#"{"data":[{"id":"deepseek-flash"},{"id":"deepseek-v4-pro"}]}"#,
+        )),
+        secrets,
+    )
 }
 
 #[tokio::test]
-async fn h157_new_selection_follows_model_default_and_manual_choice_survives_cold_reopen() {
+async fn selected_effort_matches_the_admitted_route_and_survives_reopen() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("settings.db");
     let secrets = Arc::new(MemorySecretStore::new());
     {
-        let settings = service(Arc::new(Database::open(&path).unwrap()), secrets.clone());
-        let view = settings.initialize("synthetic-h157").await.unwrap();
-        assert!(!settings.load().unwrap().unwrap().reasoning_effort_explicit);
-        assert_eq!(view.reasoning_effort, "low");
-        assert_eq!(settings.reasoning_effort().unwrap(), ReasoningEffort::Low);
-        let config = config(&settings);
-        assert_eq!(config.configured_reasoning_effort(), None);
-        assert_eq!(
-            config
-                .effective_reasoning_effort("deepseek-flash", None)
-                .unwrap(),
-            Some(ReasoningEffort::Low)
-        );
-        assert_eq!(
-            config
-                .effective_reasoning_effort("deepseek-v4-pro", None)
-                .unwrap(),
-            Some(ReasoningEffort::High)
-        );
-    }
-    {
-        let settings = service(Arc::new(Database::open(&path).unwrap()), secrets.clone());
-        assert!(!settings.load().unwrap().unwrap().reasoning_effort_explicit);
-        assert_eq!(settings.view().unwrap().unwrap().reasoning_effort, "low");
-        settings.refresh_models().await.unwrap();
-        assert!(!settings.load().unwrap().unwrap().reasoning_effort_explicit);
-        assert_eq!(
-            settings
-                .set_reasoning_effort(ReasoningEffort::High)
-                .unwrap()
-                .reasoning_effort,
-            "high"
-        );
-        assert!(settings.load().unwrap().unwrap().reasoning_effort_explicit);
-    }
-    let settings = service(Arc::new(Database::open(&path).unwrap()), secrets);
-    assert!(settings.load().unwrap().unwrap().reasoning_effort_explicit);
-    assert_eq!(
-        config(&settings).configured_reasoning_effort(),
-        Some(ReasoningEffort::High)
-    );
-    assert_eq!(settings.reasoning_effort().unwrap(), ReasoningEffort::High);
-}
-
-#[tokio::test]
-async fn h157_legacy_document_without_provenance_preserves_saved_global_choice() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let secrets = Arc::new(MemorySecretStore::new());
-    let settings = service(db.clone(), secrets.clone());
-    settings.initialize("synthetic-h157").await.unwrap();
-    let mut legacy = serde_json::to_value(settings.load().unwrap().unwrap()).unwrap();
-    legacy
-        .as_object_mut()
-        .unwrap()
-        .remove("reasoning_effort_explicit");
-    legacy["reasoning_effort"] = "high".into();
-    DocumentStore::new(&db)
-        .put(
-            SETTINGS_COLLECTION,
-            SETTINGS_ID,
-            &legacy.to_string(),
+        let db = Arc::new(Database::open(&path).unwrap());
+        let settings = service(db.clone(), secrets.clone());
+        crate::registry_fixture::configure(&settings, "synthetic-effort")
+            .await
+            .unwrap();
+        settings.set_reasoning_effort(ReasoningEffort::Low).unwrap();
+        let selection = db.harness_chat_model_selection().unwrap().unwrap();
+        assert_eq!(selection.reasoning_effort.as_deref(), Some("low"));
+        let plan = crate::model_runtime::resolve_run_model(
+            &db,
+            &settings.load().unwrap().unwrap(),
             None,
-            Timestamp::from_millis(now_ms()),
+            None,
+            None,
         )
         .unwrap();
-    let reader = service(db, secrets);
-    assert!(reader.load().unwrap().unwrap().reasoning_effort_explicit);
-    assert_eq!(reader.reasoning_effort().unwrap(), ReasoningEffort::High);
-    assert_eq!(reader.view().unwrap().unwrap().reasoning_effort, "high");
-}
-
-#[tokio::test]
-async fn h157_failed_manual_save_does_not_publish_provenance_or_effective_value() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let secrets = Arc::new(MemorySecretStore::new());
-    let settings = service(db.clone(), secrets.clone());
-    settings.initialize("synthetic-h157").await.unwrap();
-    db.with_conn(|connection| {
-        connection
-            .execute_batch(
-                "CREATE TRIGGER h157_reject BEFORE UPDATE ON documents
-          WHEN OLD.collection = 'settings' AND OLD.id = 'app'
-          BEGIN SELECT RAISE(ABORT, 'synthetic H157 write failure'); END;",
-            )
-            .map_err(|error| CoreError::Persistence(error.to_string()))?;
-        Ok(())
-    })
-    .unwrap();
-    assert!(settings
-        .set_reasoning_effort(ReasoningEffort::High)
-        .is_err());
-    for reader in [&settings, &service(db, secrets)] {
-        assert!(!reader.load().unwrap().unwrap().reasoning_effort_explicit);
-        assert_eq!(reader.reasoning_effort().unwrap(), ReasoningEffort::Low);
+        assert_eq!(plan.reasoning_effort, Some(ReasoningEffort::Low));
+        assert_eq!(settings.view().unwrap().unwrap().reasoning_effort, "low");
+        settings
+            .harness_models()
+            .fetch_models("deepseek")
+            .await
+            .unwrap();
+        assert_eq!(
+            db.harness_chat_model_selection().unwrap().unwrap(),
+            selection
+        );
     }
+    let reader = service(Arc::new(Database::open(&path).unwrap()), secrets);
+    assert_eq!(reader.reasoning_effort().unwrap(), ReasoningEffort::Low);
+    assert_eq!(reader.view().unwrap().unwrap().reasoning_effort, "low");
 }
 
 #[tokio::test]
-async fn h157_responses_choices_override_model_defaults_without_sticking_after_clear() {
+async fn failed_selection_save_preserves_the_previous_effort() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let settings = service(db.clone(), Arc::new(MemorySecretStore::new()));
+    crate::registry_fixture::configure(&settings, "synthetic-effort")
+        .await
+        .unwrap();
+    let before = db.harness_chat_model_selection().unwrap().unwrap();
+    db.with_conn(|conn| conn.execute_batch("CREATE TRIGGER reject_selection BEFORE UPDATE ON documents WHEN OLD.collection='harness_selection' AND OLD.id='chat' BEGIN SELECT RAISE(ABORT, 'synthetic selection failure'); END;").map_err(|error| CoreError::Persistence(error.to_string()))).unwrap();
+    assert!(settings.set_reasoning_effort(ReasoningEffort::Low).is_err());
+    assert_eq!(db.harness_chat_model_selection().unwrap().unwrap(), before);
+}
+
+#[test]
+fn no_model_means_no_global_reasoning_fallback() {
     let settings = service(
         Arc::new(Database::open_in_memory().unwrap()),
         Arc::new(MemorySecretStore::new()),
     );
-    settings.initialize("synthetic-h157").await.unwrap();
-    settings
-        .set_responses_settings(ResponsesApiSettings {
-            reasoning_effort: Some("high".into()),
-            ..Default::default()
-        })
-        .unwrap();
-    assert_eq!(
-        config(&settings).configured_reasoning_effort(),
-        Some(ReasoningEffort::High)
-    );
-    settings
-        .set_responses_developer_json(r#"{"reasoning":{"effort":"none"}}"#)
-        .unwrap();
-    assert_eq!(settings.reasoning_effort().unwrap(), ReasoningEffort::None);
-    assert_eq!(
-        config(&settings).configured_reasoning_effort(),
-        Some(ReasoningEffort::None)
-    );
-    settings.set_responses_developer_json("{}").unwrap();
-    assert_eq!(settings.reasoning_effort().unwrap(), ReasoningEffort::High);
-    settings
-        .set_responses_settings(ResponsesApiSettings::default())
-        .unwrap();
-    assert_eq!(settings.reasoning_effort().unwrap(), ReasoningEffort::Low);
-    assert_eq!(config(&settings).configured_reasoning_effort(), None);
-    assert!(!settings.load().unwrap().unwrap().reasoning_effort_explicit);
+    assert!(settings
+        .set_reasoning_effort(ReasoningEffort::High)
+        .is_err());
+    assert!(settings
+        .harness_models()
+        .selected_model()
+        .unwrap()
+        .is_none());
 }

@@ -65,8 +65,7 @@ async fn h87_host_process_entry() {
     match actor.as_str() {
         "primary" => {
             assert_eq!(app.host_role(), &HostRole::Primary);
-            settings
-                .initialize("h87-synthetic-credential")
+            crate::registry_fixture::configure(&settings, "h87-synthetic-credential")
                 .await
                 .unwrap();
             assert_eq!(
@@ -74,7 +73,12 @@ async fn h87_host_process_entry() {
                 SandboxMode::WorkspaceWrite
             );
             discovery.armed.store(true, Ordering::Release);
-            let view = settings.refresh_models().await.unwrap();
+            settings
+                .harness_models()
+                .fetch_models("deepseek")
+                .await
+                .unwrap();
+            let view = settings.view().unwrap().unwrap();
             assert_eq!(view.sandbox_mode, "read_only");
             assert_restrictions(&settings);
         }

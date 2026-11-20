@@ -45,16 +45,12 @@ impl HttpTransport for Recorder {
     }
 }
 
-fn catalog(model: &str, modalities: Option<Value>) -> crate::ModelCatalog {
+fn catalog(model: &str, modalities: Option<Value>) -> Vec<deepagent_models::ModelInfo> {
     let mut entry = json!({"id":model,"object":"model","owned_by":"deepseek"});
     if let Some(value) = modalities {
         entry["input_modalities"] = value;
     }
-    serde_json::from_value(
-        json!({"base_url":"https://api.deepseek.com", "available":[entry],
-        "chat_model":model,"reasoner_model":model}),
-    )
-    .unwrap()
+    serde_json::from_value(json!([entry])).unwrap()
 }
 
 fn client(
@@ -63,16 +59,13 @@ fn client(
     modalities: Option<Value>,
     route: usize,
 ) -> ModelClient {
-    let config = ModelConfig::from_catalog(
-        "PRIVATE_SYNTHETIC_KEY",
-        &catalog(model, modalities),
-        crate::ModelRole::Chat,
-    )
-    .with_wire_mode(if route == 1 {
-        WireMode::ChatCompletions
-    } else {
-        WireMode::Responses
-    });
+    let config =
+        crate::metadata_fixture::config("PRIVATE_SYNTHETIC_KEY", &catalog(model, modalities))
+            .with_wire_mode(if route == 1 {
+                WireMode::ChatCompletions
+            } else {
+                WireMode::Responses
+            });
     ModelClient::new(transport, config)
 }
 
@@ -155,6 +148,20 @@ fn rejected(error: CoreError) {
     let kind = crate::classify_model_error(&error);
     assert_eq!(kind, crate::ModelFailureKind::InvalidRequest);
     assert!(!kind.retryable());
+}
+
+#[tokio::test]
+async fn text_only_model_reports_unsupported_vision_without_a_provider_request() {
+    for route in 0..3 {
+        let transport = Arc::new(Recorder::default());
+        let model = client(transport.clone(), "text-only", Some(json!(["text"])), route);
+        let error = send(&model, image("text-only", "user"), route, 3, false)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("当前模型不支持视觉"), "{error}");
+        assert!(transport.0.lock().unwrap().is_empty());
+        rejected(error);
+    }
 }
 
 #[tokio::test]
@@ -364,12 +371,12 @@ fn h71_modalities_survive_partial_capacity_and_roundtrip_without_name_guessing()
     ] {
         let catalog = catalog("future-model", Some(declared.clone()));
         let encoded = serde_json::to_value(&catalog).unwrap();
-        assert_eq!(encoded["available"][0]["input_modalities"], declared);
-        let restored: crate::ModelCatalog = serde_json::from_value(encoded).unwrap();
+        assert_eq!(encoded[0]["input_modalities"], declared);
+        let restored: Vec<deepagent_models::ModelInfo> = serde_json::from_value(encoded).unwrap();
         let transport = Arc::new(Recorder::default());
         let client = ModelClient::new(
             transport,
-            ModelConfig::from_catalog("synthetic", &restored, crate::ModelRole::Chat),
+            crate::metadata_fixture::config("synthetic", &restored),
         );
         let cap = client.capability("future-model");
         assert_eq!(
@@ -553,10 +560,9 @@ async fn h71_real_http_receives_only_a_declared_vision_request() {
             reqwest::Client::builder().no_proxy().build().unwrap(),
         ));
         let configuration = |modalities| {
-            let mut config = ModelConfig::from_catalog(
+            let mut config = crate::metadata_fixture::config(
                 "synthetic-placeholder",
                 &catalog("h71-http", Some(modalities)),
-                crate::ModelRole::Chat,
             )
             .with_wire_mode(mode);
             config.base_url = format!("http://{}", listener.local_addr().unwrap());

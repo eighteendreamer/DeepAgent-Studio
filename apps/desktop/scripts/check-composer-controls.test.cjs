@@ -70,11 +70,11 @@ test("failed auxiliary state is discarded without treating unknown mode as norma
   assert.deepEqual(left.errors, []);
 });
 
-test("the five display levels are off, low, medium, high, max", () => {
+test("h029 the five neutral display levels follow Tianshu controls", () => {
   const source = fs.readFileSync(path.join(root, "src/components/Composer.tsx"), "utf8");
   const text = source.match(/const THINKING_OPTIONS = (\[[\s\S]*?\]) as const/)?.[1];
   assert.ok(text);
-  const options = vm.runInNewContext(text, { Feather: 0, Lightbulb: 1, Brain: 2, BrainCircuit: 3, Sparkles: 4 });
+  const options = vm.runInNewContext(text, { Feather: 0, Zap: 5, Lightbulb: 1, Brain: 2, BrainCircuit: 3, Flame: 6, Sparkles: 4 });
   const zh = JSON.parse(fs.readFileSync(path.join(root, "src/locales/zh.json"), "utf8"));
   assert.deepEqual(Array.from(options, o => o.id), ["off", "low", "medium", "high", "max"]);
   assert.deepEqual(Array.from(options, o => zh.composer[o.label.split(".")[1]]), ["关闭", "低", "中", "高", "最高"]);
@@ -98,15 +98,19 @@ test("thinking suggestions emit canonical backend efforts while displaying off",
   const script = ts.transpileModule(`(${effect})()`, {
     compilerOptions: { target: ts.ScriptTarget.ES2020 },
   }).outputText;
-  vm.runInNewContext(script, {
-    draftValue: "/thinking ",
-    setSlashResults(value) { suggestions = value; },
-    setSlashSelected() {},
-  });
-  assert.deepEqual(Array.from(suggestions, option => option.title), ["off", "low", "medium", "high", "max"]);
-  assert.deepEqual(Array.from(suggestions, option => option.insertText.trim()), [
-    "/thinking none", "/thinking low", "/thinking medium", "/thinking high", "/thinking max",
-  ]);
+  for (const defaultThinking of ["default", "high"]) {
+    vm.runInNewContext(script, {
+      draftValue: "/thinking ",
+      activeModelOptions: [{ id: "chosen", defaultThinking, thinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] }],
+      selectedModel: "chosen",
+      setSlashResults(value) { suggestions = value; },
+      setSlashSelected() {},
+    });
+    const expected = ["off", "low", "medium", "high", "max"];
+    assert.deepEqual(Array.from(suggestions, option => option.title), expected);
+    assert.deepEqual(Array.from(suggestions, option => option.insertText.trim()),
+      expected.map(level => `/thinking ${level === "off" ? "none" : level}`));
+  }
 });
 
 function deferred() {
@@ -117,7 +121,7 @@ function deferred() {
 
 function settingsHost(apiOverrides = {}) {
   const slots = [], effects = [], listeners = new Set(), reads = [], writes = [], errors = [];
-  let savedSelection = null;
+  let savedSelection = { ...activeModel("flash", "deepseek"), reasoningEffort: "high" };
   let cursor = 0;
   const hooks = {
     useRef(value) { const i = cursor++; return slots[i] ??= { current: value }; },
@@ -140,9 +144,10 @@ function settingsHost(apiOverrides = {}) {
     getSettings() { const d = deferred(); reads.push(d); return d.promise; },
     listActiveHarnessModels: async () => [activeModel("flash", "deepseek"), activeModel("pro", "deepseek")],
     getHarnessModelSelection: async () => savedSelection,
-    selectHarnessModel(providerId, value) {
-      const d = deferred(); writes.push({ ...d, field: "chat_model", value });
-      return d.promise.then(() => (savedSelection = activeModel(value, providerId)));
+    selectHarnessModel(providerId, modelName, affectsBalance, reasoningEffort = null) {
+      const d = deferred(); writes.push({ ...d, field: reasoningEffort === null ? "chat_model" : "reasoning_effort",
+        value: reasoningEffort ?? modelName, modelName, reasoningEffort, providerId });
+      return d.promise.then(() => (savedSelection = { ...activeModel(modelName, providerId), reasoningEffort }));
     },
     setReasoningEffort(value) { const d = deferred(); writes.push({ ...d, field: "reasoning_effort", value }); return d.promise; },
     ...apiOverrides,
@@ -169,13 +174,14 @@ function settingsHost(apiOverrides = {}) {
     unmount() { slots.forEach(slot => slot?.cleanup?.()); },
   };
 }
-const settings = { available_models: ["flash", "pro"], chat_model: "flash", reasoning_effort: "high", model_capabilities: [] };
+const settings = { configured: true, reasoning_effort: "high" };
 
 function activeModel(modelName, providerId = "provider") {
   return {
     providerId, modelName, displayName: `Saved ${modelName}`, providerChannel: "Provider",
-    contextWindow: 128000, thinkingLevels: ["off", "low", "medium", "high", "max"],
+    contextWindow: 128000, thinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
     thinkingDistinct: [], thinkingDisable: true,
+    reasoningEffort: null, defaultReasoningEffort: null,
   };
 }
 const modelId = model => JSON.stringify([model.providerId, model.modelName]);
@@ -257,14 +263,14 @@ test("a loaded catalog never supplies a provisional model before the saved selec
   host.unmount();
 });
 
-test("only a successful empty selection permits the runtime's active legacy DeepSeek route", async () => {
+test("an empty selection never substitutes a default DeepSeek model", async () => {
   const legacy = activeModel("flash", "deepseek");
   const host = settingsHost({
     listActiveHarnessModels: async () => [activeModel("other"), legacy],
     getHarnessModelSelection: async () => null,
   });
   host.render(); host.reads[0].resolve(settings); await tick();
-  assert.equal(host.render().selectedModel, modelId(legacy));
+  assert.equal(host.render().selectedModel, "");
   assert.deepEqual(host.writes, []);
   host.unmount();
 });
@@ -327,7 +333,7 @@ test("page startup checks onboarding without discovering remote models", async (
   const discoveries = [], onboarding = [], local = new Map();
   vm.runInNewContext(`(${effect})()`, {
     getSettings: async () => ({ configured: true }),
-    refreshModels: async () => discoveries.push("refresh"),
+    fetchHarnessModels: async () => discoveries.push("refresh"),
     setShowOnboarding: value => onboarding.push(value),
     localStorage: { setItem: (key, value) => local.set(key, value), removeItem: key => local.delete(key) },
   });
@@ -351,7 +357,7 @@ test("idle composer renders keep the model list stable for suggestion effects", 
 
 test("the thinking preset preserves initial and saved selections without writing off", async () => {
   for (const effort of ["none", "low", "medium", "high", "max"]) {
-    const host = settingsHost();
+    const host = settingsHost({ getHarnessModelSelection: async () => ({ ...activeModel("flash", "deepseek"), reasoningEffort: effort }) });
     host.render();
     host.reads[0].resolve({ ...settings, reasoning_effort: effort });
     await tick();
@@ -413,7 +419,7 @@ function thinkingSlider(props = {}) {
       if (name === "react-i18next") return { useTranslation: () => ({ t: (key, options) =>
         key === "composer.thinkingEquivalent" ? `${options.level}·等价` : key }) };
       if (name === "react/jsx-runtime") return { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) };
-      if (name === "lucide-react") return { Check: "Check", ChevronDown: "ChevronDown" };
+      if (name === "lucide-react") return { Check: "Check", ChevronDown: "ChevronDown", CircleHelp: "CircleHelp" };
       if (name === "./shadcn/utils") return { cn: (...values) => values.filter(Boolean).join(" ") };
       const component = name.split("/").at(-1);
       return { [component]: component, MENU_ITEM_ATTR: "data-menu-item" };
@@ -421,7 +427,7 @@ function thinkingSlider(props = {}) {
   });
   const element = module.exports.ModelThinkingSelector({
     open: true, models: [], selectedModel: "", selectedThinking: "high",
-    thinkingOptions: ["off", "low", "medium", "high", "max"].map(id => ({ id, label: id })),
+    thinkingOptions: ["off", "minimal", "low", "medium", "high", "xhigh", "max"].map(id => ({ id, label: id })),
     selectModelLabel: "model", noModelsLabel: "empty", onOpenChange() {}, onChooseModel() {}, onChooseThinking() {},
     ...props,
   });
@@ -431,49 +437,46 @@ function thinkingSlider(props = {}) {
     return node.type === "EffortSlider" ? node.props : find(node.props?.children);
   }
   const slider = find(element);
-  assert.ok(slider, "rendered selector must contain the real slider props");
   return slider;
 }
 
 test("thinking off follows the model's ability to disable, independently of effort levels", () => {
   for (const thinkingDisable of [true, false]) {
     const slider = thinkingSlider({ thinkingLevels: ["off", "low", "high"], thinkingDisable });
-    assert.equal(slider.stops.find(stop => stop.value === "off").disabled, !thinkingDisable);
-    assert.equal(slider.stops.find(stop => stop.value === "low").disabled, false);
-    assert.equal(slider.stops.find(stop => stop.value === "medium").disabled, true);
+    assert.equal(slider.stops.some(stop => stop.value === "off"), thinkingDisable);
+    assert.equal(slider.stops.some(stop => stop.value === "low"), true);
+    assert.equal(slider.stops.some(stop => stop.value === "medium"), false);
+    assert.equal(slider.stops[0].value, thinkingDisable ? "off" : "low");
   }
 });
 
-test("models without declared thinking capabilities use the user's five-level preset", () => {
-  const slider = thinkingSlider();
-  assert.equal(slider.stops.every(stop => !stop.disabled), true);
-  assert.equal(slider.stops[0].value, "off");
+test("models without resolved reasoning capabilities never expose a fake off control", () => {
+  assert.equal(thinkingSlider(), undefined);
 });
 
 test("explicitly empty thinking levels remain unavailable", () => {
-  assert.equal(thinkingSlider({ thinkingLevels: [] }).stops.every(stop => stop.disabled), true);
+  assert.equal(thinkingSlider({ thinkingLevels: [] }), undefined);
 });
 
 test("selector can read the selected model's close-thinking capability", () => {
   const slider = thinkingSlider({ selectedModel: "chosen", models: [{
     id: "chosen", label: "chosen", providerLabel: "provider", thinkingLevels: ["off", "high"], thinkingDisable: true,
   }] });
-  assert.equal(slider.stops.find(stop => stop.value === "off").disabled, false);
+  assert.equal(slider.stops.some(stop => stop.value === "off"), true);
 });
 
-test("only explicitly declared equivalent tiers are marked, without changing the saved effort", () => {
+test("h029 equivalent levels are merged without exposing a provider default choice", () => {
   const chosen = [];
   const slider = thinkingSlider({ selectedModel: "chosen", models: [{
     id: "chosen", label: "chosen", providerLabel: "provider",
     thinkingLevels: ["off", "low", "medium", "high", "max"],
-    thinkingDistinct: ["low", "high", "max"], thinkingDisable: true,
+    thinkingDistinct: ["off", "low", "high", "max"], thinkingDisable: true,
   }], onChooseThinking: value => chosen.push(value) });
-  assert.equal(slider.stops.find(stop => stop.value === "medium").label, "medium·等价");
+  assert.deepEqual(Array.from(slider.stops, stop => stop.value), ["off", "low", "high", "max"]);
   assert.equal(slider.stops.find(stop => stop.value === "high").label, "high");
   assert.equal(slider.stops.find(stop => stop.value === "off").label, "off");
   slider.onChange("medium");
   assert.deepEqual(chosen, ["medium"]);
-  assert.equal(thinkingSlider().stops.find(stop => stop.value === "medium").label, "medium");
 });
 
 test("an entirely disabled thinking slider rejects keyboard and pointer commits", () => {
@@ -542,14 +545,17 @@ test("a failed save rolls back to the saved value, not an earlier optimistic cho
 });
 
 test("old reads cannot replace newer selections; external updates still refresh when idle", async () => {
-  const host = settingsHost();
+  let selection = { ...activeModel("flash", "deepseek"), reasoningEffort: "high" };
+  const host = settingsHost({ getHarnessModelSelection: async () => selection });
   host.render(); host.reads[0].resolve(settings); await tick();
   host.changed();
   host.render().chooseThinking("max");
+  selection = { ...activeModel("flash", "deepseek"), reasoningEffort: "max" };
   host.writes[0].resolve({ ...settings, reasoning_effort: "max" }); await tick();
   host.reads[1].resolve(settings); await tick();
   assert.equal(host.render().selectedThinking, "max");
   host.reads[2].resolve({ ...settings, reasoning_effort: "max" }); await tick();
+  selection = { ...activeModel("pro", "deepseek"), reasoningEffort: "low" };
   host.changed(); host.reads[3].resolve({ ...settings, chat_model: "pro", reasoning_effort: "low" }); await tick();
   assert.equal(host.render().selectedModel, modelId(activeModel("pro", "deepseek")));
   assert.equal(host.render().selectedThinking, "low");
@@ -578,5 +584,53 @@ test("medium is persisted without changing it into high", async () => {
   assert.equal(host.writes[0].value, "medium");
   host.writes[0].resolve({ ...settings, reasoning_effort: "medium" }); await tick();
   assert.equal(host.render().selectedThinking, "medium");
+  host.unmount();
+});
+
+test("switching models drops the old effort and unsupported choices never write", async () => {
+  const first = { ...activeModel("flash", "deepseek"), reasoningEffort: "max" };
+  const next = { ...activeModel("pro", "deepseek"), thinkingLevels: ["low"], thinkingDisable: false };
+  const host = settingsHost({ listActiveHarnessModels: async () => [first, next], getHarnessModelSelection: async () => first });
+  host.render(); host.reads[0].resolve(settings); await tick();
+  assert.equal(host.render().selectedThinking, "max");
+  host.render().chooseModel(modelId(next));
+  assert.equal(host.render().selectedThinking, null, "pending model switches must not invent an effort when no application level was received");
+  host.render().chooseThinking("high");
+  assert.equal(host.writes.length, 1);
+  assert.equal(host.writes[0].reasoningEffort, null);
+  host.unmount();
+});
+
+test("an explicitly disabled model never inherits a legacy global high or claims thinking is off", async () => {
+  const selection = { ...activeModel("unknown"), thinkingLevels: [], reasoningEffort: null };
+  const host = settingsHost({ getHarnessModelSelection: async () => selection });
+  host.render(); await tick();
+  assert.equal(host.render().selectedThinking, null);
+  host.reads[0].resolve({ ...settings, reasoning_effort: "high" }); await tick();
+  assert.equal(host.render().selectedThinking, null);
+  host.render().chooseThinking("none");
+  assert.equal(host.writes.length, 0);
+  host.unmount();
+});
+
+test("h029 discarded provider default cannot be selected or persisted", async () => {
+  const selected = { ...activeModel("flash", "deepseek"), reasoningEffort: "max" };
+  const host = settingsHost({ getHarnessModelSelection: async () => selected });
+  host.render(); host.reads[0].resolve(settings); await tick();
+  host.render().chooseThinking("default");
+  assert.deepEqual(host.writes, []);
+  assert.equal(host.render().selectedThinking, "max");
+  host.unmount();
+});
+
+test("switching to a declared high default selects high immediately and still accepts another level", async () => {
+  const first = { ...activeModel("flash", "deepseek"), reasoningEffort: "max" };
+  const next = { ...activeModel("qwen-4", "custom"), defaultReasoningEffort: "high", reasoningEffort: null };
+  const host = settingsHost({ listActiveHarnessModels: async () => [first, next], getHarnessModelSelection: async () => first });
+  host.render(); host.reads[0].resolve(settings); await tick();
+  host.render().chooseModel(modelId(next));
+  assert.equal(host.render().selectedThinking, "high", "the capsule and slider must select the target model default before the response");
+  host.render().chooseThinking("low");
+  assert.equal(host.render().selectedThinking, "low", "model default must not make the control read-only");
   host.unmount();
 });

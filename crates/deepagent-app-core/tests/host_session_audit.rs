@@ -1,6 +1,10 @@
 //! Explicit offline audit of two real hosts continuing one persisted session.
 //! Model responses are held at a filesystem barrier; no external API is used.
 
+#[cfg(test)]
+#[path = "support/model_registry.rs"]
+mod registry_fixture;
+
 #[path = "../../deepagent-models/tests/support/sequence.rs"]
 pub mod sequence_fixture;
 use std::path::{Path, PathBuf};
@@ -94,7 +98,9 @@ async fn chat_for(app: &AppService, root: &Path, label: &'static str) -> ChatSer
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("sk-audit-placeholder").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
+        .await
+        .unwrap();
     ChatService::new(
         app.shared_database(),
         settings,

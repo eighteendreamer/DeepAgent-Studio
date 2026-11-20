@@ -2913,7 +2913,7 @@ mod tests {
             "thread/start",
             serde_json::json!({
                 "cwd": workspace,
-                "provider": "deepseek-official",
+                "provider": "deepseek",
                 "model": "deepseek-v4-pro",
                 "reasoningEffort": "high",
                 "permissionProfile": "read_only",
@@ -2958,7 +2958,7 @@ mod tests {
                 "thread/start",
                 serde_json::json!({
                     "cwd": workspace,
-                    "provider": "deepseek-official",
+                    "provider": "deepseek",
                     "model": "deepseek-v4-pro",
                     "reasoningEffort": "high"
                 }),

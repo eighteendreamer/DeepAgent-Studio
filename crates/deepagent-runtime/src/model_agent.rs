@@ -2679,12 +2679,12 @@ impl ModelAgent {
                 return Err(CoreError::other("request cancelled by user"));
             }
             attempt += 1;
-            self.reasoning_effort = self
+            let resolved_effort = self
                 .client
-                .effective_reasoning_effort(&request.model, self.requested_reasoning_effort)?
-                .unwrap_or_default();
+                .effective_reasoning_effort(&request.model, self.requested_reasoning_effort)?;
+            self.reasoning_effort = resolved_effort.unwrap_or_default();
             tracing::debug!(model = %request.model, requested = ?self.requested_reasoning_effort,
-                effective = self.reasoning_effort.label(), "resolved attempt reasoning effort");
+                effective = ?resolved_effort, "resolved attempt reasoning effort");
             request.max_output_tokens = self
                 .client
                 .effective_output_tokens(&request.model, request.max_output_tokens);
@@ -2709,7 +2709,10 @@ impl ModelAgent {
                     sink.emit(RuntimeEvent::ModelRequestStarted {
                         step,
                         model: request.model.clone(),
-                        reasoning_effort: self.reasoning_effort.label().to_string(),
+                        reasoning_effort: resolved_effort
+                            .map(ReasoningEffort::label)
+                            .unwrap_or("default")
+                            .to_owned(),
                         message_count: self.messages.len(),
                         tool_count: request.tools.len(),
                     });

@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { continuousRadius, CORNER_CURVATURE } from "../theme/continuousCorners";
 import { Check, ChevronDown, Eye, EyeOff, FolderOpen, Globe, LoaderCircle, Lock, LockOpen, MessagesSquare, Monitor, Moon, Shield, SlidersHorizontal, Sun, Terminal } from "lucide-react";
 import { AnimatePresence, motion, useAnimationControls, useReducedMotion } from "framer-motion";
-import { getWelcomeName, initializeProject, isTauri, openExternalUrl, setSandboxMode, setWelcomeName as persistWelcomeName, type SandboxMode } from "../api";
+import { getWelcomeName, isTauri, openExternalUrl, setSandboxMode, setWelcomeName as persistWelcomeName, type SandboxMode } from "../api";
+import { fetchHarnessModels, listHarnessProviders, saveHarnessProvider, selectHarnessModel, setHarnessModelActive, type HarnessModelView } from "../harnessModelsApi";
 import { message } from "./message";
 import { useTranslation } from "react-i18next";
 import { useTheme, type ThemeMode } from "../hooks/useTheme";
@@ -12,6 +13,7 @@ import { Button } from "./shadcn/button";
 import { Input } from "./shadcn/input";
 import { Label } from "./shadcn/label";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./shadcn/dropdown-menu";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./shadcn/select";
 
 const ConnectButton = motion.create(Button);
 const STEPS = [
@@ -45,6 +47,9 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
   const movingRef = useRef(false);
   const [panelHeight, setPanelHeight] = useState<number>();
   const [apiKey, setApiKey] = useState("");
+  const [models, setModels] = useState<HarnessModelView[]>([]);
+  const [modelName, setModelName] = useState("");
+  const connectedKey = useRef("");
   const [keyVisible, setKeyVisible] = useState(false);
   const [connectState, setConnectState] = useState<"idle" | "connecting" | "success" | "error">("idle");
   const [connectError, setConnectError] = useState("");
@@ -139,7 +144,30 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
     setConnectState("connecting");
     const transition = { duration: reducedMotion ? 0 : 0.38, ease: ONBOARDING_EASE };
     try {
-      const validation = initializeProject(key).then(
+      const chooseModel = models.length > 0 && connectedKey.current === key;
+      const connect = async () => {
+        if (chooseModel) {
+          if (!modelName) throw new Error("请选择模型");
+          await setHarnessModelActive("deepseek", modelName, true);
+          await selectHarnessModel("deepseek", modelName, true);
+          return;
+        }
+        const providers = await listHarnessProviders();
+        const current = providers.find(provider => provider.id === "deepseek");
+        await saveHarnessProvider({
+          id: "deepseek", channel: current?.channel ?? "DeepSeek", logo: current?.logo ?? "/providers/deepseek.svg",
+          websiteUrl: current?.websiteUrl ?? "https://www.deepseek.com/",
+          modelUrl: current?.modelUrl ?? "https://api.deepseek.com", protocol: current?.protocol ?? "responses",
+          balanceKind: current?.balanceKind ?? "official", enabled: true, apiKey: key,
+        });
+        const fetched = await fetchHarnessModels("deepseek");
+        if (!fetched.length) throw new Error("供应商未返回模型");
+        if (!mountedRef.current) return;
+        connectedKey.current = key;
+        setModels(fetched);
+        setModelName("");
+      };
+      const validation = connect().then(
         () => ({ ok: true as const }),
         (error: unknown) => ({ ok: false as const, error }),
       );
@@ -149,10 +177,10 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
       setConnectState(result.ok ? "success" : "error");
       await connectAnimation.start("expanded", transition);
       if (!mountedRef.current) return;
-      if (result.ok) {
+      if (result.ok && chooseModel) {
         goToStep(1);
-      } else {
-        console.error("initialize_project failed:", result.error);
+      } else if (!result.ok) {
+        console.error("provider connection failed:", result.error);
         setConnectError("连接失败，请检查 API Key 或网络后重试。");
         inputRef.current?.focus();
       }
@@ -267,6 +295,12 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
                     </Button>
                   </div>
                   <div id="onboarding-connect-error" className={`onboarding-inline-error ${connectError ? "onboarding-error-visible" : ""}`} role="alert"><div>{connectError}</div></div>
+                  {models.length > 0 && connectedKey.current === apiKey.trim() && (
+                    <Select value={modelName} onValueChange={setModelName}>
+                      <SelectTrigger aria-label="选择模型" disabled={isConnecting}><SelectValue placeholder="选择模型" /></SelectTrigger>
+                      <SelectContent>{models.map(model => <SelectItem key={model.modelName} value={model.modelName}>{model.displayName || model.modelName}</SelectItem>)}</SelectContent>
+                    </Select>
+                  )}
                 </div>
               )}
               {step === 1 && <OnboardingChoices<ThemeMode> label="系统主题" value={theme} layout="theme" onChange={mode => { setTheme(mode); updateConfig({ mode }); }} options={[{ id: "light", title: "浅色", icon: Sun }, { id: "dark", title: "深色", icon: Moon }, { id: "system", title: "系统", icon: Monitor }]} />}
@@ -297,9 +331,9 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
               <footer className={`onboarding-actions ${step === 0 ? "onboarding-actions-connect" : ""}`}>
                 {step > 0 && <Button variant="outline" className="onboarding-back" onClick={() => goToStep(step - 1)}>上一步</Button>}
                 {step === 0 ? (
-                  <ConnectButton initial="expanded" animate={connectAnimation} variants={{ expanded: { width: "100%", borderRadius: `${continuousRadius(12)}px`, "--connect-corner-curvature": CORNER_CURVATURE }, collapsed: { width: "46px", borderRadius: "23px", "--connect-corner-curvature": 1 } }} onClick={handleConnect} disabled={!apiKey.trim() || isConnecting} aria-busy={isConnecting} aria-label={{ idle: "确定连接", connecting: "正在连接", success: "连接成功", error: "重试连接" }[connectState]} data-connect-state={connectState} className="onboarding-primary w-full min-w-0 overflow-hidden px-0 disabled:opacity-50 data-[connect-state=connecting]:disabled:opacity-100 data-[connect-state=success]:disabled:opacity-100">
+                  <ConnectButton initial="expanded" animate={connectAnimation} variants={{ expanded: { width: "100%", borderRadius: `${continuousRadius(12)}px`, "--connect-corner-curvature": CORNER_CURVATURE }, collapsed: { width: "46px", borderRadius: "23px", "--connect-corner-curvature": 1 } }} onClick={handleConnect} disabled={!apiKey.trim() || isConnecting || (models.length > 0 && connectedKey.current === apiKey.trim() && !modelName)} aria-busy={isConnecting} aria-label={models.length > 0 && connectedKey.current === apiKey.trim() ? "使用所选模型" : { idle: "确定连接", connecting: "正在连接", success: "连接成功", error: "重试连接" }[connectState]} data-connect-state={connectState} className="onboarding-primary w-full min-w-0 overflow-hidden px-0 disabled:opacity-50 data-[connect-state=connecting]:disabled:opacity-100 data-[connect-state=success]:disabled:opacity-100">
                     <motion.span key={connectState} initial={reducedMotion ? false : { opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: reducedMotion ? 0 : 0.18 }} className="inline-flex items-center justify-center gap-2 whitespace-nowrap" aria-hidden="true">
-                      {connectState === "connecting" ? <LoaderCircle className="h-4 w-4 motion-safe:animate-spin" /> : connectState === "success" ? <><Check className="h-4 w-4" />连接成功</> : connectState === "error" ? "重试连接" : "确定连接"}
+                      {connectState === "connecting" ? <LoaderCircle className="h-4 w-4 motion-safe:animate-spin" /> : connectState === "success" ? <><Check className="h-4 w-4" />连接成功</> : connectState === "error" ? "重试连接" : models.length > 0 && connectedKey.current === apiKey.trim() ? "使用所选模型" : "确定连接"}
                     </motion.span>
                   </ConnectButton>
                 ) : step === 4 ? (

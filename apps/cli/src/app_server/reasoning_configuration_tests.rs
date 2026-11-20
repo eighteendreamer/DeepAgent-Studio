@@ -29,13 +29,15 @@ async fn h222_canonical_thread_defaults_and_turn_overrides_reach_real_wire() {
         .set_reasoning_effort(ReasoningEffort::Low)
         .unwrap();
     let mut expected_wire = Vec::new();
-    for effort in [
-        None,
-        Some("none"),
-        Some("low"),
-        Some("medium"),
-        Some("high"),
-        Some("max"),
+    for (effort, inherited_wire) in [
+        (None, "low"),
+        (Some("none"), "none"),
+        (Some("minimal"), "low"),
+        (Some("low"), "low"),
+        (Some("medium"), "high"),
+        (Some("high"), "high"),
+        (Some("xhigh"), "max"),
+        (Some("max"), "max"),
     ] {
         let created = thread(&fixture, effort);
         fixture.thread_id = created["threadId"].as_str().unwrap().to_owned();
@@ -49,7 +51,7 @@ async fn h222_canonical_thread_defaults_and_turn_overrides_reach_real_wire() {
             json!({"threadId":fixture.thread_id}),
         );
         let inherited = effort.unwrap_or("low");
-        assert_eq!(resolved["reasoningEffort"], inherited);
+        assert_eq!(resolved["reasoningEffort"], inherited_wire);
         let override_value = if inherited == "none" { "max" } else { "none" };
         for (extra, expected) in [
             (json!({}), inherited),
@@ -71,7 +73,11 @@ async fn h222_canonical_thread_defaults_and_turn_overrides_reach_real_wire() {
             );
             let id = execute_with_approvals(&fixture, launch).await;
             assert_durable_terminal(&fixture.read(), &id, "succeeded");
-            expected_wire.push(expected);
+            expected_wire.push(if expected == inherited {
+                inherited_wire
+            } else {
+                override_value
+            });
         }
         let stored = EventStore::new(&fixture.state.lock().unwrap().database)
             .session_execution_config(fixture.thread_id.parse().unwrap())
@@ -195,9 +201,9 @@ async fn h222_cold_fork_resume_steer_and_tool_loop_keep_thread_effort() {
 async fn h222_invalid_thread_effort_is_preserved_and_rejected_before_provider_dispatch() {
     let transport = recorder(vec![completed_text("must not dispatch")]);
     let mut fixture = Fixture::with_transport(transport.clone()).await;
-    // H-155 aliases remain a separate issue: never silently drop or replace
-    // them with a canonical default while fixing this protocol seam.
-    for effort in ["bogus", " high ", "minimal", "xhigh"] {
+    // Unsupported values stay durable and fail before provider dispatch.
+    // Valid minimal/xhigh levels are covered by the mapped-wire test above.
+    for effort in ["bogus", " high ", "ultra", "off"] {
         let created = thread(&fixture, Some(effort));
         assert_eq!(
             created["configuration"]["overrides"]["reasoning_effort"],

@@ -5,23 +5,25 @@ import {
   getSettings,
   listActiveHarnessModels,
   selectHarnessModel,
-  setReasoningEffort,
   SETTINGS_CHANGED_EVENT,
 } from "../api";
 import type { HarnessActiveModelView } from "../api";
 import { message } from "../components/message";
 import type { SettingsView } from "../types";
+import type { HarnessThinkingLevel } from "../harnessModelsApi";
 
 type BackendEffort = SettingsView["reasoning_effort"];
-export type ThinkingLevel = "off" | "low" | "medium" | "high" | "max";
+export type ThinkingLevel = HarnessThinkingLevel;
+export type ThinkingSelection = ThinkingLevel | null;
 type Choice<T> = { revision: number; value: T };
-type Pending = { model?: Choice<string>; effort?: Choice<ThinkingLevel> };
+type Pending = { model?: Choice<string>; effort?: Choice<ThinkingLevel> & { model: string } };
 
-function levelFromBackend(value: BackendEffort): ThinkingLevel {
-  return value === "none" ? "off" : value;
+function levelFromBackend(value: BackendEffort | null | undefined): ThinkingSelection {
+  return value == null || value === "default" ? null
+    : value === "none" ? "off" : value === "minimal" ? "low" : value === "xhigh" ? "max" : value;
 }
 
-function backendEffort(value: ThinkingLevel): BackendEffort {
+function backendEffort(value: ThinkingLevel): string {
   return value === "off" ? "none" : value;
 }
 
@@ -35,6 +37,7 @@ export interface ComposerModelOption {
   thinkingLevels: string[];
   thinkingDistinct: string[];
   thinkingDisable: boolean;
+  defaultThinking: ThinkingSelection;
 }
 
 function optionId(model: HarnessActiveModelView): string {
@@ -49,9 +52,10 @@ function optionFromActive(model: HarnessActiveModelView): ComposerModelOption {
     providerId: model.providerId,
     providerLabel: model.providerChannel || model.providerId,
     contextWindow: model.contextWindow,
-    thinkingLevels: model.thinkingLevels,
+    thinkingLevels: model.thinkingDistinct.length ? model.thinkingDistinct : model.thinkingLevels,
     thinkingDistinct: model.thinkingDistinct,
     thinkingDisable: model.thinkingDisable,
+    defaultThinking: levelFromBackend(model.defaultReasoningEffort as BackendEffort | null),
   };
 }
 
@@ -64,7 +68,7 @@ export function useComposerModelSettings() {
   const selectedOption = useRef<ComposerModelOption | null>(null);
   const pending = useRef<Pending>({});
   const acceptedModel = useRef<string | null>(null);
-  const acceptedEffort = useRef<ThinkingLevel | null>(null);
+  const acceptedEffort = useRef<ThinkingSelection>(null);
   const revision = useRef(0);
   const readVersion = useRef(0);
   const draining = useRef(false);
@@ -74,7 +78,7 @@ export function useComposerModelSettings() {
     options: [] as ComposerModelOption[],
     activeOptions: [] as ComposerModelOption[],
     model: "",
-    effort: "high" as ThinkingLevel,
+    effort: null as ThinkingSelection,
     saving: false,
   });
 
@@ -85,8 +89,9 @@ export function useComposerModelSettings() {
       options: optionsRef.current,
       activeOptions: catalog.current,
       model: pending.current.model?.value ?? acceptedModel.current ?? "",
-      effort: pending.current.effort?.value ?? acceptedEffort.current
-        ?? (current.current ? levelFromBackend(current.current.reasoning_effort) : "high"),
+      effort: pending.current.effort?.value ?? (pending.current.model
+        ? optionsRef.current.find(option => option.id === pending.current.model?.value)?.defaultThinking ?? null
+        : acceptedEffort.current),
       saving: draining.current,
     });
   };
@@ -100,19 +105,17 @@ export function useComposerModelSettings() {
 
   const reload = async () => {
     const version = ++readVersion.current;
-    let view: SettingsView | null | undefined;
     let active: ComposerModelOption[] | undefined;
     let selected: ComposerModelOption | null | undefined;
+    let selectedEffort: string | undefined;
     let reported = false;
     const valid = () => mounted.current && version === readVersion.current && !draining.current;
     const reconcile = () => {
       if (!valid()) return;
-      // Only a successful null selection permits the runtime's legacy DeepSeek
-      // route. A pending or failed read must never become a different model.
-      if (selected !== undefined && (selected !== null || (view !== undefined && active !== undefined))) {
-        selectedOption.current = selected ?? active!.find(option =>
-          option.providerId === "deepseek" && option.modelName === view?.chat_model) ?? null;
-        acceptedModel.current = selectedOption.current?.id ?? "";
+      if (selected !== undefined) {
+        selectedOption.current = selected;
+        acceptedModel.current = selected?.id ?? "";
+        acceptedEffort.current = levelFromBackend(selectedEffort as BackendEffort | undefined);
       }
       updateOptions();
       publish();
@@ -126,14 +129,13 @@ export function useComposerModelSettings() {
     await Promise.all([
       getSettings().then(result => {
         if (!valid()) return;
-        view = result;
         current.current = result;
-        acceptedEffort.current = result ? levelFromBackend(result.reasoning_effort) : null;
         reconcile();
       }).catch(error => failed("settings", error)),
       getHarnessModelSelection().then(result => {
         if (!valid()) return;
         selected = result ? optionFromActive(result) : null;
+        selectedEffort = result?.reasoningEffort ?? result?.defaultReasoningEffort ?? undefined;
         reconcile();
       }).catch(error => failed("selection", error)),
       listActiveHarnessModels().then(result => {
@@ -178,14 +180,18 @@ export function useComposerModelSettings() {
             const receipt = await selectHarnessModel(option.providerId, option.modelName, previous?.providerId !== option.providerId);
             selectedOption.current = optionFromActive(receipt);
             acceptedModel.current = optionId(receipt);
+            acceptedEffort.current = levelFromBackend((receipt.reasoningEffort ?? receipt.defaultReasoningEffort) as BackendEffort | null);
             updateOptions();
             if (pending.current.model?.revision === model.revision && mounted.current) {
               message.success(t("composer.modelSwitched", { model: option?.label ?? model.value }));
             }
           } else {
-            const receipt = await setReasoningEffort(backendEffort(effort!.value));
-            current.current = receipt;
-            acceptedEffort.current = effort!.value;
+            const option = optionsRef.current.find(candidate => candidate.id === effort!.model);
+            if (!option || acceptedModel.current !== effort!.model) throw new Error("model selection changed before reasoning selection");
+            const receipt = await selectHarnessModel(option.providerId, option.modelName, false, backendEffort(effort!.value));
+            selectedOption.current = optionFromActive(receipt);
+            acceptedEffort.current = levelFromBackend((receipt.reasoningEffort ?? receipt.defaultReasoningEffort) as BackendEffort | null);
+            updateOptions();
           }
         } catch (error) {
           console.error(model ? "set_harness_model failed:" : "set_reasoning_effort failed:", error);
@@ -209,6 +215,7 @@ export function useComposerModelSettings() {
     if (!optionsRef.current.some(option => option.id === value)
       || value === (pending.current.model?.value ?? acceptedModel.current)) return;
     pending.current.model = { value, revision: ++revision.current };
+    delete pending.current.effort;
     ++readVersion.current;
     publish();
     void drain();
@@ -216,9 +223,11 @@ export function useComposerModelSettings() {
 
   const chooseThinking = (value: ThinkingLevel | "none") => {
     const level = value === "none" ? "off" : value;
-    if (level === (pending.current.effort?.value ?? acceptedEffort.current
-      ?? (current.current ? levelFromBackend(current.current.reasoning_effort) : undefined))) return;
-    pending.current.effort = { value: level, revision: ++revision.current };
+    const model = pending.current.model?.value ?? acceptedModel.current;
+    const option = optionsRef.current.find(candidate => candidate.id === model);
+    if (!model || !option || !option.thinkingLevels.includes(level)) return;
+    if (level === (pending.current.effort?.value ?? acceptedEffort.current)) return;
+    pending.current.effort = { value: level, model, revision: ++revision.current };
     ++readVersion.current;
     publish();
     void drain();
@@ -232,7 +241,6 @@ export function useComposerModelSettings() {
     activeModelOptions: state.activeOptions,
     selectedModel: state.model,
     selectedThinking: state.effort,
-    modelCapabilities: state.view?.model_capabilities ?? [],
     switching: state.saving,
     chooseModel,
     chooseThinking,

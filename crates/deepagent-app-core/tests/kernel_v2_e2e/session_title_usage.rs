@@ -138,8 +138,7 @@ async fn services(
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
         .await
         .unwrap();
     let cost = Arc::new(CostService::new(db.clone()));

@@ -54,8 +54,7 @@ impl Fixture {
             )),
             Arc::new(MemorySecretStore::new()),
         ));
-        settings
-            .initialize("h96-synthetic-credential")
+        crate::registry_fixture::configure(&settings, "h96-synthetic-credential")
             .await
             .unwrap();
         let transport = Arc::new(CountingTransport(AtomicUsize::new(0)));

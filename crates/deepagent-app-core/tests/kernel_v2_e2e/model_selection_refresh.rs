@@ -1,6 +1,5 @@
 //! H-223: the shared settings owner feeds real preparation, wire and replay.
 use super::*;
-use deepagent_models::ModelRole;
 use deepagent_persistence::run_store::RunStore;
 
 const MODELS: &str = r#"{"data":[{"id":"deepseek-v4-flash"},{"id":"deepseek-v4-pro"}]}"#;
@@ -72,13 +71,20 @@ async fn h223_refresh_selection_override_and_reopen_match_real_wire_and_durable_
         discovery.clone(),
         secrets.clone(),
     ));
-    settings.initialize("h223-synthetic-control").await.unwrap();
-    activate_selection_model(&db, &settings, KNOWN_OVERRIDE);
-    settings.set_model(ModelRole::Chat, KNOWN_OVERRIDE).unwrap();
-    settings
-        .set_model(ModelRole::Reasoner, DEFAULT_MODEL)
+    crate::registry_fixture::configure(&settings, "h223-synthetic-control")
+        .await
         .unwrap();
-    settings.refresh_models().await.unwrap(); // Same service used by desktop startup.
+    activate_selection_model(&db, &settings, KNOWN_OVERRIDE);
+    settings
+        .harness_models()
+        .select_model("deepseek", KNOWN_OVERRIDE)
+        .unwrap();
+
+    settings
+        .harness_models()
+        .fetch_models("deepseek")
+        .await
+        .unwrap(); // Same service used by desktop startup.
     let model = Arc::new(SelectionModel::default());
     let chat = ChatService::new(db.clone(), settings.clone(), model.clone(), root.path());
     let first = prepared_run(&chat, "h223-selected", None, KNOWN_OVERRIDE).await;
@@ -100,13 +106,9 @@ async fn h223_refresh_selection_override_and_reopen_match_real_wire_and_durable_
         discovery,
         secrets.clone(),
     ));
-    let view = settings.view().unwrap().unwrap();
-    assert_eq!(view.chat_model, KNOWN_OVERRIDE);
-    assert_eq!(view.reasoner_model, DEFAULT_MODEL);
-    assert!(view
-        .model_capabilities
-        .iter()
-        .any(|c| c.model_id == view.chat_model));
+    let selected = settings.harness_models().selected_model().unwrap().unwrap();
+    assert_eq!(selected.model_name, KNOWN_OVERRIDE);
+    assert_eq!(selected.provider_id, "deepseek");
     let store = RunStore::new(&reopened);
     for (id, snapshot) in [("h223-selected", first), ("h223-override", second)] {
         assert_eq!(
@@ -136,9 +138,8 @@ async fn h223_refresh_selection_override_and_reopen_match_real_wire_and_durable_
         model.clone(),
         root.path(),
     );
-    // Losing an exact selected id rejects refresh; it must not publish a partial
-    // directory or silently retarget the next run. Availability at a real
-    // supplier is deliberately not claimed by this recording transport.
+    // Discovery adds available models; it does not erase saved model settings
+    // or silently retarget a selection when a supplier omits an existing id.
     let before = settings.load().unwrap();
     let removed = SettingsService::new(
         reopened,
@@ -147,7 +148,11 @@ async fn h223_refresh_selection_override_and_reopen_match_real_wire_and_durable_
         )),
         secrets,
     );
-    assert!(removed.refresh_models().await.is_err());
+    removed
+        .harness_models()
+        .fetch_models("deepseek")
+        .await
+        .unwrap();
     assert_eq!(settings.load().unwrap(), before);
     prepared_run(&chat, "h223-reopened", None, KNOWN_OVERRIDE).await;
     assert_eq!(
@@ -163,9 +168,14 @@ async fn h223_refresh_does_not_retarget_an_admitted_run_but_next_admission_uses_
     let discovery = Arc::new(MockTransport::with_get_json(MODELS));
     let secrets = Arc::new(MemorySecretStore::new());
     let settings = Arc::new(SettingsService::new(db.clone(), discovery, secrets));
-    settings.initialize("h223-synthetic-control").await.unwrap();
+    crate::registry_fixture::configure(&settings, "h223-synthetic-control")
+        .await
+        .unwrap();
     activate_selection_model(&db, &settings, KNOWN_OVERRIDE);
-    settings.set_model(ModelRole::Chat, KNOWN_OVERRIDE).unwrap();
+    settings
+        .harness_models()
+        .select_model("deepseek", KNOWN_OVERRIDE)
+        .unwrap();
     let model = Arc::new(SelectionModel::default());
     let chat = ChatService::new(db, settings.clone(), model.clone(), root.path());
     let session = chat.create_session(None).unwrap();
@@ -177,8 +187,15 @@ async fn h223_refresh_does_not_retarget_an_admitted_run_but_next_admission_uses_
         snapshot["context"]["executionConfig"]["model"],
         KNOWN_OVERRIDE
     );
-    settings.set_model(ModelRole::Chat, DEFAULT_MODEL).unwrap();
-    settings.refresh_models().await.unwrap();
+    settings
+        .harness_models()
+        .select_model("deepseek", DEFAULT_MODEL)
+        .unwrap();
+    settings
+        .harness_models()
+        .fetch_models("deepseek")
+        .await
+        .unwrap();
     assert_eq!(
         chat.read_execution_config(&overrides(None)).unwrap()["model"],
         DEFAULT_MODEL

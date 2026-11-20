@@ -49,8 +49,7 @@ async fn fixture_settings(db: Arc<Database>) -> Arc<SettingsService> {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("sk-result-fixture-placeholder")
+    crate::registry_fixture::configure(&settings, "sk-result-fixture-placeholder")
         .await
         .unwrap();
     settings

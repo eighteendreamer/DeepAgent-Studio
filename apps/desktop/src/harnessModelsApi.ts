@@ -10,6 +10,12 @@ import { invoke } from "@tauri-apps/api/core";
 export const HARNESS_PROTOCOLS = ["responses", "chat_completions", "messages"] as const;
 export type HarnessProtocol = (typeof HARNESS_PROTOCOLS)[number];
 
+export const HARNESS_THINKING_LEVELS = ["off", "low", "medium", "high", "max"] as const;
+export type HarnessThinkingFormat = "effort_only" | "enabled" | "adaptive" | "budget";
+export type HarnessThinkingLevel = (typeof HARNESS_THINKING_LEVELS)[number];
+/** Omitted inherits the catalog; false removes controls; only off may omit its wire value. */
+export type HarnessReasoningEfforts = false | Partial<Record<HarnessThinkingLevel, string | null>>;
+
 /** Balance query kinds supported by the backend adapter. */
 export const HARNESS_BALANCE_KINDS = ["auto", "none", "official", "new_api", "sub2api"] as const;
 export type HarnessBalanceKind = (typeof HARNESS_BALANCE_KINDS)[number];
@@ -53,9 +59,16 @@ export interface HarnessModelView {
   thinkingLevels: string[];
   thinkingDistinct: string[];
   thinkingDisable: boolean;
+  reasoningEfforts?: HarnessReasoningEfforts;
+  effectiveReasoningEfforts: HarnessReasoningEfforts;
+  thinkingFormat?: HarnessThinkingFormat | null;
+  effectiveThinkingFormat: HarnessThinkingFormat;
+  defaultReasoningEffort?: HarnessThinkingLevel | null;
+  effectiveDefaultReasoningEffort?: HarnessThinkingLevel | null;
 }
 
-export type HarnessModelInput = Omit<HarnessModelView, "active">;
+export type HarnessModelInput = Omit<HarnessModelView,
+  "active" | "thinkingLevels" | "thinkingDistinct" | "thinkingDisable" | "effectiveReasoningEfforts" | "effectiveDefaultReasoningEffort" | "effectiveThinkingFormat">;
 
 export interface HarnessActiveModelView {
   providerId: string;
@@ -70,6 +83,9 @@ export interface HarnessActiveModelView {
   thinkingLevels: string[];
   thinkingDistinct: string[];
   thinkingDisable: boolean;
+  /** Explicit selection; null resolves to an explicit application level. */
+  reasoningEffort: string | null;
+  defaultReasoningEffort: string | null;
 }
 
 export interface HarnessBalanceView {
@@ -128,8 +144,9 @@ export function selectHarnessModel(
   providerId: string,
   modelName: string,
   affectsBalance = false,
+  reasoningEffort: string | null = null,
 ): Promise<HarnessActiveModelView> {
-  const request = invoke<HarnessActiveModelView>("harness_model_select", { providerId, modelName });
+  const request = invoke<HarnessActiveModelView>("harness_model_select", { providerId, modelName, reasoningEffort });
   return request.then((view) => {
     window.dispatchEvent(new CustomEvent("deepagent:settings-changed", {
       detail: { reason: "chat_model", affectsBalance },

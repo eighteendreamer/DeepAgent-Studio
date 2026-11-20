@@ -3,7 +3,6 @@
 use super::*;
 use deepagent_app_core::WebSearchSettings;
 use deepagent_core::{event::EventPayload, response_item::ResponseItem};
-use deepagent_models::ModelRole;
 use deepagent_persistence::event_store::EventStore;
 use serde_json::{json, Value};
 
@@ -112,13 +111,13 @@ async fn settings(
     ));
     assert_eq!(settings.load().unwrap().is_none(), initialize);
     if initialize {
-        settings
-            .initialize("offline-audit-placeholder")
+        crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
             .await
             .unwrap();
-        for role in [ModelRole::Chat, ModelRole::Reasoner] {
-            settings.set_model(role, "deepseek-v4-pro").unwrap();
-        }
+        settings
+            .harness_models()
+            .select_model("deepseek", "deepseek-v4-pro")
+            .unwrap();
         settings
             .set_tool_search_mode(deepagent_builtins::ToolSearchMode::Disabled)
             .unwrap();

@@ -18,6 +18,67 @@ use tokio::sync::Notify;
 
 const TOTAL: Duration = Duration::from_millis(250);
 
+#[tokio::test]
+async fn messages_cache_breakpoint_and_usage_survive_http_transport() {
+    use deepagent_models::capability::ModelCapabilityResolver;
+    use deepagent_models::thinking::ThinkingCapabilities;
+    use deepagent_models::{ReasoningEffort, ResponseItem};
+
+    let mode = WireMode::Messages;
+    let mut events = fixture::protocol::start(mode);
+    let mut start: serde_json::Value = serde_json::from_str(&events[0]).unwrap();
+    start["message"]["usage"]["cache_read_input_tokens"] = 32.into();
+    start["message"]["usage"]["cache_creation_input_tokens"] = 4.into();
+    events[0] = start.to_string();
+    events.push(fixture::protocol::delta(mode, "ok", 1));
+    events.extend(fixture::protocol::finish(mode, "ok", 2));
+    let server = fixture::Fixture::start(vec![fixture::protocol::encode(events)]).await;
+    let model = "claude-opus-5-5";
+    let mut config = server.config(mode);
+    let mut capability = ModelCapabilityResolver::new().resolve_model_id(model);
+    capability.max_output_tokens = 128_000;
+    capability.thinking = Some(
+        ThinkingCapabilities::for_route(&server.base_url, model, mode, &serde_json::json!({}))
+            .unwrap(),
+    );
+    config.capabilities = vec![capability];
+    let client = ModelClient::new(Arc::new(fixture::Fixture::transport()), config);
+    let request = ResponseRequest::from_response_items(
+        model,
+        Some("Stable rules".into()),
+        vec![
+            ResponseItem::Message {
+                role: "system".into(),
+                content: "Current workspace".into(),
+            },
+            ResponseItem::Message {
+                role: "user".into(),
+                content: "Hello".into(),
+            },
+        ],
+    )
+    .with_max_output_tokens(128_000)
+    .with_reasoning_effort(ReasoningEffort::High);
+    let response = client.stream_response(request).await.unwrap();
+    assert_eq!(response.output_text_projection(), "ok");
+    let usage = response.usage.unwrap();
+    assert_eq!(usage.prompt_cache_hit_tokens, 32);
+    assert_eq!(usage.prompt_cache_miss_tokens, 13);
+    assert_eq!(usage.prompt_tokens, 45);
+    let posted = server.finish().await;
+    assert_eq!(posted.len(), 1);
+    let body = &posted[0];
+    assert_eq!(body["max_tokens"], 128_000);
+    assert_eq!(body["thinking"]["type"], "adaptive");
+    assert_eq!(body["output_config"]["effort"], "high");
+    assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+    assert_eq!(body["system"][1]["text"], "Current workspace");
+    assert!(body["system"][1].get("cache_control").is_none());
+    assert!(body["messages"][0]["content"][0]
+        .get("cache_control")
+        .is_none());
+}
+
 fn timeouts() -> TransportTimeouts {
     TransportTimeouts {
         connect: Duration::from_secs(2),

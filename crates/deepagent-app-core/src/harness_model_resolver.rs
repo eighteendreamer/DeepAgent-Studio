@@ -77,7 +77,7 @@ fn route(provider: HarnessProvider, model: HarnessModel) -> Result<ResolvedRoute
         .unwrap_or(&provider.protocol)
         .to_owned();
     let wire_mode = wire_mode_for_protocol(&protocol)?;
-    let capability = registry_capability(&model)?;
+    let capability = registry_capability(&provider, &model)?;
     Ok(ResolvedRoute {
         provider_id: provider.id,
         model_name: model.model_name,
@@ -92,7 +92,10 @@ fn route(provider: HarnessProvider, model: HarnessModel) -> Result<ResolvedRoute
     })
 }
 
-fn registry_capability(model: &HarnessModel) -> Result<ModelCapability> {
+fn registry_capability(
+    provider: &HarnessProvider,
+    model: &HarnessModel,
+) -> Result<ModelCapability> {
     let capacity = |value: i64| {
         usize::try_from(value)
             .ok()
@@ -125,9 +128,31 @@ fn registry_capability(model: &HarnessModel) -> Result<ModelCapability> {
     value["model_id"] = defaults.model_id.into();
     value["context_window"] = defaults.context_window.into();
     value["max_output_tokens"] = defaults.max_output_tokens.into();
-    let thinking = deepagent_models::thinking::ThinkingCapabilities::from_registry_json(&stored)?;
+    let thinking = registry_thinking(provider, model, &stored)?;
     let mut capability: ModelCapability = serde_json::from_value(value)
         .map_err(|_| CoreError::invalid("invalid registry model capability fields"))?;
+    capability.supports_thinking = !thinking.levels().is_empty();
     capability.thinking = Some(thinking);
     Ok(capability)
+}
+
+/// Shared by settings projections and the immutable runtime route snapshot.
+pub(crate) fn registry_thinking(
+    provider: &HarnessProvider,
+    model: &HarnessModel,
+    stored: &serde_json::Value,
+) -> Result<deepagent_models::thinking::ThinkingCapabilities> {
+    let mut capabilities = stored.clone();
+    if !capabilities.is_object() {
+        return Err(CoreError::invalid(
+            "registry model capabilities must be an object",
+        ));
+    }
+    capabilities["max_output_tokens"] = model.output_limit.into();
+    deepagent_models::thinking::ThinkingCapabilities::for_route(
+        &provider.model_url,
+        &model.model_name,
+        wire_mode_for_protocol(model.protocol.as_deref().unwrap_or(&provider.protocol))?,
+        &capabilities,
+    )
 }

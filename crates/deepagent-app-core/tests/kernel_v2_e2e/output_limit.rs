@@ -1,7 +1,6 @@
 //! H-49: saved settings/catalog -> RunAssembler -> real wire and run reopen.
 use super::*;
 use deepagent_app_core::settings::ResponsesApiSettings;
-use deepagent_models::ModelRole;
 use deepagent_persistence::run_store::RunStore;
 
 const PRIMARY: &str = "deepseek-v4-flash";
@@ -48,9 +47,14 @@ async fn h49_selected_model_matches_wire_context_and_reopened_terminals() {
             Arc::new(MockTransport::with_get_json(catalog.to_string())),
             Arc::new(MemorySecretStore::new()),
         ));
-        settings.initialize("h49-synthetic-control").await.unwrap();
+        crate::registry_fixture::configure(&settings, "h49-synthetic-control")
+            .await
+            .unwrap();
         model_selection::activate_selection_model(&db, &settings, FALLBACK);
-        settings.set_model(ModelRole::Chat, FALLBACK).unwrap();
+        settings
+            .harness_models()
+            .select_model("deepseek", FALLBACK)
+            .unwrap();
         settings
             .set_responses_settings(ResponsesApiSettings {
                 max_output_tokens: Some(32_768),

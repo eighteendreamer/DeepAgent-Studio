@@ -66,7 +66,7 @@
 //! let mut thread = client
 //!     .thread_start_streamed(ThreadStartRequest {
 //!         cwd: None,
-//!         provider: Some("deepseek-official".into()),
+//!         provider: Some("deepseek".into()),
 //!         model: None,
 //!         reasoning_effort: None,
 //!         permission_profile: None,

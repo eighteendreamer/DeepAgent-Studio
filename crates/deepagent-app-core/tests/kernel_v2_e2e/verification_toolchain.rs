@@ -39,8 +39,7 @@ async fn chat_write(policy: VerificationPolicy) -> bool {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
         .await
         .unwrap();
     // This offline fixture explicitly authorizes its harmless local compiler

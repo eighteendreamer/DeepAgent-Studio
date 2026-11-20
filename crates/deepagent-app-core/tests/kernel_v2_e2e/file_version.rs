@@ -1,7 +1,6 @@
 //! A read-before-write guard must validate the version actually seen by the model.
 
 use super::*;
-use deepagent_models::ModelRole;
 
 const INITIAL: &str = "owner=audit-initial\nvalue=old\n";
 const EXTERNAL: &str = "owner=audit-external-editor-saved\nvalue=old\n";
@@ -113,13 +112,13 @@ async fn observe_write(
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
         .await
         .unwrap();
-    for role in [ModelRole::Chat, ModelRole::Reasoner] {
-        settings.set_model(role, "deepseek-flash").unwrap();
-    }
+    settings
+        .harness_models()
+        .select_model("deepseek", "deepseek-flash")
+        .unwrap();
     let model = Arc::new(ExternalEditorModel {
         path: path.clone(),
         external_change,

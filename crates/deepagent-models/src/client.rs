@@ -30,7 +30,6 @@ mod content_filter_tests;
 mod interrupt_tests;
 
 /// Stable provider identity exposed by the Harness layer.
-pub const DEEPSEEK_OFFICIAL_PROVIDER: &str = "deepseek-official";
 // Shared Responses/Chat image occurrence limit (Vision Limits, retrieved
 // 2026-11-09). Count occurrences, not unique attachment ids or cached URLs.
 const MAX_INPUT_IMAGES: usize = 600;
@@ -129,29 +128,6 @@ impl ModelConfig {
         }
     }
 
-    /// Build a config from a discovered [`ModelCatalog`] + API key, targeting a
-    /// specific role's model. This is how the system wires the user's key to the
-    /// auto-selected model after project initialization.
-    pub fn from_catalog(
-        api_key: impl Into<String>,
-        catalog: &crate::discovery::ModelCatalog,
-        role: crate::discovery::ModelRole,
-    ) -> Self {
-        let _ = catalog.model_for(role); // role resolution lives in the catalog
-        Self {
-            base_url: catalog.base_url.clone(),
-            api_key: api_key.into(),
-            defaults: ResponseDefaults::default(),
-            wire_mode: WireMode::Responses,
-            capabilities: catalog
-                .available
-                .iter()
-                .map(|model| crate::ModelCapabilityResolver::new().resolve_model(model))
-                .collect(),
-            prefer_model_reasoning_default: false,
-        }
-    }
-
     pub fn with_model_reasoning_defaults(mut self, enabled: bool) -> Self {
         self.prefer_model_reasoning_default = enabled;
         self
@@ -174,22 +150,9 @@ impl ModelConfig {
 
     fn reasoning_effort_input(
         &self,
-        capability: &crate::ModelCapability,
         requested: Option<ReasoningEffort>,
     ) -> Option<ReasoningEffort> {
-        requested.or_else(|| {
-            let published_default = self.wire_mode == WireMode::Responses
-                && self.prefer_model_reasoning_default
-                && capability
-                    .effort
-                    .as_ref()
-                    .is_some_and(|effort| effort.default_level.is_some());
-            if published_default {
-                None
-            } else {
-                self.defaults.reasoning_effort
-            }
-        })
+        requested.or_else(|| self.configured_reasoning_effort())
     }
 
     pub fn effective_reasoning_effort(
@@ -198,7 +161,7 @@ impl ModelConfig {
         requested: Option<ReasoningEffort>,
     ) -> Result<Option<ReasoningEffort>> {
         let capability = self.capability(model);
-        let effort = self.reasoning_effort_input(&capability, requested);
+        let effort = self.reasoning_effort_input(requested);
         crate::protocol::codec_for(self.wire_mode).resolve_reasoning_effort(&capability, effort)
     }
 
@@ -239,15 +202,6 @@ pub struct ModelClient {
 impl ModelClient {
     pub(crate) fn config(&self) -> &ModelConfig {
         &self.config
-    }
-    pub(crate) fn encode_response_body(&self, request: &ResponseRequest) -> Result<String> {
-        request_body::encode(request)
-    }
-    pub(crate) fn encode_chat_body(&self, request: &ChatCompletionRequest) -> Result<String> {
-        request_body::encode(&request_body::ChatRequest {
-            request,
-            deepseek_extensions: self.uses_deepseek_chat_extensions(),
-        })
     }
 
     /// Build a client from a transport and config.
@@ -294,13 +248,13 @@ impl ModelClient {
         self.config.prefer_model_reasoning_default
     }
 
+    pub(crate) fn messages_cache_policy(&self) -> crate::messages::CachePolicy {
+        crate::messages::CachePolicy::for_base_url(&self.config.base_url)
+    }
+
     pub(crate) fn uses_deepseek_chat_extensions(&self) -> bool {
         url::Url::parse(&self.config.base_url)
             .is_ok_and(|url| url.host_str() == Some("api.deepseek.com"))
-    }
-
-    pub(crate) fn messages_cache_policy(&self) -> crate::messages::CachePolicy {
-        crate::messages::CachePolicy::for_base_url(&self.config.base_url)
     }
 
     /// Resolve the requested reasoning level against model metadata before a
@@ -384,7 +338,7 @@ impl ModelClient {
         match self.capability(model).input_modalities.as_deref() {
             Some(modalities) if modalities.iter().any(|value| value == "image") => Ok(()),
             Some(_) => Err(deepagent_core::error::CoreError::invalid(
-                "image_input_unsupported: effective model does not accept images; select a vision model or remove image references",
+                "image_input_unsupported: 当前模型不支持视觉",
             )),
             None => Err(deepagent_core::error::CoreError::invalid(
                 "image_input_capability_unknown: effective model has no verified image capability; refresh discovery or select a declared vision model",
@@ -588,6 +542,76 @@ impl ModelClient {
         Ok(())
     }
 
+    pub(crate) fn wire_reasoning_effort(
+        &self,
+        model: &str,
+        requested: Option<ReasoningEffort>,
+    ) -> Result<Option<String>> {
+        let Some(effort) = requested else {
+            return Ok(None);
+        };
+        if let Some(thinking) = &self.capability(model).thinking {
+            return thinking
+                .wire_effort(effort.into())
+                .map(|wire| wire.map(str::to_owned));
+        }
+        Ok(Some(effort.label().to_owned()))
+    }
+
+    pub(crate) fn encode_response_body(&self, request: &ResponseRequest) -> Result<String> {
+        let effort = self.wire_reasoning_effort(&request.model, request.reasoning_effort)?;
+        request_body::encode(&request_body::ReasoningRequest::Responses(
+            request,
+            effort.as_deref(),
+        ))
+    }
+
+    pub(crate) fn encode_chat_body(&self, request: &ChatCompletionRequest) -> Result<String> {
+        let requested = request.reasoning_effort.or_else(|| {
+            request
+                .thinking
+                .as_ref()
+                .filter(|thinking| thinking.kind == "disabled")
+                .map(|_| ReasoningEffort::None)
+        });
+        let effective = self.effective_reasoning_effort(&request.model, requested)?;
+        let mut effort = self.wire_reasoning_effort(&request.model, effective)?;
+        let thinking_capability = self.capability(&request.model).thinking;
+        let projected_thinking = thinking_capability
+            .as_ref()
+            .map(|capability| capability.chat_thinking(effective))
+            .transpose()?;
+        let supports_thinking_block = self.uses_deepseek_chat_extensions()
+            || thinking_capability.as_ref().is_some_and(|capability| {
+                matches!(
+                    capability.thinking_format,
+                    crate::thinking::ThinkingFormat::Enabled
+                        | crate::thinking::ThinkingFormat::Adaptive
+                )
+            });
+        let thinking = supports_thinking_block
+            .then(|| {
+                projected_thinking
+                    .as_ref()
+                    .and_then(Option::as_ref)
+                    .or(request.thinking.as_ref())
+            })
+            .flatten();
+        // Standalone legacy DeepSeek clients express off through the toggle.
+        if self.uses_deepseek_chat_extensions()
+            && self.capability(&request.model).thinking.is_none()
+            && requested == Some(ReasoningEffort::None)
+        {
+            effort = None;
+        }
+        request_body::encode(&request_body::ReasoningRequest::Chat(
+            request,
+            effort.as_deref(),
+            thinking,
+            self.uses_deepseek_chat_extensions(),
+        ))
+    }
+
     /// Project through the exact defaulting and serializers used by dispatch.
     /// This never resolves credentials, creates history, or sends a request.
     pub fn project_tool_schemas(
@@ -646,12 +670,12 @@ impl ModelClient {
         requested: Option<ReasoningEffort>,
     ) -> Option<ReasoningEffort> {
         let capability = self.capability(model);
-        self.config
-            .reasoning_effort_input(&capability, requested)
-            .or_else(|| {
-                crate::protocol::codec_for(self.config.wire_mode)
-                    .legacy_reasoning_default(&capability)
-            })
+        self.config.reasoning_effort_input(requested).or_else(|| {
+            if capability.thinking.is_some() {
+                return capability.resolve_reasoning_effort(None).ok().flatten();
+            }
+            crate::protocol::codec_for(self.config.wire_mode).legacy_reasoning_default(&capability)
+        })
     }
 
     pub(crate) fn apply_chat_defaults(&self, request: &mut ChatCompletionRequest) -> Result<()> {
@@ -668,7 +692,7 @@ impl ModelClient {
         }
         request.max_tokens = self.effective_output_tokens(&request.model, request.max_tokens);
         if request.reasoning_effort.is_none() && request.thinking.is_none() {
-            if let Some(effort) = self.config.defaults.reasoning_effort {
+            if let Some(effort) = self.effective_reasoning_effort(&request.model, None)? {
                 *request = request.clone().with_reasoning_effort(effort);
             }
         }
@@ -1750,21 +1774,16 @@ mod tests {
 
     #[test]
     fn request_budget_capability_prefers_provider_catalog_metadata() {
-        let catalog = crate::discovery::ModelCatalog {
-            base_url: crate::discovery::DEEPSEEK_BASE_URL.into(),
-            chat_model: "deepseek-flash".into(),
-            reasoner_model: "deepseek-flash".into(),
-            available: vec![crate::discovery::ModelInfo {
-                input_modalities: None,
-                effort: None,
-                id: "deepseek-flash".into(),
-                object: "model".into(),
-                owned_by: "deepseek".into(),
-                context_window: Some(128_000),
-                max_output_tokens: Some(8_000),
-            }],
-        };
-        let config = ModelConfig::from_catalog("test", &catalog, crate::discovery::ModelRole::Chat);
+        let catalog = vec![crate::discovery::ModelInfo {
+            input_modalities: None,
+            effort: None,
+            id: "deepseek-flash".into(),
+            object: "model".into(),
+            owned_by: "deepseek".into(),
+            context_window: Some(128_000),
+            max_output_tokens: Some(8_000),
+        }];
+        let config = crate::metadata_fixture::config("test", &catalog);
         let client = ModelClient::new(Arc::new(crate::test_sequence::mock(vec![])), config);
         let capability = client.capability("deepseek-flash");
         assert_eq!(capability.context_window, 128_000);

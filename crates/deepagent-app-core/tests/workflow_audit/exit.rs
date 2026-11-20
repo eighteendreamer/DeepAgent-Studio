@@ -84,8 +84,7 @@ async fn h192_missing_exit_rejects_effectful_full_and_targeted_graphs_before_dis
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("sk-synthetic-placeholder")
+    crate::registry_fixture::configure(&settings, "sk-synthetic-placeholder")
         .await
         .unwrap();
     let transport = Arc::new(NoDispatch::default());

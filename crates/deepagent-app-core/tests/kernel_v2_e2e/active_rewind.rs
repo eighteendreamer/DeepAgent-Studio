@@ -3,7 +3,6 @@
 use super::*;
 use deepagent_app_core::AppService;
 use deepagent_core::{clock::FixedClock, event::EventPayload, message::Message};
-use deepagent_models::ModelRole;
 use deepagent_persistence::{event_store::EventStore, run_store::RunStore};
 use deepagent_session::Session;
 use std::time::Duration;
@@ -123,13 +122,13 @@ async fn observe_active_turn(rewind: bool, ending: Ending) -> Observation {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
         .await
         .unwrap();
-    for role in [ModelRole::Chat, ModelRole::Reasoner] {
-        settings.set_model(role, "deepseek-flash").unwrap();
-    }
+    settings
+        .harness_models()
+        .select_model("deepseek", "deepseek-flash")
+        .unwrap();
     let workspace = tempfile::tempdir().unwrap();
     let started = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());

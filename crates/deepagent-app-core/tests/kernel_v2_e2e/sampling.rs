@@ -1,7 +1,6 @@
 //! H166: real Kernel retry/tool continuation and durable sampling evidence.
 use super::*;
 use deepagent_app_core::{settings::ResponsesApiSettings, HarnessRunOverrides, RuntimeEvent};
-use deepagent_models::ModelRole;
 use deepagent_persistence::run_store::RunStore;
 
 #[derive(Default)]
@@ -53,12 +52,12 @@ async fn h166_kernel_sampling_matches_wire_and_survives_sqlite_cold_reopen() {
             )),
             Arc::new(MemorySecretStore::new()),
         ));
-        settings
-            .initialize("h166-synthetic-placeholder")
+        crate::registry_fixture::configure(&settings, "h166-synthetic-placeholder")
             .await
             .unwrap();
         settings
-            .set_model(ModelRole::Chat, "deepseek-flash")
+            .harness_models()
+            .select_model("deepseek", "deepseek-flash")
             .unwrap();
         settings
             .set_responses_settings(ResponsesApiSettings {

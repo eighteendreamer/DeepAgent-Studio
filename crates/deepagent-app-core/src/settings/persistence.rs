@@ -140,8 +140,7 @@ impl SettingsService {
         update: impl Fn(&mut AppSettings) -> Result<()>,
     ) -> Result<AppSettings> {
         self.edit_settings(|prior| {
-            let mut settings =
-                prior.ok_or_else(|| CoreError::not_found("settings not initialized"))?;
+            let mut settings = prior.unwrap_or_default();
             update(&mut settings)?;
             Ok(settings)
         })

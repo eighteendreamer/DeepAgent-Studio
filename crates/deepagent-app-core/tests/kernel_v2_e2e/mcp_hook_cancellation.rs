@@ -157,8 +157,7 @@ async fn fixture_with_timeout(event: &'static str, timeout: u64) -> Fixture {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
         .await
         .unwrap();
     settings

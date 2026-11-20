@@ -27,7 +27,9 @@ async fn default_harness_request_does_not_advertise_apply_patch() {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("sk-audit-placeholder").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
+        .await
+        .unwrap();
     let model = Arc::new(ObservedModel {
         replay: ReplayTransport::new([response_text("AUDIT_CUSTOM_TOOL_CAPTURED")]),
         requests: Mutex::new(Vec::new()),

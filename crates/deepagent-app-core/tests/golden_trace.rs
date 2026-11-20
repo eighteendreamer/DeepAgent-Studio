@@ -11,6 +11,10 @@
 //! run: exactly one terminal event, no orphan tool call/result pairing, no
 //! running subagent left behind, and gapless event sequences.
 
+#[cfg(test)]
+#[path = "support/model_registry.rs"]
+mod registry_fixture;
+
 #[path = "../../deepagent-models/tests/support/sequence.rs"]
 pub mod sequence_fixture;
 use std::collections::VecDeque;
@@ -213,7 +217,9 @@ async fn chat_with(transport: Arc<dyn HttpTransport>, root: &PathBuf) -> (ChatSe
         discovery,
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("sk-e2e-test").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-e2e-test")
+        .await
+        .unwrap();
     let service = AppService::from_shared(db.clone());
     (ChatService::new(db, settings, transport, root), service)
 }

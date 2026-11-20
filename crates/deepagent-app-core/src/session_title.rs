@@ -12,7 +12,6 @@ use deepagent_core::error::{CoreError, Result};
 use deepagent_core::id::SessionId;
 use deepagent_core::message::Role;
 use deepagent_models::transport::HttpTransport;
-use deepagent_models::ReasoningEffort;
 use deepagent_persistence::event_store::EventStore;
 use deepagent_persistence::run_store::RunStore;
 use deepagent_persistence::Database;
@@ -142,17 +141,13 @@ pub async fn generate_session_title(
         events: Arc::downgrade(&events),
     };
 
-    let selection = crate::model_runtime::select_run_model(
-        settings_svc,
-        transport,
-        None,
-        None,
-        Some(ReasoningEffort::None.label()),
-    )?;
+    let selection =
+        crate::model_runtime::select_run_model(settings_svc, transport, None, None, None)?;
     let client = selection.client;
     let model = selection.model;
+    let effort = crate::model_runtime::auxiliary_reasoning_effort(&client, &model);
 
-    let request = deepagent_models::chat::ResponseRequest::with_instructions_and_user_input(
+    let mut request = deepagent_models::chat::ResponseRequest::with_instructions_and_user_input(
         model.clone(),
         SESSION_TITLE_SYSTEM_PROMPT,
         format!(
@@ -161,8 +156,8 @@ pub async fn generate_session_title(
         ),
     )
     .streaming()
-    .with_max_output_tokens(48)
-    .with_reasoning_effort(ReasoningEffort::None);
+    .with_max_output_tokens(48);
+    request.reasoning_effort = effort;
     let mut call = SideModelCall::start(Some(&owner), "session_title", &model)?;
     let response =
         match tokio::time::timeout(TITLE_TIMEOUT, call.stream_response(&client, request, None))

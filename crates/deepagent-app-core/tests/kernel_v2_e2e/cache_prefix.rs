@@ -43,10 +43,17 @@ async fn cold_cache_settings(
         )),
         secrets,
     ));
-    assert_eq!(settings.load().unwrap().is_none(), initialize);
-    if initialize {
+    assert!(settings.load().unwrap().is_some());
+    assert_eq!(
         settings
-            .initialize("offline-audit-placeholder")
+            .harness_models()
+            .selected_model()
+            .unwrap()
+            .is_none(),
+        initialize
+    );
+    if initialize {
+        crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
             .await
             .unwrap();
     }
@@ -361,7 +368,9 @@ async fn consecutive_session_requests_preserve_responses_prefix_on_wire() {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("sk-audit-placeholder").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
+        .await
+        .unwrap();
     let model = Arc::new(ObservedModel {
         replay: ReplayTransport::new([
             response_text("AUDIT_CACHE_FIRST_ANSWER"),
@@ -461,7 +470,9 @@ async fn audit_dynamic_instructions_do_not_cut_off_conversation_cache_prefix() {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("sk-audit-placeholder").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
+        .await
+        .unwrap();
     let model = Arc::new(ObservedModel {
         replay: ReplayTransport::new([
             response_text("AUDIT_DYNAMIC_CACHE_FIRST_ANSWER"),

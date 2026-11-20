@@ -7,6 +7,10 @@
 //! assertions are on durable runtime facts (tool events, replay, file-backed
 //! storage, FTS projection, and diagnostics shape), not on exact model prose.
 
+#[cfg(test)]
+#[path = "support/model_registry.rs"]
+mod registry_fixture;
+
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -204,8 +208,7 @@ async fn run_real_responses_session(reasoning_effort: ReasoningEffort) {
         });
     let secrets = Arc::new(MemorySecretStore::new());
     let settings = Arc::new(SettingsService::new(db.clone(), transport.clone(), secrets));
-    settings
-        .initialize(&key)
+    crate::registry_fixture::configure(&settings, &key)
         .await
         .expect("live model discovery");
     settings

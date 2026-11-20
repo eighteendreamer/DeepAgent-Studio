@@ -178,7 +178,9 @@ mod audit_tests {
             )),
             Arc::new(MemorySecretStore::new()),
         ));
-        settings.initialize("sk-audit-placeholder").await.unwrap();
+        crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
+            .await
+            .unwrap();
         settings
             .set_approval_policy(ApprovalPolicy::AlwaysAsk)
             .unwrap();
@@ -299,7 +301,9 @@ mod audit_tests {
             )),
             Arc::new(MemorySecretStore::new()),
         ));
-        settings.initialize("sk-audit-placeholder").await.unwrap();
+        crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
+            .await
+            .unwrap();
 
         let started = Arc::new(tokio::sync::Notify::new());
         let cancelled = Arc::new(tokio::sync::Notify::new());

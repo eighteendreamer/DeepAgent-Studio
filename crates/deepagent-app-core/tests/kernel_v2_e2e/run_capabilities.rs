@@ -37,8 +37,7 @@ async fn settings(db: &Arc<Database>) -> Arc<SettingsService> {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("offline-capability-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-capability-placeholder")
         .await
         .unwrap();
     settings.set_sandbox_mode(SandboxMode::ReadOnly).unwrap();

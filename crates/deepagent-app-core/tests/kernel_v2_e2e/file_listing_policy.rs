@@ -2,7 +2,6 @@
 
 use super::*;
 use deepagent_app_core::SandboxMode;
-use deepagent_models::ModelRole;
 
 struct ListingModel {
     operation: &'static str,
@@ -137,16 +136,16 @@ async fn observe_listing(operation: &'static str, mode: Option<SandboxMode>) -> 
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
         .await
         .unwrap();
     if let Some(mode) = mode {
         settings.set_sandbox_mode(mode).unwrap();
     }
-    for role in [ModelRole::Chat, ModelRole::Reasoner] {
-        settings.set_model(role, "deepseek-flash").unwrap();
-    }
+    settings
+        .harness_models()
+        .select_model("deepseek", "deepseek-flash")
+        .unwrap();
     let model = Arc::new(ListingModel {
         operation,
         calls: AtomicUsize::new(0),

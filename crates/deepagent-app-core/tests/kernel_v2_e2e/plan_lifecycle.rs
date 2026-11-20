@@ -1,7 +1,6 @@
 //! Plan restrictions must survive recovering the same persisted session.
 
 use super::*;
-use deepagent_models::ModelRole;
 use serde_json::{json, Value};
 use std::path::Path;
 
@@ -180,13 +179,13 @@ async fn observe_reopen(slash: bool, reapply: bool) -> WriteObservation {
     let session = {
         let db = Arc::new(Database::open(&db_path).unwrap());
         let config = settings(db.clone(), secrets.clone());
-        config
-            .initialize("offline-audit-placeholder")
+        crate::registry_fixture::configure(&config, "offline-audit-placeholder")
             .await
             .unwrap();
-        for role in [ModelRole::Chat, ModelRole::Reasoner] {
-            config.set_model(role, "deepseek-flash").unwrap();
-        }
+        config
+            .harness_models()
+            .select_model("deepseek", "deepseek-flash")
+            .unwrap();
         let chat = ChatService::new(db.clone(), config.clone(), model.clone(), &workspace);
         let session = if slash {
             chat.run("/plan", |_| {}, |_| {}).await.unwrap()
@@ -217,7 +216,15 @@ async fn observe_reopen(slash: bool, reapply: bool) -> WriteObservation {
     };
     let db = Arc::new(Database::open(&db_path).unwrap());
     let config = settings(db.clone(), secrets);
-    assert_eq!(config.view().unwrap().unwrap().chat_model, "deepseek-flash");
+    assert_eq!(
+        config
+            .harness_models()
+            .selected_model()
+            .unwrap()
+            .unwrap()
+            .model_name,
+        "deepseek-flash"
+    );
     let chat = ChatService::new(db, config, model.clone(), &workspace);
     let cold_mode_before_reapply = chat.is_plan_mode(&session).unwrap();
     if reapply {
@@ -238,8 +245,7 @@ async fn plan_lifecycle_explicit_reapply_and_exit_controls() {
     let temp = tempfile::tempdir().unwrap();
     let db = Arc::new(Database::open(temp.path().join("state.sqlite")).unwrap());
     let config = settings(db.clone(), Arc::new(MemorySecretStore::new()));
-    config
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&config, "offline-audit-placeholder")
         .await
         .unwrap();
     let model = Arc::new(PlanModel::default());
@@ -298,8 +304,7 @@ async fn plan_lifecycle_exit_does_not_grant_read_only_write_permissions() {
     let temp = tempfile::tempdir().unwrap();
     let db = Arc::new(Database::open(temp.path().join("state.sqlite")).unwrap());
     let config = settings(db.clone(), Arc::new(MemorySecretStore::new()));
-    config
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&config, "offline-audit-placeholder")
         .await
         .unwrap();
     let model = Arc::new(PlanModel(
@@ -355,8 +360,7 @@ async fn plan_lifecycle_model_tools_commit_before_the_next_write_gate() {
     let temp = tempfile::tempdir().unwrap();
     let db = Arc::new(Database::open(temp.path().join("state.sqlite")).unwrap());
     let config = settings(db.clone(), Arc::new(MemorySecretStore::new()));
-    config
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&config, "offline-audit-placeholder")
         .await
         .unwrap();
     let model = Arc::new(PlanModel(
@@ -420,8 +424,7 @@ async fn plan_lifecycle_initial_flag_is_durable_and_missing_state_fails_before_m
     let id = {
         let db = Arc::new(Database::open(&path).unwrap());
         let config = settings(db.clone(), secrets.clone());
-        config
-            .initialize("offline-audit-placeholder")
+        crate::registry_fixture::configure(&config, "offline-audit-placeholder")
             .await
             .unwrap();
         let chat = ChatService::new(db.clone(), config.clone(), model.clone(), temp.path());

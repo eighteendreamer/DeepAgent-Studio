@@ -112,8 +112,7 @@ async fn effectful_orphan(kind: &str, config: Value) {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("sk-synthetic-placeholder")
+    crate::registry_fixture::configure(&settings, "sk-synthetic-placeholder")
         .await
         .unwrap();
     settings

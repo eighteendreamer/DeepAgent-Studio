@@ -440,8 +440,10 @@ async fn h107_command_end_needs_no_login_and_uses_admitted_control() {
         super::tests::discovery_transport(),
         Arc::new(crate::secret_store::MemorySecretStore::new()),
     ));
-    settings.initialize("sk-h107-synthetic").await.unwrap();
-    settings.clear_key().unwrap();
+    crate::registry_fixture::configure(&settings, "sk-h107-synthetic")
+        .await
+        .unwrap();
+    settings.harness_models().clear_credentials().unwrap();
     let marker = dir.path().join("ends.txt");
     configure_end(&settings, &marker);
     let id = Session::create(&db, &SystemClock, None)

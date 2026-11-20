@@ -102,6 +102,8 @@ GREEN：`node apps/desktop/scripts/check-plugin-licenses.cjs`，10 个插件全�
 
 ## H003：首次登录与旧 Chat 模型的一次性种子迁移（P3）
 
+> 2026-11-20 用户决定丢弃本节导入方案。旧模型目录、种子导入和兼容回退已删除；以下仅为历史记录，当前规则见 H038。
+
 RED：`cargo test -q -p deepagent-app-core --test harness_registry_seed --offline -j 1`，
 4 failed / 1 passed，复现登录和旧配置未激活模型、迁移写入缺少事务边界等问题。
 
@@ -117,6 +119,8 @@ settings lib 97 passed / 2 ignored。修改文件已 rustfmt；提交前检查 d
 本批只完成注册表初始化，生产运行链仍待 H004 接入。
 
 ## H004：注册表接入真实运行链与冻结模型（P3，2026-11-18）
+
+> 2026-11-20：本节中的旧凭据生命周期 gate 和 provider alias 兼容已在 H038 删除；以下保留当时的实现与验证记录。
 
 RED：新增 `harness_registry_run` 先取得 0 passed / 5 failed：注册表中非旧 catalog
 模型被拒绝、停用旧模型仍可请求、快照缺少真实 provider、未绑定对应供应商密钥。
@@ -637,3 +641,10 @@ H022 后端 `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --all
 - 新编译的原生桌面通过 CDP 脚本完成胶囊选模、三协议发送和回复，HTTP 200、运行 completed、零 JS 异常，实际检查回复截图；原用户窗口保留。页面切换约 102～156 ms，仍未达到 10 ms。
 - 补验并修正通用 Chat 明确关闭思考的省略规则，以及采样参数经 SDK/Value 转换后的精度展开；独立提交源码 models/http 为 431 通过、0 失败、6 忽略。全仓格式和完整严格 Clippy 通过。
 - 修复固定 G 盘测试夹具及 Clippy 指出的局部问题。独立提交源码与集成工作树分开验收；完整 workspace 最近一次仍为 36 项失败，未用专项通过替代完整结果。完整命令、失败明细、后续定向复验和未完成边界见 [本轮报告](reports/2026-11-20-p2-p11-ui-follow-up.md)。
+
+## H038：删除旧模型链路与补全数据库时间戳（2026-11-20）
+
+- 按用户决定删除旧模型目录、双角色、默认模型复制/导入及兼容别名、回退；所有选模消费方与测试使用新 SQLite 注册表。
+- 首次连接不自动激活或选择模型；旧初始化、刷新、全局凭据/余额和选模命令删除。真实原生 CDP 脚本已验证获取、激活、选择、刷新、胶囊切换与消息发送，发现接口只调用一次，实际请求的模型与思考档位正确，零 JS 异常。
+- 实际 `deepagent.db` 已从 V25 升级至 V27，25 张业务表均有 Unix 毫秒创建/更新时间戳；旧目录 JSON 字段与导入标记已清除。完整性、外键及保留业务数据的哈希校验通过，升级前保留完整备份。
+- 持久化 244 项、完整前端构建、桌面 Rust 检查、原生嵌入资源构建、格式、严格 Clippy 和独立提交源码检查通过。完整 workspace 为 5755 通过、25 失败、131 忽略；相关旧断言修正后，Kernel 思考参数 6 项、H54 2 项、H219 1 项、CLI H222 3 项及 SDK stdio 15 项通过，未将其替代完整命令结果。失败明细与提交边界见 [本轮报告](reports/2026-11-20-legacy-model-cutover-and-timestamps.md)。

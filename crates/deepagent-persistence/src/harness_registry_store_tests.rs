@@ -37,6 +37,30 @@ fn chat_selection_round_trips_without_affecting_model_activation() {
     );
 }
 
+#[test]
+fn reasoning_selection_survives_reopen_and_model_switch_clears_it_atomically() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("selection.sqlite");
+    {
+        let db = Database::open(&path).unwrap();
+        db.set_harness_chat_model_selection("alpha", "m-one", Some("xhigh"))
+            .unwrap();
+    }
+    let db = Database::open(&path).unwrap();
+    let selection = db.harness_chat_model_selection().unwrap().unwrap();
+    assert_eq!(selection.provider_id, "alpha");
+    assert_eq!(selection.model_name, "m-one");
+    assert_eq!(selection.reasoning_effort.as_deref(), Some("xhigh"));
+    assert!(db
+        .set_harness_chat_model_selection("alpha", "m-one", Some(" "))
+        .is_err());
+    assert_eq!(db.harness_chat_model_selection().unwrap(), Some(selection));
+    db.set_harness_chat_selection("beta", "m-two").unwrap();
+    let selection = db.harness_chat_model_selection().unwrap().unwrap();
+    assert_eq!(selection.provider_id, "beta");
+    assert_eq!(selection.reasoning_effort, None);
+}
+
 fn model(provider_id: &str, name: &str) -> HarnessModel {
     HarnessModel {
         provider_id: provider_id.into(),

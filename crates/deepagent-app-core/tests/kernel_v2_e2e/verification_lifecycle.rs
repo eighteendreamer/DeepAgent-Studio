@@ -23,7 +23,9 @@ async fn observe_fixture(fixture: BuildFixture, post_edit: bool, cancel: bool, p
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("offline-placeholder").await.unwrap();
+    crate::registry_fixture::configure(&settings, "offline-placeholder")
+        .await
+        .unwrap();
     settings
         .set_approval_policy(ApprovalPolicy::FullAccess)
         .unwrap();

@@ -1265,7 +1265,7 @@ fn subagent_reasoning_effort(
         None => Ok(inherited),
         Some(value) => ReasoningEffort::parse(value).ok_or_else(|| {
             CoreError::invalid(format!(
-                "invalid sub-agent effort '{value}'; expected none, low, medium, high, or max"
+                "invalid sub-agent effort '{value}'; expected none, minimal, low, medium, high, xhigh, or max"
             ))
         }),
     }
@@ -2852,10 +2852,10 @@ mod tests {
 
     #[test]
     fn subagent_effort_rejects_noncanonical_values() {
-        for value in ["none", "low", "medium", "high", "max"] {
+        for value in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
             assert!(subagent_reasoning_effort(Some(value), ReasoningEffort::None).is_ok());
         }
-        for alias in ["minimal", "xhigh", "simple", "deep"] {
+        for alias in ["off", "ultra", "simple", "deep"] {
             assert!(subagent_reasoning_effort(Some(alias), ReasoningEffort::None).is_err());
         }
     }
@@ -2914,7 +2914,7 @@ mod tests {
 
     #[tokio::test]
     async fn h296_child_model_uses_its_partial_output_capacity_instead_of_the_parent_limit() {
-        use deepagent_models::discovery::{ModelCatalog, ModelInfo, ModelRole, DEEPSEEK_BASE_URL};
+        use deepagent_models::discovery::ModelInfo;
         let root = tempfile::tempdir().unwrap();
         let transport = Arc::new(AuditResumeTransport::default());
         let mut runner = audit_child_runner(root.path(), transport.clone());
@@ -2923,12 +2923,8 @@ mod tests {
             {"id":"audit-capacity-child","max_output_tokens":8_192}
         ]))
         .unwrap();
-        let catalog = ModelCatalog::auto_select(DEEPSEEK_BASE_URL, models).unwrap();
-        let mut config = deepagent_models::ModelConfig::from_catalog(
-            "synthetic-h296",
-            &catalog,
-            ModelRole::Chat,
-        );
+        let catalog = models;
+        let mut config = crate::metadata_fixture::config("synthetic-h296", &catalog);
         config.defaults.max_output_tokens = Some(32_768);
         runner.client = Arc::new(ModelClient::new(transport.clone(), config));
         let request = deepagent_builtins::SubagentRequest {

@@ -6,7 +6,7 @@
 //! forwarding every [`RuntimeEvent`] to a caller-supplied callback (which the
 //! Tauri layer bridges to `app.emit`, or a web layer to SSE/WS).
 //!
-//! The model client is built from the persisted [`ModelCatalog`] + the API key
+//! The model client is built from the persisted [`SQLite harness registry`] + the API key
 //! from the secret store, so the UI only needs to call [`ChatService::run`].
 
 use std::future::Future;
@@ -1488,14 +1488,15 @@ impl ChatService {
     where
         F: FnMut(&str) + Send + 'static,
     {
-        let (client, model, reasoning_effort) = self.build_model()?;
-        let request = deepagent_models::chat::ResponseRequest::with_instructions_and_user_input(
-            model,
-            system_prompt,
-            user_prompt,
-        )
-        .streaming()
-        .with_reasoning_effort(reasoning_effort);
+        let (client, model, _) = self.build_model()?;
+        let mut request =
+            deepagent_models::chat::ResponseRequest::with_instructions_and_user_input(
+                model,
+                system_prompt,
+                user_prompt,
+            )
+            .streaming();
+        request.reasoning_effort = client.configured_reasoning_effort();
 
         struct CallbackObserver<F: FnMut(&str) + Send> {
             on_token: F,
@@ -1546,14 +1547,19 @@ impl ChatService {
         F: FnMut(&str) + Send + 'static,
     {
         let configured = self.settings.skill_install_ai_review_model()?;
+        let review_route = configured
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .map(|model| self.settings.harness_models().find_active_model(model))
+            .transpose()?;
         let selection = crate::model_runtime::select_run_model(
             &self.settings,
             self.transport.clone(),
-            None,
-            configured
-                .as_deref()
-                .map(str::trim)
-                .filter(|model| !model.is_empty()),
+            review_route
+                .as_ref()
+                .map(|model| model.provider_id.as_str()),
+            review_route.as_ref().map(|model| model.model_name.as_str()),
             Some(reasoning_effort.label()),
         )?;
         let client = selection.client;
@@ -1992,7 +1998,9 @@ mod tests {
             )),
             Arc::new(MemorySecretStore::new()),
         ));
-        settings.initialize("synthetic-login-key").await.unwrap();
+        crate::registry_fixture::configure(&settings, "synthetic-login-key")
+            .await
+            .unwrap();
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -2260,7 +2268,9 @@ mod tests {
             discovery_transport(),
             secrets,
         ));
-        settings.initialize("sk-test-1234").await.unwrap();
+        crate::registry_fixture::configure(&settings, "sk-test-1234")
+            .await
+            .unwrap();
         let dir = tempfile::tempdir().unwrap();
         (db, settings, dir)
     }
@@ -3165,6 +3175,10 @@ mod tests {
     #[tokio::test]
     async fn slash_model_without_args_lists_only_activated_registry_models() {
         let (_db, settings, dir) = seeded().await;
+        settings
+            .harness_models()
+            .set_model_active("deepseek", "deepseek-v4-pro", false)
+            .unwrap();
         let chat = ChatService::new(_db, settings, chat_transport(), dir.path());
         let events = Arc::new(std::sync::Mutex::new(Vec::<RuntimeEvent>::new()));
         let sink = events.clone();
@@ -3232,12 +3246,12 @@ mod tests {
             last_body: last_body.clone(),
         });
         let chat = ChatService::new(db, settings.clone(), transport, dir.path());
-        for effort in [
-            ReasoningEffort::None,
-            ReasoningEffort::Low,
-            ReasoningEffort::Medium,
-            ReasoningEffort::High,
-            ReasoningEffort::Max,
+        for (effort, expected_wire) in [
+            (ReasoningEffort::None, "none"),
+            (ReasoningEffort::Low, "low"),
+            (ReasoningEffort::Medium, "high"),
+            (ReasoningEffort::High, "high"),
+            (ReasoningEffort::Max, "max"),
         ] {
             settings.set_reasoning_effort(effort).unwrap();
             chat.run("solve a complex task", |_| {}, |_| {})
@@ -3246,7 +3260,7 @@ mod tests {
             let body = last_body.lock().unwrap().clone().unwrap();
             let json: serde_json::Value = serde_json::from_str(&body).unwrap();
             assert_eq!(json["model"], "deepseek-v4-flash");
-            assert_eq!(json["reasoning"]["effort"], effort.label());
+            assert_eq!(json["reasoning"]["effort"], expected_wire);
             assert!(json.get("thinking").is_none());
             assert!(json.get("reasoning_effort").is_none());
             assert_eq!(

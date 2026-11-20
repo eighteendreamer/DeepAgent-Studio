@@ -44,8 +44,7 @@ async fn observe_budget(budget: BudgetConfig, rows: &[(i64, f64)]) -> BudgetObse
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
         .await
         .unwrap();
     let cost = Arc::new(CostService::new(db.clone()));

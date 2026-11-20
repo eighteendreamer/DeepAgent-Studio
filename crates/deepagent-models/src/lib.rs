@@ -22,6 +22,10 @@
 //! `reqwest`-based transport is compiled only with `--features http`.
 
 #[cfg(test)]
+#[path = "../tests/support/metadata.rs"]
+mod metadata_fixture;
+
+#[cfg(test)]
 extern crate self as deepagent_models;
 
 #[cfg(test)]
@@ -67,11 +71,8 @@ pub use chat::{
     ToolSchema, Usage,
 };
 pub use chat_completions::{ChatCompletionAccumulator, ChatCompletionRequest};
-pub use client::{
-    ModelClient, ModelConfig, ProviderToolSchemas, ResponseDefaults, WireMode,
-    DEEPSEEK_OFFICIAL_PROVIDER,
-};
-pub use discovery::{ModelCatalog, ModelDiscovery, ModelInfo, ModelRole, DEEPSEEK_BASE_URL};
+pub use client::{ModelClient, ModelConfig, ProviderToolSchemas, ResponseDefaults, WireMode};
+pub use discovery::{ModelDiscovery, ModelInfo, DEEPSEEK_BASE_URL};
 pub use failure::{classify_model_error, ModelFailureKind};
 pub use responses::{
     messages_from_response_items, response_items_from_legacy_messages,

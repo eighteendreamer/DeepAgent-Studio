@@ -1,5 +1,9 @@
 //! Model discovery metadata and the provider request boundary, without network.
 
+#[cfg(test)]
+#[path = "support/metadata.rs"]
+mod metadata_fixture;
+
 use std::collections::BTreeMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -9,8 +13,7 @@ use deepagent_core::error::Result;
 use deepagent_core::message::{Message, MessageAttachment, ToolCall};
 use deepagent_models::transport::{EventSink, HttpTransport, TransportRequest};
 use deepagent_models::{
-    ModelCatalog, ModelClient, ModelConfig, ModelDiscovery, ModelRole, ResponseInputItem,
-    ResponseRequest,
+    ModelClient, ModelConfig, ModelDiscovery, ResponseInputItem, ResponseRequest,
 };
 
 // Public /models shape and declared modalities from DeepSeek's documentation
@@ -566,17 +569,17 @@ async fn h127_complete_request_counts_repeated_tool_image_occurrences() {
 async fn sample(model: &str, with_image: bool) -> Observation {
     let transport = Arc::new(ModalityTransport::default());
     let discovered = ModelDiscovery::deepseek(transport.clone())
-        .discover("offline-audit-placeholder")
+        .list_models("offline-audit-placeholder")
         .await
         .unwrap();
     let encoded = serde_json::to_value(&discovered).unwrap();
-    let modalities_retained = encoded["available"]
+    let modalities_retained = encoded
         .as_array()
         .unwrap()
         .iter()
         .all(|model| model.get("input_modalities").is_some());
-    let restored: ModelCatalog = serde_json::from_value(encoded).unwrap();
-    let config = ModelConfig::from_catalog("offline-audit-placeholder", &restored, ModelRole::Chat);
+    let restored: Vec<deepagent_models::ModelInfo> = serde_json::from_value(encoded).unwrap();
+    let config = crate::metadata_fixture::config("offline-audit-placeholder", &restored);
     let client = ModelClient::new(transport.clone(), config);
     // Numeric capacity metadata is already preserved; test the independent
     // media contract without incorrectly claiming all metadata is discarded.

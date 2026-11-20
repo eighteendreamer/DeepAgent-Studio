@@ -79,15 +79,25 @@ impl WireCodec for MessagesCodec {
     }
 
     fn encode_body(&self, client: &ModelClient, request: ResponseRequest) -> Result<String> {
-        let request = client.prepare_response_request(request);
+        let mut request = client.prepare_response_request(request);
+        request.reasoning_effort =
+            client.effective_reasoning_effort(&request.model, request.reasoning_effort)?;
         let max_tokens = request.max_output_tokens.ok_or_else(|| {
             deepagent_core::error::CoreError::invalid(
                 "Messages requests require a positive max_output_tokens value",
             )
         })?;
-        crate::messages::encode_request_with_cache(
+        let effort = client.wire_reasoning_effort(&request.model, request.reasoning_effort)?;
+        let format = client
+            .capability(&request.model)
+            .thinking
+            .map(|thinking| thinking.thinking_format)
+            .unwrap_or(crate::thinking::ThinkingFormat::Adaptive);
+        crate::messages::encode_request_with_format(
             &request,
             max_tokens,
+            effort.as_deref(),
+            format,
             client.messages_cache_policy(),
         )
     }

@@ -3,7 +3,6 @@
 use super::*;
 use deepagent_app_core::{BudgetConfig, CostSummary};
 use deepagent_core::event::EventPayload;
-use deepagent_models::ModelRole;
 use deepagent_persistence::cost_store::{CostStore, HistoricalCost};
 use deepagent_persistence::event_store::EventStore;
 
@@ -104,11 +103,13 @@ async fn observe_route(
         )),
         secrets.clone(),
     ));
-    settings
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
         .await
         .unwrap();
-    settings.set_model(ModelRole::Chat, primary).unwrap();
+    settings
+        .harness_models()
+        .select_model("deepseek", primary)
+        .unwrap();
     let prices = settings.load().unwrap().unwrap().pricing_catalog.models;
     assert_eq!(prices[FLASH].calculate(1000, 100, 800, 200), 0.000616);
     assert_eq!(prices[PRO].calculate(1000, 100, 800, 200), 0.002370);

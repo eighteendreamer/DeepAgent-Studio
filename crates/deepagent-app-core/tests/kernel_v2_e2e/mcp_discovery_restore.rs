@@ -277,8 +277,7 @@ async fn check_prepared_mcp_config_generation(environment_only: bool) {
     let (second_script, second_report) = fixture(&second_root);
     let db = Arc::new(Database::open_in_memory().unwrap());
     let settings = settings(&db, &Arc::new(MemorySecretStore::new()));
-    settings
-        .initialize("offline-h219-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-h219-placeholder")
         .await
         .unwrap();
     settings
@@ -568,8 +567,7 @@ async fn h152_native_discovery_respects_permission_denial_and_cancellation() {
         let (script, report_path) = fixture(root.path());
         let db = Arc::new(Database::open_in_memory().unwrap());
         let settings = settings(&db, &Arc::new(MemorySecretStore::new()));
-        settings
-            .initialize("offline-h152-placeholder")
+        crate::registry_fixture::configure(&settings, "offline-h152-placeholder")
             .await
             .unwrap();
         settings
@@ -712,8 +710,7 @@ async fn check_discovery_reopen(native: bool) {
     let (session, previous_tools, previous_discovery, previous_native) = {
         let db = Arc::new(Database::open(&database_path).unwrap());
         let settings = settings(&db, &secrets);
-        settings
-            .initialize("offline-audit-placeholder")
+        crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
             .await
             .unwrap();
         settings
@@ -852,8 +849,7 @@ async fn h219_discovery_schema_durability_failure_stops_before_next_model_and_mc
     let (script, report_path) = fixture(root.path());
     let db = Arc::new(Database::open(root.path().join("state.sqlite")).unwrap());
     let settings = settings(&db, &Arc::new(MemorySecretStore::new()));
-    settings
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
         .await
         .unwrap();
     settings
@@ -931,8 +927,7 @@ async fn observe_rewind_discovery(case: RewindDiscovery) -> (Vec<String>, Vec<St
             .sequence;
         drop(session);
         let settings = settings(&db, &secrets);
-        settings
-            .initialize("offline-audit-placeholder")
+        crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
             .await
             .unwrap();
         settings

@@ -257,7 +257,9 @@ async fn h147_alias_is_shared_by_discovery_approval_history_and_reopened_kernel(
             )),
             secrets.clone(),
         ));
-        settings.initialize("offline-placeholder").await.unwrap();
+        crate::registry_fixture::configure(&settings, "offline-placeholder")
+            .await
+            .unwrap();
         settings
             .set_tool_search_mode(ToolSearchMode::Enabled)
             .unwrap();

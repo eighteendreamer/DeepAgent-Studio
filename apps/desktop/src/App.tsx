@@ -32,8 +32,7 @@ import {
   setProjectPinned,
   setProjectFolder,
   setSessionPinned,
-  clearApiKey,
-  getVisionSettings,
+  clearProviderCredentials,
   getSettings,
   runChat,
   RunCompletionError,
@@ -50,10 +49,9 @@ import {
   saveTranscriptFile,
   openSessionInNewWindow,
   renameSession,
-  visionRecognizeImage,
   openStudioCanvasWindow,
 } from "./api";
-import type { PreflightToolCall, RuntimeEvent, SshConnection } from "./api";
+import type { RuntimeEvent, SshConnection } from "./api";
 import type {
   ApprovalRequest,
   ChatMessage,
@@ -359,11 +357,6 @@ function buildPromptWithAttachments(text: string, attachments: ComposerAttachmen
     }
     if (attachment.extractedText) {
       lines.push("", attachment.extractedText);
-    } else if (attachment.kind === "image") {
-      lines.push(
-        "",
-        "This image is attached but could not be recognized by the configured system vision API. Do not infer details that are not present. If the image content is essential, ask the user to configure system vision or describe the image.",
-      );
     } else {
       lines.push("", "Binary or unsupported file content was not read. Use file tools if deeper inspection is needed.");
     }
@@ -371,125 +364,6 @@ function buildPromptWithAttachments(text: string, attachments: ComposerAttachmen
     return lines.join("\n");
   });
   return [trimmed || "\u8bf7\u67e5\u770b\u9644\u4ef6\u5185\u5bb9\u3002", "", "<attachments>", blocks.join("\n\n"), "</attachments>"].join("\n");
-}
-
-async function recognizeImageAttachmentsOnSend(
-  attachments: ComposerAttachment[] = [],
-  signal?: AbortSignal,
-): Promise<{
-  attachments: ComposerAttachment[];
-  skipped: boolean;
-  failed: boolean;
-  cancelled: boolean;
-  error?: string;
-  recognizedCount: number;
-}> {
-  const cancelledResult = (recognizedCount = 0) => ({
-    attachments,
-    skipped: false,
-    failed: false,
-    cancelled: true,
-    recognizedCount,
-  });
-  if (signal?.aborted) return cancelledResult();
-  const pendingImages = attachments.filter((attachment) => attachment.kind === "image" && !attachment.extractedText);
-  if (pendingImages.length === 0) {
-    return { attachments, skipped: true, failed: false, cancelled: false, recognizedCount: 0 };
-  }
-
-  let visionSettings;
-  try {
-    visionSettings = await getVisionSettings();
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error("get_vision_settings failed before send:", error);
-    return {
-      attachments: attachments.map((attachment) =>
-        attachment.kind === "image" && !attachment.extractedText
-          ? {
-              ...attachment,
-              status: "error",
-              error: `Vision settings load failed: ${errorMessage}`,
-              backendMessage: `Vision settings load failed: ${errorMessage}`,
-            }
-          : attachment
-      ),
-      skipped: false,
-      failed: true,
-      cancelled: false,
-      error: `Vision settings load failed: ${errorMessage}`,
-      recognizedCount: 0,
-    };
-  }
-
-  if (signal?.aborted) return cancelledResult();
-  if (visionSettings.mode !== "system" || !visionSettings.auto_analyze_pasted_images) {
-    return { attachments, skipped: true, failed: false, cancelled: false, recognizedCount: 0 };
-  }
-
-  const next: ComposerAttachment[] = [];
-  const errors: string[] = [];
-  let recognizedCount = 0;
-  for (const attachment of attachments) {
-    if (signal?.aborted) return cancelledResult(recognizedCount);
-    if (attachment.kind !== "image" || attachment.extractedText) {
-      next.push(attachment);
-      continue;
-    }
-    if (!attachment.originalPath) {
-      const errorMessage = "Image file path is missing.";
-      errors.push(`${attachment.name}: ${errorMessage}`);
-      next.push({
-        ...attachment,
-        status: "error",
-        error: `Vision recognition failed: ${errorMessage}`,
-        backendMessage: `Vision recognition failed: ${errorMessage}`,
-      });
-      continue;
-    }
-    try {
-      const result = await visionRecognizeImage({ image_path: attachment.originalPath });
-      if (signal?.aborted) return cancelledResult(recognizedCount);
-      if (!result.text.trim()) {
-        const errorMessage = "Vision API returned an empty result.";
-        errors.push(`${attachment.name}: ${errorMessage}`);
-        next.push({
-          ...attachment,
-          status: "error",
-          error: `Vision recognition failed: ${errorMessage}`,
-          backendMessage: `Vision recognition failed: ${errorMessage}`,
-        });
-        continue;
-      }
-      recognizedCount += 1;
-      next.push({
-        ...attachment,
-        extractedText: result.text,
-        backendMessage: "Image recognized by system vision.",
-        status: "ready",
-        error: undefined,
-      });
-    } catch (error) {
-      if (signal?.aborted) return cancelledResult(recognizedCount);
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error("vision recognition failed before send:", error);
-      errors.push(`${attachment.name}: ${errorMessage}`);
-      next.push({
-        ...attachment,
-        status: "error",
-        error: `Vision recognition failed: ${errorMessage}`,
-        backendMessage: `Vision recognition failed: ${errorMessage}`,
-      });
-    }
-  }
-  return {
-    attachments: next,
-    skipped: false,
-    failed: errors.length > 0,
-    cancelled: false,
-    error: errors.join("\n"),
-    recognizedCount,
-  };
 }
 
 export function App() {
@@ -1147,13 +1021,12 @@ export function App() {
   // Log out: delete the stored API key from encrypted SQLite, clear the local
   // onboarding flag, and return to the login (onboarding) screen.
   const onLogout = useCallback(() => {
-    clearApiKey()
-      .catch(() => {})
-      .finally(() => {
+    clearProviderCredentials()
+      .then(() => {
         localStorage.removeItem("onboarding_complete");
         setShowOnboarding(true);
         message.success("已退出登录");
-      });
+      }).catch(error => message.error(`退出失败：${String(error)}`));
   }, []);
 
   const onSubmit = useCallback(
@@ -1173,17 +1046,6 @@ export function App() {
       const contextBlocks = [skillContext, mentionContext].filter((block) => block.trim().length > 0);
       const promptText = [...contextBlocks, trimmedText].filter((block) => block.trim().length > 0).join("\n\n");
       if (!promptText.trim() && attachments.length === 0) return;
-      // Vision routing: the "启用系统视觉" toggle is the switch. ON (mode
-      // "system") routes images through the third-party vision model which
-      // converts them to text; OFF sends the original image to the main model
-      // as structured image parts — unconditionally. Whether the model can
-      // actually see is decided by the model server itself (success or a 400
-      // rejection); the client does not guess vision capability from the model
-      // id or query it from /models.
-      const visionSettings = attachments.some((a) => a.kind === "image")
-        ? await getVisionSettings().catch(() => null)
-        : null;
-      const nativeVision = visionSettings !== null && visionSettings.mode !== "system";
       const projectSelection = projectSelectionRef.current;
       if (projectSelection && !(await projectSelection)) return;
       const storedEnvMode = localStorage.getItem("envMode");
@@ -1313,7 +1175,7 @@ export function App() {
         : [];
       const userContent = buildPromptWithAttachments(
         promptText,
-        nativeVision ? attachments.filter((a) => a.kind !== "image") : attachments,
+        attachments.filter((a) => a.kind !== "image"),
       );
       const visibleUserContent = displayText ?? trimmedText;
       const displaySkills = normalizeSkillSelections(selectedSkills);
@@ -1402,19 +1264,6 @@ export function App() {
         }
         liveTranscripts.current.set(key, updated);
         scheduleTranscriptRender(key, immediate);
-      };
-
-      const replaceLastUserAttachments = (nextAttachments: ComposerAttachment[]) => {
-        updateTranscript((prev) => {
-          const next = [...prev];
-          for (let i = next.length - 1; i >= 0; i -= 1) {
-            if (next[i].role === "user") {
-              next[i] = { ...next[i], attachments: nextAttachments };
-              break;
-            }
-          }
-          return next;
-        });
       };
 
       // --- ordered-parts helpers ------------------------------------------
@@ -2022,157 +1871,16 @@ export function App() {
         }
       };
 
-      let submittedText = userContent;
-      const preflightTools: PreflightToolCall[] = [];
-      let preflightAbortMessage: string | null = null;
       const imageAttachments = attachments.filter((attachment) => attachment.kind === "image");
-      const pendingImageCount = imageAttachments.filter((attachment) => !attachment.extractedText).length;
-      if (imageAttachments.length > 0 && !nativeVision) {
-        const visionCallId = `system_vision:${runId}`;
-        const visionStartedAt = Date.now();
-        const visionArguments = {
-          images: imageAttachments.map((attachment) => ({
-            name: attachment.name,
-            mime: attachment.mime,
-            path: attachment.originalPath,
-            cached: !!attachment.extractedText,
-          })),
-        };
-        upsertTool(visionCallId, {
-          name: "system_vision",
-          args: JSON.stringify(visionArguments, null, 2),
-          status: pendingImageCount > 0 ? "running" : "ok",
-          detail:
-            pendingImageCount > 0
-              ? `正在识别 ${pendingImageCount} 张图片...`
-              : `已使用系统视觉识别 ${imageAttachments.length} 张图片，继续交给主模型。`,
-        });
-
-        if (pendingImageCount === 0) {
-          const output = {
-            ok: true,
-            cached: true,
-            recognized_images: imageAttachments.length,
-            attachments: imageAttachments.map((attachment) => ({
-              name: attachment.name,
-              status: attachment.status,
-              vision_result: attachment.extractedText ?? "",
-            })),
-          };
-          upsertTool(visionCallId, {
-            name: "system_vision",
-            status: "ok",
-            durationMs: Date.now() - visionStartedAt,
-            detail: `已使用系统视觉识别 ${imageAttachments.length} 张图片，继续交给主模型。`,
-            output,
-          });
-          preflightTools.push({
-            call_id: visionCallId,
-            name: "system_vision",
-            arguments: visionArguments,
-            ok: true,
-            output,
-            duration_ms: Date.now() - visionStartedAt,
-          });
-        } else {
-          const visionResult = await recognizeImageAttachmentsOnSend(
-            attachments,
-            preflightController.signal,
-          );
-          if (visionResult.cancelled || preflightController.signal.aborted) {
-            finalizeCancelled();
-            finishRun();
-            return;
-          }
-          replaceLastUserAttachments(visionResult.attachments);
-
-          if (visionResult.skipped) {
-            submittedText = buildPromptWithAttachments(promptText, visionResult.attachments);
-            const output = {
-              skipped: true,
-              reason: "system vision is disabled or automatic image recognition is disabled",
-            };
-            upsertTool(visionCallId, {
-              name: "system_vision",
-              status: "blocked",
-              durationMs: Date.now() - visionStartedAt,
-              detail: "系统视觉未启用或未设置自动识别，已跳过图片识别。",
-              output,
-            });
-            preflightTools.push({
-              call_id: visionCallId,
-              name: "system_vision",
-              arguments: visionArguments,
-              ok: false,
-              output,
-              duration_ms: Date.now() - visionStartedAt,
-            });
-          } else if (visionResult.failed) {
-            const output = {
-              ok: false,
-              error: visionResult.error ?? "image recognition failed",
-              recognized_images: visionResult.recognizedCount,
-            };
-            upsertTool(visionCallId, {
-              name: "system_vision",
-              status: "error",
-              durationMs: Date.now() - visionStartedAt,
-              detail: visionResult.error ?? "图片识别失败",
-              output,
-            });
-            preflightTools.push({
-              call_id: visionCallId,
-              name: "system_vision",
-              arguments: visionArguments,
-              ok: false,
-              output,
-              duration_ms: Date.now() - visionStartedAt,
-            });
-            submittedText = buildPromptWithAttachments(promptText, visionResult.attachments);
-            preflightAbortMessage = `图片识别失败：${visionResult.error ?? "未知错误"}\n\n已停止本轮请求，避免主模型在没有图片识别结果的情况下猜测图片内容。请检查系统视觉设置后重试。`;
-          } else {
-            submittedText = buildPromptWithAttachments(promptText, visionResult.attachments);
-            const output = {
-              ok: true,
-              recognized_images: visionResult.recognizedCount,
-              attachments: visionResult.attachments
-                .filter((attachment) => attachment.kind === "image")
-                .map((attachment) => ({
-                  name: attachment.name,
-                  status: attachment.status,
-                  vision_result: attachment.extractedText ?? "",
-                })),
-            };
-            upsertTool(visionCallId, {
-              name: "system_vision",
-              status: "ok",
-              durationMs: Date.now() - visionStartedAt,
-              detail: `已识别 ${visionResult.recognizedCount} 张图片，继续交给主模型。`,
-              output,
-            });
-            preflightTools.push({
-              call_id: visionCallId,
-              name: "system_vision",
-              arguments: visionArguments,
-              ok: true,
-              output,
-              duration_ms: Date.now() - visionStartedAt,
-            });
-          }
-        }
-      }
-
-      const runAttachments: RunAttachment[] = nativeVision
-        ? imageAttachments
-            .filter((a) => !!a.originalPath)
-            .map((a) => ({
-              type: "image" as const,
-              id: a.id,
-              path: a.originalPath as string,
-              media_type: a.mime || null,
-              sha256: a.sha256 ?? null,
-            }))
-        : [];
+      const runAttachments: RunAttachment[] = imageAttachments
+        .filter((attachment) => !!attachment.originalPath)
+        .map((attachment) => ({
+          type: "image" as const,
+          id: attachment.id,
+          path: attachment.originalPath as string,
+          media_type: attachment.mime || null,
+          sha256: attachment.sha256 ?? null,
+        }));
 
       if (preflightController.signal.aborted) {
         finalizeCancelled();
@@ -2181,7 +1889,7 @@ export function App() {
       }
       runPhaseRef.current.set(runId, "starting");
       runChat(
-        submittedText,
+        userContent,
         onEvent,
         (request) => {
           mutateParts((parts) => parts, "working");
@@ -2192,8 +1900,8 @@ export function App() {
         runId,
         effectiveEnvMode,
         effectiveConnectionId,
-        preflightTools,
-        preflightAbortMessage,
+        [],
+        null,
         !continueId && requestedPlanMode,
         runAttachments,
         (sid) => {
@@ -2294,8 +2002,8 @@ export function App() {
       const preflightController = preflightAbortControllersRef.current.get(runId);
       if (phase === "preparing" || phase === "starting") {
         // The run is visible to the UI but may not have reached AppCore's
-        // admission table yet. Abort the same local signal used by image
-        // preprocessing; runChat will forward it to cancel_run if admission
+        // admission table yet. Abort this run's local signal;
+        // runChat will forward it to cancel_run if admission
         // races this click.
         preflightController?.abort();
         if (activeRunIdsRef.current.get(key ?? "") === runId) {

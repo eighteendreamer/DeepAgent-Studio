@@ -240,11 +240,11 @@ async fn registry_thinking_contract_controls_dispatch_on_every_protocol() {
     }
 
     for protocol in ["responses", "chat_completions", "messages"] {
-        for (capabilities, allowed) in [
-            (json!({}), vec!["none", "low", "medium", "high", "max"]),
+        for (mut capabilities, allowed) in [
+            (json!({}), vec!["low", "medium", "high", "max"]),
             (
                 json!({"effort":{"supported_levels":["low"],"default_level":"low"}}),
-                vec!["none", "low"],
+                vec!["low"],
             ),
             (
                 json!({"thinking_levels":["off","medium"],"thinking_disable":true,
@@ -257,12 +257,17 @@ async fn registry_thinking_contract_controls_dispatch_on_every_protocol() {
             ),
             (json!({"thinking_levels":[]}), vec![]),
         ] {
+            // This cross-protocol fixture verifies the explicit effort-value
+            // channel. Generic Messages endpoints otherwise use token budgets.
+            if protocol == "messages" {
+                capabilities["thinking_format"] = json!("adaptive");
+            }
             let db = seeded(protocol, true, &[("m-one", true, None)]);
             let mut stored = model("alpha", "m-one", None);
             stored.capabilities = capabilities.to_string();
             db.save_harness_models("alpha", &[stored]).unwrap();
             let route = resolve_active_model(&db, "alpha", "m-one").unwrap();
-            assert!(route.capability.supports_thinking);
+            assert_eq!(route.capability.supports_thinking, !allowed.is_empty());
             for label in ["none", "low", "medium", "high", "max"] {
                 for entry in 0..if protocol == "chat_completions" { 4 } else { 2 } {
                     let transport =
@@ -313,7 +318,7 @@ async fn registry_thinking_contract_controls_dispatch_on_every_protocol() {
                     let body = &requests[0];
                     match route.wire_mode {
                         WireMode::Responses => assert_eq!(body["reasoning"]["effort"], label),
-                        WireMode::ChatCompletions | WireMode::Messages if label == "none" => {
+                        WireMode::Messages if label == "none" => {
                             assert_eq!(body["thinking"]["type"], "disabled");
                             assert!(body.get("reasoning_effort").is_none());
                             assert!(body.get("output_config").is_none());

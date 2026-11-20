@@ -9,7 +9,9 @@ use std::sync::Arc;
 use deepagent_core::error::{CoreError, Result};
 use deepagent_models::balance::{fetch_balance_by_kind, BalanceAmount, BalanceKind};
 use deepagent_models::discovery::ModelDiscovery;
-use deepagent_models::thinking::ThinkingCapabilities;
+use deepagent_models::thinking::{
+    ReasoningEfforts, ThinkingCapabilities, ThinkingFormat, ThinkingLevel,
+};
 use deepagent_models::transport::HttpTransport;
 use deepagent_persistence::harness_registry::{HarnessModel, HarnessProvider, HARNESS_PROTOCOLS};
 use deepagent_persistence::Database;
@@ -75,6 +77,8 @@ pub struct ActiveModelView {
     #[serde(default)]
     pub thinking_distinct: Vec<String>,
     pub thinking_disable: bool,
+    pub reasoning_effort: Option<String>,
+    pub default_reasoning_effort: Option<String>,
 }
 
 /// One model under a provider, as shown on the settings page. Plain DTO so
@@ -93,6 +97,13 @@ pub struct HarnessModelView {
     pub thinking_levels: Vec<String>,
     pub thinking_distinct: Vec<String>,
     pub thinking_disable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_efforts: Option<ReasoningEfforts>,
+    pub effective_reasoning_efforts: ReasoningEfforts,
+    pub thinking_format: Option<ThinkingFormat>,
+    pub effective_thinking_format: ThinkingFormat,
+    pub default_reasoning_effort: Option<ThinkingLevel>,
+    pub effective_default_reasoning_effort: Option<ThinkingLevel>,
 }
 
 /// Editable model fields. Identity and activation are owned by the registry.
@@ -105,9 +116,18 @@ pub struct HarnessModelInput {
     pub protocol: Option<String>,
     pub context_window: i64,
     pub output_limit: i64,
-    pub thinking_levels: Vec<String>,
-    pub thinking_distinct: Vec<String>,
-    pub thinking_disable: bool,
+    #[serde(default, deserialize_with = "deserialize_reasoning_declaration")]
+    pub reasoning_efforts: Option<ReasoningEfforts>,
+    #[serde(default)]
+    pub default_reasoning_effort: Option<ThinkingLevel>,
+    #[serde(default)]
+    pub thinking_format: Option<ThinkingFormat>,
+}
+
+fn deserialize_reasoning_declaration<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<ReasoningEfforts>, D::Error> {
+    ReasoningEfforts::deserialize(deserializer).map(Some)
 }
 
 /// Normalized balance for one registered harness provider. The API key never
@@ -121,14 +141,31 @@ pub struct HarnessBalanceView {
     pub available: Option<bool>,
 }
 
-impl TryFrom<HarnessModel> for HarnessModelView {
-    type Error = CoreError;
-
-    fn try_from(model: HarnessModel) -> Result<Self> {
+impl HarnessModelView {
+    fn from_model(provider: &HarnessProvider, model: HarnessModel) -> Result<Self> {
         let value = serde_json::from_str(&model.capabilities)
             .map_err(|_| CoreError::invalid("invalid registry model capabilities JSON"))?;
-        let thinking = ThinkingCapabilities::from_registry_json(&value)?;
+        let thinking = crate::harness_model_resolver::registry_thinking(provider, &model, &value)?;
+        let reasoning_efforts = ThinkingCapabilities::declaration(&value)?.or_else(|| {
+            value
+                .get("thinking_levels")
+                .map(|_| thinking.reasoning_efforts.clone())
+        });
         Ok(Self {
+            reasoning_efforts,
+            thinking_format: value
+                .get("thinking_format")
+                .map(|v| serde_json::from_value(v.clone()))
+                .transpose()
+                .map_err(|_| CoreError::invalid("invalid reasoning transport format"))?,
+            effective_thinking_format: thinking.thinking_format,
+            effective_reasoning_efforts: thinking.reasoning_efforts.clone(),
+            default_reasoning_effort: value
+                .get("reasoning_default")
+                .map(|value| serde_json::from_value(value.clone()))
+                .transpose()
+                .map_err(|_| CoreError::invalid("invalid reasoning default level"))?,
+            effective_default_reasoning_effort: thinking.default_effort,
             provider_id: model.provider_id,
             model_name: model.model_name,
             display_name: model.display_name,
@@ -137,16 +174,16 @@ impl TryFrom<HarnessModel> for HarnessModelView {
             output_limit: model.output_limit,
             active: model.active,
             thinking_levels: thinking
-                .thinking_levels
+                .levels()
                 .iter()
                 .map(|level| level.label().into())
                 .collect(),
             thinking_distinct: thinking
-                .thinking_distinct
+                .distinct_levels()
                 .iter()
                 .map(|level| level.label().into())
                 .collect(),
-            thinking_disable: thinking.thinking_disable,
+            thinking_disable: thinking.allows(ThinkingLevel::Off),
         })
     }
 }
@@ -212,6 +249,39 @@ impl HarnessModelService {
             .into_iter()
             .map(|provider| self.view(provider))
             .collect()
+    }
+
+    /// Sign out of configured providers; model configuration stays in SQLite.
+    pub fn clear_credentials(&self) -> Result<()> {
+        for provider in self.db.list_harness_providers()? {
+            self.secrets.delete(&provider.api_key_ref)?;
+        }
+        Ok(())
+    }
+
+    /// Read-only diagnostic against the exact selected provider and protocol.
+    pub async fn validate_selected_provider(&self) -> Result<usize> {
+        let selected = self
+            .selected_model()?
+            .ok_or_else(|| CoreError::invalid("select a model in Settings first"))?;
+        let provider = self
+            .provider(&selected.provider_id)?
+            .ok_or_else(|| CoreError::invalid("selected provider is missing"))?;
+        let key = self
+            .secrets
+            .get(&provider.api_key_ref)?
+            .filter(|key| !key.trim().is_empty())
+            .ok_or_else(|| CoreError::invalid("selected provider has no API key"))?;
+        let wire = crate::harness_model_resolver::wire_mode_for_protocol(&selected.protocol)?;
+        let models = ModelDiscovery::with_base_url(self.transport.clone(), provider.model_url)
+            .with_wire_mode(wire)
+            .list_models(&key)
+            .await
+            .map_err(|error| CoreError::other(error.to_string().replace(&key, "[redacted]")))?;
+        if models.is_empty() {
+            return Err(CoreError::invalid("selected provider returned no models"));
+        }
+        Ok(models.len())
     }
 
     /// Create or update a provider. The key, when given, is written to the
@@ -354,7 +424,7 @@ impl HarnessModelService {
                     capabilities.insert("effort".into(), serde_json::to_value(effort)?);
                 }
                 let capabilities = serde_json::Value::Object(capabilities);
-                ThinkingCapabilities::from_registry_json(&capabilities)?;
+                ThinkingCapabilities::for_model(&info.id, &capabilities)?;
                 Ok(HarnessModel {
                     provider_id: provider.id.clone(),
                     display_name: info.id.clone(),
@@ -372,10 +442,13 @@ impl HarnessModelService {
     }
 
     pub fn list_models(&self, provider_id: &str) -> Result<Vec<HarnessModelView>> {
+        let Some(provider) = self.provider(provider_id)? else {
+            return Ok(Vec::new());
+        };
         self.db
             .list_harness_models(provider_id)?
             .into_iter()
-            .map(HarnessModelView::try_from)
+            .map(|model| HarnessModelView::from_model(&provider, model))
             .collect()
     }
 
@@ -396,7 +469,7 @@ impl HarnessModelService {
         {
             return Err(CoreError::invalid("unknown harness model protocol"));
         }
-        let (_, mut model) = self
+        let (provider, mut model) = self
             .db
             .harness_model_route(&input.provider_id, &input.model_name)?
             .ok_or_else(|| CoreError::invalid("unknown harness model"))?;
@@ -405,22 +478,32 @@ impl HarnessModelService {
         let fields = capabilities
             .as_object_mut()
             .ok_or_else(|| CoreError::invalid("registry model capabilities must be an object"))?;
-        fields.insert(
-            "thinking_levels".into(),
-            serde_json::to_value(input.thinking_levels)?,
-        );
-        fields.insert(
-            "thinking_distinct".into(),
-            serde_json::to_value(input.thinking_distinct)?,
-        );
-        fields.insert("thinking_disable".into(), input.thinking_disable.into());
-        ThinkingCapabilities::from_registry_json(&capabilities)?;
+        for legacy in ["thinking_levels", "thinking_distinct", "thinking_disable"] {
+            fields.remove(legacy);
+        }
+        if let Some(efforts) = input.reasoning_efforts {
+            fields.insert("reasoning_efforts".into(), serde_json::to_value(efforts)?);
+        } else {
+            fields.remove("reasoning_efforts");
+        }
+        if let Some(default) = input.default_reasoning_effort {
+            fields.insert("reasoning_default".into(), serde_json::to_value(default)?);
+        } else {
+            fields.remove("reasoning_default");
+        }
+        if let Some(format) = input.thinking_format {
+            fields.insert("thinking_format".into(), serde_json::to_value(format)?);
+        } else {
+            fields.remove("thinking_format");
+        }
+        model.protocol = input.protocol.clone();
+        crate::harness_model_resolver::registry_thinking(&provider, &model, &capabilities)?;
         model.display_name = input.display_name.trim().into();
         model.protocol = input.protocol;
         model.context_window = input.context_window;
         model.output_limit = input.output_limit;
         model.capabilities = serde_json::to_string(&capabilities)?;
-        let view = HarnessModelView::try_from(model.clone())?;
+        let view = HarnessModelView::from_model(&provider, model.clone())?;
         self.db.save_harness_models(&input.provider_id, &[model])?;
         Ok(view)
     }
@@ -471,6 +554,15 @@ impl HarnessModelService {
     /// Persist one active model as the next chat selection. The runtime reads
     /// this record only when admitting a new user turn.
     pub fn select_model(&self, provider_id: &str, model_name: &str) -> Result<ActiveModelView> {
+        self.select_model_with_reasoning(provider_id, model_name, None)
+    }
+
+    pub fn select_model_with_reasoning(
+        &self,
+        provider_id: &str,
+        model_name: &str,
+        effort: Option<&str>,
+    ) -> Result<ActiveModelView> {
         let (provider, model) = self
             .db
             .harness_model_route(provider_id, model_name)?
@@ -478,14 +570,34 @@ impl HarnessModelService {
         if !provider.enabled || !model.active {
             return Err(CoreError::invalid("harness model is not active"));
         }
-        let view = self.active_view(provider, model)?;
-        self.db
-            .set_harness_chat_selection(provider_id, model_name)?;
+        let mut view = self.active_view(provider, model)?;
+        let route =
+            crate::harness_model_resolver::resolve_active_model(&self.db, provider_id, model_name)?;
+        let requested = effort
+            .map(|effort| {
+                deepagent_models::ReasoningEffort::parse(effort)
+                    .ok_or_else(|| CoreError::invalid("unknown reasoning effort"))
+            })
+            .transpose()?;
+        view.reasoning_effort = route
+            .capability
+            .resolve_reasoning_effort(requested)?
+            .map(|effort| effort.label().into());
+        self.db.set_harness_chat_model_selection(
+            provider_id,
+            model_name,
+            view.reasoning_effort.as_deref(),
+        )?;
         Ok(view)
     }
 
     /// Slash commands use the activated catalog, with a provider prefix for duplicates.
     pub fn select_model_by_name(&self, name: &str) -> Result<ActiveModelView> {
+        let model = self.find_active_model(name)?;
+        self.select_model(&model.provider_id, &model.model_name)
+    }
+
+    pub(crate) fn find_active_model(&self, name: &str) -> Result<ActiveModelView> {
         let matches: Vec<_> = self
             .active_models()?
             .into_iter()
@@ -495,7 +607,7 @@ impl HarnessModelService {
             })
             .collect();
         match matches.as_slice() {
-            [model] => self.select_model(&model.provider_id, &model.model_name),
+            [model] => Ok(model.clone()),
             [] => Err(CoreError::invalid(format!(
                 "model '{name}' is not activated under an enabled provider"
             ))),
@@ -507,17 +619,37 @@ impl HarnessModelService {
     }
 
     pub fn selected_model(&self) -> Result<Option<ActiveModelView>> {
-        let Some((provider_id, model_name)) = self.db.harness_chat_selection()? else {
+        let Some(selection) = self.db.harness_chat_model_selection()? else {
             return Ok(None);
         };
-        let Some((provider, model)) = self.db.harness_model_route(&provider_id, &model_name)?
+        let Some((provider, model)) = self
+            .db
+            .harness_model_route(&selection.provider_id, &selection.model_name)?
         else {
             return Ok(None);
         };
         if !provider.enabled || !model.active {
             return Ok(None);
         }
-        self.active_view(provider, model).map(Some)
+        let mut view = self.active_view(provider, model)?;
+        let route = crate::harness_model_resolver::resolve_active_model(
+            &self.db,
+            &selection.provider_id,
+            &selection.model_name,
+        )?;
+        let requested = selection
+            .reasoning_effort
+            .as_deref()
+            .map(|effort| {
+                deepagent_models::ReasoningEffort::parse(effort)
+                    .ok_or_else(|| CoreError::invalid("unknown stored reasoning effort"))
+            })
+            .transpose()?;
+        view.reasoning_effort = route
+            .capability
+            .resolve_reasoning_effort(requested)?
+            .map(|effort| effort.label().into());
+        Ok(Some(view))
     }
 
     fn provider(&self, provider_id: &str) -> Result<Option<HarnessProvider>> {
@@ -551,8 +683,15 @@ impl HarnessModelService {
     ) -> Result<ActiveModelView> {
         let capabilities: serde_json::Value = serde_json::from_str(&model.capabilities)
             .map_err(|_| CoreError::invalid("invalid registry model capabilities JSON"))?;
-        let thinking = ThinkingCapabilities::from_registry_json(&capabilities)?;
+        let thinking =
+            crate::harness_model_resolver::registry_thinking(&provider, &model, &capabilities)?;
+        let default_reasoning_effort = thinking
+            .default_effort
+            .map(deepagent_models::ReasoningEffort::from)
+            .map(|effort| effort.label().to_owned());
         Ok(ActiveModelView {
+            reasoning_effort: None,
+            default_reasoning_effort,
             protocol: model.protocol.unwrap_or_else(|| provider.protocol.clone()),
             provider_id: provider.id,
             provider_channel: provider.channel,
@@ -563,16 +702,16 @@ impl HarnessModelService {
             context_window: model.context_window,
             output_limit: model.output_limit,
             thinking_levels: thinking
-                .thinking_levels
+                .levels()
                 .iter()
                 .map(|level| level.label().to_owned())
                 .collect(),
             thinking_distinct: thinking
-                .thinking_distinct
+                .distinct_levels()
                 .iter()
                 .map(|level| level.label().to_owned())
                 .collect(),
-            thinking_disable: thinking.thinking_disable,
+            thinking_disable: thinking.allows(ThinkingLevel::Off),
         })
     }
 }

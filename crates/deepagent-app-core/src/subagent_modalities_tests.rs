@@ -1,7 +1,6 @@
 //! H-71: tracked children use the parent's frozen model capability boundary.
 use super::*;
 use deepagent_models::transport::{EventSink, HttpTransport, TransportRequest};
-use deepagent_models::{ModelCatalog, ModelConfig, ModelRole};
 use deepagent_persistence::{run_store::RunStore, subagent_store::SubagentRunStore};
 use serde_json::{json, Value};
 use std::sync::Mutex;
@@ -36,13 +35,14 @@ async fn h71_child_override_checks_retained_images_and_preserves_normal_text() {
         let root = tempfile::tempdir().unwrap();
         let model = Arc::new(Model::default());
         let mut runner = super::tests::audit_child_runner(root.path(), model.clone());
-        let catalog:ModelCatalog=serde_json::from_value(json!({
-            "base_url":"https://api.deepseek.com", "chat_model":"h71-vision","reasoner_model":"h71-text",
-            "available":[{"id":"h71-vision","input_modalities":["text","image"]},
-                {"id":"h71-text","input_modalities":["text"]}]})).unwrap();
+        let catalog: Vec<deepagent_models::ModelInfo> = serde_json::from_value(
+            json!([{"id":"h71-vision","input_modalities":["text","image"]},
+                {"id":"h71-text","input_modalities":["text"]}]),
+        )
+        .unwrap();
         runner.client = Arc::new(ModelClient::new(
             model.clone(),
-            ModelConfig::from_catalog("synthetic-placeholder", &catalog, ModelRole::Chat),
+            crate::metadata_fixture::config("synthetic-placeholder", &catalog),
         ));
         runner.model = "h71-vision".into();
         let request: deepagent_builtins::SubagentRequest = serde_json::from_value(json!({

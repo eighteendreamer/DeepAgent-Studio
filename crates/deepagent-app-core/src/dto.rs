@@ -868,7 +868,7 @@ pub struct AttachmentDto {
 }
 
 /// A tool call completed before the main chat model starts. The UI uses this
-/// for first-class persisted steps such as system vision recognition.
+/// for first-class persisted preparation steps and their historical replay.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PreflightToolCallDto {
     pub call_id: String,
@@ -877,27 +877,6 @@ pub struct PreflightToolCallDto {
     pub ok: bool,
     pub output: serde_json::Value,
     pub duration_ms: u64,
-}
-
-// ---- third-party system vision recognition --------------------------------
-
-/// Request for system-vision image recognition.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VisionRecognizeRequestDto {
-    /// Absolute path to the saved image.
-    pub image_path: String,
-    /// Optional prompt override. When omitted, the built-in structured
-    /// screenshot/image understanding prompt is used.
-    pub prompt: Option<String>,
-}
-
-/// Result of third-party system-vision image recognition.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VisionRecognizeResultDto {
-    pub model_id: String,
-    pub model_path: String,
-    pub text: String,
-    pub raw_json: String,
 }
 
 // ---- managed runtimes (office-agent RuntimeService) -----------------------

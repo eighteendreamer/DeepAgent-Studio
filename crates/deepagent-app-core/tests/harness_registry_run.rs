@@ -1,4 +1,9 @@
 //! Registry selections must reach the real admission -> bind -> model wire.
+
+#[cfg(test)]
+#[path = "support/model_registry.rs"]
+mod registry_fixture;
+
 use async_trait::async_trait;
 use deepagent_app_core::{
     ChatService, HarnessRunOverrides, MemorySecretStore, SecretStore, SettingsService,
@@ -105,6 +110,93 @@ async fn slash_model_uses_activated_registry_and_routes_the_next_turn() {
         "https://alpha.test/v1/responses",
         "synthetic-alpha-key",
         MODEL,
+    );
+}
+
+#[tokio::test]
+async fn reasoning_selection_is_route_owned_and_user_choices_survive_admission() {
+    let f = Fixture::new("responses", None).await;
+    let mut declared = model(None);
+    declared.capabilities = serde_json::json!({"reasoning_efforts":{
+        "off":null,"minimal":"tiny","xhigh":"extra","max":"ultra"
+    }})
+    .to_string();
+    f.db.save_harness_models("alpha", &[declared]).unwrap();
+    let service = deepagent_app_core::harness_model_service::HarnessModelService::new(
+        f.db.clone(),
+        f.secrets.clone(),
+        f.wire.clone(),
+    );
+    service
+        .select_model_with_reasoning("alpha", MODEL, Some("max"))
+        .unwrap();
+    f.run("declared-max", HarnessRunOverrides::default())
+        .await
+        .unwrap();
+    let wire: serde_json::Value =
+        serde_json::from_str(&f.wire.requests.lock().unwrap().last().unwrap().body).unwrap();
+    assert_eq!(wire["reasoning"]["effort"], "ultra");
+
+    let before = f.db.harness_chat_model_selection().unwrap();
+    assert!(service
+        .select_model_with_reasoning("alpha", MODEL, Some("high"))
+        .is_err());
+    assert_eq!(f.db.harness_chat_model_selection().unwrap(), before);
+    service
+        .select_model_with_reasoning("alpha", MODEL, Some("none"))
+        .unwrap();
+    f.run("declared-off-omit", HarnessRunOverrides::default())
+        .await
+        .unwrap();
+    let wire: serde_json::Value =
+        serde_json::from_str(&f.wire.requests.lock().unwrap().last().unwrap().body).unwrap();
+    assert!(
+        wire.get("reasoning").is_none(),
+        "off:null must omit effort through real admission"
+    );
+
+    // A model switch constructs a fresh selection instead of carrying the old effort.
+    let mut unknown = model(None);
+    unknown.model_name = "unknown-model".into();
+    f.db.save_harness_models("alpha", &[unknown]).unwrap();
+    let selected = service.select_model("alpha", "unknown-model").unwrap();
+    assert_eq!(selected.thinking_levels, ["low", "medium", "high", "max"]);
+    assert_eq!(selected.reasoning_effort.as_deref(), Some("high"));
+    f.run("unknown-default", HarnessRunOverrides::default())
+        .await
+        .unwrap();
+    let wire: serde_json::Value =
+        serde_json::from_str(&f.wire.requests.lock().unwrap().last().unwrap().body).unwrap();
+    assert_eq!(wire["model"], "unknown-model");
+    assert_eq!(
+        wire["reasoning"]["effort"], "high",
+        "the application chooses explicitly"
+    );
+    f.chat
+        .run_oneshot_streaming("fixture", "fixture", |_| {})
+        .await
+        .unwrap();
+    let wire: serde_json::Value =
+        serde_json::from_str(&f.wire.requests.lock().unwrap().last().unwrap().body).unwrap();
+    assert_eq!(
+        wire["reasoning"]["effort"], "high",
+        "one-shot calls preserve the application choice"
+    );
+    let parent = deepagent_persistence::run_store::RunStore::new(&f.db)
+        .get("unknown-default")
+        .unwrap()
+        .unwrap();
+    assert!(f
+        .chat
+        .maybe_generate_session_title_for_run(&parent.session_id, "unknown-default")
+        .await
+        .unwrap()
+        .is_some());
+    let wire: serde_json::Value =
+        serde_json::from_str(&f.wire.requests.lock().unwrap().last().unwrap().body).unwrap();
+    assert_eq!(
+        wire["reasoning"]["effort"], "high",
+        "titles must not force an undeclared off effort"
     );
 }
 
@@ -239,7 +331,9 @@ impl Fixture {
             )),
             secrets.clone(),
         ));
-        settings.initialize("synthetic-legacy-key").await.unwrap();
+        crate::registry_fixture::configure(&settings, "synthetic-legacy-key")
+            .await
+            .unwrap();
         secrets
             .set("registry-alpha-key", "synthetic-alpha-key")
             .unwrap();
@@ -459,30 +553,14 @@ async fn registry_missing_key_cannot_use_the_onboarding_key() {
 }
 
 #[tokio::test]
-async fn registry_legacy_key_retains_the_failure_closed_credential_lifecycle() {
+async fn registry_cleared_credentials_fail_before_inference() {
     let f = Fixture::new("responses", None).await;
-    f.db.with_conn(|conn| {
-        conn.execute_batch(
-            "CREATE TRIGGER reject_settings BEFORE UPDATE ON documents
-         WHEN NEW.collection = 'settings' AND NEW.id = 'app'
-         BEGIN SELECT RAISE(ABORT, 'synthetic settings failure'); END;",
-        )
-        .map_err(|error| CoreError::Persistence(error.to_string()))
-    })
-    .unwrap();
-    assert!(f
-        .settings
-        .initialize("synthetic-incomplete-key")
-        .await
-        .is_err());
+    f.settings.harness_models().clear_credentials().unwrap();
     let error = f
-        .run("registry-credential", HarnessRunOverrides::default())
+        .run("registry-credential", selection("alpha", MODEL))
         .await
         .unwrap_err();
-    assert!(
-        error.to_string().contains("credential update incomplete"),
-        "{error}"
-    );
+    assert!(error.to_string().contains("has no API key"), "{error}");
     assert!(f.wire.requests.lock().unwrap().is_empty());
 }
 

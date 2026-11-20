@@ -74,7 +74,9 @@ async fn h53_host_recovers_visible_memory_then_retrieves_again_after_boundary() 
             )),
             Arc::new(MemorySecretStore::new()),
         ));
-        settings.initialize("synthetic-control").await.unwrap();
+        crate::registry_fixture::configure(&settings, "synthetic-control")
+            .await
+            .unwrap();
         let transport = Arc::new(MemoryWire {
             requests: Mutex::new(Vec::new()),
             phase,

@@ -6,7 +6,7 @@ use deepagent_core::error::{CoreError, Result};
 use deepagent_core::event::EventPayload;
 use deepagent_core::response_item::ResponseItem;
 use deepagent_models::transport::EventSink;
-use deepagent_models::{HttpTransport, MockTransport, ModelRole, TransportRequest};
+use deepagent_models::{HttpTransport, MockTransport, TransportRequest};
 use deepagent_persistence::{event_store::EventStore, Database};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
@@ -102,13 +102,13 @@ pub(crate) async fn observe(first: FirstAttempt) -> Observation {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("synthetic-audit-placeholder")
+    crate::registry_fixture::configure(&settings, "synthetic-audit-placeholder")
         .await
         .unwrap();
-    for role in [ModelRole::Chat, ModelRole::Reasoner] {
-        settings.set_model(role, "deepseek-flash").unwrap();
-    }
+    settings
+        .harness_models()
+        .select_model("deepseek", "deepseek-flash")
+        .unwrap();
     let model = Arc::new(Model {
         first,
         requests: Mutex::new(Vec::new()),

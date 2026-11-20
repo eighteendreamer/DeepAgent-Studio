@@ -87,8 +87,7 @@ async fn h191_missing_entry_rejects_effectful_roots_in_full_and_targeted_runs() 
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("sk-synthetic-placeholder")
+    crate::registry_fixture::configure(&settings, "sk-synthetic-placeholder")
         .await
         .unwrap();
     let transport = Arc::new(NoDispatch::default());

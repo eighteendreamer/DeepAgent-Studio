@@ -407,7 +407,7 @@ fn fetching_new_models_retains_declared_capacity_and_effort_without_name_guessin
         .set_model_active("alpha", "unknown-model", true)
         .unwrap();
     let active = service.active_models().unwrap().remove(0);
-    assert_eq!(active.thinking_levels, ["off", "low", "medium"]);
+    assert_eq!(active.thinking_levels, ["low", "medium"]);
 }
 
 #[test]
@@ -446,9 +446,11 @@ fn model_editor_updates_registry_capabilities_and_preserves_activation_and_other
         protocol: Some("messages".into()),
         context_window: 64_000,
         output_limit: 4_096,
-        thinking_levels: vec!["off".into(), "medium".into()],
-        thinking_distinct: vec!["medium".into()],
-        thinking_disable: true,
+        reasoning_efforts: Some(
+            serde_json::from_value(serde_json::json!({"off":null,"medium":"deep"})).unwrap(),
+        ),
+        default_reasoning_effort: None,
+        thinking_format: None,
     };
     let saved = service.save_model(input.clone()).unwrap();
     assert!(saved.active);
@@ -457,7 +459,7 @@ fn model_editor_updates_registry_capabilities_and_preserves_activation_and_other
     assert_eq!(saved.context_window, 64_000);
     assert_eq!(saved.output_limit, 4_096);
     assert_eq!(saved.thinking_levels, ["off", "medium"]);
-    assert_eq!(saved.thinking_distinct, ["medium"]);
+    assert_eq!(saved.thinking_distinct, ["off", "medium"]);
     assert!(saved.thinking_disable);
     let stored: serde_json::Value =
         serde_json::from_str(&db.list_harness_models("deepseek").unwrap()[0].capabilities).unwrap();
@@ -491,18 +493,6 @@ fn model_editor_updates_registry_capabilities_and_preserves_activation_and_other
         },
         HarnessModelInput {
             protocol: Some("unknown".into()),
-            ..input.clone()
-        },
-        HarnessModelInput {
-            thinking_levels: vec!["unknown".into()],
-            ..input.clone()
-        },
-        HarnessModelInput {
-            thinking_levels: vec!["medium".into(), "medium".into()],
-            ..input.clone()
-        },
-        HarnessModelInput {
-            thinking_distinct: vec!["high".into()],
             ..input.clone()
         },
     ] {
@@ -602,13 +592,13 @@ fn active_model_thinking_uses_the_registry_contract_before_legacy_effort() {
     ] {
         let json = serde_json::to_value(view).unwrap();
         assert_eq!(json["thinkingLevels"], capability["thinking_levels"]);
-        assert_eq!(json["thinkingDistinct"], capability["thinking_distinct"]);
+        assert_eq!(json["thinkingDistinct"], capability["thinking_levels"]);
         assert_eq!(json["thinkingDisable"], true);
     }
 }
 
 #[test]
-fn models_without_thinking_metadata_use_the_user_preset_with_off_as_the_first_level() {
+fn models_without_reasoning_declarations_receive_explicit_user_controls() {
     let (service, _) = service_with_models_response("{\"data\":[{\"id\":\"unknown-model\"}]}");
     service
         .save_provider(input("alpha", Some("test-key")))
@@ -618,14 +608,77 @@ fn models_without_thinking_metadata_use_the_user_preset_with_off_as_the_first_le
         .set_model_active("alpha", "unknown-model", true)
         .unwrap();
     let view = service.active_models().unwrap().remove(0);
-    assert_eq!(
-        view.thinking_levels,
-        ["off", "low", "medium", "high", "max"]
-    );
+    assert_eq!(view.thinking_levels, ["low", "medium", "high", "max"]);
     assert!(
-        view.thinking_disable,
-        "the default lowest level must disable thinking"
+        !view.thinking_disable,
+        "missing metadata must not promise thinking can be disabled"
     );
+    assert_eq!(view.reasoning_effort, None);
+    assert_eq!(view.default_reasoning_effort.as_deref(), Some("high"));
+}
+
+#[test]
+fn model_reasoning_input_rejects_invalid_declarations_before_any_write() {
+    for efforts in [
+        serde_json::json!({}),
+        serde_json::Value::Null,
+        serde_json::json!(true),
+        serde_json::json!({"off":null}),
+        serde_json::json!({"low":null}),
+        serde_json::json!({"max":""}),
+        serde_json::json!({"ultra":"ultra"}),
+    ] {
+        let input = serde_json::json!({"providerId":"alpha","modelName":"m-a","displayName":"M",
+            "protocol":null,"contextWindow":64000,"outputLimit":4096,"reasoningEfforts":efforts});
+        assert!(serde_json::from_value::<HarnessModelInput>(input).is_err());
+    }
+}
+
+#[test]
+fn declared_default_roundtrips_and_drives_the_runtime_without_an_explicit_selection() {
+    let (service, _, db) = legacy_provider_service();
+    futures_block_on(service.fetch_models("deepseek")).unwrap();
+    service
+        .set_model_active("deepseek", "deepseek-flash", true)
+        .unwrap();
+    let input = |default: serde_json::Value| {
+        serde_json::from_value::<HarnessModelInput>(
+            serde_json::json!({"providerId":"deepseek","modelName":"deepseek-flash",
+            "displayName":"Declared","protocol":null,"contextWindow":64000,"outputLimit":4096,
+            "reasoningEfforts":{"off":null,"minimal":"tiny","max":"ultra"},
+            "defaultReasoningEffort":default}),
+        )
+        .unwrap()
+    };
+    for (default, expected) in [("max", "max"), ("off", "none")] {
+        let saved = service.save_model(input(default.into())).unwrap();
+        assert_eq!(
+            serde_json::to_value(&saved).unwrap()["defaultReasoningEffort"],
+            default
+        );
+        let reloaded = service.list_models("deepseek").unwrap().remove(0);
+        assert_eq!(reloaded, saved);
+        let active = service.select_model("deepseek", "deepseek-flash").unwrap();
+        assert_eq!(active.reasoning_effort.as_deref(), Some(expected));
+        assert_eq!(active.default_reasoning_effort.as_deref(), Some(expected));
+        let route = deepagent_app_core::harness_model_resolver::resolve_active_model(
+            &db,
+            "deepseek",
+            "deepseek-flash",
+        )
+        .unwrap();
+        let effort = route
+            .capability
+            .resolve_reasoning_effort(None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(effort.label(), expected);
+        let persisted = db.list_harness_models("deepseek").unwrap().remove(0);
+        let metadata: serde_json::Value = serde_json::from_str(&persisted.capabilities).unwrap();
+        assert_eq!(metadata["reasoning_default"], default);
+        assert!(service.save_model(input("high".into())).is_err());
+        assert_eq!(service.list_models("deepseek").unwrap()[0], saved);
+    }
 }
 
 #[test]

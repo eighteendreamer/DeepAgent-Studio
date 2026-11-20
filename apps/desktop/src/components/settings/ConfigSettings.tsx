@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   getSettings,
+  listActiveHarnessModels,
   setSandboxMode,
   type SandboxMode,
   getToolSearchMode,
@@ -14,11 +15,9 @@ import {
   getToolSearchThreshold,
   setToolSearchThreshold,
   getAnySearchApiKeyInfo,
-  getVisionSettings,
   setAnySearchApiKey,
   clearAnySearchApiKey,
   testWebSearchEngine,
-  setVisionSettings,
   getSkillCatalogEnabled,
   setSkillCatalogEnabled,
   getSkillCatalogCharBudget,
@@ -42,7 +41,6 @@ import type {
   RuntimeProgress,
   RuntimeRoots,
   RuntimeStatus,
-  VisionSettings,
   WebSearchSettings,
   WebSearchEngineId,
   ResponsesApiSettings,
@@ -538,205 +536,6 @@ function RuntimeResourceSettings() {
     </div>
   );
 }
-function VisionResourceSettings() {
-  const [settings, setSettingsState] = useState<VisionSettings>({
-    mode: "system",
-    provider: "modelscope",
-    base_url: "https://api-inference.modelscope.cn/v1",
-    api_key: null,
-    api_key_configured: false,
-    system_model: "moonshotai/Kimi-K2.5:DashScope",
-    timeout_ms: 60000,
-    auto_analyze_pasted_images: true,
-  });
-  const [apiKeyInput, setApiKeyInput] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [testing, setTesting] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    getVisionSettings()
-      .then((value) => {
-        if (!cancelled) setSettingsState(value);
-      })
-      .catch((e) => {
-        console.error("get_vision_settings failed:", e);
-        message.error("视觉设置加载失败");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const persist = async (next: VisionSettings) => {
-    const previous = settings;
-    setSettingsState(next);
-    try {
-      const saved = await setVisionSettings(next);
-      setSettingsState(saved);
-      if (next.api_key !== undefined) setApiKeyInput("");
-    } catch (e) {
-      setSettingsState(previous);
-      message.error("视觉设置保存失败");
-      console.error("set_vision_settings failed:", e);
-    }
-  };
-
-  const providerOptions = [
-    {
-      title: "modelscope",
-      displayTitle: "魔搭社区",
-      description: "使用 ModelScope API-Inference 的 OpenAI-compatible 接口。",
-    },
-    {
-      title: "openai_compatible",
-      displayTitle: "OpenAI 兼容",
-      description: "自定义兼容 /v1/chat/completions 的视觉模型服务。",
-    },
-  ];
-
-  const disabled = loading || settings.mode === "off";
-
-  return (
-    <div className="mb-12 max-w-[700px]">
-      <div className="mb-4">
-        <h2 className="text-[15px] font-medium text-text-base mb-1">系统视觉</h2>
-        <div className="text-[12px] text-text-secondary">
-          用第三方视觉模型识别截图、图片、界面和图表，识别结果会作为文本上下文交给当前主模型。
-        </div>
-      </div>
-      <div className={`border border-border-theme rounded-xl bg-white shadow-[0_1px_2px_rgb(0,0,0,0.02)] ${loading ? "opacity-60" : ""}`}>
-        <div className="flex items-center justify-between p-4 border-b border-border-theme">
-          <div>
-            <div className="text-[14px] font-medium text-text-base mb-1">启用系统视觉</div>
-            <div className="text-[12px] text-text-secondary">开启后，图片附件会先发送给视觉模型识别。</div>
-          </div>
-          <ToggleSwitch
-            checked={settings.mode === "system"}
-            onChange={() =>
-              void persist({
-                ...settings,
-                mode: settings.mode === "system" ? "off" : "system",
-              })
-            }
-          />
-        </div>
-        <div className={`flex items-center justify-between p-4 border-b border-border-theme ${disabled ? "opacity-50 pointer-events-none" : ""}`}>
-          <div>
-            <div className="text-[14px] font-medium text-text-base mb-1">视觉供应商</div>
-            <div className="text-[12px] text-text-secondary">默认使用魔搭社区，也可以填写 OpenAI 兼容服务。</div>
-          </div>
-          <ComplexDropdown
-            options={providerOptions}
-            selectedTitle={providerOptions.find((item) => item.title === settings.provider)?.displayTitle ?? "魔搭社区"}
-            onChange={(display) => {
-              const selected = providerOptions.find((item) => item.displayTitle === display);
-              if (!selected) return;
-              void persist({
-                ...settings,
-                provider: selected.title,
-                base_url:
-                  selected.title === "modelscope"
-                    ? "https://api-inference.modelscope.cn/v1"
-                    : settings.base_url,
-              });
-            }}
-          />
-        </div>
-        <div className={`flex items-center justify-between p-4 border-b border-border-theme ${disabled ? "opacity-50 pointer-events-none" : ""}`}>
-          <div>
-            <div className="text-[14px] font-medium text-text-base mb-1">API 地址</div>
-            <div className="text-[12px] text-text-secondary">例如 https://api-inference.modelscope.cn/v1</div>
-          </div>
-          <input
-            type="url"
-            value={settings.base_url}
-            onChange={(e) => setSettingsState({ ...settings, base_url: e.target.value })}
-            onBlur={() => void persist({ ...settings, base_url: settings.base_url.trim() })}
-            className="w-[320px] px-2 py-1 text-[13px] font-mono border border-border-theme rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-blue-400"
-          />
-        </div>
-        <div className={`flex items-center justify-between p-4 border-b border-border-theme ${disabled ? "opacity-50 pointer-events-none" : ""}`}>
-          <div>
-            <div className="text-[14px] font-medium text-text-base mb-1">API Key</div>
-            <div className="text-[12px] text-text-secondary">
-              {settings.api_key_configured ? "已保存密钥。留空不会覆盖，输入新密钥后失焦保存。" : "请输入视觉供应商的 API Key。"}
-            </div>
-          </div>
-          <input
-            type="password"
-            value={apiKeyInput}
-            placeholder={settings.api_key_configured ? "已配置" : "ModelScope Token"}
-            onChange={(e) => setApiKeyInput(e.target.value)}
-            onBlur={() => {
-              if (apiKeyInput.trim()) {
-                void persist({ ...settings, api_key: apiKeyInput.trim() });
-              }
-            }}
-            className="w-[320px] px-2 py-1 text-[13px] font-mono border border-border-theme rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-blue-400"
-          />
-        </div>
-        <div className={`flex items-center justify-between p-4 border-b border-border-theme ${disabled ? "opacity-50 pointer-events-none" : ""}`}>
-          <div>
-            <div className="text-[14px] font-medium text-text-base mb-1">视觉模型名称</div>
-            <div className="text-[12px] text-text-secondary">填写魔搭 Model-Id，例如 moonshotai/Kimi-K2.5:DashScope</div>
-          </div>
-          <input
-            type="text"
-            value={settings.system_model}
-            onChange={(e) => setSettingsState({ ...settings, system_model: e.target.value })}
-            onBlur={() => void persist({ ...settings, system_model: settings.system_model.trim() })}
-            className="w-[320px] px-2 py-1 text-[13px] font-mono border border-border-theme rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-blue-400"
-          />
-        </div>
-        <div className={`flex items-center justify-between p-4 border-b border-border-theme ${disabled ? "opacity-50 pointer-events-none" : ""}`}>
-          <div>
-            <div className="text-[14px] font-medium text-text-base mb-1">自动识别图片</div>
-            <div className="text-[12px] text-text-secondary">发送消息时再调用系统视觉，避免未发送的图片消耗额度。</div>
-          </div>
-          <ToggleSwitch
-            checked={settings.auto_analyze_pasted_images}
-            onChange={() =>
-              void persist({
-                ...settings,
-                auto_analyze_pasted_images: !settings.auto_analyze_pasted_images,
-              })
-            }
-          />
-        </div>
-        <div className={`flex items-center justify-between p-4 ${disabled ? "opacity-50 pointer-events-none" : ""}`}>
-          <div>
-            <div className="text-[14px] font-medium text-text-base mb-1">测试连接</div>
-            <div className="text-[12px] text-text-secondary">使用魔搭示例图片测试当前 API Key 和模型是否可用。</div>
-          </div>
-          <button
-            type="button"
-            disabled={testing}
-            onClick={async () => {
-              setTesting(true);
-              try {
-                const { visionTestConnection } = await import("../../api");
-                const result = await visionTestConnection();
-                message.success(result.text ? "视觉模型测试成功" : "视觉模型已响应");
-              } catch (e) {
-                message.error(`视觉模型测试失败：${String(e)}`);
-              } finally {
-                setTesting(false);
-              }
-            }}
-            className="px-3 py-1.5 text-[13px] rounded-md bg-black/5 hover:bg-black/5 disabled:opacity-50"
-          >
-            {testing ? "测试中..." : "测试连接"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function ResponsesSettingsPanel() {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<ResponsesApiSettings>({
@@ -1124,11 +923,11 @@ export function ConfigSettings() {
         if (settings?.sandbox_mode) {
           setSandboxSetting(settings.sandbox_mode);
         }
-        if (settings?.available_models) {
-          setAvailableModels(settings.available_models);
-        }
       })
       .catch((e) => console.error("get_settings failed:", e));
+    listActiveHarnessModels().then(models => {
+      if (!cancelled) setAvailableModels(models.map(model => `${model.providerId}/${model.modelName}`));
+    }).catch(error => console.error("active model list failed:", error));
     // Tool-search initial state (separate Tauri commands).
     getToolSearchMode()
       .then((m) => {
@@ -1704,7 +1503,6 @@ export function ConfigSettings() {
 
       <RuntimeResourceSettings />
       <ResponsesSettingsPanel />
-      <VisionResourceSettings />
 
       {/* Section: 工作空间依赖项 */}
       <div className="mb-12 max-w-[700px]">

@@ -1,7 +1,7 @@
 //! H66: child model overrides share the adapter, not the parent's hosted form.
 use super::*;
 use crate::{MemorySecretStore, SettingsService};
-use deepagent_models::{transport::*, MockTransport, ModelRole};
+use deepagent_models::{transport::*, MockTransport};
 use deepagent_persistence::{run_store::RunStore, subagent_store::SubagentRunStore};
 use serde_json::{json, Value};
 use std::sync::Mutex;
@@ -40,9 +40,12 @@ async fn h66_tracked_child_override_uses_its_own_search_capability_and_respects_
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("synthetic").await.unwrap();
+    crate::registry_fixture::configure(&settings, "synthetic")
+        .await
+        .unwrap();
     settings
-        .set_model(ModelRole::Chat, "deepseek-v4-pro")
+        .harness_models()
+        .select_model("deepseek", "deepseek-v4-pro")
         .unwrap();
     let capability =
         deepagent_models::ModelCapabilityResolver::new().resolve_model_id("deepseek-v4-pro");

@@ -26,7 +26,7 @@ use super::*;
 use deepagent_app_core::{ApprovalPolicy, MemorySecretStore, SettingsService};
 use deepagent_core::error::{CoreError, Result as CoreResult};
 use deepagent_models::transport::EventSink;
-use deepagent_models::{HttpTransport, MockTransport, ModelRole, TransportRequest};
+use deepagent_models::{HttpTransport, MockTransport, TransportRequest};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -160,13 +160,13 @@ impl Fixture {
             transport.clone(),
             Arc::new(MemorySecretStore::new()),
         ));
-        settings
-            .initialize("offline-audit-placeholder")
+        crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
             .await
             .unwrap();
-        for role in [ModelRole::Chat, ModelRole::Reasoner] {
-            settings.set_model(role, "deepseek-flash").unwrap();
-        }
+        settings
+            .harness_models()
+            .select_model("deepseek", "deepseek-flash")
+            .unwrap();
         // These dispatcher fixtures explicitly allow selecting a second model.
         // Onboarding itself activates only Chat; discovery is not activation.
         let capability =

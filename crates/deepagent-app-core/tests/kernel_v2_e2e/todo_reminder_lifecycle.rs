@@ -2,7 +2,6 @@
 //! history, not from the lifetime of one freshly assembled ModelAgent.
 
 use super::*;
-use deepagent_models::ModelRole;
 use std::path::Path;
 
 const REMINDER_MARKER: &str = "todo-tracking tool hasn't been used in a while";
@@ -60,13 +59,13 @@ async fn audit_chat(db_path: &Path, root: &Path, model: Arc<RecordingTodoModel>)
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
         .await
         .unwrap();
-    for role in [ModelRole::Chat, ModelRole::Reasoner] {
-        settings.set_model(role, "deepseek-flash").unwrap();
-    }
+    settings
+        .harness_models()
+        .select_model("deepseek", "deepseek-flash")
+        .unwrap();
     ChatService::new(db, settings, model, root)
 }
 

@@ -4,7 +4,6 @@
 use super::responses_fixture::{call, completed, text};
 use super::*;
 use deepagent_core::{event::EventPayload, id::SessionId};
-use deepagent_models::ModelRole;
 use deepagent_persistence::event_store::EventStore;
 use deepagent_persistence::run_store::RunStore;
 use deepagent_runtime::RuntimeEvent;
@@ -114,13 +113,13 @@ async fn settings(db: Arc<Database>, case: Case, kind: &str) -> Arc<SettingsServ
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
         .await
         .unwrap();
-    for role in [ModelRole::Chat, ModelRole::Reasoner] {
-        settings.set_model(role, MODEL).unwrap();
-    }
+    settings
+        .harness_models()
+        .select_model("deepseek", MODEL)
+        .unwrap();
     settings
         .set_active_permission_preset(PermissionPreset::Default)
         .unwrap();

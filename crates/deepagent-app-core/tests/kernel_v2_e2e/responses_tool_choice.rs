@@ -219,7 +219,9 @@ async fn observe_saved_chat_choice(choice: serde_json::Value) -> (bool, Vec<serd
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("sk-audit-placeholder").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
+        .await
+        .unwrap();
     settings
         .set_responses_developer_json(&serde_json::json!({"tool_choice":choice}).to_string())
         .unwrap();
@@ -305,7 +307,9 @@ async fn responses_choice_settings_reopen_and_rejected_updates_keep_last_success
                 discovery.clone(),
                 secrets.clone(),
             );
-            settings.initialize("synthetic-key").await.unwrap();
+            crate::registry_fixture::configure(&settings, "synthetic-key")
+                .await
+                .unwrap();
             settings
                 .set_responses_settings(ResponsesApiSettings::default())
                 .unwrap();

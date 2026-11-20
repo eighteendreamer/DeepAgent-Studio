@@ -145,43 +145,15 @@ mod tests {
     /// helper to keep up.
     fn settings_default() -> AppSettings {
         AppSettings {
-            catalog: deepagent_models::ModelCatalog::auto_select(
-                deepagent_models::DEEPSEEK_BASE_URL.to_string(),
-                vec![
-                    deepagent_models::ModelInfo {
-                        input_modalities: None,
-                        effort: None,
-                        id: "deepseek-v4-flash".into(),
-                        object: "model".into(),
-                        owned_by: "deepseek".into(),
-                        context_window: None,
-                        max_output_tokens: None,
-                    },
-                    deepagent_models::ModelInfo {
-                        input_modalities: None,
-                        effort: None,
-                        id: "deepseek-v4-pro".into(),
-                        object: "model".into(),
-                        owned_by: "deepseek".into(),
-                        context_window: None,
-                        max_output_tokens: None,
-                    },
-                ],
-            )
-            .expect("auto_select with both V4 roles produces a valid catalog"),
-            discovered_at: 0,
             pricing_catalog: Default::default(),
             approval_policy: crate::settings::ApprovalPolicy::default(),
             sandbox_mode: crate::settings::SandboxMode::default(),
             terminal_shell: crate::settings::TerminalShell::default(),
             permission_rules: deepagent_hooks::PermissionRules::default(),
             hooks_json: String::new(),
-            reasoning_effort: deepagent_models::ReasoningEffort::default(),
-            reasoning_effort_explicit: true,
             responses: crate::settings::ResponsesApiSettings::default(),
             verification_policy: crate::settings::VerificationPolicy::default(),
             web_search: crate::settings::WebSearchSettings::default(),
-            vision: crate::settings::VisionSettings::default(),
             tool_search_mode: crate::settings::SettingsService::DEFAULT_TOOL_SEARCH_MODE,
             tool_search_auto_threshold_chars: None,
             skill_catalog_enabled: true,

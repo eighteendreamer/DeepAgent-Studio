@@ -259,22 +259,15 @@ async fn multi_image_tool_loop_and_disk_restart_keep_one_admitted_turn() {
 }
 
 #[tokio::test]
-async fn system_vision_text_projection_does_not_invent_native_images() {
-    use deepagent_app_core::{VisionMode, VisionSettings};
+async fn text_attachment_metadata_does_not_invent_native_images() {
     let root = tempfile::tempdir().unwrap();
     let db = Arc::new(Database::open_in_memory().unwrap());
     let settings = image_preparation::image_settings(db.clone()).await;
-    settings
-        .set_vision_settings(VisionSettings {
-            mode: VisionMode::System,
-            ..VisionSettings::default()
-        })
-        .unwrap();
     let transport = Arc::new(ImageSurfaceTransport::default());
     let chat = ChatService::new(db, settings, transport.clone(), root.path());
-    // App.tsx sends recognized text and an empty structured image list in this
-    // mode. Recognition itself is outside this local backend regression.
-    let prompt = "Inspect this.\n<attachments><attachment kind=\"image\">\nOffline recognized diagram.\n</attachment></attachments>";
+    // User-provided attachment descriptions remain text and never synthesize
+    // native image references.
+    let prompt = "Inspect this.\n<attachments><attachment kind=\"image\">\nUser-provided diagram description.\n</attachment></attachments>";
     chat.run_in_session(
         prompt,
         None,
@@ -283,19 +276,19 @@ async fn system_vision_text_projection_does_not_invent_native_images() {
         Vec::new(),
         None,
         false,
-        Some("h67-vision-text"),
+        Some("h67-plain-text"),
         |_| {},
         |_| {},
     )
     .await
     .unwrap();
-    assert_one_terminal(&chat, "h67-vision-text");
+    assert_one_terminal(&chat, "h67-plain-text");
     let requests = transport.requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
     assert_eq!(image_count(&requests[0]), 0);
     assert!(requests[0]["input"]
         .to_string()
-        .contains("Offline recognized diagram."));
+        .contains("User-provided diagram description."));
 }
 
 fn assert_one_terminal(chat: &ChatService, run: &str) {

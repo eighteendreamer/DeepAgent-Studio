@@ -50,7 +50,9 @@ async fn h108_real_lifecycle_metadata_is_truthful_and_does_not_change_dispatch_f
         super::tests::discovery_transport(),
         Arc::new(crate::secret_store::MemorySecretStore::new()),
     ));
-    settings.initialize("sk-h108-synthetic").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-h108-synthetic")
+        .await
+        .unwrap();
     let path = dir.path().join("lifecycle.jsonl");
     let action = capture(&path);
     settings
@@ -80,7 +82,7 @@ async fn h108_real_lifecycle_metadata_is_truthful_and_does_not_change_dispatch_f
         dir.path(),
     );
     turn(&chat, &id, "continue after host replacement").await;
-    settings.clear_key().unwrap();
+    settings.harness_models().clear_credentials().unwrap();
     chat.end_session(&id).await.unwrap();
     chat.end_session(&id).await.unwrap();
     let events = EventStore::new(&db)

@@ -53,8 +53,7 @@ async fn observe(usage: Value) -> Observation {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
         .await
         .unwrap();
     let cost = Arc::new(CostService::new(db.clone()));
@@ -316,8 +315,7 @@ async fn observe_tool_loop_usage(with_details: bool) {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
         .await
         .unwrap();
     let cost = Arc::new(CostService::new(db.clone()));

@@ -78,7 +78,9 @@ async fn observe(panel: bool, stall: bool, exhausted_after_answer: bool) {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("offline-placeholder").await.unwrap();
+    crate::registry_fixture::configure(&settings, "offline-placeholder")
+        .await
+        .unwrap();
     settings
         .set_approval_policy(ApprovalPolicy::FullAccess)
         .unwrap();

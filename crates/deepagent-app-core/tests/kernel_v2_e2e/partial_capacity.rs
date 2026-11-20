@@ -2,7 +2,6 @@
 use super::*;
 use deepagent_app_core::chat_service::HarnessRunOverrides;
 use deepagent_app_core::settings::ResponsesApiSettings;
-use deepagent_models::CapabilitySource;
 use deepagent_runtime::RuntimeEvent;
 
 fn discovery(output: u32) -> Arc<MockTransport> {
@@ -45,7 +44,9 @@ async fn h296_partial_capacity_survives_reopen_and_refresh_changes_next_kernel_r
             secrets.clone(),
         ));
         if generation == 0 {
-            settings.initialize("synthetic-h296").await.unwrap();
+            crate::registry_fixture::configure(&settings, "synthetic-h296")
+                .await
+                .unwrap();
             settings
                 .set_responses_settings(ResponsesApiSettings {
                     max_output_tokens: Some(32_768),
@@ -53,23 +54,27 @@ async fn h296_partial_capacity_survives_reopen_and_refresh_changes_next_kernel_r
                 })
                 .unwrap();
         } else {
-            let old = settings.view().unwrap().unwrap();
-            assert_eq!(old.model_capabilities[0].max_output_tokens, 8_192);
-            settings.refresh_models().await.unwrap();
+            let models = settings.harness_models().list_models("deepseek").unwrap();
+            assert_eq!(models[0].output_limit, 8_192);
+            settings
+                .harness_models()
+                .fetch_models("deepseek")
+                .await
+                .unwrap();
+            assert_eq!(
+                settings.harness_models().list_models("deepseek").unwrap()[0].output_limit,
+                8_192,
+                "discovery cannot overwrite a user's persisted configuration"
+            );
+            let mut configured = db.list_harness_models("deepseek").unwrap().remove(0);
+            configured.output_limit = output.into();
+            db.save_harness_models("deepseek", &[configured]).unwrap();
         }
-        let view = settings.view().unwrap().unwrap();
-        let cap = &view.model_capabilities[0];
+        let cap = crate::registry_fixture::client(&settings).capability("deepseek-flash");
         assert_eq!(cap.context_window, 1_000_000);
         assert_eq!(cap.max_output_tokens, output as usize);
-        assert_eq!(cap.capability_source, CapabilitySource::Mixed);
-        let encoded = serde_json::to_value(&view).unwrap();
-        assert_eq!(
-            encoded["model_capabilities"][0]["capability_source"],
-            "mixed"
-        );
-        let raw = &settings.load().unwrap().unwrap().catalog.available[0];
-        assert_eq!(raw.context_window, None);
-        assert_eq!(raw.max_output_tokens, Some(u64::from(output)));
+        let raw = db.list_harness_models("deepseek").unwrap().remove(0);
+        assert_eq!(raw.output_limit, i64::from(output));
         let transport = Arc::new(Recorder::default());
         let chat = ChatService::new(db.clone(), settings, transport.clone(), &workspace);
         let snapshots = Arc::new(Mutex::new(Vec::new()));

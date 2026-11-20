@@ -184,7 +184,7 @@ impl AttachmentService {
                 extracted_text: None,
                 preview: None,
                 status: "ready".to_string(),
-                message: Some("image saved; system vision extraction is pending".to_string()),
+                message: None,
             });
         }
         let Some(path) = original_path else {
@@ -527,6 +527,9 @@ mod tests {
         };
         let dto = service.ingest(input.clone()).unwrap();
         assert_eq!(dto.mime, "image/png");
+        assert_eq!(dto.status, "ready");
+        assert!(dto.message.is_none());
+        assert!(dto.extracted_text.is_none());
         assert_eq!(dto.sha256.as_deref(), Some(hex_sha256(&png).as_str()));
         let reference = MessageAttachment {
             id: dto.id,

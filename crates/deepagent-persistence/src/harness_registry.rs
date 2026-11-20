@@ -14,17 +14,18 @@ use crate::{map_sqlite, Database, Result};
 /// Wire protocols a harness provider may speak (plan §5). One list, one place.
 pub const HARNESS_PROTOCOLS: &[&str] = &["responses", "chat_completions", "messages"];
 
-/// Base URL of the DeepSeek route that existed before the registry. Used only
-/// to create the one-time legacy provider row; runtime code reads `model_url`
-/// from the registry and never this constant.
-const LEGACY_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
-
-/// Legacy secret name written by the old settings page.
-const LEGACY_DEEPSEEK_KEY_NAME: &str = "deepseek_api_key";
-
-const LEGACY_SEED_ID: &str = "harness_registry_seed_v1";
 const CHAT_SELECTION_COLLECTION: &str = "harness_selection";
 const CHAT_SELECTION_ID: &str = "chat";
+
+/// One atomic route selection. Omitted effort uses the model's resolved
+/// application initial level; the runtime never substitutes a global level.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HarnessChatSelection {
+    pub provider_id: String,
+    pub model_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+}
 
 /// One provider entry. The API key is referenced by `api_key_ref`, never held here.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,28 +58,6 @@ pub struct HarnessModel {
     pub active: bool,
 }
 
-/// Legacy import: create the provider row for an existing DeepSeek key. The key
-/// is referenced by name, never copied. Safe on every open.
-pub(crate) fn import_legacy_deepseek_provider(conn: &Connection) -> Result<()> {
-    conn.execute(
-        "INSERT OR IGNORE INTO harness_providers
-            (id, channel, logo, model_url, protocol, api_key_ref, balance_kind,
-             status, revision, created_at, updated_at)
-         SELECT 'deepseek', 'DeepSeek', '', ?1, 'responses', name, 'auto',
-                1, 1, updated_at, updated_at
-         FROM secret_records
-         WHERE name = ?2
-           AND NOT EXISTS (SELECT 1 FROM documents WHERE collection = 'migrations' AND id = ?3)",
-        [
-            LEGACY_DEEPSEEK_BASE_URL,
-            LEGACY_DEEPSEEK_KEY_NAME,
-            LEGACY_SEED_ID,
-        ],
-    )
-    .map_err(map_sqlite)?;
-    Ok(())
-}
-
 /// Install defaults once. Reopening never restores deleted providers or overwrites
 /// a user's endpoint, protocol, credentials, model activation or chat selection.
 pub(crate) fn seed_builtin_harness_providers(conn: &Connection) -> Result<()> {
@@ -106,10 +85,10 @@ pub(crate) fn seed_builtin_harness_providers(conn: &Connection) -> Result<()> {
             (
                 "deepseek",
                 "DeepSeek",
-                LEGACY_DEEPSEEK_BASE_URL,
+                "https://api.deepseek.com",
                 "https://www.deepseek.com/",
                 "/providers/deepseek.svg",
-                LEGACY_DEEPSEEK_KEY_NAME,
+                "harness_provider:deepseek",
                 "official",
             ),
         ] {
@@ -178,9 +157,14 @@ const PROVIDER_COLUMNS: &str = "id, channel, logo, model_url, protocol, api_key_
 
 impl Database {
     /// Return the persisted chat selection, if the user has chosen one from
-    /// the harness model list. Missing selection keeps legacy DeepSeek
-    /// settings as the compatibility default.
+    /// the harness model list. No selection means no configured chat route.
     pub fn harness_chat_selection(&self) -> Result<Option<(String, String)>> {
+        Ok(self
+            .harness_chat_model_selection()?
+            .map(|selected| (selected.provider_id, selected.model_name)))
+    }
+
+    pub fn harness_chat_model_selection(&self) -> Result<Option<HarnessChatSelection>> {
         self.with_conn(|conn| {
             let body: Option<String> = conn
                 .query_row(
@@ -191,20 +175,21 @@ impl Database {
                 .optional()
                 .map_err(map_sqlite)?;
             let Some(body) = body else { return Ok(None) };
-            let value: serde_json::Value = serde_json::from_str(&body).map_err(|error| {
+            let value: HarnessChatSelection = serde_json::from_str(&body).map_err(|error| {
                 CoreError::Persistence(format!("invalid harness selection: {error}"))
             })?;
-            let provider = value.get("provider_id").and_then(serde_json::Value::as_str);
-            let model = value.get("model_name").and_then(serde_json::Value::as_str);
-            match (provider, model) {
-                (Some(provider), Some(model))
-                    if !provider.trim().is_empty() && !model.trim().is_empty() =>
-                {
-                    Ok(Some((provider.to_owned(), model.to_owned())))
-                }
-                _ => Err(CoreError::Persistence(
+            if value.provider_id.trim().is_empty()
+                || value.model_name.trim().is_empty()
+                || value
+                    .reasoning_effort
+                    .as_ref()
+                    .is_some_and(|effort| effort.trim().is_empty())
+            {
+                Err(CoreError::Persistence(
                     "harness selection must contain provider_id and model_name".into(),
-                )),
+                ))
+            } else {
+                Ok(Some(value))
             }
         })
     }
@@ -212,18 +197,30 @@ impl Database {
     /// Persist the next chat selection without touching the current run's
     /// frozen model snapshot.
     pub fn set_harness_chat_selection(&self, provider_id: &str, model_name: &str) -> Result<()> {
+        self.set_harness_chat_model_selection(provider_id, model_name, None)
+    }
+
+    pub fn set_harness_chat_model_selection(
+        &self,
+        provider_id: &str,
+        model_name: &str,
+        reasoning_effort: Option<&str>,
+    ) -> Result<()> {
         let provider_id = provider_id.trim();
         let model_name = model_name.trim();
-        if provider_id.is_empty() || model_name.is_empty() {
+        if provider_id.is_empty()
+            || model_name.is_empty()
+            || reasoning_effort.is_some_and(|effort| effort.trim().is_empty())
+        {
             return Err(CoreError::invalid(
                 "harness chat selection must not be empty",
             ));
         }
-        let body = serde_json::json!({
-            "provider_id": provider_id,
-            "model_name": model_name,
-        })
-        .to_string();
+        let body = serde_json::to_string(&HarnessChatSelection {
+            provider_id: provider_id.into(),
+            model_name: model_name.into(),
+            reasoning_effort: reasoning_effort.map(str::to_owned),
+        })?;
         let now = now_millis();
         self.with_conn(|conn| {
             conn.execute(
@@ -258,61 +255,6 @@ impl Database {
             )
             .optional()
             .map_err(map_sqlite)
-        })
-    }
-
-    /// Publish the old chat selection once, together with a durable migration
-    /// marker. Existing provider/model edits win; later deletion stays deleted.
-    pub fn seed_legacy_harness_model(&self, base_url: &str, model: &HarnessModel) -> Result<()> {
-        if model.provider_id != "deepseek" || model.model_name.trim().is_empty() {
-            return Err(CoreError::invalid("invalid legacy harness model"));
-        }
-        let now = now_millis();
-        self.with_conn(|conn| {
-            let migrated: bool = conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM documents WHERE collection = 'migrations' AND id = ?1)",
-                [LEGACY_SEED_ID], |row| row.get(0),
-            ).map_err(map_sqlite)?;
-            if migrated {
-                return Ok(());
-            }
-            let transaction = conn.unchecked_transaction().map_err(map_sqlite)?;
-            let inserted = transaction.execute(
-                "INSERT INTO documents (collection, id, body, created_at, updated_at)
-                 VALUES ('migrations', ?1, '{\"version\":1}', ?2, ?2)
-                 ON CONFLICT(collection, id) DO NOTHING",
-                params![LEGACY_SEED_ID, now],
-            ).map_err(map_sqlite)?;
-            if inserted != 0 {
-                transaction.execute(
-                    "INSERT INTO harness_providers
-                        (id, channel, logo, model_url, protocol, api_key_ref, balance_kind,
-                         status, revision, created_at, updated_at)
-                     VALUES ('deepseek', 'DeepSeek', '', ?1, 'responses', ?2, 'official', 1, 1, ?3, ?3)
-                     ON CONFLICT(id) DO NOTHING",
-                    params![base_url, LEGACY_DEEPSEEK_KEY_NAME, now],
-                ).map_err(map_sqlite)?;
-                // An untouched built-in row may precede legacy settings import.
-                // Hydrate its endpoint from those settings in the same transaction.
-                transaction.execute(
-                    "UPDATE harness_providers SET model_url = ?1
-                     WHERE id = 'deepseek' AND revision = 1
-                       AND model_url = ?2 AND protocol = 'responses'
-                       AND api_key_ref = ?3 AND channel = 'DeepSeek'",
-                    params![base_url, LEGACY_DEEPSEEK_BASE_URL, LEGACY_DEEPSEEK_KEY_NAME],
-                ).map_err(map_sqlite)?;
-                transaction.execute(
-                    "INSERT INTO harness_models
-                        (id, provider_id, model_name, display_name, protocol, context_window,
-                         output_limit, capabilities, status, updated_at)
-                     VALUES (?1, 'deepseek', ?2, ?3, NULL, ?4, ?5, ?6, 1, ?7)
-                     ON CONFLICT(provider_id, model_name) DO NOTHING",
-                    params![format!("deepseek:{}", model.model_name), model.model_name,
-                        model.display_name, model.context_window, model.output_limit,
-                        model.capabilities, now],
-                ).map_err(map_sqlite)?;
-            }
-            transaction.commit().map_err(map_sqlite)
         })
     }
 

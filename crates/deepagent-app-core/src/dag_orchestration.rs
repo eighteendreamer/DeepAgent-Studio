@@ -19,7 +19,7 @@ use serde::Deserialize;
 
 use deepagent_core::error::{CoreError, Result};
 use deepagent_models::chat::ResponseRequest;
-use deepagent_models::{ModelClient, ReasoningEffort};
+use deepagent_models::ModelClient;
 use deepagent_planner::{PlanDag, PlanNode};
 use deepagent_subagents::{DagScheduler, GitWorktrees};
 
@@ -60,14 +60,14 @@ pub(crate) async fn plan_dag_via_model(
     model: &str,
     goal: &str,
 ) -> Result<PlanDag> {
-    let request = ResponseRequest::with_instructions_and_user_input(
+    let mut request = ResponseRequest::with_instructions_and_user_input(
         model.to_string(),
         PLAN_SYSTEM_PROMPT,
         format!("Goal:\n{goal}"),
     )
     .streaming()
-    .with_max_output_tokens(1024)
-    .with_reasoning_effort(ReasoningEffort::None);
+    .with_max_output_tokens(1024);
+    request.reasoning_effort = crate::model_runtime::auxiliary_reasoning_effort(client, model);
     let response = client
         .stream_response(request)
         .await?

@@ -17,6 +17,39 @@ fn discovery(default: &str, allow_high: bool) -> Arc<MockTransport> {
     ))
 }
 
+fn configure_thinking(settings: &SettingsService, default: &str, allow_high: bool) {
+    use deepagent_app_core::harness_model_service::HarnessModelInput;
+    let service = settings.harness_models();
+    let model = service
+        .list_models("deepseek")
+        .unwrap()
+        .into_iter()
+        .find(|model| model.model_name == "deepseek-flash")
+        .unwrap();
+    service
+        .save_model(HarnessModelInput {
+            provider_id: model.provider_id,
+            model_name: model.model_name,
+            display_name: model.display_name,
+            protocol: model.protocol,
+            context_window: model.context_window,
+            output_limit: model.output_limit,
+            reasoning_efforts: Some(
+                serde_json::from_value(if allow_high {
+                    serde_json::json!({"low":"low","high":"high"})
+                } else {
+                    serde_json::json!({"low":"low"})
+                })
+                .unwrap(),
+            ),
+            default_reasoning_effort: Some(
+                serde_json::from_value(serde_json::json!(default)).unwrap(),
+            ),
+            thinking_format: None,
+        })
+        .unwrap();
+}
+
 #[derive(Default)]
 struct Recorder(Mutex<Vec<serde_json::Value>>);
 
@@ -41,7 +74,7 @@ fn overrides(effort: Option<&str>) -> HarnessRunOverrides {
 }
 
 #[tokio::test]
-async fn h157_kernel_default_selection_survives_reopen_without_pinning_the_old_effective_value() {
+async fn h157_kernel_user_selection_survives_reopen_and_initial_level_edits() {
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
@@ -55,7 +88,13 @@ async fn h157_kernel_default_selection_survives_reopen_without_pinning_the_old_e
             discovery("low", true),
             secrets.clone(),
         ));
-        settings.initialize("synthetic-h157").await.unwrap();
+        crate::registry_fixture::configure(&settings, "synthetic-h157")
+            .await
+            .unwrap();
+        configure_thinking(&settings, "low", true);
+        settings
+            .set_reasoning_effort(deepagent_models::ReasoningEffort::Low)
+            .unwrap();
         let transport = Arc::new(Recorder::default());
         let chat = ChatService::new(db, settings, transport.clone(), &workspace);
         session_id = chat
@@ -88,11 +127,21 @@ async fn h157_kernel_default_selection_survives_reopen_without_pinning_the_old_e
         settings.reasoning_effort().unwrap(),
         deepagent_models::ReasoningEffort::Low
     );
-    settings.refresh_models().await.unwrap();
-    // Registry model edits, rather than automatic legacy discovery, publish the
-    // new capability used by the next turn.
-    model_selection::activate_selection_model(&db, &settings, "deepseek-flash");
-    assert!(!settings.load().unwrap().unwrap().reasoning_effort_explicit);
+    settings
+        .harness_models()
+        .fetch_models("deepseek")
+        .await
+        .unwrap();
+    // Editing the model's initial level changes its configuration, while the
+    // user's explicit route selection remains authoritative after reopening.
+    configure_thinking(&settings, "high", true);
+    let selected = settings.harness_models().selected_model().unwrap().unwrap();
+    assert_eq!(selected.default_reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(selected.reasoning_effort.as_deref(), Some("low"));
+    assert!(serde_json::to_value(settings.load().unwrap().unwrap())
+        .unwrap()
+        .get("reasoning_effort_explicit")
+        .is_none());
     let transport = Arc::new(Recorder::default());
     let chat = ChatService::new(db, settings, transport.clone(), &workspace);
     chat.run_in_session_with_overrides(
@@ -112,7 +161,7 @@ async fn h157_kernel_default_selection_survives_reopen_without_pinning_the_old_e
     .unwrap();
     let requests = transport.0.lock().unwrap();
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0]["reasoning"]["effort"], "high");
+    assert_eq!(requests[0]["reasoning"]["effort"], "low");
     assert!(requests[0]["input"]
         .to_string()
         .contains("h157 persisted reply"));
@@ -127,7 +176,10 @@ async fn h157_kernel_rejects_explicit_unsupported_effort_before_model_transport(
         discovery("low", false),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("synthetic-h157").await.unwrap();
+    crate::registry_fixture::configure(&settings, "synthetic-h157")
+        .await
+        .unwrap();
+    configure_thinking(&settings, "low", false);
     let transport = Arc::new(Recorder::default());
     let chat = ChatService::new(db, settings, transport.clone(), root.path());
     let error = chat

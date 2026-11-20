@@ -2,10 +2,7 @@ use std::sync::Arc;
 
 use deepagent_core::error::{CoreError, Result};
 use deepagent_models::transport::HttpTransport;
-use deepagent_models::{
-    ModelClient, ModelConfig, ModelRole, ReasoningEffort, ResponseDefaults, WireMode,
-    DEEPSEEK_OFFICIAL_PROVIDER,
-};
+use deepagent_models::{ModelClient, ModelConfig, ReasoningEffort, ResponseDefaults};
 
 use crate::settings::SettingsService;
 
@@ -22,7 +19,7 @@ pub(crate) struct RunModelPlan {
     pub(crate) provider_revision: i64,
     pub(crate) config_hash: String,
     pub(crate) model: String,
-    pub(crate) reasoning_effort: ReasoningEffort,
+    pub(crate) reasoning_effort: Option<ReasoningEffort>,
     pub(crate) override_applied: bool,
     config: ModelConfig,
     api_key_ref: String,
@@ -53,7 +50,9 @@ impl RunModelPlan {
                     .with_image_file_cache(settings.image_file_cache()),
             ),
             model: self.model,
-            reasoning_effort: self.reasoning_effort,
+            // This value sizes local context policy only. ModelConfig resolves
+            // the explicit application level; no level means no effort control.
+            reasoning_effort: self.reasoning_effort.unwrap_or_default(),
         })
     }
 }
@@ -71,6 +70,22 @@ pub fn build_chat_model_client(
     transport: Arc<dyn HttpTransport>,
 ) -> Result<(Arc<ModelClient>, String, ReasoningEffort)> {
     build_model_client(settings, transport)
+}
+
+/// Auxiliary requests prefer off only when the model declares it. This is an
+/// internal preference, never a downgrade of an explicit user selection.
+pub(crate) fn auxiliary_reasoning_effort(
+    client: &ModelClient,
+    model: &str,
+) -> Option<ReasoningEffort> {
+    if client
+        .effective_reasoning_effort(model, Some(ReasoningEffort::None))
+        .is_ok()
+    {
+        Some(ReasoningEffort::None)
+    } else {
+        client.configured_reasoning_effort()
+    }
 }
 
 pub(crate) fn select_run_model(
@@ -100,25 +115,45 @@ pub(crate) fn resolve_run_model(
     model_override: Option<&str>,
     reasoning_effort_override: Option<&str>,
 ) -> Result<RunModelPlan> {
-    // Preserve the old public provider id as an alias for its migrated row.
-    // Selection and validation still go through the registry exactly once.
-    let persisted_selection = db.harness_chat_selection()?;
-    let selected_provider = persisted_selection
-        .as_ref()
-        .map(|(provider, _)| provider.as_str())
-        .unwrap_or("deepseek");
-    let selected_model = persisted_selection
-        .as_ref()
-        .map(|(_, model)| model.as_str())
-        .unwrap_or(&loaded.catalog.chat_model);
-    let provider = match provider_override {
-        None => selected_provider,
-        Some(DEEPSEEK_OFFICIAL_PROVIDER) => "deepseek",
-        Some(id) => id,
-    };
-    let model = model_override.unwrap_or(selected_model);
+    let persisted_selection = db.harness_chat_model_selection()?;
+    let provider = provider_override
+        .or_else(|| {
+            persisted_selection
+                .as_ref()
+                .map(|selection| selection.provider_id.as_str())
+        })
+        .ok_or_else(|| CoreError::invalid("select a configured provider and model first"))?;
+    let model = model_override
+        .or_else(|| {
+            persisted_selection
+                .as_ref()
+                .map(|selection| selection.model_name.as_str())
+        })
+        .ok_or_else(|| CoreError::invalid("select a configured model first"))?;
     let route = crate::harness_model_resolver::resolve_active_model(db, provider, model)?;
-    let requested = resolve_reasoning_effort(loaded, reasoning_effort_override)?;
+    // A route selection owns its optional effort. A different route never
+    // inherits the previous model's effort or the legacy global fallback.
+    let requested = if let Some(value) = reasoning_effort_override {
+        Some(
+            ReasoningEffort::parse(value)
+                .ok_or_else(|| CoreError::invalid("invalid reasoning effort override"))?,
+        )
+    } else if let Some(selected) = persisted_selection.as_ref() {
+        if selected.provider_id == provider && selected.model_name == model {
+            selected
+                .reasoning_effort
+                .as_deref()
+                .map(|effort| {
+                    ReasoningEffort::parse(effort)
+                        .ok_or_else(|| CoreError::invalid("invalid selected reasoning effort"))
+                })
+                .transpose()?
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let mut defaults = response_defaults(loaded, requested);
     defaults.max_output_tokens = defaults
         .max_output_tokens
@@ -138,9 +173,7 @@ pub(crate) fn resolve_run_model(
         capabilities: vec![route.capability],
         prefer_model_reasoning_default: requested.is_none(),
     };
-    let reasoning_effort = config
-        .effective_reasoning_effort(model, None)?
-        .unwrap_or_default();
+    let reasoning_effort = config.effective_reasoning_effort(model, None)?;
     Ok(RunModelPlan {
         config,
         api_key_ref: route.api_key_ref,
@@ -154,21 +187,6 @@ pub(crate) fn resolve_run_model(
     })
 }
 
-/// Compatibility projection for the legacy settings view and sampling preview.
-/// Runtime routing always uses the harness registry through resolve_run_model.
-pub(crate) fn model_config(
-    settings: &crate::settings::AppSettings,
-    role: ModelRole,
-    run_override: Option<&str>,
-) -> Result<ModelConfig> {
-    let requested = resolve_reasoning_effort(settings, run_override)?;
-    let defaults = response_defaults(settings, requested);
-    Ok(ModelConfig::from_catalog("", &settings.catalog, role)
-        .with_defaults(defaults)
-        .with_model_reasoning_defaults(requested.is_none())
-        .with_wire_mode(WireMode::Responses))
-}
-
 fn response_defaults(
     settings: &crate::settings::AppSettings,
     requested: Option<ReasoningEffort>,
@@ -178,175 +196,105 @@ fn response_defaults(
         top_p: settings.responses.effective_top_p(),
         max_output_tokens: settings.responses.effective_max_output_tokens(),
         top_logprobs: settings.responses.effective_top_logprobs(),
-        // The retained global value is only a compatibility default when a
-        // model publishes no default. The same capability validator checks it.
-        reasoning_effort: requested.or(Some(settings.reasoning_effort)),
+        reasoning_effort: requested,
         text: settings.responses.effective_text(),
         tool_choice: settings.responses.effective_tool_choice(),
         user: settings.responses.effective_user(),
     }
 }
 
-pub(crate) fn resolve_reasoning_effort(
-    settings: &crate::settings::AppSettings,
-    run_override: Option<&str>,
-) -> Result<Option<ReasoningEffort>> {
-    let response_effort = settings.responses.effective_reasoning_effort();
-    if let Some(value) = run_override {
-        return ReasoningEffort::parse(value).map(Some).ok_or_else(|| {
-            CoreError::invalid(format!(
-                "reasoning effort must be none, low, medium, high, or max; got '{value}'"
-            ))
-        });
-    }
-    let has_responses_effort = settings.responses.reasoning_effort.is_some()
-        || settings.responses.developer.contains_key("reasoning");
-    if has_responses_effort && response_effort.is_none() {
-        return Err(CoreError::invalid(
-            "stored Responses reasoning effort is invalid; select none, low, medium, high, or max",
-        ));
-    }
-    Ok(response_effort.or(settings
-        .reasoning_effort_explicit
-        .then_some(settings.reasoning_effort)))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::resolve_reasoning_effort;
-    use crate::settings::{AppSettings, ResponsesApiSettings};
-    use deepagent_models::ReasoningEffort;
+    use super::*;
+    use crate::{MemorySecretStore, SettingsService};
+    use deepagent_models::MockTransport;
+    use deepagent_persistence::Database;
 
     #[test]
-    fn reasoning_effort_resolution_normalizes_responses_aliases() {
-        let mut settings: AppSettings = serde_json::from_value(serde_json::json!({
-            "catalog": { "base_url": deepagent_models::DEEPSEEK_BASE_URL,
-                "available": [], "chat_model": "deepseek-v4-flash", "reasoner_model": "deepseek-v4-pro" },
-            "discovered_at": 0, "sandbox_mode": "workspace_write"
-        })).unwrap();
-        settings.reasoning_effort = ReasoningEffort::Low;
+    fn general_settings_never_import_or_select_a_model() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let settings = SettingsService::new(
+            db.clone(),
+            Arc::new(MockTransport::with_get_json("{}")),
+            Arc::new(MemorySecretStore::new()),
+        );
+        let general = settings.load().unwrap().unwrap();
+        assert!(db.harness_chat_model_selection().unwrap().is_none());
+        assert!(db.active_harness_models().unwrap().is_empty());
+        assert!(!settings.view().unwrap().unwrap().configured);
+        assert!(resolve_run_model(&db, &general, None, None, None).is_err());
+        let encoded = serde_json::to_value(general).unwrap();
+        assert!(encoded.get("catalog").is_none());
+        assert!(encoded.get("discovered_at").is_none());
+    }
+
+    #[tokio::test]
+    async fn admission_uses_only_the_exact_registry_selection() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let settings = SettingsService::new(
+            db.clone(),
+            Arc::new(MockTransport::with_get_json(
+                r#"{"data":[{"id":"deepseek-flash"},{"id":"deepseek-v4-pro"}]}"#,
+            )),
+            Arc::new(MemorySecretStore::new()),
+        );
+        crate::registry_fixture::configure(&settings, "synthetic-registry-key")
+            .await
+            .unwrap();
+        let first =
+            resolve_run_model(&db, &settings.load().unwrap().unwrap(), None, None, None).unwrap();
+        settings
+            .harness_models()
+            .select_model("deepseek", "deepseek-v4-pro")
+            .unwrap();
+        let next =
+            resolve_run_model(&db, &settings.load().unwrap().unwrap(), None, None, None).unwrap();
+        assert_eq!(first.model, "deepseek-flash");
+        assert_eq!(next.model, "deepseek-v4-pro");
+        assert_eq!(next.provider_id, "deepseek");
+        assert!(resolve_run_model(
+            &db,
+            &settings.load().unwrap().unwrap(),
+            Some("missing"),
+            None,
+            None
+        )
+        .is_err());
+        db.set_harness_model_active("deepseek", "deepseek-v4-pro", false)
+            .unwrap();
+        assert!(
+            resolve_run_model(&db, &settings.load().unwrap().unwrap(), None, None, None).is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_global_effort_cannot_override_the_selected_route() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let settings = SettingsService::new(
+            db.clone(),
+            Arc::new(MockTransport::with_get_json(
+                r#"{"data":[{"id":"deepseek-flash"}]}"#,
+            )),
+            Arc::new(MemorySecretStore::new()),
+        );
+        crate::registry_fixture::configure(&settings, "synthetic-effort-key")
+            .await
+            .unwrap();
+        settings.set_reasoning_effort(ReasoningEffort::Low).unwrap();
+        let mut general = settings.load().unwrap().unwrap();
+        general.responses.reasoning_effort = Some("high".into());
         assert_eq!(
-            resolve_reasoning_effort(&settings, None).unwrap(),
+            resolve_run_model(&db, &general, None, None, None)
+                .unwrap()
+                .reasoning_effort,
             Some(ReasoningEffort::Low)
         );
+        assert!(resolve_run_model(&db, &general, None, None, Some("ultra")).is_err());
         assert_eq!(
-            resolve_reasoning_effort(&settings, Some("max")).unwrap(),
-            Some(ReasoningEffort::Max)
+            resolve_run_model(&db, &general, None, None, Some("none"))
+                .unwrap()
+                .reasoning_effort,
+            Some(ReasoningEffort::None)
         );
-        settings.responses = ResponsesApiSettings {
-            reasoning_effort: Some("high".into()),
-            ..Default::default()
-        };
-        assert_eq!(
-            resolve_reasoning_effort(&settings, None).unwrap(),
-            Some(ReasoningEffort::High)
-        );
-        for value in ["minimal", "xhigh", "simple", "deep"] {
-            assert!(
-                resolve_reasoning_effort(&settings, Some(value)).is_err(),
-                "{value}"
-            );
-        }
-        settings.responses.reasoning_effort = Some("medium".into());
-        assert_eq!(
-            resolve_reasoning_effort(&settings, None).unwrap(),
-            Some(ReasoningEffort::Medium)
-        );
-    }
-
-    #[test]
-    fn h157_admission_distinguishes_model_default_from_global_and_turn_selections() {
-        let mut settings: AppSettings = serde_json::from_value(serde_json::json!({
-            "catalog": { "base_url": deepagent_models::DEEPSEEK_BASE_URL,
-                "available": [
-                    {"id":"primary","effort":{"supported_levels":["low"],"default_level":"low"}},
-                    {"id":"fallback","effort":{"supported_levels":["high"],"default_level":"high"}}
-                ], "chat_model":"primary", "reasoner_model":"fallback" },
-            "discovered_at":0, "sandbox_mode":"workspace_write"
-        }))
-        .unwrap();
-        let db = deepagent_persistence::Database::open_in_memory().unwrap();
-        let capability = deepagent_models::ModelCapabilityResolver::new()
-            .resolve_model(&settings.catalog.available[0]);
-        db.seed_legacy_harness_model(
-            &settings.catalog.base_url,
-            &deepagent_persistence::harness_registry::HarnessModel {
-                provider_id: "deepseek".into(),
-                model_name: "primary".into(),
-                display_name: "primary".into(),
-                protocol: None,
-                context_window: capability.context_window as i64,
-                output_limit: capability.max_output_tokens as i64,
-                capabilities: serde_json::to_string(&capability).unwrap(),
-                active: true,
-            },
-        )
-        .unwrap();
-        let resolve = |settings: &AppSettings, effort| {
-            super::resolve_run_model(&db, settings, None, None, effort)
-        };
-        // An old document's retained global high must not be silently downgraded.
-        assert!(settings.reasoning_effort_explicit);
-        assert!(resolve(&settings, None).is_err());
-        settings.reasoning_effort_explicit = false;
-        assert_eq!(resolve_reasoning_effort(&settings, None).unwrap(), None);
-        let plan = resolve(&settings, None).unwrap();
-        assert_eq!(plan.reasoning_effort, ReasoningEffort::Low);
-        assert_eq!(plan.config.configured_reasoning_effort(), None);
-        assert!(resolve(&settings, Some("high")).is_err());
-        assert_eq!(
-            resolve(&settings, Some("none")).unwrap().reasoning_effort,
-            ReasoningEffort::None
-        );
-        assert_eq!(
-            resolve(&settings, Some("low")).unwrap().reasoning_effort,
-            ReasoningEffort::Low
-        );
-    }
-
-    #[test]
-    fn persisted_harness_selection_drives_the_next_admission() {
-        let mut settings: AppSettings = serde_json::from_value(serde_json::json!({
-            "catalog": { "base_url": deepagent_models::DEEPSEEK_BASE_URL,
-                "available": [], "chat_model":"legacy", "reasoner_model":"legacy" },
-            "discovered_at":0, "sandbox_mode":"workspace_write"
-        }))
-        .unwrap();
-        settings.reasoning_effort_explicit = false;
-        let db = deepagent_persistence::Database::open_in_memory().unwrap();
-        db.seed_legacy_harness_model(
-            &settings.catalog.base_url,
-            &deepagent_persistence::harness_registry::HarnessModel {
-                provider_id: "deepseek".into(),
-                model_name: "legacy".into(),
-                display_name: "legacy".into(),
-                protocol: None,
-                context_window: 1_000_000,
-                output_limit: 131_072,
-                capabilities: "{}".into(),
-                active: true,
-            },
-        )
-        .unwrap();
-        db.save_harness_models(
-            "deepseek",
-            &[deepagent_persistence::harness_registry::HarnessModel {
-                provider_id: "deepseek".into(),
-                model_name: "next-model".into(),
-                display_name: "next-model".into(),
-                protocol: None,
-                context_window: 1_000_000,
-                output_limit: 131_072,
-                capabilities: "{}".into(),
-                active: true,
-            }],
-        )
-        .unwrap();
-        db.set_harness_chat_selection("deepseek", "next-model")
-            .unwrap();
-
-        let plan = super::resolve_run_model(&db, &settings, None, None, None).unwrap();
-        assert_eq!(plan.model, "next-model");
-        assert_eq!(plan.provider_id, "deepseek");
     }
 }

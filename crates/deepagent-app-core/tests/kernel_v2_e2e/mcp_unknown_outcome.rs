@@ -94,8 +94,7 @@ async fn assert_production_outcome(lose_reply: bool) {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("offline-h06-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-h06-placeholder")
         .await
         .unwrap();
     settings

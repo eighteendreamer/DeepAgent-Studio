@@ -53,7 +53,9 @@ async fn h87_next_kernel_run_uses_other_hosts_read_only_restriction_after_refres
             discovery.clone(),
             Arc::new(MemorySecretStore::new()),
         ));
-        first.initialize("h87-synthetic-credential").await.unwrap();
+        crate::registry_fixture::configure(&first, "h87-synthetic-credential")
+            .await
+            .unwrap();
         let model = Arc::new(WriteModel {
             calls: AtomicUsize::new(0),
             output: Mutex::new(None),
@@ -69,7 +71,11 @@ async fn h87_next_kernel_run_uses_other_hosts_read_only_restriction_after_refres
         if restrict {
             second.set_sandbox_mode(SandboxMode::ReadOnly).unwrap();
         }
-        first.refresh_models().await.unwrap();
+        first
+            .harness_models()
+            .fetch_models("deepseek")
+            .await
+            .unwrap();
         let run_id = if restrict {
             "h87-restricted"
         } else {

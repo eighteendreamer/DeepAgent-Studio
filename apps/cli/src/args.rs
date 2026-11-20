@@ -1,7 +1,5 @@
 use std::ffi::OsString;
 
-use deepagent_models::DEEPSEEK_OFFICIAL_PROVIDER;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliCommand {
     Chat(RunOptions),
@@ -203,14 +201,6 @@ where
         }
     }
 
-    if provider
-        .as_deref()
-        .is_some_and(|provider| provider != DEEPSEEK_OFFICIAL_PROVIDER)
-    {
-        return Err(format!(
-            "unsupported provider; only '{DEEPSEEK_OFFICIAL_PROVIDER}' is available"
-        ));
-    }
     if prompt_required && continue_thread.is_none() && prompt_parts.is_empty() {
         return Err("run requires a prompt".to_string());
     }
@@ -286,7 +276,7 @@ mod tests {
             "run",
             "--json",
             "--provider",
-            "deepseek-official",
+            "deepseek",
             "--model",
             "deepseek-v4-pro",
             "--sandbox-backend",
@@ -303,7 +293,7 @@ mod tests {
                 prompt: "inspect the repository".into(),
                 continue_thread: None,
                 json: true,
-                provider: Some("deepseek-official".into()),
+                provider: Some("deepseek".into()),
                 model: Some("deepseek-v4-pro".into()),
                 sandbox_backend: Some("windows_sandbox".into()),
                 permission_profile: Some("workspace_write".into()),
@@ -330,9 +320,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_provider_before_running() {
-        let error = parse_args(["deepagent", "run", "--provider", "openai", "hello"]).unwrap_err();
-        assert!(error.contains("unsupported provider"));
+    fn accepts_registry_provider_identifiers_for_runtime_validation() {
+        let CliCommand::Run(options) =
+            parse_args(["deepagent", "run", "--provider", "custom-provider", "hello"]).unwrap()
+        else {
+            panic!("run expected")
+        };
+        assert_eq!(options.provider.as_deref(), Some("custom-provider"));
     }
 
     #[test]

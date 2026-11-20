@@ -171,7 +171,7 @@ mod h49_tests {
 
 mod h296_tests {
     use super::*;
-    use deepagent_models::discovery::{ModelCatalog, ModelInfo, ModelRole, DEEPSEEK_BASE_URL};
+    use deepagent_models::discovery::ModelInfo;
 
     #[tokio::test]
     async fn h296_selected_partial_metadata_reaches_wire_budget_and_next_step() {
@@ -179,8 +179,11 @@ mod h296_tests {
             {"id":"audit-capacity-model","max_output_tokens":8_192}
         ]))
         .unwrap();
-        let catalog = ModelCatalog::auto_select(DEEPSEEK_BASE_URL, models).unwrap();
-        let mut config = ModelConfig::from_catalog("synthetic-h296", &catalog, ModelRole::Chat);
+        let mut config = ModelConfig::deepseek("synthetic-h296");
+        config.capabilities = models
+            .iter()
+            .map(|model| deepagent_models::ModelCapabilityResolver::new().resolve_model(model))
+            .collect();
         config.defaults.max_output_tokens = Some(32_768);
         let selected = config.capability("audit-capacity-model");
         let transport = Arc::new(AttemptTransport {

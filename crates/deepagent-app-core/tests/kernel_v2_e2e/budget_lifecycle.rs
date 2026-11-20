@@ -83,8 +83,7 @@ async fn observe_rebuild(expected_budget: BudgetConfig, reapply: bool) -> Lifecy
             discovery.clone(),
             secrets.clone(),
         ));
-        settings
-            .initialize("offline-audit-placeholder")
+        crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
             .await
             .unwrap();
         let pricing = settings.load().unwrap().unwrap().pricing_catalog.models;
@@ -128,8 +127,15 @@ async fn observe_rebuild(expected_budget: BudgetConfig, reapply: bool) -> Lifecy
     let db = Arc::new(Database::open(&path).unwrap());
     let settings = Arc::new(SettingsService::new(db.clone(), discovery, secrets));
     let cost = Arc::new(CostService::from_settings(db.clone(), settings.clone()));
-    let view = settings.view().unwrap().unwrap();
-    assert_eq!(view.chat_model, MODEL);
+    assert_eq!(
+        settings
+            .harness_models()
+            .selected_model()
+            .unwrap()
+            .unwrap()
+            .model_name,
+        MODEL
+    );
     if reapply {
         cost.set_budget(expected_budget.clone()).unwrap();
     }
@@ -238,8 +244,7 @@ async fn corrupt_policy_refuses_formal_admission_but_does_not_lose_incurred_usag
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("synthetic-budget-fixture")
+    crate::registry_fixture::configure(&settings, "synthetic-budget-fixture")
         .await
         .unwrap();
     let cost = Arc::new(CostService::from_settings(db.clone(), settings.clone()));
@@ -309,8 +314,7 @@ async fn run_budget_process_phase(root: &std::path::Path, phase: &str) {
     let restored_before_login = cost.budget().unwrap();
     // Each fresh process owns a new synthetic credential store and performs a
     // deliberate credential change. Ledger scope must not be reset by login.
-    settings
-        .initialize(&format!("synthetic-budget-{phase}"))
+    crate::registry_fixture::configure(&settings, &format!("synthetic-budget-{phase}"))
         .await
         .unwrap();
     assert_eq!(cost.budget().unwrap(), restored_before_login);

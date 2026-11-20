@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "support/model_registry.rs"]
+mod registry_fixture;
+
 #[path = "../../deepagent-models/tests/support/sequence.rs"]
 pub mod sequence_fixture;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -67,7 +71,9 @@ async fn workflow_fixture_with_database(
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("sk-audit-placeholder").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
+        .await
+        .unwrap();
     let chat = ChatService::new(
         db.clone(),
         settings,
@@ -444,7 +450,9 @@ async fn audit_workflow_knowledge_base_id_is_honored() {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("sk-audit-placeholder").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
+        .await
+        .unwrap();
     let chat = ChatService::new(
         db.clone(),
         settings,

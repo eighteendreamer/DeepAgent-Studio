@@ -12,19 +12,26 @@ assert.ok(start >= 0 && end > start);
 const code = ts.transpileModule(source.slice(start, end), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
-const project = new Function("nativeVision", "imageAttachments", `${code}; return runAttachments;`);
+const project = new Function("imageAttachments", `${code}; return runAttachments;`);
 
 test("native image run input preserves the ingestion digest", () => {
   const image = { id: "fixture", originalPath: "synthetic.png", mime: "image/png", sha256: "ab".repeat(32) };
-  assert.deepEqual(project(true, [image]), [{
+  assert.deepEqual(project([image]), [{
     type: "image", id: image.id, path: image.originalPath, media_type: image.mime, sha256: image.sha256,
   }]);
-  assert.deepEqual(project(false, [image]), []);
+});
+
+test("image input always reaches the selected model, including legacy system vision settings", () => {
+  const image = { id: "fixture", originalPath: "synthetic.png", mime: "image/png", sha256: "ab".repeat(32), extractedText: "legacy recognition" };
+  assert.deepEqual(project([image]), [{
+    type: "image", id: image.id, path: image.originalPath, media_type: image.mime, sha256: image.sha256,
+  }]);
+  assert.doesNotMatch(source, /getVisionSettings|visionRecognizeImage|recognizeImageAttachmentsOnSend/);
 });
 
 test("legacy composer state cannot synthesize a content identity", () => {
-  assert.equal(project(true, [{ id: "old", originalPath: "old.png" }])[0].sha256, null);
-  assert.deepEqual(project(true, [{ id: "missing" }]), []);
+  assert.equal(project([{ id: "old", originalPath: "old.png" }])[0].sha256, null);
+  assert.deepEqual(project([{ id: "missing" }]), []);
 });
 
 // Execute the real picker/drop/paste handler, not a second upload implementation.

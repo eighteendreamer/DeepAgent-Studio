@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../../crates/deepagent-app-core/tests/support/model_registry.rs"]
+mod registry_fixture;
+
 mod app_server;
 mod args;
 mod jsonl;
@@ -20,7 +24,7 @@ use deepagent_app_core::{
     WindowsSandboxBackend, KEYCHAIN_SERVICE,
 };
 use deepagent_harness_protocol::{EventContext, HarnessEvent, PROTOCOL_VERSION};
-use deepagent_models::{HttpTransport, ReqwestTransport, DEEPSEEK_OFFICIAL_PROVIDER};
+use deepagent_models::{HttpTransport, ReqwestTransport};
 use deepagent_persistence::Database;
 use deepagent_runtime::RuntimeEvent;
 
@@ -191,7 +195,7 @@ async fn tools_list() -> Result<(), String> {
             prompt: String::new(),
             continue_thread: None,
             json: true,
-            provider: Some(DEEPSEEK_OFFICIAL_PROVIDER.to_string()),
+            provider: None,
             model: None,
             sandbox_backend: Some("direct".to_string()),
             permission_profile: None,

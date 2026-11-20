@@ -33,6 +33,7 @@ pub fn validate_responses_user_identifier(value: &str) -> Result<()> {
 pub enum ReasoningEffort {
     /// Thinking disabled.
     None,
+    Minimal,
     /// Thinking enabled at low effort.
     Low,
     /// Thinking enabled at medium effort.
@@ -40,6 +41,7 @@ pub enum ReasoningEffort {
     /// Thinking enabled at high effort.
     #[default]
     High,
+    Xhigh,
     /// Thinking enabled at maximum effort.
     Max,
 }
@@ -49,9 +51,11 @@ impl ReasoningEffort {
     pub const fn label(self) -> &'static str {
         match self {
             ReasoningEffort::None => "none",
+            ReasoningEffort::Minimal => "minimal",
             ReasoningEffort::Low => "low",
             ReasoningEffort::Medium => "medium",
             ReasoningEffort::High => "high",
+            ReasoningEffort::Xhigh => "xhigh",
             ReasoningEffort::Max => "max",
         }
     }
@@ -60,24 +64,20 @@ impl ReasoningEffort {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "none" => Some(Self::None),
+            "minimal" => Some(Self::Minimal),
             "low" => Some(Self::Low),
             "medium" => Some(Self::Medium),
             "high" => Some(Self::High),
+            "xhigh" => Some(Self::Xhigh),
             "max" => Some(Self::Max),
             _ => None,
         }
     }
 
-    /// Parse the Responses API input vocabulary and return the canonical wire
-    /// value. DeepSeek documents these aliases only for `reasoning.effort`;
-    /// keep the stricter `parse` contract for internal slash commands and
-    /// persisted non-Responses settings.
+    /// Preserve neutral levels. Provider-specific values are resolved from the
+    /// selected model's declaration at the codec boundary, never while parsing.
     pub fn parse_responses(value: &str) -> Option<Self> {
-        match value {
-            "minimal" => Some(Self::Low),
-            "xhigh" => Some(Self::High),
-            _ => Self::parse(value),
-        }
+        Self::parse(value)
     }
 }
 
@@ -978,9 +978,11 @@ mod tests {
     fn reasoning_effort_accepts_only_canonical_values() {
         for (label, effort) in [
             ("none", ReasoningEffort::None),
+            ("minimal", ReasoningEffort::Minimal),
             ("low", ReasoningEffort::Low),
             ("medium", ReasoningEffort::Medium),
             ("high", ReasoningEffort::High),
+            ("xhigh", ReasoningEffort::Xhigh),
             ("max", ReasoningEffort::Max),
         ] {
             assert_eq!(ReasoningEffort::parse(label), Some(effort));
@@ -989,7 +991,7 @@ mod tests {
                 effort
             );
         }
-        for alias in ["minimal", "xhigh", "simple", "deep", " HIGH "] {
+        for alias in ["ultra", "simple", "deep", " HIGH "] {
             assert!(
                 ReasoningEffort::parse(alias).is_none(),
                 "must reject {alias}"
@@ -1002,11 +1004,11 @@ mod tests {
     }
 
     #[test]
-    fn responses_reasoning_effort_aliases_map_to_canonical_values() {
+    fn responses_reasoning_effort_parsing_preserves_neutral_levels() {
         for (alias, expected) in [
-            ("minimal", ReasoningEffort::Low),
+            ("minimal", ReasoningEffort::Minimal),
             ("medium", ReasoningEffort::Medium),
-            ("xhigh", ReasoningEffort::High),
+            ("xhigh", ReasoningEffort::Xhigh),
         ] {
             assert_eq!(ReasoningEffort::parse_responses(alias), Some(expected));
         }

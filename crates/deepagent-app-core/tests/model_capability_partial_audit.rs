@@ -1,13 +1,17 @@
 //! Audit partial /models metadata through discovery, catalog and context policy.
 
+#[cfg(test)]
+#[path = "../../deepagent-models/tests/support/metadata.rs"]
+mod metadata_fixture;
+
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use deepagent_context::ContextPolicy;
 use deepagent_core::error::{CoreError, Result};
-use deepagent_models::discovery::{ModelCatalog, ModelDiscovery, ModelRole};
+use deepagent_models::discovery::ModelDiscovery;
 use deepagent_models::transport::{EventSink, HttpTransport, TransportRequest};
-use deepagent_models::{ModelCapability, ModelClient, ModelConfig, ReasoningEffort};
+use deepagent_models::{ModelCapability, ModelClient, ReasoningEffort};
 use serde_json::{json, Value};
 
 struct CatalogTransport {
@@ -42,20 +46,20 @@ async fn observe(model: &str, context: Option<u64>, output: Option<u64>) -> Mode
         gets: Mutex::new(Vec::new()),
     });
     let catalog = ModelDiscovery::deepseek(transport.clone())
-        .discover("offline-capability-audit")
+        .list_models("offline-capability-audit")
         .await
         .unwrap();
-    let catalog: ModelCatalog =
+    let catalog: Vec<deepagent_models::ModelInfo> =
         serde_json::from_slice(&serde_json::to_vec(&catalog).unwrap()).unwrap();
-    assert_eq!(catalog.available.len(), 1);
-    assert_eq!(catalog.available[0].context_window, context);
-    assert_eq!(catalog.available[0].max_output_tokens, output);
-    assert_eq!(catalog.chat_model, model);
+    assert_eq!(catalog.len(), 1);
+    assert_eq!(catalog[0].context_window, context);
+    assert_eq!(catalog[0].max_output_tokens, output);
+
     assert_eq!(
         *transport.gets.lock().unwrap(),
         ["https://api.deepseek.com/models"]
     );
-    let config = ModelConfig::from_catalog("offline-capability-audit", &catalog, ModelRole::Chat);
+    let config = crate::metadata_fixture::config("offline-capability-audit", &catalog);
     let client = ModelClient::new(transport, config);
     let capability = client.capability(model);
     let policy = ContextPolicy::for_capability(&capability, ReasoningEffort::High);

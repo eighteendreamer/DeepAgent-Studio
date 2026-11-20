@@ -212,17 +212,19 @@ impl<'a> SlashRuntime<'a> {
                     "关闭"
                 };
                 let settings = self.settings.view()?;
-                let (configured, chat_model, reasoning_effort, web_search) = settings
+                let selected = self.settings.harness_models().selected_model()?;
+                let chat_model = selected.as_ref().map(|model| format!("{}/{}", model.provider_id, model.model_name))
+                    .unwrap_or_else(|| "(未选择)".into());
+                let (configured, reasoning_effort, web_search) = settings
                     .as_ref()
                     .map(|s| {
                         (
                             s.configured,
-                            s.chat_model.as_str(),
                             s.reasoning_effort.as_str(),
                             web_search_summary(&s.web_search),
                         )
                     })
-                    .unwrap_or((false, "(未初始化)", "high", "default".to_string()));
+                    .unwrap_or((false, "default", "default".to_string()));
                 let approval = self.settings.approval_policy()?.label();
                 SlashPanel::new("状态")
                     .section(SlashSection::new(
@@ -248,24 +250,28 @@ impl<'a> SlashRuntime<'a> {
             }
             SlashAction::Settings => match self.settings.view()? {
                 Some(s) => {
+                    let selected = self.settings.harness_models().selected_model()?;
+                    let model = selected.as_ref().map(|model| format!("{}/{}", model.provider_id, model.model_name))
+                        .unwrap_or_else(|| "(未选择)".into());
                     let mut items = vec![
                         SlashPanelItem::new("已配置")
                             .status(if s.configured { "ok" } else { "warn" })
                             .value(if s.configured { "是" } else { "否" }),
-                        kv("API Key", s.api_key_masked.clone()).monospace(),
-                        kv("Base URL", s.base_url.clone()).monospace(),
-                        kv("聊天模型", s.chat_model.clone()).monospace(),
-                        kv("推理模型", s.reasoner_model.clone()).monospace(),
+                        kv("聊天模型", model).monospace(),
                         kv("思考档位", s.reasoning_effort.clone()),
                         kv("审批策略", s.approval_policy.clone()),
                         kv("网页搜索", web_search_summary(&s.web_search)),
                     ];
+                    if let Some(selected) = selected {
+                        items.push(kv("Base URL", selected.model_url).monospace());
+                    }
                     let mut models = SlashPanelItem::new("可用模型");
-                    if s.available_models.is_empty() {
+                    let available = self.settings.harness_models().active_models()?;
+                    if available.is_empty() {
                         models = models.value("(无)").status("muted");
                     } else {
-                        for m in &s.available_models {
-                            models = models.badge(m.clone());
+                        for m in available {
+                            models = models.badge(format!("{}/{}", m.provider_id, m.model_name));
                         }
                     }
                     items.push(models);
@@ -504,15 +510,15 @@ impl<'a> SlashRuntime<'a> {
             }
             SlashAction::Thinking { depth } => match depth {
                 Some(depth) => {
-                    let parsed = parse_reasoning_effort(&depth)?;
-                    let view = self.settings.set_reasoning_effort(parsed)?;
+                    let parsed = Some(parse_reasoning_effort(&depth)?);
+                    let view = self.settings.set_reasoning_selection(parsed)?;
                     format!("Reasoning effort set to {}.", view.reasoning_effort)
                 }
                 None => {
-                    let depth = self.settings.reasoning_effort()?;
+                    let depth = self.settings.view()?.map(|view| view.reasoning_effort).unwrap_or_else(|| "default".into());
                     format!(
-                        "Reasoning effort is {}. Usage: /thinking <none|low|medium|high|max>.",
-                        depth.label()
+                        "Reasoning effort is {}. Usage: /thinking <off|low|medium|high|max>.",
+                        depth
                     )
                 }
             },
@@ -1168,8 +1174,8 @@ fn collect_agent_items(
 }
 
 fn parse_reasoning_effort(depth: &str) -> Result<ReasoningEffort> {
-    ReasoningEffort::parse(depth)
-        .ok_or_else(|| CoreError::invalid("usage: /thinking <none|low|medium|high|max>"))
+    ReasoningEffort::parse(if depth == "off" { "none" } else { depth })
+        .ok_or_else(|| CoreError::invalid("usage: /thinking <off|low|medium|high|max>"))
 }
 
 /// Format a rule count with an optional inline listing (diagnostics helper).

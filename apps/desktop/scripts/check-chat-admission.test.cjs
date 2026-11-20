@@ -1,4 +1,4 @@
-// Opt-in: execute the unmodified App submit/stop callbacks and API client.
+// Execute the production App submit/stop callbacks and API client.
 // React state is hosted in memory; only Tauri IPC/notifications are controlled.
 // No provider, image file, real desktop window, or user database is accessed.
 const assert = require("node:assert/strict");
@@ -21,7 +21,7 @@ function appCallbacks() {
   const ast = ts.createSourceFile("App.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const helperNames = ["escapeXmlAttr", "escapeXmlText", "buildSkillContext",
     "normalizeSkillSelections", "buildSkillContexts", "buildMentionContexts",
-    "buildPromptWithAttachments", "recognizeImageAttachmentsOnSend"];
+    "buildPromptWithAttachments"];
   const helpers = new Map();
   const callbacks = new Map();
   function visit(node) {
@@ -35,7 +35,7 @@ function appCallbacks() {
     ts.forEachChild(node, visit);
   }
   visit(ast);
-  assert.equal(helpers.size, helperNames.length, "load the real attachment/preflight helpers");
+  assert.equal(helpers.size, helperNames.length, "load the real attachment helpers");
   assert.equal(callbacks.size, 2, "load both production callbacks in full");
   return ts.transpileModule([
     ...helpers.values(),
@@ -46,9 +46,10 @@ function appCallbacks() {
   }).outputText;
 }
 
-async function observeStop({ preflight, fresh = false }) {
-  const visionEntered = deferred();
-  const visionResult = deferred();
+const callbacksCode = appCallbacks();
+
+async function observeStop({ images = false, fresh = false, beforeAck = false }) {
+  const admissionRelease = deferred();
   const startEntered = deferred();
   const settled = deferred();
   const handlers = new Map();
@@ -61,17 +62,11 @@ async function observeStop({ preflight, fresh = false }) {
   const api = loadTypeScript("../src/api.ts", {
     "@tauri-apps/api/core": { invoke: async (command, args) => {
       calls.push({ command, args });
-      if (command === "get_vision_settings") {
-        return { mode: "system", auto_analyze_pasted_images: true };
-      }
-      if (command === "vision_recognize_image") {
-        visionEntered.resolve();
-        return visionResult.promise;
-      }
       if (command === "start_chat_v2") {
         submitted = args;
         admitted.add(args.runId);
         startEntered.resolve();
+        if (beforeAck) await admissionRelease.promise;
         return { run_id: args.runId, session_id: "audit-session", accepted: true };
       }
       if (command === "cancel_run") {
@@ -93,6 +88,8 @@ async function observeStop({ preflight, fresh = false }) {
   const context = {
     ...api, advanceTurnActivity, console,
     AbortController,
+    messageSendMotion: { take: () => null },
+    visibleSessionIdRef: { current: fresh ? null : "audit-session" },
     activeId: fresh ? null : "audit-session", view: fresh ? "start" : "chat",
     activeIdRef: { current: fresh ? null : "audit-session" },
     activePendingRunKey: null, activePendingRunKeyRef: { current: null },
@@ -134,83 +131,84 @@ async function observeStop({ preflight, fresh = false }) {
     context[setter] = (update) => {
       context[state] = typeof update === "function" ? update(context[state]) : update;
       if (setter === "setRunningSessionIds" && context[state].size === 0) settled.resolve();
-      if (setter === "setActivePendingRunKey" && context[state] === null) settled.resolve();
     };
   }
   const priorWindow = globalThis.window;
   globalThis.window = context.window;
   let submission;
   try {
-    vm.runInNewContext(appCallbacks(), context, { filename: "audit-production-app-callbacks.js" });
-    submission = context.auditCallbacks.onSubmit("audit image turn", preflight ? [1, 2].map((index) => ({
+    vm.runInNewContext(callbacksCode, context, { filename: "audit-production-app-callbacks.js" });
+    submission = context.auditCallbacks.onSubmit("audit image turn", images ? [1, 2].map((index) => ({
       id: `audit-image-${index}`, name: `fixture-${index}.png`, kind: "image", mime: "image/png",
-      originalPath: `G:/audit/fixture-${index}.png`, source: "file", size: 100, status: "ready",
+      originalPath: `G:/audit/fixture-${index}.png`, source: "file", size: 100, status: "ready", sha256: "ab".repeat(32),
+      extractedText: index === 1 ? "LEGACY_RECOGNIZED_IMAGE" : undefined,
     })) : []);
-    await (preflight ? visionEntered.promise : startEntered.promise);
+    await startEntered.promise;
+    if (!beforeAck) await tick();
     const startsBeforeStop = calls.filter((call) => call.command === "start_chat_v2").length;
     const locallyRunning = context.activeRunIdsRef.current.size === 1;
-    const visionCallsBeforeStop = calls.filter((call) => call.command === "vision_recognize_image").length;
     context.auditCallbacks.onStopRun();
     await tick();
     const cancelsBeforeRelease = calls.filter((call) => call.command === "cancel_run").length;
     const stoppingBeforeRelease = context.stoppingRunIds.size > 0;
-    visionResult.resolve({ model_id: "audit-vision", text: "AUDIT_RECOGNIZED_IMAGE", raw_json: "{}" });
+    admissionRelease.resolve();
     await submission;
-    if (!preflight) await startEntered.promise;
     await tick();
     const startsAfterStop = calls.filter((call) => call.command === "start_chat_v2").length - startsBeforeStop;
     // Release the actual runChat completion path, including its 100ms delay.
     // This is controlled cleanup, not a claim that the earlier stop worked.
-    if (!preflight) handlers.get("chat://event")?.({ payload: {
+    handlers.get("chat://event")?.({ payload: {
       run_id: submitted.runId, payload: { type: "run_cancelled" },
     } });
-    if (!preflight) handlers.get("session://completed")({ payload: {
+    handlers.get("session://completed")({ payload: {
       run_id: submitted.runId, session_id: "audit-session", status: "completed", error: null,
     } });
     await settled.promise;
     await tick();
     return {
-      fresh, preflight, locallyRunning, startsBeforeStop, startsAfterStop,
-      cancelsBeforeRelease, cancelAccepted, stoppingBeforeRelease, visionCallsBeforeStop,
-      visionCallsAfterStop: calls.filter((call) => call.command === "vision_recognize_image").length - visionCallsBeforeStop,
+      fresh, images, beforeAck, locallyRunning, startsBeforeStop, startsAfterStop,
+      cancelsBeforeRelease, cancelAccepted, stoppingBeforeRelease,
+      submittedPrompt: submitted?.prompt,
       cancelNotFoundVisible: notifications.some((item) => item.kind === "error" && item.value.includes("composer.cancelNotFound")),
-      recognizedTextSubmitted: submitted?.prompt.includes("AUDIT_RECOGNIZED_IMAGE") ?? false,
+      attachmentsSubmitted: submitted?.attachments,
+      cancelsAfterAck: calls.filter((call) => call.command === "cancel_run").length,
+      unexpectedVisionCalls: calls.filter((call) => /vision/.test(call.command)).length,
       preflightToolsSubmitted: submitted?.preflightTools.length ?? 0,
       listenersAfterFinish: handlers.size,
     };
   } finally {
-    visionResult.resolve({ text: "AUDIT_CLEANUP" });
+    admissionRelease.resolve();
     for (const timer of timers) clearTimeout(timer);
     if (priorWindow === undefined) delete globalThis.window;
     else globalThis.window = priorWindow;
   }
 }
 
-const options = { skip: process.env.RUN_HARNESS_AUDIT !== "1", timeout: 5000 };
-test("an admitted text turn still reaches the normal stop path", options, async () => {
-  const result = await observeStop({ preflight: false });
-  console.log(JSON.stringify(result));
-  assert.equal(result.locallyRunning, true);
-  assert.equal(result.startsBeforeStop, 1);
-  assert.equal(result.cancelsBeforeRelease, 1);
-  assert.equal(result.cancelAccepted, true);
-  assert.equal(result.stoppingBeforeRelease, true);
-  assert.equal(result.cancelNotFoundVisible, false);
-  assert.equal(result.startsAfterStop, 0);
-  assert.equal(result.listenersAfterFinish, 0);
-});
-
-for (const fresh of [false, true]) {
-  test(`${fresh ? "new" : "continued"} image turn does not submit after stop during system vision`, options, async () => {
-    const result = await observeStop({ preflight: true, fresh });
-    console.log(JSON.stringify(result));
-    assert.equal(result.locallyRunning, true, "the UI exposes this turn as active");
-    assert.equal(result.startsBeforeStop, 0, "stop occurs before backend admission");
-    assert.equal(result.cancelsBeforeRelease, 0, "preflight stop is handled by the run-local signal");
-    assert.equal(result.cancelAccepted, undefined, "no backend cancel is needed before admission");
-    assert.equal(result.listenersAfterFinish, 0, "cleanup the eventual run before the defect assertion");
-    assert.equal(result.startsAfterStop, 0, "stopped image preflight must not start a new backend turn");
-    assert.equal(result.visionCallsAfterStop, 0, "the next image must not start after stop");
-    assert.equal(result.cancelNotFoundVisible, false);
-  });
+const options = { timeout: 5000 };
+for (const images of [false, true]) {
+  for (const fresh of [false, true]) {
+    for (const beforeAck of [false, true]) {
+      const title = (fresh ? "new" : "continued") + (images ? " image" : " text") + (beforeAck ? " stops during admission" : " stops after admission");
+      test(title, options, async () => {
+        const result = await observeStop({ images, fresh, beforeAck });
+        assert.equal(result.locallyRunning, true);
+        assert.equal(result.startsBeforeStop, 1);
+        assert.equal(result.startsAfterStop, 0);
+        assert.equal(result.stoppingBeforeRelease, true);
+        assert.equal(result.cancelsBeforeRelease, beforeAck ? 0 : 1);
+        assert.equal(result.cancelsAfterAck, 1, "cancel the admitted run exactly once");
+        assert.equal(result.cancelAccepted, true);
+        assert.equal(result.cancelNotFoundVisible, false);
+        assert.equal(result.unexpectedVisionCalls, 0, "no independent vision API requests");
+        assert.equal(result.preflightToolsSubmitted, 0);
+        assert.doesNotMatch(result.submittedPrompt, /LEGACY_RECOGNIZED_IMAGE/);
+        assert.equal(result.attachmentsSubmitted.length, images ? 2 : 0);
+        for (const attachment of result.attachmentsSubmitted) {
+          assert.equal(attachment.type, "image");
+          assert.equal(attachment.sha256, "ab".repeat(32));
+        }
+        assert.equal(result.listenersAfterFinish, 0);
+      });
+    }
+  }
 }

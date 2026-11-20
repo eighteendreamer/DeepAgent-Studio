@@ -42,7 +42,6 @@ use deepagent_app_core::settings::{
 use deepagent_app_core::skill_catalog_reminder::SkillCatalogSendState;
 use deepagent_app_core::skills_service::SkillsService;
 use deepagent_builtins::{SkillTool, SKILL_TOOL_NAME};
-use deepagent_models::{ModelCatalog, ModelInfo, DEEPSEEK_BASE_URL};
 use deepagent_skills::{SkillRegistry, SkillsRoots};
 use deepagent_tools::Tool;
 
@@ -156,43 +155,15 @@ impl FakeRoots {
 /// this integration test too.
 fn settings_default() -> AppSettings {
     AppSettings {
-        catalog: ModelCatalog::auto_select(
-            DEEPSEEK_BASE_URL.to_string(),
-            vec![
-                ModelInfo {
-                    input_modalities: None,
-                    effort: None,
-                    id: "deepseek-v4-flash".into(),
-                    object: "model".into(),
-                    owned_by: "deepseek".into(),
-                    context_window: None,
-                    max_output_tokens: None,
-                },
-                ModelInfo {
-                    input_modalities: None,
-                    effort: None,
-                    id: "deepseek-v4-pro".into(),
-                    object: "model".into(),
-                    owned_by: "deepseek".into(),
-                    context_window: None,
-                    max_output_tokens: None,
-                },
-            ],
-        )
-        .expect("auto_select with both V4 roles produces a valid catalog"),
-        discovered_at: 0,
         pricing_catalog: Default::default(),
         approval_policy: Default::default(),
         sandbox_mode: Default::default(),
         terminal_shell: Default::default(),
         permission_rules: Default::default(),
         hooks_json: String::new(),
-        reasoning_effort: Default::default(),
-        reasoning_effort_explicit: true,
         responses: Default::default(),
         verification_policy: Default::default(),
         web_search: Default::default(),
-        vision: Default::default(),
         tool_search_mode: SettingsService::DEFAULT_TOOL_SEARCH_MODE,
         tool_search_auto_threshold_chars: None,
         skill_catalog_enabled: true,

@@ -1,7 +1,8 @@
 import { HoverInfo } from "./ui/HoverInfo";
 import { useId } from "react";
 import { useTranslation } from "react-i18next";
-import { Check, ChevronDown, type LucideIcon } from "lucide-react";
+import { Check, ChevronDown, CircleHelp, type LucideIcon } from "lucide-react";
+import type { ThinkingLevel, ThinkingSelection } from "../hooks/useComposerModelSettings";
 
 import { EffortSlider } from "./ui/EffortSlider";
 
@@ -17,7 +18,7 @@ import { cn } from "./shadcn/utils";
 
 
 
-type ReasoningEffort = "off" | "low" | "medium" | "high" | "max";
+type ReasoningEffort = ThinkingLevel;
 
 
 
@@ -40,6 +41,7 @@ export type ModelOption = {
   thinkingLevels?: string[];
   thinkingDistinct?: string[];
   thinkingDisable?: boolean;
+  defaultThinking?: ThinkingSelection;
 };
 
 type Props = {
@@ -54,7 +56,7 @@ type Props = {
 
   selectedModel: string;
 
-  selectedThinking: ReasoningEffort;
+  selectedThinking: ThinkingSelection;
 
   thinkingOptions: readonly ThinkingOption[];
 
@@ -70,7 +72,7 @@ type Props = {
 
   onChooseModel: (id: string) => void;
 
-  onChooseThinking: (id: ReasoningEffort) => void;
+  onChooseThinking: (id: ThinkingLevel) => void;
 
   triggerClassName?: string;
 
@@ -123,15 +125,15 @@ export function ModelThinkingSelector({
 
   const morphLayoutId = useId().replace(/:/g, "");
 
-  const selectedThinkingOption =
-
-    thinkingOptions.find((option) => option.id === selectedThinking) ?? thinkingOptions[2];
+  const unavailableOption = { label: t("composer.thinkingUnavailable"), icon: CircleHelp };
+  const selectedThinkingOption = thinkingOptions.find(option => option.id === selectedThinking) ?? unavailableOption;
 
   const selectedOption = models.find((model) => model.id === selectedModel);
-  const declaredLevels = thinkingLevels ?? selectedOption?.thinkingLevels ?? thinkingOptions.map(option => option.id);
+  const declaredLevels = selectedOption?.thinkingDistinct?.length ? selectedOption.thinkingDistinct : thinkingLevels ?? selectedOption?.thinkingLevels ?? [];
   const supportedLevels = new Set(declaredLevels.map((level) => level === "none" ? "off" : level));
   const canDisableThinking = thinkingDisable ?? selectedOption?.thinkingDisable ?? true;
-  const distinctLevels = new Set(selectedOption?.thinkingDistinct ?? []);
+  const effortOptions = thinkingOptions.filter(option => supportedLevels.has(option.id)
+    && (option.id !== "off" || canDisableThinking));
   const pillModel = selectedOption?.label || (selectedModel ? selectedModel : selectModelLabel);
 
   const trigger = (
@@ -157,7 +159,7 @@ export function ModelThinkingSelector({
       layoutId={morphLayoutId}
       trigger={trigger}
       className="flex h-8 min-w-0 max-w-full items-center"
-      panelClassName="w-[264px]"
+      panelClassName="w-[352px]"
       panelAlign="right"
       zIndex={50}
     >
@@ -232,26 +234,22 @@ export function ModelThinkingSelector({
 
             </div>
 
-            <EffortSlider
+            {effortOptions.length <= 1 ? <div className="py-1 text-sm text-text-secondary">{effortOptions[0]?.label ?? unavailableOption.label}</div> : <EffortSlider
 
-              stops={thinkingOptions.map((option) => ({
+              stops={effortOptions.map((option) => ({
                 value: option.id,
-                label: option.id !== "off" && supportedLevels.has(option.id)
-                  && distinctLevels.size > 0 && !distinctLevels.has(option.id)
-                    ? t("composer.thinkingEquivalent", { level: option.label }) : option.label,
+                label: option.label,
                 icon: option.icon,
-                disabled: !supportedLevels.has(option.id)
-                  || (option.id === "off" && !canDisableThinking),
               }))}
 
-              value={selectedThinking}
+              value={selectedThinking ?? ""}
 
-              onChange={(value) => onChooseThinking(value as ReasoningEffort)}
+              onChange={(value) => onChooseThinking(value as ThinkingLevel)}
 
               ariaLabel={t("composer.selectThinking")}
               disabled={disabled}
 
-            />
+            />}
 
           </div>
 

@@ -254,7 +254,10 @@ async fn h219_real_main_registry_can_prepare_without_model_credentials_admission
         transport.clone(),
         Arc::new(crate::secret_store::MemorySecretStore::new()),
     ));
-    assert!(settings.load().unwrap().is_none());
+    let before_settings = settings.load().unwrap();
+    assert!(before_settings.is_some());
+    assert!(!settings.view().unwrap().unwrap().configured);
+    assert!(db.harness_chat_model_selection().unwrap().is_none());
     let session = deepagent_session::Session::create(&db, &SystemClock, None)
         .unwrap()
         .id();
@@ -326,7 +329,9 @@ async fn h219_real_main_registry_can_prepare_without_model_credentials_admission
             .contains("not bound"));
     }
     assert_eq!(transport.0.load(Ordering::Acquire), 0);
-    assert!(settings.load().unwrap().is_none());
+    assert_eq!(settings.load().unwrap(), before_settings);
+    assert!(!settings.view().unwrap().unwrap().configured);
+    assert!(db.harness_chat_model_selection().unwrap().is_none());
     assert!(deepagent_persistence::run_store::RunStore::new(&db)
         .list_for_session(&session_id)
         .unwrap()

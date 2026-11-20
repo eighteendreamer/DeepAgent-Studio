@@ -546,7 +546,9 @@ async fn formal_workflow_real_http_approval_and_sqlite_reopen_do_not_replay() {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("sk-fixture-only").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-fixture-only")
+        .await
+        .unwrap();
     let dns = resolver(&[&["8.8.8.8"]]);
     let chat = ChatService::new(
         db.clone(),

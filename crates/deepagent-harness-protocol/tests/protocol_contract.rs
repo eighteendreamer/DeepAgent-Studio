@@ -166,7 +166,7 @@ fn h222_thread_reasoning_round_trips_without_losing_explicit_none() {
 fn thread_start_request_uses_stable_machine_field_names() {
     let request = HarnessRequest::ThreadStart(ThreadStartRequest {
         cwd: Some("G:/workspace".into()),
-        provider: Some("deepseek-official".into()),
+        provider: Some("deepseek".into()),
         model: Some("deepseek-v4-flash".into()),
         reasoning_effort: None,
         permission_profile: Some("workspace_write".into()),
@@ -177,7 +177,7 @@ fn thread_start_request_uses_stable_machine_field_names() {
 
     assert_eq!(json["method"], "thread/start");
     assert_eq!(json["params"]["cwd"], "G:/workspace");
-    assert_eq!(json["params"]["provider"], "deepseek-official");
+    assert_eq!(json["params"]["provider"], "deepseek");
     assert_eq!(json["params"]["sandboxBackend"], "windows_sandbox");
 }
 
@@ -358,7 +358,7 @@ fn turn_start_request_serializes_provider_and_sandbox_overrides() {
         expected_config_snapshot_id: None,
         thread_id: "thread-1".into(),
         input: "inspect the repository".into(),
-        provider: Some("deepseek-official".into()),
+        provider: Some("deepseek".into()),
         model: Some("deepseek-v4-pro".into()),
         reasoning_effort: Some("high".into()),
         permission_profile: Some("read_only".into()),

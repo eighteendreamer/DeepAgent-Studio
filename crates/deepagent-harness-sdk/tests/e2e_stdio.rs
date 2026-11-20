@@ -527,7 +527,7 @@ async fn initialize_then_thread_start_streams_thread_started_event() {
     let response = client
         .thread_start(ThreadStartRequest {
             cwd: None,
-            provider: Some("deepseek-official".into()),
+            provider: Some("deepseek".into()),
             model: None,
             reasoning_effort: None,
             permission_profile: None,
@@ -805,7 +805,10 @@ async fn h214_owned_real_cli_failure_is_unique_and_durable_after_reopen() {
                 turn_id, reason, ..
             } => {
                 assert_eq!(turn_id.as_deref(), Some(turn.as_str()));
-                assert!(reason.contains("not initialized"), "{reason}");
+                assert!(
+                    reason.contains("select a configured provider and model"),
+                    "{reason}"
+                );
                 terminals += 1;
             }
             HarnessEvent::TurnCompleted { .. } | HarnessEvent::TurnInterrupted { .. } => {
@@ -994,7 +997,7 @@ async fn introspection_methods_round_trip_without_a_model() {
     let config = client.config_read().await.expect("config/read");
     assert!(config.is_success(), "config/read succeeds");
     assert_eq!(config.result()["configSnapshotVersion"], 1);
-    assert_eq!(config.result()["resolutionStatus"], "uninitialized");
+    assert_eq!(config.result()["resolutionStatus"], "invalid");
     assert_eq!(config.result()["credentialChecked"], false);
     // The versioned snapshot projects only a resolved model plan. An empty
     // installation has no plan and must not invent an initialized provider.
@@ -1035,7 +1038,7 @@ async fn introspection_methods_round_trip_without_a_model() {
     assert!(scoped.is_success());
     assert_eq!(scoped.result()["scope"]["threadId"], thread_id);
     assert_eq!(scoped.result()["configSnapshotVersion"], 1);
-    assert_eq!(scoped.result()["resolutionStatus"], "uninitialized");
+    assert_eq!(scoped.result()["resolutionStatus"], "invalid");
     assert_eq!(scoped.result()["credentialChecked"], false);
     assert!(scoped.result()["model"].is_null());
 

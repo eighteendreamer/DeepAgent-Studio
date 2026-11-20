@@ -1,5 +1,9 @@
 //! Audit the model-specific reasoning metadata at the Responses request seam.
 
+#[cfg(test)]
+#[path = "support/metadata.rs"]
+mod metadata_fixture;
+
 #[path = "support/sequence.rs"]
 pub mod sequence_fixture;
 use std::sync::atomic::AtomicBool;
@@ -10,8 +14,8 @@ use deepagent_core::error::Result;
 use deepagent_core::message::Message;
 use deepagent_models::transport::{EventSink, HttpTransport, TransportRequest};
 use deepagent_models::{
-    ModelCatalog, ModelClient, ModelConfig, ModelDiscovery, ModelRole, ReasoningEffort,
-    ResponseDefaults, ResponseRequest, ToolSchema,
+    ModelClient, ModelConfig, ModelDiscovery, ReasoningEffort, ResponseDefaults, ResponseRequest,
+    ToolSchema,
 };
 
 const CATALOG: &str = r#"{"object":"list","data":[{
@@ -56,13 +60,14 @@ impl HttpTransport for AuditTransport {
 async fn audit_model_effort_metadata_constrains_responses_request() {
     let transport = Arc::new(AuditTransport::default());
     let catalog = ModelDiscovery::deepseek(transport.clone())
-        .discover("offline-audit-placeholder")
+        .list_models("offline-audit-placeholder")
         .await
         .unwrap();
     let serialized_catalog = serde_json::to_value(&catalog).unwrap();
-    let effort_metadata_retained = serialized_catalog["available"][0].get("effort").is_some();
-    let restored: ModelCatalog = serde_json::from_value(serialized_catalog).unwrap();
-    let config = ModelConfig::from_catalog("offline-audit-placeholder", &restored, ModelRole::Chat)
+    let effort_metadata_retained = serialized_catalog[0].get("effort").is_some();
+    let restored: Vec<deepagent_models::ModelInfo> =
+        serde_json::from_value(serialized_catalog).unwrap();
+    let config = crate::metadata_fixture::config("offline-audit-placeholder", &restored)
         .with_defaults(ResponseDefaults {
             reasoning_effort: Some(ReasoningEffort::High),
             ..ResponseDefaults::default()
@@ -96,10 +101,10 @@ async fn audit_model_effort_metadata_constrains_responses_request() {
 async fn model_effort_metadata_supplies_default_without_overriding_explicit_none() {
     let transport = Arc::new(AuditTransport::default());
     let catalog = ModelDiscovery::deepseek(transport.clone())
-        .discover("offline-audit-placeholder")
+        .list_models("offline-audit-placeholder")
         .await
         .unwrap();
-    let config = ModelConfig::from_catalog("offline-audit-placeholder", &catalog, ModelRole::Chat);
+    let config = crate::metadata_fixture::config("offline-audit-placeholder", &catalog);
     let client = ModelClient::new(transport.clone(), config);
     let preview = client.prepare_response_request(ResponseRequest::new(
         "deepseek-effort-limited",
@@ -126,12 +131,12 @@ async fn model_effort_metadata_supplies_default_without_overriding_explicit_none
 async fn h157_every_responses_entry_rejects_unsupported_effort_before_transport() {
     let transport = Arc::new(AuditTransport::default());
     let catalog = ModelDiscovery::deepseek(transport.clone())
-        .discover("offline-audit-placeholder")
+        .list_models("offline-audit-placeholder")
         .await
         .unwrap();
     let client = ModelClient::new(
         transport.clone(),
-        ModelConfig::from_catalog("offline-audit-placeholder", &catalog, ModelRole::Chat),
+        crate::metadata_fixture::config("offline-audit-placeholder", &catalog),
     );
     for entry in 0..4 {
         let request =
@@ -178,10 +183,10 @@ fn requests(transport: &Arc<AuditTransport>) -> Vec<serde_json::Value> {
 async fn h157_model_defaults_override_only_implicit_compatibility_not_explicit_requests() {
     let transport = Arc::new(AuditTransport::default());
     let catalog = ModelDiscovery::deepseek(transport.clone())
-        .discover("offline-audit-placeholder")
+        .list_models("offline-audit-placeholder")
         .await
         .unwrap();
-    let config = ModelConfig::from_catalog("offline-audit-placeholder", &catalog, ModelRole::Chat)
+    let config = crate::metadata_fixture::config("offline-audit-placeholder", &catalog)
         .with_defaults(ResponseDefaults {
             reasoning_effort: Some(ReasoningEffort::High),
             ..Default::default()

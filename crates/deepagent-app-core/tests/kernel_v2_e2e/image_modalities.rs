@@ -2,7 +2,7 @@
 use super::*;
 use deepagent_app_core::attachment_service::FileAttachmentResolver;
 use deepagent_core::message::MessageAttachment;
-use deepagent_models::{ModelClient, ModelConfig, WireMode};
+use deepagent_models::{ModelClient, WireMode};
 use deepagent_persistence::run_store::RunStore;
 use deepagent_runtime::{Agent, AttachmentDataResolver, ModelAgent};
 use serde_json::{json, Value};
@@ -182,22 +182,19 @@ async fn sqlite_reopen_model_switch_rejects_before_read_and_vision_recovers() {
             model.clone(),
             secrets.clone(),
         ));
-        let view = settings.initialize("synthetic-placeholder").await.unwrap();
-        let encoded = serde_json::to_value(view).unwrap();
-        let cap = encoded["model_capabilities"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|cap| cap["model_id"] == "h71-text")
+        let view = crate::registry_fixture::configure(&settings, "synthetic-placeholder")
+            .await
             .unwrap();
-        assert_eq!(cap["input_modalities"], json!(["text"]));
+        assert!(view.configured);
+        let capability = crate::registry_fixture::client(&settings).capability("h71-text");
+        assert_eq!(
+            serde_json::to_value(capability).unwrap()["input_modalities"],
+            json!(["text"])
+        );
         settings
-            .set_vision_settings(VisionSettings {
-                mode: VisionMode::Off,
-                ..Default::default()
-            })
+            .harness_models()
+            .select_model("deepseek", "h71-vision")
             .unwrap();
-        settings.set_model(ModelRole::Chat, "h71-vision").unwrap();
         let chat = ChatService::new(db.clone(), settings, model.clone(), root.path());
         session = run(&chat, None, "h71-first", Some(&dto)).await.unwrap();
         terminal(&db, "h71-first", "succeeded");
@@ -211,11 +208,20 @@ async fn sqlite_reopen_model_switch_rejects_before_read_and_vision_recovers() {
             secrets.clone(),
         ));
         assert_eq!(
-            serde_json::to_value(settings.load().unwrap().unwrap().catalog).unwrap()["available"]
-                [0]["input_modalities"],
+            serde_json::from_str::<serde_json::Value>(
+                &db.harness_model_route("deepseek", "h71-vision")
+                    .unwrap()
+                    .unwrap()
+                    .1
+                    .capabilities
+            )
+            .unwrap()["input_modalities"],
             json!(["text", "image"])
         );
-        settings.set_model(ModelRole::Chat, "h71-text").unwrap();
+        settings
+            .harness_models()
+            .select_model("deepseek", "h71-text")
+            .unwrap();
         // A rejected model must not read even an unreadable retained image.
         std::fs::write(&path, []).unwrap();
         let chat = ChatService::new(db.clone(), settings, model.clone(), root.path());
@@ -234,7 +240,10 @@ async fn sqlite_reopen_model_switch_rejects_before_read_and_vision_recovers() {
     {
         let db = Arc::new(Database::open(&database).unwrap());
         let settings = Arc::new(SettingsService::new(db.clone(), model.clone(), secrets));
-        settings.set_model(ModelRole::Chat, "h71-vision").unwrap();
+        settings
+            .harness_models()
+            .select_model("deepseek", "h71-vision")
+            .unwrap();
         let chat = ChatService::new(db.clone(), settings, model.clone(), root.path());
         run(&chat, Some(&session), "h71-recovered", None)
             .await
@@ -312,14 +321,13 @@ async fn h171_native_image_roles_survive_database_reopen_without_silent_relabeli
                 secrets.clone(),
             ));
             if phase == 0 {
-                settings.initialize("synthetic-h171").await.unwrap();
-                settings
-                    .set_vision_settings(VisionSettings {
-                        mode: VisionMode::Off,
-                        ..Default::default()
-                    })
+                crate::registry_fixture::configure(&settings, "synthetic-h171")
+                    .await
                     .unwrap();
-                settings.set_model(ModelRole::Chat, "h71-vision").unwrap();
+                settings
+                    .harness_models()
+                    .select_model("deepseek", "h71-vision")
+                    .unwrap();
             }
             let chat = ChatService::new(db.clone(), settings, model.clone(), root.path());
             if phase == 0 {
@@ -413,13 +421,12 @@ async fn h171_model_agent_role_policy_precedes_reads_retries_and_overload() {
                     ..Default::default()
                 });
                 let catalog = deepagent_models::ModelDiscovery::deepseek(model.clone())
-                    .discover("synthetic")
+                    .list_models("synthetic")
                     .await
                     .unwrap();
                 let client = Arc::new(ModelClient::new(
                     model.clone(),
-                    ModelConfig::from_catalog("synthetic", &catalog, ModelRole::Chat)
-                        .with_wire_mode(mode),
+                    crate::metadata_fixture::config("synthetic", &catalog).with_wire_mode(mode),
                 ));
                 let resolver = Arc::new(CountingResolver(AtomicUsize::new(0)));
                 let native = ResponseInputItem::InputMessage {
@@ -488,13 +495,12 @@ async fn effective_model_gate_precedes_resolver_and_survives_retry_overload_canc
                 ..Default::default()
             });
             let catalog = deepagent_models::ModelDiscovery::deepseek(model.clone())
-                .discover("synthetic")
+                .list_models("synthetic")
                 .await
                 .unwrap();
             let client = Arc::new(ModelClient::new(
                 model.clone(),
-                ModelConfig::from_catalog("synthetic", &catalog, ModelRole::Chat)
-                    .with_wire_mode(mode),
+                crate::metadata_fixture::config("synthetic", &catalog).with_wire_mode(mode),
             ));
             let resolver = Arc::new(CountingResolver(AtomicUsize::new(0)));
             let selected = match scenario {

@@ -1,15 +1,5 @@
-//! Project settings & initialization.
-//!
-//! The product flow: at project init the user supplies **only an API key**. The
-//! system (base URL hard-coded to DeepSeek) discovers available models, auto-
-//! selects the latest ones into a [`ModelCatalog`], and persists everything.
-//! That persisted model configuration is the key the rest of the system reads
-//! to know which model to call.
-//!
-//! **Credential storage:** API keys live behind [`SecretStore`]. The desktop
-//! persists authenticated ciphertext in SQLite and keeps only a device-bound
-//! wrapping secret in the OS keychain. Public [`ModelCatalog`] settings remain
-//! in the `documents` table (collection `"settings"`, id `"app"`).
+//! General application settings. Provider/model configuration and credentials
+//! are owned by the SQLite harness registry and SecretStore respectively.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -20,10 +10,7 @@ use deepagent_builtins::prefix_covers;
 use deepagent_core::clock::Timestamp;
 use deepagent_core::error::{CoreError, Result};
 use deepagent_hooks::{bash_prefix_rule, rule_command_prefix, PermissionRules};
-use deepagent_models::balance::{fetch_balance, BalanceResponse};
-use deepagent_models::capability::{ModelCapability, ModelCapabilityResolver};
 use deepagent_models::chat::validate_responses_user_identifier;
-use deepagent_models::discovery::{ModelCatalog, ModelDiscovery, ModelRole};
 use deepagent_models::transport::HttpTransport;
 use deepagent_models::ReasoningEffort;
 use deepagent_persistence::document_store::DocumentStore;
@@ -35,10 +22,6 @@ use crate::secret_store::SecretStore;
 /// The document-store collection + id the (non-secret) settings live under.
 const SETTINGS_COLLECTION: &str = "settings";
 const SETTINGS_ID: &str = "app";
-/// The logical name the API key is stored under in the secret store.
-const API_KEY_NAME: &str = "deepseek_api_key";
-/// The third-party system-vision API key lives in the same SecretStore.
-const VISION_API_KEY_NAME: &str = "vision_api_key";
 /// The AnySearch API key lives in the same SecretStore.
 const ANYSEARCH_API_KEY_NAME: &str = "anysearch_api_key";
 
@@ -600,12 +583,14 @@ fn validate_developer_responses_fields(
                 "DeepSeek Responses reasoning only supports `effort`",
             ));
         }
-        if !matches!(
-            reasoning.get("effort").and_then(serde_json::Value::as_str),
-            Some("none" | "low" | "medium" | "high" | "max")
-        ) {
+        if reasoning
+            .get("effort")
+            .and_then(serde_json::Value::as_str)
+            .and_then(ReasoningEffort::parse_responses)
+            .is_none()
+        {
             return Err(CoreError::invalid(
-                "Responses reasoning.effort must be none, low, medium, high, or max",
+                "Responses reasoning.effort must be none, minimal, low, medium, high, xhigh, or max",
             ));
         }
     }
@@ -763,140 +748,15 @@ impl ResponseScenePreset {
     }
 }
 
-/// How pasted/dropped images are converted into model-readable context.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum VisionMode {
-    /// Do not use a third-party vision API: image attachments are sent to the
-    /// main model directly as structured image parts (native DeepSeek vision).
-    Off,
-    /// Use the configured third-party vision API, then pass the text result to
-    /// the main chat model.
-    #[default]
-    System,
-}
-
-impl<'de> Deserialize<'de> for VisionMode {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        // Tolerant read: unknown values (including the removed legacy `"model"`
-        // mode) fall back instead of failing the whole settings load.
-        let raw = String::deserialize(deserializer)?;
-        Ok(Self::parse(&raw).unwrap_or(VisionMode::System))
-    }
-}
-
-impl VisionMode {
-    pub const fn label(&self) -> &'static str {
-        match self {
-            VisionMode::Off => "off",
-            VisionMode::System => "system",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "off" => Some(Self::Off),
-            "system" => Some(Self::System),
-            // Legacy: the removed `model` mode selected native vision, which the
-            // `system`/`off` toggle now expresses as `off`.
-            "model" => Some(Self::Off),
-            _ => None,
-        }
-    }
-}
-
-fn default_vision_provider() -> String {
-    "modelscope".to_string()
-}
-
-fn default_vision_base_url() -> String {
-    "https://api-inference.modelscope.cn/v1".to_string()
-}
-
-fn default_system_vision_model() -> String {
-    "moonshotai/Kimi-K2.5:DashScope".to_string()
-}
-
-fn default_vision_timeout_ms() -> u64 {
-    60_000
-}
-
-fn default_auto_analyze_pasted_images() -> bool {
-    true
-}
-
-/// Persisted image-analysis settings for composer attachments.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VisionSettings {
-    #[serde(default)]
-    pub mode: VisionMode,
-    #[serde(default = "default_vision_provider")]
-    pub provider: String,
-    #[serde(default = "default_vision_base_url")]
-    pub base_url: String,
-    #[serde(default, skip_serializing)]
-    pub api_key: Option<String>,
-    #[serde(default, skip_serializing)]
-    pub api_key_configured: bool,
-    #[serde(default = "default_system_vision_model")]
-    pub system_model: String,
-    #[serde(default = "default_vision_timeout_ms")]
-    pub timeout_ms: u64,
-    #[serde(default = "default_auto_analyze_pasted_images")]
-    pub auto_analyze_pasted_images: bool,
-}
-
-impl Default for VisionSettings {
-    fn default() -> Self {
-        Self {
-            mode: VisionMode::default(),
-            provider: default_vision_provider(),
-            base_url: default_vision_base_url(),
-            api_key: None,
-            api_key_configured: false,
-            system_model: default_system_vision_model(),
-            timeout_ms: default_vision_timeout_ms(),
-            auto_analyze_pasted_images: default_auto_analyze_pasted_images(),
-        }
-    }
-}
-
-fn normalize_vision_settings(mut settings: VisionSettings) -> VisionSettings {
-    settings.provider = settings.provider.trim().to_ascii_lowercase();
-    if settings.provider.is_empty() {
-        settings.provider = default_vision_provider();
-    }
-    settings.base_url = settings.base_url.trim().trim_end_matches('/').to_string();
-    if settings.base_url.is_empty() {
-        settings.base_url = default_vision_base_url();
-    }
-    if settings.system_model.trim().is_empty() {
-        settings.system_model = default_system_vision_model();
-    } else {
-        settings.system_model = settings.system_model.trim().to_string();
-    }
-    if settings.timeout_ms == 0 {
-        settings.timeout_ms = default_vision_timeout_ms();
-    }
-    settings.api_key_configured = false;
-    settings
-}
-
 /// Persisted, **non-secret** application settings (safe to store on disk).
 /// The API key is intentionally absent — it lives in the [`SecretStore`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppSettings {
-    /// The discovered + auto-selected model configuration.
-    pub catalog: ModelCatalog,
-    /// When discovery last ran (Unix ms).
-    pub discovered_at: i64,
     /// How tool approvals are resolved.
     #[serde(default)]
     pub approval_policy: ApprovalPolicy,
     /// Maximum filesystem boundary for tool execution.
+    #[serde(default)]
     pub sandbox_mode: SandboxMode,
     /// Preferred shell for the desktop integrated terminal.
     #[serde(default)]
@@ -909,13 +769,6 @@ pub struct AppSettings {
     /// the runtime hook registry.
     #[serde(default)]
     pub hooks_json: String,
-    /// User-selected DeepSeek Responses reasoning effort.
-    #[serde(default)]
-    pub reasoning_effort: ReasoningEffort,
-    /// Missing in old documents means preserve their saved global choice.
-    /// New initialization explicitly writes false; user selection writes true.
-    #[serde(default = "default_true")]
-    pub reasoning_effort_explicit: bool,
     /// Global Responses API controls; system-managed request fields are never
     /// accepted from this object.
     #[serde(default)]
@@ -928,9 +781,6 @@ pub struct AppSettings {
     /// Web search provider settings. Defaults to DeepSeek-first.
     #[serde(default)]
     pub web_search: WebSearchSettings,
-    /// Local/model vision settings for image attachments.
-    #[serde(default)]
-    pub vision: VisionSettings,
     /// Tool-search / lazy-tool-loading mode (tool-search spec).
     /// Decides whether deferrable tools (MCP + `should_defer == true`) are
     /// hidden from each request's `tools` array until discovered through the
@@ -1013,6 +863,16 @@ pub struct AppSettings {
     /// ensures old settings without this field deserialize cleanly.
     #[serde(default)]
     pub pricing_catalog: PricingCatalog,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        let mut settings: Self =
+            serde_json::from_value(serde_json::json!({})).expect("application defaults are valid");
+        settings.pricing_catalog = SettingsService::pricing_snapshot();
+        settings.tool_search_mode = SettingsService::DEFAULT_TOOL_SEARCH_MODE;
+        settings
+    }
 }
 
 /// DeepSeek official pricing catalog (idle-tier rates, RMB per million tokens).
@@ -1108,24 +968,7 @@ fn default_skill_install_ai_review_enabled() -> bool {
 /// A redacted view of settings safe to send to the UI (no secret material).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SettingsView {
-    /// Masked key (e.g. `"sk-…last4"`), or `"(not set)"`. Never the full secret.
-    pub api_key_masked: String,
-    /// Base URL in use (hard-coded DeepSeek).
-    pub base_url: String,
-    /// All discovered model ids.
-    pub available_models: Vec<String>,
-    /// Resolved capability (context window / max output) for every discovered
-    /// model, resolved exactly the way the runtime resolves it (provider
-    /// metadata wins, then the bundled official-doc snapshot, then a
-    /// conservative fallback). Lets the UI show the real context capacity
-    /// instead of guessing it from the model id.
-    #[serde(default)]
-    pub model_capabilities: Vec<ModelCapability>,
-    /// Selected chat model.
-    pub chat_model: String,
-    /// Selected reasoner model.
-    pub reasoner_model: String,
-    /// Whether the project is initialized (key present + models discovered).
+    /// Whether the selected registry route is active and has a credential.
     pub configured: bool,
     /// Current approval policy label (always_ask / auto_review / full_access).
     pub approval_policy: String,
@@ -1143,8 +986,6 @@ pub struct SettingsView {
     pub responses_sampling: Vec<ResponsesSamplingPreview>,
     /// Current web-search settings.
     pub web_search: WebSearchSettings,
-    /// Current image-analysis settings.
-    pub vision: VisionSettings,
     /// Opt-in advanced execution safeguards (§2.2/§2.3/§6.1/§6.2).
     #[serde(default)]
     pub execution_features: ExecutionFeatures,
@@ -1156,72 +997,12 @@ pub struct SettingsView {
     pub pricing_catalog: PricingCatalog,
 }
 
-/// One per-currency balance row exposed to the UI.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct BalanceInfoDto {
-    /// Currency code (e.g. `"CNY"`, `"USD"`).
-    pub currency: String,
-    /// Total spendable balance (granted + topped-up).
-    pub total_balance: String,
-    /// Granted (free credit) portion.
-    pub granted_balance: String,
-    /// Topped-up (paid) portion.
-    pub topped_up_balance: String,
-}
-
-/// Account balance summary from the DeepSeek `/user/balance` endpoint.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct BalanceDto {
-    /// Whether the account currently has any spendable balance.
-    pub is_available: bool,
-    /// Per-currency balance breakdown.
-    pub infos: Vec<BalanceInfoDto>,
-}
-
-impl BalanceDto {
-    fn from_response(resp: BalanceResponse) -> Self {
-        Self {
-            is_available: resp.is_available,
-            infos: resp
-                .balance_infos
-                .into_iter()
-                .map(|i| BalanceInfoDto {
-                    currency: i.currency,
-                    total_balance: i.total_balance,
-                    granted_balance: i.granted_balance,
-                    topped_up_balance: i.topped_up_balance,
-                })
-                .collect(),
-        }
-    }
-}
-
-/// Mask an API key to a non-leaking preview.
-fn mask_key(key: &str) -> String {
-    let n = key.chars().count();
-    if n <= 4 {
-        "****".to_string()
-    } else {
-        let last4: String = key.chars().skip(n - 4).collect();
-        format!("sk-…{last4}")
-    }
-}
-
-/// Manages project settings + initialization over a database, a transport, and
-/// a secret store. The DB holds the public catalog; the secret store holds the
-/// API key.
+/// General settings share the existing database and provider service.
 pub struct SettingsService {
     db: Arc<Database>,
     transport: Arc<dyn HttpTransport>,
     secrets: Arc<dyn SecretStore>,
     settings_cache: Mutex<Option<(String, AppSettings)>>,
-}
-
-/// Initialization may choose defaults; discovery refresh has no such authority.
-#[derive(Clone, Copy)]
-enum CatalogUpdate {
-    Initialize,
-    Refresh,
 }
 
 /// The command prefixes `rules` allows, minus any fenced by an `ask`/`deny` rule.
@@ -1266,34 +1047,7 @@ fn migrate_persisted_reasoning(value: &mut serde_json::Value) -> usize {
     let Some(settings) = value.as_object_mut() else {
         return 0;
     };
-    let legacy_depth_value = settings.remove("thinking_depth");
-    let legacy_depth = legacy_depth_value
-        .as_ref()
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned);
-    let mut changes = usize::from(legacy_depth_value.is_some());
-    if settings
-        .get("reasoning_effort")
-        .is_some_and(|value| value.as_str().and_then(ReasoningEffort::parse).is_none())
-    {
-        settings.remove("reasoning_effort");
-        changes += 1;
-    }
-    if !settings.contains_key("reasoning_effort") {
-        let migrated = match legacy_depth.as_deref() {
-            Some("simple") => Some(ReasoningEffort::None),
-            Some("medium") => Some(ReasoningEffort::High),
-            Some("deep") => Some(ReasoningEffort::Max),
-            _ => None,
-        };
-        if let Some(effort) = migrated {
-            settings.insert(
-                "reasoning_effort".to_string(),
-                serde_json::Value::String(effort.label().to_string()),
-            );
-            changes += 1;
-        }
-    }
+    let mut changes = 0;
 
     let Some(responses) = settings
         .get_mut("responses")
@@ -1375,72 +1129,6 @@ impl SettingsService {
         }
     }
 
-    /// Initialize the project with just an API key: store the key in the secret
-    /// store, discover models, auto-select the catalog, persist the catalog, and
-    /// return the redacted view. The single call the UI makes after the user
-    /// enters their key.
-    pub async fn initialize(&self, api_key: &str) -> Result<SettingsView> {
-        if api_key.trim().is_empty() {
-            return Err(CoreError::invalid("API key must not be empty"));
-        }
-        // Intent takes a shared durable generation before waiting for discovery.
-        let generation = self.begin_credential_change()?;
-        // Discover first so we never store a key that doesn't work.
-        let discovery = ModelDiscovery::deepseek(self.transport.clone());
-        let catalog = discovery.discover(api_key).await?;
-
-        self.complete_credential_change(&generation, api_key, catalog)
-    }
-
-    fn merge_discovered_catalog(
-        &self,
-        catalog: ModelCatalog,
-        update: CatalogUpdate,
-    ) -> Result<AppSettings> {
-        // Merge only discovery-owned fields into the current durable document.
-        let discovered_at = now_ms();
-        let pricing = Self::pricing_snapshot();
-        self.edit_settings(|prior| {
-            let mut catalog = catalog.clone();
-            if let (CatalogUpdate::Refresh, Some(current)) = (update, prior.as_ref()) {
-                // Re-evaluate the latest durable choices on every CAS attempt,
-                // never the choices captured before asynchronous discovery.
-                if !catalog.has_model(&current.catalog.chat_model)
-                    || !catalog.has_model(&current.catalog.reasoner_model)
-                {
-                    return Err(CoreError::invalid(
-                        "model catalog refresh rejected: selected model is unavailable; \
-                         choose another model or explicitly initialize again",
-                    ));
-                }
-                catalog.chat_model = current.catalog.chat_model.clone();
-                catalog.reasoner_model = current.catalog.reasoner_model.clone();
-            }
-            let mut settings = match prior {
-                Some(settings) => settings,
-                None => serde_json::from_value(serde_json::json!({
-                    "catalog": &catalog,
-                    "discovered_at": discovered_at,
-                    "sandbox_mode": SandboxMode::default(),
-                    "tool_search_mode": Self::DEFAULT_TOOL_SEARCH_MODE,
-                    "reasoning_effort_explicit": false,
-                }))?,
-            };
-            settings.catalog = catalog;
-            settings.discovered_at = discovered_at;
-            settings.pricing_catalog = pricing.clone();
-            settings.web_search = normalized_web_search_settings(settings.web_search);
-            Ok(settings)
-        })
-    }
-
-    /// Re-run discovery with the stored key (e.g. to pick up new models).
-    /// Preserve current role choices; reject the entire publication if either
-    /// selected id disappears. Pricing refreshes only alongside a committed catalog.
-    pub async fn refresh_models(&self) -> Result<SettingsView> {
-        self.discover_for_refresh().await
-    }
-
     /// Refresh official DeepSeek pricing and persist to settings.
     ///
     /// First-stage implementation: returns hardcoded idle-tier rates verified
@@ -1501,39 +1189,15 @@ impl SettingsService {
         }
     }
 
-    /// Manually override which model fills a role (must be a discovered id).
-    pub fn set_model(
-        &self,
-        role: deepagent_models::ModelRole,
-        model_id: &str,
-    ) -> Result<SettingsView> {
-        let settings = self.update_settings(|settings| {
-            if !settings.catalog.has_model(model_id) {
-                return Err(CoreError::invalid(format!(
-                    "model '{model_id}' is not in the discovered set"
-                )));
-            }
-            match role {
-                deepagent_models::ModelRole::Chat => {
-                    settings.catalog.chat_model = model_id.to_string()
-                }
-                deepagent_models::ModelRole::Reasoner => {
-                    settings.catalog.reasoner_model = model_id.to_string()
-                }
-            }
-            Ok(())
-        })?;
-        let key = self.api_key()?;
-        self.view_with_key(key.as_deref(), &settings)
-    }
-
-    /// Load the public settings (catalog) from the database.
+    /// Load general settings, creating only application defaults when absent.
+    /// This never discovers, activates, imports or selects a model.
     pub fn load(&self) -> Result<Option<AppSettings>> {
-        let settings = self.load_current_settings()?;
-        if let Some(settings) = &settings {
-            self.seed_harness_registry(settings)?;
+        match self.load_current_settings()? {
+            Some(settings) => Ok(Some(settings)),
+            None => self
+                .edit_settings(|prior| Ok(prior.unwrap_or_default()))
+                .map(Some),
         }
-        Ok(settings)
     }
 
     /// Read the persisted welcome name. An empty value means the UI should use
@@ -1561,45 +1225,6 @@ impl SettingsService {
         Ok(settings.welcome_name)
     }
 
-    /// The raw API key from the secret store (for internal runtime use only).
-    pub fn api_key(&self) -> Result<Option<String>> {
-        self.read_current_credential()
-    }
-
-    /// Validate an API key with a read-only `/models` discovery call.
-    ///
-    /// Unlike [`initialize`](Self::initialize) or [`refresh_models`](Self::refresh_models),
-    /// this does not persist the returned catalog. It is used by `/doctor` so a
-    /// diagnostic scan can verify credentials without mutating settings.
-    pub async fn validate_api_key(&self, api_key: &str) -> Result<usize> {
-        if api_key.trim().is_empty() {
-            return Err(CoreError::invalid("API key must not be empty"));
-        }
-        let discovery = ModelDiscovery::deepseek(self.transport.clone());
-        let models = discovery.list_models(api_key).await?;
-        if models.is_empty() {
-            return Err(CoreError::other(
-                "model discovery returned no models (check API key / connectivity)",
-            ));
-        }
-        Ok(models.len())
-    }
-
-    /// Fetch the user's DeepSeek account balance via `GET /user/balance` using
-    /// the stored API key. Returns a UI-safe DTO. Errors when the key is not
-    /// set, the catalog is missing, or the network/auth fails — the caller
-    /// surfaces the error message verbatim.
-    pub async fn query_balance(&self) -> Result<BalanceDto> {
-        let key = self
-            .api_key()?
-            .ok_or_else(|| CoreError::not_found("API key not set; initialize first"))?;
-        let settings = self
-            .load()?
-            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
-        let resp = fetch_balance(self.transport.clone(), &settings.catalog.base_url, &key).await?;
-        Ok(BalanceDto::from_response(resp))
-    }
-
     /// The current approval policy (defaults to [`ApprovalPolicy::AlwaysAsk`]
     /// when uninitialized).
     pub fn approval_policy(&self) -> Result<ApprovalPolicy> {
@@ -1616,14 +1241,14 @@ impl SettingsService {
         Ok(self.load()?.map(|s| s.terminal_shell).unwrap_or_default())
     }
 
-    /// The current DeepSeek Thinking Mode depth.
+    /// The current route's effective user-controlled thinking level.
     pub fn reasoning_effort(&self) -> Result<ReasoningEffort> {
         let Some(settings) = self.load()? else {
             return Ok(ReasoningEffort::default());
         };
         Ok(
-            crate::model_runtime::model_config(&settings, ModelRole::Chat, None)?
-                .effective_reasoning_effort(&settings.catalog.chat_model, None)?
+            crate::model_runtime::resolve_run_model(&self.db, &settings, None, None, None)?
+                .reasoning_effort
                 .unwrap_or_default(),
         )
     }
@@ -1727,7 +1352,9 @@ impl SettingsService {
     /// Redacted readiness view; ready means configured, not reachable.
     pub fn web_search_settings_view(&self) -> Result<WebSearchSettingsView> {
         let settings = self.web_search_settings()?;
-        let deepseek_ready = self.api_key()?.is_some_and(|key| !key.trim().is_empty());
+        let deepseek_ready = self
+            .deepseek_search_api_key()?
+            .is_some_and(|key| !key.trim().is_empty());
         let anysearch_ready = self
             .anysearch_api_key()?
             .is_some_and(|key| !key.trim().is_empty());
@@ -1767,7 +1394,7 @@ impl SettingsService {
             .engines
             .iter()
             .any(|engine| engine.enabled && engine.id == WebSearchEngineId::Deepseek)
-            .then(|| self.api_key())
+            .then(|| self.deepseek_search_api_key())
             .transpose()?
             .flatten();
         let anysearch_api_key = settings
@@ -1813,47 +1440,6 @@ impl SettingsService {
     pub fn clear_anysearch_api_key(&self) -> Result<()> {
         let _ = self.secrets.delete(ANYSEARCH_API_KEY_NAME);
         Ok(())
-    }
-
-    /// Current image-analysis settings.
-    pub fn vision_settings(&self) -> Result<VisionSettings> {
-        let settings = self.load()?.map(|s| s.vision).unwrap_or_default();
-        self.vision_settings_view(settings)
-    }
-
-    /// Set image-analysis settings.
-    pub fn set_vision_settings(&self, settings_next: VisionSettings) -> Result<VisionSettings> {
-        self.load()?
-            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
-        if let Some(api_key) = settings_next.api_key.as_deref() {
-            let api_key = api_key.trim();
-            if api_key.is_empty() {
-                self.secrets.delete(VISION_API_KEY_NAME)?;
-            } else {
-                self.secrets.set(VISION_API_KEY_NAME, api_key)?;
-            }
-        }
-        let next = normalize_vision_settings(settings_next);
-        let settings = self.update_settings(|settings| {
-            settings.vision = next.clone();
-            Ok(())
-        })?;
-        self.vision_settings_view(settings.vision)
-    }
-
-    /// The configured third-party system-vision API key, if present.
-    pub fn vision_api_key(&self) -> Result<Option<String>> {
-        self.secrets.get(VISION_API_KEY_NAME)
-    }
-
-    fn vision_settings_view(&self, mut settings: VisionSettings) -> Result<VisionSettings> {
-        settings.api_key = None;
-        settings.api_key_configured = self
-            .secrets
-            .get(VISION_API_KEY_NAME)?
-            .map(|key| !key.trim().is_empty())
-            .unwrap_or(false);
-        Ok(settings)
     }
 
     /// Performance-oriented default for new settings documents: use Auto so
@@ -2100,13 +1686,23 @@ impl SettingsService {
 
     /// Set the Thinking Mode depth, persisting it. Returns the redacted view.
     pub fn set_reasoning_effort(&self, effort: ReasoningEffort) -> Result<SettingsView> {
-        let settings = self.update_settings(|settings| {
-            settings.reasoning_effort = effort;
-            settings.reasoning_effort_explicit = true;
-            Ok(())
-        })?;
-        let key = self.api_key()?;
-        self.view_with_key(key.as_deref(), &settings)
+        self.set_reasoning_selection(Some(effort))
+    }
+
+    pub fn set_reasoning_selection(&self, effort: Option<ReasoningEffort>) -> Result<SettingsView> {
+        if let Some(model) = self.harness_models().selected_model()? {
+            self.harness_models().select_model_with_reasoning(
+                &model.provider_id,
+                &model.model_name,
+                effort.map(ReasoningEffort::label),
+            )?;
+            return self
+                .view()?
+                .ok_or_else(|| CoreError::invalid("project not initialized"));
+        }
+        Err(CoreError::invalid(
+            "select a configured model before changing reasoning effort",
+        ))
     }
 
     pub fn responses_settings(&self) -> Result<ResponsesApiSettings> {
@@ -2132,8 +1728,7 @@ impl SettingsService {
             settings.responses = settings_next.clone();
             Ok(())
         })?;
-        let key = self.api_key()?;
-        self.view_with_key(key.as_deref(), &settings)
+        self.view_from_settings(&settings)
     }
 
     pub fn set_responses_developer_json(&self, raw: &str) -> Result<SettingsView> {
@@ -2143,8 +1738,7 @@ impl SettingsService {
             settings.responses.ineffective = developer.ineffective.clone();
             Ok(())
         })?;
-        let key = self.api_key()?;
-        self.view_with_key(key.as_deref(), &settings)
+        self.view_from_settings(&settings)
     }
 
     /// Set the approval policy, persisting it. Returns the redacted view.
@@ -2153,8 +1747,7 @@ impl SettingsService {
             settings.approval_policy = policy;
             Ok(())
         })?;
-        let key = self.api_key()?;
-        self.view_with_key(key.as_deref(), &settings)
+        self.view_from_settings(&settings)
     }
 
     /// Set the sandbox mode, persisting it. Returns the redacted view.
@@ -2163,8 +1756,7 @@ impl SettingsService {
             settings.sandbox_mode = mode;
             Ok(())
         })?;
-        let key = self.api_key()?;
-        self.view_with_key(key.as_deref(), &settings)
+        self.view_from_settings(&settings)
     }
 
     /// Set the preferred integrated-terminal shell, persisting it.
@@ -2173,8 +1765,7 @@ impl SettingsService {
             settings.terminal_shell = shell;
             Ok(())
         })?;
-        let key = self.api_key()?;
-        self.view_with_key(key.as_deref(), &settings)
+        self.view_from_settings(&settings)
     }
 
     /// The current declarative permission rules (empty when uninitialized).
@@ -2259,57 +1850,45 @@ impl SettingsService {
 
     /// The redacted view for the UI, or `None` if uninitialized.
     pub fn view(&self) -> Result<Option<SettingsView>> {
-        self.current_credential_view()
+        self.load()?
+            .map(|settings| self.view_from_settings(&settings))
+            .transpose()
     }
 
-    /// Clear the stored key (sign-out). Leaves the catalog in place.
-    pub fn clear_key(&self) -> Result<()> {
-        self.clear_current_credential()
-    }
-
-    fn view_with_key(&self, key: Option<&str>, settings: &AppSettings) -> Result<SettingsView> {
-        // Resolve through the same resolver the runtime uses so the UI never
-        // has to guess a model's context window from its id.
-        let capability_resolver = ModelCapabilityResolver::new();
+    fn view_from_settings(&self, settings: &AppSettings) -> Result<SettingsView> {
+        let configured = match self.db.harness_chat_model_selection()? {
+            Some(selection) => match self
+                .db
+                .harness_model_route(&selection.provider_id, &selection.model_name)?
+            {
+                Some((provider, model)) if provider.enabled && model.active => self
+                    .secrets
+                    .get(&provider.api_key_ref)?
+                    .is_some_and(|key| !key.trim().is_empty()),
+                _ => false,
+            },
+            None => false,
+        };
         let reasoning_effort =
-            match crate::model_runtime::model_config(settings, ModelRole::Chat, None).and_then(
-                |config| config.effective_reasoning_effort(&settings.catalog.chat_model, None),
-            ) {
-                Ok(effort) => effort.unwrap_or_default(),
+            match crate::model_runtime::resolve_run_model(&self.db, settings, None, None, None) {
+                Ok(plan) => plan
+                    .reasoning_effort
+                    .map(|value| value.label().to_owned())
+                    .unwrap_or_else(|| "default".into()),
                 Err(error) => {
-                    // Preserve an invalid saved value as an editable configuration,
-                    // not as a claim that this effort is valid for the active model.
                     tracing::warn!(%error, "reasoning setting is not valid for the active model");
-                    settings.reasoning_effort
+                    "default".into()
                 }
             };
         Ok(SettingsView {
-            api_key_masked: key.map(mask_key).unwrap_or_else(|| "(not set)".to_string()),
-            base_url: settings.catalog.base_url.clone(),
-            available_models: settings
-                .catalog
-                .available
-                .iter()
-                .map(|m| m.id.clone())
-                .collect(),
-            model_capabilities: settings
-                .catalog
-                .available
-                .iter()
-                .map(|m| capability_resolver.resolve_model(m))
-                .collect(),
-            chat_model: settings.catalog.chat_model.clone(),
-            reasoner_model: settings.catalog.reasoner_model.clone(),
-            configured: key.map(|k| !k.trim().is_empty()).unwrap_or(false)
-                && !settings.catalog.available.is_empty(),
+            configured,
             approval_policy: settings.approval_policy.label().to_string(),
             sandbox_mode: settings.sandbox_mode.label().to_string(),
             terminal_shell: settings.terminal_shell.label().to_string(),
-            reasoning_effort: reasoning_effort.label().to_string(),
+            reasoning_effort,
             responses: settings.responses.clone(),
-            responses_sampling: responses_sampling_preview(settings),
+            responses_sampling: responses_sampling_preview(&self.db, settings),
             web_search: normalized_web_search_settings(settings.web_search.clone()),
-            vision: self.vision_settings_view(settings.vision.clone())?,
             execution_features: settings.execution_features,
             output_style: settings.output_style.as_str().to_string(),
             pricing_catalog: settings.pricing_catalog.clone(),
@@ -2331,7 +1910,7 @@ impl SettingsService {
             SETTINGS_ID,
             &body,
             None,
-            Timestamp::from_millis(settings.discovered_at),
+            Timestamp::from_millis(now_ms()),
         )?;
         *cache = Some((body, settings.clone()));
         Ok(())
@@ -2351,9 +1930,6 @@ fn normalized_web_search_settings(mut settings: WebSearchSettings) -> WebSearchS
 #[path = "settings/persistence.rs"]
 mod persistence;
 
-#[path = "settings/credential_lifecycle.rs"]
-mod credential_lifecycle;
-
 #[path = "settings/harness_registry.rs"]
 mod harness_registry;
 
@@ -2370,24 +1946,12 @@ mod reasoning_tests;
 mod repair_tests;
 
 #[cfg(test)]
-#[path = "settings/selection_tests.rs"]
-mod selection_tests;
-
-#[cfg(test)]
 #[path = "settings/process_tests.rs"]
 mod process_tests;
 
 #[cfg(test)]
-#[path = "settings/credential_tests.rs"]
-mod credential_tests;
-
-#[cfg(test)]
 #[path = "settings/web_search_tests.rs"]
 mod web_search_tests;
-
-#[cfg(test)]
-#[path = "settings/credential_process_tests.rs"]
-mod credential_process_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2427,13 +1991,17 @@ mod tests {
     #[tokio::test]
     async fn context_headroom_overrides_legacy_reserve_and_survives_settings_update() {
         let (svc, _) = service();
-        svc.initialize("sk-synthetic-test").await.unwrap();
+        crate::registry_fixture::configure(&svc, "sk-synthetic-test")
+            .await
+            .unwrap();
         let mut settings = svc.load().unwrap().unwrap();
         settings.autocompact_reserve_tokens = Some(23_456);
         settings.context_headroom_tokens = Some(65_536);
         svc.save(&settings).unwrap();
         assert_eq!(svc.autocompact_reserve_tokens(), Some(65_536));
-        svc.initialize("sk-synthetic-test").await.unwrap();
+        crate::registry_fixture::configure(&svc, "sk-synthetic-test")
+            .await
+            .unwrap();
         assert_eq!(
             svc.load().unwrap().unwrap().context_headroom_tokens,
             Some(65_536)
@@ -2446,19 +2014,6 @@ mod tests {
         let legacy: AppSettings = serde_json::from_value(legacy).unwrap();
         assert_eq!(legacy.context_headroom_tokens, None);
         assert_eq!(legacy.autocompact_reserve_tokens, Some(23_456));
-    }
-
-    #[test]
-    fn vision_mode_tolerates_legacy_and_unknown_values() {
-        // Legacy persisted "model" selected native vision → maps to Off now.
-        let legacy: VisionMode = serde_json::from_str("\"model\"").unwrap();
-        assert_eq!(legacy, VisionMode::Off);
-        // Unknown values fall back to the safe default (third-party off? no: system).
-        let unknown: VisionMode = serde_json::from_str("\"nonsense\"").unwrap();
-        assert_eq!(unknown, VisionMode::System);
-        assert_eq!(VisionMode::parse("system"), Some(VisionMode::System));
-        assert_eq!(VisionMode::parse("off"), Some(VisionMode::Off));
-        assert_eq!(VisionMode::parse("model"), Some(VisionMode::Off));
     }
 
     fn transport_with_models() -> Arc<dyn HttpTransport> {
@@ -2477,212 +2032,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pricing_activation_initialization_commits_models_and_prices_together() {
-        let (settings, _) = service();
-        settings
-            .db
-            .with_conn(|connection| {
-                connection
-                    .execute_batch(
-                        "CREATE TRIGGER reject_initial_pricing BEFORE INSERT ON documents
-                 WHEN NEW.collection = 'settings' AND NEW.id = 'app'
-                 BEGIN SELECT RAISE(ABORT, 'synthetic initial save failure'); END;",
-                    )
-                    .map_err(|error| CoreError::Persistence(error.to_string()))
-            })
-            .unwrap();
-        assert!(settings
-            .initialize("synthetic-pricing-test")
+    async fn legacy_system_vision_is_ignored_without_breaking_settings_or_exposing_it_in_the_view()
+    {
+        let (svc, _) = service();
+        crate::registry_fixture::configure(&svc, "synthetic-vision-migration")
             .await
-            .unwrap_err()
-            .to_string()
-            .contains("synthetic initial save failure"));
-        assert!(settings.load().unwrap().is_none());
-        settings
-            .db
-            .with_conn(|connection| {
-                connection
-                    .execute_batch(
-                        "DROP TRIGGER reject_initial_pricing;
-                 CREATE TRIGGER reject_second_pricing_write BEFORE UPDATE ON documents
-                 WHEN NEW.collection = 'settings' AND NEW.id = 'app'
-                 BEGIN SELECT RAISE(ABORT, 'models/prices must be one commit'); END;",
-                    )
-                    .map_err(|error| CoreError::Persistence(error.to_string()))
-            })
             .unwrap();
-        let view = settings.initialize("synthetic-pricing-test").await.unwrap();
-        let persisted: AppSettings = serde_json::from_str(
-            &DocumentStore::new(&settings.db)
-                .get(SETTINGS_COLLECTION, SETTINGS_ID)
-                .unwrap()
-                .unwrap()
-                .body,
-        )
-        .unwrap();
-        assert!(!persisted.pricing_catalog.models.is_empty());
-        assert_eq!(view.pricing_catalog, persisted.pricing_catalog);
-        assert_eq!(
-            settings.load().unwrap().unwrap().pricing_catalog,
-            persisted.pricing_catalog
-        );
-    }
-
-    #[tokio::test]
-    async fn pricing_activation_save_publishes_only_committed_catalog() {
-        use crate::cost_service::{CostRecordRequest, CostService};
-
-        let (settings, _) = service();
-        let settings = Arc::new(settings);
-        settings.initialize("synthetic-pricing-test").await.unwrap();
-        settings
-            .db
-            .with_conn(|connection| {
-                connection
-                    .execute_batch(
-                        "INSERT INTO sessions (id, title, mode, created_at, updated_at)
-                 VALUES ('pricing', 'fixture', 'normal', 0, 0);
-                 CREATE TRIGGER reject_pricing_update BEFORE UPDATE ON documents
-                 WHEN NEW.collection = 'settings' AND NEW.id = 'app'
-                 BEGIN SELECT RAISE(ABORT, 'synthetic settings write failure'); END;",
-                    )
-                    .map_err(|error| CoreError::Persistence(error.to_string()))
-            })
-            .unwrap();
-        let cost = CostService::from_settings(settings.db.clone(), settings.clone());
-        let committed = settings.load().unwrap().unwrap();
-        let mut changed = committed.clone();
-        let price = changed
-            .pricing_catalog
-            .models
-            .get_mut("deepseek-flash")
-            .unwrap();
-        price.output_per_million = 100.0;
-        assert!(settings
-            .save(&changed)
-            .unwrap_err()
-            .to_string()
-            .contains("synthetic settings write failure"));
-        assert_eq!(
-            settings.load().unwrap().unwrap().pricing_catalog,
-            committed.pricing_catalog
-        );
-        let request = || CostRecordRequest {
-            session_id: "pricing".into(),
-            model: "deepseek-flash".into(),
-            input_tokens: 1000,
-            output_tokens: 100,
-            cache_hit_tokens: 800,
-            cache_miss_tokens: 200,
-            total_tokens: 1100,
-        };
-        assert_eq!(cost.record(request()).unwrap(), Some(0.000616));
-        settings
-            .db
-            .with_conn(|connection| {
-                connection
-                    .execute_batch("DROP TRIGGER reject_pricing_update")
-                    .map_err(|error| CoreError::Persistence(error.to_string()))
-            })
-            .unwrap();
-        settings.save(&changed).unwrap();
-        assert_eq!(cost.record(request()).unwrap(), Some(0.010216));
-        let rows = deepagent_persistence::cost_store::CostStore::new(&settings.db)
-            .session_costs_detailed("pricing")
-            .unwrap();
-        assert_eq!(rows.len(), 2);
-        // A later activation never reprices an already committed cost row.
-        assert_eq!(rows[0].output_price, Some(4.0));
-        assert_eq!(rows[1].output_price, Some(100.0));
-    }
-
-    #[tokio::test]
-    async fn pricing_activation_serializes_database_and_snapshot_publication() {
-        let (settings, _) = service();
-        settings.initialize("synthetic-pricing-test").await.unwrap();
-        let settings = Arc::new(settings);
-        // Force both cold load and save to wait at the real DB boundary. They
-        // must already own the cache guard, preventing out-of-order publication.
-        for loading in [true, false] {
-            if loading {
-                *settings.settings_cache.lock().unwrap() = None;
-            }
-            let current = serde_json::from_str::<AppSettings>(
-                &DocumentStore::new(&settings.db)
-                    .get(SETTINGS_COLLECTION, SETTINGS_ID)
-                    .unwrap()
-                    .unwrap()
-                    .body,
-            )
-            .unwrap();
-            settings
-                .db
-                .with_conn(|_| {
-                    let owner = settings.clone();
-                    let worker = std::thread::spawn(move || {
-                        if loading {
-                            owner.load().map(|_| ())
-                        } else {
-                            owner.save(&current)
-                        }
-                    });
-                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-                    while settings.settings_cache.try_lock().is_ok() {
-                        assert!(
-                            std::time::Instant::now() < deadline,
-                            "DB operation did not acquire snapshot publication guard"
-                        );
-                        std::thread::yield_now();
-                    }
-                    // Return the worker; joining while holding the DB would deadlock.
-                    Ok(worker)
-                })
-                .unwrap()
-                .join()
-                .unwrap()
-                .unwrap();
-        }
-        let start = Arc::new(std::sync::Barrier::new(9));
-        let workers: Vec<_> = (1..=8)
-            .map(|version| {
-                let owner = settings.clone();
-                let start = start.clone();
-                std::thread::spawn(move || {
-                    let mut snapshot = owner.load().unwrap().unwrap();
-                    snapshot.pricing_catalog.fetched_at = version;
-                    snapshot
-                        .pricing_catalog
-                        .models
-                        .get_mut("deepseek-flash")
-                        .unwrap()
-                        .output_per_million = version as f64;
-                    start.wait();
-                    owner.save(&snapshot).unwrap();
-                })
-            })
-            .collect();
-        start.wait();
-        for worker in workers {
-            worker.join().unwrap();
-        }
-        let persisted: AppSettings = serde_json::from_str(
-            &DocumentStore::new(&settings.db)
-                .get(SETTINGS_COLLECTION, SETTINGS_ID)
-                .unwrap()
-                .unwrap()
-                .body,
-        )
-        .unwrap();
-        assert_eq!(
-            settings.load().unwrap().unwrap().pricing_catalog,
-            persisted.pricing_catalog
-        );
+        let mut legacy = serde_json::to_value(svc.load().unwrap().unwrap()).unwrap();
+        legacy["vision"] = serde_json::json!({
+            "mode": "system", "base_url": "https://legacy-vision.invalid/v1",
+            "system_model": "legacy-vision", "api_key": "synthetic-unused-secret"
+        });
+        let settings: AppSettings = serde_json::from_value(legacy).unwrap();
+        assert!(serde_json::to_value(&settings)
+            .unwrap()
+            .get("vision")
+            .is_none());
+        svc.save(&settings).unwrap();
+        let view = serde_json::to_value(svc.view().unwrap().unwrap()).unwrap();
+        assert!(view.get("vision").is_none());
+        assert_eq!(view["configured"], true);
+        assert!(view["configured"].as_bool().unwrap());
     }
 
     #[tokio::test]
     async fn a_prefix_grant_is_a_permission_rule_the_settings_page_lists() {
         let (svc, _secrets) = service();
-        svc.initialize("sk-secret-1234").await.unwrap();
+        crate::registry_fixture::configure(&svc, "sk-secret-1234")
+            .await
+            .unwrap();
         assert!(svc.command_prefix_grants().unwrap().is_empty());
 
         svc.grant_command_prefix("git status").unwrap();
@@ -2712,7 +2090,9 @@ mod tests {
     #[tokio::test]
     async fn a_grant_never_walks_past_a_rule_the_user_wrote() {
         let (svc, _secrets) = service();
-        svc.initialize("sk-secret-1234").await.unwrap();
+        crate::registry_fixture::configure(&svc, "sk-secret-1234")
+            .await
+            .unwrap();
         svc.set_permission_rules(PermissionRules::new(
             [],
             ["Bash(git:*)".to_string()],
@@ -2739,7 +2119,9 @@ mod tests {
             transport_with_models(),
             Arc::new(MemorySecretStore::new()),
         );
-        first.initialize("sk-secret-1234").await.unwrap();
+        crate::registry_fixture::configure(&first, "sk-secret-1234")
+            .await
+            .unwrap();
         first.grant_command_prefix("cargo test").unwrap();
 
         // A fresh service over the same data root (the next process) reads it back.
@@ -2761,7 +2143,9 @@ mod tests {
     async fn output_style_round_trip_and_takes_effect_in_prompt() {
         use crate::system_context::output_style_prompt_block;
         let (svc, _secrets) = service();
-        svc.initialize("sk-secret-1234").await.unwrap();
+        crate::registry_fixture::configure(&svc, "sk-secret-1234")
+            .await
+            .unwrap();
 
         // Default: no style block injected.
         assert_eq!(svc.output_style(), OutputStyle::Default);
@@ -2784,7 +2168,9 @@ mod tests {
     #[tokio::test]
     async fn execution_features_default_off_and_round_trip() {
         let (svc, _secrets) = service();
-        svc.initialize("sk-secret-1234").await.unwrap();
+        crate::registry_fixture::configure(&svc, "sk-secret-1234")
+            .await
+            .unwrap();
 
         // Default: every opt-in safeguard is OFF (自创机制默认从宽).
         let features = svc.execution_features();
@@ -2813,28 +2199,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn initialize_stores_key_through_secret_store_boundary() {
-        let (svc, secrets) = service();
-        let view = svc.initialize("sk-secret-1234").await.unwrap();
-        assert!(view.configured);
-        assert_eq!(view.chat_model, "deepseek-v4-flash");
-        assert_eq!(view.reasoner_model, "deepseek-v4-pro");
-        assert_eq!(view.reasoning_effort, "high");
-        assert_eq!(view.api_key_masked, "sk-…1234");
-
-        // The key is in the secret store...
-        assert_eq!(
-            secrets.get("deepseek_api_key").unwrap().as_deref(),
-            Some("sk-secret-1234")
-        );
-        // ...but NOT in the persisted (DB) settings JSON.
-        let persisted = svc.load().unwrap().unwrap();
-        let json = serde_json::to_string(&persisted).unwrap();
-        assert!(!json.contains("sk-secret-1234"));
-        assert!(!json.contains("\"deepseek_api_key\""));
-    }
-
-    #[tokio::test]
     async fn audit_refresh_models_preserves_other_host_sandbox_mode() {
         let database_dir = tempfile::tempdir().unwrap();
         let database_path = database_dir.path().join("settings.sqlite");
@@ -2854,7 +2218,9 @@ mod tests {
             release: release.clone(),
         });
         let first = Arc::new(SettingsService::new(first_db, transport, secrets.clone()));
-        first.initialize("sk-audit-placeholder").await.unwrap();
+        crate::registry_fixture::configure(&first, "sk-audit-placeholder")
+            .await
+            .unwrap();
         // The first host keeps the original sandbox policy in its own cache.
         assert_eq!(
             first.load().unwrap().unwrap().sandbox_mode,
@@ -2869,7 +2235,7 @@ mod tests {
         block_next.store(true, Ordering::SeqCst);
         let refresh = {
             let first = first.clone();
-            tokio::spawn(async move { first.refresh_models().await })
+            tokio::spawn(async move { first.harness_models().fetch_models("deepseek").await })
         };
         started.notified().await;
 
@@ -2895,140 +2261,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn audit_refresh_models_does_not_restore_a_superseded_api_key() {
-        use crate::secret_store::SqliteSecretStore;
-
-        let body =
-            r#"{"data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#;
-        let mut overwritten_actions = Vec::new();
-        for action in ["sign_out", "replace_key"] {
-            let database_dir = tempfile::tempdir().unwrap();
-            let database_path = database_dir.path().join("credentials.sqlite");
-            let first_db = Arc::new(Database::open(&database_path).unwrap());
-            let wrapping = Arc::new(MemorySecretStore::new());
-            let first_secrets =
-                Arc::new(SqliteSecretStore::new(first_db.clone(), wrapping.clone()));
-            let started = Arc::new(Notify::new());
-            let release = Arc::new(Notify::new());
-            let block_next = Arc::new(AtomicBool::new(false));
-            let first = Arc::new(SettingsService::new(
-                first_db,
-                Arc::new(GateTransport {
-                    body: body.to_string(),
-                    block_next: block_next.clone(),
-                    started: started.clone(),
-                    release: release.clone(),
-                }),
-                first_secrets,
-            ));
-            first.initialize("audit-old-credential").await.unwrap();
-
-            block_next.store(true, Ordering::SeqCst);
-            let refresh = {
-                let first = first.clone();
-                tokio::spawn(async move { first.refresh_models().await })
-            };
-            tokio::time::timeout(std::time::Duration::from_secs(5), started.notified())
-                .await
-                .expect("model refresh must reach the controlled network wait");
-
-            let second_db = Arc::new(Database::open(&database_path).unwrap());
-            let second = SettingsService::new(
-                second_db.clone(),
-                Arc::new(MockTransport::with_get_json(body)),
-                Arc::new(SqliteSecretStore::new(second_db, wrapping.clone())),
-            );
-            let expected_key = if action == "sign_out" {
-                second.clear_key().unwrap();
-                None
-            } else {
-                second.initialize("audit-new-credential").await.unwrap();
-                Some("audit-new-credential")
-            };
-            assert_eq!(second.api_key().unwrap().as_deref(), expected_key);
-
-            release.notify_one();
-            // Rejecting a stale refresh is valid; it must not restore its key.
-            let refresh_succeeded = refresh.await.unwrap().is_ok();
-            let reopened_db = Arc::new(Database::open(&database_path).unwrap());
-            let reopened = SettingsService::new(
-                reopened_db.clone(),
-                Arc::new(MockTransport::with_get_json(body)),
-                Arc::new(SqliteSecretStore::new(reopened_db, wrapping)),
-            );
-            let reopened_key = reopened.api_key().unwrap();
-            let preserved = reopened_key.as_deref() == expected_key;
-            let restored_previous = reopened_key.as_deref() == Some("audit-old-credential");
-            let configured = reopened.view().unwrap().unwrap().configured;
-            eprintln!(
-                "action={action} refresh_succeeded={refresh_succeeded} credential_preserved={preserved} previous_restored={restored_previous} configured={configured}"
-            );
-            assert!(
-                preserved || restored_previous,
-                "unexpected fixture credential"
-            );
-            if !preserved {
-                overwritten_actions.push(action);
-            }
-        }
-        assert!(
-            overwritten_actions.is_empty(),
-            "a stale refresh restored its credential after: {overwritten_actions:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn runtime_can_read_raw_key() {
-        let (svc, _) = service();
-        svc.initialize("sk-abcd1234").await.unwrap();
-        assert_eq!(svc.api_key().unwrap().as_deref(), Some("sk-abcd1234"));
-    }
-
-    #[tokio::test]
     async fn empty_key_rejected_and_not_stored() {
         let (svc, secrets) = service();
-        assert!(svc.initialize("   ").await.is_err());
-        assert!(secrets.get("deepseek_api_key").unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn clear_key_signs_out_but_keeps_catalog() {
-        let (svc, _) = service();
-        svc.initialize("sk-abcd1234").await.unwrap();
-        svc.clear_key().unwrap();
-        assert!(svc.api_key().unwrap().is_none());
-        // Catalog remains; view shows not-configured + masked "(not set)".
-        let view = svc.view().unwrap().unwrap();
-        assert!(!view.configured);
-        assert_eq!(view.api_key_masked, "(not set)");
-        assert_eq!(view.chat_model, "deepseek-v4-flash");
-    }
-
-    #[tokio::test]
-    async fn set_model_overrides_role() {
-        let (svc, _) = service();
-        svc.initialize("sk-abcd1234").await.unwrap();
-        let view = svc
-            .set_model(deepagent_models::ModelRole::Chat, "deepseek-v4-pro")
-            .unwrap();
-        assert_eq!(view.chat_model, "deepseek-v4-pro");
+        assert!(crate::registry_fixture::configure(&svc, "   ")
+            .await
+            .is_err());
+        assert!(secrets.get("harness_provider:deepseek").unwrap().is_none());
     }
 
     #[tokio::test]
     async fn reasoning_effort_roundtrips_and_survives_refresh() {
         let (svc, _) = service();
-        svc.initialize("sk-abcd1234").await.unwrap();
+        crate::registry_fixture::configure(&svc, "sk-abcd1234")
+            .await
+            .unwrap();
         let view = svc.set_reasoning_effort(ReasoningEffort::Max).unwrap();
         assert_eq!(view.reasoning_effort, "max");
         assert_eq!(svc.reasoning_effort().unwrap(), ReasoningEffort::Max);
-        let refreshed = svc.refresh_models().await.unwrap();
+        svc.harness_models().fetch_models("deepseek").await.unwrap();
+        let refreshed = svc.view().unwrap().unwrap();
         assert_eq!(refreshed.reasoning_effort, "max");
     }
 
     #[tokio::test]
     async fn sandbox_mode_roundtrips_and_survives_refresh() {
         let (svc, _) = service();
-        let initial = svc.initialize("sk-abcd1234").await.unwrap();
+        let initial = crate::registry_fixture::configure(&svc, "sk-abcd1234")
+            .await
+            .unwrap();
         assert_eq!(initial.sandbox_mode, "workspace_write");
         assert_eq!(svc.sandbox_mode().unwrap(), SandboxMode::WorkspaceWrite);
 
@@ -3036,16 +2296,20 @@ mod tests {
         assert_eq!(view.sandbox_mode, "read_only");
         assert_eq!(svc.sandbox_mode().unwrap(), SandboxMode::ReadOnly);
 
-        let refreshed = svc.refresh_models().await.unwrap();
+        svc.harness_models().fetch_models("deepseek").await.unwrap();
+        let refreshed = svc.view().unwrap().unwrap();
         assert_eq!(refreshed.sandbox_mode, "read_only");
     }
 
     #[tokio::test]
     async fn set_unknown_model_rejected() {
         let (svc, _) = service();
-        svc.initialize("sk-abcd1234").await.unwrap();
+        crate::registry_fixture::configure(&svc, "sk-abcd1234")
+            .await
+            .unwrap();
         assert!(svc
-            .set_model(deepagent_models::ModelRole::Chat, "ghost-model")
+            .harness_models()
+            .select_model("deepseek", "ghost-model")
             .is_err());
     }
 
@@ -3055,7 +2319,9 @@ mod tests {
         // bloat every prompt. Setting / getting roundtrips through the
         // SQLite-backed settings doc, and survives a discovery refresh.
         let (svc, _) = service();
-        svc.initialize("sk-abcd1234").await.unwrap();
+        crate::registry_fixture::configure(&svc, "sk-abcd1234")
+            .await
+            .unwrap();
         assert_eq!(
             svc.tool_search_mode().unwrap(),
             deepagent_builtins::ToolSearchMode::Auto
@@ -3075,26 +2341,19 @@ mod tests {
             deepagent_builtins::ToolSearchMode::Auto
         );
 
-        svc.refresh_models().await.unwrap();
+        svc.harness_models().fetch_models("deepseek").await.unwrap();
         assert_eq!(
             svc.tool_search_mode().unwrap(),
             deepagent_builtins::ToolSearchMode::Auto
         );
     }
 
-    #[test]
-    fn tool_search_mode_set_before_initialize_errors() {
-        let (svc, _) = service();
-        let err = svc
-            .set_tool_search_mode(deepagent_builtins::ToolSearchMode::Enabled)
-            .unwrap_err();
-        assert!(matches!(err, CoreError::NotFound(_)));
-    }
-
     #[tokio::test]
     async fn web_search_settings_default_and_round_trip() {
         let (svc, _) = service();
-        let view = svc.initialize("sk-abcd1234").await.unwrap();
+        let view = crate::registry_fixture::configure(&svc, "sk-abcd1234")
+            .await
+            .unwrap();
         assert_eq!(view.web_search.schema_version, 2);
         assert_eq!(view.web_search.strategy, WebSearchStrategy::Fallback);
         assert_eq!(
@@ -3154,7 +2413,8 @@ mod tests {
             Some("https://search.example.com")
         );
 
-        let refreshed = svc.refresh_models().await.unwrap();
+        svc.harness_models().fetch_models("deepseek").await.unwrap();
+        let refreshed = svc.view().unwrap().unwrap();
         assert_eq!(refreshed.web_search.strategy, WebSearchStrategy::Verify);
         assert_eq!(
             refreshed.web_search.engines[0].id,
@@ -3169,7 +2429,9 @@ mod tests {
     #[tokio::test]
     async fn web_search_runtime_config_uses_current_login_key_and_drops_it_after_sign_out() {
         let (svc, _) = service();
-        svc.initialize("synthetic-old-login-key").await.unwrap();
+        crate::registry_fixture::configure(&svc, "synthetic-old-login-key")
+            .await
+            .unwrap();
 
         assert_eq!(
             svc.web_search_runtime_config()
@@ -3179,7 +2441,9 @@ mod tests {
             Some("synthetic-old-login-key")
         );
 
-        svc.initialize("synthetic-new-login-key").await.unwrap();
+        crate::registry_fixture::configure(&svc, "synthetic-new-login-key")
+            .await
+            .unwrap();
         assert_eq!(
             svc.web_search_runtime_config()
                 .unwrap()
@@ -3188,20 +2452,11 @@ mod tests {
             Some("synthetic-new-login-key")
         );
 
-        svc.clear_key().unwrap();
+        svc.harness_models().clear_credentials().unwrap();
         assert_eq!(
             svc.web_search_runtime_config().unwrap().deepseek_api_key,
             None
         );
-    }
-
-    #[test]
-    fn web_search_settings_set_before_initialize_errors() {
-        let (svc, _) = service();
-        let err = svc
-            .set_web_search_settings(WebSearchSettings::default())
-            .unwrap_err();
-        assert!(matches!(err, CoreError::NotFound(_)));
     }
 
     // ---- Skill marketplace settings (R10) ---------------------------------
@@ -3211,7 +2466,9 @@ mod tests {
         // R10.1: defaults after initialize are: enabled=true, budget=8000,
         // ai_review=true, ai_review_model=None.
         let (svc, _) = service();
-        svc.initialize("sk-abcd1234").await.unwrap();
+        crate::registry_fixture::configure(&svc, "sk-abcd1234")
+            .await
+            .unwrap();
 
         assert!(
             svc.skill_catalog_enabled().unwrap(),
@@ -3232,7 +2489,9 @@ mod tests {
         // thing to a "restart" available to a unit test) to confirm the
         // values survive a re-discovery cycle.
         let (svc, _) = service();
-        svc.initialize("sk-abcd1234").await.unwrap();
+        crate::registry_fixture::configure(&svc, "sk-abcd1234")
+            .await
+            .unwrap();
 
         svc.set_skill_catalog_enabled(false).unwrap();
         svc.set_skill_catalog_char_budget(0).unwrap();
@@ -3250,7 +2509,7 @@ mod tests {
 
         // Refresh models (re-runs discovery and persists). Skill settings
         // must carry over via the `prior` path in `initialize`.
-        svc.refresh_models().await.unwrap();
+        svc.harness_models().fetch_models("deepseek").await.unwrap();
 
         assert!(!svc.skill_catalog_enabled().unwrap());
         assert_eq!(svc.skill_catalog_char_budget().unwrap(), 0);
@@ -3266,7 +2525,9 @@ mod tests {
         // Pass an empty / whitespace-only string and the setter falls back
         // to None, so the consumer site reads "use the chat model".
         let (svc, _) = service();
-        svc.initialize("sk-abcd1234").await.unwrap();
+        crate::registry_fixture::configure(&svc, "sk-abcd1234")
+            .await
+            .unwrap();
 
         svc.set_skill_install_ai_review_model(Some("   ".into()))
             .unwrap();
@@ -3279,47 +2540,12 @@ mod tests {
     }
 
     #[test]
-    fn skill_settings_set_before_initialize_errors() {
-        // Mirrors `tool_search_mode_set_before_initialize_errors` so the
-        // failure mode is consistent across all post-init settings.
-        let (svc, _) = service();
-        assert!(matches!(
-            svc.set_skill_catalog_enabled(false).unwrap_err(),
-            CoreError::NotFound(_)
-        ));
-        assert!(matches!(
-            svc.set_skill_catalog_char_budget(0).unwrap_err(),
-            CoreError::NotFound(_)
-        ));
-        assert!(matches!(
-            svc.set_skill_install_ai_review_enabled(false).unwrap_err(),
-            CoreError::NotFound(_)
-        ));
-        assert!(matches!(
-            svc.set_skill_install_ai_review_model(Some("m".into()))
-                .unwrap_err(),
-            CoreError::NotFound(_)
-        ));
-    }
-
-    #[test]
     fn old_settings_payload_decodes_with_skill_defaults() {
         // R10.1 backwards-compatibility: a settings JSON written by an
         // older build (no skill_* keys) must decode cleanly with the
         // documented defaults. This is the contract that `#[serde(default
         // = "...")]` provides; we lock it in with an explicit test.
-        let json = r#"{
-            "catalog": {
-                "base_url": "https://api.deepseek.com/v1",
-                "available": [
-                    {"id": "deepseek-v4-flash", "object": "model", "owned_by": "deepseek"}
-                ],
-                "chat_model": "deepseek-v4-flash",
-                "reasoner_model": "deepseek-v4-flash"
-            },
-            "discovered_at": 0,
-            "sandbox_mode": "workspace_write"
-        }"#;
+        let json = r#"{"sandbox_mode":"workspace_write"}"#;
         let parsed: AppSettings = serde_json::from_str(json).expect("decode old payload");
 
         assert!(parsed.skill_catalog_enabled);
@@ -3340,7 +2566,9 @@ mod tests {
         // (snake_case, matching the field names) so the desktop layer's
         // Tauri commands can decode + re-encode them without lossiness.
         let (svc, _) = service();
-        svc.initialize("sk-abcd1234").await.unwrap();
+        crate::registry_fixture::configure(&svc, "sk-abcd1234")
+            .await
+            .unwrap();
         svc.set_skill_catalog_char_budget(123).unwrap();
         svc.set_skill_install_ai_review_model(Some("m".into()))
             .unwrap();
@@ -3354,16 +2582,12 @@ mod tests {
         assert!(json.contains("\"skill_install_ai_review_model\":\"m\""));
     }
 
-    #[test]
-    fn view_before_init_is_none() {
-        let (svc, _) = service();
-        assert!(svc.view().unwrap().is_none());
-    }
-
     #[tokio::test]
     async fn hooks_json_roundtrips_and_validates() {
         let (svc, _) = service();
-        svc.initialize("sk-abcd1234").await.unwrap();
+        crate::registry_fixture::configure(&svc, "sk-abcd1234")
+            .await
+            .unwrap();
         // Default empty.
         assert_eq!(svc.hooks_json().unwrap(), "");
         assert!(svc.hook_definitions().unwrap().is_empty());
@@ -3382,100 +2606,13 @@ mod tests {
     #[tokio::test]
     async fn hooks_json_survives_refresh() {
         let (svc, _) = service();
-        svc.initialize("sk-abcd1234").await.unwrap();
+        crate::registry_fixture::configure(&svc, "sk-abcd1234")
+            .await
+            .unwrap();
         let json = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"./stop.sh"}]}]}}"#;
         svc.set_hooks_json(json).unwrap();
-        svc.refresh_models().await.unwrap();
+        svc.harness_models().fetch_models("deepseek").await.unwrap();
         assert_eq!(svc.hooks_json().unwrap(), json);
-    }
-
-    #[tokio::test]
-    async fn query_balance_without_key_errors_cleanly() {
-        let (svc, _) = service();
-        let err = svc.query_balance().await.unwrap_err();
-        assert!(matches!(err, CoreError::NotFound(_)));
-    }
-
-    #[tokio::test]
-    async fn query_balance_parses_response() {
-        // A bespoke service whose mock transport returns a balance body so we
-        // can exercise the parsing path without going through `initialize`
-        // (which expects the models body).
-        let body = r#"{
-            "is_available": true,
-            "balance_infos": [
-                {"currency":"CNY","total_balance":"42.50","granted_balance":"2.50","topped_up_balance":"40.00"}
-            ]
-        }"#;
-        let db = Arc::new(Database::open_in_memory().unwrap());
-        let secrets: Arc<dyn crate::secret_store::SecretStore> = Arc::new(MemorySecretStore::new());
-        secrets.set("deepseek_api_key", "sk-test").unwrap();
-        let transport: Arc<dyn HttpTransport> = Arc::new(MockTransport::with_get_json(body));
-        let svc = SettingsService::new(db, transport, secrets);
-        // Seed a minimal AppSettings so query_balance can read the base_url.
-        let settings = AppSettings {
-            catalog: ModelCatalog::auto_select(
-                deepagent_models::DEEPSEEK_BASE_URL.to_string(),
-                vec![
-                    deepagent_models::ModelInfo {
-                        input_modalities: None,
-                        effort: None,
-                        id: "deepseek-v4-flash".into(),
-                        object: "model".into(),
-                        owned_by: "deepseek".into(),
-                        context_window: None,
-                        max_output_tokens: None,
-                    },
-                    deepagent_models::ModelInfo {
-                        input_modalities: None,
-                        effort: None,
-                        id: "deepseek-v4-pro".into(),
-                        object: "model".into(),
-                        owned_by: "deepseek".into(),
-                        context_window: None,
-                        max_output_tokens: None,
-                    },
-                ],
-            )
-            .unwrap(),
-            discovered_at: 0,
-            pricing_catalog: Default::default(),
-            approval_policy: ApprovalPolicy::AlwaysAsk,
-            sandbox_mode: SandboxMode::WorkspaceWrite,
-            terminal_shell: TerminalShell::default(),
-            reasoning_effort: ReasoningEffort::High,
-            reasoning_effort_explicit: true,
-            responses: ResponsesApiSettings::default(),
-            permission_rules: PermissionRules::default(),
-            hooks_json: String::new(),
-            verification_policy: VerificationPolicy::default(),
-            web_search: WebSearchSettings::default(),
-            vision: VisionSettings::default(),
-            tool_search_mode: deepagent_builtins::ToolSearchMode::default(),
-            tool_search_auto_threshold_chars: None,
-            skill_catalog_enabled: default_skill_catalog_enabled(),
-            skill_catalog_char_budget: default_skill_catalog_char_budget(),
-            skill_install_ai_review_enabled: default_skill_install_ai_review_enabled(),
-            skill_install_ai_review_model: None,
-            active_permission_preset: PermissionPreset::default(),
-            permission_preset_visibility: PermissionPresetVisibility::default(),
-            welcome_name: String::new(),
-            autocompact_reserve_tokens: None,
-            context_headroom_tokens: None,
-            output_style: OutputStyle::default(),
-            execution_features: ExecutionFeatures::default(),
-            language: String::new(),
-        };
-        svc.save(&settings).unwrap();
-
-        let dto = svc.query_balance().await.unwrap();
-        assert!(dto.is_available);
-        assert_eq!(dto.infos.len(), 1);
-        let info = &dto.infos[0];
-        assert_eq!(info.currency, "CNY");
-        assert_eq!(info.total_balance, "42.50");
-        assert_eq!(info.granted_balance, "2.50");
-        assert_eq!(info.topped_up_balance, "40.00");
     }
 }
 #[test]
@@ -3516,7 +2653,11 @@ fn responses_developer_json_uses_official_nested_reasoning_shape() {
 
 #[test]
 fn reasoning_effort_accepts_official_aliases_but_rejects_legacy_labels() {
-    for (value, canonical) in [("minimal", "low"), ("medium", "medium"), ("xhigh", "high")] {
+    for (value, canonical) in [
+        ("minimal", "minimal"),
+        ("medium", "medium"),
+        ("xhigh", "xhigh"),
+    ] {
         let settings = ResponsesApiSettings {
             reasoning_effort: Some(value.to_string()),
             ..ResponsesApiSettings::default()
@@ -3557,13 +2698,6 @@ fn reasoning_effort_accepts_official_aliases_but_rejects_legacy_labels() {
         .is_ok());
         assert!(ReasoningEffort::parse(value).is_some());
     }
-}
-
-#[test]
-fn migration_persists_removal_of_malformed_legacy_reasoning_field() {
-    let mut stored = serde_json::json!({"thinking_depth": true});
-    assert_eq!(migrate_persisted_reasoning(&mut stored), 1);
-    assert!(stored.get("thinking_depth").is_none());
 }
 
 #[test]
@@ -3611,7 +2745,7 @@ fn responses_user_identifier_validates_both_settings_surfaces() {
 }
 
 #[tokio::test]
-async fn load_migrates_legacy_reasoning_and_normalizes_responses_aliases() {
+async fn load_preserves_explicit_responses_wire_values() {
     let db = Arc::new(Database::open_in_memory().unwrap());
     let svc = SettingsService::new(
         db.clone(),
@@ -3620,15 +2754,15 @@ async fn load_migrates_legacy_reasoning_and_normalizes_responses_aliases() {
         )),
         Arc::new(crate::secret_store::MemorySecretStore::new()),
     );
-    svc.initialize("sk-synthetic-test").await.unwrap();
+    crate::registry_fixture::configure(&svc, "sk-synthetic-test")
+        .await
+        .unwrap();
     let store = DocumentStore::new(&svc.db);
     let doc = store
         .get(SETTINGS_COLLECTION, SETTINGS_ID)
         .unwrap()
         .unwrap();
     let mut stored: serde_json::Value = serde_json::from_str(&doc.body).unwrap();
-    stored["thinking_depth"] = serde_json::json!("medium");
-    stored["reasoning_effort"] = serde_json::json!("deep");
     stored["responses"]["reasoning_effort"] = serde_json::json!("medium");
     stored["responses"]["developer"] = serde_json::json!({
         "reasoning": { "effort": "xhigh" },
@@ -3646,9 +2780,8 @@ async fn load_migrates_legacy_reasoning_and_normalizes_responses_aliases() {
     *svc.settings_cache.lock().unwrap() = None;
 
     let loaded = svc.load().unwrap().unwrap();
-    assert_eq!(loaded.reasoning_effort, ReasoningEffort::High);
     assert_eq!(loaded.responses.reasoning_effort.as_deref(), Some("medium"));
-    assert_eq!(loaded.responses.developer["reasoning"]["effort"], "high");
+    assert_eq!(loaded.responses.developer["reasoning"]["effort"], "xhigh");
     assert_eq!(loaded.responses.effective_temperature(), Some(0.4));
 
     let cleaned = store
@@ -3657,11 +2790,11 @@ async fn load_migrates_legacy_reasoning_and_normalizes_responses_aliases() {
         .unwrap();
     let cleaned: serde_json::Value = serde_json::from_str(&cleaned.body).unwrap();
     assert!(cleaned.get("thinking_depth").is_none());
-    assert_eq!(cleaned["reasoning_effort"], "high");
+    assert!(cleaned.get("reasoning_effort").is_none());
     assert_eq!(cleaned["responses"]["reasoning_effort"], "medium");
     assert_eq!(
         cleaned["responses"]["developer"]["reasoning"]["effort"],
-        "high"
+        "xhigh"
     );
     assert_eq!(cleaned["responses"]["developer"]["temperature"], 0.4);
 }

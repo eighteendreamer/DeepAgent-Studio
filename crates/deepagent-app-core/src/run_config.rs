@@ -839,11 +839,11 @@ mod tests {
     #[test]
     fn provider_and_reasoning_overrides_are_run_scoped_scalars() {
         let overlay = RunConfigOverlay::from_value(serde_json::json!({
-            "provider": "  deepseek-official ",
+            "provider": "  deepseek ",
             "reasoningEffort": "high"
         }));
 
-        assert_eq!(overlay.provider_override(), Some("deepseek-official"));
+        assert_eq!(overlay.provider_override(), Some("deepseek"));
         assert_eq!(overlay.reasoning_effort_override(), Some("high"));
     }
 }

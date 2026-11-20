@@ -64,22 +64,10 @@ impl ModelCapability {
         requested: Option<ReasoningEffort>,
     ) -> Result<Option<ReasoningEffort>> {
         if let Some(thinking) = &self.thinking {
-            let effort = requested.or_else(|| {
-                self.effort
-                    .as_ref()
-                    .and_then(|metadata| metadata.default_level.as_deref())
-                    .and_then(ReasoningEffort::parse_responses)
-            });
-            if let Some(effort) = effort {
-                if !thinking.allows(effort.into()) {
-                    return Err(CoreError::invalid(format!(
-                        "model '{}' does not support reasoning effort '{}'",
-                        self.model_id,
-                        effort.label()
-                    )));
-                }
-            }
-            return Ok(effort);
+            return requested
+                .or_else(|| thinking.default_effort.map(ReasoningEffort::from))
+                .map(|effort| thinking.normalize(effort.into()).map(ReasoningEffort::from))
+                .transpose();
         }
         let Some(metadata) = self.effort.as_ref() else {
             return Ok(requested);
@@ -179,7 +167,7 @@ impl ModelCapabilityResolver {
         };
         // Preserve a supplied zero instead of treating it as absent. On narrow
         // platforms only cap unrepresentable values; never wrap them to a smaller
-        // unrelated number. The raw u64 declaration remains in ModelCatalog.
+        // unrelated number. The raw u64 declaration remains in ModelInfo.
         let platform_capacity = |value| usize::try_from(value).unwrap_or(usize::MAX);
         if let Some(context) = model.context_window {
             capability.context_window = platform_capacity(context);
@@ -384,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_metadata_preserves_unknown_levels_and_normalizes_supported_aliases() {
+    fn reasoning_metadata_preserves_unknown_levels_and_distinct_supported_efforts() {
         let model = ModelInfo {
             id: "limited".into(),
             object: "model".into(),
@@ -401,14 +389,17 @@ mod tests {
         assert_eq!(capability.effort, model.effort);
         assert_eq!(
             capability.resolve_reasoning_effort(None).unwrap(),
-            Some(ReasoningEffort::Low)
+            Some(ReasoningEffort::Minimal)
         );
         assert_eq!(
             capability
-                .resolve_reasoning_effort(Some(ReasoningEffort::High))
+                .resolve_reasoning_effort(Some(ReasoningEffort::Xhigh))
                 .unwrap(),
-            Some(ReasoningEffort::High)
+            Some(ReasoningEffort::Xhigh)
         );
+        assert!(capability
+            .resolve_reasoning_effort(Some(ReasoningEffort::High))
+            .is_err());
         assert!(capability
             .resolve_reasoning_effort(Some(ReasoningEffort::Max))
             .is_err());

@@ -48,7 +48,9 @@ async fn observe(ending: &str) {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("synthetic-placeholder").await.unwrap();
+    crate::registry_fixture::configure(&settings, "synthetic-placeholder")
+        .await
+        .unwrap();
     let first = vec![
         json!({"type":"response.created","sequence_number":0,"response":{
             "id":"attempt-lost","model":"server-model-before","instructions":"PRIVATE_BODY"}})

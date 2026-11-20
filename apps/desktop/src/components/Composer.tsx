@@ -250,7 +250,7 @@ export function Composer({
   const composerRef = useRef<HTMLDivElement>(null);
   const messageSendMotion = useMessageSendMotion();
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
-  const { modelOptions, activeModelOptions, selectedModel, modelCapabilities, selectedThinking, switching,
+  const { modelOptions, activeModelOptions, selectedModel, selectedThinking, switching,
     chooseModel, chooseThinking } = useComposerModelSettings();
   const [slashResults, setSlashResults] = useState<SlashChoice[]>([]);
   const [slashSelected, setSlashSelected] = useState(0);
@@ -521,6 +521,7 @@ export function Composer({
           { id: "high", title: "high", description: "高推理强度", category: "推理强度" },
           { id: "max", title: "max", description: "最高推理强度", category: "推理强度" },
         ]
+          .filter(opt => activeModelOptions.find(model => model.id === selectedModel)?.thinkingLevels.includes(opt.id))
           .filter((opt) => opt.title.includes(argQuery) || opt.description.includes(argQuery))
           .map((opt) => ({
             ...opt,
@@ -1706,7 +1707,6 @@ export function Composer({
             snapshot={contextUsage}
             contextWindow={
               modelOptions.find((model) => model.id === selectedModel)?.contextWindow
-                ?? modelCapabilities.find((c) => c.model_id === selectedModel)?.context_window
             }
             fallbackPromptTokens={contextUsageFallbackTokens}
             popoverSuppressed={isModelDropdownOpen || isApprovalDropdownOpen}

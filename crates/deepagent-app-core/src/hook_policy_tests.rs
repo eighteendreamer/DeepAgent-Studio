@@ -85,7 +85,9 @@ async fn assembled_read(
         )),
         Arc::new(crate::MemorySecretStore::new()),
     );
-    settings.initialize("offline-policy-fixture").await.unwrap();
+    crate::registry_fixture::configure(&settings, "offline-policy-fixture")
+        .await
+        .unwrap();
     settings.set_permission_rules(ui_rules).unwrap();
     // Match ALL tools: passing the extension registry into the child would
     // recursively invoke this action on its forced read.

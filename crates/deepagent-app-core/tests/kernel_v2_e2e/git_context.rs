@@ -124,8 +124,7 @@ async fn observe(change: Change, relative: &str) -> Observation {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
         .await
         .unwrap();
     let model = Arc::new(GitContextModel::default());

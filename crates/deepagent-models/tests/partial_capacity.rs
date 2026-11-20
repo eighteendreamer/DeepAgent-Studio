@@ -1,9 +1,14 @@
 //! H-296: discovered partial capacities reach real serializers, not just previews.
+
+#[cfg(test)]
+#[path = "support/metadata.rs"]
+mod metadata_fixture;
+
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use deepagent_core::{error::CoreError, message::Message, Result};
-use deepagent_models::discovery::{ModelCatalog, ModelInfo, ModelRole, DEEPSEEK_BASE_URL};
+use deepagent_models::discovery::ModelInfo;
 use deepagent_models::transport::{EventSink, HttpTransport, TransportRequest};
 use deepagent_models::{ModelClient, ModelConfig, ResponseRequest, WireMode};
 use serde_json::{json, Value};
@@ -27,10 +32,10 @@ fn config(model: &str, context: Option<u64>, output: Option<u64>, mode: WireMode
         "id":model,"context_window":context,"max_output_tokens":output
     }))
     .unwrap();
-    let catalog = ModelCatalog::auto_select(DEEPSEEK_BASE_URL, vec![entry]).unwrap();
-    let restored: ModelCatalog =
+    let catalog = vec![entry];
+    let restored: Vec<deepagent_models::ModelInfo> =
         serde_json::from_value(serde_json::to_value(catalog).unwrap()).unwrap();
-    ModelConfig::from_catalog("synthetic-h296", &restored, ModelRole::Chat).with_wire_mode(mode)
+    crate::metadata_fixture::config("synthetic-h296", &restored).with_wire_mode(mode)
 }
 
 #[tokio::test]

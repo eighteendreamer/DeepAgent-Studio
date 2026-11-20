@@ -458,7 +458,8 @@ const MIGRATIONS: &[&str] = &[
         identity TEXT NOT NULL,
         revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision>=0)
     );
-    INSERT OR IGNORE INTO session_catalog_state VALUES (1, lower(hex(randomblob(16))), 0);
+    INSERT OR IGNORE INTO session_catalog_state (singleton, identity, revision)
+    VALUES (1, lower(hex(randomblob(16))), 0);
     CREATE INDEX IF NOT EXISTS idx_sessions_catalog_updated ON sessions(updated_at DESC,id DESC);
     CREATE INDEX IF NOT EXISTS idx_sessions_catalog_created ON sessions(created_at DESC,id DESC);
     CREATE INDEX IF NOT EXISTS idx_sessions_catalog_project ON sessions(project,updated_at DESC,id DESC);
@@ -540,7 +541,32 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE harness_providers ADD COLUMN website_url TEXT NOT NULL DEFAULT '';
     "#,
+    // V26: the harness registry is the only model configuration authority.
+    // Keep unrelated settings and existing registry rows; never import a model.
+    r#"
+    UPDATE documents SET body = json_remove(body, '$.catalog', '$.discovered_at',
+        '$.thinking_depth', '$.reasoning_effort', '$.reasoning_effort_explicit'),
+        updated_at = CAST(strftime('%s', 'now') AS INTEGER) * 1000
+    WHERE collection = 'settings' AND id = 'app' AND json_valid(body)
+      AND (json_type(body, '$.catalog') IS NOT NULL
+           OR json_type(body, '$.discovered_at') IS NOT NULL
+           OR json_type(body, '$.thinking_depth') IS NOT NULL
+           OR json_type(body, '$.reasoning_effort') IS NOT NULL
+           OR json_type(body, '$.reasoning_effort_explicit') IS NOT NULL);
+    DELETE FROM documents WHERE collection = 'settings' AND id = 'credential_lifecycle';
+    DELETE FROM documents WHERE collection = 'migrations' AND id = 'harness_registry_seed_v1';
+    "#,
+    // V27: missing audit timestamps are installed by the shared helper below.
+    // It is also used when disposable search projections are rebuilt.
+    "",
 ];
+
+#[path = "migrations/timestamps.rs"]
+mod timestamps;
+
+#[cfg(test)]
+#[path = "migrations/cutover_tests.rs"]
+mod cutover_tests;
 
 /// The highest schema version defined by this build.
 pub const LATEST_VERSION: i64 = MIGRATIONS.len() as i64;
@@ -577,6 +603,9 @@ pub fn run(conn: &Connection) -> Result<()> {
                 ).map_err(map_sqlite)?;
             if !website_exists {
                 conn.execute_batch(script).map_err(map_sqlite)?;
+            }
+            if next == 27 {
+                timestamps::install(conn)?;
             }
             // user_version does not accept bound params; format is safe (i64).
             conn.execute_batch(&format!("PRAGMA user_version = {next};"))
@@ -626,7 +655,10 @@ fn ensure_session_search_projection(conn: &Connection) -> Result<()> {
          DROP TABLE IF EXISTS session_search_docs;",
     )
     .map_err(map_sqlite)?;
-    let result = conn.execute_batch(MIGRATIONS[18]).map_err(map_sqlite);
+    let result = conn
+        .execute_batch(MIGRATIONS[18])
+        .map_err(map_sqlite)
+        .and_then(|()| timestamps::install(conn));
     match result {
         Ok(()) => conn.execute_batch("COMMIT;").map_err(map_sqlite),
         Err(error) => {
@@ -873,7 +905,8 @@ mod tests {
             .unwrap()
         };
         let initial = snapshot();
-        conn.execute_batch(MIGRATIONS[22]).unwrap();
+        conn.execute_batch("PRAGMA user_version=22;").unwrap();
+        run(&conn).unwrap();
         assert_eq!(
             snapshot(),
             initial,

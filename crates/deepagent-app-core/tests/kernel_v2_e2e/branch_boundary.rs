@@ -7,7 +7,6 @@ use deepagent_core::{
     event::EventPayload,
     message::Message,
 };
-use deepagent_models::ModelRole;
 use deepagent_persistence::event_store::EventStore;
 use deepagent_session::Session;
 
@@ -139,22 +138,16 @@ async fn branch_continuation(db: Arc<Database>, target: &str) -> Result<serde_js
     let settings = Arc::new(SettingsService::new(
         db.clone(),
         Arc::new(MockTransport::with_get_json(
-            r#"{"data":[{"id":"deepseek-flash","object":"model","owned_by":"deepseek"}]}"#,
+            r#"{"data":[{"id":"deepseek-flash","object":"model","owned_by":"deepseek","input_modalities":["text","image"]}]}"#,
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
         .await
         .unwrap();
-    for role in [ModelRole::Chat, ModelRole::Reasoner] {
-        settings.set_model(role, "deepseek-flash").unwrap();
-    }
     settings
-        .set_vision_settings(deepagent_app_core::VisionSettings {
-            mode: deepagent_app_core::VisionMode::Off,
-            ..Default::default()
-        })
+        .harness_models()
+        .select_model("deepseek", "deepseek-flash")
         .unwrap();
     let requests = Arc::new(Mutex::new(Vec::new()));
     let run_id = format!("audit-branch-{}", deepagent_core::id::EventId::new());

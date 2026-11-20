@@ -7,36 +7,28 @@ use std::io::{self, Write};
 // Applies to the complete JSON body, including inline base64, on every route.
 const MAX_REQUEST_BYTES: usize = 48 * 1024 * 1024;
 
-pub(super) struct ChatRequest<'a> {
-    pub request: &'a crate::ChatCompletionRequest,
-    pub deepseek_extensions: bool,
+/// Reuse the bounded serializers while supplying model-resolved wire effort.
+pub(super) enum ReasoningRequest<'a> {
+    Responses(&'a crate::ResponseRequest, Option<&'a str>),
+    Chat(
+        &'a crate::ChatCompletionRequest,
+        Option<&'a str>,
+        Option<&'a crate::chat::ThinkingToggle>,
+        bool,
+    ),
 }
 
-impl Serialize for ChatRequest<'_> {
+impl Serialize for ReasoningRequest<'_> {
     fn serialize<S: serde::Serializer>(
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
-        self.request.serialize_for_provider(
-            serializer,
-            self.request
-                .reasoning_effort
-                .or_else(|| {
-                    self.request
-                        .thinking
-                        .as_ref()
-                        .filter(|thinking| thinking.kind == "disabled")
-                        .map(|_| crate::ReasoningEffort::None)
-                })
-                .filter(|effort| {
-                    !self.deepseek_extensions || *effort != crate::ReasoningEffort::None
-                })
-                .map(crate::ReasoningEffort::label),
-            self.deepseek_extensions
-                .then_some(self.request.thinking.as_ref())
-                .flatten(),
-            self.deepseek_extensions,
-        )
+        match self {
+            Self::Responses(request, effort) => request.serialize_with_effort(serializer, *effort),
+            Self::Chat(request, effort, thinking, deepseek_extensions) => {
+                request.serialize_for_provider(serializer, *effort, *thinking, *deepseek_extensions)
+            }
+        }
     }
 }
 

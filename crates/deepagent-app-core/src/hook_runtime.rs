@@ -381,14 +381,15 @@ impl AppHookActionExecutor {
             .map(str::trim)
             .filter(|model| !model.is_empty())
             .unwrap_or(&self.model);
-        let request = ResponseRequest::with_instructions_and_user_input(
+        let mut request = ResponseRequest::with_instructions_and_user_input(
             model,
             model_hook_system_prompt(false),
             prompt,
         )
         .with_temperature(0.0)
-        .with_max_output_tokens(512)
-        .with_reasoning_effort(ReasoningEffort::None);
+        .with_max_output_tokens(512);
+        request.reasoning_effort =
+            crate::model_runtime::auxiliary_reasoning_effort(&self.client, model);
         let usage = usage.unwrap_or_else(|| Arc::new(NoopEventSink));
         usage.before_call()?;
         let mut observer = CallUsageObserver::new(usage.clone(), model.into(), false);
@@ -451,6 +452,7 @@ impl AppHookActionExecutor {
         let task = session.create_task(&prompt)?;
         let mut agent = ModelAgent::new(self.client.clone(), model, system, prompt, tools)
             .with_reasoning_effort(self.reasoning_effort)
+            .with_reasoning_effort_selection(self.client.configured_reasoning_effort())
             .with_max_model_attempts(2);
         if let Some(usage) = usage {
             agent = agent.with_call_usage_sink(usage);

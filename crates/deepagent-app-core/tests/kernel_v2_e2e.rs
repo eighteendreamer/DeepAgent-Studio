@@ -1,3 +1,11 @@
+#[cfg(test)]
+#[path = "../../deepagent-models/tests/support/metadata.rs"]
+mod metadata_fixture;
+
+#[cfg(test)]
+#[path = "support/model_registry.rs"]
+mod registry_fixture;
+
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -596,7 +604,9 @@ async fn audit_sandbox_override_does_not_route_to_default_direct_backend() {
         discovery,
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("sk-audit-placeholder").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
+        .await
+        .unwrap();
     settings
         .set_approval_policy(ApprovalPolicy::FullAccess)
         .unwrap();
@@ -722,7 +732,9 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("sk-audit-placeholder").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
+        .await
+        .unwrap();
     let mcp = Arc::new(McpService::new(db.clone()));
     let dto: McpServerDto = serde_json::from_value(serde_json::json!({
         "name":"slow_audit", "transport":"stdio", "enabled":true,
@@ -838,7 +850,9 @@ async fn write_turn_reaches_terminal_with_checkpoint_and_real_side_effect() {
         discovery,
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("sk-e2e-test").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-e2e-test")
+        .await
+        .unwrap();
 
     let tool_turn = response_function_call(
         "call-write",
@@ -919,7 +933,9 @@ async fn audit_unrelated_read_does_not_move_reads_before_write_barrier() {
             )),
             Arc::new(MemorySecretStore::new()),
         ));
-        settings.initialize("sk-audit-placeholder").await.unwrap();
+        crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
+            .await
+            .unwrap();
         let mut calls = vec![
             (
                 "audit-write",
@@ -1051,7 +1067,9 @@ async fn audit_saved_tool_result_survives_turn_and_database_reopen() {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("sk-audit-placeholder").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
+        .await
+        .unwrap();
     // Fewer than 2000 lines, but above the production 4000-token result budget.
     let content = format!(
         "{}\nAUDIT_RESULT_TAIL",
@@ -1170,7 +1188,9 @@ async fn approval_lifecycle_healthy_answers_keep_durable_and_live_paths_aligned(
                 )),
                 Arc::new(MemorySecretStore::new()),
             ));
-            settings.initialize("sk-audit-placeholder").await.unwrap();
+            crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
+                .await
+                .unwrap();
             settings
                 .set_approval_policy(ApprovalPolicy::AlwaysAsk)
                 .unwrap();
@@ -1327,7 +1347,9 @@ async fn cancelled_approval_scope(scope: &str) {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("sk-audit-placeholder").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
+        .await
+        .unwrap();
     settings
         .set_approval_policy(ApprovalPolicy::AlwaysAsk)
         .unwrap();
@@ -1524,7 +1546,9 @@ async fn cancel_by_run_id_stops_model_stream_and_reaches_terminal_under_two_seco
         discovery,
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("sk-e2e-test").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-e2e-test")
+        .await
+        .unwrap();
     let started = Arc::new(tokio::sync::Notify::new());
     let transport: Arc<dyn HttpTransport> = Arc::new(HangingTransport {
         started: started.clone(),
@@ -1588,7 +1612,9 @@ async fn native_move_and_delete_are_verified_and_recorded_as_completion_evidence
         discovery,
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("sk-e2e-test").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-e2e-test")
+        .await
+        .unwrap();
     settings
         .set_active_permission_preset(PermissionPreset::FullAccess)
         .unwrap();
@@ -1677,7 +1703,9 @@ async fn completion_is_not_gated_by_prompt_keyword_extraction() {
         discovery,
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("sk-e2e-test").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-e2e-test")
+        .await
+        .unwrap();
     let transport: Arc<dyn HttpTransport> = Arc::new(ReplayTransport::new([response_text(
         "Deleted target-dir successfully.",
     )]));
@@ -1737,7 +1765,9 @@ async fn subagent_run_persists_terminal_state_and_independent_transcript() {
         discovery,
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("sk-e2e-test").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-e2e-test")
+        .await
+        .unwrap();
     settings
         .set_active_permission_preset(PermissionPreset::FullAccess)
         .unwrap();
@@ -1824,7 +1854,9 @@ async fn background_subagent_outlives_parent_and_can_be_cancelled_independently(
         discovery,
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("sk-e2e-test").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-e2e-test")
+        .await
+        .unwrap();
     settings
         .set_active_permission_preset(PermissionPreset::FullAccess)
         .unwrap();
@@ -1921,7 +1953,9 @@ async fn terminal_subagent_resumes_across_parent_runs_in_the_same_session() {
         discovery,
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("sk-e2e-test").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-e2e-test")
+        .await
+        .unwrap();
     settings
         .set_active_permission_preset(PermissionPreset::FullAccess)
         .unwrap();
@@ -2019,7 +2053,9 @@ async fn worktree_subagent_rebinds_file_tools_without_touching_main_checkout() {
         discovery,
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("sk-e2e-test").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-e2e-test")
+        .await
+        .unwrap();
     settings
         .set_active_permission_preset(PermissionPreset::FullAccess)
         .unwrap();
@@ -2169,7 +2205,9 @@ async fn failed_subagent_propagates_paired_failure_and_parent_still_terminates()
         discovery,
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("sk-e2e-test").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-e2e-test")
+        .await
+        .unwrap();
     settings
         .set_active_permission_preset(PermissionPreset::FullAccess)
         .unwrap();
@@ -2397,7 +2435,9 @@ impl NoteE2e {
             discovery,
             Arc::new(MemorySecretStore::new()),
         ));
-        settings.initialize("sk-e2e-test").await.unwrap();
+        crate::registry_fixture::configure(&settings, "sk-e2e-test")
+            .await
+            .unwrap();
         let transport = Arc::new(NotePassTransport::default());
         let cost = Arc::new(CostService::new(db.clone()));
         let chat = ChatService::new(db.clone(), settings, transport.clone(), &root).with_cost(cost);
@@ -2628,7 +2668,9 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
             )),
             Arc::new(MemorySecretStore::new()),
         ));
-        settings.initialize("sk-audit-placeholder").await.unwrap();
+        crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
+            .await
+            .unwrap();
         settings
             .set_tool_search_mode(deepagent_builtins::ToolSearchMode::Disabled)
             .unwrap();
@@ -2799,7 +2841,9 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("sk-audit-placeholder").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
+        .await
+        .unwrap();
     let mcp = Arc::new(McpService::new(db.clone()));
     let dto: McpServerDto = serde_json::from_value(serde_json::json!({
         "name":"instructions_audit", "transport":"stdio", "enabled":true,
@@ -2904,7 +2948,9 @@ async fn audit_harness_reasoning_override_reaches_provider_request() {
             discovery,
             Arc::new(MemorySecretStore::new()),
         ));
-        settings.initialize("sk-audit-placeholder").await.unwrap();
+        crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
+            .await
+            .unwrap();
         settings.set_reasoning_effort(depth).unwrap();
         let transport = Arc::new(ObservedModel(Mutex::new(Vec::new())));
         let chat = ChatService::new(db, settings, transport.clone(), root.path());
@@ -2977,7 +3023,9 @@ async fn audit_skill_catalog_survives_continuation_on_wire() {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("sk-audit-placeholder").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
+        .await
+        .unwrap();
     settings.set_skill_catalog_enabled(true).unwrap();
     let model = Arc::new(ObservedModel(Mutex::new(Vec::new())));
     let chat = ChatService::new(db, settings, model.clone(), root.path()).with_skills(skills);
@@ -3041,7 +3089,9 @@ async fn responses_reasoning_effort_settings_accepts_official_aliases_and_normal
         )),
         Arc::new(MemorySecretStore::new()),
     );
-    settings.initialize("sk-audit-placeholder").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
+        .await
+        .unwrap();
 
     for effort in ["none", "low", "medium", "high", "max"] {
         settings
@@ -3057,7 +3107,11 @@ async fn responses_reasoning_effort_settings_accepts_official_aliases_and_normal
         assert_eq!(effective, deepagent_models::ReasoningEffort::parse(effort));
     }
 
-    for (alias, canonical) in [("minimal", "low"), ("medium", "medium"), ("xhigh", "high")] {
+    for (alias, canonical) in [
+        ("minimal", "minimal"),
+        ("medium", "medium"),
+        ("xhigh", "xhigh"),
+    ] {
         settings
             .set_responses_settings(ResponsesApiSettings {
                 reasoning_effort: Some(alias.to_string()),
@@ -3102,7 +3156,7 @@ async fn responses_reasoning_effort_settings_accepts_official_aliases_and_normal
 }
 
 #[tokio::test]
-async fn responses_reasoning_effort_settings_reach_provider_wire() {
+async fn selected_model_reasoning_effort_reaches_provider_wire() {
     use deepagent_app_core::settings::ResponsesApiSettings;
     use deepagent_models::ReasoningEffort;
 
@@ -3130,7 +3184,9 @@ async fn responses_reasoning_effort_settings_reach_provider_wire() {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("sk-audit-placeholder").await.unwrap();
+    crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
+        .await
+        .unwrap();
     settings.set_reasoning_effort(ReasoningEffort::Low).unwrap();
 
     let mut actual_requests = Vec::new();
@@ -3140,14 +3196,17 @@ async fn responses_reasoning_effort_settings_reach_provider_wire() {
         ("high", "high"),
         ("max", "max"),
         ("minimal", "low"),
-        ("medium", "medium"),
-        ("xhigh", "high"),
+        ("medium", "high"),
+        ("xhigh", "max"),
     ] {
         settings
             .set_responses_settings(ResponsesApiSettings {
-                reasoning_effort: Some(effort.to_string()),
+                reasoning_effort: Some("medium".into()),
                 ..ResponsesApiSettings::default()
             })
+            .unwrap();
+        settings
+            .set_reasoning_effort(ReasoningEffort::parse(effort).unwrap())
             .unwrap();
         let transport = Arc::new(ObservedModel(Mutex::new(Vec::new())));
         let chat = ChatService::new(db.clone(), settings.clone(), transport.clone(), root.path());
@@ -3178,7 +3237,7 @@ async fn responses_reasoning_effort_settings_reach_provider_wire() {
 
     assert_eq!(
         actual_requests,
-        ["none", "low", "high", "max", "low", "medium", "high"]
+        ["none", "low", "high", "max", "low", "high", "max"]
     );
 }
 
@@ -3220,7 +3279,9 @@ async fn responses_user_identifier_is_validated_before_transport() {
             )),
             Arc::new(MemorySecretStore::new()),
         ));
-        settings.initialize("sk-audit-placeholder").await.unwrap();
+        crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
+            .await
+            .unwrap();
         let raw = serde_json::json!({"user": user}).to_string();
         let saved = settings.set_responses_developer_json(&raw);
         let save_error = saved.as_ref().err().map(ToString::to_string);
@@ -3296,10 +3357,11 @@ async fn audit_configured_output_limit_reaches_provider_request() {
     let mut matched = Vec::new();
     for (depth, panel, developer, expected) in [
         // The historical ReasoningEffort migration removed invented depth caps.
-        // Omission stays omission on the wire; budgeting reserves model capacity.
-        (ReasoningEffort::High, None, None, None),
-        (ReasoningEffort::None, None, None, None),
-        (ReasoningEffort::Max, None, None, None),
+        // The selected registry model owns the output ceiling when no explicit
+        // request setting replaces it.
+        (ReasoningEffort::High, None, None, Some(131_072)),
+        (ReasoningEffort::None, None, None, Some(131_072)),
+        (ReasoningEffort::Max, None, None, Some(131_072)),
         (ReasoningEffort::High, Some(512), None, Some(512)),
         (ReasoningEffort::High, Some(512), Some(768), Some(768)),
         (ReasoningEffort::Max, Some(65_536), None, Some(65_536)),
@@ -3313,7 +3375,9 @@ async fn audit_configured_output_limit_reaches_provider_request() {
             )),
             Arc::new(MemorySecretStore::new()),
         ));
-        settings.initialize("sk-audit-placeholder").await.unwrap();
+        crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
+            .await
+            .unwrap();
         settings.set_reasoning_effort(depth).unwrap();
         settings
             .set_responses_settings(ResponsesApiSettings {
@@ -3375,7 +3439,7 @@ async fn audit_configured_output_limit_reaches_provider_request() {
     }
     assert!(
         matched[0],
-        "without an explicit cap the wire must preserve omission"
+        "without an explicit cap the wire must use the registry output limit"
     );
     assert!(
         matched.into_iter().all(|value| value),
@@ -3443,7 +3507,9 @@ async fn context_projection_retains_turns_across_runs_and_database_reopen() {
     let (session, before_reopen) = {
         let db = Arc::new(Database::open(&db_path).unwrap());
         let config = settings(db.clone());
-        config.initialize("sk-audit-placeholder").await.unwrap();
+        crate::registry_fixture::configure(&config, "sk-audit-placeholder")
+            .await
+            .unwrap();
         let chat = ChatService::new(db.clone(), config, model.clone(), root.path())
             .with_cost(Arc::new(CostService::new(db.clone())));
         let mut session = None;
@@ -3506,7 +3572,9 @@ async fn context_projection_retains_turns_across_runs_and_database_reopen() {
         before_reopen
     );
     let config = settings(app.shared_database());
-    config.initialize("sk-audit-placeholder").await.unwrap();
+    crate::registry_fixture::configure(&config, "sk-audit-placeholder")
+        .await
+        .unwrap();
     let chat = ChatService::new(app.shared_database(), config, model.clone(), root.path());
     let captured = snapshots.clone();
     chat.run_in_session(

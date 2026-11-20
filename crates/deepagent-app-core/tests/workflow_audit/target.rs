@@ -567,8 +567,7 @@ async fn h196_real_model_transport_and_registry_tool_still_use_the_shared_kernel
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("sk-synthetic-placeholder")
+    crate::registry_fixture::configure(&settings, "sk-synthetic-placeholder")
         .await
         .unwrap();
     let model = Arc::new(TargetModel::default());

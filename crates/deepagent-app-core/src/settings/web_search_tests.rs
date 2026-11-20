@@ -21,7 +21,9 @@ async fn web_search_rejected_write_keeps_exact_document_and_cache_across_reopen(
     let db = Arc::new(Database::open(&path).unwrap());
     let secrets = Arc::new(MemorySecretStore::new());
     let settings = service_at(db.clone(), secrets.clone());
-    settings.initialize("synthetic-search-login").await.unwrap();
+    crate::registry_fixture::configure(&settings, "synthetic-search-login")
+        .await
+        .unwrap();
     let previous = settings.web_search_settings().unwrap();
     let body = DocumentStore::new(&db)
         .get(SETTINGS_COLLECTION, SETTINGS_ID)
@@ -80,7 +82,9 @@ async fn web_search_concurrent_service_updates_preserve_other_settings_and_cold_
     let path = directory.path().join("search-concurrent.sqlite3");
     let secrets = Arc::new(MemorySecretStore::new());
     let first = service_at(Arc::new(Database::open(&path).unwrap()), secrets.clone());
-    first.initialize("synthetic-search-login").await.unwrap();
+    crate::registry_fixture::configure(&first, "synthetic-search-login")
+        .await
+        .unwrap();
     let second = service_at(Arc::new(Database::open(&path).unwrap()), secrets.clone());
     let mut config = WebSearchSettings::default();
     for round in 0..8 {

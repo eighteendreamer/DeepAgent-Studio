@@ -83,7 +83,9 @@ async fn observe(ending: Ending) {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("offline-placeholder").await.unwrap();
+    crate::registry_fixture::configure(&settings, "offline-placeholder")
+        .await
+        .unwrap();
     let mut events = responses_fixture::completed(
         "h208-response",
         "deepseek-flash",

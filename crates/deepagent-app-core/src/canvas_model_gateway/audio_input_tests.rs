@@ -172,7 +172,9 @@ impl Host {
             )),
             secrets.clone(),
         ));
-        settings.initialize("sk-fixture-only").await.unwrap();
+        crate::registry_fixture::configure(&settings, "sk-fixture-only")
+            .await
+            .unwrap();
         let providers = Arc::new(CanvasProviderService::new(db.clone(), secrets));
         let provider = providers
             .save_provider(CanvasProviderInput {

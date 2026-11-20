@@ -2,7 +2,6 @@
 //! Windows-only fixture; every ACL operation targets one synthetic temp file.
 
 use super::*;
-use deepagent_models::ModelRole;
 use deepagent_persistence::checkpoint_store::CheckpointStore;
 use deepagent_persistence::fs_commit::access::{open_policy_source, WindowsDacl};
 use deepagent_persistence::run_store::RunStore;
@@ -165,13 +164,13 @@ async fn observe(tool: &'static str, protect: bool) -> Observation {
             )),
             Arc::new(MemorySecretStore::new()),
         ));
-        settings
-            .initialize("offline-audit-placeholder")
+        crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
             .await
             .unwrap();
-        for role in [ModelRole::Chat, ModelRole::Reasoner] {
-            settings.set_model(role, "deepseek-flash").unwrap();
-        }
+        settings
+            .harness_models()
+            .select_model("deepseek", "deepseek-flash")
+            .unwrap();
         let chat = ChatService::new(db.clone(), settings, model.clone(), &workspace);
         chat.run_in_session(
             "Run the supplied controlled file audit and report the tool result.",

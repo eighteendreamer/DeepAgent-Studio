@@ -44,17 +44,17 @@ impl ImageRequest<'_> {
         }
     }
 
-    fn fallback_body(&mut self) -> Result<String> {
+    fn fallback_body(&mut self, client: &ModelClient) -> Result<String> {
         match self {
             Self::Responses(request) => {
                 request.image_file_ids.clear();
                 request.validate()?;
-                request_body::encode(request)
+                client.encode_response_body(request)
             }
             Self::Chat(request) => {
                 request.image_file_ids.clear();
                 request.validate()?;
-                request_body::encode(request)
+                client.encode_chat_body(request)
             }
         }
     }
@@ -270,7 +270,7 @@ impl ModelClient {
             request.image_file_ids.clear();
             return Err(error);
         }
-        if let Err(error) = request_body::encode(request) {
+        if let Err(error) = self.encode_response_body(request) {
             request.image_file_ids.clear();
             return Err(error);
         }
@@ -389,7 +389,7 @@ impl ModelClient {
         {
             return Err(CoreError::other("request cancelled"));
         }
-        transport_request.body = request.fallback_body()?;
+        transport_request.body = request.fallback_body(self)?;
         self.stream_attempt(codec, transport_request.clone(), observer, cancel)
             .await
     }

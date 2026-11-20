@@ -1,7 +1,6 @@
 //! Provider incomplete reasons must retain their meaning through the real run lifecycle.
 
 use super::*;
-use deepagent_models::ModelRole;
 use deepagent_persistence::cost_store::{CostStore, SessionUsageTotals};
 use deepagent_runtime::RuntimeEvent;
 
@@ -126,13 +125,21 @@ async fn observe_incomplete_reason(
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
         .await
         .unwrap();
-    for role in [ModelRole::Chat, ModelRole::Reasoner] {
-        settings.set_model(role, "deepseek-flash").unwrap();
-    }
+    settings
+        .harness_models()
+        .select_model("deepseek", "deepseek-flash")
+        .unwrap();
+    // Start below the registry ceiling so this fixture exercises escalation,
+    // then continuation, rather than starting with a fully reserved capacity.
+    settings
+        .set_responses_settings(deepagent_app_core::settings::ResponsesApiSettings {
+            max_output_tokens: Some(32_768),
+            ..Default::default()
+        })
+        .unwrap();
     let model = Arc::new(IncompleteModel {
         reason,
         incomplete_responses,

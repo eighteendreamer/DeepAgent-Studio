@@ -50,7 +50,9 @@ async fn h297_kernel_cold_reopen_keeps_history_but_not_a_stale_usage_anchor() {
             secrets.clone(),
         ));
         if generation == 0 {
-            settings.initialize("synthetic-h297").await.unwrap();
+            crate::registry_fixture::configure(&settings, "synthetic-h297")
+                .await
+                .unwrap();
         }
         settings
             .set_responses_settings(ResponsesApiSettings {

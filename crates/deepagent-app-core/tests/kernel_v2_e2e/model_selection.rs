@@ -6,31 +6,9 @@ use deepagent_app_core::HarnessRunOverrides;
 const DEFAULT_MODEL: &str = "deepseek-v4-flash";
 const KNOWN_OVERRIDE: &str = "deepseek-v4-pro";
 
-// Selection tests exercise preconfigured, activated routes. Discovery alone no
-// longer activates every returned model; onboarding imports only the Chat row.
-pub(super) fn activate_selection_model(db: &Database, settings: &SettingsService, id: &str) {
-    let settings = settings.load().unwrap().unwrap();
-    let info = settings
-        .catalog
-        .available
-        .iter()
-        .find(|model| model.id == id)
-        .unwrap();
-    let capability = deepagent_models::ModelCapabilityResolver::new().resolve_model(info);
-    db.save_harness_models(
-        "deepseek",
-        &[deepagent_persistence::harness_registry::HarnessModel {
-            provider_id: "deepseek".into(),
-            model_name: id.into(),
-            display_name: id.into(),
-            protocol: None,
-            context_window: capability.context_window as i64,
-            output_limit: capability.max_output_tokens as i64,
-            capabilities: serde_json::to_string(&capability).unwrap(),
-            active: true,
-        }],
-    )
-    .unwrap();
+// Selection fixtures are already discovered in the SQLite registry.
+pub(super) fn activate_selection_model(db: &Database, _settings: &SettingsService, id: &str) {
+    assert!(db.set_harness_model_active("deepseek", id, true).unwrap());
 }
 
 #[path = "model_selection_refresh.rs"]
@@ -81,12 +59,16 @@ async fn observe_selection_with_files(
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings
-        .initialize("offline-audit-placeholder")
+    crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
         .await
         .unwrap();
     assert_eq!(
-        settings.load().unwrap().unwrap().catalog.chat_model,
+        settings
+            .harness_models()
+            .selected_model()
+            .unwrap()
+            .unwrap()
+            .model_name,
         DEFAULT_MODEL
     );
     activate_selection_model(&db, &settings, KNOWN_OVERRIDE);
@@ -258,14 +240,14 @@ async fn audit_catalog_refresh_preserves_selected_model_on_provider_wire() {
             discovery.clone(),
             secrets.clone(),
         ));
-        settings
-            .initialize("offline-audit-placeholder")
+        crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
             .await
             .unwrap();
         activate_selection_model(&db, &settings, KNOWN_OVERRIDE);
         let expected = if explicit_selection {
             settings
-                .set_model(deepagent_models::ModelRole::Chat, KNOWN_OVERRIDE)
+                .harness_models()
+                .select_model("deepseek", KNOWN_OVERRIDE)
                 .unwrap();
             KNOWN_OVERRIDE
         } else {
@@ -275,8 +257,12 @@ async fn audit_catalog_refresh_preserves_selected_model_on_provider_wire() {
         let chat = ChatService::new(db, settings.clone(), model.clone(), root.path());
         for stage in ["before-refresh", "after-refresh"] {
             if stage == "after-refresh" {
-                let refreshed = settings.refresh_models().await.unwrap();
-                assert!(refreshed.available_models.iter().any(|id| id == expected));
+                let refreshed = settings
+                    .harness_models()
+                    .fetch_models("deepseek")
+                    .await
+                    .unwrap();
+                assert!(refreshed.iter().any(|model| model.model_name == expected));
             }
             let run_id = format!("audit-refresh-{explicit_selection}-{stage}");
             chat.run_in_session_with_overrides(
@@ -312,7 +298,12 @@ async fn audit_catalog_refresh_preserves_selected_model_on_provider_wire() {
             discovery,
             secrets,
         );
-        let persisted_model = reopened.load().unwrap().unwrap().catalog.chat_model;
+        let persisted_model = reopened
+            .harness_models()
+            .selected_model()
+            .unwrap()
+            .unwrap()
+            .model_name;
         eprintln!(
             "catalog refresh audit: explicit={explicit_selection} expected={expected} wire={wire_models:?} persisted={persisted_model}"
         );

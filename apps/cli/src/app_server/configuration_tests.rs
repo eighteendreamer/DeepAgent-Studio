@@ -1,6 +1,5 @@
 //! H-04: exercise the dispatcher, authoritative session metadata and real run path.
 use super::*;
-use deepagent_models::DEEPSEEK_OFFICIAL_PROVIDER;
 
 #[path = "config_read_tests.rs"]
 mod config_read_tests;
@@ -13,7 +12,7 @@ fn configured_thread(state: &mut ServerState, workspace: &std::path::Path) -> Va
         state,
         "thread/start",
         json!({
-            "cwd": workspace, "provider": DEEPSEEK_OFFICIAL_PROVIDER,
+            "cwd": workspace, "provider": "deepseek",
             "model":"deepseek-flash", "permissionProfile":"read_only", "sandboxBackend":"direct"
         }),
     )
@@ -287,7 +286,8 @@ async fn configuration_cold_resume_retains_wire_model_and_read_only_after_defaul
     fixture.thread_id = created["threadId"].as_str().unwrap().to_owned();
     fixture
         .settings
-        .set_model(ModelRole::Chat, "deepseek-pro")
+        .harness_models()
+        .select_model("deepseek", "deepseek-pro")
         .unwrap();
     fixture
         .settings

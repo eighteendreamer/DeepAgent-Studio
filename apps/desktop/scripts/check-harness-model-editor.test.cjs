@@ -9,6 +9,8 @@ const model = {
   providerId: "provider", modelName: "model", displayName: "Model", protocol: null,
   contextWindow: 64000, outputLimit: 4096, active: true,
   thinkingLevels: ["off", "low", "medium", "high", "max"], thinkingDistinct: [], thinkingDisable: true,
+  reasoningEfforts: { off: null, low: "tiny", high: "extra", max: "ultra" },
+  effectiveReasoningEfforts: { off: null, low: "tiny", high: "extra", max: "ultra" },
 };
 
 function editor(overrides = {}) {
@@ -28,7 +30,10 @@ function editor(overrides = {}) {
     if (name === "react/jsx-runtime") return {
       jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }),
     };
-    if (name.endsWith("harnessModelsApi")) return { HARNESS_PROTOCOLS: ["responses", "chat_completions", "messages"] };
+    if (name.endsWith("harnessModelsApi")) return {
+      HARNESS_PROTOCOLS: ["responses", "chat_completions", "messages"],
+      HARNESS_THINKING_LEVELS: ["off", "low", "medium", "high", "max"],
+    };
     return new Proxy({}, { get: (_, component) => String(component) });
   } });
   const render = () => {
@@ -48,7 +53,7 @@ function editor(overrides = {}) {
   };
 }
 
-test("model editing saves actual capacity and neutral thinking fields", async () => {
+test("model editing saves capacity and exact neutral-to-wire declarations", async () => {
   const host = editor();
   host.change("model-context", "128000");
   host.change("model-output", "8192");
@@ -57,8 +62,10 @@ test("model editing saves actual capacity and neutral thinking fields", async ()
   assert.equal(host.saved[0].contextWindow, 128000);
   assert.equal(host.saved[0].outputLimit, 8192);
   assert.equal(host.saved[0].protocol, null);
-  assert.deepEqual(Array.from(host.saved[0].thinkingLevels), model.thinkingLevels);
-  assert.equal(host.saved[0].thinkingDisable, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(host.saved[0].reasoningEfforts)), model.reasoningEfforts);
+  for (const field of ["thinkingLevels", "thinkingDistinct", "thinkingDisable", "effectiveReasoningEfforts"]) {
+    assert.equal(Object.hasOwn(host.saved[0], field), false, `derived field ${field} must not be saved`);
+  }
 });
 
 test("invalid capacity never reaches the settings bridge", async () => {
@@ -75,12 +82,53 @@ test("invalid capacity never reaches the settings bridge", async () => {
   assert.equal(host.saved.length, 0);
 });
 
-test("turning a level off also removes its distinct declaration", async () => {
-  const host = editor({ model: { ...model, thinkingDistinct: ["medium"] } });
-  host.find(node => node.props?.id === "model-level-medium").props.onCheckedChange(false);
+test("inherit, disabled, and mapped reasoning survive edits as distinct declarations", async () => {
+  for (const [mode, expected] of [["inherit", undefined], ["disabled", false]]) {
+    const host = editor();
+    host.find(node => node.type === "Select" && node.props.value === "custom").props.onValueChange(mode);
+    await host.submit();
+    assert.equal(host.saved[0].reasoningEfforts, expected);
+    assert.equal(Object.hasOwn(host.saved[0], "reasoningEfforts"), mode !== "inherit");
+  }
+  const host = editor();
+  host.change("model-wire-max", "super-deep");
+  host.find(node => node.props?.id === "model-level-high").props.onCheckedChange(false);
   await host.submit();
-  assert.equal(host.saved[0].thinkingLevels.includes("medium"), false);
-  assert.deepEqual(Array.from(host.saved[0].thinkingDistinct), []);
+  assert.equal(host.saved[0].reasoningEfforts.max, "super-deep");
+  assert.equal(Object.hasOwn(host.saved[0].reasoningEfforts, "high"), false);
+  assert.equal(host.saved[0].reasoningEfforts.off, null);
+});
+
+test("off may omit the parameter or explicitly send none", async () => {
+  const host = editor();
+  host.change("model-wire-off", "none");
+  await host.submit();
+  assert.equal(host.saved[0].reasoningEfforts.off, "none");
+});
+
+test("configured model defaults survive reopening and only offered levels can be saved", async () => {
+  const configured = { ...model, defaultReasoningEffort: "max", effectiveDefaultReasoningEffort: "max" };
+  const host = editor({ model: configured });
+  assert.equal(host.find(node => node.type === "Select" && node.props.value === "max")?.props.value, "max");
+  await host.submit();
+  assert.equal(host.saved[0].defaultReasoningEffort, "max");
+  const reopened = editor({ model: { ...configured, ...host.saved[0] } });
+  reopened.find(node => node.type === "Select" && node.props.value === "max").props.onValueChange("off");
+  await reopened.submit();
+  assert.equal(reopened.saved[0].defaultReasoningEffort, "off");
+  const invalid = editor({ model: configured });
+  invalid.find(node => node.props?.id === "model-level-max").props.onCheckedChange(false);
+  await invalid.submit();
+  assert.equal(invalid.saved.length, 0);
+  assert.ok(invalid.find(node => node.props?.role === "alert"));
+});
+
+test("empty enabled wire values never reach the settings bridge", async () => {
+  const host = editor();
+  host.change("model-wire-max", "  ");
+  await host.submit();
+  assert.equal(host.saved.length, 0);
+  assert.ok(host.find(node => node.props?.role === "alert"));
 });
 
 test("saving failures keep the editor open and show the real error", async () => {

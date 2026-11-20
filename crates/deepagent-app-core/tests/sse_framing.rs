@@ -1,6 +1,10 @@
 //! H-30: actual HTTP framing -> ordinary ChatService -> one durable terminal.
 #![cfg(feature = "web")]
 
+#[cfg(test)]
+#[path = "support/model_registry.rs"]
+mod registry_fixture;
+
 #[path = "../../deepagent-models/tests/support/sse_http_fixture.rs"]
 mod fixture;
 
@@ -74,7 +78,9 @@ async fn h30_real_http_framing_controls_the_single_terminal_after_sqlite_reopen(
             )),
             Arc::new(MemorySecretStore::new()),
         ));
-        settings.initialize("h30-synthetic").await.unwrap();
+        crate::registry_fixture::configure(&settings, "h30-synthetic")
+            .await
+            .unwrap();
         let transport = Arc::new(LocalTransport {
             base_url: server.config(WireMode::Responses).base_url,
             inner: fixture::Fixture::transport(),
@@ -178,7 +184,9 @@ async fn h257_real_http_encoding_failures_are_not_retried_and_survive_sqlite_reo
             )),
             Arc::new(MemorySecretStore::new()),
         ));
-        settings.initialize("h257-synthetic").await.unwrap();
+        crate::registry_fixture::configure(&settings, "h257-synthetic")
+            .await
+            .unwrap();
         let transport = Arc::new(LocalTransport {
             base_url: server.config(WireMode::Responses).base_url,
             inner: fixture::Fixture::transport(),
@@ -309,7 +317,9 @@ async fn h131_real_http_progress_succeeds_once_but_actual_idle_failure_stays_fai
             )),
             Arc::new(MemorySecretStore::new()),
         ));
-        settings.initialize("h131-synthetic").await.unwrap();
+        crate::registry_fixture::configure(&settings, "h131-synthetic")
+            .await
+            .unwrap();
         let limits = TransportTimeouts {
             connect: Duration::from_secs(2),
             first_byte: Duration::from_secs(2),

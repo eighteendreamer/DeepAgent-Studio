@@ -111,7 +111,7 @@ pub enum RuntimeEvent {
         step: usize,
         /// Target model id.
         model: String,
-        /// Canonical reasoning effort label (`none` / `low` / `medium` / `high` / `max`).
+        /// Canonical reasoning label, or `default` when no effort is specified.
         reasoning_effort: String,
         /// Number of messages in the request payload.
         message_count: usize,

@@ -167,33 +167,15 @@ pub fn format_diagnostics(results: &[DiagnosticResult]) -> String {
 }
 
 async fn check_api_key(settings: &SettingsService) -> DiagnosticResult {
-    match settings.api_key() {
-        Ok(Some(key)) if !key.trim().is_empty() => match settings.validate_api_key(&key).await {
-            Ok(count) => DiagnosticResult::ok(
-                "API Key",
-                format!("valid; DeepSeek returned {count} model(s)"),
-            ),
-            Err(e) => DiagnosticResult::error(
-                "API Key",
-                format!(
-                    "configured but validation failed: {}",
-                    sanitize_diagnostic_error(&e, &key)
-                ),
-                "Re-enter a valid DeepSeek API key in Settings.",
-            ),
-        },
-        Ok(_) => DiagnosticResult::error(
+    match settings.harness_models().validate_selected_provider().await {
+        Ok(count) => DiagnosticResult::ok(
             "API Key",
-            "not configured",
-            "Open Settings and enter a DeepSeek API key.",
+            format!("selected provider returned {count} model(s)"),
         ),
-        Err(e) => DiagnosticResult::error(
+        Err(error) => DiagnosticResult::error(
             "API Key",
-            format!(
-                "could not read secret store: {}",
-                sanitize_diagnostic_error(&e, "")
-            ),
-            "Check encrypted SQLite and OS keychain access, then re-enter the API key.",
+            sanitize_diagnostic_error(&error, ""),
+            "Check the selected provider, model and API key in Settings.",
         ),
     }
 }
@@ -440,7 +422,7 @@ fn format_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::secret_store::{MemorySecretStore, SecretStore};
+    use crate::secret_store::MemorySecretStore;
     use async_trait::async_trait;
     use deepagent_core::error::{CoreError, Result};
     use deepagent_models::transport::{EventSink, HttpTransport, MockTransport, TransportRequest};
@@ -546,7 +528,9 @@ mod tests {
     async fn api_key_check_validates_with_models_endpoint() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let settings = settings_with_models(db);
-        settings.initialize("sk-test").await.unwrap();
+        crate::registry_fixture::configure(&settings, "sk-test")
+            .await
+            .unwrap();
         let result = check_api_key(&settings).await;
         assert_eq!(result.status, DiagStatus::Ok);
     }
@@ -556,7 +540,16 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let secret = "sk-audit-secret-placeholder";
         let secrets = Arc::new(MemorySecretStore::new());
-        secrets.set("deepseek_api_key", secret).unwrap();
+        let configured = SettingsService::new(
+            db.clone(),
+            Arc::new(MockTransport::with_get_json(
+                r#"{"data":[{"id":"doctor-model"}]}"#,
+            )),
+            secrets.clone(),
+        );
+        crate::registry_fixture::configure(&configured, secret)
+            .await
+            .unwrap();
         let transport = Arc::new(ErrorTransport(format!(
             "GET /models returned 401: credential rejected: Bearer {secret}"
         )));
@@ -564,6 +557,7 @@ mod tests {
 
         let result = check_api_key(&settings).await;
 
+        assert_eq!(result.status, DiagStatus::Error);
         assert!(
             !result.detail.contains(secret),
             "doctor diagnostic contains the API key: {}",

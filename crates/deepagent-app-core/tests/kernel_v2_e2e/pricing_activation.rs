@@ -98,7 +98,9 @@ async fn observe_activation(activation: Activation) -> PricingObservation {
             Arc::new(MockTransport::with_get_json(DISCOVERY)),
             secrets.clone(),
         );
-        seed.initialize("offline-audit-placeholder").await.unwrap();
+        crate::registry_fixture::configure(&seed, "offline-audit-placeholder")
+            .await
+            .unwrap();
         if matches!(activation, Activation::LegacyEmptyStartup) {
             let mut legacy = serde_json::to_value(seed.load().unwrap().unwrap()).unwrap();
             legacy.as_object_mut().unwrap().remove("pricing_catalog");
@@ -135,25 +137,33 @@ async fn observe_activation(activation: Activation) -> PricingObservation {
 
     if matches!(activation, Activation::FailedLoginRetry) {
         discovery.0.store(true, Ordering::SeqCst);
-        assert!(settings
-            .initialize("offline-audit-placeholder")
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("synthetic discovery failure"));
-        assert!(settings.load().unwrap().is_none());
+        assert!(
+            crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("synthetic discovery failure")
+        );
+        assert!(!settings.view().unwrap().unwrap().configured);
     }
     if !matches!(
         activation,
         Activation::ConfiguredStartup | Activation::LegacyEmptyStartup
     ) {
-        settings
-            .initialize("offline-audit-placeholder")
+        crate::registry_fixture::configure(&settings, "offline-audit-placeholder")
             .await
             .unwrap();
     }
     let persisted = settings.load().unwrap().unwrap();
-    assert_eq!(persisted.catalog.chat_model, MODEL);
+    assert_eq!(
+        settings
+            .harness_models()
+            .selected_model()
+            .unwrap()
+            .unwrap()
+            .model_name,
+        MODEL
+    );
     let price = persisted.pricing_catalog.models.get(MODEL).unwrap();
     assert!((price.calculate(1000, 100, 800, 200) - EXPECTED_IDLE_COST).abs() < 1e-12);
     if matches!(
@@ -163,12 +173,15 @@ async fn observe_activation(activation: Activation) -> PricingObservation {
         settings.refresh_pricing().await.unwrap();
     }
     if matches!(activation, Activation::RefreshAfterLogin) {
-        settings.refresh_models().await.unwrap();
+        settings
+            .harness_models()
+            .fetch_models("deepseek")
+            .await
+            .unwrap();
     }
     if matches!(activation, Activation::LoginAgain) {
-        settings.clear_key().unwrap();
-        settings
-            .initialize("offline-relogin-placeholder")
+        settings.harness_models().clear_credentials().unwrap();
+        crate::registry_fixture::configure(&settings, "offline-relogin-placeholder")
             .await
             .unwrap();
     }

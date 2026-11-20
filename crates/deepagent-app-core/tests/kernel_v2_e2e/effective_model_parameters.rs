@@ -43,10 +43,10 @@ async fn configured_settings(db: Arc<Database>) -> Arc<SettingsService> {
         )),
         Arc::new(MemorySecretStore::new()),
     ));
-    settings.initialize("h54-synthetic").await.unwrap();
-    settings
-        .set_reasoning_effort(ReasoningEffort::None)
+    crate::registry_fixture::configure(&settings, "h54-synthetic")
+        .await
         .unwrap();
+    settings.set_reasoning_effort(ReasoningEffort::Max).unwrap();
     settings
         .set_responses_settings(ResponsesApiSettings {
             reasoning_effort: Some("high".into()),
@@ -55,7 +55,7 @@ async fn configured_settings(db: Arc<Database>) -> Arc<SettingsService> {
         })
         .unwrap();
     settings
-        .set_responses_developer_json(r#"{"reasoning":{"effort":"max"},"max_output_tokens":768}"#)
+        .set_responses_developer_json(r#"{"reasoning":{"effort":"none"},"max_output_tokens":768}"#)
         .unwrap();
     settings
 }
@@ -66,7 +66,7 @@ async fn h54_effective_parameters_survive_project_run_precedence_retry_and_tool_
         (None, None, "max"),
         (Some("reasoningEffort"), None, "low"),
         (Some("reasoning_effort"), Some("none"), "none"),
-        (Some("reasoning_effort"), Some("medium"), "medium"),
+        (Some("reasoning_effort"), Some("medium"), "high"),
     ] {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("control.txt"), "H54 synthetic control").unwrap();
@@ -144,7 +144,7 @@ async fn h54_invalid_run_effort_is_rejected_before_transport() {
     let settings = configured_settings(db.clone()).await;
     let transport = Arc::new(Attempts::default());
     let chat = ChatService::new(db, settings, transport.clone(), root.path());
-    for value in ["simple", "deep", "xhigh", "off"] {
+    for value in ["simple", "deep", "ultra", "unknown"] {
         let error = chat
             .run_in_session_with_overrides(
                 "This invalid run must not dispatch.",

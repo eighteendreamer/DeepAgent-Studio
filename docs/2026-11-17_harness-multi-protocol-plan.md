@@ -20,23 +20,25 @@
 
 1. **无限画布与 harness 分属两套，互不合并。** 画布注册表（`canvas_provider_service.rs`）保持不动；harness 使用独立的注册表。原方案"扩展画布注册表为共享真源"作废。
 2. **新增主设置页"模型"**：专门管理 harness 的模型，用于接入更多平台的大模型 API。用户在此添加供应商（协议、base_url、密钥、余额类型、logo）并拉取、激活模型。
-3. **激活的模型进入会话窗口的模型列表**，按供应商分组。推理强度滑杆按该模型的 `thinking_levels` 显示；底部"余额"按供应商的 `balance_kind` 查询并显示。
+3. **激活的模型进入会话窗口的模型列表**，按供应商分组。思考强度统一五档，按路由能力转换并合并等价选项（2026-11-18 最新决定，见 §1.6）；底部"余额"按供应商的 `balance_kind` 查询并显示。
 4. **替换写死的 DeepSeek 逻辑**：
    - `DEEPSEEK_BASE_URL` 不再作为主对话的固定地址；
-   - 启动时自动查询官方模型（`ModelDiscovery` / `ModelCatalog` 的 `auto_select`）停用，改为用户在"模型"页手动拉取、激活；
+   - 删除旧 `ModelCatalog`、`auto_select` 和启动时自动选模；`ModelDiscovery` 仅返回模型元数据，由用户在"模型"页手动拉取、激活和选择；
    - `fetch_balance` 按供应商类型分发（P7），不再固定 DeepSeek 路径；
-   - 现有 `deepseek_api_key` 迁移为一个 provider 条目（§3.1），密钥不重新导出。
+   - 2026-11-20 用户决定：删除旧模型配置及其导入。仅使用已经保存的新注册表；不再从 `deepseek_api_key` 或旧模型目录创建 provider/model 条目（§3.1）。
 5. **删除设置页"系统视觉的大模型接入"**（`VisionSettings` 的设置 UI 与配置项）。注意：该配置还被图片准备、`VisionMode` 的路径引用，删除后向非视觉模型发送图片的行为需用户确认（见 §10-8）。
 6. 方案 §3（`harness_providers` / `harness_models` 两张表）保留，它与画布注册表无关，是 harness 唯一的模型注册表。
 7. **单一激活模型，取消 Chat / Reasoner 双角色**（2026-11-17，用户确认）。
    - 旧代码里的 `reasoner_model` 不是“开启思考时切换的模型”：思考强度按模型取值（`effective_reasoning_effort(&model)`），与角色无关。它唯一的运行时作用是主模型返回 `Overloaded` 时一次性切换到 reasoner（`model_agent.rs` 的 `fallback_model`）。
-   - 决定：**删除过载自动切换备用模型**。过载立即以错误返回，零自动重试，也不换模型（2026-11-17 再次确认）。`ModelResolver` 只解析一个激活模型；不保留 `fallback_model` 字段、`ModelRole::Reasoner` 与 `with_fallback_model` 的运行时调用路径；旧数据字段只用于兼容读取。
+   - 决定：**删除过载自动切换备用模型**。过载立即以错误返回，零自动重试，也不换模型（2026-11-17 再次确认）。`ModelResolver` 只解析一个激活模型；不保留 `fallback_model` 字段、`ModelRole::Reasoner` 与 `with_fallback_model` 的运行时调用路径。2026-11-20 起，旧目录、双角色配置与兼容回退一并删除。
    - 代价：失去过载兜底。变更说明须写明该行为变化；若后续需要兜底，按显式设置重新设计，不沿用 reasoner 角色。
-   - 旧 `settings.catalog` 的种子导入只激活旧 `chat_model`，`reasoner_model` 不导入（见 §3.1）。
+   - 原 `settings.catalog.chat_model` 种子导入方案已丢弃；没有新注册表选择时要求用户明确配置、激活和选择模型。
 
 ---
 
 ## 1. 思考等级
+
+> **决策更新（2026-11-18）：以用户最新要求为准，改参考 Tianshu-harness，统一 `off/low/medium/high/max`，由用户控制。§1.2—§1.4 及 §1.5 的七档／供应商默认策略均丢弃，仅保留历史。当前规则见 §1.6。**
 
 ### 1.1 各家实际档位（2026-11 查证）
 
@@ -74,7 +76,7 @@
 
 横向并集共 8 个：`off/none` `minimal` `low` `medium` `high` `xhigh` `max` `ultra`。
 
-### 1.2 收敛到 5 档
+### 1.2 收敛到 5 档（已丢弃）
 
 逐档看「几家原生支持 / 其余能否安全映射」：
 
@@ -93,7 +95,7 @@
 
 三个被删项都有硬理由：`minimal` 和 `ultra` 各只有一家支持，`xhigh` 的语义已被 `max` 完全覆盖。这比 8 档少了 3 档，同时保住了「关闭思考」这个明确需求。
 
-### 1.3 跨协议映射表
+### 1.3 跨协议映射表（已丢弃）
 
 | UI 档位 | Anthropic | OpenAI 5.x | DeepSeek-V4 | GLM-5.2/5.1/5 | GLM-5.3 | Kimi K3 | Kimi K3.1 | Qwen3.8 | MiMo |
 |---|---|---|---|---|---|---|---|---|---|
@@ -111,7 +113,7 @@
 
 **映射表进代码作为唯一真源，不做隐式钳制。** 用户在 `medium` 档看到的效果与 `high` 相同，是供应商本身只有两档造成的 —— 界面必须能解释，否则用户会以为参数没生效。
 
-### 1.4 每模型能力声明
+### 1.4 每模型能力声明（已丢弃）
 
 档位可用性不入代码、不入文档，入数据库：
 
@@ -138,6 +140,43 @@
 这里的“预设”指方案设计，并不要求新安装默认选中关闭；保持现有初始档位和已有用户保存的选择。
 
 ---
+
+### 1.5 历史规则：按 deepseek harness（已丢弃）
+
+依据：`借鉴/deepseek-harness/packages/llm/llm-pi-ai/src/catalog.ts`、`adapter.ts`，
+`packages/client/ui-model-selection/src/client/ModelSelect.tsx`，
+`packages/client/ui-settings-models/src/client/ModelReasoningEfforts.tsx`，
+以及 DeepSeek 专用的 `packages/llm/llm-deepseek/src/model-info.ts`。
+
+- 通用中性档位为 `off / minimal / low / medium / high / xhigh / max`。`ultra` 可作为供应商实际参数值，例如 `max: "ultra"`，不新增第八个中性档位。
+- 模型声明 `reasoning_efforts`（JSON DTO 为 `reasoningEfforts`）：省略表示继承已知模型声明；`false` 表示不提供思考控件；映射只开放实际声明的档位，缺少的键即不支持。
+- 示例：`{"off":null,"low":"low","max":"ultra"}`。只有 `off` 可为 `null`，表示省略 effort；`off:"none"` 表示显式发送 `none`。Messages 的关闭仍由协议编码为 `thinking.type=disabled`，不将关闭值当作其正向 effort。
+- 映射至少含一个非 off 档位。空映射、空值、非 off 的 null、未知中性档位均报错。请求不做 clamp，不依据模型家族或名称子串猜测映射。
+- DeepSeek 专用参考入口提供 `off / low / high / max`；通用入口按模型实际声明开放七档中的一部分。当前只内置精确 DeepSeek 模型标识的已知声明，不给未知第三方模型虚构能力。
+- 未知模型没有声明时仅显示“供应商默认”，不发送 effort；这不保证关闭供应商自身默认思考。原“所有模型缺省五档并允许关闭”设计一并丢弃。
+- 选择器沿用参考界面的默认项规则：模型已声明默认档位时直接选中该档位，不额外列“供应商默认”；有可选档位但未声明默认值时才提供默认选项。无思考能力声明时不提供档位控件。
+- 切换模型建立新的 `{provider, model, reasoningEffort?}` 选择，旧档位不随模型迁移；未选档位时采用模型/供应商默认。显式选中不支持的档位直接报错，不修改已经保存的选择。
+- 现有 `harness_selection/chat` 文档承载可选 effort，与模型路由一起持久化，无新增数据表；当前 turn 及工具续写继续使用接纳时冻结的选择。
+- 旧 `thinking_levels / thinking_distinct / thinking_disable` 只在读取边界兼容。编辑器保留其有效映射，保存时统一写新声明；不再写“等价档位”或旧家族表。
+
+### 1.6 当前规则：参考 Tianshu-harness 的五档与能力转换
+
+依据：`借鉴/Tianshu-harness/src/api/provider.ts` 的 `resolveCapabilities`、
+`resolveWireEffort`、`normalizeReasoningEffort`、`resolveEffortChoices`，以及
+`factory.ts`、`anthropic-client.ts` 的协议投影。参考其边界与机制，不复制业务代码。
+
+- 中性选择只展示 `off / low / medium / high / max`。`minimal/xhigh/ultra` 可以是实际 API 参数值，不新增 UI 档位；历史 `minimal/xhigh` 选择在读取边界归一为 `low/max`。
+- 模型设置中的显式映射优先于发现元数据与参考能力配置；供应商地址、模型标识和所选协议共同决定传输形态。转换只发生在 `deepagent-models`，前端不自行推断供应商字段。
+- 合并实际等价选项。例如 `medium→high` 时保留“高”；`off→low` 时保留“低”，不假称已经关闭思考。
+- 不提供“供应商默认”选项。缺省采用应用明确选择的档位（优先高；未支持高时取实际可用的正向档位），请求明确发送其参数；用户可在模型设置与胶囊中修改。显式关闭与未选择不能混淆。
+- `reasoning_efforts` 保留为能力映射存储边界，`reasoning_default` 表示应用初始档位；`thinking_format` 表示 `effort_only/enabled/adaptive/budget` 协议形态。它们均存入既有模型 capabilities JSON，不新建注册表。
+- Responses 写 `reasoning.effort`；Chat Completions 写 `reasoning_effort` 并按能力决定是否附加 thinking；Messages 按能力写 `thinking` 与 `output_config.effort`，或显式 token 预算。关闭时使用对应协议的关闭表达。
+- Messages 的明确能力优先；DeepSeek 官方地址包含 Claude 别名时仍按 DeepSeek 投影。已声明支持 adaptive/effort 的 Claude 代际使用该通道，其余 Messages 使用预算。预算换算与界面去重共用计算，低输出上限造成的等价预算也合并。为避免天枢固定 low=8192 在小输出窗口超过 high，本地设计将 low 限为输出上限的 1/8 与 8192 中较小值，再遵循 1024 最小预算及严格小于输出上限的限制。
+- 当前 Claude 5 系列及 Fable 5.2 的 max 不降为 high；官方仅支持始终思考的型号将 off 合并到 low，不显示虚假的关闭选项。能力事实以 2026-11-18 核对的 Anthropic thinking/effort 文档为准，模型设置的显式声明可覆盖兼容网关差异。
+- 未知兼容端点的正向 effort 透传属于**本地设计**：提供显式选择，不能保证网关真的执行。允许用户覆盖映射／形态、或显式关闭控件；不能用接口 200 冒充模型确实区分强度，验收同时记录请求参数和响应回显。
+- 不支持的选择在发请求前报错。用户已经保存的选择与路由一起持久化；当前 turn 及其工具续写继续冻结接纳时快照，下一轮用户消息生效。
+- 旧 §1.5 中“未知模型只有供应商默认”“统一七档”“不合并选项”不再执行。该更新不恢复 §1.3 的旧映射表。
+
 
 ## 2. 协议配置粒度
 
@@ -188,7 +227,7 @@ CREATE TABLE harness_models (
     protocol        TEXT,                     -- NULL = 继承 provider
     context_window  INTEGER NOT NULL DEFAULT 1000000,
     output_limit    INTEGER NOT NULL DEFAULT 131072,   -- 128K
-    capabilities    TEXT NOT NULL DEFAULT '{}',        -- thinking_levels 等
+    capabilities    TEXT NOT NULL DEFAULT '{}',        -- reasoning_efforts 等
     status          INTEGER NOT NULL DEFAULT 1,
     updated_at      INTEGER NOT NULL,
     UNIQUE (provider_id, model_name)
@@ -201,9 +240,11 @@ CREATE INDEX idx_harness_models_provider ON harness_models(provider_id, status);
 
 现有 `secret_records(name, ciphertext, nonce, key_version, updated_at)`（`migrations.rs:214`）已做认证加密。`api_key_ref` 只是指向它的逻辑名。
 
-迁移：现有 `deepseek_api_key` 生成一个默认 provider 行，`api_key_ref = 'deepseek_api_key'`，不重新导出密钥。
+**2026-11-20 决定：原旧密钥迁移与默认 Chat 种子导入方案丢弃。** 不从旧配置复制、激活或选择任何模型。V26 删除旧目录、全局思考选择字段、凭据生命周期文档及种子导入标记；已经存在的新供应商、模型、选择和所引用的加密凭据保持不变。已有 `api_key_ref` 是不透明标识，不因名称含旧字符串而改名或复制密文。
 
-种子模型：旧 `settings.catalog.chat_model` 作为一条 `harness_models` 记录导入并**直接激活**；`reasoner_model` 不导入（见 §0.1-7）。
+首次连接走新供应商保存、获取模型列表、用户明确选择、激活、保存选择的同一条链路。旧初始化、刷新、双角色选模与全局密钥/余额入口删除。
+
+V27 为 `deepagent.db` 的全部业务表统一提供 `created_at`、`updated_at`，单位为 Unix 毫秒；有历史时钟的按原值回填，其余按迁移时刻补齐。新字段由数据库触发器维护，已有时间戳继续由现有 writer 维护。SQLite 系统表及 FTS 虚拟表/影子表由 SQLite 管理，其业务源表包含时间戳。具体迁移、实际数据库校验与验证边界见 [清理报告](reports/2026-11-20-legacy-model-cutover-and-timestamps.md)。
 
 ### 3.2 `max_tokens` 的语义
 
@@ -215,7 +256,7 @@ CREATE INDEX idx_harness_models_provider ON harness_models(provider_id, status);
 （见 §10-9 已确认决策），由选中模型提供 `context_window` / `output_limit`。
 早期 0.78/0.95 比例公式作废，不新增第二套压缩阈值。
 
-注意 Anthropic 的 `max_tokens` 是**必填**字段，无默认值 —— 这个 128K 不是可选项，每次请求都得带。
+Anthropic 的 `max_tokens` 是**必填**字段，每次请求都带选中模型的输出上限。新发现的 Messages 模型若未声明上限，注册表补十进制 `128000`；显式声明的上限和已保存的配置保持原值。Layso 的 Claude 验收路由实测接受 `128000`、拒绝 `128001`（H030）。
 
 ---
 
@@ -442,7 +483,7 @@ pub struct BalanceAmount {
 | 批次 | 内容 | 会话 |
 |---|---|---|
 | **P0 可测性验证** | 两个 SDK 能否注入本系统 `HttpTransport`；不能则定替代方案 | 1 |
-| **P1 中性内容层** | `ContentBlock` + `Thinking.signature`；`ThinkingLevel` 5 档 + 映射表 | 2 |
+| **P1 中性内容层** | `ContentBlock` + `Thinking.signature`；旧映射表已丢弃，思考规则改按 §1.6 | 2 |
 | **P2 协议表 + 工厂** | `Protocol` 枚举、`WireCodec` trait、`match` 收口一处 | 2 |
 | **P3 数据模型** | 两张新表 + 迁移；`ModelResolver` 单点解析（单一激活模型，无 Reasoner 角色，见 §0.1-7） | 3 |
 | **P3b 会话 JSONL 承载模型输出** | `signature` / `origin` 可选字段；旧 JSONL 回放测试；中途切换供应商的整文件回放测试；不新增表 | 2 |
@@ -451,7 +492,7 @@ pub struct BalanceAmount {
 | **P6 设置页** | 供应商 CRUD（协议 / logo / 余额类型）+ 模型列表 + 连通性测试 | 4 |
 | **P7 余额适配** | `BalanceKind` 五值分发 + `Auto` 探测链 | 2 |
 | **P8 缓存治理** | 前缀稳定性；`cache_control` 断点；复用既有压缩阈值 | 3 |
-| **P9 输入框思考档位** | 5 档下拉，按模型 `thinking_levels` 置灰 | 2 |
+| **P9 输入框思考档位** | 天枢五档；按路由能力转换与合并，不提供供应商默认，见 §1.6 | 2 |
 | **P10 模型列表与切换** | 按 provider 分组；运行时切换下次生效 + 余额重查 | 2 |
 | **P11 三协议验收** | 同一套行为用例跑 Responses、Chat Completions、Messages | 3 |
 | **P3b 会话 JSONL 承载模型输出** | `signature` / `origin` 可选字段；旧 JSONL 回放测试；中途切换供应商的整文件回放测试；不新增表 | 2 |
@@ -467,9 +508,9 @@ pub struct BalanceAmount {
 |---|---|---|
 | G0 工程门禁 | 格式与完整 Clippy 通过；完整测试未通过 | H037 完整 workspace 为 5799 passed / 36 failed / 132 ignored，9 个目标失败；其中注册表 2 项修正后定向 10 passed，未重跑完整命令。独立提交源码 models/http 为 431 passed / 0 failed / 6 ignored，HTTP/all-targets 严格 Clippy 通过；桌面前端构建及三协议原生 UI 对话通过。完整 Clippy 最终退出 0；版本边界和剩余失败详见 [H037](reports/2026-11-20-p2-p11-ui-follow-up.md)。 |
 | P0 可测性验证 | 已记录结论，采用 (a) | SDK 只承担类型与序列化，HTTP/SSE/取消/预算继续复用。async-openai 0.43.0 启用 response-types 与 chat-completion-types，Messages 使用已固定的 anthropic-sdk。H037 补 Chat 请求类型验证。 |
-| P1 中性内容层 + 五档映射 | 五档已贯通，家族映射接入待完成 | `b6774635` 增加 `ThinkingLevel` / `map_thinking` 和 `ResponseItem::Reasoning.signature`。H012 将 medium 独立保留到三协议请求体，默认能力与显式能力共用解析与校验；`map_thinking` 家族映射仍待接入 provider adapter。 |
+| P1 中性内容层 + 思考声明 | 旧映射表已丢弃；按 §1.6 改造验证中 | `ResponseItem::Reasoning.signature` 保留；原 `map_thinking` 接入项不再执行。新声明、模型选择与三协议实际发送值共用解析边界，验证结果见执行记录。 |
 | P2 协议表 + 工厂 | 三协议统一分发；Chat SDK 请求与具名工具补齐 | Responses / Chat Completions / Messages 共用协议表、传输与取消入口。H037 接入 Chat SDK DTO，具名工具显式关闭并行；两条真实具名请求通过，三协议新版桌面 UI 对话通过。详见 [H037](reports/2026-11-20-p2-p11-ui-follow-up.md)。 |
-| P3 数据模型 + 迁移 | 运行链已接入，消费方回归中 | V24 表、CRUD、激活列表、AppCore DTO、7 个 Tauri command 与 TS API 均已落地。`9c9046be` 修复密钥引用；`b1de6059` 完成一次性 Chat 种子迁移。H004 将 admission、执行绑定、工具续写、技能审查和标题调用接入注册表；解析、真实运行链、内核相关和 persistence 回归均通过。模型选择已持久化并由下一轮 admission 读取，旧 Chat 字段仅作迁移/兼容回退。 |
+| P3 数据模型 + 迁移 | 新注册表单一路由；旧链路清理验证中 | V24 表、CRUD、激活列表、AppCore DTO、Tauri 与 TS API 已落地。2026-11-20 起丢弃 `b1de6059` 的旧 Chat 种子导入及所有旧目录/别名回退；模型选择仅从 SQLite 新表读取。V26 清理旧配置；V27 补全业务表时间戳。结果见 H038 和清理报告。 |
 | P3c 过载与备用模型删除 | 已提交，相关回归通过 | `10234777`：过载统一不可重试，明确 503 过载也立即报错；删除运行时 fallback 路径。models lib 240 passed；runtime lib 493 passed / 2 ignored；H55 4 passed；内核 H144 7 passed；采样、计费/预算、输出上限、图像模式及模型快照串行回归通过；真实 HTTP 1 项、CLI 2 项通过。H004 已接入单一 resolver。 |
 | P3b 会话 JSONL 的 `origin` | 已实现，回归通过 | `ResponseItemAppended.origin` 为可选 `ModelOrigin`，由真实模型运行链写入；旧 JSONL 无 `origin` 仍可读。core 往返 2 项、persistence 来源回放 1 项、persistence 全量 221 项、session 27 项、AppCore 注册表真实运行 7 项通过。跨供应商思考签名是否需要降级仍待实测，当前只保留签名与来源，不擅自改变回放语义。 |
 | P4 Responses codec | 已完成（按 P0 类型与序列化边界） | async-openai 0.43.0 的 CreateResponse、消息、工具调用/结果、图片、工具、text 与 tool_choice 类型进入生产序列化；DeepSeek 扩展显式保留。现有 HTTP/SSE、语义组装、取消与 48 MiB 预算复用。验证见 H034。 |
@@ -477,7 +518,7 @@ pub struct BalanceAmount {
 | P6 设置页 | 基础界面与后端已实现；流程待验收 | `ModelsSettings.tsx` 已接供应商 CRUD、模型拉取/激活和配置编辑。H015 保留已存配置，H016 支持协议/容量/思考编辑，服务 19 + resolver 12 项通过；H017 设置页迟到请求回归通过。完整原生 UI 流程仍待验收。 |
 | P7 余额 | 已修复已知解析/UI 缺口；真实 API 待验收 | H009 修复未知形状误判无限、分币换算、display 单位、缺失金额伪造零与错误跨供应商回退；两处 UI 共用查询与金额格式化并丢弃迟到结果。models lib 256、前端余额专项 9 passed。完整桌面与真实余额 API 待验收。 |
 | P8 缓存 | 稳定前缀与 Messages 断点已验证；未完全复现 Harness 缓存策略 | 工具稳定排序，稳定 instructions 与动态环境分开，已完成历史断点避开思考签名块；DeepSeek 官方继续自动缓存。H037 真实观察 Responses 0/11250、Chat 11008/11250、Messages 23952/23960，不承诺普遍命中；cacheRetention 与签名前缀摘要持久绑定仍未实现。详见 [H037](reports/2026-11-20-p2-p11-ui-follow-up.md)。 |
-| P9 输入框思考档位 | 五档参数与能力回归通过，原生 UI 验收待完成 | H012 统一 `thinking_levels` / `thinking_distinct` / `thinking_disable`，缺省五档可关闭，兼容显式旧 effort 限制；修正 off 禁用条件与全禁用滑杆，medium 保存不再变为 high。H018 补齐显式等价标注，Composer 18 项与 registry → transport 三协议矩阵通过；原生 UI 流程仍待验收。 |
+| P9 输入框思考档位 | 天枢五档控件验证中 | H012/H018 为历史验证，不证明新契约。模型编辑器支持自动匹配/无控件/自定义映射、传输形态与初始档位；未知兼容模型明确透传正向 effort，切换模型不继承旧 effort，当前验证见 H029。 |
 | P10 模型列表与切换 | 已接入；桌面手动验收待完成 | Composer 消费激活模型，按 provider 分组；选择写入 harness 注册表，跨供应商触发余额刷新；当前 turn 冻结旧模型，工具续写保持旧模型，下一轮用户消息重新 admission。 |
 | P11 产品验收 | 三协议新版原生 UI 通过；跨协议补验 3/3；全量门禁另列 | H037：通过脚本输入并发送，三协议 HTTP 200、运行 completed、零 JS 异常；Responses/Chat 指定工具名已修复且真实通过。当前 Claude Fable→Responses 连续三轮完成，其中一轮带签名；保留旧 Sonnet 路线失败记录，不外推全部模型与 SessionStore/origin 矩阵。详见 [H037](reports/2026-11-20-p2-p11-ui-follow-up.md)。 |
 | F0 协议层盘点 | 当前 16 个方法及关键边界已复核 | 重新核对方法生产/消费方、连接退出、steer、持久终态、审批、ACK 与独立游标；已有三项思考配置断言冲突未掩盖。见 9.2 和 [H036 验收报告](reports/2026-11-19-p11-f0-f1-acceptance.md)。 |

@@ -161,7 +161,9 @@ impl Fixture {
             )),
             secrets.clone(),
         ));
-        settings.initialize("sk-fixture-placeholder").await.unwrap();
+        crate::registry_fixture::configure(&settings, "sk-fixture-placeholder")
+            .await
+            .unwrap();
         let providers = Arc::new(CanvasProviderService::new(db.clone(), secrets));
         let cost = Arc::new(CostService::new(db.clone()));
         let artifacts = Arc::new(

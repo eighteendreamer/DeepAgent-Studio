@@ -973,27 +973,15 @@ export interface PermissionPresetVisibility {
 
 /** Redacted settings view (mirrors deepagent-app-core::SettingsView). */
 export interface SettingsView {
-  api_key_masked: string;
-  base_url: string;
-  available_models: string[];
-  /**
-   * Resolved capability (context window / max output) for every discovered
-   * model, resolved by the runtime's own resolver. Lets the UI show the model's
-   * real context capacity instead of guessing it from the model id.
-   */
-  model_capabilities: ModelCapability[];
-  chat_model: string;
-  reasoner_model: string;
   configured: boolean;
   approval_policy: string;
   sandbox_mode: "read_only" | "workspace_write" | "full_access";
   terminal_shell: "powershell" | "command_prompt" | "git_bash" | "wsl";
-  reasoning_effort: "none" | "low" | "medium" | "high" | "max";
+  reasoning_effort: "default" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   responses: ResponsesApiSettings;
   /** Backend-computed scenarios, not the actual tool set of a future run. */
   responses_sampling?: ResponsesSamplingPreview[];
   web_search: WebSearchSettings;
-  vision: VisionSettings;
   execution_features: ExecutionFeatures;
   /** Built-in output style (§7.1): default | explanatory | learning. */
   output_style: string;
@@ -1070,31 +1058,6 @@ export interface WebSearchEngineTestResult {
   ok: boolean;
   error: string | null;
   count: number | null;
-}
-
-export type VisionMode = "off" | "system";
-
-export interface VisionSettings {
-  mode: VisionMode;
-  provider: string;
-  base_url: string;
-  api_key?: string | null;
-  api_key_configured: boolean;
-  system_model: string;
-  timeout_ms: number;
-  auto_analyze_pasted_images: boolean;
-}
-
-export interface VisionRecognizeRequest {
-  image_path: string;
-  prompt?: string | null;
-}
-
-export interface VisionRecognizeResult {
-  model_id: string;
-  model_path: string;
-  text: string;
-  raw_json: string;
 }
 
 /** A project folder in the sidebar (mirrors deepagent-app-core::ProjectDto). */

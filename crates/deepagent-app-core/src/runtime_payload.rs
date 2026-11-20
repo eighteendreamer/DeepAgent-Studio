@@ -548,7 +548,9 @@ mod tests {
             )),
             Arc::new(MemorySecretStore::new()),
         ));
-        settings.initialize("sk-audit-placeholder").await.unwrap();
+        crate::registry_fixture::configure(&settings, "sk-audit-placeholder")
+            .await
+            .unwrap();
         let plugins = Arc::new(PluginService::new(roots, &install));
         let skills = Arc::new(Mutex::new(
             crate::SkillsService::open_v2(deepagent_skills::SkillsRoots {

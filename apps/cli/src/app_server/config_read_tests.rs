@@ -295,7 +295,8 @@ async fn h221_admitted_snapshot_is_consumed_by_real_provider_after_settings_chan
     );
     fixture
         .settings
-        .set_model(ModelRole::Chat, "deepseek-pro")
+        .harness_models()
+        .select_model("deepseek", "deepseek-pro")
         .unwrap();
     fixture
         .settings

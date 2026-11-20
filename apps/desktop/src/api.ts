@@ -77,9 +77,6 @@ import type {
   RuntimeRoots,
   RuntimeStatus,
   TranscriptSegment,
-  VisionRecognizeRequest,
-  VisionRecognizeResult,
-  VisionSettings,
   RewindResult,
   RuntimeLogEntry,
   ScanResult,
@@ -153,7 +150,6 @@ export type SettingsChangedReason =
   | "sandbox"
   | "tool_search"
   | "web_search"
-  | "vision"
   | "execution_features"
   | "output_style"
   | "other";
@@ -338,22 +334,6 @@ export async function computeDiff(oldText: string, newText: string): Promise<Dif
 
 // ---- settings / project initialization ------------------------------------
 
-/**
- * Initialize the project with a DeepSeek API key. This **validates** the key by
- * running model discovery against DeepSeek — an invalid key rejects (throws).
- * On success the key is stored as encrypted SQLite ciphertext and the redacted view is
- * returned. Only callable inside the desktop app.
- */
-export async function initializeProject(apiKey: string): Promise<SettingsView> {
-  const invoke = getInvoke();
-  if (invoke) {
-    const view = await invoke<SettingsView>("initialize_project", { apiKey });
-    emitSettingsChanged({ reason: "api_key", affectsBalance: true });
-    return view;
-  }
-  throw new Error("connecting an API key requires the desktop app");
-}
-
 /** The current (redacted) settings view, or null if uninitialized. */
 export async function getSettings(): Promise<SettingsView | null> {
   const invoke = getInvoke();
@@ -384,29 +364,16 @@ export async function setWelcomeName(name: string): Promise<string> {
   return normalized;
 }
 
-/** Re-run model discovery with the stored key. */
-export async function refreshModels(): Promise<SettingsView> {
-  const invoke = getInvoke();
-  if (invoke) {
-    const view = await invoke<SettingsView>("refresh_models");
-    emitSettingsChanged({ reason: "models" });
-    return view;
-  }
-  throw new Error("refresh requires the desktop app");
-}
-
 /**
- * Fetch the user's DeepSeek account balance (CNY, including granted +
- * topped-up portions). Hits the live `GET /user/balance` endpoint with the
- * stored API key. Throws on network/auth errors so the UI can show a clear
- * "—" indicator with the message in a tooltip.
+ * Query the selected registry provider's balance adapter. No selection yields
+ * an unknown balance; provider errors remain visible to the UI.
  */
 export async function getBalance(): Promise<Balance> {
   const invoke = getInvoke();
   if (!invoke) return { is_available: null, infos: [] };
   const { fetchSelectedHarnessBalance } = await import("./harnessModelsApi");
   const selected = await fetchSelectedHarnessBalance();
-  if (!selected) return invoke<Balance>("get_balance");
+  if (!selected) return { is_available: null, infos: [] };
   return {
     is_available: selected.available,
     infos: selected.amount.unit === "none" ? [] : [{
@@ -419,32 +386,18 @@ export async function getBalance(): Promise<Balance> {
   };
 }
 
-/** Clear the stored API key (sign out). */
-export async function clearApiKey(): Promise<void> {
+/** Clear credentials referenced by registered providers (sign out). */
+export async function clearProviderCredentials(): Promise<void> {
   const invoke = getInvoke();
   if (invoke) {
-    await invoke("clear_api_key");
+    await invoke("harness_credentials_clear");
     emitSettingsChanged({ reason: "api_key", affectsBalance: true });
   }
 }
 
-/**
- * Switch the active chat model to a discovered model id. Returns the updated
- * (redacted) settings view. Throws if the id is not in `available_models`.
- */
-export async function setChatModel(modelId: string): Promise<SettingsView> {
-  const invoke = getInvoke();
-  if (invoke) {
-    const view = await invoke<SettingsView>("set_chat_model", { modelId });
-    emitSettingsChanged({ reason: "chat_model" });
-    return view;
-  }
-  throw new Error("switching models requires the desktop app");
-}
-
-/** Set DeepSeek Responses reasoning effort for subsequent chat requests. */
+/** Set the selected registry model's reasoning effort for subsequent turns. */
 export async function setReasoningEffort(
-  effort: "none" | "low" | "medium" | "high" | "max"
+  effort: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
 ): Promise<SettingsView> {
   const invoke = getInvoke();
   if (invoke) {
@@ -1758,47 +1711,6 @@ export async function testWebSearchEngine(
     error: "桌面运行环境不可用",
     count: null,
   };
-}
-
-// ---- vision settings ------------------------------------------------------
-
-export async function getVisionSettings(): Promise<VisionSettings> {
-  const invoke = getInvoke();
-  if (invoke) return invoke<VisionSettings>("get_vision_settings");
-  return {
-    mode: "system",
-    provider: "modelscope",
-    base_url: "https://api-inference.modelscope.cn/v1",
-    api_key: null,
-    api_key_configured: false,
-    system_model: "moonshotai/Kimi-K2.5:DashScope",
-    timeout_ms: 60000,
-    auto_analyze_pasted_images: true,
-  };
-}
-
-export async function setVisionSettings(settings: VisionSettings): Promise<VisionSettings> {
-  const invoke = getInvoke();
-  if (invoke) {
-    const value = await invoke<VisionSettings>("set_vision_settings", { settings });
-    emitSettingsChanged({ reason: "vision" });
-    return value;
-  }
-  return settings;
-}
-
-export async function visionRecognizeImage(
-  request: VisionRecognizeRequest
-): Promise<VisionRecognizeResult> {
-  const invoke = getInvoke();
-  if (invoke) return invoke<VisionRecognizeResult>("vision_recognize_image", { request });
-  throw new Error("vision recognition requires the desktop app");
-}
-
-export async function visionTestConnection(): Promise<VisionRecognizeResult> {
-  const invoke = getInvoke();
-  if (invoke) return invoke<VisionRecognizeResult>("vision_test_connection");
-  throw new Error("vision test requires the desktop app");
 }
 
 // ---- MCP servers (visual config) ------------------------------------------
@@ -3681,7 +3593,7 @@ const MOCK_COMMANDS: Command[] = [
   { id: "slash.mcp", title: "/mcp", description: "查看已配置的 MCP 服务及启用状态", category: "内置命令", shortcut: null },
   { id: "slash.projects", title: "/projects", description: "查看已打开项目和当前激活项目", category: "内置命令", shortcut: null },
   { id: "slash.sessions", title: "/sessions", description: "查看最近会话列表", category: "内置命令", shortcut: null },
-  { id: "slash.thinking", title: "/thinking", description: "查看或设置推理强度：none、low、medium、high、max", category: "内置命令", shortcut: null },
+  { id: "slash.thinking", title: "/thinking", description: "查看或设置推理强度：off、low、medium、high、max", category: "内置命令", shortcut: null },
   { id: "slash.effort", title: "/effort", description: "/thinking 的别名，查看或设置推理强度", category: "内置命令", shortcut: null },
   { id: "slash.plan", title: "/plan", description: "进入只读 Plan 模式，先规划再执行", category: "内置命令", shortcut: null },
   { id: "slash.execute", title: "/execute", description: "退出 Plan 模式，恢复正常执行权限", category: "内置命令", shortcut: null },

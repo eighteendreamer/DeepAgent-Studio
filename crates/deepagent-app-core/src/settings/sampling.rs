@@ -10,47 +10,30 @@ pub struct ResponsesSamplingPreview {
     pub sampling: EffectiveSamplingConfig,
 }
 
-pub(super) fn responses_sampling_preview(settings: &AppSettings) -> Vec<ResponsesSamplingPreview> {
-    let config = match crate::model_runtime::model_config(
-        settings,
-        deepagent_models::ModelRole::Chat,
-        None,
-    ) {
-        Ok(config) => config,
+pub(super) fn responses_sampling_preview(
+    db: &Database,
+    settings: &AppSettings,
+) -> Vec<ResponsesSamplingPreview> {
+    let plan = match crate::model_runtime::resolve_run_model(db, settings, None, None, None) {
+        Ok(plan) => plan,
         Err(error) => {
-            // A bad legacy setting must remain editable. The runtime still
-            // rejects it; do not invent an effective mode or fail get_settings.
-            tracing::warn!(error = %error, "sampling preview unavailable for saved reasoning settings");
+            tracing::debug!(%error, "sampling preview requires a valid registry selection");
             return Vec::new();
         }
     };
-    let top_p = settings.responses.effective_top_p();
     let choice = settings.responses.effective_tool_choice();
-    let models = vec![settings.catalog.chat_model.clone()];
-    models
+    [false, true]
         .into_iter()
-        .filter_map(|model| match config.effective_reasoning_effort(&model, None) {
-            Ok(effort) => Some((model, effort)),
-            Err(error) => {
-                tracing::warn!(%error, "sampling preview unavailable for model reasoning capability");
-                None
-            }
-        })
-        .flat_map(|(model, effort)| {
-            let choice = choice.as_ref();
-            [false, true]
-                .into_iter()
-                .map(move |advertised_tools| ResponsesSamplingPreview {
-                    sampling: resolve_responses_sampling(
-                        &model,
-                        top_p,
-                        effort,
-                        advertised_tools,
-                        choice,
-                    ),
-                    model: model.clone(),
-                    advertised_tools,
-                })
+        .map(|advertised_tools| ResponsesSamplingPreview {
+            sampling: resolve_responses_sampling(
+                &plan.model,
+                settings.responses.effective_top_p(),
+                plan.reasoning_effort,
+                advertised_tools,
+                choice.as_ref(),
+            ),
+            model: plan.model.clone(),
+            advertised_tools,
         })
         .collect()
 }
@@ -59,7 +42,7 @@ pub(super) fn responses_sampling_preview(settings: &AppSettings) -> Vec<Response
 mod tests {
     use super::*;
     use crate::MemorySecretStore;
-    use deepagent_models::{MockTransport, ModelRole, SamplingReason};
+    use deepagent_models::{MockTransport, SamplingReason};
     use deepagent_persistence::Database;
 
     fn service(db: Arc<Database>, secrets: Arc<MemorySecretStore>) -> SettingsService {
@@ -73,13 +56,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn h166_legacy_invalid_effort_remains_editable_without_a_fabricated_preview() {
+    async fn h166_global_editor_cannot_replace_the_selected_models_effort() {
         let settings = service(
             Arc::new(Database::open_in_memory().unwrap()),
             Arc::new(MemorySecretStore::new()),
         );
-        settings
-            .initialize("h166-synthetic-placeholder")
+        crate::registry_fixture::configure(&settings, "h166-synthetic-placeholder")
             .await
             .unwrap();
         let mut legacy = settings.load().unwrap().unwrap();
@@ -90,8 +72,11 @@ mod tests {
             view.responses.reasoning_effort.as_deref(),
             Some("legacy-invalid")
         );
-        assert!(view.responses_sampling.is_empty());
-        assert!(crate::model_runtime::resolve_reasoning_effort(&legacy, None).is_err());
+        assert_eq!(view.responses_sampling.len(), 2);
+        assert!(view
+            .responses_sampling
+            .iter()
+            .all(|row| row.sampling.thinking_enabled));
     }
 
     #[tokio::test]
@@ -101,12 +86,12 @@ mod tests {
         let secrets = Arc::new(MemorySecretStore::new());
         {
             let settings = service(Arc::new(Database::open(&path).unwrap()), secrets.clone());
-            settings
-                .initialize("h166-synthetic-placeholder")
+            crate::registry_fixture::configure(&settings, "h166-synthetic-placeholder")
                 .await
                 .unwrap();
             settings
-                .set_model(ModelRole::Chat, "deepseek-flash")
+                .harness_models()
+                .select_model("deepseek", "deepseek-flash")
                 .unwrap();
             let view = settings
                 .set_responses_settings(ResponsesApiSettings {
@@ -144,6 +129,9 @@ mod tests {
                     r#"{"top_p":0.94,"reasoning":{"effort":"none"},"tool_choice":"none"}"#,
                 )
                 .unwrap();
+            settings
+                .set_reasoning_effort(deepagent_models::ReasoningEffort::None)
+                .unwrap();
             let saved = settings.load().unwrap().unwrap();
             assert_eq!(saved.responses.top_p, Some(0.2));
             assert!(serde_json::to_value(saved)
@@ -174,8 +162,7 @@ mod tests {
     async fn h166_failed_save_does_not_publish_candidate_sampling_and_old_views_decode() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let settings = service(db.clone(), Arc::new(MemorySecretStore::new()));
-        settings
-            .initialize("h166-synthetic-placeholder")
+        crate::registry_fixture::configure(&settings, "h166-synthetic-placeholder")
             .await
             .unwrap();
         let before = settings.view().unwrap().unwrap();
