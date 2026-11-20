@@ -1,7 +1,8 @@
 import { HoverInfo } from "./ui/HoverInfo";
+import { GoalTarget } from "./GoalTarget";
 import { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo, useId } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { Brain, BrainCircuit, Check, ChevronDown, CircleAlert, Feather, Hand, Lightbulb, Layers, ListChecks, Loader2, Puzzle, ShieldHalf, Sparkles, createLucideIcon } from "lucide-react";
+import { Brain, BrainCircuit, Check, ChevronDown, CircleAlert, Feather, Hand, Lightbulb, Layers, ListChecks, Loader2, Puzzle, ShieldHalf, Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ContextCapacityIndicator } from "./ContextCapacityIndicator";
 import { ComposerSuggestPanel } from "./ComposerSuggestPanel";
@@ -50,10 +51,6 @@ const COMPOSER_TEXTAREA_MIN_HEIGHT = 60;
 const COMPOSER_TEXTAREA_DEFAULT_MAX_HEIGHT = 300;
 const SKILL_MARKER = "\uE000";
 const MENTION_MARKER = "\uE001";
-const GoalTarget = createLucideIcon("goal-target", [
-  ["path", { d: "M21 12a9 9 0 1 1-9-9m5 9a5 5 0 1 1-5-5", key: "rings" }],
-  ["path", { d: "M20 4l-8 8m0-4v4h4", key: "arrow" }],
-]);
 
 /** A slash-dropdown row. `insertText` is used for built-in slash commands;
  *  `skillName` / `skillId` mark a row as a skill picker. */
@@ -947,7 +944,7 @@ export function Composer({
     const mentions: ComposerMention[] = [...selectedMentions];
     if (!isStandaloneSlash) {
       if (mode === "goal") mentions.push({ kind: "goal", text: draftText });
-      if (draftMode === "plan") mentions.push({ kind: "plan_mode" });
+      if (mode === "plan") mentions.push({ kind: "plan_mode" });
     }
     onSubmit(readyAttachments, selectedSkills, mentions, draftValue);
     setDraftMode(null);

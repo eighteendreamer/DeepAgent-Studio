@@ -48,10 +48,10 @@ function appCallbacks() {
 
 const callbacksCode = appCallbacks();
 
-async function observeStop({ images = false, fresh = false, beforeAck = false }) {
+async function exerciseRun({ images = false, fresh = false, beforeAck = false, planning = false }) {
   const admissionRelease = deferred();
-  const startEntered = deferred();
-  const settled = deferred();
+  let startEntered = deferred();
+  let settled = deferred();
   const handlers = new Map();
   const admitted = new Set();
   const calls = [];
@@ -85,8 +85,17 @@ async function observeStop({ images = false, fresh = false, beforeAck = false })
     } },
   });
   const { advanceTurnActivity } = loadTypeScript("../src/components/chat-timeline/processDisclosure.ts");
+  const previews = loadTypeScript("../src/components/conversationModePreview.ts");
   const context = {
-    ...api, advanceTurnActivity, console,
+    ...api, ...previews, advanceTurnActivity, console,
+    modePreviews: new Map(),
+    updateModePreview: (key, update) => {
+      context.modePreviews = previews.updateConversationModePreview(context.modePreviews, key, update);
+    },
+    updateSessionPlanMode: async (sessionId, active) => {
+      calls.push({ command: "set_plan_mode", args: { sessionId, active } });
+      return true;
+    },
     AbortController,
     messageSendMotion: { take: () => null },
     visibleSessionIdRef: { current: fresh ? null : "audit-session" },
@@ -94,6 +103,7 @@ async function observeStop({ images = false, fresh = false, beforeAck = false })
     activeIdRef: { current: fresh ? null : "audit-session" },
     activePendingRunKey: null, activePendingRunKeyRef: { current: null },
     activeRunIdsRef: { current: new Map() }, runningSessionIds: new Set(),
+    planModeChangeKeys: { current: new Set() },
     preflightAbortControllersRef: { current: new Map() },
     runPhaseRef: { current: new Map() },
     pendingNewChatSectionRef: { current: null }, projectSelectionRef: { current: null },
@@ -125,7 +135,7 @@ async function observeStop({ images = false, fresh = false, beforeAck = false })
     setChatFrameKey: "chatFrameKey", setActivePendingRunKey: "activePendingRunKey",
     setStoppingRunIds: "stoppingRunIds", setApprovals: "approvals",
     setContextUsageByKey: "contextUsageByKey", setNavState: "navState",
-    setPlanMode: "planMode", setRunningSessionIds: "runningSessionIds",
+    setPlanMode: "planMode", setRunningSessionIds: "runningSessionIds", setModePreviews: "modePreviews",
     setQuestionsBySession: "questionsBySession",
   })) {
     context[setter] = (update) => {
@@ -138,6 +148,44 @@ async function observeStop({ images = false, fresh = false, beforeAck = false })
   let submission;
   try {
     vm.runInNewContext(callbacksCode, context, { filename: "audit-production-app-callbacks.js" });
+    if (planning) {
+      const plan = () => context.modePreviews.get("audit-session")?.plan;
+      const publishCompletion = async (text, status = "completed") => {
+        await tick();
+        handlers.get("chat://event")({ payload: { run_id: submitted.runId, payload: status === "completed"
+          ? { type: "run_completed", message: text }
+          : { type: "run_failed", reason: text } } });
+        handlers.get("session://completed")({ payload: {
+          run_id: submitted.runId, session_id: "audit-session", status, error: status === "completed" ? null : text,
+        } });
+        await settled.promise;
+      };
+      const markdown = "# Workspace audit\n\n1. Inspect sources.\n2. Run the validation suite.";
+      await context.auditCallbacks.onSubmit("Plan an audit", [], undefined, undefined, [], [{ kind: "plan_mode" }]);
+      await startEntered.promise;
+      assert.equal(submitted.initialPlanMode, true);
+      assert.match(submitted.prompt, /Wait for explicit confirmation/);
+      await tick();
+      assert.equal(plan()?.phase, "drafting", "the pending preview moves to the admitted session");
+      assert.equal(calls.filter((call) => call.command === "start_chat_v2").length, 1, "drafting must not start execution");
+      await publishCompletion(markdown);
+      assert.equal(plan()?.phase, "review");
+      assert.equal(plan()?.markdown, markdown);
+      for (const status of ["failed", "completed"]) {
+        startEntered = deferred();
+        settled = deferred();
+        await context.auditCallbacks.onSubmit("Implement the confirmed plan", [], undefined, undefined, [], [], "Implement plan", plan().markdown);
+        await startEntered.promise;
+        assert.equal(plan()?.phase, "executing");
+        assert.equal(submitted.initialPlanMode, false);
+        assert.equal(submitted.sessionId, "audit-session");
+        assert.equal(calls.filter((call) => call.command === "set_plan_mode").at(-1).args.active, false);
+        assert.ok(submitted.prompt.includes(markdown), "execute the exact plan that was shown");
+        await publishCompletion(status === "completed" ? "Implementation verified" : "Execution failed", status);
+        assert.equal(plan()?.phase, status === "failed" ? "review" : undefined);
+      }
+      return;
+    }
     submission = context.auditCallbacks.onSubmit("audit image turn", images ? [1, 2].map((index) => ({
       id: `audit-image-${index}`, name: `fixture-${index}.png`, kind: "image", mime: "image/png",
       originalPath: `G:/audit/fixture-${index}.png`, source: "file", size: 100, status: "ready", sha256: "ab".repeat(32),
@@ -190,7 +238,7 @@ for (const images of [false, true]) {
     for (const beforeAck of [false, true]) {
       const title = (fresh ? "new" : "continued") + (images ? " image" : " text") + (beforeAck ? " stops during admission" : " stops after admission");
       test(title, options, async () => {
-        const result = await observeStop({ images, fresh, beforeAck });
+        const result = await exerciseRun({ images, fresh, beforeAck });
         assert.equal(result.locallyRunning, true);
         assert.equal(result.startsBeforeStop, 1);
         assert.equal(result.startsAfterStop, 0);
@@ -212,3 +260,20 @@ for (const images of [false, true]) {
     }
   }
 }
+
+
+test("planning proposes a real answer, retries failed execution, and clears only on success", options, async () => {
+  await exerciseRun({ fresh: true, planning: true });
+});
+
+test("goal preview keeps its elapsed time while paused and moves only with its pending session", () => {
+  const { adoptConversationModePreview, goalElapsedMs, toggleGoalPreview } = loadTypeScript("../src/components/conversationModePreview.ts");
+  const paused = toggleGoalPreview({ runId: "goal-run", text: "Check the UI", elapsedMs: 0, resumedAt: 1000 }, 6000);
+  assert.equal(goalElapsedMs(paused, 26000), 5000);
+  assert.equal(goalElapsedMs(toggleGoalPreview(paused, 26000), 28000), 7000);
+  const otherChat = { goal: { ...paused, runId: "other" } };
+  const previews = adoptConversationModePreview(new Map([["pending", { goal: paused }], ["other", otherChat]]), "pending", "created");
+  assert.equal(previews.has("pending"), false);
+  assert.equal(previews.get("created").goal, paused);
+  assert.equal(previews.get("other"), otherChat);
+});

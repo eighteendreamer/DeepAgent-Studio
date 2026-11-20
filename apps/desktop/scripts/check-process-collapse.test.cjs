@@ -164,6 +164,7 @@ function liveAccumulator() {
   const context = vm.createContext({
     liveTranscripts, runKey: "session-a", runId: "run-a", runStart: Date.now(), advanceTurnActivity,
     activeRunIdsRef: activeRuns, pendingKey: "pending-a",
+    goal: undefined, requestedPlanMode: false, approvedPlan: undefined,
     activePendingRunKeyRef: { current: null },
     preflightAbortControllersRef: { current: new Map() },
     runPhaseRef: { current: new Map() },

@@ -5,6 +5,9 @@ import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { ComposerMention, ComposerSkillSelection } from "../../types";
 import { MarkdownText } from "../MarkdownText";
+import { ListChecks } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import { GoalTarget } from "../GoalTarget";
 import { ImagePreviewTrigger } from "../ImagePreviewTrigger";
 import { useMessageEditMotion } from "../ui/useMessageEditMotion";
 import { useMessageSendTarget } from "../ui/MessageSendMotionContext";
@@ -52,6 +55,7 @@ function renderSkillChip(skill: ComposerSkillSelection, key: string) {
 }
 
 function renderMentionChip(mention: ComposerMention, key: string) {
+  if (mention.kind === "goal" || mention.kind === "plan_mode") return null;
   return (
     <HoverInfo key={key} content={mentionTitle(mention)}><span
       className="mx-0.5 inline-flex max-w-[260px] translate-y-[2px] items-center rounded-md border border-gray-300 bg-gray-50 px-1.5 py-0.5 text-[13px] font-medium leading-none text-text-base"
@@ -154,6 +158,8 @@ export function UserMessageBubble({
   busy: boolean;
   onResend: (text: string, skills?: ComposerSkillSelection[], mentions?: ComposerMention[]) => void;
 }) {
+  const { t } = useTranslation();
+  const goal = block.mentions.find((mention) => mention.kind === "goal");
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(block.text.replace(/[\uE000\uE001]/g, ""));
   const { slotRef, shellRef, compactRef, editorRef, textareaRef, actionsRef, editButtonRef } =
@@ -175,7 +181,8 @@ export function UserMessageBubble({
     const text = draft.trim();
     if (!text || busy) return;
     setEditing(false);
-    onResend(text, block.selectedSkills, block.mentions);
+    const mentions = block.mentions.map((mention) => mention.kind === "goal" ? { ...mention, text } : mention);
+    onResend(text, block.selectedSkills, mentions);
   };
 
   return (
@@ -235,6 +242,11 @@ export function UserMessageBubble({
               </button>
             </div>
       </div>
+      {goal && !editing && (
+        <span data-user-goal className="-mt-1 inline-flex items-center gap-1.5 text-xs text-text-secondary">
+          <GoalTarget aria-hidden="true" className="size-3.5" />{t("composer.goal.sent")}
+        </span>
+      )}
     </div>
   );
 }
@@ -242,10 +254,29 @@ export function UserMessageBubble({
 export function AssistantMessageBubble({
   block,
   onOpenUrl,
+  planPhase,
 }: {
   block: Extract<ChatBlock, { kind: "assistant" }>;
   onOpenUrl?: (url: string) => void;
+  planPhase?: "drafting" | "ready";
 }) {
+  const { t } = useTranslation();
+  if (planPhase && block.tone !== "error") {
+    return (
+      <section data-assistant-plan className="min-w-0 rounded-xl border border-border-theme bg-elevated-bg">
+        <div className="flex items-center gap-2 border-b border-border-theme px-4 py-2.5 text-xs text-text-secondary">
+          <ListChecks aria-hidden="true" className="size-4" />{t(planPhase === "drafting" ? "composer.plan.drafting" : "composer.plan.proposal")}
+        </div>
+        <div className="custom-scrollbar max-h-80 overflow-y-auto px-4 py-3">
+          <MarkdownText
+            text={block.text}
+            onOpenUrl={onOpenUrl}
+            className="[&_h1]:mb-3 [&_h1]:text-2xl [&_h1]:font-semibold [&_h2]:mb-1 [&_h2]:mt-4 [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:font-semibold [&_ol]:list-decimal [&_ul]:list-disc [&_ol]:pl-6 [&_ul]:pl-6"
+          />
+        </div>
+      </section>
+    );
+  }
   return (
     <div className="group/message flex min-w-0 max-w-full flex-col">
       <div className="min-w-0 max-w-full text-text-base">

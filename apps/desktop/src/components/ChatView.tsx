@@ -16,6 +16,8 @@ import type {
   ProjectMapStatus,
 } from "../types";
 import { Composer } from "./Composer";
+import { ComposerGoalBar, PlanReviewActions } from "./ConversationModeCards";
+import type { GoalPreview } from "./conversationModePreview";
 import { ComposerActivityBar } from "./ComposerActivityBar";
 import { collectComposerActivity, conversationTools } from "./composerActivityData";
 import { ApprovalDialog } from "./ApprovalDialog";
@@ -111,6 +113,13 @@ interface Props {
   /** Current session is in read-only Plan mode. */
   planMode?: boolean | null;
   onExitPlanMode?: () => void;
+  goalPreview?: GoalPreview;
+  onToggleGoal: () => void;
+  onEditGoal: (text: string) => void;
+  onRemoveGoal: () => void;
+  showPlanReview?: boolean;
+  onConfirmPlan: () => void;
+  onDismissPlanReview: () => void;
   /** Explicitly selected project path. Empty means the chat is not project-bound. */
   activeProjectPath?: string | null;
   /** Authoritative current chat repository path, supplied independently of global selection. */
@@ -922,6 +931,13 @@ export function ChatView({
   stopping = false,
   planMode = false,
   onExitPlanMode,
+  goalPreview,
+  onToggleGoal,
+  onEditGoal,
+  onRemoveGoal,
+  showPlanReview,
+  onConfirmPlan,
+  onDismissPlanReview,
   activeProjectPath = null,
   repositoryPath = null,
   projectMapOpenSignal = 0,
@@ -1353,6 +1369,19 @@ export function ChatView({
               gitError={gitError}
               onRefreshChanges={() => { void refreshGitChanges(); }}
             />}
+            {showPlanReview && !busy && !question && !approval && (
+              <PlanReviewActions
+                onAccept={onConfirmPlan}
+                onDismiss={onDismissPlanReview}
+                onRevise={() => {
+                  onDismissPlanReview();
+                  composerFrameRef.current?.querySelector<HTMLTextAreaElement>("textarea.composer-textarea")?.focus();
+                }}
+              />
+            )}
+            {goalPreview && (
+              <ComposerGoalBar key={goalPreview.runId} goal={goalPreview} onToggle={onToggleGoal} onEdit={onEditGoal} onRemove={onRemoveGoal} />
+            )}
             <Composer
               value={value}
               onChange={setValue}

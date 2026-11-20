@@ -1,3 +1,10 @@
+import {
+  adoptConversationModePreview,
+  settlePlanPreview,
+  toggleGoalPreview,
+  updateConversationModePreview,
+  type ConversationModePreview,
+} from "./components/conversationModePreview";
 import { summarizeWebSearch } from "./components/chat-timeline/webSearchSummary";
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { SurfaceVisibility } from "./components/ui/SurfaceVisibility";
@@ -318,11 +325,10 @@ function buildSkillContexts(skills: ComposerSkillSelection[]): string {
   return skills.map(buildSkillContext).join("\n\n");
 }
 
-function buildMentionContexts(mentions: ComposerMention[]): string {
-  if (mentions.length === 0) return "";
+function buildMentionContexts(mentions: ComposerMention[], approvedPlan?: string): string {
   const blocks = mentions.map((mention, index) => {
     if (mention.kind === "plan_mode") {
-      return `<context-item index="${index + 1}" kind="plan_mode">Plan mode was requested for this turn.</context-item>`;
+      return `<context-item index="${index + 1}" kind="plan_mode">Plan mode was requested. Inspect as needed and return a concrete Markdown plan with a title, ordered implementation steps, and validation criteria. Wait for explicit confirmation before implementing or exiting plan mode.</context-item>`;
     }
     if (mention.kind === "goal") {
       return `<context-item index="${index + 1}" kind="goal">${escapeXmlText(mention.text)}</context-item>`;
@@ -341,7 +347,10 @@ function buildMentionContexts(mentions: ComposerMention[]): string {
     ];
     return lines.join("\n");
   });
-  return ["<context-items>", blocks.join("\n\n"), "</context-items>"].join("\n");
+  if (approvedPlan) {
+    blocks.push(`<context-item index="${blocks.length + 1}" kind="approved_plan">${escapeXmlText(approvedPlan)}</context-item>`);
+  }
+  return blocks.length ? ["<context-items>", blocks.join("\n\n"), "</context-items>"].join("\n") : "";
 }
 
 function buildPromptWithAttachments(text: string, attachments: ComposerAttachment[] = []): string {
@@ -453,6 +462,10 @@ export function App() {
   const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(() => new Set());
   const [stoppingRunIds, setStoppingRunIds] = useState<Set<string>>(() => new Set());
   const [planMode, setPlanMode] = useState<boolean | null>(false);
+  const [modePreviews, setModePreviews] = useState<ReadonlyMap<string, ConversationModePreview>>(() => new Map());
+  const updateModePreview = useCallback((key: string, update: (current: ConversationModePreview) => ConversationModePreview) => {
+    setModePreviews((previous) => updateConversationModePreview(previous, key, update));
+  }, []);
   // The session id of the in-flight run, set as soon as the backend announces
   // it (session_registered) — used for the manual stop button and to navigate
   // into the still-running session.
@@ -480,6 +493,7 @@ export function App() {
   visibleSessionIdRef.current = view === "chat" && !activePendingRunKey ? activeId : null;
   const activePendingRunKeyRef = useRef<string | null>(null);
   const activeRunIdsRef = useRef<Map<string, string>>(new Map());
+  const planModeChangeKeys = useRef(new Set<string>());
   const preflightAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const runPhaseRef = useRef<Map<string, "preparing" | "starting" | "admitted">>(new Map());
   const projectSelectionRef = useRef<Promise<boolean> | null>(null);
@@ -1030,6 +1044,8 @@ export function App() {
   }, []);
 
   const updateSessionPlanMode = useCallback(async (sessionId: string, requested: boolean) => {
+    if (planModeChangeKeys.current.has(sessionId)) return false;
+    planModeChangeKeys.current.add(sessionId);
     try {
       const active = await setSessionPlanMode(sessionId, requested);
       if (visibleSessionIdRef.current === sessionId) setPlanMode(active);
@@ -1037,6 +1053,8 @@ export function App() {
     } catch (error) {
       message.error(`${requested ? "开启" : "退出"}计划模式失败：${String(error)}`);
       return false;
+    } finally {
+      planModeChangeKeys.current.delete(sessionId);
     }
   }, []);
 
@@ -1049,11 +1067,12 @@ export function App() {
       selectedSkills?: ComposerSkillSelection | ComposerSkillSelection[] | null,
       mentions: ComposerMention[] = [],
       displayText?: string,
+      approvedPlan?: string,
     ) => {
       const trimmedText = text.trim();
       const sendAnimation = messageSendMotion.take(displayText ?? text);
       const skillContext = buildSkillContexts(normalizeSkillSelections(selectedSkills));
-      const mentionContext = buildMentionContexts(mentions);
+      const mentionContext = buildMentionContexts(mentions, approvedPlan);
       const contextBlocks = [skillContext, mentionContext].filter((block) => block.trim().length > 0);
       const promptText = [...contextBlocks, trimmedText].filter((block) => block.trim().length > 0).join("\n\n");
       if (!promptText.trim() && attachments.length === 0) return;
@@ -1074,7 +1093,8 @@ export function App() {
       // Continue the current session when submitting a follow-up from within an
       // open chat; start a fresh session when submitting from the start view.
       const continueId = view === "chat" && activeId ? activeId : null;
-      if (continueId && runningSessionIds.has(continueId)) return;
+      if (continueId && (activeRunIdsRef.current.has(continueId) || planModeChangeKeys.current.has(continueId))) return;
+      if (approvedPlan && !continueId) return;
       if (!continueId && activePendingRunKey) return;
       // Capture the draft section for this run; later navigation cannot redirect it.
       const newSessionSectionId = continueId ? null : pendingNewChatSectionRef.current;
@@ -1086,9 +1106,9 @@ export function App() {
         void changeSidebarPreferences({ type: "set_section", session_id: sid, section_id: newSessionSectionId })
           .catch((error) => message.error(`新会话归入分区失败：${String(error)}`));
       };
-      const requestedGoal = mentions.some((mention) => mention.kind === "goal");
-      const requestedPlanMode = !requestedGoal && mentions.some((mention) => mention.kind === "plan_mode");
-      if (continueId && (requestedGoal || requestedPlanMode)) {
+      const goal = mentions.find((mention) => mention.kind === "goal");
+      const requestedPlanMode = !goal && !approvedPlan && mentions.some((mention) => mention.kind === "plan_mode");
+      if (continueId && (goal || requestedPlanMode || approvedPlan)) {
         if (!(await updateSessionPlanMode(continueId, requestedPlanMode))) return;
       } else if (requestedPlanMode) {
         setPlanMode(true);
@@ -1099,6 +1119,7 @@ export function App() {
       let modelAttemptBaseParts: MessagePart[] | null = null;
       let observedTerminal: RuntimeEvent["type"] | null = null;
       let settledErrorReported = false;
+      let completedSuccessfully = false;
 
       // The run's session key for the live transcript. Until the backend
       // announces the real id (session_registered), a new run buffers under a
@@ -1108,6 +1129,13 @@ export function App() {
         `run_${Date.now()}_${Math.random().toString(16).slice(2)}`;
       const pendingKey = `__pending__:${runId}`;
       let runKey = continueId ?? pendingKey;
+      if (goal) {
+        updateModePreview(runKey, () => ({ goal: { runId, text: goal.text, elapsedMs: 0, resumedAt: runStart } }));
+      } else if (requestedPlanMode || approvedPlan) {
+        updateModePreview(runKey, () => ({
+          plan: approvedPlan ? { runId, phase: "executing", markdown: approvedPlan } : { runId, phase: "drafting" },
+        }));
+      }
       activeRunIdsRef.current.set(runKey, runId);
       const preflightController = new AbortController();
       preflightAbortControllersRef.current.set(runId, preflightController);
@@ -1147,6 +1175,10 @@ export function App() {
             next.set(sid, snapshot);
             return next;
           });
+          if (goal || requestedPlanMode) {
+            const previousKey = runKey;
+            setModePreviews((previous) => adoptConversationModePreview(previous, previousKey, sid));
+          }
           runKey = sid;
           activeRunIdsRef.current.delete(pendingKey);
           activeRunIdsRef.current.set(sid, runId);
@@ -1846,6 +1878,22 @@ export function App() {
       };
 
       const finishRun = () => {
+        if (goal || requestedPlanMode || approvedPlan) {
+          const finishedKey = runKey;
+          const transcript = liveTranscripts.current.get(finishedKey) ?? [];
+          const answer = transcript[transcript.length - 1];
+          const lastText = answer?.parts?.slice().reverse().find((part) => part.kind === "text");
+          const planText = answer?.role === "assistant" && answer.tone !== "error" && lastText?.kind === "text" && lastText.tone !== "error"
+            ? lastText.text
+            : "";
+          const stoppedAt = Date.now();
+          updateModePreview(finishedKey, (current) => ({
+            goal: !completedSuccessfully && current.goal?.runId === runId && current.goal.resumedAt !== null
+              ? toggleGoalPreview(current.goal, stoppedAt)
+              : current.goal,
+            plan: settlePlanPreview(current.plan, runId, completedSuccessfully, planText),
+          }));
+        }
         preflightAbortControllersRef.current.delete(runId);
         runPhaseRef.current.delete(runId);
         scheduleTranscriptRender(runKey, true);
@@ -1918,6 +1966,7 @@ export function App() {
         preflightController.signal,
       )
         .then((newSessionId) => {
+          completedSuccessfully = observedTerminal !== "run_cancelled" && observedTerminal !== "run_failed";
           if (newSessionId) assignNewSessionSection(newSessionId);
           // The run created (or continued) a session under the active project;
           // refresh the sidebar lists and focus that session.
@@ -1959,7 +2008,7 @@ export function App() {
           finishRun();
         });
     },
-    [activeId, view, refreshSessions, runningSessionIds, activePendingRunKey, messageSendMotion, chatFrameKey, updateSessionPlanMode]
+    [activeId, view, refreshSessions, activePendingRunKey, messageSendMotion, chatFrameKey, updateSessionPlanMode, updateModePreview]
   );
 
   const onChatSend = useCallback(
@@ -1981,6 +2030,33 @@ export function App() {
       ),
     [onSubmit],
   );
+
+  const modePreviewKey = activePendingRunKey ?? activeId;
+  const modePreview = modePreviewKey ? modePreviews.get(modePreviewKey) : undefined;
+  const changeActiveGoal = (change: (goal: NonNullable<ConversationModePreview["goal"]>) => ConversationModePreview["goal"]) => {
+    if (!modePreviewKey || !modePreview?.goal) return;
+    const goalId = modePreview.goal.runId;
+    updateModePreview(modePreviewKey, (current) => current.goal?.runId === goalId
+      ? { ...current, goal: change(current.goal) }
+      : current);
+  };
+  const dismissPlanReview = () => {
+    if (!modePreviewKey || modePreview?.plan?.phase !== "review") return;
+    const planId = modePreview.plan.runId;
+    updateModePreview(modePreviewKey, (current) => current.plan?.runId === planId && current.plan.phase === "review"
+      ? { ...current, plan: { runId: planId, phase: "planning" } }
+      : current);
+  };
+  const confirmPlan = () => {
+    if (!activeId || activePendingRunKey || modePreview?.plan?.phase !== "review" || activeRunIdsRef.current.has(activeId)) return;
+    void onSubmit(t("composer.plan.executionRequest"), [], undefined, undefined, [], [], t("composer.plan.accept"), modePreview.plan.markdown);
+  };
+  const exitPlan = async () => {
+    if (!activeId || activePendingRunKey || activeRunIdsRef.current.has(activeId)) return;
+    if (await updateSessionPlanMode(activeId, false)) {
+      updateModePreview(activeId, (current) => ({ ...current, plan: undefined }));
+    }
+  };
 
   const chatMessages = messages;
   const activeQuestions = questionsForSession(questionsBySession, activeId);
@@ -2496,8 +2572,15 @@ export function App() {
                   busy={activeChatBusy}
                   onStop={onStopRun}
                   stopping={activeRunIsStopping}
-                  planMode={planMode}
-                  onExitPlanMode={activeId ? () => { void updateSessionPlanMode(activeId, false); } : undefined}
+                  planMode={modePreview?.plan ? true : planMode}
+                  onExitPlanMode={exitPlan}
+                  goalPreview={modePreview?.goal}
+                  onToggleGoal={() => changeActiveGoal((goal) => toggleGoalPreview(goal, Date.now()))}
+                  onEditGoal={(text) => changeActiveGoal((goal) => ({ ...goal, text }))}
+                  onRemoveGoal={() => changeActiveGoal(() => undefined)}
+                  showPlanReview={modePreview?.plan?.phase === "review"}
+                  onConfirmPlan={confirmPlan}
+                  onDismissPlanReview={dismissPlanReview}
                   activeProjectPath={activeProjectPath}
                   projectMapOpenSignal={projectMapOpenSignal}
                   contextUsage={activeContextUsage}

@@ -47,6 +47,7 @@ function MessageTurnComponent({
   const detailsContext = useMemo(() => ({ snapshot, setDetail }), [snapshot, setDetail]);
   const totalMs = turn.runMs ?? totalToolMs(turn);
   const hasProcess = processBlocks.length > 0;
+  const isPlanningTurn = turn.user?.mentions.some((mention) => mention.kind === "plan_mode");
 
   return (
     <div className="flex min-w-0 flex-col gap-4" data-process-turn={turnKey}>
@@ -71,7 +72,12 @@ function MessageTurnComponent({
         </div>
       )}
       {assistantContentBlocks.map((block) => (
-        <AssistantMessageBubble key={block.id} block={block} onOpenUrl={onOpenUrl} />
+        <AssistantMessageBubble
+          key={block.id}
+          block={block}
+          onOpenUrl={onOpenUrl}
+          planPhase={isPlanningTurn ? (processing ? "drafting" : "ready") : undefined}
+        />
       ))}
       {/* One metrics line per turn, rendered here rather than inside a text
           block: while the run continues, the answer text can be reclassified
