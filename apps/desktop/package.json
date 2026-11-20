@@ -32,7 +32,7 @@
     "test:run-completion-error": "node --test scripts/check-run-completion-error.test.cjs",
     "test:message-edit": "node --test scripts/check-message-edit-motion.test.cjs scripts/check-menu-mount.test.cjs scripts/check-spring-press.test.cjs",
     "test:image-integrity": "node --test scripts/check-image-integrity.test.cjs scripts/check-chat-admission.test.cjs",
-    "test:composer-activity": "node --test scripts/check-composer-activity.test.cjs scripts/check-composer-controls.test.cjs scripts/check-history-preload.test.cjs scripts/check-composer-height.test.cjs",
+    "test:composer-activity": "node --test scripts/check-composer-activity.test.cjs scripts/check-composer-controls.test.cjs scripts/check-history-preload.test.cjs scripts/check-composer-height.test.cjs scripts/check-composer-slash-token.test.cjs",
     "test:harness-models": "node --test scripts/check-harness-model-editor.test.cjs",
     "test:ui-navigation": "node --test scripts/check-titlebar.test.cjs",
     "test:theme-background": "node --test scripts/check-theme-background.test.cjs",

@@ -3580,6 +3580,7 @@ const MOCK_COMMANDS: Command[] = [
   { id: "approvals.review", title: "Review Pending Approvals", description: "Open pending tool approval requests.", category: "Approvals", shortcut: "Ctrl+Shift+A" },
   { id: "mcp.list", title: "List MCP Servers", description: "Open the configured MCP server list.", category: "MCP", shortcut: null },
   { id: "theme.toggle", title: "Toggle Theme", description: "Switch between light and dark UI themes.", category: "View", shortcut: null },
+  { id: "slash.context", title: "/context", description: "查看当前会话的上下文和 Token 用量", category: "内置命令", shortcut: null },
   { id: "slash.compact", title: "/compact", description: "压缩当前会话上下文，降低后续请求的上下文体积", category: "内置命令", shortcut: null },
   { id: "slash.cost", title: "/cost", description: "查看当前会话、当天、本月和累计费用", category: "内置命令", shortcut: null },
   { id: "slash.doctor", title: "/doctor", description: "运行环境诊断，检查配置、数据库、权限和 API Key", category: "内置命令", shortcut: null },

@@ -1,7 +1,7 @@
 import { HoverInfo } from "./ui/HoverInfo";
 import { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo, useId } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { Brain, BrainCircuit, Check, ChevronDown, CircleAlert, Feather, Hand, Lightbulb, Loader2, ShieldHalf, Sparkles } from "lucide-react";
+import { Brain, BrainCircuit, Check, ChevronDown, CircleAlert, Feather, Hand, Lightbulb, Loader2, ShieldHalf, Sparkles, Terminal } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ContextCapacityIndicator } from "./ContextCapacityIndicator";
 import { ComposerSuggestPanel } from "./ComposerSuggestPanel";
@@ -12,6 +12,7 @@ import { useMessageSendMotion } from "./ui/MessageSendMotionContext";
 import { ComposerAttachButton } from "./ComposerAttachButton";
 import { ComposerAttachmentList } from "./ComposerAttachmentList";
 import { validateComposerImage } from "./composerImageInput";
+import { findCommittedSlash, projectSlashDraft, restoreSlashDraft, toSlashEditorOffset } from "./composerSlashToken";
 import { MorphingMenuShell } from "./ui/MorphingMenuShell";
 import { MOTION } from "./ui/motion";
 import { MENU_ITEM_ATTR, SlidingMenuList } from "./ui/SlidingMenuList";
@@ -247,12 +248,16 @@ export function Composer({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const mirrorRef = useRef<HTMLDivElement>(null);
+  const slashChipRef = useRef<HTMLSpanElement>(null);
+  const previousSlashPrefix = useRef("");
+  const lastCommittedSlashPrefix = useRef("");
   const composerRef = useRef<HTMLDivElement>(null);
   const messageSendMotion = useMessageSendMotion();
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const { modelOptions, activeModelOptions, selectedModel, selectedThinking, switching,
     chooseModel, chooseThinking } = useComposerModelSettings();
   const [slashResults, setSlashResults] = useState<SlashChoice[]>([]);
+  const [slashCommands, setSlashCommands] = useState<Command[]>([]);
   const [slashSelected, setSlashSelected] = useState(0);
   const [suggestionNavigation, setSuggestionNavigation] = useState(0);
   const [atSections, setAtSections] = useState<AtSection[]>([]);
@@ -423,6 +428,54 @@ export function Composer({
     [cursorPos, draftValue],
   );
 
+  const hasSlashInput = draftValue.startsWith("/") || activeSlashToken !== null;
+  useEffect(() => {
+    if (!hasSlashInput) return;
+    let currentRequest = 0;
+    const refresh = () => {
+      const request = ++currentRequest;
+      getCommands("")
+        .then((commands) => {
+          if (request === currentRequest) setSlashCommands(commands.filter((command) => command.id.startsWith("slash.")));
+        })
+        .catch(() => {
+          // Keep the last catalog while a refresh is unavailable.
+        });
+    };
+    refresh();
+    window.addEventListener(SETTINGS_CHANGED_EVENT, refresh);
+    return () => {
+      currentRequest += 1;
+      window.removeEventListener(SETTINGS_CHANGED_EVENT, refresh);
+    };
+  }, [activeProjectPath, hasSlashInput]);
+
+  const slashTitles = useMemo(() => new Set(slashCommands.map((command) => command.title)), [slashCommands]);
+  const committedSlash = findCommittedSlash(draftValue, slashTitles);
+  const slashPrefix = committedSlash?.prefix ?? "";
+  const editorValue = projectSlashDraft(draftValue, slashPrefix);
+
+  // Only adjust the native selection when the editor switches between the raw
+  // command and its one-character representation. Ordinary text edits stay native.
+  useLayoutEffect(() => {
+    if (previousSlashPrefix.current === slashPrefix) return;
+    previousSlashPrefix.current = slashPrefix;
+    if (slashPrefix) lastCommittedSlashPrefix.current = slashPrefix;
+    textareaRef.current?.setSelectionRange(
+      toSlashEditorOffset(cursorPos, slashPrefix),
+      toSlashEditorOffset(selectionRange?.end ?? cursorPos, slashPrefix),
+    );
+  }, [cursorPos, selectionRange, slashPrefix]);
+
+  const focusEditorAt = (nextDraft: string, caret: number) => {
+    const prefix = findCommittedSlash(nextDraft, slashTitles)?.prefix ?? "";
+    const editorCaret = toSlashEditorOffset(caret, prefix);
+    requestAnimationFrame(() => {
+      textareaRef.current?.setSelectionRange(editorCaret, editorCaret);
+      textareaRef.current?.focus();
+    });
+  };
+
   const activeAtToken = useMemo(
     () => findActiveAtToken(draftValue, cursorPos),
     [cursorPos, draftValue],
@@ -460,7 +513,25 @@ export function Composer({
 
   useLayoutEffect(() => {
     resizeTextarea();
-  }, [draftValue, resizeTextarea]);
+  }, [draftValue, resizeTextarea, slashPrefix]);
+
+  // The mirror lays out the chip at its natural width. Reserve exactly that
+  // space on the textarea's first line so wrapped arguments stay aligned.
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    const chip = slashChipRef.current;
+    if (!textarea || !chip || !slashPrefix) return;
+    const syncIndent = () => {
+      textarea.style.textIndent = `${chip.getBoundingClientRect().width}px`;
+    };
+    syncIndent();
+    const observer = new ResizeObserver(syncIndent);
+    observer.observe(chip);
+    return () => {
+      observer.disconnect();
+      textarea.style.removeProperty("text-indent");
+    };
+  }, [slashPrefix]);
 
   // Width is the other input to the measurement, and it changes without
   // touching the draft: window resize, sidebar toggle, moving the window to a
@@ -541,7 +612,6 @@ export function Composer({
       return;
     }
 
-    let cancelled = false;
     const q = activeSlashToken.query.trim().toLowerCase();
     const selectedSkillIds = new Set(selectedSkills.map((skill) => skill.id));
     const skillChoices: SlashChoice[] = skills
@@ -563,27 +633,10 @@ export function Composer({
         skillId: sk.id,
         skillName: sk.name,
       }));
-    getCommands("")
-      .then((commands) => {
-        if (cancelled) return;
-        const slash = commands.filter((c) => {
-          if (!c.id.startsWith("slash.")) return false;
-          const name = c.title.replace(/^\//, "").toLowerCase();
-          return !q || name.includes(q);
-        });
-        setSlashResults([...slash, ...skillChoices]);
-        setSlashSelected(0);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setSlashResults(skillChoices);
-          setSlashSelected(0);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [activeSlashToken, draftValue, activeModelOptions, selectedModel, selectedSkills, skills]);
+    const slash = slashCommands.filter((command) => !q || command.title.slice(1).toLowerCase().includes(q));
+    setSlashResults([...slash, ...skillChoices]);
+    setSlashSelected(0);
+  }, [activeSlashToken, draftValue, activeModelOptions, selectedModel, selectedSkills, skills, slashCommands]);
 
   useEffect(() => {
     if (!activeAtToken || slashOpen) {
@@ -755,23 +808,16 @@ export function Composer({
       onChange(stripSkillMarkers(nextValue));
       setCursorPos(rawStart + 1);
       setSelectionRange(null);
-      requestAnimationFrame(() => {
-        textareaRef.current?.setSelectionRange(rawStart + 1, rawStart + 1);
-        textareaRef.current?.focus();
-      });
+      focusEditorAt(nextValue, rawStart + 1);
     } else {
       const insertText = cmd.insertText ?? `${cmd.title} `;
-      const nextValue = `${prefix}${insertText}${suffix}`;
+      const nextValue = `${prefix}${insertText}${suffix.startsWith(" ") ? suffix.slice(1) : suffix}`;
       setDraftValue(nextValue);
       pendingDraftValueRef.current = stripSkillMarkers(nextValue);
       onChange(stripSkillMarkers(nextValue));
       setCursorPos(rawStart + insertText.length);
       setSelectionRange(null);
-      requestAnimationFrame(() => {
-        const caret = rawStart + insertText.length;
-        textareaRef.current?.setSelectionRange(caret, caret);
-        textareaRef.current?.focus();
-      });
+      focusEditorAt(nextValue, rawStart + insertText.length);
     }
     setSlashResults([]);
     setSlashSelected(0);
@@ -802,10 +848,7 @@ export function Composer({
     const caret = rawStart + 1 + spacer.length;
     setCursorPos(caret);
     setSelectionRange(null);
-    requestAnimationFrame(() => {
-      textareaRef.current?.setSelectionRange(caret, caret);
-      textareaRef.current?.focus();
-    });
+    focusEditorAt(nextValue, caret);
   };
 
   const insertMentionMarker = (
@@ -829,10 +872,7 @@ export function Composer({
     const caret = rawStart + 1 + spacer.length;
     setCursorPos(caret);
     setSelectionRange(null);
-    requestAnimationFrame(() => {
-      textareaRef.current?.setSelectionRange(caret, caret);
-      textareaRef.current?.focus();
-    });
+    focusEditorAt(nextValue, caret);
   };
 
   const chooseAt = (choice: AtChoice) => {
@@ -1152,23 +1192,29 @@ export function Composer({
   const syncCursorFromTextarea = () => {
     const textarea = textareaRef.current;
     if (!textarea) return;
+    const { offset } = restoreSlashDraft(textarea.value, slashPrefix);
     const start = textarea.selectionStart ?? textarea.value.length;
     const end = textarea.selectionEnd ?? start;
-    setCursorPos(start);
-    setSelectionRange(normalizeSelectionRange(start, end));
+    setCursorPos(offset(start));
+    setSelectionRange(normalizeSelectionRange(offset(start), offset(end)));
   };
 
   const handleEditorChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const next = event.currentTarget.value;
+    const textarea = event.currentTarget;
+    const { inputType } = event.nativeEvent as InputEvent;
+    const isHistoryEdit = inputType === "historyUndo" || inputType === "historyRedo";
+    // Native undo can reinsert the one-character token after it was deleted.
+    const prefix = slashPrefix || (isHistoryEdit ? lastCommittedSlashPrefix.current : "");
+    const { draft: next, offset } = restoreSlashDraft(textarea.value, prefix);
     const stripped = stripSkillMarkers(next);
-    const caret = event.currentTarget.selectionStart ?? next.length;
+    const caret = offset(textarea.selectionStart ?? textarea.value.length);
     const previousDraft = draftValue;
     setDraftValue(next);
     setCursorPos(caret);
     setSelectionRange(
       normalizeSelectionRange(
         caret,
-        event.currentTarget.selectionEnd ?? caret,
+        offset(textarea.selectionEnd ?? textarea.value.length),
       ),
     );
     const previousMarkerCount = countSkillMarkers(previousDraft);
@@ -1255,6 +1301,26 @@ export function Composer({
     const nodes: React.ReactNode[] = [];
     let match: RegExpExecArray | null;
     let segmentIndex = 0;
+    if (committedSlash) {
+      const selected = rangesOverlap(selectionRange, 0, slashPrefix.length);
+      const caretBefore = renderCaretAt(0, "slash-before-caret");
+      if (caretBefore) nodes.push(caretBefore);
+      nodes.push(
+        <span key="slash" ref={slashChipRef} className="inline-flex max-w-[min(15rem,50%)] pr-1.5 align-baseline">
+          <span data-composer-slash-token className={cn(
+            "inline-flex h-5 min-w-0 items-center gap-1 rounded-sm px-1 text-[13px] font-medium leading-none",
+            selected ? "bg-primary text-white" : "bg-primary/10 text-primary",
+          )}>
+            <Terminal aria-hidden="true" className="size-3 shrink-0" />
+            <span className="truncate">{committedSlash.label}</span>
+          </span>
+        </span>,
+      );
+      offset = slashPrefix.length;
+      markerRegex.lastIndex = offset;
+      const caretAfter = renderCaretAt(offset, "slash-after-caret");
+      if (caretAfter) nodes.push(caretAfter);
+    }
     while ((match = markerRegex.exec(draftValue)) !== null) {
       const markerStart = match.index;
       const text = draftValue.slice(offset, markerStart);
@@ -1331,39 +1397,41 @@ export function Composer({
 
   const handleCopy = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const textarea = event.currentTarget;
-    const start = textarea.selectionStart ?? 0;
-    const end = textarea.selectionEnd ?? start;
+    const { draft, offset } = restoreSlashDraft(textarea.value, slashPrefix);
+    const start = offset(textarea.selectionStart);
+    const end = offset(textarea.selectionEnd);
     if (start === end) return;
-    const selectedText = stripSkillMarkers(textarea.value.slice(start, end));
+    const selectedText = stripSkillMarkers(draft.slice(start, end));
     event.preventDefault();
     event.clipboardData.setData("text/plain", selectedText);
   };
 
   const handleCut = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const textarea = event.currentTarget;
-    const start = textarea.selectionStart ?? 0;
-    const end = textarea.selectionEnd ?? start;
+    const { draft, offset } = restoreSlashDraft(textarea.value, slashPrefix);
+    const start = offset(textarea.selectionStart);
+    const end = offset(textarea.selectionEnd);
     if (start === end) return;
-    const selectedText = stripSkillMarkers(textarea.value.slice(start, end));
-    const nextValue = `${textarea.value.slice(0, start)}${textarea.value.slice(end)}`;
+    const selectedText = stripSkillMarkers(draft.slice(start, end));
+    const nextValue = `${draft.slice(0, start)}${draft.slice(end)}`;
     const stripped = stripSkillMarkers(nextValue);
     event.preventDefault();
     event.clipboardData.setData("text/plain", selectedText);
     setDraftValue(nextValue);
     setCursorPos(start);
     setSelectionRange(null);
-    const removedMarkers = countSkillMarkers(textarea.value.slice(start, end));
+    const removedMarkers = countSkillMarkers(draft.slice(start, end));
     if (removedMarkers > 0) {
-      const removeAt = countSkillMarkers(textarea.value.slice(0, start));
+      const removeAt = countSkillMarkers(draft.slice(0, start));
       setSelectedSkills((prev) => {
         const next = [...prev];
         next.splice(removeAt, removedMarkers);
         return next;
       });
     }
-    const removedMentionMarkers = countMentionMarkers(textarea.value.slice(start, end));
+    const removedMentionMarkers = countMentionMarkers(draft.slice(start, end));
     if (removedMentionMarkers > 0) {
-      const removeAt = countMentionMarkers(textarea.value.slice(0, start));
+      const removeAt = countMentionMarkers(draft.slice(0, start));
       setSelectedMentions((prev) => {
         const next = [...prev];
         next.splice(removeAt, removedMentionMarkers);
@@ -1372,10 +1440,7 @@ export function Composer({
     }
     pendingDraftValueRef.current = stripped;
     onChange(stripped);
-    requestAnimationFrame(() => {
-      textareaRef.current?.setSelectionRange(start, start);
-      textareaRef.current?.focus();
-    });
+    focusEditorAt(nextValue, start);
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1420,7 +1485,7 @@ export function Composer({
     if (slashOpen && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) {
       const selected = slashEntries[slashSelected];
       const exact = selected?.skillName ? false : selected?.title === stripSkillMarkers(draftValue).trim();
-      if (selected && !exact) {
+      if (selected && (!exact || e.key === "Tab")) {
         e.preventDefault();
         chooseSlash(selected);
         return;
@@ -1532,7 +1597,7 @@ export function Composer({
         </div>
         <textarea
           ref={textareaRef}
-          aria-label={editorPlaceholder}
+          aria-label={committedSlash ? `${editorPlaceholder} (${committedSlash.prefix.trimEnd()})` : editorPlaceholder}
           aria-autocomplete="list"
           aria-controls={atOpen ? `${suggestId}-at` : slashOpen ? `${suggestId}-slash` : undefined}
           aria-activedescendant={atOpen ? `${suggestId}-at-option-${atSelected}` : slashOpen ? `${suggestId}-slash-option-${slashSelected}` : undefined}
@@ -1544,7 +1609,7 @@ export function Composer({
             maxHeight: `${textareaMaxHeight}px`,
           }}
           placeholder={editorPlaceholder}
-          value={draftValue}
+          value={editorValue}
           onChange={handleEditorChange}
           onPaste={onPaste}
           onCopy={handleCopy}
