@@ -151,7 +151,7 @@ async fn observe(renew: bool, protocol: bool) -> Observation {
                 .map_err(|e| e.to_string()),
         ));
         let before = backend
-            .recovery_status(&session.session_id)
+            .recovery_status(&session)
             .await
             .map_err(|e| e.to_string())?;
         if !before.available {
@@ -232,7 +232,7 @@ async fn observe(renew: bool, protocol: bool) -> Observation {
                 .map_err(|e| e.to_string()),
         ));
         let available_after_close = backend
-            .recovery_status(&session.session_id)
+            .recovery_status(&session)
             .await
             .map_err(|e| e.to_string())?
             .available;

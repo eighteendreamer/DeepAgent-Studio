@@ -742,6 +742,95 @@ async fn persisted_queue_executes_real_loopback_sftp_upload_and_download_without
 }
 
 #[tokio::test]
+async fn external_editor_only_uploads_after_opt_in_and_retains_a_conflicting_save() {
+    use deepagent_app_core::external_editor::{EditorOpenRequest, ExternalEditorService};
+    let server = support::SshServer::start("127.0.0.1").await;
+    let dir = tempfile::tempdir().unwrap();
+    let trust = dir.path().join("known_hosts");
+    server.write_trust(&trust);
+    let ssh = Arc::new(deepagent_ssh::SshService::new(dir.path().to_owned()));
+    let connection = server.create(&ssh, Some(&trust)).await;
+    let queue =
+        TransferCoordinator::new(Arc::new(Database::open_in_memory().unwrap()), ssh.clone())
+            .unwrap();
+    let source = dir.path().join("editor-input");
+    std::fs::write(&source, b"original").unwrap();
+    let mut upload = request(&connection.id, "edit.txt");
+    upload.transfer.local_path = source.to_string_lossy().into();
+    let first = queue.submit(upload.clone()).await.unwrap();
+    state(&queue, &first.id, TransferState::Completed).await;
+
+    let editor =
+        ExternalEditorService::new(dir.path().join("edit-cache"), ssh.clone(), queue.clone());
+    // A self-contained executable that exits without opening a GUI. The test
+    // writes to the file it was passed, as an external editor would on Save.
+    let edit = editor
+        .open(EditorOpenRequest {
+            connection_id: connection.id.clone(),
+            remote_path: upload.transfer.remote_path.clone(),
+            executable: std::env::current_exe().unwrap().to_string_lossy().into(),
+            arguments: vec!["--list".into()],
+            auto_upload: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(&edit.local_path).unwrap(), b"original");
+    std::fs::write(&edit.local_path, b"saved locally").unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
+    assert_eq!(queue.snapshot().await.unwrap().len(), 1);
+
+    editor.resolve(&edit.id, "resume", None).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(12), async {
+        loop {
+            if queue
+                .snapshot()
+                .await
+                .unwrap()
+                .iter()
+                .any(|task| task.id != first.id && task.state == TransferState::Completed)
+                && editor.list().await[0].task_id.is_none()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let download = dir.path().join("download-after-save");
+    let mut readback = upload.clone();
+    readback.transfer.direction = FileTransferDirection::Download;
+    readback.transfer.local_path = download.to_string_lossy().into();
+    let task = queue.submit(readback).await.unwrap();
+    state(&queue, &task.id, TransferState::Completed).await;
+    assert_eq!(std::fs::read(download).unwrap(), b"saved locally");
+
+    std::fs::write(&source, b"changed by a different client").unwrap();
+    upload.transfer.conflict = FileConflictPolicy::Replace;
+    let remote = queue.submit(upload).await.unwrap();
+    state(&queue, &remote.id, TransferState::Completed).await;
+    std::fs::write(&edit.local_path, b"unsent local changes").unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(12), async {
+        loop {
+            if editor.list().await[0].state == "conflict" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let blocked = &editor.list().await[0];
+    assert!(!blocked.auto_upload);
+    assert_eq!(
+        std::fs::read(&edit.local_path).unwrap(),
+        b"unsent local changes"
+    );
+    editor.resolve(&edit.id, "close", None).await.unwrap();
+    ssh.disconnect(&connection.id).await.unwrap();
+}
+
+#[tokio::test]
 async fn terminal_persistence_failure_is_visible_and_blocks_new_work_until_host_recovery() {
     let db = Arc::new(Database::open_in_memory().unwrap());
     let executor = Arc::new(Executor::default());

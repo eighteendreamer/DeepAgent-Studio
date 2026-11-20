@@ -139,7 +139,7 @@ fn regular(meta: &FileAttributes) -> Result<u64> {
         Err(fail("invalid"))
     }
 }
-async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
+pub(super) async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     reader: &mut R,
     writer: &mut W,
     total: u64,
@@ -177,7 +177,7 @@ async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     operation(cancel, writer.flush()).await?;
     Ok(format!("{:x}", digest.finalize()))
 }
-async fn digest_remote(
+pub(super) async fn digest_remote(
     sftp: &SftpSession,
     path: &str,
     size: u64,
@@ -247,6 +247,28 @@ pub(super) async fn upload(
     progress: &TransferProgressCallback,
     expected_size: Option<u64>,
 ) -> Result<FileTransferReceipt> {
+    upload_guarded(sftp, request, local, cancel, progress, expected_size, None).await
+}
+
+pub(super) async fn upload_guarded(
+    sftp: &SftpSession,
+    request: &FileTransferRequest,
+    local: &PathBuf,
+    cancel: &CancellationToken,
+    progress: &TransferProgressCallback,
+    expected_size: Option<u64>,
+    expected_hash: Option<&Option<String>>,
+) -> Result<FileTransferReceipt> {
+    if let Some(expected) = expected_hash {
+        if &crate::conditional_upload::content_hash(sftp, &request.remote_path, cancel).await?
+            != expected
+        {
+            return Err(FileTransferError::new(
+                "conflict",
+                "remote content changed or was deleted; auto upload paused",
+            ));
+        }
+    }
     let meta = operation(cancel, tokio::fs::symlink_metadata(local)).await?;
     if !meta.is_file() || crate::directory_plan::is_link(&meta) {
         return Err(fail("invalid"));
@@ -311,6 +333,14 @@ pub(super) async fn upload(
         if cancel.is_cancelled() {
             return Err(fail("cancelled"));
         }
+        if let Some(expected) = expected_hash {
+            if &crate::conditional_upload::content_hash(sftp, &target, cancel).await? != expected {
+                return Err(FileTransferError::new(
+                    "conflict",
+                    "remote content changed before publication; auto upload paused",
+                ));
+            }
+        }
         let (strategy, warnings) =
             publish_remote(sftp, &stage, &target, existing.is_some()).await?;
         Ok(FileTransferReceipt {
@@ -338,7 +368,7 @@ pub(super) async fn upload(
 }
 
 /// Publication/rollback is non-cancellable. SFTP v3 rename cannot promise atomic replacement.
-async fn publish_remote(
+pub(super) async fn publish_remote(
     sftp: &SftpSession,
     stage: &str,
     target: &str,

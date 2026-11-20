@@ -79,6 +79,9 @@ pub struct TerminalSession {
     pub backend: String,
     pub cols: u16,
     pub rows: u16,
+    /// Fences SSH operations to the transport that created this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_generation: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -313,10 +316,21 @@ impl TerminalLeaseRegistry {
     /// Check host/run ownership without accepting an expired input token.
     /// Used before explicit takeover, which itself rotates the generation.
     pub fn validate_scope(&self, session_id: &str, run_id: &str) -> TerminalResult<()> {
+        if self.scope_is_registered(session_id, run_id)? {
+            Ok(())
+        } else {
+            Err(TerminalError::InvalidLease)
+        }
+    }
+
+    /// A removed session is absent; a registered session owned by another run
+    /// remains an error rather than looking like a closed session.
+    pub fn scope_is_registered(&self, session_id: &str, run_id: &str) -> TerminalResult<bool> {
         let leases = self.leases.lock().unwrap_or_else(|p| p.into_inner());
         match leases.get(session_id) {
-            Some(lease) if lease.run_id == run_id => Ok(()),
-            _ => Err(TerminalError::InvalidLease),
+            Some(lease) if lease.run_id == run_id => Ok(true),
+            Some(_) => Err(TerminalError::InvalidLease),
+            None => Ok(false),
         }
     }
 
@@ -463,6 +477,36 @@ mod tests {
     }
 
     #[test]
+    fn terminal_session_generation_is_optional_for_legacy_and_local_sessions() {
+        let legacy: TerminalSession = serde_json::from_value(serde_json::json!({
+            "sessionId": "direct:fixture",
+            "runId": "run",
+            "backend": "direct",
+            "cols": 80,
+            "rows": 24
+        }))
+        .unwrap();
+        assert_eq!(legacy.connection_generation, None);
+        assert!(serde_json::to_value(&legacy)
+            .unwrap()
+            .get("connectionGeneration")
+            .is_none());
+
+        let ssh = TerminalSession {
+            session_id: "ssh:fixture:pty".into(),
+            run_id: "run".into(),
+            backend: "ssh".into(),
+            cols: 80,
+            rows: 24,
+            connection_generation: Some(42),
+        };
+        assert_eq!(
+            serde_json::to_value(ssh).unwrap()["connectionGeneration"],
+            42
+        );
+    }
+
+    #[test]
     fn h293_concurrent_old_release_and_remove_cannot_replace_a_successor() {
         let registry = Arc::new(TerminalLeaseRegistry::default());
         let old = registry
@@ -511,6 +555,43 @@ mod tests {
             "terminal input lease is stale or belongs to another scope"
         );
         registry.validate(&user).unwrap();
+    }
+
+    #[test]
+    fn scope_lookup_distinguishes_removed_sessions_from_another_run() {
+        let registry = TerminalLeaseRegistry::default();
+        assert!(!registry.scope_is_registered("terminal-1", "run-1").unwrap());
+        let lease = registry
+            .register("terminal-1", "run-1", TerminalInputHolder::User)
+            .unwrap();
+        assert!(registry.scope_is_registered("terminal-1", "run-1").unwrap());
+        assert!(matches!(
+            registry.scope_is_registered("terminal-1", "another-run"),
+            Err(TerminalError::InvalidLease)
+        ));
+        assert!(registry
+            .validate_scope("terminal-1", "another-run")
+            .is_err());
+
+        registry.remove(&lease).unwrap();
+        assert!(!registry.scope_is_registered("terminal-1", "run-1").unwrap());
+        assert!(registry.validate_scope("terminal-1", "run-1").is_err());
+        assert!(registry.validate(&lease).is_err());
+        assert!(registry.renew(&lease).is_err());
+        assert!(registry
+            .takeover("terminal-1", TerminalInputHolder::Runtime)
+            .is_err());
+
+        registry
+            .register("terminal-1", "successor-run", TerminalInputHolder::User)
+            .unwrap();
+        assert!(matches!(
+            registry.scope_is_registered("terminal-1", "run-1"),
+            Err(TerminalError::InvalidLease)
+        ));
+        assert!(registry
+            .scope_is_registered("terminal-1", "successor-run")
+            .unwrap());
     }
 
     #[test]

@@ -54,9 +54,25 @@ export interface TransferInput {
   remotePath: string;
   conflict?: ConflictPolicy;
 }
+export type TransferRequest = Omit<TransferOptions, "detectLocalKind"> & { connectionId: string; transfer: TransferInput };
+export type OperationRequest = import("./fileWorkspaceApi").WorkbenchOperation | { operation: "edit_upload"; request: { connectionId: string; remotePath: string; localPath: string } };
+export function isTransferRequest(request: TransferTask["request"]): request is TransferRequest { return "transfer" in request; }
+export function operationConnections(request: TransferTask["request"]): string[] {
+  if (isTransferRequest(request)) return [request.connectionId];
+  if (request.operation === "copy") return [request.request.spec.sourceConnectionId, request.request.spec.destinationConnectionId];
+  if (request.operation === "extract") return [request.request.spec.connectionId];
+  return [request.request.connectionId];
+}
+export function operationPath(request: TransferTask["request"]): string {
+  if (isTransferRequest(request)) return request.transfer.remotePath;
+  if (request.operation === "copy") return `${request.request.spec.sourcePath} → ${request.request.spec.destinationPath}`;
+  if (request.operation === "extract") return `${request.request.spec.archivePath} → ${request.request.spec.destinationPath}`;
+  return request.operation === "chmod" ? request.request.path : request.request.remotePath;
+}
 export interface TransferTask {
   id: string;
-  request: Omit<TransferOptions, "detectLocalKind"> & { connectionId: string; transfer: TransferInput };
+  request: TransferRequest | OperationRequest;
+  operationReceipt?: Record<string, unknown> | null;
   attempt: number;
   state: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled";
   bytes: string;

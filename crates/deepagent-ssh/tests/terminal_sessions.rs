@@ -88,8 +88,11 @@ async fn rejected_shell_is_reported_and_remote_exit_drains_bytes_before_eof() {
             })
             .await
             .unwrap();
-        let status = backend.recovery_status(&session.session_id).await.unwrap();
+        let status = backend.recovery_status(&session).await.unwrap();
         assert!(status.available && status.control_available);
+        let mut wrong_run = session.clone();
+        wrong_run.run_id = "another-run".into();
+        assert!(backend.recovery_status(&wrong_run).await.is_err());
         backend
             .write(&session, &lease, b"fixture-exit")
             .await
@@ -106,18 +109,241 @@ async fn rejected_shell_is_reported_and_remote_exit_drains_bytes_before_eof() {
             tokio::task::yield_now().await;
         }
         assert_eq!(received, "fixture$ 尾部".as_bytes());
-        assert!(
-            !backend
-                .recovery_status(&session.session_id)
-                .await
-                .unwrap()
-                .available
-        );
+        assert!(!backend.recovery_status(&session).await.unwrap().available);
         backend.close(&session, &lease).await.unwrap();
+        let closed = backend
+            .recovery_status(&session)
+            .await
+            .expect("a closed SSH terminal must remain queryable as unavailable");
+        assert!(!closed.available && !closed.control_available);
+        assert!(backend.write(&session, &lease, b"closed").await.is_err());
+        assert!(backend.renew(&session, &lease).await.is_err());
+        assert!(backend
+            .takeover(&session, TerminalInputHolder::Runtime)
+            .await
+            .is_err());
+        assert!(backend
+            .release(&session, &lease, TerminalInputHolder::Runtime)
+            .await
+            .is_err());
+        let mut missing_generation = session.clone();
+        missing_generation.connection_generation = None;
+        assert!(backend.recovery_status(&missing_generation).await.is_err());
+        let mut malformed = session.clone();
+        malformed.session_id = "ssh:missing-token".into();
+        assert!(backend.recovery_status(&malformed).await.is_err());
+        let mut wrong_backend = session.clone();
+        wrong_backend.backend = "direct".into();
+        assert!(backend.recovery_status(&wrong_backend).await.is_err());
+        let recreated = SshTerminalSessionBackend::for_service(service.clone(), None);
+        let absent = recreated.recovery_status(&session).await.unwrap();
+        assert!(!absent.available && !absent.control_available);
+        assert_eq!(server.auth_count(), 1);
         service.disconnect(&connection.id).await.unwrap();
     })
     .await
     .expect("shell refusal/EOF must settle");
+}
+
+#[tokio::test]
+async fn ssh_terminal_session_returns_its_transport_generation() {
+    let server = support::SshServer::start("127.0.0.1").await;
+    let data = tempfile::tempdir().unwrap();
+    let trust = data.path().join("known_hosts");
+    server.write_trust(&trust);
+    let service = Arc::new(SshService::new(data.path().to_path_buf()));
+    let connection = server.create(&service, Some(&trust)).await;
+    let expected_generation = service
+        .connect(&connection.id)
+        .await
+        .unwrap()
+        .connection_generation
+        .unwrap();
+    let backend = SshTerminalSessionBackend::for_service(service.clone(), None);
+    let (session, lease) = backend
+        .open(TerminalOpenRequest {
+            target: deepagent_terminal::TerminalTarget::Ssh {
+                connection_id: connection.id.clone(),
+            },
+            run_id: "terminal-generation".into(),
+            cwd: String::new(),
+            cols: 80,
+            rows: 24,
+            initial_holder: TerminalInputHolder::User,
+        })
+        .await
+        .unwrap();
+
+    let wire = serde_json::to_value(&session).unwrap();
+    assert_eq!(
+        wire.get("connectionGeneration")
+            .and_then(serde_json::Value::as_u64),
+        Some(expected_generation),
+        "the shared terminal session must carry the transport generation to Tauri callers"
+    );
+
+    backend.close(&session, &lease).await.unwrap();
+    service.disconnect(&connection.id).await.unwrap();
+}
+
+#[tokio::test]
+async fn stale_transport_generation_cannot_operate_a_replacement_terminal_pty() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let server = support::SshServer::start("127.0.0.1").await;
+        let data = tempfile::tempdir().unwrap();
+        let trust = data.path().join("known_hosts");
+        server.write_trust(&trust);
+        let service = Arc::new(SshService::new(data.path().to_path_buf()));
+        let connection = server.create(&service, Some(&trust)).await;
+        let backend = SshTerminalSessionBackend::for_service(service.clone(), None);
+        let request = || TerminalOpenRequest {
+            target: deepagent_terminal::TerminalTarget::Ssh {
+                connection_id: connection.id.clone(),
+            },
+            run_id: "terminal-generation-replacement".into(),
+            cwd: String::new(),
+            cols: 80,
+            rows: 24,
+            initial_holder: TerminalInputHolder::User,
+        };
+
+        let (old_session, old_lease) = backend.open(request()).await.unwrap();
+        let old_generation = old_session.connection_generation.unwrap();
+        service.disconnect(&connection.id).await.unwrap();
+        let current_transport = service.connect(&connection.id).await.unwrap();
+        assert_ne!(
+            current_transport.connection_generation,
+            Some(old_generation)
+        );
+        let (current_session, current_lease) = backend.open(request()).await.unwrap();
+        assert_eq!(
+            current_session.connection_generation,
+            current_transport.connection_generation
+        );
+
+        let mut stale_session = current_session.clone();
+        stale_session.connection_generation = Some(old_generation);
+        assert!(
+            !backend
+                .recovery_status(&old_session)
+                .await
+                .unwrap()
+                .available
+        );
+        assert!(backend.renew(&stale_session, &current_lease).await.is_err());
+        assert!(backend
+            .takeover(&stale_session, TerminalInputHolder::Runtime)
+            .await
+            .is_err());
+        assert!(backend
+            .release(&stale_session, &current_lease, TerminalInputHolder::Runtime)
+            .await
+            .is_err());
+        assert!(backend.subscribe_output(&stale_session).await.is_err());
+        assert!(backend
+            .signal(
+                &stale_session,
+                &current_lease,
+                deepagent_terminal::TerminalSignal::Interrupt,
+            )
+            .await
+            .is_err());
+        let stale_status = backend.recovery_status(&stale_session).await.unwrap();
+        assert!(!stale_status.available && !stale_status.control_available);
+        assert!(backend.read(&stale_session, 0).await.is_err());
+        assert!(backend
+            .write(
+                &stale_session,
+                &current_lease,
+                b"must-not-reach-current-pty"
+            )
+            .await
+            .is_err());
+        assert!(backend
+            .resize(&stale_session, &current_lease, 140, 60)
+            .await
+            .is_err());
+        assert_eq!(
+            *server.counts.pty_size.read().unwrap(),
+            Some((80, 24)),
+            "a stale resize must not change the replacement PTY"
+        );
+        assert!(backend.close(&stale_session, &current_lease).await.is_err());
+
+        let mut missing_generation = current_session.clone();
+        missing_generation.connection_generation = None;
+        assert!(backend.recovery_status(&missing_generation).await.is_err());
+        assert!(backend.read(&missing_generation, 0).await.is_err());
+        assert!(backend
+            .write(&missing_generation, &current_lease, b"missing-generation")
+            .await
+            .is_err());
+        assert!(backend
+            .close(&missing_generation, &current_lease)
+            .await
+            .is_err());
+
+        assert!(
+            backend
+                .recovery_status(&current_session)
+                .await
+                .unwrap()
+                .available
+        );
+        let prompt = backend.read(&current_session, 0).await.unwrap();
+        assert_eq!(prompt.data, b"fixture$ ");
+        backend
+            .write(&current_session, &current_lease, b"current-generation-only")
+            .await
+            .unwrap();
+        let echoed = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let chunk = backend.read(&current_session, prompt.cursor).await.unwrap();
+                if !chunk.data.is_empty() {
+                    break chunk.data;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("replacement PTY output should remain readable");
+        assert_eq!(echoed, b"current-generation-only");
+
+        backend
+            .renew(&current_session, &current_lease)
+            .await
+            .unwrap();
+        let runtime_lease = backend
+            .release(
+                &current_session,
+                &current_lease,
+                TerminalInputHolder::Runtime,
+            )
+            .await
+            .unwrap();
+        assert!(backend
+            .renew(&current_session, &current_lease)
+            .await
+            .is_err());
+        backend
+            .renew(&current_session, &runtime_lease)
+            .await
+            .unwrap();
+        let user_lease = backend
+            .takeover(&current_session, TerminalInputHolder::User)
+            .await
+            .unwrap();
+        backend.close(&current_session, &user_lease).await.unwrap();
+        assert_eq!(
+            server.auth_count(),
+            2,
+            "stale operations must not reconnect"
+        );
+        let _ = backend.close(&old_session, &old_lease).await;
+        service.disconnect(&connection.id).await.unwrap();
+    })
+    .await
+    .expect("terminal generation replacement must settle");
 }
 
 #[tokio::test]

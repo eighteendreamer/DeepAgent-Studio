@@ -143,6 +143,38 @@ impl russh_sftp::server::Handler for MemoryFiles {
         })
     }
 
+    async fn setstat(
+        &mut self,
+        id: u32,
+        path: String,
+        attrs: FileAttributes,
+    ) -> Result<Status, Self::Error> {
+        let mode = attrs.permissions.ok_or(StatusCode::Failure)?;
+        assert!(attrs.size.is_none() && attrs.uid.is_none() && attrs.gid.is_none());
+        self.counts
+            .chmod_requests
+            .write()
+            .unwrap()
+            .push((path.clone(), mode));
+        if self
+            .counts
+            .reject_chmod_paths
+            .read()
+            .unwrap()
+            .contains(&path)
+        {
+            return Err(StatusCode::PermissionDenied);
+        }
+        let mut current = self.lstat(id, path.clone()).await?.attrs;
+        current.permissions = Some((current.permissions.unwrap_or(0) & !0o7777) | (mode & 0o7777));
+        self.counts
+            .file_attributes
+            .write()
+            .unwrap()
+            .insert(path, current);
+        Ok(success(id))
+    }
+
     async fn open(
         &mut self,
         id: u32,

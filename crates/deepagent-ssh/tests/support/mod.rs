@@ -57,6 +57,8 @@ pub struct Counts {
     pub pty_size: RwLock<Option<(u32, u32)>>,
     pub files: Arc<RwLock<HashMap<String, Vec<u8>>>>,
     pub file_opens: AtomicUsize,
+    pub chmod_requests: RwLock<Vec<(String, u32)>>,
+    pub reject_chmod_paths: RwLock<std::collections::HashSet<String>>,
     pub status_messages: RwLock<HashMap<String, String>>,
     pub stage_created: tokio::sync::Notify,
     pub stage_open_gate: RwLock<Option<Arc<tokio::sync::Notify>>>,

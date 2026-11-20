@@ -311,7 +311,11 @@ async fn admission_and_retry_reserve_each_active_tasks_entire_result_capacity() 
     assert!(error.to_string().contains("capacity"));
     // A duplicate neither consumes another reservation nor starts another worker.
     assert_eq!(
-        queue.submit(tasks[0].request.clone()).await.unwrap().id,
+        queue
+            .submit(tasks[0].request.as_transfer().unwrap().clone())
+            .await
+            .unwrap()
+            .id,
         tasks[0].id
     );
     let cancelled = tasks.last().unwrap();

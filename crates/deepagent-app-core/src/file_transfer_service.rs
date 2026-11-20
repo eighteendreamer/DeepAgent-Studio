@@ -42,6 +42,56 @@ pub struct TransferRequest {
     #[serde(default)]
     pub directory_conflict: DirectoryConflictPolicy,
 }
+/// Existing transfers retain their original wire shape and persisted history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum FileOperationRequest {
+    Transfer(TransferRequest),
+    Workbench(crate::file_operations::WorkbenchOperation),
+}
+
+impl FileOperationRequest {
+    pub fn connection_id(&self) -> &str {
+        match self {
+            Self::Transfer(request) => &request.connection_id,
+            Self::Workbench(operation) => operation.connection_id(),
+        }
+    }
+
+    pub fn as_transfer(&self) -> Option<&TransferRequest> {
+        match self {
+            Self::Transfer(request) => Some(request),
+            Self::Workbench(_) => None,
+        }
+    }
+
+    fn connections(&self) -> Vec<String> {
+        match self {
+            Self::Workbench(operation) => operation.connections(),
+            _ => vec![self.connection_id().to_owned()],
+        }
+    }
+
+    fn initial_file(&self) -> Option<String> {
+        self.as_transfer()
+            .filter(|request| request.kind == TransferKind::File)
+            .map(|request| request.transfer.remote_path.clone())
+    }
+
+    fn same_work(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Transfer(left), Self::Transfer(right)) => {
+                left.kind == right.kind
+                    && left.connection_id == right.connection_id
+                    && left.transfer.direction == right.transfer.direction
+                    && left.transfer.local_path == right.transfer.local_path
+                    && left.transfer.remote_path == right.transfer.remote_path
+            }
+            (Self::Workbench(left), Self::Workbench(right)) => left == right,
+            _ => false,
+        }
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransferState {
@@ -93,7 +143,7 @@ pub type ResolvedDirectoryConflict =
 #[serde(rename_all = "camelCase")]
 pub struct TransferTask {
     pub id: String,
-    pub request: TransferRequest,
+    pub request: FileOperationRequest,
     pub attempt: u32,
     pub state: TransferState,
     pub bytes: String,
@@ -119,6 +169,8 @@ pub struct TransferTask {
     pub receipt: Option<FileTransferReceipt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub directory_receipt: Option<DirectoryTransferReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_receipt: Option<serde_json::Value>,
     pub error: Option<FileTransferError>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_file_conflict: Option<PendingFileConflict>,
@@ -174,6 +226,17 @@ pub trait TransferExecutor: Send + Sync {
             "executor does not support directory transfers",
         ))
     }
+    async fn execute_workbench(
+        &self,
+        _request: crate::file_operations::WorkbenchOperation,
+        _cancel: CancellationTree,
+        _progress: Arc<dyn Fn(FileTransferProgress) + Send + Sync>,
+    ) -> std::result::Result<serde_json::Value, FileTransferError> {
+        Err(FileTransferError::new(
+            "unsupported",
+            "executor does not support workbench operations",
+        ))
+    }
 }
 #[async_trait::async_trait]
 impl TransferExecutor for SshService {
@@ -209,10 +272,59 @@ impl TransferExecutor for SshService {
         )
         .await
     }
+    async fn execute_workbench(
+        &self,
+        request: crate::file_operations::WorkbenchOperation,
+        cancel: CancellationTree,
+        progress: Arc<dyn Fn(FileTransferProgress) + Send + Sync>,
+    ) -> std::result::Result<serde_json::Value, FileTransferError> {
+        use crate::file_operations::WorkbenchOperation::*;
+        let value = match request {
+            Chmod { request } => serde_json::to_value(
+                self.execute_chmod(
+                    request,
+                    DirectoryWalkLimits::default(),
+                    cancel.token(),
+                    Arc::new(move |p| {
+                        progress(FileTransferProgress {
+                            bytes: u64::from(p.changed_entries),
+                            total: Some(u64::from(p.total_entries)),
+                        })
+                    }),
+                )
+                .await?,
+            ),
+            Copy { request } => serde_json::to_value(
+                self.execute_server_copy(request, cancel.token(), progress)
+                    .await?,
+            ),
+            Extract { request } => return self.execute_archive(request, cancel.token()).await,
+            EditUpload { request } => serde_json::to_value(
+                self.conditional_upload(request, cancel.token(), progress)
+                    .await?,
+            ),
+        };
+        value.map_err(|e| FileTransferError::new("invalid", &e.to_string()))
+    }
 }
 enum ExecutionReceipt {
     File(FileTransferReceipt),
     Directory(DirectoryTransferReceipt),
+    Workbench(serde_json::Value),
+}
+
+struct ExecutionFailure {
+    error: FileTransferError,
+    receipt: Option<ExecutionReceipt>,
+}
+
+impl From<FileTransferError> for ExecutionFailure {
+    fn from(error: FileTransferError) -> Self {
+        Self {
+            error,
+            receipt: None,
+        }
+    }
 }
 enum ProgressUpdate {
     File(FileTransferProgress),
@@ -490,25 +602,34 @@ impl TransferCoordinator {
             )
             .to_string_lossy()
             .into();
+        self.admit(FileOperationRequest::Transfer(request))
+    }
+
+    pub async fn submit_operation(
+        &self,
+        operation: crate::file_operations::WorkbenchOperation,
+    ) -> Result<TransferTask> {
+        operation.validate().map_err(|e| invalid(&e.to_string()))?;
+        self.admit(FileOperationRequest::Workbench(operation))
+    }
+
+    fn admit(&self, request: FileOperationRequest) -> Result<TransferTask> {
         let task = {
             let mut state = self.inner.state.lock().unwrap_or_else(|p| p.into_inner());
             healthy(&state)?;
-            if let Some(task) = state.document.tasks.iter().find(|t| {
-                !t.state.terminal()
-                    && t.request.kind == request.kind
-                    && t.request.connection_id == request.connection_id
-                    && t.request.transfer.direction == request.transfer.direction
-                    && t.request.transfer.local_path == request.transfer.local_path
-                    && t.request.transfer.remote_path == request.transfer.remote_path
-            }) {
+            if let Some(task) = state
+                .document
+                .tasks
+                .iter()
+                .find(|t| !t.state.terminal() && t.request.same_work(&request))
+            {
                 return Ok(task.clone());
             }
             if state.document.tasks.len() >= LIMIT {
                 return Err(invalid("transfer history is full; clear finished tasks"));
             }
-            let current_file =
-                (request.kind == TransferKind::File).then(|| request.transfer.remote_path.clone());
-            let total_files = (request.kind == TransferKind::File).then_some(1);
+            let current_file = request.initial_file();
+            let total_files = current_file.as_ref().map(|_| 1);
             let task = TransferTask {
                 id: uuid::Uuid::new_v4().to_string(),
                 request,
@@ -526,6 +647,7 @@ impl TransferCoordinator {
                 started_at: None,
                 receipt: None,
                 directory_receipt: None,
+                operation_receipt: None,
                 error: None,
                 pending_file_conflict: None,
                 last_file_conflict: None,
@@ -707,6 +829,28 @@ impl TransferCoordinator {
         conflict: FileConflictPolicy,
         directory_conflict: Option<DirectoryConflictPolicy>,
     ) -> Result<TransferTask> {
+        self.retry_operation(id, |request| {
+            let FileOperationRequest::Transfer(request) = request else {
+                return Err(invalid(
+                    "workbench retry requires a new preview and confirmation",
+                ));
+            };
+            if directory_conflict.is_some() && request.kind != TransferKind::Directory {
+                return Err(invalid("directory policy requires a directory task"));
+            }
+            request.transfer.conflict = conflict;
+            if let Some(policy) = directory_conflict {
+                request.directory_conflict = policy;
+            }
+            Ok(())
+        })
+    }
+
+    fn retry_operation(
+        &self,
+        id: &str,
+        update: impl FnOnce(&mut FileOperationRequest) -> Result<()>,
+    ) -> Result<TransferTask> {
         let task = {
             let mut state = self.inner.state.lock().unwrap_or_else(|p| p.into_inner());
             healthy(&state)?;
@@ -722,32 +866,26 @@ impl TransferCoordinator {
             ) {
                 return Err(invalid("only failed/cancelled transfers can be retried"));
             }
-            if directory_conflict.is_some()
-                && state.document.tasks[index].request.kind != TransferKind::Directory
-            {
-                return Err(invalid("directory policy requires a directory task"));
-            }
+            let mut request = state.document.tasks[index].request.clone();
+            update(&mut request)?;
             let before = state.document.clone();
             let task = &mut state.document.tasks[index];
             task.attempt = task
                 .attempt
                 .checked_add(1)
                 .ok_or_else(|| invalid("attempt limit reached"))?;
-            task.request.transfer.conflict = conflict;
-            if let Some(policy) = directory_conflict {
-                task.request.directory_conflict = policy;
-            }
+            task.request = request;
             task.state = TransferState::Queued;
             task.error = None;
             task.receipt = None;
             task.directory_receipt = None;
+            task.operation_receipt = None;
             task.bytes = "0".into();
             task.total = None;
             task.completed_files = 0;
             task.skipped_files = 0;
-            task.current_file = (task.request.kind == TransferKind::File)
-                .then(|| task.request.transfer.remote_path.clone());
-            task.total_files = (task.request.kind == TransferKind::File).then_some(1);
+            task.current_file = task.request.initial_file();
+            task.total_files = task.current_file.as_ref().map(|_| 1);
             task.speed_bps = None;
             task.started_at = None;
             task.clear_pending_conflict();
@@ -776,23 +914,30 @@ impl TransferCoordinator {
         Ok(())
     }
     fn launch(&self, task: &TransferTask) {
-        let (lane, cancel) = {
+        let (lanes, cancel) = {
             let mut state = self.inner.state.lock().unwrap_or_else(|p| p.into_inner());
             state.lanes.retain(|_, v| v.strong_count() > 0);
-            let lane = state
-                .lanes
-                .get(&task.request.connection_id)
-                .and_then(Weak::upgrade)
-                .unwrap_or_else(|| {
-                    let lane = Arc::new(Semaphore::new(1));
+            // Both endpoints are locked in a stable order: A→B and B→A cannot
+            // deadlock or publish concurrently with an upload on B.
+            let lanes: Vec<_> = task
+                .request
+                .connections()
+                .into_iter()
+                .map(|id| {
                     state
                         .lanes
-                        .insert(task.request.connection_id.clone(), Arc::downgrade(&lane));
-                    lane
-                });
+                        .get(&id)
+                        .and_then(Weak::upgrade)
+                        .unwrap_or_else(|| {
+                            let lane = Arc::new(Semaphore::new(1));
+                            state.lanes.insert(id, Arc::downgrade(&lane));
+                            lane
+                        })
+                })
+                .collect();
             let cancel = self.inner.root.child();
             state.tokens.insert(task.id.clone(), cancel.clone());
-            (lane, cancel)
+            (lanes, cancel)
         };
         let weak = Arc::downgrade(&self.inner);
         let task = task.clone();
@@ -800,9 +945,12 @@ impl TransferCoordinator {
         let executor = self.inner.executor.clone();
         tokio::spawn(async move {
             let permits = async {
-                let lane = lane.acquire_owned().await.ok()?;
+                let mut held = Vec::new();
+                for lane in lanes {
+                    held.push(lane.acquire_owned().await.ok()?);
+                }
                 let global = global.acquire_owned().await.ok()?;
-                Some((lane, global))
+                Some((held, global))
             };
             let _permits = tokio::select! {_ = cancel.cancelled()=>return,permits=permits=>match permits{Some(p)=>p,None=>return}};
             let Some(inner) = weak.upgrade() else { return };
@@ -821,21 +969,33 @@ impl TransferCoordinator {
                     inner.progress(&id, attempt, progress);
                 }
             });
-            let result = match task.request.kind {
-                TransferKind::File => executor
-                    .execute(
-                        &task.request.connection_id,
-                        task.request.transfer,
+            let result = match task.request {
+                FileOperationRequest::Workbench(request) => executor
+                    .execute_workbench(
+                        request,
                         cancel,
                         Arc::new(move |p| progress(ProgressUpdate::File(p))),
                     )
                     .await
-                    .map(ExecutionReceipt::File),
-                TransferKind::Directory => executor
+                    .map(ExecutionReceipt::Workbench)
+                    .map_err(ExecutionFailure::from),
+                FileOperationRequest::Transfer(request) if request.kind == TransferKind::File => {
+                    executor
+                        .execute(
+                            &request.connection_id,
+                            request.transfer,
+                            cancel,
+                            Arc::new(move |p| progress(ProgressUpdate::File(p))),
+                        )
+                        .await
+                        .map(ExecutionReceipt::File)
+                        .map_err(ExecutionFailure::from)
+                }
+                FileOperationRequest::Transfer(request) => executor
                     .execute_directory(
-                        &task.request.connection_id,
-                        task.request.transfer,
-                        task.request.directory_conflict,
+                        &request.connection_id,
+                        request.transfer,
+                        request.directory_conflict,
                         cancel.clone(),
                         Arc::new(move |p| progress(ProgressUpdate::Directory(p))),
                         Some(Arc::new(QueueConflictResolver {
@@ -846,19 +1006,20 @@ impl TransferCoordinator {
                         })),
                     )
                     .await
-                    .map(ExecutionReceipt::Directory),
+                    .map(ExecutionReceipt::Directory)
+                    .map_err(ExecutionFailure::from),
             };
             if let Some(inner) = weak.upgrade() {
                 let (state, receipt, error) = match result {
                     Ok(receipt) => (TransferState::Completed, Some(receipt), None),
-                    Err(error) => (
-                        if error.code == "cancelled" {
+                    Err(failure) => (
+                        if failure.error.code == "cancelled" {
                             TransferState::Cancelled
                         } else {
                             TransferState::Failed
                         },
-                        None,
-                        Some(error),
+                        failure.receipt,
+                        Some(failure.error),
                     ),
                 };
                 if let Err(error) = inner.transition(&task.id, task.attempt, state, receipt, error)
@@ -886,7 +1047,10 @@ impl Inner {
             .ok_or_else(|| invalid("stale transfer attempt"))?;
         let task = &state.document.tasks[index];
         if task.state != TransferState::Running
-            || task.request.kind != TransferKind::Directory
+            || !task
+                .request
+                .as_transfer()
+                .is_some_and(|request| request.kind == TransferKind::Directory)
             || task.has_pending_conflict()
             || !state
                 .tokens
@@ -1021,6 +1185,12 @@ impl Inner {
                 task.completed_files = receipt.completed_files;
                 task.skipped_files = receipt.skipped_files;
                 task.directory_receipt = Some(receipt);
+            }
+            Some(ExecutionReceipt::Workbench(receipt)) => {
+                if let Some(bytes) = receipt.get("bytes").and_then(|v| v.as_str()) {
+                    task.bytes = bytes.into();
+                }
+                task.operation_receipt = Some(receipt);
             }
             None => {}
         }

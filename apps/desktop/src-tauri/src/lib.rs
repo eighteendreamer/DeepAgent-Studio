@@ -411,6 +411,7 @@ struct AppState {
     terminal_sessions: Arc<DirectTerminalSessionBackend>,
     ssh_terminal_sessions: Arc<deepagent_ssh::SshTerminalSessionBackend>,
     transfers: deepagent_app_core::file_transfer_service::TransferCoordinator,
+    external_editor: deepagent_app_core::external_editor::ExternalEditorService,
     git: Arc<GitService>,
     /// File preview for the desktop "File Preview" panel (office-agent).
     preview: Arc<FilePreviewService>,
@@ -5139,6 +5140,7 @@ async fn terminal_session_open(
     cols: u16,
     rows: u16,
     target: Option<deepagent_terminal::TerminalTarget>,
+    cwd: Option<String>,
 ) -> Result<(TerminalSession, TerminalInputLease), String> {
     let target = target.unwrap_or_default();
     let backend = match &target {
@@ -5149,7 +5151,7 @@ async fn terminal_session_open(
         .open(TerminalOpenRequest {
             target,
             run_id,
-            cwd: state.terminal.current_dir(),
+            cwd: cwd.unwrap_or_else(|| if backend == "ssh" { String::new() } else { state.terminal.current_dir() }),
             cols,
             rows,
             initial_holder: TerminalInputHolder::User,
@@ -5242,20 +5244,21 @@ fn terminal_session_last_cursor(
 #[tauri::command]
 async fn terminal_session_recovery_status(
     state: State<'_, AppState>,
-    session_id: String,
+    session: TerminalSession,
 ) -> Result<TerminalRecoveryStatus, String> {
-    if session_id.starts_with("ssh:") {
-        return state
+    match session.backend.as_str() {
+        "ssh" => state
             .ssh_terminal_sessions
-            .recovery_status(&session_id)
+            .recovery_status(&session)
             .await
-            .map_err(|error| error.to_string());
+            .map_err(|error| error.to_string()),
+        "direct" => state
+            .terminal_sessions
+            .recovery_status(&session)
+            .await
+            .map_err(|error| error.to_string()),
+        backend => Err(format!("Unsupported terminal backend: {backend}")),
     }
-    state
-        .terminal_sessions
-        .recovery_status(&session_id)
-        .await
-        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -5939,6 +5942,49 @@ async fn ssh_list_dir(
     ssh.list_dir(&handle, &path)
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn file_chmod_preview(state: State<'_, AppState>, connection_id: String, path: String, mode: u32, recursive: bool) -> Result<deepagent_ssh::RemoteChmodPreview, String> {
+    state.ssh.preview_chmod(&connection_id, &path, mode, recursive, deepagent_ssh::DirectoryWalkLimits::default(), tokio_util::sync::CancellationToken::new()).await.map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn file_copy_preview(state: State<'_, AppState>, spec: deepagent_ssh::ServerCopySpec) -> Result<deepagent_ssh::ServerCopyPreview, String> {
+    state.ssh.preview_server_copy(spec, tokio_util::sync::CancellationToken::new()).await.map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn file_copy_probe(state: State<'_, AppState>, source_id: String, destination_id: String) -> Result<deepagent_ssh::DirectCopyProbe, String> {
+    Ok(state.ssh.probe_direct_copy(&source_id, &destination_id, tokio_util::sync::CancellationToken::new()).await)
+}
+#[tauri::command]
+async fn file_archive_preview(state: State<'_, AppState>, spec: deepagent_ssh::ArchiveSpec) -> Result<deepagent_ssh::ArchivePreview, String> {
+    state.ssh.preview_archive(spec, tokio_util::sync::CancellationToken::new()).await.map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn file_operation_submit(state: State<'_, AppState>, operation: deepagent_app_core::file_operations::WorkbenchOperation) -> Result<deepagent_app_core::file_transfer_service::TransferTask, String> {
+    state.transfers.submit_operation(operation).await.map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn file_editor_open(state: State<'_, AppState>, request: deepagent_app_core::external_editor::EditorOpenRequest) -> Result<deepagent_app_core::external_editor::EditorSession, String> {
+    state.external_editor.open(request).await
+}
+#[tauri::command]
+async fn file_editor_list(state: State<'_, AppState>) -> Result<Vec<deepagent_app_core::external_editor::EditorSession>, String> {
+    Ok(state.external_editor.list().await)
+}
+#[tauri::command]
+async fn file_editor_resolve(state: State<'_, AppState>, id: String, action: String, path: Option<String>) -> Result<deepagent_app_core::external_editor::EditorSession, String> {
+    state.external_editor.resolve(&id, &action, path).await
+}
+
+#[tauri::command]
+async fn file_panel_list(
+    state: State<'_, AppState>,
+    endpoint: deepagent_app_core::file_workspace::FileEndpoint,
+    path: String,
+) -> Result<deepagent_app_core::file_workspace::FilePanelListing, String> {
+    deepagent_app_core::file_workspace::list_endpoint(&state.ssh, endpoint, path)
+        .await.map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -7740,6 +7786,7 @@ pub fn run() {
                 ).map_err(|error| format!("initialize SSH terminal leases: {error}"))?)),
             ));
             let transfers=deepagent_app_core::file_transfer_service::TransferCoordinator::new(service.shared_database(),ssh.clone()).map_err(|error|format!("initialize file transfer queue: {error}"))?;
+            let external_editor = deepagent_app_core::external_editor::ExternalEditorService::new(paths.root.join("external-edits"), ssh.clone(), transfers.clone());
             {
                 let ssh_monitor = ssh.clone();
                 tauri::async_runtime::spawn(async move {
@@ -8047,6 +8094,7 @@ pub fn run() {
                 terminal_sessions,
                 ssh_terminal_sessions,
                 transfers,
+                external_editor,
                 git,
                 preview,
                 attachments,
@@ -8339,6 +8387,9 @@ pub fn run() {
             ssh_test_connection,
             ssh_exec,
             ssh_list_dir,
+            file_panel_list,
+            file_chmod_preview, file_copy_preview, file_copy_probe, file_archive_preview, file_operation_submit,
+            file_editor_open, file_editor_list, file_editor_resolve,
             ssh_file_metadata,
             remote_transfer_submit,
             remote_transfer_snapshot,

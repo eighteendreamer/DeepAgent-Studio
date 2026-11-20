@@ -69,10 +69,10 @@ async fn mixed_real_sources_use_exact_paths_and_existing_file_and_directory_exec
             .submit_detected_upload(request(&id, local, remote))
             .await
             .unwrap();
-        assert_eq!(task.request.kind, kind);
+        assert_eq!(task.request.as_transfer().unwrap().kind, kind);
         let done = observe(&queue, &task.id, false).await;
         assert_eq!(done.state, TransferState::Completed, "{done:?}");
-        assert_eq!(done.request.kind, kind);
+        assert_eq!(done.request.as_transfer().unwrap().kind, kind);
         assert_eq!(
             done.directory_receipt.is_some(),
             kind == TransferKind::Directory
@@ -140,7 +140,10 @@ async fn detected_directory_keeps_ask_deduplicates_and_persists_only_resolved_ki
     let restored =
         TransferCoordinator::new(db, Arc::new(SshService::new(temp.path().to_owned()))).unwrap();
     let history = restored.snapshot().await.unwrap();
-    assert_eq!(history[0].request.kind, TransferKind::Directory);
+    assert_eq!(
+        history[0].request.as_transfer().unwrap().kind,
+        TransferKind::Directory
+    );
     let wire = serde_json::to_value(&history[0]).unwrap();
     assert_eq!(wire["request"]["kind"], "directory");
     assert!(wire["request"].get("detectLocalKind").is_none());

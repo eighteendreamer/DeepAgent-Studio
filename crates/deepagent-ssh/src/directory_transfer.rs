@@ -281,12 +281,8 @@ pub(super) async fn remote_chain(
     path: &str,
     cancel: &CancellationToken,
 ) -> Result<(), FileTransferError> {
-    remote_directory(sftp, "/", cancel).await?;
-    let mut current = String::new();
-    for name in path.split('/').filter(|name| !name.is_empty()) {
-        current.push('/');
-        current.push_str(name);
-        remote_directory(sftp, &current, cancel).await?;
+    for current in crate::files::directory_ancestors(path) {
+        remote_directory(sftp, current, cancel).await?;
     }
     Ok(())
 }

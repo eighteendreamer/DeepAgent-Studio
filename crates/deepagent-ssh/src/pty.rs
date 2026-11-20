@@ -57,6 +57,7 @@ pub(super) async fn open(
     connection_id: &str,
     cols: u16,
     rows: u16,
+    cwd: Option<&str>,
 ) -> SshResult<PtyState> {
     if cols < 2 || rows == 0 {
         return Err(SshError::Pty("invalid terminal dimensions".into()));
@@ -102,10 +103,21 @@ pub(super) async fn open(
             .await
             .map_err(|error| SshError::Pty(format!("request PTY: {error}")))?;
         acknowledged(&mut reader, &mut pending, "PTY").await?;
-        writer
-            .request_shell(true)
-            .await
-            .map_err(|error| SshError::Pty(format!("request shell: {error}")))?;
+        if let Some(cwd) = cwd {
+            let command = format!(
+                "cd -- {} && exec \"${{SHELL:-/bin/sh}}\" -l",
+                crate::remote_file_command::quote(cwd)
+            );
+            writer
+                .exec(true, command)
+                .await
+                .map_err(|error| SshError::Pty(format!("open directory shell: {error}")))?;
+        } else {
+            writer
+                .request_shell(true)
+                .await
+                .map_err(|error| SshError::Pty(format!("request shell: {error}")))?;
+        }
         acknowledged(&mut reader, &mut pending, "shell").await
     })
     .await

@@ -15,7 +15,7 @@ function observer() {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
   }).outputText, {
     exports: module.exports, module,
-    require: () => ({ remoteTransfersWatch: () => { throw Error('unexpected singleton request'); } }),
+    require: () => ({ isTransferRequest: request => 'transfer' in request, remoteTransfersWatch: () => { throw Error('unexpected singleton request'); } }),
     setTimeout: (fn, ms) => { timers.set(++id, { fn, ms }); return id; },
     clearTimeout: key => timers.delete(key),
     console: { error: (...args) => diagnostics.push(args) },

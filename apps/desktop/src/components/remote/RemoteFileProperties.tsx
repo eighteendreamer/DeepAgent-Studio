@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { sshFileMetadata, sshRealpath, type RemoteFileMetadata } from "../../api";
 import { Button } from "../shadcn/button";
+import { Input } from "../shadcn/input";
+import { Label } from "../shadcn/label";
+import { Checkbox } from "../shadcn/checkbox";
+import { previewChmod, submitOperation, type ChmodPreview } from "../../fileWorkspaceApi";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../shadcn/dialog";
 
 export async function loadRemoteFileProperties(connectionId: string, path: string): Promise<RemoteFileMetadata> {
@@ -46,12 +50,16 @@ export function RemoteFileProperties({ connectionId, path, onClose }: {
   const [resolving, setResolving] = useState(false);
   const [error, setError] = useState("");
   const [refresh, setRefresh] = useState(0);
+  const [mode, setMode] = useState("0644");
+  const [recursive, setRecursive] = useState(false);
+  const [preview, setPreview] = useState<ChmodPreview | null>(null);
+  const [changing, setChanging] = useState(false);
   const generation = useRef(0);
   useEffect(() => {
     const owner = ++generation.current;
     setBusy(true); setMetadata(null); setCanonicalPath(null); setError(""); setResolving(false);
     void loadRemoteFileProperties(connectionId, path).then(result => {
-      if (owner === generation.current) setMetadata(result);
+      if (owner === generation.current) { setMetadata(result); setMode(((result.permissions ?? 0o644) & 0o7777).toString(8).padStart(4, "0")); setPreview(null); }
     }).catch(error => {
       if (owner === generation.current) setError(String(error));
     }).finally(() => {
@@ -80,6 +88,12 @@ export function RemoteFileProperties({ connectionId, path, onClose }: {
     {busy && <p role="status">{label("loading")}</p>}
     {error && <p role="alert" className="break-words text-red-500">{label("failed")}: {error}</p>}
     {metadata && <RemoteFilePropertiesBody metadata={metadata} canonicalPath={canonicalPath} label={label} />}
+    {metadata && ["file", "directory"].includes(metadata.kind) && <div className="mt-4 space-y-2 border-t border-border-theme pt-3">
+      <Label htmlFor="file-permission-mode">{t("remote.files.chmodMode")}</Label><Input id="file-permission-mode" value={mode} maxLength={4} disabled={changing} onChange={e => { setMode(e.target.value); setPreview(null); }} />
+      {metadata.kind === "directory" && <Label className="flex items-center gap-2"><Checkbox checked={recursive} disabled={changing} onCheckedChange={checked => { setRecursive(checked === true); setPreview(null); }} />{t("remote.files.recursive")}</Label>}
+      <Button variant="outline" disabled={changing || !/^[0-7]{3,4}$/.test(mode)} onClick={() => { setChanging(true); setError(""); const owner = generation.current; void previewChmod(connectionId, path, parseInt(mode, 8), recursive).then(result => { if (owner === generation.current) setPreview(result); }).catch(e => { if (owner === generation.current) setError(String(e)); }).finally(() => { if (owner === generation.current) setChanging(false); }); }}>{t("remote.files.preview")}</Button>
+      {preview && <div role="status" className="space-y-2"><p>{t("remote.files.chmodPreview", { entries: preview.totalEntries, files: preview.totalFiles, directories: preview.totalDirectories, links: preview.totalSymlinks })}</p><p>{t("remote.files.partialWarning")}</p><Button disabled={changing} onClick={() => { setChanging(true); setError(""); void submitOperation({ operation: "chmod", request: { version: preview.version, connectionId: preview.connectionId, connectionGeneration: preview.connectionGeneration, path: preview.path, mode: preview.mode, recursive: preview.recursive, fingerprint: preview.fingerprint } }).then(() => { setPreview(null); onClose(); }).catch(e => setError(String(e))).finally(() => setChanging(false)); }}>{t("remote.files.confirm")}</Button></div>}
+    </div>}
     </div>
     <DialogFooter className="flex-wrap gap-2">
       <Button variant="outline" disabled={busy || resolving} onClick={() => void resolvePath()}>{resolving ? label("loading") : label("resolve")}</Button>

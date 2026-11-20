@@ -14,6 +14,8 @@ interface TerminalPluginProps {
   mode?: "local" | "remote";
   connectionId?: string | null;
   active?: boolean;
+  initialCwd?: string;
+  onDirectoryChange?: (path: string) => void;
 }
 
 type TerminalRuntime = {
@@ -76,11 +78,13 @@ function buildTerminalTheme(palette: ThemePalette, isDark: boolean) {
   };
 }
 
-export function TerminalPlugin({ mode = "local", connectionId = null, active = true }: TerminalPluginProps) {
+export function TerminalPlugin({ mode = "local", connectionId = null, active = true, initialCwd, onDirectoryChange }: TerminalPluginProps) {
   const { activePalette, activeIsDark } = useThemeContext();
   const { t } = useTranslation();
   const texts = useRef(t);
   const activeRef = useRef(active);
+  const directoryChanged = useRef(onDirectoryChange);
+  directoryChanged.current = onDirectoryChange;
   texts.current = t;
   activeRef.current = active;
   const [remoteConn, setRemoteConn] = useState<SshConnection | null>(null);
@@ -152,6 +156,17 @@ export function TerminalPlugin({ mode = "local", connectionId = null, active = t
       const fit = new FitAddon();
       term.loadAddon(fit);
       term.open(containerRef.current);
+      const directorySignal = term.parser.registerOscHandler(7, value => {
+        try {
+          const url = new URL(value);
+          if (url.protocol === "file:") {
+            let path = decodeURIComponent(url.pathname);
+            if (!isRemote && /^\/[A-Za-z]:\//.test(path)) path = path.slice(1);
+            if (path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path)) directoryChanged.current?.(path);
+          }
+        } catch { /* Ignore malformed shell integration sequences. */ }
+        return true;
+      });
       termRef.current = term;
       fitRef.current = fit;
       let acceptsInput = false;
@@ -175,6 +190,7 @@ export function TerminalPlugin({ mode = "local", connectionId = null, active = t
             term.writeln(`[${texts.current("terminalSession.historyGap")}]`);
           },
         },
+        initialCwd,
       );
       controllerRef.current = controller;
       const input = term.onData(data => {
@@ -183,7 +199,7 @@ export function TerminalPlugin({ mode = "local", connectionId = null, active = t
       const observer = new ResizeObserver(() => scheduleLayout(true));
       observer.observe(containerRef.current);
       cleanup = () => {
-        input.dispose(); observer.disconnect();
+        input.dispose(); directorySignal.dispose(); observer.disconnect();
         if (layoutFrame.current !== null) window.cancelAnimationFrame(layoutFrame.current);
         if (resizeTimer.current !== null) window.clearTimeout(resizeTimer.current);
         layoutFrame.current = resizeTimer.current = null;
@@ -205,7 +221,7 @@ export function TerminalPlugin({ mode = "local", connectionId = null, active = t
     });
     return () => { cancelled = true; cleanup?.(); };
   // Palette/language/visibility changes update the existing terminal, never reopen its shell.
-  }, [connectionId, isRemote, retry, scheduleLayout, syncLayout]);
+  }, [connectionId, isRemote, initialCwd, retry, scheduleLayout, syncLayout]);
 
   useEffect(() => {
     if (termRef.current) termRef.current.options.theme = terminalTheme;

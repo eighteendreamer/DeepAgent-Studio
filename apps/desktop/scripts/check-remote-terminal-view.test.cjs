@@ -22,13 +22,14 @@ test('inactive terminal tabs stay mounted even when a file preview is selected',
   for (const active of ['terminal-1', 'terminal-2', '/fixture.txt']) {
     for (const forwarding of [false, true]) {
     let index = 0;
-    const states = [forwarding, [{ id: 'terminal-1', name: 'one' }, { id: 'terminal-2', name: 'two' }], [{ path: '/fixture.txt', name: 'fixture.txt' }], active, { '/fixture.txt': { status: 'loaded', kind: 'text', content: 'fixture text', truncated: false } }];
+    const states = [null, undefined, forwarding, [{ id: 'terminal-1', name: 'one' }, { id: 'terminal-2', name: 'two' }], [{ id: '/fixture.txt', connectionId: 'fixture', path: '/fixture.txt', name: 'fixture.txt' }], active, { '/fixture.txt': { status: 'loaded', kind: 'text', content: 'fixture text', truncated: false } }];
     const pass = ({ children }) => React.createElement('div', null, children);
     const context = {
       React, useState: () => [states[index++], () => {}], useRef: () => ({ current: 1 }), useEffect() {}, useTranslation: () => ({ t: key => key }),
       HoverInfo: pass, ContextMenu: pass, ContextMenuTrigger: pass, ContextMenuContent: pass, ContextMenuItem: pass,
       Button: pass, SshForwardPanel: () => React.createElement('output', { 'data-forwarding': true }),
       TerminalPlugin: ({ connectionId, active }) => React.createElement('output', { 'data-connection': connectionId, 'data-active': active }, 'terminal fixture'),
+      FileWorkspace: () => null, FileOperationDialog: () => null, ExternalEditorPanel: () => null,
       FloatingChat: () => null, RemoteTransfersPanel: () => null, SyntaxHighlightedCode: () => null, PreviewBody: () => null, languageForFile: () => 'text',
     };
     for (const name of ['Server', 'Terminal', 'Plus', 'X', 'FileText', 'Loader2']) context[name] = () => null;

@@ -1,4 +1,4 @@
-import { remoteTransfersWatch, type TransferSnapshot } from "./remoteTransfersApi";
+import { isTransferRequest, remoteTransfersWatch, type TransferSnapshot } from "./remoteTransfersApi";
 
 interface Listener {
   next: (snapshot: TransferSnapshot) => void;
@@ -82,7 +82,7 @@ export function createUploadInvalidator(connectionId: string, refresh: (paths: S
     const next = new Set<string>();
     const paths = new Set<string>();
     for (const task of snapshot.tasks) {
-      if (task.request.connectionId !== connectionId || task.request.transfer.direction !== "upload") continue;
+      if (!isTransferRequest(task.request) || task.request.connectionId !== connectionId || task.request.transfer.direction !== "upload") continue;
       const directory = task.request.kind === "directory";
       if (directory ? !["completed", "failed", "cancelled"].includes(task.state)
         : task.state !== "completed" || !task.receipt || task.receipt.skipped) continue;

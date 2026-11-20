@@ -2816,6 +2816,7 @@ export interface TerminalSession {
   backend: string;
   cols: number;
   rows: number;
+  connectionGeneration?: number;
 }
 
 export interface TerminalInputLease {
@@ -2847,6 +2848,7 @@ export async function terminalSessionOpen(
   cols: number,
   rows: number,
   target: TerminalTarget = { kind: "local" },
+  cwd?: string,
 ): Promise<[TerminalSession, TerminalInputLease]> {
   const invoke = getInvoke();
   if (!invoke) throw new Error("terminal sessions require the desktop app");
@@ -2855,6 +2857,7 @@ export async function terminalSessionOpen(
     cols,
     rows,
     target,
+    cwd,
   });
 }
 
@@ -2923,13 +2926,13 @@ export async function terminalSessionLastCursor(sessionId: string): Promise<numb
   return invoke<number>("terminal_session_last_cursor", { sessionId });
 }
 
-/** Query whether the persisted cursor still points to a live local PTY. */
+/** Query whether the session's cursor still belongs to its live backend generation. */
 export async function terminalSessionRecoveryStatus(
-  sessionId: string,
+  session: TerminalSession,
 ): Promise<TerminalRecoveryStatus> {
   const invoke = getInvoke();
   if (!invoke) return { cursor: 0, available: false, controlAvailable: false };
-  return invoke<TerminalRecoveryStatus>("terminal_session_recovery_status", { sessionId });
+  return invoke<TerminalRecoveryStatus>("terminal_session_recovery_status", { session });
 }
 
 export async function terminalSessionResize(

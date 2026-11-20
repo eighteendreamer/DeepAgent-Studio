@@ -1441,11 +1441,9 @@ impl SshServiceImpl {
         &self,
         handle: &SshServiceHandle,
     ) -> SshResult<(SessionLease, SftpSession)> {
-        let session = self.connected_session_for_handle(handle).await?;
-        let client = session
-            .client()
-            .await
-            .ok_or_else(|| SshError::ConnectionLost(handle.connection_id.clone()))?;
+        let (session, client) = self
+            .file_client_for_generation(&handle.connection_id, handle.connection_generation)
+            .await?;
         let sftp = sftp_open(&client, None).await?;
         Ok((session, sftp))
     }
@@ -1454,7 +1452,17 @@ impl SshServiceImpl {
         &self,
         connection_id: &str,
     ) -> SshResult<(SessionLease, Client)> {
-        let session = self.connected_session(connection_id).await?;
+        self.file_client_for_generation(connection_id, None).await
+    }
+
+    pub(crate) async fn file_client_for_generation(
+        &self,
+        connection_id: &str,
+        generation: Option<u64>,
+    ) -> SshResult<(SessionLease, Client)> {
+        let session = self
+            .connected_session_for_generation(connection_id, generation)
+            .await?;
         let client = session
             .client()
             .await
@@ -1544,6 +1552,19 @@ impl SshServiceImpl {
         token: String,
         legacy: bool,
     ) -> SshResult<SshServiceHandle> {
+        self.spawn_pty_at(handle, cols, rows, token, legacy, None)
+            .await
+    }
+
+    pub(super) async fn spawn_pty_at(
+        &self,
+        handle: &SshServiceHandle,
+        cols: u16,
+        rows: u16,
+        token: String,
+        legacy: bool,
+        cwd: Option<&str>,
+    ) -> SshResult<SshServiceHandle> {
         let session = self.connected_session_for_handle(handle).await?;
         let generation = session
             .transport_generation()
@@ -1553,7 +1574,7 @@ impl SshServiceImpl {
             .await
             .ok_or_else(|| SshError::ConnectionLost(handle.connection_id.clone()))?;
 
-        let mut pty = crate::pty::open(&client, &handle.connection_id, cols, rows).await?;
+        let mut pty = crate::pty::open(&client, &handle.connection_id, cols, rows, cwd).await?;
         pty._resource = Some(
             session
                 .resources
@@ -2401,27 +2422,31 @@ impl SshServiceImpl {
         &self,
         handle: &SshServiceHandle,
     ) -> SshResult<SessionLease> {
-        let Some(expected_generation) = handle.connection_generation else {
-            return self.connected_session(&handle.connection_id).await;
+        self.connected_session_for_generation(&handle.connection_id, handle.connection_generation)
+            .await
+    }
+
+    async fn connected_session_for_generation(
+        &self,
+        connection_id: &str,
+        generation: Option<u64>,
+    ) -> SshResult<SessionLease> {
+        let Some(expected_generation) = generation else {
+            return self.connected_session(connection_id).await;
         };
 
         self.ensure_loaded().await;
-        let permit = self
-            .connection_operations
-            .acquire(&handle.connection_id)
-            .await?;
-        let config = self
-            .operation_config(&handle.connection_id, &permit)
-            .await?;
+        let permit = self.connection_operations.acquire(connection_id).await?;
+        let config = self.operation_config(connection_id, &permit).await?;
         let (session, client) = self
             .reusable_client(&config, &permit)
             .await?
-            .ok_or_else(|| SshError::ConnectionLost(handle.connection_id.clone()))?;
+            .ok_or_else(|| SshError::ConnectionLost(connection_id.into()))?;
         let _lifecycle = self.lock_connection_generation(&permit, &session).await?;
         if session.transport_generation() != Some(expected_generation) || client.is_closed() {
             return Err(SshError::ConnectionLost(format!(
                 "{}: SSH transport generation is no longer active",
-                handle.connection_id
+                connection_id
             )));
         }
         SessionLease::new(session)

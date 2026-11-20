@@ -16,6 +16,7 @@ interface TerminalSink {
 /** One mounted UI tab, one backend session, one byte cursor and one streaming decoder. */
 export class TerminalSessionController {
   private current: [TerminalSession, TerminalInputLease] | null = null;
+  private closing: Promise<void> | null = null;
   private disposed = false;
   private stopped = false;
   private started = false;
@@ -33,6 +34,7 @@ export class TerminalSessionController {
     private target: TerminalTarget,
     private runId: string,
     private sink: TerminalSink,
+    private cwd?: string,
   ) {}
 
   async open(cols: number, rows: number): Promise<void> {
@@ -40,12 +42,12 @@ export class TerminalSessionController {
     this.started = true;
     this.sink.state("starting");
     try {
-      const current = await terminalSessionOpen(this.runId, cols, rows, this.target);
+      const current = await terminalSessionOpen(this.runId, cols, rows, this.target, this.cwd);
+      this.current = current;
       if (this.disposed) {
-        await terminalSessionClose(...current);
+        await this.close();
         return;
       }
-      this.current = current;
       this.lastSize = { cols, rows };
       const unsubscribe = await terminalSessionSubscribe(current[0], () => this.requestRead(), error => {
         if (!this.disposed) this.fail(error);
@@ -159,11 +161,15 @@ export class TerminalSessionController {
     this.sink.state("error", error instanceof Error ? error.message : String(error));
   }
 
-  async close(): Promise<void> {
+  close(): Promise<void> {
     this.disposed = true;
     this.stop();
+    if (this.closing) return this.closing;
     const current = this.current;
-    this.current = null;
-    if (current) await terminalSessionClose(...current);
+    if (!current) return Promise.resolve();
+    this.closing = terminalSessionClose(...current)
+      .then(() => { this.current = null; })
+      .finally(() => { this.closing = null; });
+    return this.closing;
   }
 }

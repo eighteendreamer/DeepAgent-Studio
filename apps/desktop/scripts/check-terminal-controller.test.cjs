@@ -83,6 +83,70 @@ test('late reads cannot render after close', async () => {
   assert.equal(h.timers.size, 0);
 });
 
+test('concurrent close waits for one backend result and a failed close retains the exact generation for retry', async () => {
+  const failure = Error('fixture backend cleanup failed');
+  const session = { sessionId: 'ssh:fixture:retry', runId: 'fixture-run', backend: 'ssh', connectionGeneration: 42 };
+  const lease = { sessionId: session.sessionId, runId: session.runId, leaseId: 'retry-lease', epoch: 7, holder: 'user' };
+  let rejectClose;
+  const attempts = [];
+  const h = harness({
+    terminalSessionOpen: async () => [session, lease],
+    terminalSessionClose: async (...args) => {
+      attempts.push(args);
+      if (attempts.length === 1) await new Promise((resolve, reject) => { rejectClose = reject; });
+    },
+  });
+  await h.controller.open(80, 24);
+  const first = h.controller.close();
+  const second = h.controller.close();
+  const outcomes = Promise.allSettled([first, second]);
+  await Promise.resolve();
+  assert.equal(attempts.length, 1, 'overlapping close requests share one backend cleanup');
+  rejectClose(failure);
+  const settled = await outcomes;
+  assert.deepEqual(settled.map(result => result.status), ['rejected', 'rejected']);
+  for (const result of settled) assert.equal(result.reason, failure);
+  assert.equal(h.timers.size, 0);
+  assert.equal(h.unsubscribed, 1);
+
+  await h.controller.write('must-not-restart');
+  await h.controller.resize(100, 40);
+  assert.equal(h.calls.filter(call => call[0] === 'write' || call[0] === 'resize').length, 0);
+  await h.controller.close();
+  assert.equal(attempts.length, 2, 'explicit retry must reach the retained backend owner');
+  for (const attempt of attempts) {
+    assert.equal(attempt[0], session);
+    assert.equal(attempt[1], lease);
+  }
+  await h.controller.close();
+  assert.equal(attempts.length, 2, 'successful cleanup is not sent again');
+});
+
+test('a session arriving after disposal keeps its owner when cleanup fails and can be closed again', async () => {
+  let resolveOpen;
+  const failure = Error('fixture late cleanup failed');
+  const session = { sessionId: 'ssh:fixture:late-retry', backend: 'ssh', connectionGeneration: 84 };
+  const lease = { sessionId: session.sessionId, leaseId: 'late-retry-lease', epoch: 2 };
+  const attempts = [];
+  const h = harness({
+    terminalSessionOpen: () => new Promise(resolve => { resolveOpen = resolve; }),
+    terminalSessionClose: async (...args) => {
+      attempts.push(args);
+      if (attempts.length === 1) throw failure;
+    },
+  });
+  const opening = h.controller.open(80, 24);
+  await h.controller.close();
+  resolveOpen([session, lease]);
+  await assert.rejects(opening, error => error === failure);
+  assert.equal(h.timers.size, 0);
+  assert.equal(h.calls.filter(call => call[0] === 'subscribe' || call[0] === 'read').length, 0);
+  await h.controller.close();
+  assert.equal(attempts.length, 2, 'late owner must survive its first failed cleanup');
+  assert.equal(attempts[1][0], session);
+  assert.equal(attempts[1][1], lease);
+});
+
 test('xterm acknowledgement gates the next read and input/resize are ordered without duplicate sizes', async () => {
   const h = harness(); await h.controller.open(80, 24);
   await Promise.all([h.controller.write('first'), h.controller.write('second'), h.controller.resize(80, 24), h.controller.resize(90, 30), h.controller.resize(90, 30)]);

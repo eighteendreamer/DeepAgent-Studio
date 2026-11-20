@@ -153,7 +153,7 @@ impl DirectTerminalSessionBackend {
     }
 
     fn owner(&self, session: &TerminalSession) -> deepagent_terminal::TerminalResult<PtyOwner> {
-        if session.backend != self.backend_kind() {
+        if session.backend != self.backend_kind() || session.connection_generation.is_some() {
             return Err(TerminalError::InvalidLease);
         }
         Ok(PtyOwner::Shared {
@@ -201,8 +201,10 @@ impl DirectTerminalSessionBackend {
 
     pub async fn recovery_status(
         &self,
-        session_id: &str,
+        session: &TerminalSession,
     ) -> deepagent_terminal::TerminalResult<TerminalRecoveryStatus> {
+        let owner = self.owner(session)?;
+        let session_id = &session.session_id;
         let cursor = self.last_cursor(session_id)?;
         let state = self.service.ptys.read().await.get(session_id).cloned();
         let Some(state) = state else {
@@ -213,18 +215,28 @@ impl DirectTerminalSessionBackend {
             });
         };
         let leases = self.leases.clone();
-        let backend_id = self.backend_id.clone();
         let id = session_id.to_string();
         tokio::task::spawn_blocking(move || {
             let control = state.control.lock().map_err(pty_error)?;
-            if !matches!(&control.owner, PtyOwner::Shared { backend_id: owner, .. } if owner == &backend_id) {
+            if control.owner != owner {
                 return Err(TerminalError::InvalidLease);
             }
-            let alive = !control.reaped && state.child.lock().map_err(pty_error)?
-                .try_wait().map_err(pty_error)?.is_none();
-            Ok(TerminalRecoveryStatus { cursor, available: alive,
-                control_available: alive && leases.control_available(&id)?, })
-        }).await.map_err(pty_error)?
+            let alive = !control.reaped
+                && state
+                    .child
+                    .lock()
+                    .map_err(pty_error)?
+                    .try_wait()
+                    .map_err(pty_error)?
+                    .is_none();
+            Ok(TerminalRecoveryStatus {
+                cursor,
+                available: alive,
+                control_available: alive && leases.control_available(&id)?,
+            })
+        })
+        .await
+        .map_err(pty_error)?
     }
 }
 
@@ -599,6 +611,7 @@ impl TerminalSessionBackend for DirectTerminalSessionBackend {
             backend: self.backend_kind().into(),
             cols: request.cols,
             rows: request.rows,
+            connection_generation: None,
         };
         // Do not start a process until durable ownership exists. A failed lease
         // acquisition can no longer leave an unpublished, uncontrollable child.
@@ -1417,13 +1430,43 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
+    async fn h293_recovery_status_rejects_mismatched_session_scope() {
+        let (_dir, _svc, backend, session, lease) = h293_shared_fixture().await;
+        assert_eq!(session.connection_generation, None);
+        let mut wrong_run = session.clone();
+        wrong_run.run_id = "another-run".into();
+        let wrong_run_status = backend.recovery_status(&wrong_run).await;
+        let mut ssh_generation = session.clone();
+        ssh_generation.connection_generation = Some(42);
+        let generation_status = backend.recovery_status(&ssh_generation).await;
+        let generation_read = backend.read(&ssh_generation, 0).await;
+        let generation_write = backend
+            .write(&ssh_generation, &lease, b"must-not-run\r\n")
+            .await;
+        let generation_close = backend.close(&ssh_generation, &lease).await;
+        let current_status = backend.recovery_status(&session).await;
+        backend.close(&session, &lease).await.unwrap();
+
+        assert!(
+            wrong_run_status.is_err(),
+            "recovery must check the full session owner"
+        );
+        assert!(generation_status.is_err());
+        assert!(generation_read.is_err());
+        assert!(generation_write.is_err());
+        assert!(generation_close.is_err());
+        assert!(current_status.unwrap().available);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
     async fn h293_recovery_status_checks_actual_child_exit_and_cleanup() {
         let (_dir, svc, backend, session, lease) = h293_shared_fixture().await;
-        let initial = backend.recovery_status(&session.session_id).await.unwrap();
+        let initial = backend.recovery_status(&session).await.unwrap();
         backend.write(&session, &lease, b"exit\r\n").await.unwrap();
         let exited = tokio::time::timeout(std::time::Duration::from_secs(3), async {
             loop {
-                let status = backend.recovery_status(&session.session_id).await.unwrap();
+                let status = backend.recovery_status(&session).await.unwrap();
                 if !status.available {
                     break status;
                 }
@@ -1436,7 +1479,7 @@ mod tests {
         assert!(initial.available && initial.control_available);
         assert!(retained, "the exited child remains owned until close");
         assert!(!exited.unwrap().control_available);
-        let closed = backend.recovery_status(&session.session_id).await.unwrap();
+        let closed = backend.recovery_status(&session).await.unwrap();
         assert!(!closed.available && !closed.control_available);
     }
 
@@ -1453,7 +1496,7 @@ mod tests {
         }).unwrap();
         let first = backend.close(&session, &lease).await;
         let retained = svc.pty_exists(&session.session_id).await;
-        let status = backend.recovery_status(&session.session_id).await.unwrap();
+        let status = backend.recovery_status(&session).await.unwrap();
         let input = backend
             .write(&session, &lease, b"echo must-not-run\r\n")
             .await;
