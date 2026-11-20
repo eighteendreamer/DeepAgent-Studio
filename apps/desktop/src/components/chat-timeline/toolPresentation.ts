@@ -56,7 +56,14 @@ export function presentTool(tool: ToolCall): ToolPresentation {
     raw: rawText(tool.output ?? tool.detail ?? args), changes: [],
     matches: Array.isArray(data.matches) ? data.matches.filter((v): v is string => typeof v === "string") : [],
   };
-  if (kind === "skill") {
+  if (name === "workspace_browser") {
+    const browserLabels: Record<string, string> = {
+      navigate: "打开网页", snapshot: "读取网页", click: "点击网页", fill: "填写网页",
+      scroll: "滚动网页", screenshot: "截取网页",
+    };
+    result.label = browserLabels[string(args.action)] ?? "操作浏览器";
+    result.target = compact(string(args.url) || string(args.target));
+  } else if (kind === "skill") {
     result.target = compact(string(data.name) || string(data.id) || string(args.name) || string(args.skill));
     result.skillBody = string(data.body) || undefined;
   } else if (name === "list_dir" && Array.isArray(data.entries)) {

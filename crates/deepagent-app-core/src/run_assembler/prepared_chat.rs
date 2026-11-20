@@ -304,7 +304,22 @@ impl RunAssembler<'_> {
         });
         base.project = session_project;
         observe_phase("execution_requests");
+        let accepts_tool_images = prepared
+            .configuration
+            .model_plan
+            .as_ref()
+            .ok()
+            .and_then(Option::as_ref)
+            .is_some_and(crate::model_runtime::RunModelPlan::accepts_tool_images);
+        let browser_tool = (effective_env_mode != Some("remote")
+            && environment.sandbox_backend != Some(SandboxBackendKind::WindowsSandbox))
+        .then(|| {
+            self.service
+                .desktop_browser_tool(session_id, accepts_tool_images)
+        })
+        .flatten();
         let tools = self.prepare_main_run_tools(MainRunPreparationRequest {
+            browser_tool,
             base,
             sub_base,
             plugin_projection: prepared.plugin_projection.as_ref(),
@@ -320,13 +335,7 @@ impl RunAssembler<'_> {
             screen_capture: effective_env_mode != Some("remote")
                 && environment.policy == crate::settings::ApprovalPolicy::AlwaysAsk
                 && environment.sandbox_backend != Some(SandboxBackendKind::WindowsSandbox)
-                && prepared
-                    .configuration
-                    .model_plan
-                    .as_ref()
-                    .ok()
-                    .and_then(Option::as_ref)
-                    .is_some_and(crate::model_runtime::RunModelPlan::accepts_tool_images),
+                && accepts_tool_images,
         })?;
         observe_phase("main_toolset");
         let mut context = capability_context(CapabilityContextRequest {

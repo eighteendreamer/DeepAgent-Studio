@@ -42,7 +42,8 @@ function StandardToolRow({ tool }: { tool: ToolCall }) {
   const label = images.length ? t("composer.attachments.viewedImages", { count: images.length })
     : tool.name === "screen_capture" ? t("composer.attachments.captureImage") : summary.label;
   const Icon = images.length || tool.name === "screen_capture" ? ImageIcon : icons[summary.kind as keyof typeof icons] || Wrench;
-  const canOpen = Boolean(images.length || summary.raw || summary.read || summary.command || summary.changes.length || summary.skillBody || summary.entries);
+  const browser = tool.name === "workspace_browser";
+  const canOpen = Boolean(browser || images.length || summary.raw || summary.read || summary.command || summary.changes.length || summary.skillBody || summary.entries);
   return <div className="min-w-0">
     <Button variant="ghost" aria-expanded={open && canOpen} onClick={() => canOpen && toggle()}
       aria-label={[label, summary.target, status.label].filter(Boolean).join(" · ")}
@@ -58,6 +59,15 @@ function StandardToolRow({ tool }: { tool: ToolCall }) {
       </span>
     </Button>
     <CollapseBlurPanel open={open && canOpen} innerClassName="ml-5 mt-1 mb-2 min-w-0">
+      {open && browser && <div className="mb-2 flex min-w-0 flex-col gap-2" data-browser-tool-details>
+        <CodeBlock size="sm"><CodeBlockHeader><CodeBlockTitle>请求参数</CodeBlockTitle></CodeBlockHeader>
+          <CodeBlockContent wrap aria-label="浏览器请求参数">{tool.args || "{}"}</CodeBlockContent>
+        </CodeBlock>
+        {tool.status !== "running" && <CodeBlock size="sm" variant={tool.status === "error" ? "destructive" : "default"}>
+          <CodeBlockHeader><CodeBlockTitle>返回结果</CodeBlockTitle></CodeBlockHeader>
+          <CodeBlockContent wrap aria-label="浏览器返回结果">{summary.raw || status.label}</CodeBlockContent>
+        </CodeBlock>}
+      </div>}
       {open && (images.length ? <div className="flex flex-wrap gap-2">
         {images.map((image, index) => <ImagePreviewTrigger
           key={`${image.id}:${index}`}
@@ -66,7 +76,7 @@ function StandardToolRow({ tool }: { tool: ToolCall }) {
           triggerClassName="max-w-full rounded-lg border border-border-theme"
           imageClassName="block max-h-32 w-auto object-contain"
         />)}
-      </div> : <ToolDetail summary={summary} tool={tool} />)}
+      </div> : (!browser && <ToolDetail summary={summary} tool={tool} />))}
     </CollapseBlurPanel>
   </div>;
 }

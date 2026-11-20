@@ -353,6 +353,8 @@ fn parse_verify_mode(mode: &str) -> deepagent_ssh::RemoteVerifyMode {
     }
 }
 
+mod workspace_browser;
+
 struct AppState {
     service: Arc<Mutex<AppService>>,
     settings: Arc<SettingsService>,
@@ -7042,6 +7044,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_decorum::init())
+        .manage(workspace_browser::WorkspaceBrowser::default())
         .manage(Mutex::new(SplashGate::default()))
         .setup(|app| {
             // Main-window chrome is rendered by React, including after a reload.
@@ -7488,6 +7491,13 @@ pub fn run() {
             // service powers channel-A catalog reminders + the channel-B
             // `skill` tool (skill-marketplace task 14).
             let chat = {
+                let browser = app
+                    .state::<workspace_browser::WorkspaceBrowser>()
+                    .inner()
+                    .clone();
+                let browser_app = app.handle().clone();
+                let browser_attachments =
+                    deepagent_app_core::AttachmentService::new(paths.attachments.clone());
                 let ssh_clone = ssh.clone();
                 let ssh_context = ssh.clone();
                 let ssh_ops = ssh.clone();
@@ -7529,6 +7539,9 @@ pub fn run() {
                         Arc::new(ReqwestTransport::new()),
                         workspace_root.clone(),
                     )
+                    .with_desktop_browser_tool(move |session, images| {
+                        browser.tool(&browser_app, &browser_attachments, session, images)
+                    })
                     .with_runtime_broker(runtime_broker.clone())
                     .with_executor_factory(move |connection_id: String| {
                         Arc::new(SshExecutor {
@@ -7843,6 +7856,11 @@ pub fn run() {
             set_budget,
             run_doctor,
             start_chat_v2,
+            workspace_browser::browser_tab_open,
+            workspace_browser::browser_tab_navigate,
+            workspace_browser::browser_tab_bounds,
+            workspace_browser::browser_tab_access,
+            workspace_browser::browser_tab_close,
             start_workflow,
             canvas_settings_read,
             canvas_provider_save,

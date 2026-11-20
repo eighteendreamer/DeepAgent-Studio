@@ -46,6 +46,7 @@ export type PluginTitleContext = {
 };
 
 export type PluginRenderContext = {
+  sessionId?: string | null;
   activeProjectPath?: string | null;
   envMode?: "local" | "remote";
   selectedConnectionId?: string | null;

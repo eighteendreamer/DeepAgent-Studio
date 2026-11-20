@@ -98,6 +98,7 @@ use crate::tool_runtime::{
 /// Orchestrates streamed chat runs over the kernel.
 #[derive(Clone)]
 pub struct ChatService {
+    browser_tool: Option<Arc<DesktopBrowserToolFactory>>,
     db: Arc<Database>,
     settings: Arc<SettingsService>,
     transport: Arc<dyn HttpTransport>,
@@ -299,6 +300,9 @@ pub(crate) type InvokedSkillMap =
 /// resolution implementation.
 pub use deepagent_core::execution_config::ExecutionOverrides as HarnessRunOverrides;
 
+type DesktopBrowserToolFactory =
+    dyn Fn(&str, bool) -> Option<Arc<dyn deepagent_tools::Tool>> + Send + Sync;
+
 impl ChatService {
     /// Build a chat service over the shared DB, settings, model transport, and
     /// workspace root.
@@ -347,6 +351,7 @@ impl ChatService {
             executor_factory: None,
             local_command_executor: None,
             runtime_broker: None,
+            browser_tool: None,
             sandboxie_executor: None,
             sandbox_backend_registry: None,
             remote_context_factory: None,
@@ -855,6 +860,23 @@ impl ChatService {
         drop(sink);
         let _ = event_pump.await;
         result.map(|_| session_id.to_string())
+    }
+
+    /// Register the host browser tool only for a session with an authorized tab.
+    pub fn with_desktop_browser_tool(
+        mut self,
+        factory: impl Fn(&str, bool) -> Option<Arc<dyn deepagent_tools::Tool>> + Send + Sync + 'static,
+    ) -> Self {
+        self.browser_tool = Some(Arc::new(factory));
+        self
+    }
+
+    pub(crate) fn desktop_browser_tool(
+        &self,
+        session: &str,
+        accepts_images: bool,
+    ) -> Option<Arc<dyn deepagent_tools::Tool>> {
+        self.browser_tool.as_ref()?(session, accepts_images)
     }
 
     /// Attach an [`McpService`](crate::mcp_service::McpService) so enabled MCP

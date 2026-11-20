@@ -561,6 +561,7 @@ where
         any(windows, target_os = "macos", target_os = "linux")
     ))]
     pub(crate) screen_capture: bool,
+    pub(crate) browser_tool: Option<Arc<dyn deepagent_tools::Tool>>,
     pub(crate) skills: Option<&'a Arc<Mutex<crate::skills_service::SkillsService>>>,
     pub(crate) tool_search_mode: deepagent_builtins::ToolSearchMode,
     pub(crate) tool_search_discovered: DiscoveredToolSet,
@@ -612,6 +613,9 @@ where
     register_task_tool(&mut registry, request.task_runner, request.task_agent_types)?;
     register_plan_execute_tool(&mut registry, request.plan_executor)?;
     register_memory_tools(&mut registry, request.memory_backend)?;
+    if let Some(tool) = request.browser_tool {
+        registry.register(tool)?;
+    }
     register_knowledge_write_tool(&mut registry, knowledge.as_ref())?;
     #[cfg(all(
         feature = "desktop-screen",

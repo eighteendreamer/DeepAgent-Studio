@@ -1414,7 +1414,7 @@ export function ChatView({
               onCloseTab={closeSidebarTab}
               onShowLauncher={() => setActiveSidebarTabId("new")}
               onSelectPlugin={handleOpenSidebarPlugin}
-              renderContext={{ activeProjectPath, envMode, selectedConnectionId, onProjectMapStatusChange: setMapStatus }}
+              renderContext={{ activeProjectPath, envMode, selectedConnectionId, sessionId, onProjectMapStatusChange: setMapStatus }}
             />
       </div>
 

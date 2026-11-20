@@ -117,6 +117,7 @@ pub(super) struct MainRunPreparationRequest<'a> {
     pub(super) screen_capture: bool,
     pub(super) plugin_projection: Option<&'a crate::plugin_runtime::PluginRuntimeProjection>,
     pub(super) plugin_registry: Option<Arc<deepagent_mcp::McpRegistry>>,
+    pub(super) browser_tool: Option<Arc<dyn deepagent_tools::Tool>>,
     pub(super) plan: deepagent_builtins::PlanMode,
     pub(super) discovered: DiscoveredToolSet,
     pub(super) search_mode: deepagent_builtins::ToolSearchMode,
@@ -176,6 +177,7 @@ impl RunAssembler<'_> {
             task_agent_types,
             plan_executor: Some(Arc::new(services.clone())),
             memory_backend,
+            browser_tool: request.browser_tool,
             #[cfg(all(
                 feature = "desktop-screen",
                 any(windows, target_os = "macos", target_os = "linux")

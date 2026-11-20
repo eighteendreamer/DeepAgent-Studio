@@ -1,10 +1,14 @@
 import { HoverInfo } from "../ui/HoverInfo";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { Button } from "../shadcn/button";
 import { ArrowLeft, ArrowRight, Globe, RotateCw } from "lucide-react";
 import type { PluginDefinition } from "./pluginTypes";
 
 interface BrowserPluginProps {
   initialUrl?: string;
+  sessionId?: string | null;
 }
 
 function normalizeUrl(input: string): string {
@@ -26,14 +30,14 @@ function titleFromUrl(url: string): string {
   }
 }
 
-export function BrowserPlugin({ initialUrl = "" }: BrowserPluginProps) {
+export function BrowserPlugin({ initialUrl = "", sessionId }: BrowserPluginProps) {
   const [url, setUrl] = useState(() => normalizeUrl(initialUrl));
   const [draftUrl, setDraftUrl] = useState(() => normalizeUrl(initialUrl));
   const [reloadKey, setReloadKey] = useState(0);
   const [nativeError, setNativeError] = useState<string | null>(null);
+  const [tabId, setTabId] = useState<string | null>(null);
+  const [granted, setGranted] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
-  const webviewRef = useRef<any>(null);
-  const labelRef = useRef("");
   const canUseNativeWebview = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
   const host = useMemo(() => titleFromUrl(url), [url]);
 
@@ -41,96 +45,75 @@ export function BrowserPlugin({ initialUrl = "" }: BrowserPluginProps) {
     const next = normalizeUrl(initialUrl);
     setUrl(next);
     setDraftUrl(next);
-  }, [initialUrl]);
-
-  useEffect(() => {
-    if (!canUseNativeWebview || !url) return;
+    setGranted(false);
+    setTabId(null);
+    if (!canUseNativeWebview || !contentRef.current) return;
     const container = contentRef.current;
-    if (!container) return;
-
-    let cancelled = false;
-    let resizeObserver: ResizeObserver | null = null;
-
-    const syncBounds = async () => {
-      const webview = webviewRef.current;
-      const el = contentRef.current;
-      if (!webview || !el) return;
-      try {
-        const rect = el.getBoundingClientRect();
-        if (rect.width <= 0 || rect.height <= 0) {
-          await webview.hide?.();
-          return;
-        }
-        const { LogicalPosition, LogicalSize } = await import("@tauri-apps/api/dpi");
-        await webview.setPosition(new LogicalPosition(rect.left, rect.top));
-        await webview.setSize(new LogicalSize(rect.width, rect.height));
-        await webview.show?.();
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (!/webview not found/i.test(message)) {
-          setNativeError(message);
-        }
-      }
+    let disposed = false;
+    let label: string | null = null;
+    let unlisten: (() => void) | undefined;
+    let frame = 0;
+    const bounds = () => {
+      const { x, y, width, height } = container.getBoundingClientRect();
+      return { x, y, width, height };
     };
-
-    const createWebview = async () => {
-      try {
-        setNativeError(null);
-        await webviewRef.current?.close?.().catch(() => {});
-        webviewRef.current = null;
-
-        const [{ Webview }, { getCurrentWindow }] = await Promise.all([
-          import("@tauri-apps/api/webview"),
-          import("@tauri-apps/api/window"),
-        ]);
-        if (cancelled || !contentRef.current) return;
-
-        const rect = contentRef.current.getBoundingClientRect();
-        labelRef.current = `browser_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        const webview = new Webview(getCurrentWindow(), labelRef.current, {
-          url,
-          x: rect.left,
-          y: rect.top,
-          width: Math.max(1, rect.width),
-          height: Math.max(1, rect.height),
-          backgroundColor: [255, 255, 255, 255],
-          focus: true,
-        });
-        webview.once("tauri://created", () => {
-          webviewRef.current = webview;
-          void webview.setBackgroundColor?.([255, 255, 255, 255]).catch(() => {});
-          void syncBounds();
-        });
-        webview.once("tauri://error", (event: any) => {
-          if (webviewRef.current === webview) webviewRef.current = null;
-          setNativeError(String(event?.payload ?? "内置浏览器创建失败"));
-        });
-      } catch (error) {
-        setNativeError(error instanceof Error ? error.message : String(error));
-      }
+    const sync = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        if (!disposed && label) void invoke("browser_tab_bounds", { id: label, bounds: bounds() }).catch(report);
+      });
     };
-
-    void createWebview();
-    resizeObserver = new ResizeObserver(() => {
-      void syncBounds();
-    });
-    resizeObserver.observe(container);
-    window.addEventListener("resize", syncBounds);
-
+    function report(error: unknown) {
+      if (!disposed) setNativeError(String(error));
+    }
+    const observer = new ResizeObserver(sync);
+    observer.observe(container);
+    window.addEventListener("resize", sync);
+    void (async () => {
+      setNativeError(null);
+      unlisten = await listen<{ id: string; url: string }>("workspace-browser://location", ({ payload }) => {
+        if (payload.id !== label || payload.url === "about:blank") return;
+        setUrl(payload.url);
+        setDraftUrl(payload.url);
+      });
+      if (disposed) { unlisten(); return; }
+      label = await invoke<string>("browser_tab_open", { sessionId: sessionId ?? null, url: next, bounds: bounds() });
+      if (disposed) { await invoke("browser_tab_close", { id: label }); return; }
+      setTabId(label);
+      sync();
+    })().catch(report);
     return () => {
-      cancelled = true;
-      resizeObserver?.disconnect();
-      window.removeEventListener("resize", syncBounds);
-      const webview = webviewRef.current;
-      webviewRef.current = null;
-      void webview?.close?.().catch(() => {});
+      disposed = true;
+      observer.disconnect();
+      window.removeEventListener("resize", sync);
+      cancelAnimationFrame(frame);
+      unlisten?.();
+      if (label) void invoke("browser_tab_close", { id: label }).catch(error => {
+        console.warn("Could not close workspace browser tab", error);
+      });
     };
-  }, [canUseNativeWebview, reloadKey, url]);
+  }, [canUseNativeWebview, initialUrl, sessionId]);
 
-  const navigate = () => {
-    const next = normalizeUrl(draftUrl);
-    setDraftUrl(next);
-    setUrl(next);
+  const navigate = (reload = false) => {
+    const next = reload ? url : normalizeUrl(draftUrl);
+    if (!next) return;
+    setNativeError(null);
+    if (canUseNativeWebview && tabId) {
+      void invoke("browser_tab_navigate", { id: tabId, url: reload ? null : next })
+        .catch(error => setNativeError(String(error)));
+    } else if (!canUseNativeWebview) {
+      setDraftUrl(next);
+      setUrl(next);
+      if (reload) setReloadKey(key => key + 1);
+    }
+  };
+
+  const setAccess = () => {
+    if (!tabId) return;
+    void invoke("browser_tab_access", { id: tabId, enabled: !granted }).then(() => {
+      setGranted(!granted);
+      setNativeError(null);
+    }).catch(error => setNativeError(String(error)));
   };
 
   return (
@@ -143,7 +126,7 @@ export function BrowserPlugin({ initialUrl = "" }: BrowserPluginProps) {
             type="button"
             className="text-text-secondary hover:text-text-base"
 
-            onClick={() => setReloadKey((current) => current + 1)}
+            onClick={() => navigate(true)}
           >
             <RotateCw className="h-4 w-4" aria-hidden="true" />
           </button></HoverInfo>
@@ -165,6 +148,8 @@ export function BrowserPlugin({ initialUrl = "" }: BrowserPluginProps) {
             aria-label="浏览器地址"
           />
         </form>
+        {sessionId && tabId && <Button type="button" variant={granted ? "secondary" : "outline"} size="sm"
+          aria-pressed={granted} onClick={setAccess}>{granted ? "停止 AI 控制" : "允许 AI 控制"}</Button>}
         {host && (
           <HoverInfo content={host}><div className="hidden max-w-[160px] truncate text-[12px] text-text-secondary md:block" >
             {host}
@@ -180,7 +165,7 @@ export function BrowserPlugin({ initialUrl = "" }: BrowserPluginProps) {
             <div className="text-[12px] text-text-secondary">输入 URL 后打开页面</div>
           </div>
         ) : !canUseNativeWebview && (
-          <iframe title="browser" src={url} className="h-full w-full border-0 bg-white" />
+          <iframe key={reloadKey} title="browser" src={url} className="h-full w-full border-0 bg-white" />
         )}
         {nativeError && (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-white px-6 text-center">

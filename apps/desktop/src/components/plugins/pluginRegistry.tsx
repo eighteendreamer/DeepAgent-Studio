@@ -85,7 +85,9 @@ export const PLUGIN_DEFINITIONS: PluginDefinition[] = [
     fallbackDesc: "Open website",
     getTabTitle: ({ t }, options) =>
       browserTitle(options?.url) || t?.("chatView.tools.browser", { defaultValue: "Browser" }) || "Browser",
-    render: ({ tab }) => renderLazyPlugin(<BrowserPlugin initialUrl={tab.url} />),
+    render: ({ tab, sessionId, envMode }) => renderLazyPlugin(
+      <BrowserPlugin initialUrl={tab.url} sessionId={envMode === "remote" ? null : sessionId} />,
+    ),
   },
   {
     type: "terminal",
