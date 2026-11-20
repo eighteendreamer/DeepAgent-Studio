@@ -44,7 +44,6 @@ type ActiveDownload = { started: boolean; ready: boolean; cancelRequested: boole
 function unavailableReason(runtime: RuntimeStatus) {
   if (runtime.installed) return undefined;
   if (!runtime.available_for_platform) return "当前系统不可用";
-  if (!runtime.checksum_pinned) return "下载源尚未配置完整性校验";
 }
 
 const filters = ["全部", "已安装", "未安装", "下载中"] as const;

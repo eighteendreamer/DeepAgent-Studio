@@ -2,8 +2,9 @@
 //!
 //! Heavy runtimes (speech models, pdfium, pandoc, LibreOffice) are **not**
 //! bundled in the installer. They are downloaded on demand into the configured
-//! active runtimes directory, not `PATH`, and verified by SHA-256 before
-//! install. Legacy runtime directories can remain as read-only lookup roots so
+//! active runtimes directory, not `PATH`. Downloads with a known SHA-256 are
+//! verified before install; otherwise their digest is recorded on first use.
+//! Legacy runtime directories can remain as read-only lookup roots so
 //! moving resources does not break already-installed capabilities. When a
 //! runtime is absent the
 //! caller falls back to a pure-Rust Tier C path (handled by the consumer).
@@ -13,9 +14,9 @@
 //! actual HTTP fetch is an injected [`Downloader`]; a reqwest-backed
 //! implementation lives behind the `runtimes` feature.
 //!
-//! Integrity is **fail-closed**: an artifact without a pinned SHA-256 cannot be
-//! installed. This is deliberate: real registry entries must pin a verified
-//! checksum before the download path is enabled.
+//! Registry checksums take precedence over locally recorded checksums. A first
+//! download without either establishes a local baseline, not upstream authenticity.
+//! Multi-file snapshots retain their explicit immutable-revision policy.
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
@@ -40,6 +41,10 @@ use probe_cache::RuntimeProbeCache;
 #[cfg(test)]
 #[path = "runtime_service/probe_cache_tests.rs"]
 mod probe_cache_tests;
+
+#[cfg(test)]
+#[path = "runtime_service/download_integrity_tests.rs"]
+mod download_integrity_tests;
 
 /// Target platform of a runtime artifact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -123,8 +128,8 @@ pub struct RuntimeArtifact {
     /// Optional fallback URLs for networks where the primary host is blocked.
     /// These are tried after `url`; downloaded bytes are still verified.
     pub mirror_urls: Vec<String>,
-    /// Pinned SHA-256 (lowercase hex). `None` means not installable
-    /// (fail-closed).
+    /// Optional upstream SHA-256 (lowercase hex). Without one, a successful
+    /// download establishes a local checksum in the install ledger.
     pub sha256: Option<String>,
     /// Destination subdir under the install root (e.g. "speech/models").
     pub dest_subdir: String,
@@ -584,34 +589,66 @@ impl RuntimeService {
         self
     }
 
-    /// Note the downloaded runtime and where it came from. A lost record must not
-    /// undo a completed install, so failures are logged, not raised.
-    fn record_install(&self, entry: &RuntimeEntry, artifact: &RuntimeArtifact) {
+    /// Prefer an upstream pin, otherwise reuse the observation for this exact
+    /// runtime version and download source. A corrupt ledger must not silently
+    /// replace an existing baseline with a new observation.
+    fn expected_checksum(
+        &self,
+        entry: &RuntimeEntry,
+        artifact: &RuntimeArtifact,
+    ) -> Result<Option<String>> {
+        if let Some(expected) = &artifact.sha256 {
+            return Ok(Some(expected.clone()));
+        }
         let Some(ledger) = self.ledger.as_ref() else {
-            return;
+            return Ok(None);
+        };
+        Ok(ledger.entries()?.into_iter().find_map(|record| {
+            (record.kind == crate::install_ledger::InstallKind::Runtime
+                && record.id == entry.id
+                && record.version.as_ref() == Some(&entry.version)
+                && (record.source.spec == artifact.url
+                    || artifact.mirror_urls.contains(&record.source.spec)))
+            .then_some(record.sha256)
+            .flatten()
+        }))
+    }
+
+    /// Record the actual downloaded digest and source after installation.
+    /// Persistence failures are reported so the caller cannot assume a checksum
+    /// was saved when it was not.
+    fn record_install(
+        &self,
+        entry: &RuntimeEntry,
+        artifact: &RuntimeArtifact,
+        source_url: &str,
+        sha256: Option<&str>,
+    ) -> Result<()> {
+        let Some(ledger) = self.ledger.as_ref() else {
+            return Ok(());
         };
         let installed = self.active_root.join(&artifact.dest_subdir);
         let Some(relative) = installed.strip_prefix(ledger.root()).ok() else {
-            tracing::warn!(path = %installed.display(), "runtime install is outside the data root");
-            return;
+            return Err(CoreError::invalid(format!(
+                "cannot record runtime install outside the data root: {}",
+                installed.display()
+            )));
         };
-        let result = ledger.record(crate::install_ledger::LedgerEntry {
+        ledger.record(crate::install_ledger::LedgerEntry {
             id: entry.id.clone(),
             kind: crate::install_ledger::InstallKind::Runtime,
             version: Some(entry.version.clone()),
             source: crate::install_ledger::InstallSource {
                 kind: crate::install_ledger::InstallSourceKind::Registry,
-                spec: artifact.url.clone(),
+                spec: source_url.to_string(),
             },
             path: relative.display().to_string(),
             sidecars: Vec::new(),
-            sha256: artifact.sha256.clone(),
+            sha256: sha256.map(str::to_string),
             installed_at: String::new(),
             last_updated: None,
-        });
-        if let Err(error) = result {
-            tracing::warn!(runtime_id = %entry.id, %error, "could not record the installed runtime");
-        }
+        })?;
+        Ok(())
     }
 
     /// The active install root. Downloads and uninstalls only touch this root.
@@ -917,9 +954,8 @@ impl RuntimeService {
         let artifact = entry.artifact();
         let installed = self.installed_location(&entry.id);
 
-        // Installer-type artifacts are always available (no pinned checksum
-        // required — the installer self-verifies). Other artifacts need a
-        // pinned SHA-256 to be installable.
+        // Keep the existing integrity metadata for callers. Missing pins do not
+        // determine platform availability or prevent a single-file download.
         let has_installer = artifact
             .map(|a| a.archive == ArchiveKind::Installer)
             .unwrap_or(false);
@@ -1034,13 +1070,13 @@ impl RuntimeService {
     }
 
     /// Download + verify + install the runtime `id`. Reports progress through
-    /// `progress` (downloaded/total). Fails closed: no pinned checksum ⇒ error;
-    /// checksum mismatch ⇒ the temp file is removed and an error returned.
+    /// `progress` (downloaded/total). Known checksum mismatches remove the temp
+    /// file and return an error. Without a known checksum, save the downloaded
+    /// digest in the install ledger as a first-use observation.
     ///
     /// For [`ArchiveKind::Installer`] artifacts, the downloaded installer is
     /// run silently into the managed runtime directory (same as other
-    /// resources). SHA-256 is optional for installers because the installer
-    /// itself verifies integrity.
+    /// resources). Installers follow the same checksum and recording policy.
     pub async fn install(&self, id: &str, progress: Arc<ProgressFn>) -> Result<RuntimeStatusDto> {
         let entry = self
             .registry
@@ -1140,22 +1176,15 @@ impl RuntimeService {
         if !artifact.files.is_empty() {
             self.install_multi_file_artifact(id, artifact, staging, op, progress)
                 .await?;
-            self.record_install(entry, artifact);
+            self.record_install(entry, artifact, &artifact.url, artifact.sha256.as_deref())?;
             return self
                 .status(id)
                 .ok_or_else(|| CoreError::Other(format!("runtime '{id}' vanished after install")));
         }
-        // For installer-type artifacts, skip the SHA-256 requirement (the
-        // installer verifies its own integrity) and run silently into the
-        // managed runtime directory.
+        // Installer-type artifacts run silently into the managed directory.
         let is_installer = artifact.archive == ArchiveKind::Installer;
 
-        let expected = artifact.sha256.clone();
-        if !is_installer && expected.is_none() {
-            return Err(CoreError::Other(format!(
-                "'{id}' has no pinned SHA-256 — refusing to install unverified runtime"
-            )));
-        }
+        let expected = self.expected_checksum(entry, artifact)?;
 
         let tmp = staging.join(download_filename(artifact));
 
@@ -1164,6 +1193,7 @@ impl RuntimeService {
         urls.push(artifact.url.clone());
         urls.extend(artifact.mirror_urls.clone());
         let mut last_error = None;
+        let mut downloaded_url = artifact.url.as_str();
         for url in &urls {
             let dl_progress = progress.clone();
             match self
@@ -1173,6 +1203,7 @@ impl RuntimeService {
             {
                 Ok(()) => {
                     last_error = None;
+                    downloaded_url = url;
                     break;
                 }
                 Err(e) => {
@@ -1191,15 +1222,10 @@ impl RuntimeService {
             )));
         }
 
-        // Verify (skip for installers — they self-verify).
+        // Always calculate the digest. First use without a known value records
+        // an observation; it does not claim upstream verification.
+        let actual = sha256_file(&tmp)?;
         if let Some(ref expected_hash) = expected {
-            let actual = match sha256_file(&tmp) {
-                Ok(h) => h,
-                Err(e) => {
-                    let _ = std::fs::remove_file(&tmp);
-                    return Err(e);
-                }
-            };
             if actual != expected_hash.to_lowercase() {
                 let _ = std::fs::remove_file(&tmp);
                 return Err(CoreError::Other(format!(
@@ -1233,7 +1259,7 @@ impl RuntimeService {
             )));
         }
 
-        self.record_install(entry, artifact);
+        self.record_install(entry, artifact, downloaded_url, Some(&actual))?;
         self.status(id)
             .ok_or_else(|| CoreError::Other(format!("runtime '{id}' vanished after install")))
     }
@@ -1965,12 +1991,11 @@ fn extract_tar_xz_into(archive_path: &Path, dest_dir: &Path) -> Result<()> {
 }
 
 /// The default runtime registry. Entries are listed in the UI catalog so users
-/// can see what's available; **install is blocked until a SHA-256 is pinned**
-/// (artifacts ship `sha256: None` here as a fail-closed placeholder — the
-/// verified hash is pinned when the real download path is enabled).
+/// can see what's available. Single-file artifacts without an upstream checksum
+/// record their downloaded digest after installation.
 pub fn default_registry() -> Vec<RuntimeEntry> {
-    // Data models can be shared across OSes; pass `Some(sha256)` only after the
-    // upstream artifact hash has been verified and pinned.
+    // Data models can be shared across OSes. Upstream pins, when available,
+    // remain preferred over first-use observations.
     fn all_platforms(
         url: &str,
         mirror_urls: &[&str],
@@ -2462,7 +2487,7 @@ fn per_platform<const N: usize>(
             RuntimeArtifact {
                 url: url.to_string(),
                 mirror_urls: Vec::new(),
-                sha256: None, // TODO: pin verified checksum before enabling install
+                sha256: None, // Calculated and recorded on first successful install.
                 dest_subdir: dest.to_string(),
                 file_name: file.to_string(),
                 archive,
@@ -2657,9 +2682,9 @@ mod tests {
         }
     }
 
-    struct MirrorFallbackDownloader {
-        bytes: Vec<u8>,
-        seen_urls: Mutex<Vec<String>>,
+    pub(super) struct MirrorFallbackDownloader {
+        pub(super) bytes: Vec<u8>,
+        pub(super) seen_urls: Mutex<Vec<String>>,
     }
 
     #[async_trait]
@@ -2683,13 +2708,13 @@ mod tests {
         }
     }
 
-    fn sha256_of(bytes: &[u8]) -> String {
+    pub(super) fn sha256_of(bytes: &[u8]) -> String {
         let mut h = Sha256::new();
         h.update(bytes);
         hex_lower(&h.finalize())
     }
 
-    fn raw_entry(sha: Option<String>) -> RuntimeEntry {
+    pub(super) fn raw_entry(sha: Option<String>) -> RuntimeEntry {
         let mut artifacts = HashMap::new();
         artifacts.insert(
             Platform::current(),
@@ -2810,7 +2835,7 @@ fn main() {{
         }
     }
 
-    fn noop_progress() -> Arc<ProgressFn> {
+    pub(super) fn noop_progress() -> Arc<ProgressFn> {
         Arc::new(|_d, _t| {})
     }
 
@@ -3030,7 +3055,7 @@ fn main() {{
     }
 
     #[tokio::test]
-    async fn install_blocked_without_pinned_checksum() {
+    async fn install_allowed_without_pinned_checksum() {
         let dir = tempfile::tempdir().unwrap();
         let svc = RuntimeService::with_registry(
             &[dir.path().to_path_buf()],
@@ -3039,11 +3064,9 @@ fn main() {{
             }),
             vec![raw_entry(None)],
         );
-        let err = svc
-            .install("test-model", noop_progress())
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("no pinned SHA-256"));
+        let status = svc.install("test-model", noop_progress()).await.unwrap();
+        assert!(status.installed);
+        assert!(!status.checksum_pinned);
     }
 
     #[tokio::test]

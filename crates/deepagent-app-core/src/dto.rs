@@ -904,8 +904,9 @@ pub struct RuntimeStatusDto {
     pub installed: bool,
     /// Whether this runtime has an artifact for the current platform.
     pub available_for_platform: bool,
-    /// Whether the artifact carries a pinned SHA-256 (installable). When false,
-    /// install is blocked until a checksum is pinned (fail-closed integrity).
+    /// Existing registry integrity metadata (checksum pin, immutable snapshot,
+    /// or installer policy). Informational; false does not block single-file
+    /// downloads, and a local first-use observation does not change this flag.
     pub checksum_pinned: bool,
     /// Absolute install path when installed, else null.
     pub install_path: Option<String>,

@@ -35,6 +35,7 @@
     "test:harness-models": "node --test scripts/check-harness-model-editor.test.cjs",
     "test:ui-navigation": "node --test scripts/check-titlebar.test.cjs",
     "test:theme-background": "node --test scripts/check-theme-background.test.cjs",
+    "test:runtime-resources": "node --test scripts/check-runtime-resource-availability.test.cjs",
     "test:continuous-corners": "node --test scripts/check-continuous-corners.test.mjs",
     "test:onboarding": "node --test scripts/check-onboarding-entrance.test.cjs scripts/check-model-cutover.test.cjs",
     "test:workflow": "node --test scripts/check-workflow.test.cjs scripts/check-workflow-documents.test.cjs scripts/audit-workflow-isolation.test.cjs",
@@ -43,7 +44,7 @@
     "test:ssh-host-trust": "node --test scripts/check-ssh-host-trust.test.cjs scripts/check-ssh-agent.test.cjs",
     "test:remote-files": "node --test scripts/check-remote-files.test.cjs scripts/check-transfer-queue.test.cjs",
     "test:video-edit-persistence": "node --test scripts/check-video-edit-persistence.test.cjs",
-    "build": "pnpm test:approval && pnpm test:sidecar && pnpm prebundle-rea && pnpm test:continuous-corners && pnpm test:onboarding && pnpm test:workflow && pnpm test:canvas-ipc && pnpm test:video-edit-persistence && pnpm test:ssh-host-trust && pnpm test:remote-files && pnpm test:terminal-session && pnpm test:plugin-logos && pnpm test:plugin-detail && pnpm test:plugin-page && pnpm test:plugin-toggle && pnpm test:sidebar && pnpm test:session-usage && pnpm test:session-control && pnpm test:mcp-response-budget && pnpm test:session-search && pnpm test:number-format && pnpm test:knowledge-kinds && pnpm test:hover-info && pnpm test:web-search-settings && pnpm test:timeline-memory && pnpm test:process-collapse && pnpm test:run-completion-error && pnpm test:message-edit && pnpm test:composer-activity && pnpm test:harness-models && pnpm test:ui-navigation && pnpm test:theme-background && pnpm test:image-integrity && pnpm check-plugin-licenses && pnpm prebundle-skills && tsc --noEmit && vite build",
+    "build": "pnpm test:runtime-resources && pnpm test:approval && pnpm test:sidecar && pnpm prebundle-rea && pnpm test:continuous-corners && pnpm test:onboarding && pnpm test:workflow && pnpm test:canvas-ipc && pnpm test:video-edit-persistence && pnpm test:ssh-host-trust && pnpm test:remote-files && pnpm test:terminal-session && pnpm test:plugin-logos && pnpm test:plugin-detail && pnpm test:plugin-page && pnpm test:plugin-toggle && pnpm test:sidebar && pnpm test:session-usage && pnpm test:session-control && pnpm test:mcp-response-budget && pnpm test:session-search && pnpm test:number-format && pnpm test:knowledge-kinds && pnpm test:hover-info && pnpm test:web-search-settings && pnpm test:timeline-memory && pnpm test:process-collapse && pnpm test:run-completion-error && pnpm test:message-edit && pnpm test:composer-activity && pnpm test:harness-models && pnpm test:ui-navigation && pnpm test:theme-background && pnpm test:image-integrity && pnpm check-plugin-licenses && pnpm prebundle-skills && tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "node scripts/prepare-sidecar.cjs tauri",
     "review": "ocr"
