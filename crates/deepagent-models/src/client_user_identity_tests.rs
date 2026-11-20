@@ -150,3 +150,70 @@ async fn h146_user_identity_responses_transport_keeps_user_and_omits_user_id() {
         }
     }
 }
+
+#[tokio::test]
+async fn openai_compatible_chat_uses_sdk_fields_and_omits_deepseek_extensions() {
+    let transport = Arc::new(Recorder::default());
+    let mut config = ModelConfig::deepseek_chat("synthetic");
+    config.base_url = "https://api.layso.ai/v1".into();
+    let client = ModelClient::new(transport.clone(), config);
+    let mut request = ChatCompletionRequest::new(
+        "gpt-5.6-sol",
+        vec![
+            Message::assistant("prior answer").with_reasoning("private reasoning"),
+            Message::user("fixture"),
+        ],
+    );
+    request.user = Some("stable-user".into());
+    request.max_tokens = Some(1024);
+    request.reasoning_effort = Some(crate::ReasoningEffort::High);
+    request.thinking = Some(crate::ThinkingToggle {
+        kind: "enabled".into(),
+    });
+
+    assert_eq!(
+        client
+            .stream_chat_completion(request)
+            .await
+            .unwrap_err()
+            .to_string(),
+        "synthetic-dispatched"
+    );
+    let bodies = transport.0.lock().unwrap();
+    let body = &bodies[0];
+    assert_eq!(body["user"], "stable-user");
+    assert_eq!(body["max_completion_tokens"], 1024);
+    assert_eq!(body["reasoning_effort"], "high");
+    assert!(body.get("user_id").is_none());
+    assert!(body.get("max_tokens").is_none());
+    assert!(body.get("thinking").is_none());
+    assert!(body["messages"][0].get("reasoning_content").is_none());
+}
+
+#[tokio::test]
+async fn openai_chat_explicit_off_is_not_lost_with_legacy_configuration() {
+    for toggle_only in [false, true] {
+        let transport = Arc::new(Recorder::default());
+        let mut config = ModelConfig::deepseek_chat("synthetic");
+        config.base_url = "https://openai-compatible.test/v1".into();
+        let client = ModelClient::new(transport.clone(), config);
+        let request = ChatCompletionRequest::new("fixture", vec![Message::user("fixture")]);
+        let request = if toggle_only {
+            request.with_thinking(false)
+        } else {
+            request.with_reasoning_effort(crate::ReasoningEffort::None)
+        };
+        assert_eq!(
+            client
+                .stream_chat_completion(request)
+                .await
+                .unwrap_err()
+                .to_string(),
+            "synthetic-dispatched"
+        );
+        let bodies = transport.0.lock().unwrap();
+        assert_eq!(bodies.len(), 1);
+        assert_eq!(bodies[0]["reasoning_effort"], "none");
+        assert!(bodies[0].get("thinking").is_none());
+    }
+}

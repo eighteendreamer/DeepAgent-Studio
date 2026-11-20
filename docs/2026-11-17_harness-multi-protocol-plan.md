@@ -171,7 +171,7 @@ CREATE TABLE harness_providers (
     channel       TEXT NOT NULL,              -- 供应商名称
     logo          TEXT NOT NULL DEFAULT '',   -- 图标标识
     model_url     TEXT NOT NULL,              -- API base URL
-    protocol      TEXT NOT NULL,              -- 'responses' | 'messages'（默认）
+    protocol      TEXT NOT NULL,              -- 'responses' | 'chat_completions' | 'messages'
     api_key_ref   TEXT NOT NULL,              -- → secret_records.name
     balance_kind  TEXT NOT NULL DEFAULT 'auto',
     status        INTEGER NOT NULL DEFAULT 1,
@@ -335,28 +335,25 @@ pub enum ContentBlock {
 
 ## 5. 协议表 + 工厂分发
 
-照 deepseek-harness `provider.ts:48-53`：
+参考 DeepSeek Harness 的静态协议注册表。以下摘自当前生产实现（不是另建一套工厂）：
 
 ```rust
-// crates/deepagent-models/src/protocol.rs
-pub enum Protocol { Responses, Messages }
-
-type CodecFactory = fn() -> Box<dyn WireCodec>;
-
-static PROTOCOLS: &[(Protocol, CodecFactory)] = &[
-    (Protocol::Responses, || Box::new(async_openai_codec::Codec::new())),
-    (Protocol::Messages,  || Box::new(anthropic_codec::Codec::new())),
+static PROTOCOLS: &[(WireMode, &dyn WireCodec)] = &[
+    (WireMode::Responses, &RESPONSES),
+    (WireMode::ChatCompletions, &CHAT_COMPLETIONS),
+    (WireMode::Messages, &MESSAGES),
 ];
 
-pub trait WireCodec: Send + Sync {
-    fn encode_request(&self, req: &ModelRequest, cfg: &CodecConfig) -> Result<Value>;
-    fn decode_stream(&self, chunk: &[u8], sink: &mut dyn EventSink) -> Result<()>;
-    fn map_usage(&self, raw: &Value) -> Usage;
-    fn map_stop(&self, raw: &Value) -> FinishReason;
-    fn map_thinking(&self, level: ThinkingLevel) -> ThinkingWire;
+pub(crate) fn codec_for(mode: WireMode) -> &'static dyn WireCodec {
+    PROTOCOLS
+        .iter()
+        .find(|(protocol, _)| *protocol == mode)
+        .map(|(_, codec)| *codec)
+        .expect("every WireMode must be registered in PROTOCOLS")
 }
 ```
 
+各 codec 负责请求准备、协议编码和对应的流解析器；SDK 负责类型与序列化，HTTP/SSE、取消与计量由已有客户端统一处理。
 **硬约束：`match protocol` 只允许出现在工厂里。** `core` / `runtime` / `persistence` 不允许出现协议分支。
 
 现状核查：`WireMode::` 在 `runtime` 有 17 处，全部在测试文件；生产代码干净。这个边界要守住。
@@ -456,7 +453,7 @@ pub struct BalanceAmount {
 | **P8 缓存治理** | 前缀稳定性；`cache_control` 断点；复用既有压缩阈值 | 3 |
 | **P9 输入框思考档位** | 5 档下拉，按模型 `thinking_levels` 置灰 | 2 |
 | **P10 模型列表与切换** | 按 provider 分组；运行时切换下次生效 + 余额重查 | 2 |
-| **P11 双协议验收** | 同一套行为用例跑两个协议 | 3 |
+| **P11 三协议验收** | 同一套行为用例跑 Responses、Chat Completions、Messages | 3 |
 | **P3b 会话 JSONL 承载模型输出** | `signature` / `origin` 可选字段；旧 JSONL 回放测试；中途切换供应商的整文件回放测试；不新增表 | 2 |
 | **F0 协议层只读盘点** | 逐个核对 `apps/cli/src/app_server.rs` 的方法实现与测试、`jsonl.rs`、TypeScript SDK；输出缺口清单，不改代码。依据 AGENTS §5.1 的方法面 | 1 |
 | **F1+ 协议层补齐** | 按 F0 清单拆分：协议版本字段、DTO 与 UI DTO 分离、事件 replay 与断线续读、审批统一路由、SDK 覆盖。以现有 app_server 为基础，不另起协议引擎 | 待 F0 后估算 |
@@ -464,14 +461,14 @@ pub struct BalanceAmount {
 
 ---
 
-### 9.1 执行状态（截至 2026-11-19）
+### 9.1 执行状态（截至 2026-11-20）
 
 | 批次 | 状态 | 证据 / 与原计划的偏差 |
 |---|---|---|
-| G0 工程门禁 | 编译检查通过；完整门禁未通过 | H024 最后完整 workspace 测试在 AppCore lib 停止：1714 passed / 7 failed / 44 ignored；串行复核仍有 6 项失败，不能沿用此前“仅剩 1 项”的结论。H022 原生 all-targets check 通过；H025 models/http 321、AppCore 模型服务 20、内核终态 5 passed。桌面完整 `pnpm build` 已通过；全仓 fmt/clippy 问题仍待处理。远程连接由另一会话负责。 H034 最新完整命令为 5757 passed / 61 failed / 130 ignored，13 个目标失败；其中 9 项因仓库内 TEMP 受影响，仓库外复核通过，未覆盖原失败结论。 H035 本轮完整 workspace 命令在 kernel_v2_e2e 编译时内存不足退出，未进入测试。 |
-| P0 可测性验证 | 已记录结论，采用 (a) | §10-1；SDK 只承担类型与序列化，复用现有 HTTP/SSE/取消/预算边界。anthropic-sdk 与 async-openai 0.43.0 均已进入生产依赖；Responses 仅启用 response-types。 |
+| G0 工程门禁 | 格式与完整 Clippy 通过；完整测试未通过 | H037 完整 workspace 为 5799 passed / 36 failed / 132 ignored，9 个目标失败；其中注册表 2 项修正后定向 10 passed，未重跑完整命令。独立提交源码 models/http 为 431 passed / 0 failed / 6 ignored，HTTP/all-targets 严格 Clippy 通过；桌面前端构建及三协议原生 UI 对话通过。完整 Clippy 最终退出 0；版本边界和剩余失败详见 [H037](reports/2026-11-20-p2-p11-ui-follow-up.md)。 |
+| P0 可测性验证 | 已记录结论，采用 (a) | SDK 只承担类型与序列化，HTTP/SSE/取消/预算继续复用。async-openai 0.43.0 启用 response-types 与 chat-completion-types，Messages 使用已固定的 anthropic-sdk。H037 补 Chat 请求类型验证。 |
 | P1 中性内容层 + 五档映射 | 五档已贯通，家族映射接入待完成 | `b6774635` 增加 `ThinkingLevel` / `map_thinking` 和 `ResponseItem::Reasoning.signature`。H012 将 medium 独立保留到三协议请求体，默认能力与显式能力共用解析与校验；`map_thinking` 家族映射仍待接入 provider adapter。 |
-| P2 协议表 + 工厂 | 已完成 | 参考 DeepSeek Harness 的完整协议工厂：Responses / Chat Completions / Messages 均由 codec 负责准备、编码、发送入口与解析器；客户端与 Files 重试共用一条物理传输路径。验证见 H034。 |
+| P2 协议表 + 工厂 | 三协议统一分发；Chat SDK 请求与具名工具补齐 | Responses / Chat Completions / Messages 共用协议表、传输与取消入口。H037 接入 Chat SDK DTO，具名工具显式关闭并行；两条真实具名请求通过，三协议新版桌面 UI 对话通过。详见 [H037](reports/2026-11-20-p2-p11-ui-follow-up.md)。 |
 | P3 数据模型 + 迁移 | 运行链已接入，消费方回归中 | V24 表、CRUD、激活列表、AppCore DTO、7 个 Tauri command 与 TS API 均已落地。`9c9046be` 修复密钥引用；`b1de6059` 完成一次性 Chat 种子迁移。H004 将 admission、执行绑定、工具续写、技能审查和标题调用接入注册表；解析、真实运行链、内核相关和 persistence 回归均通过。模型选择已持久化并由下一轮 admission 读取，旧 Chat 字段仅作迁移/兼容回退。 |
 | P3c 过载与备用模型删除 | 已提交，相关回归通过 | `10234777`：过载统一不可重试，明确 503 过载也立即报错；删除运行时 fallback 路径。models lib 240 passed；runtime lib 493 passed / 2 ignored；H55 4 passed；内核 H144 7 passed；采样、计费/预算、输出上限、图像模式及模型快照串行回归通过；真实 HTTP 1 项、CLI 2 项通过。H004 已接入单一 resolver。 |
 | P3b 会话 JSONL 的 `origin` | 已实现，回归通过 | `ResponseItemAppended.origin` 为可选 `ModelOrigin`，由真实模型运行链写入；旧 JSONL 无 `origin` 仍可读。core 往返 2 项、persistence 来源回放 1 项、persistence 全量 221 项、session 27 项、AppCore 注册表真实运行 7 项通过。跨供应商思考签名是否需要降级仍待实测，当前只保留签名与来源，不擅自改变回放语义。 |
@@ -479,10 +476,10 @@ pub struct BalanceAmount {
 | P5 Messages codec | 图片、原生请求头已补齐；真实 Messages 11 项通过 | H035 的 SDK 请求、流解析、签名、用量、图片与统一鉴权继续复用。H036 对 Layso Claude 实测文本、历史、工具续写、五档发包、图片、取消及缓存读取均通过；不能外推为所有 Anthropic 端点验收，见 [H036 验收报告](reports/2026-11-19-p11-f0-f1-acceptance.md)。 |
 | P6 设置页 | 基础界面与后端已实现；流程待验收 | `ModelsSettings.tsx` 已接供应商 CRUD、模型拉取/激活和配置编辑。H015 保留已存配置，H016 支持协议/容量/思考编辑，服务 19 + resolver 12 项通过；H017 设置页迟到请求回归通过。完整原生 UI 流程仍待验收。 |
 | P7 余额 | 已修复已知解析/UI 缺口；真实 API 待验收 | H009 修复未知形状误判无限、分币换算、display 单位、缺失金额伪造零与错误跨供应商回退；两处 UI 共用查询与金额格式化并丢弃迟到结果。models lib 256、前端余额专项 9 passed。完整桌面与真实余额 API 待验收。 |
-| P8 缓存 | 断点/用量已有回归；本轮三协议真实缓存读取已证 | H036 最终 Responses 与 Chat 的命中/输入均为 5120/5275，Messages 第二次为 5628/5641；Responses/Chat 前缀此前已使用，不视为冷缓存对照。供应商命中不可保证，不能把这些样本外推为所有模型命中率，详见 [H036 验收报告](reports/2026-11-19-p11-f0-f1-acceptance.md)。 |
+| P8 缓存 | 稳定前缀与 Messages 断点已验证；未完全复现 Harness 缓存策略 | 工具稳定排序，稳定 instructions 与动态环境分开，已完成历史断点避开思考签名块；DeepSeek 官方继续自动缓存。H037 真实观察 Responses 0/11250、Chat 11008/11250、Messages 23952/23960，不承诺普遍命中；cacheRetention 与签名前缀摘要持久绑定仍未实现。详见 [H037](reports/2026-11-20-p2-p11-ui-follow-up.md)。 |
 | P9 输入框思考档位 | 五档参数与能力回归通过，原生 UI 验收待完成 | H012 统一 `thinking_levels` / `thinking_distinct` / `thinking_disable`，缺省五档可关闭，兼容显式旧 effort 限制；修正 off 禁用条件与全禁用滑杆，medium 保存不再变为 high。H018 补齐显式等价标注，Composer 18 项与 registry → transport 三协议矩阵通过；原生 UI 流程仍待验收。 |
 | P10 模型列表与切换 | 已接入；桌面手动验收待完成 | Composer 消费激活模型，按 provider 分组；选择写入 harness 注册表，跨供应商触发余额刷新；当前 turn 冻结旧模型，工具续写保持旧模型，下一轮用户消息重新 admission。 |
-| P11 产品验收 | 常规三协议矩阵 33/33；跨协议历史 2/3；产品全量门禁未通过 | H036 使用生产 ModelClient/工厂/ReqwestTransport，覆盖文本、历史、工具续写、五档参数、原生图片、取消和缓存观察。Claude→Responses 三轮均在来源请求阶段失败，未取得目标验收；指定工具名在该 Layso Responses 路由仍 HTTP 400。范围及全部失败见 [H036 验收报告](reports/2026-11-19-p11-f0-f1-acceptance.md)。 |
+| P11 产品验收 | 三协议新版原生 UI 通过；跨协议补验 3/3；全量门禁另列 | H037：通过脚本输入并发送，三协议 HTTP 200、运行 completed、零 JS 异常；Responses/Chat 指定工具名已修复且真实通过。当前 Claude Fable→Responses 连续三轮完成，其中一轮带签名；保留旧 Sonnet 路线失败记录，不外推全部模型与 SessionStore/origin 矩阵。详见 [H037](reports/2026-11-20-p2-p11-ui-follow-up.md)。 |
 | F0 协议层盘点 | 当前 16 个方法及关键边界已复核 | 重新核对方法生产/消费方、连接退出、steer、持久终态、审批、ACK 与独立游标；已有三项思考配置断言冲突未掩盖。见 9.2 和 [H036 验收报告](reports/2026-11-19-p11-f0-f1-acceptance.md)。 |
 | F1+ 协议层补齐 | 本轮版本、SDK 持续增量回放及专项通过；整仓门禁未通过 | 全部出站事件统一 protocolVersion=1，Rust/TS 校验入站版本并兼容旧 v1；SDK 复用 thread/read 做 250ms 持续拉取和 checkpoint 恢复，非服务端推送补发。补 sandbox/status 专项与真实 CLI 重连去重，见 [H036 验收报告](reports/2026-11-19-p11-f0-f1-acceptance.md)。 |
 

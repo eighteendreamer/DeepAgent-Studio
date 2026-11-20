@@ -309,8 +309,9 @@ async fn real_chat_http_roundtrip_uses_mapped_request_and_default_choices() {
     for native in [false, true] {
         for defaults in [false, true] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let local_addr = listener.local_addr().unwrap();
             let mut cfg = config(native);
-            cfg.base_url = format!("http://{}", listener.local_addr().unwrap());
+            cfg.base_url = format!("http://api.deepseek.com:{}", local_addr.port());
             let canonical = json!({"type":"function","name":"read_file"});
             let explicit = if defaults {
                 cfg.defaults.tool_choice = Some(canonical);
@@ -359,7 +360,11 @@ async fn real_chat_http_roundtrip_uses_mapped_request_and_default_choices() {
                 socket.write_all(response.as_bytes()).await.unwrap();
             });
             let transport = deepagent_models::ReqwestTransport::with_client(
-                reqwest::Client::builder().no_proxy().build().unwrap(),
+                reqwest::Client::builder()
+                    .no_proxy()
+                    .resolve("api.deepseek.com", local_addr)
+                    .build()
+                    .unwrap(),
             );
             let client = ModelClient::new(Arc::new(transport), cfg);
             assert_eq!(

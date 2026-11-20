@@ -200,7 +200,7 @@ impl HttpTransport for ReplayTransport {
 }
 
 fn e2e_root(run_id: &str) -> PathBuf {
-    PathBuf::from(r"G:\Code\Kotlin_code\_deepagent-e2e").join(run_id)
+    std::env::temp_dir().join("deepagent-e2e").join(run_id)
 }
 
 async fn chat_with(transport: Arc<dyn HttpTransport>, root: &PathBuf) -> (ChatService, AppService) {

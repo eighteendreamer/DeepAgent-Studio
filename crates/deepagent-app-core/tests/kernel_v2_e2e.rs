@@ -537,7 +537,7 @@ impl HttpTransport for HangingTransport {
 }
 
 fn e2e_root(run_id: &str) -> PathBuf {
-    PathBuf::from(r"G:\Code\Kotlin_code\_deepagent-e2e").join(run_id)
+    std::env::temp_dir().join("deepagent-e2e").join(run_id)
 }
 
 /// Audit-only probe: records backend routing without running any host command.
@@ -2280,7 +2280,7 @@ impl HttpTransport for NotePassTransport {
             &mut crate::sequence_fixture::sink(sink);
         let events = if request.body.contains("session-memory.md") {
             let call = self.note_calls.fetch_add(1, Ordering::AcqRel);
-            if call % 3 == 0 {
+            if call.is_multiple_of(3) {
                 self.note_prompts
                     .lock()
                     .unwrap_or_else(|poison| poison.into_inner())

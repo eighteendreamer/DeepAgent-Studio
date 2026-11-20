@@ -641,7 +641,7 @@ mod tests {
                 .read_session_page(id, None, Some(cursor), budget(5))
                 .unwrap();
             assert!(page.events.len() <= 5);
-            assert!(page.events.len() % 2 == 0);
+            assert!(page.events.len().is_multiple_of(2));
             assert!(serde_json::to_vec(&page.events).unwrap().len() <= 16 * 1024);
             actual.extend(page.events);
             next = page.next_cursor;

@@ -104,3 +104,209 @@ fn messages_endpoint_appends_protocol_path_to_base_url_once() {
         assert_eq!(config.messages_endpoint(), expected);
     }
 }
+
+#[tokio::test]
+async fn messages_cache_marks_stable_sections_and_completed_history_only() {
+    let transport = Arc::new(RecordingTransport {
+        events: events(),
+        ..Default::default()
+    });
+    let mut config = ModelConfig::deepseek("fixture-key").with_wire_mode(WireMode::Messages);
+    config.base_url = "https://api.anthropic.com".into();
+    let client = ModelClient::new(transport.clone(), config);
+    let tools = vec![
+        deepagent_models::ToolSchema::function("z_tool", "last", json!({"type":"object"})),
+        deepagent_models::ToolSchema::function("a_tool", "first", json!({"type":"object"})),
+    ];
+    let request = ResponseRequest::from_response_items(
+        "claude-fixture",
+        Some("stable rules".into()),
+        vec![
+            ResponseItem::Message {
+                role: "user".into(),
+                content: "earlier question".into(),
+            },
+            ResponseItem::Message {
+                role: "assistant".into(),
+                content: "earlier answer".into(),
+            },
+            ResponseItem::Message {
+                role: "user".into(),
+                content: "current question".into(),
+            },
+        ],
+    )
+    .with_max_output_tokens(128)
+    .with_tools(tools.clone());
+    client.stream_response(request).await.unwrap();
+    let recorded = transport.request.lock().unwrap().clone().unwrap();
+    let body: Value = serde_json::from_str(&recorded.body).unwrap();
+    assert_eq!(body["system"][0]["text"], "stable rules");
+    assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+    assert_eq!(body["tools"][0]["name"], "a_tool");
+    assert!(body["tools"][0].get("cache_control").is_none());
+    assert_eq!(body["tools"][1]["cache_control"]["type"], "ephemeral");
+    assert_eq!(
+        body["messages"][1]["content"][0]["cache_control"]["type"],
+        "ephemeral"
+    );
+    assert!(body["messages"][2]["content"][0]
+        .get("cache_control")
+        .is_none());
+    assert_eq!(recorded.body.matches("\"cache_control\"").count(), 3);
+    assert_eq!(
+        json!(client.project_tool_schemas("claude-fixture", &tools).tools),
+        body["tools"]
+    );
+}
+
+#[tokio::test]
+async fn messages_cache_skips_thinking_only_history_and_deepseek_auto_cache() {
+    for base in [
+        "https://api.anthropic.com",
+        "https://api.deepseek.com/anthropic",
+    ] {
+        let transport = Arc::new(RecordingTransport {
+            events: events(),
+            ..Default::default()
+        });
+        let mut config = ModelConfig::deepseek("fixture-key").with_wire_mode(WireMode::Messages);
+        config.base_url = base.into();
+        let client = ModelClient::new(transport.clone(), config);
+        let request = ResponseRequest::from_response_items(
+            "claude-fixture",
+            Some("rules".into()),
+            vec![
+                ResponseItem::Message {
+                    role: "user".into(),
+                    content: "earlier".into(),
+                },
+                ResponseItem::Reasoning {
+                    id: None,
+                    content: "reasoning".into(),
+                    signature: Some("sig".into()),
+                },
+                ResponseItem::Message {
+                    role: "user".into(),
+                    content: "current".into(),
+                },
+            ],
+        )
+        .with_max_output_tokens(128);
+        client.stream_response(request).await.unwrap();
+        let recorded = transport.request.lock().unwrap().clone().unwrap();
+        let body: Value = serde_json::from_str(&recorded.body).unwrap();
+        assert!(body["messages"][1]["content"][0]
+            .get("cache_control")
+            .is_none());
+        assert!(body["messages"][2]["content"][0]
+            .get("cache_control")
+            .is_none());
+        if base.contains("deepseek.com") {
+            assert!(!recorded.body.contains("\"cache_control\""));
+            assert_eq!(body["system"], "rules");
+        } else {
+            assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+            assert_eq!(recorded.body.matches("\"cache_control\"").count(), 1);
+        }
+    }
+}
+
+#[tokio::test]
+async fn messages_cache_keeps_stable_instructions_separate_from_runtime_system_items() {
+    let mut stable_block = None;
+    for dynamic in ["environment one", "environment two"] {
+        let transport = Arc::new(RecordingTransport {
+            events: events(),
+            ..Default::default()
+        });
+        let mut config = ModelConfig::deepseek("fixture-key").with_wire_mode(WireMode::Messages);
+        config.base_url = "https://api.anthropic.com".into();
+        let client = ModelClient::new(transport.clone(), config);
+        let request = ResponseRequest::from_response_items(
+            "claude-fixture",
+            Some("stable rules".into()),
+            vec![
+                ResponseItem::Message {
+                    role: "user".into(),
+                    content: "hello".into(),
+                },
+                ResponseItem::Message {
+                    role: "system".into(),
+                    content: dynamic.into(),
+                },
+            ],
+        )
+        .with_max_output_tokens(128);
+        client.stream_response(request).await.unwrap();
+        let recorded = transport.request.lock().unwrap().clone().unwrap();
+        let body: Value = serde_json::from_str(&recorded.body).unwrap();
+        assert_eq!(body["system"][0]["text"], "stable rules");
+        assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(body["system"][1]["text"], dynamic);
+        assert!(body["system"][1].get("cache_control").is_none());
+        if let Some(first) = &stable_block {
+            assert_eq!(first, &body["system"][0]);
+        } else {
+            stable_block = Some(body["system"][0].clone());
+        }
+        assert_eq!(recorded.body.matches("\"cache_control\"").count(), 1);
+    }
+}
+
+#[tokio::test]
+async fn messages_cache_preserves_thinking_signature_and_tool_result_pair() {
+    let transport = Arc::new(RecordingTransport {
+        events: events(),
+        ..Default::default()
+    });
+    let mut config = ModelConfig::deepseek("fixture-key").with_wire_mode(WireMode::Messages);
+    config.base_url = "https://api.anthropic.com".into();
+    let client = ModelClient::new(transport.clone(), config);
+    let request = ResponseRequest::from_response_items(
+        "claude-fixture",
+        Some("rules".into()),
+        vec![
+            ResponseItem::Message {
+                role: "user".into(),
+                content: "read".into(),
+            },
+            ResponseItem::Reasoning {
+                id: None,
+                content: "thinking".into(),
+                signature: Some("signature".into()),
+            },
+            ResponseItem::FunctionCall {
+                call_id: "call-1".into(),
+                name: "read_file".into(),
+                arguments: "{}".into(),
+            },
+            ResponseItem::FunctionCallOutput {
+                call_id: "call-1".into(),
+                output: deepagent_core::tool_content::ToolResultBody::Text("result".into()),
+            },
+            ResponseItem::Message {
+                role: "user".into(),
+                content: "continue".into(),
+            },
+        ],
+    )
+    .with_max_output_tokens(128);
+    client.stream_response(request).await.unwrap();
+    let recorded = transport.request.lock().unwrap().clone().unwrap();
+    let body: Value = serde_json::from_str(&recorded.body).unwrap();
+    let assistant = &body["messages"][1]["content"];
+    assert_eq!(assistant[0]["type"], "thinking");
+    assert_eq!(assistant[0]["signature"], "signature");
+    assert!(assistant[0].get("cache_control").is_none());
+    assert_eq!(assistant[1]["type"], "tool_use");
+    assert_eq!(assistant[1]["id"], "call-1");
+    assert_eq!(assistant[1]["cache_control"]["type"], "ephemeral");
+    let user = &body["messages"][2]["content"];
+    assert_eq!(user[0]["type"], "tool_result");
+    assert_eq!(user[0]["tool_use_id"], "call-1");
+    assert_eq!(user[1]["text"], "continue");
+    assert!(user[0].get("cache_control").is_none());
+    assert!(user[1].get("cache_control").is_none());
+    assert_eq!(recorded.body.matches("\"cache_control\"").count(), 2);
+}

@@ -302,6 +302,7 @@ fn assert_request(request: &TransportRequest, url: &str, expected_key: &str, exp
     assert_eq!(body["model"], expected_model);
     let output = body
         .get("max_output_tokens")
+        .or_else(|| body.get("max_completion_tokens"))
         .or_else(|| body.get("max_tokens"));
     assert_eq!(output, Some(&serde_json::json!(4096)));
 }
@@ -597,7 +598,7 @@ async fn registry_changes_during_tool_round_trip_apply_only_to_next_user_turn() 
         .unwrap()
         .iter()
         .any(|item| item["type"] == "function_call_output" && item["call_id"] == "registry-read"));
-    let cold = Database::open(&f.root.path().join("state.sqlite")).unwrap();
+    let cold = Database::open(f.root.path().join("state.sqlite")).unwrap();
     let history = deepagent_persistence::event_store::EventStore::new(&cold)
         .load_session(session.parse().unwrap())
         .unwrap();

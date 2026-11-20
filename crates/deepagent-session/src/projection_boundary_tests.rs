@@ -842,7 +842,7 @@ fn concurrent_session_handles_commit_whole_groups_without_interleaving() {
     let store = EventStore::new(&db);
     let events = store.load_session_for_model(id).unwrap();
     assert_eq!(events.len(), 1 + 16 * 5);
-    for group in events[1..].chunks_exact(5) {
+    for group in events[1..].as_chunks::<5>().0 {
         assert!(matches!(
             group[0].payload,
             EventPayload::MessageAppended { .. }

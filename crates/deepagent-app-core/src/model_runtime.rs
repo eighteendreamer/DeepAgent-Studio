@@ -139,7 +139,7 @@ pub(crate) fn resolve_run_model(
         prefer_model_reasoning_default: requested.is_none(),
     };
     let reasoning_effort = config
-        .effective_reasoning_effort(&model, None)?
+        .effective_reasoning_effort(model, None)?
         .unwrap_or_default();
     Ok(RunModelPlan {
         config,

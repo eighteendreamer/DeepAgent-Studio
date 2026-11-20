@@ -59,6 +59,14 @@ fn project(request: &ResponseRequest, effort: Option<&str>) -> Result<WireReques
             .clone()
             .map(serde_json::from_value)
             .transpose()?,
+        // Tianshu's forced-function projection is a single-call contract.
+        // Keep the named choice; some compatible routes reject it with the
+        // protocol's implicit parallel-call default.
+        parallel_tool_calls: request
+            .tool_choice
+            .as_ref()
+            .is_some_and(Value::is_object)
+            .then_some(false),
         ..Default::default()
     };
     // SDK effort enums intentionally do not cover custom provider wire levels.

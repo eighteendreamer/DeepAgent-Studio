@@ -377,7 +377,7 @@ fn fetching_models_preserves_saved_model_configuration() {
         .to_string(),
         active: true,
     };
-    db.save_harness_models("deepseek", &[saved.clone()])
+    db.save_harness_models("deepseek", std::slice::from_ref(&saved))
         .unwrap();
     futures_block_on(service.fetch_models("deepseek")).unwrap();
     assert_eq!(db.list_harness_models("deepseek").unwrap(), [saved]);

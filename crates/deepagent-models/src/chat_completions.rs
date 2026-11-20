@@ -1,4 +1,4 @@
-//! DeepSeek Chat Completions request serialization and streaming assembly.
+//! OpenAI-compatible Chat Completions request serialization and stream assembly.
 //!
 //! This module owns the provider wire format. The runtime consumes the
 //! provider-neutral [`ModelStreamEvent`] and [`Response`] types, so adding the
@@ -6,10 +6,11 @@
 
 use std::collections::BTreeMap;
 
+use async_openai::types::chat as sdk;
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::message::{Message, Role};
 use deepagent_core::response_item::ResponseOutputItem;
-use serde::ser::{SerializeMap, SerializeSeq};
+use serde::ser::SerializeSeq;
 use serde::{Serialize, Serializer};
 
 use crate::chat::{
@@ -21,7 +22,7 @@ use crate::stream::{DeltaObserver, ModelStreamEvent};
 /// DeepSeek Chat user_id is bounded by UTF-8 bytes, not JSON-escaped length.
 const MAX_USER_ID_BYTES: usize = 512;
 
-/// A DeepSeek Chat Completions request.
+/// A canonical Chat Completions request before provider-specific projection.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatCompletionRequest {
     pub model: String,
@@ -51,69 +52,282 @@ pub struct ChatCompletionRequest {
 }
 
 impl Serialize for ChatCompletionRequest {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        self.serialize_with_effort(
+            serializer,
+            self.reasoning_effort
+                .filter(|effort| *effort != ReasoningEffort::None)
+                .map(ReasoningEffort::label),
+        )
+    }
+}
+
+#[derive(Serialize)]
+struct ChatWireRequest {
+    #[serde(flatten)]
+    body: serde_json::Value,
+    // Keep f32 sampling typed through final serialization, as in Responses.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f32>,
+}
+
+impl ChatCompletionRequest {
+    pub(crate) fn serialize_with_effort<S: Serializer>(
+        &self,
+        serializer: S,
+        effort: Option<&str>,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        self.serialize_with_thinking(serializer, effort, self.thinking.as_ref())
+    }
+
+    pub(crate) fn serialize_with_thinking<S: Serializer>(
+        &self,
+        serializer: S,
+        effort: Option<&str>,
+        thinking: Option<&ThinkingToggle>,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        self.serialize_for_provider(serializer, effort, thinking, true)
+    }
+
+    pub(crate) fn serialize_for_provider<S: Serializer>(
+        &self,
+        serializer: S,
+        effort: Option<&str>,
+        thinking: Option<&ThinkingToggle>,
+        deepseek_extensions: bool,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        self.wire_value(effort, thinking, deepseek_extensions)
+            .map_err(serde::ser::Error::custom)?
+            .serialize(serializer)
+    }
+
+    fn wire_value(
+        &self,
+        effort: Option<&str>,
+        thinking: Option<&ThinkingToggle>,
+        deepseek_extensions: bool,
+    ) -> serde_json::Result<ChatWireRequest> {
         self.validate_tool_choice()
-            .map_err(serde::ser::Error::custom)?;
+            .map_err(|error| serde::ser::Error::custom(error.to_string()))?;
         self.validate_user_identity()
-            .map_err(serde::ser::Error::custom)?;
+            .map_err(|error| serde::ser::Error::custom(error.to_string()))?;
         self.validate_image_roles()
-            .map_err(serde::ser::Error::custom)?;
+            .map_err(|error| serde::ser::Error::custom(error.to_string()))?;
         self.validate_image_references()
-            .map_err(serde::ser::Error::custom)?;
-        let mut map = serializer.serialize_map(None)?;
-        map.serialize_entry("model", &self.model)?;
-        map.serialize_entry(
-            "messages",
-            &ChatMessages(
+            .map_err(|error| serde::ser::Error::custom(error.to_string()))?;
+        let mut object = serde_json::Map::new();
+        object.insert(
+            "model".into(),
+            serde_json::Value::String(self.model.clone()),
+        );
+        object.insert(
+            "messages".into(),
+            serde_json::to_value(ChatMessages(
                 &self.messages,
                 &self.attachment_data_urls,
                 &self.image_file_ids,
-            ),
-        )?;
-        map.serialize_entry("stream", &self.stream)?;
+            ))?,
+        );
+        object.insert("stream".into(), serde_json::Value::Bool(self.stream));
         if self.stream_options_include_usage {
-            map.serialize_entry(
-                "stream_options",
-                &serde_json::json!({"include_usage": true}),
-            )?;
+            object.insert(
+                "stream_options".into(),
+                serde_json::json!({"include_usage": true}),
+            );
         }
         if let Some(value) = &self.response_format {
-            map.serialize_entry(
-                "response_format",
-                &normalize_response_format(value).map_err(serde::ser::Error::custom)?,
-            )?;
+            object.insert(
+                "response_format".into(),
+                normalize_response_format(value)
+                    .map_err(|error| serde::ser::Error::custom(error.to_string()))?,
+            );
         }
-        if let Some(thinking) = &self.thinking {
-            map.serialize_entry("thinking", thinking)?;
+        if let Some(thinking) = thinking {
+            object.insert("thinking".into(), serde_json::to_value(thinking)?);
         }
-        if let Some(effort) = self.reasoning_effort {
-            if effort != ReasoningEffort::None {
-                map.serialize_entry("reasoning_effort", effort.label())?;
-            }
+        if let Some(effort) = effort {
+            object.insert(
+                "reasoning_effort".into(),
+                serde_json::Value::String(effort.to_string()),
+            );
         }
         if !self.tools.is_empty() {
-            map.serialize_entry("tools", &chat_tools_to_wire(&self.tools))?;
+            object.insert(
+                "tools".into(),
+                serde_json::to_value(chat_tools_to_wire(&self.tools))?,
+            );
         }
         if let Some(value) = self.temperature {
-            map.serialize_entry("temperature", &value)?;
+            object.insert("temperature".into(), serde_json::json!(value));
         }
         if let Some(value) = self.max_tokens {
-            map.serialize_entry("max_tokens", &value)?;
+            let field = if deepseek_extensions {
+                "max_tokens"
+            } else {
+                "max_completion_tokens"
+            };
+            object.insert(field.into(), serde_json::json!(value));
         }
         if let Some(value) = self.top_p {
-            map.serialize_entry("top_p", &value)?;
+            object.insert("top_p".into(), serde_json::json!(value));
         }
         if let Some(value) = &self.tool_choice {
-            map.serialize_entry("tool_choice", value)?;
+            object.insert("tool_choice".into(), value.clone());
+            if value.is_object() {
+                object.insert("parallel_tool_calls".into(), serde_json::Value::Bool(false));
+            }
         }
         if let Some(value) = &self.user {
-            map.serialize_entry("user_id", value)?;
+            let field = if deepseek_extensions {
+                "user_id"
+            } else {
+                "user"
+            };
+            object.insert(field.into(), serde_json::json!(value));
         }
-        map.end()
+        let mut wire = serde_json::Value::Object(object);
+        canonicalize_chat_request(&mut wire, deepseek_extensions)
+            .map_err(serde::ser::Error::custom)?;
+        let object = wire
+            .as_object_mut()
+            .ok_or_else(|| serde::ser::Error::custom("SDK Chat request must be an object"))?;
+        object.remove("temperature");
+        object.remove("top_p");
+        Ok(ChatWireRequest {
+            body: wire,
+            temperature: self.temperature,
+            top_p: self.top_p,
+        })
     }
+}
+
+/// Round-trip the standard Chat Completions surface through async-openai's
+/// pinned request DTOs. Preserve only the existing DeepSeek extensions that
+/// the SDK intentionally does not model.
+fn canonicalize_chat_request(
+    wire: &mut serde_json::Value,
+    deepseek_extensions: bool,
+) -> serde_json::Result<()> {
+    let object = wire
+        .as_object_mut()
+        .ok_or_else(|| serde::de::Error::custom("Chat request must be an object"))?;
+
+    let mut reasoning_content = Vec::new();
+    let mut file_references = Vec::new();
+    let messages = object
+        .get_mut("messages")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or_else(|| serde::de::Error::custom("Chat request messages must be an array"))?;
+    for message in messages.iter_mut() {
+        let message_object = message
+            .as_object_mut()
+            .ok_or_else(|| serde::de::Error::custom("Chat request message must be an object"))?;
+        reasoning_content.push(if deepseek_extensions {
+            message_object.remove("reasoning_content")
+        } else {
+            None
+        });
+        let mut message_file_references = Vec::new();
+        if let Some(parts) = message_object
+            .get_mut("content")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for (index, part) in parts.iter_mut().enumerate() {
+                let Some(part_object) = part.as_object_mut() else {
+                    continue;
+                };
+                if part_object.get("type").and_then(serde_json::Value::as_str) == Some("file") {
+                    if let Some(file_id) = part_object.remove("file_id") {
+                        part_object.insert("file".into(), serde_json::json!({"file_id": file_id}));
+                        if deepseek_extensions {
+                            message_file_references.push((index, file_id));
+                        }
+                    }
+                }
+            }
+        }
+        file_references.push(message_file_references);
+    }
+
+    // Ultra and provider-specific switches are extensions; standard effort
+    // values are parsed and serialized by the SDK request type below.
+    let custom_effort = object
+        .get("reasoning_effort")
+        .and_then(serde_json::Value::as_str)
+        .filter(|effort| {
+            serde_json::from_value::<sdk::ReasoningEffort>(serde_json::json!(effort)).is_err()
+        })
+        .map(str::to_owned);
+    if custom_effort.is_some() {
+        object.remove("reasoning_effort");
+    }
+
+    let mut extensions = object
+        .remove("thinking")
+        .map(|value| vec![("thinking", value)])
+        .unwrap_or_default();
+    if deepseek_extensions {
+        extensions.extend(
+            ["user_id"]
+                .into_iter()
+                .filter_map(|key| object.remove(key).map(|value| (key, value))),
+        );
+    }
+    let typed: sdk::CreateChatCompletionRequest = serde_json::from_value(std::mem::take(wire))?;
+    *wire = serde_json::to_value(typed)?;
+    let object = wire
+        .as_object_mut()
+        .ok_or_else(|| serde::de::Error::custom("SDK Chat request must be an object"))?;
+    if let Some(effort) = custom_effort {
+        object.insert("reasoning_effort".into(), serde_json::Value::String(effort));
+    }
+    for (key, value) in extensions {
+        object.insert(key.into(), value);
+    }
+    let messages = object
+        .get_mut("messages")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or_else(|| serde::de::Error::custom("SDK Chat request messages must be an array"))?;
+    if messages.len() != reasoning_content.len() || messages.len() != file_references.len() {
+        return Err(serde::de::Error::custom(
+            "SDK Chat request changed the message count",
+        ));
+    }
+    for ((message, reasoning), references) in messages
+        .iter_mut()
+        .zip(reasoning_content)
+        .zip(file_references)
+    {
+        if let Some(parts) = message
+            .as_object_mut()
+            .and_then(|message| message.get_mut("content"))
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for (index, file_id) in references {
+                let part = parts.get_mut(index).ok_or_else(|| {
+                    serde::de::Error::custom("SDK Chat request changed the file part count")
+                })?;
+                let part_object = part.as_object_mut().ok_or_else(|| {
+                    serde::de::Error::custom("SDK Chat file content must be an object")
+                })?;
+                part_object.remove("file");
+                part_object.insert("file_id".into(), file_id);
+            }
+        } else if !references.is_empty() {
+            return Err(serde::de::Error::custom(
+                "SDK Chat request removed the file content parts",
+            ));
+        }
+        if let Some(reasoning) = reasoning {
+            message
+                .as_object_mut()
+                .ok_or_else(|| serde::de::Error::custom("SDK Chat message must be an object"))?
+                .insert("reasoning_content".into(), reasoning);
+        }
+    }
+    Ok(())
 }
 
 /// The one Chat Completions tool serializer; kinds are normalized here, not

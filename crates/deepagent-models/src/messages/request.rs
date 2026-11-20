@@ -1,7 +1,7 @@
 //! Messages request projection from the canonical Responses item surface.
 use anthropic_sdk::{
-    ContentBlockParam, ImageBlockParam, ImageSource, MessageCreateParams, OutputConfig,
-    SystemPrompt, ThinkingConfig, ToolChoice,
+    CacheControlEphemeral, ContentBlockParam, ImageBlockParam, ImageSource, MessageCreateParams,
+    OutputConfig, SystemPrompt, TextBlockParam, ThinkingConfig, ToolChoice,
 };
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::message::MessageAttachment;
@@ -12,17 +12,70 @@ use std::collections::{HashMap, HashSet};
 
 use crate::chat::{ResponseRequest, ToolSchema};
 
-pub(crate) fn encode_request(request: &ResponseRequest, max_tokens: u32) -> Result<String> {
-    let (system, messages) = project_messages(request)?;
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CachePolicy {
+    Automatic,
+    Explicit,
+}
+
+impl CachePolicy {
+    pub(crate) fn for_base_url(base_url: &str) -> Self {
+        if url::Url::parse(base_url).is_ok_and(|url| url.host_str() == Some("api.deepseek.com")) {
+            Self::Automatic
+        } else {
+            Self::Explicit
+        }
+    }
+}
+
+#[cfg(test)]
+fn encode_request(request: &ResponseRequest, max_tokens: u32) -> Result<String> {
+    encode_request_with_cache(request, max_tokens, CachePolicy::Explicit)
+}
+
+pub(crate) fn encode_request_with_cache(
+    request: &ResponseRequest,
+    max_tokens: u32,
+    cache_policy: CachePolicy,
+) -> Result<String> {
+    let (systems, mut messages) = project_messages(request)?;
+    if cache_policy == CachePolicy::Explicit {
+        cache_completed_history(&mut messages);
+    }
+    let system = if systems.is_empty() {
+        None
+    } else if cache_policy == CachePolicy::Automatic {
+        Some(SystemPrompt::Text(systems.join("\n\n")))
+    } else {
+        let stable_instructions = request
+            .instructions
+            .as_ref()
+            .is_some_and(|value| !value.is_empty());
+        Some(SystemPrompt::Blocks(
+            systems
+                .into_iter()
+                .enumerate()
+                .map(|(index, text)| TextBlockParam {
+                    text,
+                    // Run admission has already separated frozen instructions
+                    // from runtime system items. Do not move this breakpoint
+                    // past changing environment snapshots.
+                    cache_control: (stable_instructions && index == 0)
+                        .then(CacheControlEphemeral::default),
+                    citations: None,
+                    type_name: Some("text".into()),
+                })
+                .collect(),
+        ))
+    };
+
     let mut body = MessageCreateParams {
         model: request.model.clone(),
         max_tokens: i64::from(max_tokens),
         messages: serde_json::from_value(Value::Array(messages))
             .map_err(|_| invalid("content does not match the Messages SDK schema"))?,
         stream: Some(true),
-        system: system
-            .filter(|value| !value.is_empty())
-            .map(SystemPrompt::Text),
+        system,
         temperature: request.temperature.map(f64::from),
         top_p: request.top_p.map(f64::from),
         ..Default::default()
@@ -40,7 +93,7 @@ pub(crate) fn encode_request(request: &ResponseRequest, max_tokens: u32) -> Resu
     }
     if !request.tools.is_empty() {
         body.tools = Some(
-            serde_json::from_value(json!(project_tools(&request.tools)))
+            serde_json::from_value(json!(project_tools(&request.tools, cache_policy)))
                 .map_err(|_| invalid("tools do not match the Messages SDK schema"))?,
         );
     }
@@ -50,8 +103,39 @@ pub(crate) fn encode_request(request: &ResponseRequest, max_tokens: u32) -> Resu
     crate::client::request_body::encode(&body)
 }
 
-pub(crate) fn project_tools(tools: &[ToolSchema]) -> Vec<Value> {
-    tools.iter().map(tool_to_wire).collect()
+pub(crate) fn project_tools(tools: &[ToolSchema], cache_policy: CachePolicy) -> Vec<Value> {
+    let mut ordered = tools.iter().collect::<Vec<_>>();
+    ordered.sort_by(|left, right| left.function.name.cmp(&right.function.name));
+    let mut projected = ordered.into_iter().map(tool_to_wire).collect::<Vec<_>>();
+    if cache_policy == CachePolicy::Explicit {
+        if let Some(last) = projected.last_mut() {
+            last["cache_control"] = json!(CacheControlEphemeral::default());
+        }
+    }
+    projected
+}
+
+fn cache_completed_history(messages: &mut [Value]) {
+    // The final message is the current input. Thinking blocks cannot carry
+    // explicit cache controls, including in a thinking-only assistant turn.
+    for message in messages.iter_mut().rev().skip(1) {
+        if message["role"] != "assistant" {
+            continue;
+        }
+        let block = message
+            .get_mut("content")
+            .and_then(Value::as_array_mut)
+            .and_then(|blocks| {
+                blocks
+                    .iter_mut()
+                    .rev()
+                    .find(|block| matches!(block["type"].as_str(), Some("text" | "tool_use")))
+            });
+        if let Some(block) = block {
+            block["cache_control"] = json!(CacheControlEphemeral::default());
+            break;
+        }
+    }
 }
 
 fn tool_to_wire(tool: &ToolSchema) -> Value {
@@ -91,7 +175,7 @@ fn messages_tool_choice(choice: &Value) -> Result<ToolChoice> {
     }
 }
 
-fn project_messages(request: &ResponseRequest) -> Result<(Option<String>, Vec<Value>)> {
+fn project_messages(request: &ResponseRequest) -> Result<(Vec<String>, Vec<Value>)> {
     request.validate_image_roles(crate::WireMode::Messages)?;
     let mut systems = Vec::new();
     if let Some(instructions) = request
@@ -107,19 +191,20 @@ fn project_messages(request: &ResponseRequest) -> Result<(Option<String>, Vec<Va
     while index < request.input.len() {
         let item = &request.input[index];
         match item {
-            ResponseItem::Message { role, content } => {
+            ResponseItem::Message { role, content }
+            | ResponseItem::InputMessage { role, content, .. } => {
                 ensure_no_pending_tools(&pending_tool_ids)?;
-                push_message(&mut messages, role, json!({"type":"text","text":content}))?;
-            }
-            ResponseItem::InputMessage {
-                role,
-                content,
-                attachments,
-            } => {
-                ensure_no_pending_tools(&pending_tool_ids)?;
-                push_message(&mut messages, role, json!({"type":"text","text":content}))?;
-                for attachment in attachments {
-                    push_message(&mut messages, role, image_block(request, attachment)?)?;
+                if role == "system" {
+                    if !content.is_empty() {
+                        systems.push(content.clone());
+                    }
+                } else {
+                    push_message(&mut messages, role, json!({"type":"text","text":content}))?;
+                }
+                if let ResponseItem::InputMessage { attachments, .. } = item {
+                    for attachment in attachments {
+                        push_message(&mut messages, role, image_block(request, attachment)?)?;
+                    }
                 }
             }
             ResponseItem::Reasoning {
@@ -231,10 +316,7 @@ fn project_messages(request: &ResponseRequest) -> Result<(Option<String>, Vec<Va
             "Messages request requires at least one user or assistant message",
         ));
     }
-    Ok((
-        (!systems.is_empty()).then(|| systems.join("\n\n")),
-        messages,
-    ))
+    Ok((systems, messages))
 }
 
 /// The shared raster gate validates bytes before dispatch. Projection only
@@ -301,11 +383,6 @@ fn ensure_no_pending_tools(pending_tool_ids: &[String]) -> Result<()> {
 fn push_message(messages: &mut Vec<Value>, role: &str, block: Value) -> Result<()> {
     let role = match role {
         "user" | "assistant" => role,
-        "system" => {
-            return Err(invalid(
-                "Messages system items must be supplied as instructions",
-            ))
-        }
         "tool" => return Err(invalid("Messages tool role must use tool_result blocks")),
         _ => return Err(invalid("Messages message role is unsupported")),
     };
@@ -344,6 +421,39 @@ mod tests {
     use deepagent_models::responses::ResponseInputItem;
 
     #[test]
+    fn system_projection_preserves_message_and_tool_boundaries() {
+        let system = ResponseInputItem::Message {
+            role: "system".into(),
+            content: "rules".into(),
+        };
+        let request =
+            ResponseRequest::from_response_items("claude-fixture", None, vec![system.clone()]);
+        assert!(project_messages(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("requires at least one user or assistant message"));
+
+        let mut request = ResponseRequest::from_response_items("claude-fixture", None, vec![]);
+        // Check the codec boundary directly; the constructor repairs tool order.
+        request.input = vec![
+            ResponseInputItem::FunctionCall {
+                call_id: "call-a".into(),
+                name: "read_file".into(),
+                arguments: "{}".into(),
+            },
+            system,
+            ResponseInputItem::FunctionCallOutput {
+                call_id: "call-a".into(),
+                output: deepagent_core::tool_content::ToolResultBody::Text("ok".into()),
+            },
+        ];
+        assert!(project_messages(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("must immediately follow"));
+    }
+
+    #[test]
     fn projects_system_reasoning_tool_use_and_results_without_lossy_chat_conversion() {
         let mut request = ResponseRequest::from_response_items(
             "claude-fixture",
@@ -376,7 +486,7 @@ mod tests {
             json!({"type":"object"}),
         )];
         let body: Value = serde_json::from_str(&encode_request(&request, 128).unwrap()).unwrap();
-        assert_eq!(body["system"], "rules");
+        assert_eq!(body["system"][0]["text"], "rules");
         assert_eq!(body["messages"][0]["role"], "user");
         assert_eq!(body["messages"][1]["content"][0]["type"], "thinking");
         assert_eq!(body["messages"][1]["content"][0]["signature"], "sig");

@@ -246,7 +246,7 @@ fn legacy_seed_preserves_existing_provider_and_model_edits() {
         capabilities: "{\"supports_tools\":false}".into(),
         active: false,
     };
-    db.save_harness_models("deepseek", &[model.clone()])
+    db.save_harness_models("deepseek", std::slice::from_ref(&model))
         .unwrap();
     let saved = db.list_harness_providers().unwrap();
     service(db.clone()).load().unwrap();

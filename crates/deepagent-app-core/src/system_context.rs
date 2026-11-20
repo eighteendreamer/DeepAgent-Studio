@@ -101,11 +101,11 @@ pub(crate) fn build_system_manifest_with_instruction_sources(
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
     let mut env_lines = vec![
-        format!("# Environment"),
+        "# Environment".to_string(),
         format!("- Today's date: {today}"),
         format!("- Operating system: {os} ({arch})"),
         format!("- Working directory: {cwd}", cwd = root.display()),
-        format!("- When you need current information, use this date — especially the year — in web_search queries."),
+        "- When you need current information, use this date — especially the year — in web_search queries.".to_string(),
     ];
 
     // Inject user language preference if configured (Claude Code pattern).

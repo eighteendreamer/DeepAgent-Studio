@@ -79,19 +79,23 @@ macro_rules! typed_id {
 
 typed_id!(
     /// Identifies a single agent session (one append-only event stream).
-    SessionId, "ses"
+    SessionId,
+    "ses"
 );
 typed_id!(
     /// Identifies a task within a session.
-    TaskId, "task"
+    TaskId,
+    "task"
 );
 typed_id!(
     /// Identifies a single event in the append-only log.
-    EventId, "evt"
+    EventId,
+    "evt"
 );
 typed_id!(
     /// Identifies an agent (root agent or sub-agent) instance.
-    AgentId, "agt"
+    AgentId,
+    "agt"
 );
 
 #[cfg(test)]

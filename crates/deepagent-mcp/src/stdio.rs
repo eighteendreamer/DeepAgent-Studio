@@ -630,10 +630,23 @@ impl StdioTransport {
         // Different clients (including reconnect initialization) can share a
         // transport. Allocate ids per connection so a late response cannot
         // satisfy a new caller that reused a client-local id.
-        let wire_id = self
-            .next_wire_id
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-            .map_err(|_| CoreError::other("MCP request id space exhausted"))?;
+        // Keep checked allocation compatible with Rust 1.88 while avoiding
+        // fetch_update, which is deprecated on newer toolchains.
+        let mut wire_id = self.next_wire_id.load(Ordering::Relaxed);
+        loop {
+            let next = wire_id
+                .checked_add(1)
+                .ok_or_else(|| CoreError::other("MCP request id space exhausted"))?;
+            match self.next_wire_id.compare_exchange_weak(
+                wire_id,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(current) => wire_id = current,
+            }
+        }
         let mut wire_request = request.clone();
         wire_request.id = wire_id;
         tracing::trace!(

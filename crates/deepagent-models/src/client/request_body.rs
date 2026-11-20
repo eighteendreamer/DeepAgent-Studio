@@ -7,6 +7,39 @@ use std::io::{self, Write};
 // Applies to the complete JSON body, including inline base64, on every route.
 const MAX_REQUEST_BYTES: usize = 48 * 1024 * 1024;
 
+pub(super) struct ChatRequest<'a> {
+    pub request: &'a crate::ChatCompletionRequest,
+    pub deepseek_extensions: bool,
+}
+
+impl Serialize for ChatRequest<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        self.request.serialize_for_provider(
+            serializer,
+            self.request
+                .reasoning_effort
+                .or_else(|| {
+                    self.request
+                        .thinking
+                        .as_ref()
+                        .filter(|thinking| thinking.kind == "disabled")
+                        .map(|_| crate::ReasoningEffort::None)
+                })
+                .filter(|effort| {
+                    !self.deepseek_extensions || *effort != crate::ReasoningEffort::None
+                })
+                .map(crate::ReasoningEffort::label),
+            self.deepseek_extensions
+                .then_some(self.request.thinking.as_ref())
+                .flatten(),
+            self.deepseek_extensions,
+        )
+    }
+}
+
 pub(crate) fn encode(request: &impl Serialize) -> Result<String> {
     encode_with_limit(request, MAX_REQUEST_BYTES)
 }

@@ -35,13 +35,8 @@ fn standard_request_round_trips_through_sdk_without_implicit_defaults() {
     let body: sdk::CreateResponse = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(serde_json::to_value(body).unwrap(), wire);
     assert_eq!(wire["input"][0]["content"], "中文 🦀");
-    for field in [
-        "store",
-        "background",
-        "parallel_tool_calls",
-        "stream_options",
-        "safety_identifier",
-    ] {
+    assert_eq!(wire["parallel_tool_calls"], false);
+    for field in ["store", "background", "stream_options", "safety_identifier"] {
         assert!(wire.get(field).is_none(), "unexpected SDK default: {field}");
     }
 }

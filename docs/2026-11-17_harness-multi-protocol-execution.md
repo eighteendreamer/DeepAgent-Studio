@@ -627,3 +627,13 @@ H022 后端 `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --all
 - TypeScript SDK 212 项、本轮真实 stdio 6 项和真实 JSONL 1 项通过。模型/http 本地 441 通过、0 失败、5 忽略。app-server 138 通过、3 项思考旧断言失败、5 忽略；保留失败，未擅自重写模型规则。
 - Rust SDK 最终单元 88 通过/3 忽略、真实 stdio 15 通过；CLI JSONL 3 通过。workspace、严格 Clippy 和全仓格式门禁未通过；细分结果及原始现象写入报告，没有用专项通过代替完整门禁。
 - 完整命令、最终门禁、测试配置及排除范围见 [本轮报告](reports/2026-11-19-p11-f0-f1-acceptance.md)。不将本轮结果解释为完整方案或全仓门禁完成。
+
+## H037：Chat SDK、具名工具、缓存前缀与三协议桌面验收（2026-11-20）
+
+- Chat Completions 在已有三协议表和工厂内补齐 `async-openai 0.43.0` 请求类型；通用 OpenAI 字段与 DeepSeek 扩展在 provider 编码边界隔离，共用既有传输、取消、计量和流式状态机。
+- 对照天枢并用单变量真实请求验证：Responses、Chat 指定函数时关闭并行调用后成功。保留具名选择和完整工具列表，不增加失败重发；32 组回归覆盖默认配置、请求覆盖、普通及取消入口。
+- Messages 固定工具顺序，分开稳定指令与动态环境，缓存断点避开思考签名块及当前输入；官方 DeepSeek 使用自动缓存。三协议的具体缓存观察值及尚未实现的 retention、签名前缀绑定在报告中单列。
+- 真实 Claude Fable→Responses 连续三轮通过，来源签名数为 0、0、1；保留 H036 来源 Messages 失败的历史记录，不外推全部供应商和完整 SessionStore/origin 验收。
+- 新编译的原生桌面通过 CDP 脚本完成胶囊选模、三协议发送和回复，HTTP 200、运行 completed、零 JS 异常，实际检查回复截图；原用户窗口保留。页面切换约 102～156 ms，仍未达到 10 ms。
+- 补验并修正通用 Chat 明确关闭思考的省略规则，以及采样参数经 SDK/Value 转换后的精度展开；独立提交源码 models/http 为 431 通过、0 失败、6 忽略。全仓格式和完整严格 Clippy 通过。
+- 修复固定 G 盘测试夹具及 Clippy 指出的局部问题。独立提交源码与集成工作树分开验收；完整 workspace 最近一次仍为 36 项失败，未用专项通过替代完整结果。完整命令、失败明细、后续定向复验和未完成边界见 [本轮报告](reports/2026-11-20-p2-p11-ui-follow-up.md)。

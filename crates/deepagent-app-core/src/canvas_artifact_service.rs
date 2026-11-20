@@ -832,7 +832,7 @@ fn guess_media_type(path: &Path, kind: ArtifactKind) -> Option<String> {
         "json" => "application/json",
         _ => return None,
     };
-    Some(mime.to_string()).filter(|_| kind != ArtifactKind::ToolResult)
+    (kind != ArtifactKind::ToolResult).then_some(mime.to_string())
 }
 
 fn default_media_type(kind: ArtifactKind) -> Option<String> {

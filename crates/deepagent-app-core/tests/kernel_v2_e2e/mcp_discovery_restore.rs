@@ -957,9 +957,9 @@ async fn observe_rewind_discovery(case: RewindDiscovery) -> (Vec<String>, Vec<St
         let chat = ChatService::new(db.clone(), settings, model.clone(), root.path())
             .with_mcp(mcp.clone());
         let first = turn(&chat, &session_id, "audit-discovery-before-rewind").await;
-        if first.is_err() {
+        if let Err(error) = first {
             mcp.ready_registry().close_all().await.unwrap();
-            first.unwrap();
+            panic!("discovery before rewind failed: {error:?}");
         }
         let discovered_before = discovery_events(&db, &session_id);
         let events = EventStore::new(&db).load_session(id).unwrap();

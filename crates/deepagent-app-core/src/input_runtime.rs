@@ -1167,7 +1167,7 @@ mod tests {
             },
         )];
         assert_eq!(
-            sequence_of_response_item_tail(&events, &[current.clone()]),
+            sequence_of_response_item_tail(&events, std::slice::from_ref(&current)),
             Some(7)
         );
         assert_eq!(sequence_of_response_item(&events, &current), Some(7));

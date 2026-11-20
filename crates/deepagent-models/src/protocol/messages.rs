@@ -55,8 +55,8 @@ impl WireCodec for MessagesCodec {
         "messages"
     }
 
-    fn project_tools(&self, _client: &ModelClient, tools: &[ToolSchema]) -> Vec<serde_json::Value> {
-        crate::messages::project_tools(tools)
+    fn project_tools(&self, client: &ModelClient, tools: &[ToolSchema]) -> Vec<serde_json::Value> {
+        crate::messages::project_tools(tools, client.messages_cache_policy())
     }
 
     fn tool_kind<'a>(&self, schema: &'a serde_json::Value) -> Result<&'a str> {
@@ -85,6 +85,10 @@ impl WireCodec for MessagesCodec {
                 "Messages requests require a positive max_output_tokens value",
             )
         })?;
-        crate::messages::encode_request(&request, max_tokens)
+        crate::messages::encode_request_with_cache(
+            &request,
+            max_tokens,
+            client.messages_cache_policy(),
+        )
     }
 }

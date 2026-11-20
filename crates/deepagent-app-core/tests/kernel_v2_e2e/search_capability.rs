@@ -121,30 +121,32 @@ async fn engine_order_and_strategy_persist_without_model_fields() {
         Arc::new(MemorySecretStore::new()),
     );
     settings.initialize("synthetic").await.unwrap();
-    let mut configured = WebSearchSettings::default();
-    configured.strategy = WebSearchStrategy::Verify;
-    configured.engines = vec![
-        WebSearchEngineSettings {
-            id: WebSearchEngineId::Duckduckgo,
-            enabled: true,
-            base_url: None,
-        },
-        WebSearchEngineSettings {
-            id: WebSearchEngineId::Deepseek,
-            enabled: false,
-            base_url: None,
-        },
-        WebSearchEngineSettings {
-            id: WebSearchEngineId::Searxng,
-            enabled: false,
-            base_url: None,
-        },
-        WebSearchEngineSettings {
-            id: WebSearchEngineId::Anysearch,
-            enabled: false,
-            base_url: Some("https://api.anysearch.com".into()),
-        },
-    ];
+    let configured = WebSearchSettings {
+        strategy: WebSearchStrategy::Verify,
+        engines: vec![
+            WebSearchEngineSettings {
+                id: WebSearchEngineId::Duckduckgo,
+                enabled: true,
+                base_url: None,
+            },
+            WebSearchEngineSettings {
+                id: WebSearchEngineId::Deepseek,
+                enabled: false,
+                base_url: None,
+            },
+            WebSearchEngineSettings {
+                id: WebSearchEngineId::Searxng,
+                enabled: false,
+                base_url: None,
+            },
+            WebSearchEngineSettings {
+                id: WebSearchEngineId::Anysearch,
+                enabled: false,
+                base_url: Some("https://api.anysearch.com".into()),
+            },
+        ],
+        ..Default::default()
+    };
     settings.set_web_search_settings(configured).unwrap();
     let persisted = settings.web_search_settings().unwrap();
     assert_eq!(persisted.strategy, WebSearchStrategy::Verify);
@@ -447,11 +449,12 @@ async fn real_search_result_reaches_next_model_and_cold_history_without_redispat
     )
     .await
     .unwrap();
-    let requests = transport.requests.lock().unwrap();
-    assert_eq!(requests.len(), 3);
-    assert_eq!(search_output_from_wire(&requests[2]), result);
-    assert_eq!(settings.web_search_settings().unwrap(), config);
-    drop(requests);
+    {
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(search_output_from_wire(&requests[2]), result);
+        assert_eq!(settings.web_search_settings().unwrap(), config);
+    }
     assert!(
         !server.await.unwrap(),
         "history continuation must not send a second HTTP request"

@@ -244,7 +244,10 @@ impl ModelClient {
         request_body::encode(request)
     }
     pub(crate) fn encode_chat_body(&self, request: &ChatCompletionRequest) -> Result<String> {
-        request_body::encode(request)
+        request_body::encode(&request_body::ChatRequest {
+            request,
+            deepseek_extensions: self.uses_deepseek_chat_extensions(),
+        })
     }
 
     /// Build a client from a transport and config.
@@ -289,6 +292,15 @@ impl ModelClient {
 
     pub fn prefers_model_reasoning_default(&self) -> bool {
         self.config.prefer_model_reasoning_default
+    }
+
+    pub(crate) fn uses_deepseek_chat_extensions(&self) -> bool {
+        url::Url::parse(&self.config.base_url)
+            .is_ok_and(|url| url.host_str() == Some("api.deepseek.com"))
+    }
+
+    pub(crate) fn messages_cache_policy(&self) -> crate::messages::CachePolicy {
+        crate::messages::CachePolicy::for_base_url(&self.config.base_url)
     }
 
     /// Resolve the requested reasoning level against model metadata before a

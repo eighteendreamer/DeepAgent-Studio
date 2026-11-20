@@ -301,11 +301,16 @@ async fn actual_http_transport_has_zero_connections_for_rejected_thinking_and_ac
 
     for native in [false, true] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local_addr = listener.local_addr().unwrap();
         let mut cfg = ModelConfig::deepseek_chat("synthetic");
-        cfg.base_url = format!("http://{}", listener.local_addr().unwrap());
+        cfg.base_url = format!("http://api.deepseek.com:{}", local_addr.port());
         cfg.defaults.reasoning_effort = Some(ReasoningEffort::High);
         let transport = deepagent_models::ReqwestTransport::with_client(
-            reqwest::Client::builder().no_proxy().build().unwrap(),
+            reqwest::Client::builder()
+                .no_proxy()
+                .resolve("api.deepseek.com", local_addr)
+                .build()
+                .unwrap(),
         );
         let client = ModelClient::new(Arc::new(transport), cfg);
         for choice in [json!("required"), named(native)] {
