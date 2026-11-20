@@ -136,6 +136,9 @@ impl russh_sftp::server::Handler for MemoryFiles {
         flags: OpenFlags,
         _: FileAttributes,
     ) -> Result<Handle, Self::Error> {
+        self.counts
+            .file_opens
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if filename == "/denied" {
             return Err(StatusCode::PermissionDenied);
         }
@@ -306,6 +309,14 @@ impl russh_sftp::server::Handler for MemoryFiles {
     }
 
     async fn remove(&mut self, id: u32, path: String) -> Result<Status, Self::Error> {
+        if path.ends_with(".backup")
+            && self
+                .counts
+                .reject_file_backup_cleanup
+                .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(StatusCode::PermissionDenied);
+        }
         if path.contains(".directory-backup/")
             && self
                 .counts

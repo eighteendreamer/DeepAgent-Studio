@@ -769,6 +769,14 @@ impl Execution<'_> {
         }
         self.warnings.extend(receipt.cleanup_warnings);
         self.emit();
+        // Keep the published file's progress and complete cleanup facts, but do
+        // not spread unresolved cleanup across the remaining directory entries.
+        if !self.warnings.is_empty() {
+            return Err(failure(
+                "cleanup_required",
+                "file publication left unresolved cleanup; review the destination before retrying",
+            ));
+        }
         Ok(())
     }
 }

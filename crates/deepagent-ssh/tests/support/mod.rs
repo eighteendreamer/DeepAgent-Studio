@@ -48,6 +48,7 @@ pub struct Counts {
     pub reject_shell: AtomicBool,
     pub pty_size: RwLock<Option<(u32, u32)>>,
     pub files: Arc<RwLock<HashMap<String, Vec<u8>>>>,
+    pub file_opens: AtomicUsize,
     pub stage_created: tokio::sync::Notify,
     pub stage_open_gate: RwLock<Option<Arc<tokio::sync::Notify>>>,
     pub directories: Arc<RwLock<std::collections::HashSet<String>>>,
@@ -69,6 +70,7 @@ pub struct Counts {
     pub reject_directory_publish: AtomicBool,
     pub reject_directory_restore: AtomicBool,
     pub reject_directory_cleanup: AtomicBool,
+    pub reject_file_backup_cleanup: AtomicBool,
 }
 
 struct Handler {

@@ -16,6 +16,130 @@ fn request(id: &str, path: &Path, direction: &str, conflict: &str) -> TransferRe
     })).expect("the existing queue must accept a typed directory request")
 }
 
+#[tokio::test]
+async fn real_directory_cleanup_diagnostics_cannot_overflow_the_admitted_task() {
+    const FILES: usize = 150;
+    let (server, dir, ssh, id, db, queue) = fixture().await;
+    let input = dir.path().join("diagnostic-input");
+    // A virtual SFTP filesystem may accept this root within the public 16 KiB
+    // path contract. Keep local fixtures flat and small; only remote facts are long.
+    let remote = format!("/{}", "r".repeat(8 * 1024));
+    server
+        .counts
+        .directories
+        .write()
+        .unwrap()
+        .insert(remote.clone());
+    std::fs::create_dir(&input).unwrap();
+    for index in 0..FILES {
+        let name = format!("file-{index:04}");
+        std::fs::write(input.join(&name), b"new").unwrap();
+        server
+            .counts
+            .files
+            .write()
+            .unwrap()
+            .insert(format!("{remote}/{name}"), b"old".to_vec());
+    }
+    server
+        .counts
+        .reject_file_backup_cleanup
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut input = request(&id, &input, "upload", "merge");
+    input.transfer.remote_path = remote;
+    input.transfer.conflict = FileConflictPolicy::Replace;
+    let task = queue.submit(input).await.unwrap();
+    let saved = tokio::time::timeout(std::time::Duration::from_secs(45), async {
+        let mut cursor = None;
+        loop {
+            let snapshot = queue
+                .watch(cursor.as_deref(), std::time::Duration::from_secs(1))
+                .await
+                .expect("real cleanup diagnostics must not destroy terminal persistence");
+            if let Some(task) = snapshot
+                .tasks
+                .iter()
+                .find(|t| t.id == task.id && t.state.terminal())
+            {
+                break serde_json::to_value(task).unwrap();
+            }
+            cursor = Some(snapshot.revision);
+        }
+    })
+    .await
+    .expect("bounded diagnostic handling must finish without timing out");
+    assert_eq!(
+        saved["state"], "failed",
+        "unresolved cleanup stops later publication"
+    );
+    assert_eq!(saved["error"]["code"], "cleanup_required");
+    let result = &saved["error"];
+    let warnings = result["cleanupWarnings"].as_array().unwrap();
+    assert!(!warnings.is_empty());
+    assert!(
+        saved.to_string().len() <= 1024 * 1024,
+        "task persistence stays bounded"
+    );
+    {
+        let files = server.counts.files.read().unwrap();
+        let backups: Vec<_> = files
+            .keys()
+            .filter(|path| path.ends_with(".backup"))
+            .collect();
+        assert_eq!(
+            warnings.len(),
+            backups.len(),
+            "every retained original needs its complete diagnostic"
+        );
+        for backup in backups {
+            assert!(
+                warnings
+                    .iter()
+                    .any(|warning| warning.as_str().unwrap().contains(backup.as_str())),
+                "cleanup paths cannot be silently dropped or shortened"
+            );
+        }
+        let published = files
+            .iter()
+            .filter(|(path, bytes)| !path.ends_with(".backup") && bytes.as_slice() == b"new")
+            .count();
+        let untouched = files
+            .iter()
+            .filter(|(path, bytes)| !path.ends_with(".backup") && bytes.as_slice() == b"old")
+            .count();
+        assert_eq!(published, warnings.len());
+        assert_eq!(published + untouched, FILES);
+        assert_eq!(
+            saved["completedFiles"].as_u64().unwrap() as usize,
+            published
+        );
+        assert_eq!(
+            published, 1,
+            "stop at the first unresolved backup before another file starts"
+        );
+        assert_eq!(untouched, FILES - 1);
+        assert!(!files.keys().any(|path| path.ends_with(".part")));
+    }
+    drop(queue);
+    let before = server
+        .counts
+        .file_opens
+        .load(std::sync::atomic::Ordering::SeqCst);
+    let reopened = TransferCoordinator::new(db, ssh).unwrap();
+    assert_eq!(
+        serde_json::to_value(reopened.snapshot().await.unwrap().remove(0)).unwrap(),
+        saved
+    );
+    assert_eq!(
+        server
+            .counts
+            .file_opens
+            .load(std::sync::atomic::Ordering::SeqCst),
+        before,
+        "reopening history must not replay completed or stopped publication"
+    );
+}
+
 async fn terminal(queue: &TransferCoordinator, id: &str) -> serde_json::Value {
     tokio::time::timeout(std::time::Duration::from_secs(3), async {
         let mut cursor = None;
