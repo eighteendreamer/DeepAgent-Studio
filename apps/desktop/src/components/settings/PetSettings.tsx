@@ -1,121 +1,103 @@
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { IconProp } from "@fortawesome/fontawesome-svg-core";
+import { MessageCircle, Moon, RotateCcw, Sparkles } from "lucide-react";
 import { Button } from "../shadcn/button";
-
-function PetItem({ name, desc, icon, iconColor, selected }: { name: string, desc: string, icon: IconProp, iconColor: string, selected: boolean }) {
-  const { t } = useTranslation();
-  return (
-    <div className="flex items-center justify-between p-3 rounded-xl transition-colors cursor-pointer hover:bg-black/5">
-      <div className="flex items-center">
-        <div className="w-12 h-12 rounded-lg bg-black/5 flex items-center justify-center mr-4 shadow-sm">
-          <FontAwesomeIcon icon={icon} className={`text-xl ${iconColor}`} />
-        </div>
-        <div>
-          <div className="text-[13px] font-medium text-text-base mb-0.5">{name}</div>
-          <div className="text-[12px] text-text-secondary">{desc}</div>
-        </div>
-      </div>
-      <div>
-        {selected ? (
-          <div className="px-4 py-1.5 bg-black/5 text-gray-400 rounded-md text-[12px] font-medium">
-            {t("settings.appearance.selected")}
-          </div>
-        ) : (
-          <div className="px-4 py-1.5 bg-black/5 text-text-base hover:bg-black/5 rounded-md text-[12px] font-medium transition-colors">
-            {t("settings.appearance.select")}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
+import { Checkbox } from "../shadcn/checkbox";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../shadcn/select";
+import { getPet, listenPet, nativePet, petAsset, resetPet, updatePet, type PetSnapshot, type Preferences } from "../../pet/api";
 
 export function PetSettings() {
   const { t } = useTranslation();
-  const [isPetExpanded, setIsPetExpanded] = useState(true);
+  const [snapshot, setSnapshot] = useState<PetSnapshot>();
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [action, setAction] = useState("");
+  const [load, setLoad] = useState(0);
+
+  useEffect(() => {
+    if (!nativePet) return;
+    let active = true;
+    const cleanup = listenPet<Preferences>("preferences", preferences => {
+      if (active) setSnapshot(current => current && { ...current, preferences });
+    });
+    void cleanup.then(() => getPet()).then(value => {
+      if (active) setSnapshot(value);
+    }).catch(reason => { if (active) setError(String(reason)); });
+    return () => { active = false; void cleanup.then(unlisten => unlisten(), () => undefined); };
+  }, [load]);
+
+  const run = async (task: () => Promise<unknown>) => {
+    setBusy(true);
+    setError("");
+    try { await task(); }
+    catch (reason) { setError(String(reason)); }
+    finally { setBusy(false); }
+  };
+  const change = (patch: Partial<Preferences>) => void run(async () => {
+    const preferences = await updatePet(patch);
+    setSnapshot(current => current && { ...current, preferences });
+  });
+  const prefs = snapshot?.preferences;
+  const pet = snapshot?.catalog.characters.find(item => item.id === prefs?.characterId);
+  const awake = Boolean(prefs?.enabled && !prefs.sleeping);
+  const preview = pet?.actions[action];
+  const selectedSize = String(prefs?.size ?? 462);
+  const sizes = Array.from(new Set([330, pet?.defaultSize ?? 462, 620, Number(selectedSize)])).sort((a, b) => a - b);
 
   return (
-    <>
-      <h1 className="text-2xl font-semibold text-text-base mb-10">{t("settings.tabs.pet")}</h1>
-
-      <div className="mb-6 max-w-[700px]">
-        <div className="border border-border-theme rounded-xl shadow-[0_1px_2px_rgb(0,0,0,0.02)] bg-white overflow-hidden">
-          <Button
-            variant="ghost"
-            className="h-auto w-full justify-between rounded-none p-4 text-left hover:bg-black/5 border-b border-border-theme"
-            aria-expanded={isPetExpanded}
-            aria-controls="pet-settings-content"
-            onClick={() => setIsPetExpanded(expanded => !expanded)}
-          >
-            <span>
-              <span className="block text-[15px] font-medium text-text-base mb-1">{t("settings.appearance.pet")}</span>
-              <span className="block text-[13px] font-normal text-text-secondary">{t("settings.appearance.selectedPet", { pet: "Codex" })}</span>
-            </span>
-            <FontAwesomeIcon icon={["fas", isPetExpanded ? "chevron-up" : "chevron-down"]} className="text-[12px] text-text-secondary" />
-          </Button>
-
-          <div id="pet-settings-content" hidden={!isPetExpanded}>
-            <div className="p-4 bg-gray-50/50 border-b border-border-theme flex justify-end space-x-2">
-              <Button variant="secondary" size="sm" className="bg-black/5 rounded-md shadow-sm">
-                {t("settings.appearance.createPet")}
-              </Button>
-              <Button variant="secondary" size="sm" className="bg-black/5 rounded-md shadow-sm">
-                {t("settings.appearance.refresh")}
-              </Button>
-              <Button variant="secondary" size="sm" className="bg-black/5 rounded-md shadow-sm">
-                {t("settings.appearance.wakePet")}
-              </Button>
+    <section className="max-w-[700px] text-text-base">
+      <h1 className="mb-2 text-2xl font-semibold">{t("settings.tabs.pet")}</h1>
+      <p className="mb-6 text-[13px] text-text-secondary">{t("desktopPet.description")}</p>
+      {!nativePet && <p className="text-sm text-text-secondary">{t("desktopPet.desktopOnly")}</p>}
+      {nativePet && !snapshot && !error && <p role="status" className="text-sm text-text-secondary">{t("desktopPet.loading")}</p>}
+      {error && <div role="alert" className="mb-4 rounded-lg border border-border-theme p-3 text-sm">
+        <p className="text-red-500">{error}</p>
+        {!snapshot && <Button size="sm" variant="ghost" className="mt-2" onClick={() => { setError(""); setLoad(n => n + 1); }}>{t("desktopPet.retry")}</Button>}
+      </div>}
+      {snapshot && prefs && pet && <>
+        <div className="overflow-hidden rounded-xl border border-border-theme bg-elevated-bg">
+          <div className="grid gap-4 p-4 sm:grid-cols-[200px_minmax(0,1fr)]">
+            <div className="flex h-36 items-center justify-center overflow-hidden rounded-lg border border-border-theme bg-sidebar-bg">
+              {preview ? <video key={preview.file} src={petAsset(snapshot.resourceRoot, preview.file)} autoPlay muted playsInline
+                className="h-full w-full object-contain" onEnded={() => setAction("")} onError={() => { setAction(""); setError(t("desktopPet.previewFailed")); }} /> :
+                <img src={petAsset(snapshot.resourceRoot, pet.thumbnail)} alt={pet.name} className="h-full w-full object-contain" />}
             </div>
-
-            <div className="p-4 bg-white space-y-3">
-              <PetItem
-                name="Codex"
-                desc="The original Codex companion."
-                icon={["fas", "robot"]}
-                iconColor="text-blue-500"
-                selected={true}
-              />
-              <PetItem
-                name="Dewey"
-                desc="A tidy duck for calm workspace days."
-                icon={["fas", "cloud"]}
-                iconColor="text-cyan-500"
-                selected={false}
-              />
-              <PetItem
-                name="Fireball"
-                desc="Hot path energy for fast iteration."
-                icon={["fas", "bullseye"]}
-                iconColor="text-orange-500"
-                selected={false}
-              />
-              <PetItem
-                name="Rocky"
-                desc="A steady rock when the diff gets large."
-                icon={["fas", "cube"]}
-                iconColor="text-stone-500"
-                selected={false}
-              />
-              <PetItem
-                name="Seedy"
-                desc="Small green shoots for new ideas."
-                icon={["fas", "leaf"]}
-                iconColor="text-green-500"
-                selected={false}
-              />
-              <PetItem
-                name="Stacky"
-                desc="A balanced stack for deep work."
-                icon={["fas", "layer-group"]}
-                iconColor="text-purple-500"
-                selected={false}
-              />
+            <div className="flex min-w-0 flex-col justify-center gap-3">
+              <div><div className="text-sm font-semibold">{pet.name}</div><div className="mt-1 text-xs text-text-secondary">{t("desktopPet.characterSource", { count: Object.keys(pet.actions).length })}</div></div>
+              {snapshot.catalog.characters.length > 1 && <Select value={pet.id} onValueChange={characterId => { setAction(""); change({ characterId }); }}>
+                <SelectTrigger disabled={busy} aria-label={t("desktopPet.character")}><SelectValue placeholder={pet.name} /></SelectTrigger>
+                <SelectContent>{snapshot.catalog.characters.map(item => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent>
+              </Select>}
+              <Select value={action} onValueChange={setAction}>
+                <SelectTrigger className="w-full max-w-56" aria-label={t("desktopPet.preview")}><SelectValue placeholder={action || t("desktopPet.preview")} /></SelectTrigger>
+                <SelectContent className="max-h-[min(18rem,var(--radix-dropdown-menu-content-available-height))] overflow-y-auto">{Object.keys(pet.actions).map(name => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent>
+              </Select>
             </div>
           </div>
+          <div className="flex flex-wrap gap-2 border-t border-border-theme p-4">
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => change(awake ? { sleeping: true } : { enabled: true, sleeping: false })}>
+              {awake ? <Moon size={14} /> : <Sparkles size={14} />}{t(awake ? "desktopPet.sleep" : "desktopPet.wake")}
+            </Button>
+            <Button variant="ghost" size="sm" disabled={busy} onClick={() => void run(resetPet)}><RotateCcw size={14} />{t("desktopPet.reset")}</Button>
+            <Button variant="ghost" size="sm" disabled><MessageCircle size={14} />{t("desktopPet.chat")}</Button>
+          </div>
         </div>
-      </div>
-    </>
+        <div className="mt-4 divide-y divide-border-theme rounded-xl border border-border-theme bg-elevated-bg">
+          {(["enabled", "alwaysOnTop", "followWork", "bubbles"] as const).map(key => (
+            <label key={key} className="flex items-center justify-between gap-3 px-4 py-3 text-[13px]">
+              <span>{t(`desktopPet.${key}`)}</span>
+              <Checkbox checked={prefs[key]} disabled={busy} onCheckedChange={checked => change({ [key]: checked === true })} />
+            </label>
+          ))}
+          <div className="flex items-center justify-between gap-3 px-4 py-3 text-[13px]">
+            <span>{t("desktopPet.size")}</span>
+            <Select value={selectedSize} onValueChange={value => change({ size: Number(value) })}>
+              <SelectTrigger disabled={busy} aria-label={t("desktopPet.size")} className="w-28"><SelectValue placeholder={`${selectedSize} px`} /></SelectTrigger>
+              <SelectContent>{sizes.map(size => <SelectItem key={size} value={String(size)}>{size} px</SelectItem>)}</SelectContent>
+            </Select>
+          </div>
+        </div>
+      </>}
+    </section>
   );
 }

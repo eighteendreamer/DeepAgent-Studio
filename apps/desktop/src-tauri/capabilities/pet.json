@@ -1,0 +1,6 @@
+{
+  "identifier": "desktop-pet-capability",
+  "description": "Built-in pet window: event subscriptions only; native management commands validate the calling window.",
+  "windows": ["desktop-pet"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

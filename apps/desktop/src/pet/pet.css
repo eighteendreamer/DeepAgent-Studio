@@ -1,0 +1,9 @@
+html, body, #root { background: transparent !important; overflow: hidden; width: 100%; height: 100%; margin: 0; }
+.pet-stage { position: absolute; left: 0; width: 100%; pointer-events: none; user-select: none; }
+.pet-video, .pet-poster { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.pet-video { opacity: 0; }
+.pet-poster { padding: 10% 26%; }
+.pet-hit.pet-hit { position: absolute; pointer-events: auto; cursor: grab; padding: 0; background: transparent; box-shadow: none; touch-action: none; }
+.pet-hit:active { cursor: grabbing; }
+.pet-bubble { position: absolute; bottom: calc(100% - 11px); left: 50%; transform: translateX(-50%); pointer-events: none;
+  white-space: nowrap; border: 1px solid #fff4; background: #222e; color: white; border-radius: 12px; padding: 7px 12px; font-size: 12px; }

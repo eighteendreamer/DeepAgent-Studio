@@ -59,7 +59,8 @@
       "resources/plugins/**/*",
       "resources/mcp/**/*",
       "resources/skills/**/*",
-      "resources/sandbox/**/*"
+      "resources/sandbox/**/*",
+      "resources/pets/**/*"
     ],
     "externalBin": ["binaries/deepagent"],
     "windows": {

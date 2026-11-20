@@ -18,6 +18,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 mod cron_lifecycle;
+mod pet;
+mod pet_store;
 
 use async_trait::async_trait;
 use deepagent_app_core::{
@@ -1981,6 +1983,7 @@ async fn start_chat_v2(
                 error: Some(error.to_string()),
             },
         };
+        pet::notify_completion(&completion_emitter, &completed.status);
         let _ = completion_emitter.emit("session://completed", completed);
         if let Ok(session_id) = result {
             match chat
@@ -3008,6 +3011,7 @@ async fn start_workflow(
                 error: Some(error.to_string()),
             },
         };
+        pet::notify_completion(&completion_emitter, &completed.status);
         let _ = completion_emitter.emit("session://completed", completed);
     });
     Ok(acknowledgement)
@@ -7773,6 +7777,8 @@ pub fn run() {
                 rt,
             });
 
+            pet::setup(app.handle(), paths.files.join("pets"));
+
             // Never leave the user staring at the splash if a signal is lost.
             let splash_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -7781,7 +7787,16 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(pet::limit_invoke(tauri::generate_handler![
+            pet::pet_get_state,
+            pet::pet_update_preferences,
+            pet::pet_ready,
+            pet::pet_set_interaction,
+            pet::pet_start_drag,
+            pet::pet_reset_position,
+            pet::pet_work_snapshot,
+            pet::pet_open_main,
+            pet::pet_render_failed,
             splash_signal,
             list_sessions,
             search_sessions,
@@ -8129,10 +8144,13 @@ pub fn run() {
             mobile_start_network_capture,
             mobile_stop_network_capture,
             mobile_get_network_records
-        ])
+        ]))
         .build(tauri::generate_context!())
         .expect("error while building DeepAgent Studio")
-        .run(|app, event| cron_lifecycle::on_event(app, &event));
+        .run(|app, event| {
+            pet::on_event(app, &event);
+            cron_lifecycle::on_event(app, &event);
+        });
 }
 
 #[cfg(test)]

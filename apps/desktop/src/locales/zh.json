@@ -175,6 +175,29 @@
     "copy": "复制",
     "selectAll": "全选"
   },
+  "desktopPet": {
+    "description": "在桌面显示宠物，并随任务状态播放动画。",
+    "desktopOnly": "请在桌面应用中使用桌宠。",
+    "loading": "正在准备桌宠资源…",
+    "retry": "重试",
+    "characterSource": "dsh-pet 原版角色 · {{count}} 个动作",
+    "character": "角色",
+    "preview": "预览动作",
+    "previewFailed": "预览加载失败。",
+    "sleep": "休眠",
+    "wake": "唤醒宠物",
+    "reset": "重置位置",
+    "chat": "对话（未开放）",
+    "enabled": "启用桌宠",
+    "alwaysOnTop": "始终置顶",
+    "followWork": "跟随工作状态",
+    "bubbles": "气泡提示",
+    "size": "大小",
+    "openMain": "打开 DeepAgent Studio",
+    "waiting": "等待确认",
+    "success": "任务已完成",
+    "error": "任务失败"
+  },
   "settings": {
     "usage": {
       "title": "使用统计",

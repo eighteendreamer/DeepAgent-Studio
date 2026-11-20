@@ -1,0 +1,2108 @@
+{
+  "version": 1,
+  "packId": "dsh-pet",
+  "resourceVersion": "1",
+  "characters": [
+    {
+      "id": "blue-maid",
+      "name": "蓝毛小女仆",
+      "thumbnail": "character.png",
+      "preview": "preview/daiji-huxi-xiuxian.gif",
+      "canvas": {
+        "width": 640,
+        "height": 360
+      },
+      "hitBox": {
+        "x": 200,
+        "y": 50,
+        "width": 240,
+        "height": 285
+      },
+      "defaultSize": 462,
+      "actions": {
+        "三球抛接": {
+          "file": "webm/三球抛接.webm",
+          "preview": "preview/sanqiu-paojie.gif",
+          "width": 640,
+          "height": 360
+        },
+        "下五子棋": {
+          "file": "webm/下五子棋.webm",
+          "preview": "preview/xiawuziqi.gif",
+          "width": 640,
+          "height": 360
+        },
+        "东张西望": {
+          "file": "webm/东张西望.webm",
+          "preview": "preview/dongzhangxiwang.gif",
+          "width": 640,
+          "height": 360
+        },
+        "中秋赏月吃月饼": {
+          "file": "webm/中秋赏月吃月饼.webm",
+          "preview": "preview/zhongqiu-shangyue-chi-yuebing.gif",
+          "width": 640,
+          "height": 360
+        },
+        "优雅女仆舞": {
+          "file": "webm/优雅女仆舞.webm",
+          "preview": "preview/youya-nvpuwu.gif",
+          "width": 640,
+          "height": 360
+        },
+        "余额-分文不剩": {
+          "file": "webm/余额-分文不剩.webm",
+          "preview": "preview/fen-wen-bu-sheng.gif",
+          "width": 640,
+          "height": 360
+        },
+        "余额-数金皱眉": {
+          "file": "webm/余额-数金皱眉.webm",
+          "preview": "preview/shu-jin-zhou-mei.gif",
+          "width": 640,
+          "height": 360
+        },
+        "余额-袋空如洗": {
+          "file": "webm/余额-袋空如洗.webm",
+          "preview": "preview/dai-kong-ru-xi.gif",
+          "width": 640,
+          "height": 360
+        },
+        "余额-金袋叮当": {
+          "file": "webm/余额-金袋叮当.webm",
+          "preview": "preview/jin-dai-ding-dang.gif",
+          "width": 640,
+          "height": 360
+        },
+        "余额-钱袋如常": {
+          "file": "webm/余额-钱袋如常.webm",
+          "preview": "preview/qian-dai-ru-chang.gif",
+          "width": 640,
+          "height": 360
+        },
+        "余额-钱袋满溢": {
+          "file": "webm/余额-钱袋满溢.webm",
+          "preview": "preview/qian-dai-man-yi.gif",
+          "width": 640,
+          "height": 360
+        },
+        "侧身急躁跑": {
+          "file": "webm/侧身急躁跑.webm",
+          "preview": null,
+          "width": 640,
+          "height": 360
+        },
+        "偷吃零食被抓住": {
+          "file": "webm/偷吃零食被抓住.webm",
+          "preview": "preview/touchi-lingshi-bei-zhuazhu.gif",
+          "width": 640,
+          "height": 360
+        },
+        "写代码": {
+          "file": "webm/写代码.webm",
+          "preview": "preview/xie-daima.gif",
+          "width": 640,
+          "height": 360
+        },
+        "写福字": {
+          "file": "webm/写福字.webm",
+          "preview": "preview/xie-fuzi.gif",
+          "width": 640,
+          "height": 360
+        },
+        "凭空生花": {
+          "file": "webm/凭空生花.webm",
+          "preview": "preview/pingkong-shenghua.gif",
+          "width": 640,
+          "height": 360
+        },
+        "动物环绕": {
+          "file": "webm/动物环绕.webm",
+          "preview": "preview/dongwu-huanrao.gif",
+          "width": 640,
+          "height": 360
+        },
+        "原地专心玩魔方": {
+          "file": "webm/原地专心玩魔方.webm",
+          "preview": "preview/yuandi-zhuanxin-wan-mofang.gif",
+          "width": 640,
+          "height": 360
+        },
+        "原地小憩沉眠": {
+          "file": "webm/原地小憩沉眠.webm",
+          "preview": "preview/yuandi-xiaoqi-chenmian.gif",
+          "width": 640,
+          "height": 360
+        },
+        "原地左转奔跑": {
+          "file": "webm/原地左转奔跑.webm",
+          "preview": "preview/yuandi-zuozhuan-benpao.gif",
+          "width": 640,
+          "height": 360
+        },
+        "原地敲击桌面互动": {
+          "file": "webm/原地敲击桌面互动.webm",
+          "preview": "preview/yuandi-qiaoji-zhuomian-hudong.gif",
+          "width": 640,
+          "height": 360
+        },
+        "原地漂浮踏步": {
+          "file": "webm/原地漂浮踏步.webm",
+          "preview": "preview/yuandi-piaofu-tabu.gif",
+          "width": 640,
+          "height": 360
+        },
+        "原地跳跃抓碎头顶物品": {
+          "file": "webm/原地跳跃抓碎头顶物品.webm",
+          "preview": "preview/yuandi-tiaoyue-zhuasui-touding-wupin.gif",
+          "width": 640,
+          "height": 360
+        },
+        "原地蹲下玩玩具汽车": {
+          "file": "webm/原地蹲下玩玩具汽车.webm",
+          "preview": "preview/yuandi-dunxia-wan-wanju-qiche.gif",
+          "width": 640,
+          "height": 360
+        },
+        "原地重力下蹲压缩": {
+          "file": "webm/原地重力下蹲压缩.webm",
+          "preview": "preview/yuandi-zhongli-xiadun-yasuo.gif",
+          "width": 640,
+          "height": 360
+        },
+        "变鸽子": {
+          "file": "webm/变鸽子.webm",
+          "preview": "preview/bian-gezi.gif",
+          "width": 640,
+          "height": 360
+        },
+        "可爱宅舞": {
+          "file": "webm/可爱宅舞.webm",
+          "preview": "preview/keai-zhaiwu.gif",
+          "width": 640,
+          "height": 360
+        },
+        "吃Token": {
+          "file": "webm/吃Token.webm",
+          "preview": "preview/chi-token.gif",
+          "width": 640,
+          "height": 360
+        },
+        "吃冰淇淋融化": {
+          "file": "webm/吃冰淇淋融化.webm",
+          "preview": "preview/chi-bingqilin-ronghua.gif",
+          "width": 640,
+          "height": 360
+        },
+        "吃午餐": {
+          "file": "webm/吃午餐.webm",
+          "preview": "preview/chi-wucan.gif",
+          "width": 640,
+          "height": 360
+        },
+        "吃大闸蟹": {
+          "file": "webm/吃大闸蟹.webm",
+          "preview": "preview/chi-dazhaxie.gif",
+          "width": 640,
+          "height": 360
+        },
+        "吃年糕": {
+          "file": "webm/吃年糕.webm",
+          "preview": "preview/chi-niangao.gif",
+          "width": 640,
+          "height": 360
+        },
+        "吃早餐": {
+          "file": "webm/吃早餐.webm",
+          "preview": "preview/chi-zaocan.gif",
+          "width": 640,
+          "height": 360
+        },
+        "吃晚餐": {
+          "file": "webm/吃晚餐.webm",
+          "preview": "preview/chi-wancan.gif",
+          "width": 640,
+          "height": 360
+        },
+        "吃汤圆": {
+          "file": "webm/吃汤圆.webm",
+          "preview": "preview/chitangyuan.gif",
+          "width": 640,
+          "height": 360
+        },
+        "吃白饭": {
+          "file": "webm/吃白饭.webm",
+          "preview": "preview/chi-baifan.gif",
+          "width": 640,
+          "height": 360
+        },
+        "吃粽子": {
+          "file": "webm/吃粽子.webm",
+          "preview": "preview/chi-zongzi.gif",
+          "width": 640,
+          "height": 360
+        },
+        "吃糖葫芦": {
+          "file": "webm/吃糖葫芦.webm",
+          "preview": "preview/chi-tanghulu.gif",
+          "width": 640,
+          "height": 360
+        },
+        "吃腊八粥": {
+          "file": "webm/吃腊八粥.webm",
+          "preview": "preview/chi-labazhou.gif",
+          "width": 640,
+          "height": 360
+        },
+        "吃西瓜": {
+          "file": "webm/吃西瓜.webm",
+          "preview": "preview/chi-xigua.gif",
+          "width": 640,
+          "height": 360
+        },
+        "吃重阳糕": {
+          "file": "webm/吃重阳糕.webm",
+          "preview": "preview/chi-chongyanggao.gif",
+          "width": 640,
+          "height": 360
+        },
+        "吃长寿面": {
+          "file": "webm/吃长寿面.webm",
+          "preview": "preview/chi-changshoumian.gif",
+          "width": 640,
+          "height": 360
+        },
+        "吃青团": {
+          "file": "webm/吃青团.webm",
+          "preview": "preview/chi-qingtuan.gif",
+          "width": 640,
+          "height": 360
+        },
+        "吃饭·碗饭": {
+          "file": "webm/吃饭·碗饭.webm",
+          "preview": null,
+          "width": 640,
+          "height": 360
+        },
+        "吃饭团": {
+          "file": "webm/吃饭团.webm",
+          "preview": null,
+          "width": 640,
+          "height": 360
+        },
+        "吃饺子": {
+          "file": "webm/吃饺子.webm",
+          "preview": "preview/chijiaozi.gif",
+          "width": 640,
+          "height": 360
+        },
+        "吹气球": {
+          "file": "webm/吹气球.webm",
+          "preview": "preview/chui-qiqiu.gif",
+          "width": 640,
+          "height": 360
+        },
+        "吹笛子": {
+          "file": "webm/吹笛子.webm",
+          "preview": "preview/chui-dizi.gif",
+          "width": 640,
+          "height": 360
+        },
+        "哈欠连天": {
+          "file": "webm/哈欠连天.webm",
+          "preview": "preview/haqian-liantian.gif",
+          "width": 640,
+          "height": 360
+        },
+        "堆雪人": {
+          "file": "webm/堆雪人.webm",
+          "preview": "preview/duixueren.gif",
+          "width": 640,
+          "height": 360
+        },
+        "大口吃零食": {
+          "file": "webm/大口吃零食.webm",
+          "preview": "preview/dakou-chi-lingshi.gif",
+          "width": 640,
+          "height": 360
+        },
+        "女仆屈膝礼仪": {
+          "file": "webm/女仆屈膝礼仪.webm",
+          "preview": "preview/nvpu-quxi-liyi.gif",
+          "width": 640,
+          "height": 360
+        },
+        "小幅度原地360度旋转展示": {
+          "file": "webm/小幅度原地360度旋转展示.webm",
+          "preview": "preview/xiaofudu-yuandi-360du-xuanzhuan-zhanshi.gif",
+          "width": 640,
+          "height": 360
+        },
+        "小提琴演奏": {
+          "file": "webm/小提琴演奏.webm",
+          "preview": "preview/xiaotiqin-yanzou.gif",
+          "width": 640,
+          "height": 360
+        },
+        "工作状态-原地踱步张望": {
+          "file": "webm/工作状态-原地踱步张望.webm",
+          "preview": "preview/gongzuozhuangtai-yuandi-duobu-zhangwang.gif",
+          "width": 640,
+          "height": 360
+        },
+        "工作状态-垂头叹气冒汗": {
+          "file": "webm/工作状态-垂头叹气冒汗.webm",
+          "preview": "preview/gongzuozhuangtai-chuitou-tanqi-maohan.gif",
+          "width": 640,
+          "height": 360
+        },
+        "工作状态-忙碌点按": {
+          "file": "webm/工作状态-忙碌点按.webm",
+          "preview": "preview/gongzuozhuangtai-manglu-dianan.gif",
+          "width": 640,
+          "height": 360
+        },
+        "工作状态-思考冒泡": {
+          "file": "webm/工作状态-思考冒泡.webm",
+          "preview": "preview/gongzuozhuangtai-sikao-maopao.gif",
+          "width": 640,
+          "height": 360
+        },
+        "工作状态-清点归档": {
+          "file": "webm/工作状态-清点归档.webm",
+          "preview": "preview/gongzuozhuangtai-qingdian-guidang.gif",
+          "width": 640,
+          "height": 360
+        },
+        "工作状态-雀跃庆祝": {
+          "file": "webm/工作状态-雀跃庆祝.webm",
+          "preview": "preview/gongzuozhuangtai-queyue-qingzhu.gif",
+          "width": 640,
+          "height": 360
+        },
+        "开心小跑": {
+          "file": "webm/开心小跑.webm",
+          "preview": null,
+          "width": 640,
+          "height": 360
+        },
+        "待机呼吸休闲": {
+          "file": "webm/待机呼吸休闲.webm",
+          "preview": "preview/daiji-huxi-xiuxian.gif",
+          "width": 640,
+          "height": 360
+        },
+        "悠闲哼歌": {
+          "file": "webm/悠闲哼歌.webm",
+          "preview": "preview/youxian-hengga.gif",
+          "width": 640,
+          "height": 360
+        },
+        "扑克魔术": {
+          "file": "webm/扑克魔术.webm",
+          "preview": "preview/puke-moshu.gif",
+          "width": 640,
+          "height": 360
+        },
+        "打瞌睡被惊醒": {
+          "file": "webm/打瞌睡被惊醒.webm",
+          "preview": "preview/da-keshui-bei-jingxing.gif",
+          "width": 640,
+          "height": 360
+        },
+        "抽陀螺": {
+          "file": "webm/抽陀螺.webm",
+          "preview": "preview/chou-tuoluo.gif",
+          "width": 640,
+          "height": 360
+        },
+        "拆礼物": {
+          "file": "webm/拆礼物.webm",
+          "preview": "preview/chai-liwu.gif",
+          "width": 640,
+          "height": 360
+        },
+        "插茱萸赏菊": {
+          "file": "webm/插茱萸赏菊.webm",
+          "preview": "preview/cha-zhuyu-shangju.gif",
+          "width": 640,
+          "height": 360
+        },
+        "摇扇纳凉": {
+          "file": "webm/摇扇纳凉.webm",
+          "preview": "preview/yaoshan-naliang.gif",
+          "width": 640,
+          "height": 360
+        },
+        "撸猫": {
+          "file": "webm/撸猫.webm",
+          "preview": "preview/lu-mao.gif",
+          "width": 640,
+          "height": 360
+        },
+        "收红包": {
+          "file": "webm/收红包.webm",
+          "preview": "preview/shou-hongbao.gif",
+          "width": 640,
+          "height": 360
+        },
+        "放孔明灯": {
+          "file": "webm/放孔明灯.webm",
+          "preview": "preview/fang-kongmingdeng.gif",
+          "width": 640,
+          "height": 360
+        },
+        "放河灯": {
+          "file": "webm/放河灯.webm",
+          "preview": "preview/fanghedeng.gif",
+          "width": 640,
+          "height": 360
+        },
+        "放烟花": {
+          "file": "webm/放烟花.webm",
+          "preview": "preview/fang-yanhua.gif",
+          "width": 640,
+          "height": 360
+        },
+        "放风筝": {
+          "file": "webm/放风筝.webm",
+          "preview": "preview/fang-fengzheng.gif",
+          "width": 640,
+          "height": 360
+        },
+        "整体换装试色": {
+          "file": "webm/整体换装试色.webm",
+          "preview": "preview/zhengti-huanzhuang-shise.gif",
+          "width": 640,
+          "height": 360
+        },
+        "是啊，吃什么": {
+          "file": "webm/是啊，吃什么.webm",
+          "preview": "preview/shia-chishenme.gif",
+          "width": 640,
+          "height": 360
+        },
+        "晨间刷牙": {
+          "file": "webm/晨间刷牙.webm",
+          "preview": "preview/chenjian-shuaya.gif",
+          "width": 640,
+          "height": 360
+        },
+        "期待开饭": {
+          "file": "webm/期待开饭.webm",
+          "preview": null,
+          "width": 640,
+          "height": 360
+        },
+        "涮火锅": {
+          "file": "webm/涮火锅.webm",
+          "preview": "preview/shuan-huoguo.gif",
+          "width": 640,
+          "height": 360
+        },
+        "深度思考碎碎念": {
+          "file": "webm/深度思考碎碎念.webm",
+          "preview": "preview/shendu-sikao-suisuinian.gif",
+          "width": 640,
+          "height": 360
+        },
+        "点击回应-傲娇生气": {
+          "file": "webm/点击回应-傲娇生气.webm",
+          "preview": "preview/dianji-huiying-aojiao-shengqi-ceshen-zhanshi.gif",
+          "width": 640,
+          "height": 360
+        },
+        "点击回应-元气挥手": {
+          "file": "webm/点击回应-元气挥手.webm",
+          "preview": "preview/dianji-huiying-yuanqi-huishou.gif",
+          "width": 640,
+          "height": 360
+        },
+        "点击回应-害羞惊讶": {
+          "file": "webm/点击回应-害羞惊讶.webm",
+          "preview": "preview/dianji-huiying-haixiu-jingya.gif",
+          "width": 640,
+          "height": 360
+        },
+        "点击回应-开心跃动": {
+          "file": "webm/点击回应-开心跃动.webm",
+          "preview": "preview/dianji-huiying-kaixin-yuedong.gif",
+          "width": 640,
+          "height": 360
+        },
+        "点击回应-挠痒咯咯笑": {
+          "file": "webm/点击回应-挠痒咯咯笑.webm",
+          "preview": "preview/dianji-huiying-naoyang-gegexiao.gif",
+          "width": 640,
+          "height": 360
+        },
+        "照镜子": {
+          "file": "webm/照镜子.webm",
+          "preview": "preview/zhao-jingzi.gif",
+          "width": 640,
+          "height": 360
+        },
+        "玩水枪": {
+          "file": "webm/玩水枪.webm",
+          "preview": "preview/wan-shuiqiang.gif",
+          "width": 640,
+          "height": 360
+        },
+        "玩游戏气急败坏": {
+          "file": "webm/玩游戏气急败坏.webm",
+          "preview": "preview/wan-youxi-qijibaituai.gif",
+          "width": 640,
+          "height": 360
+        },
+        "用鲸鱼尾巴拍打地面": {
+          "file": "webm/用鲸鱼尾巴拍打地面.webm",
+          "preview": "preview/yong-jingyu-weiba-paidadi.gif",
+          "width": 640,
+          "height": 360
+        },
+        "睡觉-开始": {
+          "file": "webm/睡觉-开始.webm",
+          "preview": "preview/shuijiao-kaishi.gif",
+          "width": 640,
+          "height": 360
+        },
+        "睡觉-循环": {
+          "file": "webm/睡觉-循环.webm",
+          "preview": "preview/shuijiao-xunhuan.gif",
+          "width": 640,
+          "height": 360
+        },
+        "睡觉-起来": {
+          "file": "webm/睡觉-起来.webm",
+          "preview": "preview/shuijiao-qilai.gif",
+          "width": 640,
+          "height": 360
+        },
+        "碎碎念-发呆碎碎念": {
+          "file": "webm/碎碎念-发呆碎碎念.webm",
+          "preview": "preview/suisuinian-fadai-suisuinian.gif",
+          "width": 640,
+          "height": 360
+        },
+        "碎碎念-对屏碎碎念": {
+          "file": "webm/碎碎念-对屏碎碎念.webm",
+          "preview": "preview/suisuinian-duiping-suisuinian.gif",
+          "width": 640,
+          "height": 360
+        },
+        "碎碎念-擦桌碎碎念": {
+          "file": "webm/碎碎念-擦桌碎碎念.webm",
+          "preview": "preview/suisuinian-cazhuo-suisuinian.gif",
+          "width": 640,
+          "height": 360
+        },
+        "穿针乞巧": {
+          "file": "webm/穿针乞巧.webm",
+          "preview": "preview/chuanzhenqiqiao.gif",
+          "width": 640,
+          "height": 360
+        },
+        "舞狮头": {
+          "file": "webm/舞狮头.webm",
+          "preview": "preview/wu-shitou.gif",
+          "width": 640,
+          "height": 360
+        },
+        "荡秋千": {
+          "file": "webm/荡秋千.webm",
+          "preview": "preview/dangqiuqian.gif",
+          "width": 640,
+          "height": 360
+        },
+        "萌化小幽灵": {
+          "file": "webm/萌化小幽灵.webm",
+          "preview": "preview/menghua-xiaoyouling.gif",
+          "width": 640,
+          "height": 360
+        },
+        "蓝鲸现世": {
+          "file": "webm/蓝鲸现世.webm",
+          "preview": "preview/lanjing-xianshi.gif",
+          "width": 640,
+          "height": 360
+        },
+        "蝴蝶蜜蜂环绕头顶开花": {
+          "file": "webm/蝴蝶蜜蜂环绕头顶开花.webm",
+          "preview": "preview/hudie-mifeng-huanrao-touding-kaihua.gif",
+          "width": 640,
+          "height": 360
+        },
+        "螃蟹走路": {
+          "file": "webm/螃蟹走路.webm",
+          "preview": "preview/pangxie-zoulu.gif",
+          "width": 640,
+          "height": 360
+        },
+        "被吓一跳": {
+          "file": "webm/被吓一跳.webm",
+          "preview": "preview/beixiayitiao-zhamao.gif",
+          "width": 640,
+          "height": 360
+        },
+        "被落叶淹没": {
+          "file": "webm/被落叶淹没.webm",
+          "preview": "preview/beiluoye-yanmo.gif",
+          "width": 640,
+          "height": 360
+        },
+        "被鼠标拖拽悬空反馈": {
+          "file": "webm/被鼠标拖拽悬空反馈.webm",
+          "preview": "preview/beishubiao-tuozhuai-xuankong-fankui.gif",
+          "width": 640,
+          "height": 360
+        },
+        "装点圣诞树": {
+          "file": "webm/装点圣诞树.webm",
+          "preview": "preview/zhuangdian-shengdanshu.gif",
+          "width": 640,
+          "height": 360
+        },
+        "讨糖南瓜灯": {
+          "file": "webm/讨糖南瓜灯.webm",
+          "preview": "preview/taotang-nanguadeng.gif",
+          "width": 640,
+          "height": 360
+        },
+        "超大伸懒腰": {
+          "file": "webm/超大伸懒腰.webm",
+          "preview": "preview/chaoda-shenlanyao.gif",
+          "width": 640,
+          "height": 360
+        },
+        "踢毽子": {
+          "file": "webm/踢毽子.webm",
+          "preview": "preview/ti-jianzi.gif",
+          "width": 640,
+          "height": 360
+        },
+        "轻快摇摆舞": {
+          "file": "webm/轻快摇摆舞.webm",
+          "preview": "preview/qingkuai-yaobaiwu.gif",
+          "width": 640,
+          "height": 360
+        },
+        "轻快记录": {
+          "file": "webm/轻快记录.webm",
+          "preview": "preview/qingkuai-jilu.gif",
+          "width": 640,
+          "height": 360
+        },
+        "骑木马": {
+          "file": "webm/骑木马.webm",
+          "preview": "preview/qi-muma.gif",
+          "width": 640,
+          "height": 360
+        },
+        "鲸鱼吐泡泡特效": {
+          "file": "webm/鲸鱼吐泡泡特效.webm",
+          "preview": "preview/jingyu-tu-paopao-texiao.gif",
+          "width": 640,
+          "height": 360
+        }
+      },
+      "states": {
+        "idle": {
+          "actions": [
+            "待机呼吸休闲"
+          ],
+          "loop": true
+        },
+        "thinking": {
+          "actions": [
+            "工作状态-思考冒泡"
+          ],
+          "loop": true,
+          "fallback": "idle"
+        },
+        "working": {
+          "actions": [
+            "工作状态-忙碌点按"
+          ],
+          "loop": true,
+          "fallback": "idle"
+        },
+        "result": {
+          "actions": [
+            "工作状态-清点归档"
+          ],
+          "loop": true,
+          "fallback": "working"
+        },
+        "waiting": {
+          "actions": [
+            "工作状态-原地踱步张望"
+          ],
+          "loop": true,
+          "fallback": "idle"
+        },
+        "success": {
+          "actions": [
+            "工作状态-雀跃庆祝"
+          ],
+          "loop": false,
+          "fallback": "idle"
+        },
+        "error": {
+          "actions": [
+            "工作状态-垂头叹气冒汗"
+          ],
+          "loop": false,
+          "fallback": "idle"
+        },
+        "drag": {
+          "actions": [
+            "被鼠标拖拽悬空反馈"
+          ],
+          "loop": true,
+          "fallback": "idle"
+        },
+        "click": {
+          "actions": [
+            "点击回应-开心跃动",
+            "点击回应-害羞惊讶",
+            "点击回应-傲娇生气",
+            "点击回应-挠痒咯咯笑",
+            "点击回应-元气挥手"
+          ],
+          "loop": false,
+          "fallback": "idle"
+        },
+        "sleep": {
+          "actions": [
+            "睡觉-循环"
+          ],
+          "loop": true,
+          "fallback": "idle"
+        }
+      },
+      "groups": [
+        {
+          "id": "idle",
+          "actions": [
+            "待机呼吸休闲"
+          ]
+        },
+        {
+          "id": "turn",
+          "actions": [
+            "东张西望"
+          ]
+        },
+        {
+          "id": "drag",
+          "actions": [
+            "被鼠标拖拽悬空反馈"
+          ]
+        },
+        {
+          "id": "click",
+          "actions": [
+            "点击回应-开心跃动",
+            "点击回应-害羞惊讶",
+            "点击回应-傲娇生气",
+            "点击回应-挠痒咯咯笑",
+            "点击回应-元气挥手"
+          ]
+        },
+        {
+          "id": "move",
+          "actions": [
+            "螃蟹走路",
+            "原地漂浮踏步",
+            "原地左转奔跑"
+          ]
+        },
+        {
+          "id": "小动作",
+          "actions": [
+            "悠闲哼歌",
+            "超大伸懒腰",
+            "原地敲击桌面互动",
+            "原地重力下蹲压缩",
+            "哈欠连天",
+            "原地小憩沉眠",
+            "女仆屈膝礼仪",
+            "被吓一跳",
+            "小幅度原地360度旋转展示",
+            "偷吃零食被抓住",
+            "用鲸鱼尾巴拍打地面",
+            "打瞌睡被惊醒",
+            "照镜子",
+            "整体换装试色",
+            "轻快记录",
+            "写代码",
+            "摇扇纳凉",
+            "晨间刷牙"
+          ]
+        },
+        {
+          "id": "玩耍",
+          "actions": [
+            "原地专心玩魔方",
+            "原地蹲下玩玩具汽车",
+            "鲸鱼吐泡泡特效",
+            "原地跳跃抓碎头顶物品",
+            "玩游戏气急败坏",
+            "玩水枪",
+            "小提琴演奏",
+            "蓝鲸现世",
+            "优雅女仆舞",
+            "轻快摇摆舞",
+            "可爱宅舞",
+            "吹气球",
+            "动物环绕",
+            "放风筝",
+            "拆礼物",
+            "变鸽子",
+            "扑克魔术",
+            "抽陀螺",
+            "吹笛子",
+            "蝴蝶蜜蜂环绕头顶开花",
+            "撸猫",
+            "凭空生花",
+            "骑木马",
+            "三球抛接",
+            "踢毽子",
+            "下五子棋",
+            "荡秋千"
+          ]
+        },
+        {
+          "id": "吃什么",
+          "actions": [
+            "吃白饭",
+            "大口吃零食",
+            "吃Token",
+            "吃早餐",
+            "吃午餐",
+            "吃晚餐",
+            "吃冰淇淋融化",
+            "吃大闸蟹",
+            "吃糖葫芦",
+            "吃长寿面",
+            "吃西瓜",
+            "涮火锅"
+          ]
+        },
+        {
+          "id": "时节",
+          "actions": [
+            "被落叶淹没",
+            "中秋赏月吃月饼",
+            "堆雪人",
+            "放烟花",
+            "吃粽子",
+            "吃年糕",
+            "吃青团",
+            "吃腊八粥",
+            "吃重阳糕",
+            "收红包",
+            "写福字",
+            "穿针乞巧",
+            "舞狮头",
+            "讨糖南瓜灯",
+            "插茱萸赏菊",
+            "放河灯",
+            "萌化小幽灵",
+            "装点圣诞树",
+            "放孔明灯",
+            "吃汤圆",
+            "吃饺子"
+          ]
+        },
+        {
+          "id": "文字",
+          "actions": [
+            "是啊，吃什么",
+            "深度思考碎碎念"
+          ]
+        },
+        {
+          "id": "balance",
+          "actions": [
+            "余额-钱袋满溢",
+            "余额-金袋叮当",
+            "余额-钱袋如常",
+            "余额-数金皱眉",
+            "余额-袋空如洗",
+            "余额-分文不剩"
+          ]
+        },
+        {
+          "id": "whisper",
+          "actions": [
+            "碎碎念-擦桌碎碎念",
+            "碎碎念-发呆碎碎念",
+            "碎碎念-对屏碎碎念"
+          ]
+        },
+        {
+          "id": "workStatus",
+          "actions": [
+            "工作状态-思考冒泡",
+            "工作状态-忙碌点按",
+            "工作状态-清点归档",
+            "工作状态-原地踱步张望",
+            "工作状态-雀跃庆祝",
+            "工作状态-垂头叹气冒汗"
+          ]
+        },
+        {
+          "id": "sleep",
+          "actions": [
+            "睡觉-开始",
+            "睡觉-循环",
+            "睡觉-起来"
+          ]
+        },
+        {
+          "id": "baifan",
+          "actions": [
+            "开心小跑",
+            "侧身急躁跑",
+            "期待开饭",
+            "吃饭·碗饭",
+            "吃饭团"
+          ]
+        }
+      ]
+    }
+  ],
+  "files": [
+    {
+      "path": "webm/三球抛接.webm",
+      "bytes": 549316,
+      "sha256": "a64c08a4b7e5c3549616faf9dcd418e17f156b4b72d906646e4d57067df70d23"
+    },
+    {
+      "path": "preview/sanqiu-paojie.gif",
+      "bytes": 632764,
+      "sha256": "7d419e7a1fd2cb158329807ea47543a60c571e9e043bceab3f66a8a99eb71535"
+    },
+    {
+      "path": "webm/下五子棋.webm",
+      "bytes": 514704,
+      "sha256": "0802b6b808f44846b3d194a857fb0ffd38bdea2d7cdb91c9e5e6f311e44f1953"
+    },
+    {
+      "path": "preview/xiawuziqi.gif",
+      "bytes": 614374,
+      "sha256": "44275db0686881a3af8161b70847537e335041c582fddc00a8185acd567cf811"
+    },
+    {
+      "path": "webm/东张西望.webm",
+      "bytes": 427005,
+      "sha256": "a20ed02ccc5e72075a3ca83fabb57d9aac5ded699f52d00ec6de72069799fcd5"
+    },
+    {
+      "path": "preview/dongzhangxiwang.gif",
+      "bytes": 622863,
+      "sha256": "b0488b4eb7068526191abcbda3e4e5453931b672a898ee953489e9d0b2cd3c45"
+    },
+    {
+      "path": "webm/中秋赏月吃月饼.webm",
+      "bytes": 512341,
+      "sha256": "3f64003262d3f129470721495695ecd231795d859693a748914c02c6e3883a3a"
+    },
+    {
+      "path": "preview/zhongqiu-shangyue-chi-yuebing.gif",
+      "bytes": 686458,
+      "sha256": "2d58b485683f1be6d821b8dc212b6053c4113db712540db5922e9d570d9dcf56"
+    },
+    {
+      "path": "webm/优雅女仆舞.webm",
+      "bytes": 578915,
+      "sha256": "74209c4c668545ab1e2366e0d1c0709b7bea0312eeba7e89b553d5b977bfe649"
+    },
+    {
+      "path": "preview/youya-nvpuwu.gif",
+      "bytes": 610270,
+      "sha256": "8d0a71cf094c7cb074058bf9ba1db86c2b705dda8c8f6629d3594173a8f90607"
+    },
+    {
+      "path": "webm/余额-分文不剩.webm",
+      "bytes": 490318,
+      "sha256": "b232349bdbd962bad7f3a15cfce539c6fadadfd0a286b7f03b03e59cf7aca7a8"
+    },
+    {
+      "path": "preview/fen-wen-bu-sheng.gif",
+      "bytes": 660687,
+      "sha256": "a6a9928f3ba127d53b703c2ba6c6a3df4d905558c9ce90b946a81d3314723666"
+    },
+    {
+      "path": "webm/余额-数金皱眉.webm",
+      "bytes": 319065,
+      "sha256": "94a7e0ee8e1012aadec33492301c893c2d1c5df7e36049dbada8c4a264bf1810"
+    },
+    {
+      "path": "preview/shu-jin-zhou-mei.gif",
+      "bytes": 635602,
+      "sha256": "80bd752f0672fb373c36a971a1a90aa89aab8a16f7de133cd7b672151c23a6ae"
+    },
+    {
+      "path": "webm/余额-袋空如洗.webm",
+      "bytes": 383104,
+      "sha256": "3db780bbc96bb362ced36078fecacfb63b9d292c06b533cfb61797adb553a7f8"
+    },
+    {
+      "path": "preview/dai-kong-ru-xi.gif",
+      "bytes": 644316,
+      "sha256": "b26345e63dbfecd89bc420e48e16d574c9224807d1cd74f4fcb447995658d705"
+    },
+    {
+      "path": "webm/余额-金袋叮当.webm",
+      "bytes": 530955,
+      "sha256": "6fda0c4ae013cf7906afa1cb846717d097db576343dab11006f14ca5c7a9a34f"
+    },
+    {
+      "path": "preview/jin-dai-ding-dang.gif",
+      "bytes": 638229,
+      "sha256": "93a19c34493bd738b1b7a85d699ce763f60679fddd8412f07af4534cc56c59b9"
+    },
+    {
+      "path": "webm/余额-钱袋如常.webm",
+      "bytes": 387407,
+      "sha256": "f6cb9aa1c829fcbc62478dbddd0e0fcd7beb47433cea751d18b81ccccbec95d3"
+    },
+    {
+      "path": "preview/qian-dai-ru-chang.gif",
+      "bytes": 656802,
+      "sha256": "a0f4073de383fdbb5ec601d7e5ac7e63bbcef819a50ea8f4ca027ff4b68a0a6b"
+    },
+    {
+      "path": "webm/余额-钱袋满溢.webm",
+      "bytes": 622258,
+      "sha256": "dddd6ffc4e763b77360e49c0ccee0987a43c3d253a23e3133c334aabb598b362"
+    },
+    {
+      "path": "preview/qian-dai-man-yi.gif",
+      "bytes": 620453,
+      "sha256": "b6aace2f161bcbf3d2ed74c4b7e23dc03d65875a7559fec8e56f204e4b9c921c"
+    },
+    {
+      "path": "webm/侧身急躁跑.webm",
+      "bytes": 735190,
+      "sha256": "75dac326108fc701214042e0cabff5e950bc21b7ba03ca2ee54cdb0afc0618d6"
+    },
+    {
+      "path": "webm/偷吃零食被抓住.webm",
+      "bytes": 432201,
+      "sha256": "c3b783351ad38fdd931e80b188ecb12d273f21e4794aed2c41f267bdb75ff897"
+    },
+    {
+      "path": "preview/touchi-lingshi-bei-zhuazhu.gif",
+      "bytes": 638708,
+      "sha256": "53c8a102e5ac7e47c9cd84c072c8a9363eed12f4ba386b58d4847b56e1b17bd3"
+    },
+    {
+      "path": "webm/写代码.webm",
+      "bytes": 383960,
+      "sha256": "0441287737cdbb993ce90dfa74c67ea4ea3549d8c8ea98946604668464589ed7"
+    },
+    {
+      "path": "preview/xie-daima.gif",
+      "bytes": 627078,
+      "sha256": "966934b70bccd613ac8234b9aedf838b4802b441b8f0c7f67d586386583bb244"
+    },
+    {
+      "path": "webm/写福字.webm",
+      "bytes": 500314,
+      "sha256": "7841a47a6997bb7c90d81671d524c44b1afc87ca2e8fceb17d06d99003a67181"
+    },
+    {
+      "path": "preview/xie-fuzi.gif",
+      "bytes": 631185,
+      "sha256": "8c767f38af787336ce5af2badd620240006a573f1f2286245fb07ac9508e1520"
+    },
+    {
+      "path": "webm/凭空生花.webm",
+      "bytes": 620252,
+      "sha256": "d1c336bc54c57a282bec180859c7b7b58912b70b5bca7b2f49495cd30cc7d5d6"
+    },
+    {
+      "path": "preview/pingkong-shenghua.gif",
+      "bytes": 604041,
+      "sha256": "f89eb7fc664fe45438a24764cdb46dbbbf8e77ef548a0776c781c1f4a40ae954"
+    },
+    {
+      "path": "webm/动物环绕.webm",
+      "bytes": 981435,
+      "sha256": "814d41e7d619f9a61f38e5494a0cfd703f8bcfd829a14fa921e1c59acf3ce872"
+    },
+    {
+      "path": "preview/dongwu-huanrao.gif",
+      "bytes": 789492,
+      "sha256": "317e56142e723b1d6d2a865974583006d3ffc3ab8cf7f14fcea30139914bd90c"
+    },
+    {
+      "path": "webm/原地专心玩魔方.webm",
+      "bytes": 442948,
+      "sha256": "ad54da175ba86b19a84b73b3169fb418b2df016560bb274283f200aca351e712"
+    },
+    {
+      "path": "preview/yuandi-zhuanxin-wan-mofang.gif",
+      "bytes": 622501,
+      "sha256": "4c4c22c191dc9a0e4f32d99c8d6a54a11d9a0457650d4ab09b8a0ebfaf709abc"
+    },
+    {
+      "path": "webm/原地小憩沉眠.webm",
+      "bytes": 433769,
+      "sha256": "31d4a6b36a29b2a4fe097384173d3bbeb3fa2f40f526b13191791456bf7507a1"
+    },
+    {
+      "path": "preview/yuandi-xiaoqi-chenmian.gif",
+      "bytes": 626237,
+      "sha256": "a0f7f7c96dccb1679ca4f41fd6b4482eaa6b758b46e8c37219a3ea79c70ed201"
+    },
+    {
+      "path": "webm/原地左转奔跑.webm",
+      "bytes": 614526,
+      "sha256": "79882aedd7b77caaacce1a34dece68e2f001a3dbfa5f9d049c1ce2fc04518d52"
+    },
+    {
+      "path": "preview/yuandi-zuozhuan-benpao.gif",
+      "bytes": 598197,
+      "sha256": "d0ab68586bb0407b0439ca290ecea14a241e399d815550c0ac9a35ade1d8f3e4"
+    },
+    {
+      "path": "webm/原地敲击桌面互动.webm",
+      "bytes": 403033,
+      "sha256": "a40f481e89abcc726c89f30b01d085ca8c17a090e71facdd5e7f747e771093eb"
+    },
+    {
+      "path": "preview/yuandi-qiaoji-zhuomian-hudong.gif",
+      "bytes": 598376,
+      "sha256": "21b3d32fe49529ef129257506c6571dfc55d9324216405bf0567f9fcfeadee3c"
+    },
+    {
+      "path": "webm/原地漂浮踏步.webm",
+      "bytes": 591446,
+      "sha256": "7dee1c14672f1f99bebe5e6f1a52d6664b851ed95f9958ac6c12b753a5e5cc81"
+    },
+    {
+      "path": "preview/yuandi-piaofu-tabu.gif",
+      "bytes": 619678,
+      "sha256": "cc78ea0b5ee7e2fac0d6e24371ed808cd18d80430f4430f80129894dd2214606"
+    },
+    {
+      "path": "webm/原地跳跃抓碎头顶物品.webm",
+      "bytes": 619282,
+      "sha256": "ccb906c677c7b739eb0dbf5307160e66583562c2a6caec72a9d3d14a202fcccd"
+    },
+    {
+      "path": "preview/yuandi-tiaoyue-zhuasui-touding-wupin.gif",
+      "bytes": 573264,
+      "sha256": "887e6a6e8373f2acadfb6b8792e7b39f901e45371e03b3528381011db3eef40b"
+    },
+    {
+      "path": "webm/原地蹲下玩玩具汽车.webm",
+      "bytes": 505114,
+      "sha256": "3ec9978ce3663d9bc4bfe5f5223f0a4e3d9ea6fcd0a6acdbaa802e0cfba36bf2"
+    },
+    {
+      "path": "preview/yuandi-dunxia-wan-wanju-qiche.gif",
+      "bytes": 554474,
+      "sha256": "92dd1777af2a9d4d3d9efefe86f2d5393371cc90851bda3746fcab277899ec54"
+    },
+    {
+      "path": "webm/原地重力下蹲压缩.webm",
+      "bytes": 215047,
+      "sha256": "1c8972478a7f347818165db62b468f1624ec11d0862f38aec3078e3870831d24"
+    },
+    {
+      "path": "preview/yuandi-zhongli-xiadun-yasuo.gif",
+      "bytes": 487025,
+      "sha256": "1ff82fb5dd30b3c91187f3ab38c1a825a5ab15d64a5b52e048d05ae2cb6d421b"
+    },
+    {
+      "path": "webm/变鸽子.webm",
+      "bytes": 509462,
+      "sha256": "796eba8ebe705e9339035e533e4f913fb8b9810432dcd6e7ae4fc1602e9ce3cf"
+    },
+    {
+      "path": "preview/bian-gezi.gif",
+      "bytes": 651972,
+      "sha256": "4486060bf41994e39416a3d1279f834b30680e36c53aaa55a25389b51116d56f"
+    },
+    {
+      "path": "webm/可爱宅舞.webm",
+      "bytes": 576307,
+      "sha256": "4f737e44ea67c20368bdce474b951902c87c37991fb0750da8ed7794df6ec55c"
+    },
+    {
+      "path": "preview/keai-zhaiwu.gif",
+      "bytes": 617842,
+      "sha256": "2276e4650dc07ce2dae4029b5b2de9ab15798cd89f1ec858a1e6c5057646bff4"
+    },
+    {
+      "path": "webm/吃Token.webm",
+      "bytes": 574754,
+      "sha256": "d46ef798fb189cd7652f63d03a35e6f314e5a598b4a65f76202ec95852eb719c"
+    },
+    {
+      "path": "preview/chi-token.gif",
+      "bytes": 670566,
+      "sha256": "93354fef7853db63d3ec59d404bfa6277554cd2f25e22be46b776ce0080a7a66"
+    },
+    {
+      "path": "webm/吃冰淇淋融化.webm",
+      "bytes": 509816,
+      "sha256": "17d73682926d6ce4203ad12d9049527e604d448bcc5c82ac5b12950b4ceb0447"
+    },
+    {
+      "path": "preview/chi-bingqilin-ronghua.gif",
+      "bytes": 620796,
+      "sha256": "6d351f42349906c9b757415ae0bc42c823ff48805e848fdf5617e108373d7d7c"
+    },
+    {
+      "path": "webm/吃午餐.webm",
+      "bytes": 495122,
+      "sha256": "e48a70e61d93195c611c2d4041be32a26a114f78c835ff6b2345459ae39a90ce"
+    },
+    {
+      "path": "preview/chi-wucan.gif",
+      "bytes": 620733,
+      "sha256": "3bb6456d6c22fcb165ca83dbaf1e7094666912793706fbc5dea12198acfd0257"
+    },
+    {
+      "path": "webm/吃大闸蟹.webm",
+      "bytes": 545299,
+      "sha256": "fbd0f445c15fda1f827e6eb485270ddf9025ac29b3edcac28a5eff7d9aa80f46"
+    },
+    {
+      "path": "preview/chi-dazhaxie.gif",
+      "bytes": 633443,
+      "sha256": "608a4e9d3b7deb9a22a7daa1264835eb4a9f8f82fb4932ad08784132c099999a"
+    },
+    {
+      "path": "webm/吃年糕.webm",
+      "bytes": 451257,
+      "sha256": "ba0c86988687801a5b19d055d728bb182c8a95a0bdd7071dea16b83c1162135c"
+    },
+    {
+      "path": "preview/chi-niangao.gif",
+      "bytes": 624791,
+      "sha256": "1fe682a1c893b5cdfb36b7ad14b92dc006068b68f54301a5c93d5c22d5b13707"
+    },
+    {
+      "path": "webm/吃早餐.webm",
+      "bytes": 441484,
+      "sha256": "893b61587aeda8ca146e32b596b00903461aab04684a146d84b31965968d60e4"
+    },
+    {
+      "path": "preview/chi-zaocan.gif",
+      "bytes": 622734,
+      "sha256": "359f0e2ff47f582af96de0724eff9f83f518917b65f8fb5f2c8a5b733431aff2"
+    },
+    {
+      "path": "webm/吃晚餐.webm",
+      "bytes": 741965,
+      "sha256": "8902602fb012c29d33392822ab534ed119a136610f6bc2e8c0c51d60afec673a"
+    },
+    {
+      "path": "preview/chi-wancan.gif",
+      "bytes": 742502,
+      "sha256": "de5765cae455def387c4c69d91fab86d0fecd5492280015cde0291658e065f24"
+    },
+    {
+      "path": "webm/吃汤圆.webm",
+      "bytes": 437152,
+      "sha256": "53a0f93612bb59c7279010f993a1101b033fc01df1998dd9874d8aea175afa6f"
+    },
+    {
+      "path": "preview/chitangyuan.gif",
+      "bytes": 624086,
+      "sha256": "b68e4aaa6496141cb4fbeed70db65285d84cb5be735b04157c61643f7d210ea1"
+    },
+    {
+      "path": "webm/吃白饭.webm",
+      "bytes": 459590,
+      "sha256": "b620413d6fa303a0ed9168dc71453c3bddc10141a0b7edeff87dc2e6e054d502"
+    },
+    {
+      "path": "preview/chi-baifan.gif",
+      "bytes": 622739,
+      "sha256": "bb0a0f528c2e86d40c1260342dd4f780bfdd1612c56d2092852813b078b16bd4"
+    },
+    {
+      "path": "webm/吃粽子.webm",
+      "bytes": 446268,
+      "sha256": "f3af3217674427fdc5609bf50b170f69669c84cf229cd7b44261c00da7876ade"
+    },
+    {
+      "path": "preview/chi-zongzi.gif",
+      "bytes": 630082,
+      "sha256": "dbf52926be09a05ad2c77abb03f13dc49c09001b3beca353ef2f9e0fa21091e7"
+    },
+    {
+      "path": "webm/吃糖葫芦.webm",
+      "bytes": 469809,
+      "sha256": "6900468dc166bfb90e1cfb73de9b41a08c62513483ce1300658340cf942be3cd"
+    },
+    {
+      "path": "preview/chi-tanghulu.gif",
+      "bytes": 621400,
+      "sha256": "520972e82d4de3f2c02fc6334fd8accd223c34184664b1b345277564ece45a2a"
+    },
+    {
+      "path": "webm/吃腊八粥.webm",
+      "bytes": 460665,
+      "sha256": "f821527812875262cc0dda50fe023c603fc89ec566172777c6bff4fa45943011"
+    },
+    {
+      "path": "preview/chi-labazhou.gif",
+      "bytes": 611830,
+      "sha256": "6dbf6f4ed0c0fab5a5fbeac7b31e9489c7a91554e98b8e880c9e1de3834fcf31"
+    },
+    {
+      "path": "webm/吃西瓜.webm",
+      "bytes": 482918,
+      "sha256": "0dd992fb7fb51d707d6589cb813a450437a2bd54046709f424a73353e2d7f78d"
+    },
+    {
+      "path": "preview/chi-xigua.gif",
+      "bytes": 614342,
+      "sha256": "dac06e17a361fed0901b76a8febab86d23fa034e6cc9c742f05c0eaaf3b6bbb4"
+    },
+    {
+      "path": "webm/吃重阳糕.webm",
+      "bytes": 468951,
+      "sha256": "d2b6b466fcb1ee689ae130680bf38311e9988d995879ca3b5b1d9aa0b5438058"
+    },
+    {
+      "path": "preview/chi-chongyanggao.gif",
+      "bytes": 609458,
+      "sha256": "3ecb1c70ddb4e08725c3a2a4e1e57acd1fcf3619da1b71f6e40c1a21b76d7073"
+    },
+    {
+      "path": "webm/吃长寿面.webm",
+      "bytes": 489038,
+      "sha256": "2881e1cd4ca31fd56ca578ce2ee73d21222f0006f237c865d9b2dc1ebc436edd"
+    },
+    {
+      "path": "preview/chi-changshoumian.gif",
+      "bytes": 630211,
+      "sha256": "e251267d4393a6413754e421109716c78ef80067dcec155a3b2820fb8d0fc5a5"
+    },
+    {
+      "path": "webm/吃青团.webm",
+      "bytes": 377524,
+      "sha256": "0d99393dd64ddf0b1ec4ab4cf392c86092ab5edf58d12f5b72e325035da23606"
+    },
+    {
+      "path": "preview/chi-qingtuan.gif",
+      "bytes": 624603,
+      "sha256": "1f2c1180a569b372f44790ee2b29e4dc7ad7b32b513e8e635c9e2a756848a22b"
+    },
+    {
+      "path": "webm/吃饭·碗饭.webm",
+      "bytes": 436316,
+      "sha256": "17272de2ea1350146a8b9fa387d9a5c8eca16a222372479215088a9dfcfb9019"
+    },
+    {
+      "path": "webm/吃饭团.webm",
+      "bytes": 419609,
+      "sha256": "dd19c4ad30c20022d72d50055eee2f5c90e1184d6389c0edee8ad20dbaa505b1"
+    },
+    {
+      "path": "webm/吃饺子.webm",
+      "bytes": 554828,
+      "sha256": "a607391c206cb2a1a977d72f318a6b5bfe95aee4da9b11c9de8724bd9981cc06"
+    },
+    {
+      "path": "preview/chijiaozi.gif",
+      "bytes": 668889,
+      "sha256": "c44dbdde484db322ea2a5956671bd5afc1322a7d92c68c1c3b3c7ba409a8f3ce"
+    },
+    {
+      "path": "webm/吹气球.webm",
+      "bytes": 751040,
+      "sha256": "3258f91b2000d949ba38f34c1f161b0d5fa148ecffb5a95eb8a3e10b5df7fc87"
+    },
+    {
+      "path": "preview/chui-qiqiu.gif",
+      "bytes": 641205,
+      "sha256": "31648088477d5d095e15d188e58a68f85247e21d1de0706311834eed491326b2"
+    },
+    {
+      "path": "webm/吹笛子.webm",
+      "bytes": 768350,
+      "sha256": "9c8b754a3256778cddd88fbb073b649d5b1d2e5f96e70231bc2c3bee06fa7c78"
+    },
+    {
+      "path": "preview/chui-dizi.gif",
+      "bytes": 677790,
+      "sha256": "0b390acef351c8139386bac6d92e35794e2a7f388037a549e1bca9c38b14c077"
+    },
+    {
+      "path": "webm/哈欠连天.webm",
+      "bytes": 424352,
+      "sha256": "2b23372e1ff2bc2f9078c09740708c960d4ea021f9fc3cca294d9df11e393ec8"
+    },
+    {
+      "path": "preview/haqian-liantian.gif",
+      "bytes": 632678,
+      "sha256": "904e76e90af46ca671597f6c54a11f04f21a861db54ef7444ffa3f2708f44f62"
+    },
+    {
+      "path": "webm/堆雪人.webm",
+      "bytes": 519196,
+      "sha256": "478bdc31cc60e55e3efa139b81c7d8680a8cf83aca2304495e6da50a20a09cf5"
+    },
+    {
+      "path": "preview/duixueren.gif",
+      "bytes": 634657,
+      "sha256": "c3afe687ab9d0ebc7276becd1ae6d619ba118404224b53061a5dce13d80854cd"
+    },
+    {
+      "path": "webm/大口吃零食.webm",
+      "bytes": 806998,
+      "sha256": "fdacb534a828b0c669f22a54e8da9bb9b5d731e0132dd5ea946f7badc9229a39"
+    },
+    {
+      "path": "preview/dakou-chi-lingshi.gif",
+      "bytes": 643312,
+      "sha256": "e3ba079a5e2108ed810a22ed10d9c2cc88efa1b5ad98778ee84decdf48f6f604"
+    },
+    {
+      "path": "webm/女仆屈膝礼仪.webm",
+      "bytes": 365712,
+      "sha256": "6536fb519ba73bbc338d30cf7286b14ffde1278b6d469c64573536dc0f896918"
+    },
+    {
+      "path": "preview/nvpu-quxi-liyi.gif",
+      "bytes": 593893,
+      "sha256": "ededb6666ec8d438c0fd74252ebe95bb22c3ee00a26851f977c57e4993cc398f"
+    },
+    {
+      "path": "webm/小幅度原地360度旋转展示.webm",
+      "bytes": 585715,
+      "sha256": "9f1a927f63c73e3c35ee5f4d2eb58f4a46ac7eca2af69388f320d10cdef8d29c"
+    },
+    {
+      "path": "preview/xiaofudu-yuandi-360du-xuanzhuan-zhanshi.gif",
+      "bytes": 606303,
+      "sha256": "1fdf3c786f33ddf980d468e21a765791996ba1924dd31863db4b3cdca862fe80"
+    },
+    {
+      "path": "webm/小提琴演奏.webm",
+      "bytes": 605350,
+      "sha256": "03816be0fcd499b63ed667e8b87c234094e64c59f1cd222455cf6a27ac832d1c"
+    },
+    {
+      "path": "preview/xiaotiqin-yanzou.gif",
+      "bytes": 629961,
+      "sha256": "ef3c8b96e35dd67a3710ce1563151c49c2960f875d637370c80499afe3cd3f5a"
+    },
+    {
+      "path": "webm/工作状态-原地踱步张望.webm",
+      "bytes": 471725,
+      "sha256": "a56c17ef901fa531324a46a04def2381f65922d319ec83dadde34d2a4669e411"
+    },
+    {
+      "path": "preview/gongzuozhuangtai-yuandi-duobu-zhangwang.gif",
+      "bytes": 631287,
+      "sha256": "f90f0a28607fd132cb0b44a1e073e440039d25354d967af6f55cc4e3df221c6b"
+    },
+    {
+      "path": "webm/工作状态-垂头叹气冒汗.webm",
+      "bytes": 198937,
+      "sha256": "ab00c844e62221905574b4c070e0d7b6fa14fb2afa1064c27a160f10e25f7196"
+    },
+    {
+      "path": "preview/gongzuozhuangtai-chuitou-tanqi-maohan.gif",
+      "bytes": 312719,
+      "sha256": "10d59731c0ad8ab077d7974edef033827b4573e3512e06ebc1413806522f0304"
+    },
+    {
+      "path": "webm/工作状态-忙碌点按.webm",
+      "bytes": 475613,
+      "sha256": "b5d702e0c04adb7b255ac702001c24da36c8bf95efc891f693f4976986ab2435"
+    },
+    {
+      "path": "preview/gongzuozhuangtai-manglu-dianan.gif",
+      "bytes": 627629,
+      "sha256": "bab6cb7eff739bac96e8e593b34b842270a5252ae631c0912bb23ab47ebb9a47"
+    },
+    {
+      "path": "webm/工作状态-思考冒泡.webm",
+      "bytes": 408849,
+      "sha256": "b4a36cfa28ea5d7089e362a01972c6e880297c6dcd0d39f1994efd889a3c1be5"
+    },
+    {
+      "path": "preview/gongzuozhuangtai-sikao-maopao.gif",
+      "bytes": 636712,
+      "sha256": "9d52ae5f84c4fa7e0249619b47b556ae26ff81168b5e712d8b5113645cc95546"
+    },
+    {
+      "path": "webm/工作状态-清点归档.webm",
+      "bytes": 362510,
+      "sha256": "8c84f58f3a9e7b912e1cbfd89f77eb3652053fc9b2844295c8440cb636305d3b"
+    },
+    {
+      "path": "preview/gongzuozhuangtai-qingdian-guidang.gif",
+      "bytes": 609676,
+      "sha256": "cc33c95ed526d0606d3519a5487eb5ce805ece148fc9635f5660795e46075b34"
+    },
+    {
+      "path": "webm/工作状态-雀跃庆祝.webm",
+      "bytes": 488024,
+      "sha256": "3ff681051a0bb4f152d7535d64b7f3194c30298bf56d41e521216a278f135d3e"
+    },
+    {
+      "path": "preview/gongzuozhuangtai-queyue-qingzhu.gif",
+      "bytes": 633926,
+      "sha256": "59232775c660091beb5cbe8d8d3381ac04515291caf25ce93313c0fe85989173"
+    },
+    {
+      "path": "webm/开心小跑.webm",
+      "bytes": 533054,
+      "sha256": "fa6a6d589490845a24aade4b8d9d16bd67143b36348261526f0acb9e6c2eb145"
+    },
+    {
+      "path": "webm/待机呼吸休闲.webm",
+      "bytes": 441437,
+      "sha256": "deb965d05a85dacf5ff4a20faa757846f0d11679598c3ec578a5571487660395"
+    },
+    {
+      "path": "preview/daiji-huxi-xiuxian.gif",
+      "bytes": 630669,
+      "sha256": "ab23562dafea476fd136909e4405b90150c7e9434a9e9d2ed4cb73d9f33ddce9"
+    },
+    {
+      "path": "webm/悠闲哼歌.webm",
+      "bytes": 584008,
+      "sha256": "358905afc2c81a9ed478bcf121a8f2f19276766b1d382d0067456bd57d1d7dbb"
+    },
+    {
+      "path": "preview/youxian-hengga.gif",
+      "bytes": 628797,
+      "sha256": "78e60435539142bbd6ad493a0ac927daf3a4eb7bcfe549db70ddba4538e7cce6"
+    },
+    {
+      "path": "webm/扑克魔术.webm",
+      "bytes": 461997,
+      "sha256": "1d44a7624fb027e5f615c747014ab040ddc497f6bdbcb67194a23a53a5dba78c"
+    },
+    {
+      "path": "preview/puke-moshu.gif",
+      "bytes": 633858,
+      "sha256": "cfc6f199fc145b9edc9b0546ca5f13ec86667d1d1e47ca0e9cbd6cf6d19a4cf5"
+    },
+    {
+      "path": "webm/打瞌睡被惊醒.webm",
+      "bytes": 454028,
+      "sha256": "7e10c87cfcbd63b20b5a3787be71b0500381d54ea04a5ac0e9d99f59ed49a6d7"
+    },
+    {
+      "path": "preview/da-keshui-bei-jingxing.gif",
+      "bytes": 617811,
+      "sha256": "4582e7cfd557c7dca8aa6cc98b5ca6f12944fe744f9fda700b589463c9e0aba7"
+    },
+    {
+      "path": "webm/抽陀螺.webm",
+      "bytes": 521068,
+      "sha256": "693689d7b4d02ae8cda53f8d580de5087287fc339360dd20909342f566e969ba"
+    },
+    {
+      "path": "preview/chou-tuoluo.gif",
+      "bytes": 608654,
+      "sha256": "f5a2311d1c1e3ca2746e5ef9812e00cc8a895352983f1b4b362da4e183d61f6b"
+    },
+    {
+      "path": "webm/拆礼物.webm",
+      "bytes": 517803,
+      "sha256": "6f781e7eac2b295417c80ff9468902280fdcf3ae5921d59977daa8dab537940c"
+    },
+    {
+      "path": "preview/chai-liwu.gif",
+      "bytes": 622000,
+      "sha256": "4216b8c6177d9b97d26df7a43f2465041d90824985a1c9c62ac336d523bc5265"
+    },
+    {
+      "path": "webm/插茱萸赏菊.webm",
+      "bytes": 486358,
+      "sha256": "4e1ba56724da3663e2f5480001ab1141a82e8618c316e6e81e3dae84998452f3"
+    },
+    {
+      "path": "preview/cha-zhuyu-shangju.gif",
+      "bytes": 615404,
+      "sha256": "32ee908cd21244d3fa6a0e699290082bb924e7e4a3135e07bb579e72a656c9da"
+    },
+    {
+      "path": "webm/摇扇纳凉.webm",
+      "bytes": 510022,
+      "sha256": "87d4b9454692484e4809b45071751b2144fc82fd8696fafabb32e19af98350f2"
+    },
+    {
+      "path": "preview/yaoshan-naliang.gif",
+      "bytes": 674462,
+      "sha256": "ee039cac479af06661cb6b67ccdf83ab52d4e7dc7b605d9bc6f6e0eda223c41b"
+    },
+    {
+      "path": "webm/撸猫.webm",
+      "bytes": 348432,
+      "sha256": "068d84e944dfce17de1c5a2ee2a4bc391e2848dad88a7df4877ebf23cf38bcec"
+    },
+    {
+      "path": "preview/lu-mao.gif",
+      "bytes": 634039,
+      "sha256": "9f4b7093fcbfacf4e79c3a7e3c5f2757bd125cfa41b50142a01f38b2b13ed059"
+    },
+    {
+      "path": "webm/收红包.webm",
+      "bytes": 472277,
+      "sha256": "a0e7a9a5997aff1357c76eeaaad7a01503c320f7017766dd5a42e643daa505c1"
+    },
+    {
+      "path": "preview/shou-hongbao.gif",
+      "bytes": 617710,
+      "sha256": "4f46777326f5b0be686be00bc49e5b7b3c1cc643f113e33bf145c4567f88cedf"
+    },
+    {
+      "path": "webm/放孔明灯.webm",
+      "bytes": 594144,
+      "sha256": "cc6540b4651f6603363dd326801921d6ba220ecaaf00828b42d248eb28beeb31"
+    },
+    {
+      "path": "preview/fang-kongmingdeng.gif",
+      "bytes": 615147,
+      "sha256": "5ae237ec08ace8eaa52a9ee88e3e5a4a0f2f389f7fd876f553334725959be4fc"
+    },
+    {
+      "path": "webm/放河灯.webm",
+      "bytes": 379124,
+      "sha256": "af744bed1ff20cc1b0492247add45f2b16433fde0b0897c31d6b0579429b788d"
+    },
+    {
+      "path": "preview/fanghedeng.gif",
+      "bytes": 608723,
+      "sha256": "652dea7ff742d339c195b829908fe63dcffafa6b94495eb732e8be23f9c52a27"
+    },
+    {
+      "path": "webm/放烟花.webm",
+      "bytes": 1330462,
+      "sha256": "539ac09ae29ed0a11bd828df096f3e72f606529b3c59e29a5fcf3b051779a4d0"
+    },
+    {
+      "path": "preview/fang-yanhua.gif",
+      "bytes": 740012,
+      "sha256": "2043be8e55d0a54c7bc0cc9e62d343f1ff50735c6d63d715e60350e3323ea8dd"
+    },
+    {
+      "path": "webm/放风筝.webm",
+      "bytes": 770134,
+      "sha256": "9d9ac75871b1c70a77fc4aaa63dd24778d79cbf492c2c5df42167199c7dd2132"
+    },
+    {
+      "path": "preview/fang-fengzheng.gif",
+      "bytes": 676169,
+      "sha256": "228012dad5096bd5b222aae17b28e08d02f01f02dc9f333c2b114d80db1fe540"
+    },
+    {
+      "path": "webm/整体换装试色.webm",
+      "bytes": 524724,
+      "sha256": "e8e599b12da7f3437c98425f6b192dd0c81a6b63bbba5e7927f53c22f757b094"
+    },
+    {
+      "path": "preview/zhengti-huanzhuang-shise.gif",
+      "bytes": 582287,
+      "sha256": "54f946253bf39565c02cbe6728801c92d32e867fd32696b430289c7d981c8ab8"
+    },
+    {
+      "path": "webm/是啊，吃什么.webm",
+      "bytes": 588163,
+      "sha256": "94e1d69e05cc66cc1dc8bf6986efc51dfd71fe22fd34166f9efe7ca2d21c1e8c"
+    },
+    {
+      "path": "preview/shia-chishenme.gif",
+      "bytes": 855953,
+      "sha256": "7d5c530b93a335293959a8205318921997fee32420fe9f6d03f1f4d2de0e24fa"
+    },
+    {
+      "path": "webm/晨间刷牙.webm",
+      "bytes": 425460,
+      "sha256": "017e384e7e13732fb12428d024ef686e79df5b79bfab0d83faa7fa50653d1bc4"
+    },
+    {
+      "path": "preview/chenjian-shuaya.gif",
+      "bytes": 644856,
+      "sha256": "e1c0b10711850b19391faf06090406ee6a800566cff53cc4b4a83e749af129ef"
+    },
+    {
+      "path": "webm/期待开饭.webm",
+      "bytes": 409072,
+      "sha256": "4999759c8c32af0b5400518084ade31c9445c4e5e3ea40218efa28f2e79d9c3e"
+    },
+    {
+      "path": "webm/涮火锅.webm",
+      "bytes": 466547,
+      "sha256": "f0b345c22cf2841137d215a7b9d50252b8be0ede64887e91fdc9bd09843e3c8f"
+    },
+    {
+      "path": "preview/shuan-huoguo.gif",
+      "bytes": 652279,
+      "sha256": "489bcc2fb9ff5a4ebce9e14f25817f13cbebeb27c201c4b7d738157f0e105b3a"
+    },
+    {
+      "path": "webm/深度思考碎碎念.webm",
+      "bytes": 433031,
+      "sha256": "db66867cd1f5bf68b0638fe1f966d0fdf95d1573523e60c77aa8913706118e82"
+    },
+    {
+      "path": "preview/shendu-sikao-suisuinian.gif",
+      "bytes": 725097,
+      "sha256": "d4be62ad8e764cedd895d59befeeb64e7f4fc9493ed90ccaced2a5ad381ba732"
+    },
+    {
+      "path": "webm/点击回应-傲娇生气.webm",
+      "bytes": 392336,
+      "sha256": "6b7176b98408cb649d1d37b6a6222a21aa6b128187e3e0b2d18550d35ab81064"
+    },
+    {
+      "path": "preview/dianji-huiying-aojiao-shengqi-ceshen-zhanshi.gif",
+      "bytes": 562573,
+      "sha256": "f81f98400e441ff0010ac72314a43ba96806ec09332e667a6a3758042c0a4087"
+    },
+    {
+      "path": "webm/点击回应-元气挥手.webm",
+      "bytes": 421669,
+      "sha256": "48cd729ccdcf746369942ea954d242e9afdd5643e1dac3827fa5e67450eb8776"
+    },
+    {
+      "path": "preview/dianji-huiying-yuanqi-huishou.gif",
+      "bytes": 627065,
+      "sha256": "36daf6048b3038504d7dbe413545ad08f518cd723d2e1a7e828861818694975b"
+    },
+    {
+      "path": "webm/点击回应-害羞惊讶.webm",
+      "bytes": 538281,
+      "sha256": "a04968bbc46d1ebea07f81e5dabd93b0b67a9d07f1371e9887b33075134ad00d"
+    },
+    {
+      "path": "preview/dianji-huiying-haixiu-jingya.gif",
+      "bytes": 637081,
+      "sha256": "3dfe3334a00ff8022077af5116a23d30305f4fbd34460bd5ac0684171d40c97e"
+    },
+    {
+      "path": "webm/点击回应-开心跃动.webm",
+      "bytes": 538110,
+      "sha256": "86dcb0c3dd7b651de9c107e927d57a5c4224599101706dbdcc782fa48bcd0ad7"
+    },
+    {
+      "path": "preview/dianji-huiying-kaixin-yuedong.gif",
+      "bytes": 625946,
+      "sha256": "904f9cc6e24daed9e313cd7ae1d1cac5b921c4300cd52e82ba6a9db0c718c27f"
+    },
+    {
+      "path": "webm/点击回应-挠痒咯咯笑.webm",
+      "bytes": 425393,
+      "sha256": "f228279219f4084323ca1bfef1604f7c77bb3f505d45a8d1747b5ac3f9f2393b"
+    },
+    {
+      "path": "preview/dianji-huiying-naoyang-gegexiao.gif",
+      "bytes": 631461,
+      "sha256": "750c2e6113132ebbeb4b41d2c48ae94b5d4f117e48f8c992c0637a9e3055023f"
+    },
+    {
+      "path": "webm/照镜子.webm",
+      "bytes": 504127,
+      "sha256": "13dc61c003e500d906b6526765072b7a78c0709491a397d4e70a88ec7ea63310"
+    },
+    {
+      "path": "preview/zhao-jingzi.gif",
+      "bytes": 635078,
+      "sha256": "6d872e75c2bbfb9114dd2285260ee7cfeb094d352917b133ed7889705c7beb78"
+    },
+    {
+      "path": "webm/玩水枪.webm",
+      "bytes": 523346,
+      "sha256": "448f732417ac4dcb6ca140cd3d73896aaea7f5dac2876a9a0f7c0776478d7128"
+    },
+    {
+      "path": "preview/wan-shuiqiang.gif",
+      "bytes": 634678,
+      "sha256": "d503736c5f4d66e5d9d83d7d628481758bbe73654cc51409921fb0234e1bff2d"
+    },
+    {
+      "path": "webm/玩游戏气急败坏.webm",
+      "bytes": 525022,
+      "sha256": "8e406bc52cf2a20c9d288867367c4df7c45a5dc78443bc5c2fdc83835ac0b4c3"
+    },
+    {
+      "path": "preview/wan-youxi-qijibaituai.gif",
+      "bytes": 676604,
+      "sha256": "b2e8d2c0906395af97408bb0dd84af4a5308bc7b10e4b0dbabd1f711043737d8"
+    },
+    {
+      "path": "webm/用鲸鱼尾巴拍打地面.webm",
+      "bytes": 352213,
+      "sha256": "e3f92df2cf182fdcb109ad0a865689d66e0a0d10db14c1528e5b3cb2f0bf090d"
+    },
+    {
+      "path": "preview/yong-jingyu-weiba-paidadi.gif",
+      "bytes": 643856,
+      "sha256": "7ebcc9e47e6e165c3476391e9633c089c1c39b2eba190644f569c45744d18685"
+    },
+    {
+      "path": "webm/睡觉-开始.webm",
+      "bytes": 331611,
+      "sha256": "5352a208925e01e191c1529d07c61ae61bcda90d92f2b89549c25c949f207e11"
+    },
+    {
+      "path": "preview/shuijiao-kaishi.gif",
+      "bytes": 555763,
+      "sha256": "4c83204e6b16dd7213f581b36ae5025dab0f834f3f3e945f9de29496afb24507"
+    },
+    {
+      "path": "webm/睡觉-循环.webm",
+      "bytes": 237002,
+      "sha256": "b49deb9b8dae4b83f84b6dc49efd41fdb654b05ad08ac6c5083977e17ef1122c"
+    },
+    {
+      "path": "preview/shuijiao-xunhuan.gif",
+      "bytes": 533116,
+      "sha256": "41740732668409e3c629ad881074722cecdd4f6da567bbbbac6903e5e8ac7554"
+    },
+    {
+      "path": "webm/睡觉-起来.webm",
+      "bytes": 379582,
+      "sha256": "a2a4832e546e7639782b74f998d8a6ebc2ec3b3b933c0bcc709487fb4d19ab46"
+    },
+    {
+      "path": "preview/shuijiao-qilai.gif",
+      "bytes": 589135,
+      "sha256": "49a53c07595ec6b04156030396f1efdcda7a2eed627d26007ea42686fdbf2206"
+    },
+    {
+      "path": "webm/碎碎念-发呆碎碎念.webm",
+      "bytes": 326752,
+      "sha256": "02da8cc2194250ae9708b137a3deff43fed2ebd40a7aa4a033b6262c3485eb5b"
+    },
+    {
+      "path": "preview/suisuinian-fadai-suisuinian.gif",
+      "bytes": 616214,
+      "sha256": "0d686d7b3cec4d20a58113ff7c0cbb3b681461bcfb3b3b3a19b39bb56efee7d0"
+    },
+    {
+      "path": "webm/碎碎念-对屏碎碎念.webm",
+      "bytes": 364946,
+      "sha256": "fda85ca286e173b7cf868c91829c3445e55c395e0c788b6be310a855b9b37973"
+    },
+    {
+      "path": "preview/suisuinian-duiping-suisuinian.gif",
+      "bytes": 616674,
+      "sha256": "7063024fefb3081c87a05ffc7c342c41a3eff1b61d8a33d4d4dfd2e06937726a"
+    },
+    {
+      "path": "webm/碎碎念-擦桌碎碎念.webm",
+      "bytes": 350436,
+      "sha256": "bfb616a3e6ed7375826d8fd00b41b9476d2e4bd65e10abddfb98f04c734e30e6"
+    },
+    {
+      "path": "preview/suisuinian-cazhuo-suisuinian.gif",
+      "bytes": 612374,
+      "sha256": "ead21ada195d860e9d2cab1f763a253522044bd99641e34bbf6c3290511ea674"
+    },
+    {
+      "path": "webm/穿针乞巧.webm",
+      "bytes": 480887,
+      "sha256": "cf16647ec4cb5634e4ff022bfc139a2233cd8be82f2391472bc842f7014ddc90"
+    },
+    {
+      "path": "preview/chuanzhenqiqiao.gif",
+      "bytes": 646989,
+      "sha256": "c9eec38b43a5d4a10f8ab023b807604837433dccdf71236ce643218b8969a9a6"
+    },
+    {
+      "path": "webm/舞狮头.webm",
+      "bytes": 632110,
+      "sha256": "6d2006b4023d44087cf4c7dc055d1d8f2a8cec32e22610807a2dfea7bb0dc367"
+    },
+    {
+      "path": "preview/wu-shitou.gif",
+      "bytes": 640129,
+      "sha256": "890b2c1852d58bbed7a00950295d0e7263a5a14be5bd46911332f9df4fb3dd76"
+    },
+    {
+      "path": "webm/荡秋千.webm",
+      "bytes": 644126,
+      "sha256": "f32ea98e9c04553ae39939cd76c469192ebc19d98b90ebf93ec4b88bf95b25c9"
+    },
+    {
+      "path": "preview/dangqiuqian.gif",
+      "bytes": 671628,
+      "sha256": "7c73c65cb94b461caab0c5e94f95a0a31a2d09c260ae58fd769acc4f2e894e58"
+    },
+    {
+      "path": "webm/萌化小幽灵.webm",
+      "bytes": 421990,
+      "sha256": "ac2012601d05bf7de7c7cced415b8793b0be3b7cfa569da06c2325f135f7e94f"
+    },
+    {
+      "path": "preview/menghua-xiaoyouling.gif",
+      "bytes": 630687,
+      "sha256": "bd0fb724d5ccae95edeeee824b9bbcb6f08bfdda9db8781550ab46fd29844d3d"
+    },
+    {
+      "path": "webm/蓝鲸现世.webm",
+      "bytes": 482896,
+      "sha256": "ed72f0ede7c6cd9482d44aa31002214d461b833c456f3ea40a52c3a0ddc20230"
+    },
+    {
+      "path": "preview/lanjing-xianshi.gif",
+      "bytes": 654904,
+      "sha256": "9b1c56f241a352f80693a4ec22726a13ec019e9c802c24c4643ff006a0b6e70d"
+    },
+    {
+      "path": "webm/蝴蝶蜜蜂环绕头顶开花.webm",
+      "bytes": 852828,
+      "sha256": "fd286c78001fe57fc093c06a4b79ef077ade2dacd2a77e011d3f393f587707ec"
+    },
+    {
+      "path": "preview/hudie-mifeng-huanrao-touding-kaihua.gif",
+      "bytes": 715918,
+      "sha256": "fb51031e8602a2d5c828e0580fc25b7c61d7e3e3460372ef2f188d448af78c66"
+    },
+    {
+      "path": "webm/螃蟹走路.webm",
+      "bytes": 596902,
+      "sha256": "5696b0878be38cc450d6eaace837aef1c1b5834f1382bc6c11c2de582f284673"
+    },
+    {
+      "path": "preview/pangxie-zoulu.gif",
+      "bytes": 627328,
+      "sha256": "224fdf6076f8aec14fdaab894d2d179d91bdda2ac5d78af5ae86d438d085e096"
+    },
+    {
+      "path": "webm/被吓一跳.webm",
+      "bytes": 282771,
+      "sha256": "537dde496e0f776e775dec1bb7bfe3fbc5eebf89112469a1a910ad0433ccde66"
+    },
+    {
+      "path": "preview/beixiayitiao-zhamao.gif",
+      "bytes": 623877,
+      "sha256": "40d0aca6e68e3cf77efc318d10366fcdcf5c4f13d0b9415a96d4e99cba112eca"
+    },
+    {
+      "path": "webm/被落叶淹没.webm",
+      "bytes": 766832,
+      "sha256": "91fc8e3dbfcd24546bc30366beb120fb5de7823ed67986dd8032c9c1b29ff079"
+    },
+    {
+      "path": "preview/beiluoye-yanmo.gif",
+      "bytes": 629167,
+      "sha256": "9c74307544e6d004cf0f7a51b89c9ffe2e8e4c68826d05e6c081963f84c5327b"
+    },
+    {
+      "path": "webm/被鼠标拖拽悬空反馈.webm",
+      "bytes": 464764,
+      "sha256": "31373a86026636eecc890db763760309360310eb095cf5575b13c9ca2a6cc80e"
+    },
+    {
+      "path": "preview/beishubiao-tuozhuai-xuankong-fankui.gif",
+      "bytes": 654762,
+      "sha256": "0bb3db0356490ae264d5278b977c432099b8d5e253e59bcd69e1fee313230caf"
+    },
+    {
+      "path": "webm/装点圣诞树.webm",
+      "bytes": 818456,
+      "sha256": "25da448acdbba49c2d4b209d24053b6dd1b79e656273d1f3e659385dc2bc3759"
+    },
+    {
+      "path": "preview/zhuangdian-shengdanshu.gif",
+      "bytes": 848628,
+      "sha256": "3edfb27a37130f9822ebc866c3d83e2893920756ab31518b34588e9d37a8ff75"
+    },
+    {
+      "path": "webm/讨糖南瓜灯.webm",
+      "bytes": 483293,
+      "sha256": "9535d1a29f780aa2d78ffaabd7ee1765952bf34b2b380e9edc25dc6a3003070b"
+    },
+    {
+      "path": "preview/taotang-nanguadeng.gif",
+      "bytes": 625363,
+      "sha256": "deeb165a0df25da17e6f4e52599ee4e7125b24085b814d354503e750e53a78e0"
+    },
+    {
+      "path": "webm/超大伸懒腰.webm",
+      "bytes": 396987,
+      "sha256": "0ac66d918cc5efd49be1273c3830de73eae5f9bdcd5fcb968d1b2f9b487705ad"
+    },
+    {
+      "path": "preview/chaoda-shenlanyao.gif",
+      "bytes": 617589,
+      "sha256": "8b051919ba7edf4cfda7a0e8160c2a17fc5061e91f65d74e8f236b336e70f784"
+    },
+    {
+      "path": "webm/踢毽子.webm",
+      "bytes": 531015,
+      "sha256": "68937b619a44e9ca7ccdfe77e5657f7a9bfa238beb33768378b6f254a16f3dbd"
+    },
+    {
+      "path": "preview/ti-jianzi.gif",
+      "bytes": 630934,
+      "sha256": "5d30ae7b352f03d722da63e68715ffc1a6c8286a6ee2652ee9d4e3855143a358"
+    },
+    {
+      "path": "webm/轻快摇摆舞.webm",
+      "bytes": 542928,
+      "sha256": "c621d00e1b959b991df8fc420e409b569e768fad7f75d1fb489375d101fee630"
+    },
+    {
+      "path": "preview/qingkuai-yaobaiwu.gif",
+      "bytes": 624222,
+      "sha256": "7808d01e6f1c4ddb72cd5a8875c0aa61eb5d6fb6b76b1c1c3d5566a3056403ce"
+    },
+    {
+      "path": "webm/轻快记录.webm",
+      "bytes": 447726,
+      "sha256": "1da04162fed5cd52bd4a6a6027a6902f50bda0969d34465bc2d332cf3679bbd5"
+    },
+    {
+      "path": "preview/qingkuai-jilu.gif",
+      "bytes": 633555,
+      "sha256": "8f573a77742ffa73601ad88b90b2a108e490a21cd1bea92ab0f09014fb1b5f8b"
+    },
+    {
+      "path": "webm/骑木马.webm",
+      "bytes": 697580,
+      "sha256": "5f54a98ccac97eac000d799043411f4fc0732096dc51a2ad766552737578f313"
+    },
+    {
+      "path": "preview/qi-muma.gif",
+      "bytes": 806703,
+      "sha256": "c81d03355acfe0f5b09eef1ffd84d3a2cd20be2e49ce452c4709acc4a1065ade"
+    },
+    {
+      "path": "webm/鲸鱼吐泡泡特效.webm",
+      "bytes": 452096,
+      "sha256": "d64d02059dc1602f7de5aa3135d381351363f021b2bceed47655db322cc71db3"
+    },
+    {
+      "path": "preview/jingyu-tu-paopao-texiao.gif",
+      "bytes": 647658,
+      "sha256": "b8b09a866df0acdd08958f92b9c5042f087cb0796fe90e898601999bb0fc6a93"
+    },
+    {
+      "path": "character.png",
+      "bytes": 1175558,
+      "sha256": "90e6d4b2fe01e1ead9a02827ac9a9cc249161b4474dc61c37cee9034f72e8ebf"
+    },
+    {
+      "path": "LICENSE.code.txt",
+      "bytes": 1069,
+      "sha256": "22757dc9c895b2729a2fc684d227cadfb54d5af3dd300029926839e8c4e269ce"
+    },
+    {
+      "path": "ATTRIBUTION.md",
+      "bytes": 638,
+      "sha256": "a2b9864b358ff39987da4e3d3c4b88d79d41f89a1056ee781bf010a5256e7445"
+    }
+  ]
+}

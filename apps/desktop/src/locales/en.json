@@ -175,6 +175,29 @@
     "copy": "Copy",
     "selectAll": "Select All"
   },
+  "desktopPet": {
+    "description": "Show a companion on your desktop and animate it with task activity.",
+    "desktopOnly": "Desktop pets are available in the desktop app.",
+    "loading": "Preparing pet assets…",
+    "retry": "Retry",
+    "characterSource": "Original dsh-pet character · {{count}} animations",
+    "character": "Character",
+    "preview": "Preview animation",
+    "previewFailed": "Could not load the preview.",
+    "sleep": "Sleep",
+    "wake": "Wake pet",
+    "reset": "Reset position",
+    "chat": "Chat (coming later)",
+    "enabled": "Enable desktop pet",
+    "alwaysOnTop": "Always on top",
+    "followWork": "Follow task activity",
+    "bubbles": "Show status bubbles",
+    "size": "Size",
+    "openMain": "Open DeepAgent Studio",
+    "waiting": "Awaiting approval",
+    "success": "Task completed",
+    "error": "Task failed"
+  },
   "settings": {
     "usage": {
       "title": "Usage statistics",
