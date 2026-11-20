@@ -280,6 +280,7 @@ async fn h219_real_main_registry_can_prepare_without_model_credentials_admission
     };
     let prepared = assembler
         .prepare_main_run_tools(MainRunPreparationRequest {
+            browser_tool: None,
             base: base(),
             sub_base: base(),
             #[cfg(all(
