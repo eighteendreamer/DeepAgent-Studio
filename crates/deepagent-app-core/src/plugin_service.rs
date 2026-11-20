@@ -440,11 +440,10 @@ struct PathSnapshot {
 }
 
 impl PluginService {
-    /// Build the plugin service with the app installation directory as the
-    /// anchor for persistent plugin state and data.
-    pub fn new(roots: PluginRoots, install_dir: impl AsRef<Path>) -> Self {
-        let plugin_data = install_dir.as_ref().join("plugins");
-        let state_root = install_dir.as_ref().to_path_buf();
+    /// Build the plugin service using the user data root for state and data.
+    pub fn new(roots: PluginRoots, state_root: impl AsRef<Path>) -> Self {
+        let state_root = state_root.as_ref().to_path_buf();
+        let plugin_data = state_root.join("plugins");
         let ledger = LedgerStore::at(state_root.clone(), state_root.join(LEDGER_FILE));
         let service = Self {
             roots,
@@ -4628,7 +4627,7 @@ fn inline_object_count(value: Option<&serde_json::Value>) -> u32 {
         .unwrap_or_default()
 }
 
-fn copy_dir(source: &Path, destination: &Path) -> Result<()> {
+pub(crate) fn copy_dir(source: &Path, destination: &Path) -> Result<()> {
     std::fs::create_dir_all(destination).map_err(|e| {
         CoreError::Persistence(format!(
             "create plugin destination {}: {e}",
@@ -4686,7 +4685,7 @@ fn commit_plugin_directory(
     result
 }
 
-fn create_plugin_staging_dir(install_root: &Path, label: &str) -> Result<PathBuf> {
+pub(crate) fn create_plugin_staging_dir(install_root: &Path, label: &str) -> Result<PathBuf> {
     create_temp_staging_dir(
         &install_root.join(".staging"),
         &sanitize_file_name(label),
@@ -4711,7 +4710,11 @@ fn create_temp_staging_dir(base: &Path, label: &str, purpose: &str) -> Result<Pa
     Ok(temp_dir.keep())
 }
 
-fn replace_plugin_dir(stage: &Path, destination: &Path, install_root: &Path) -> Result<()> {
+pub(crate) fn replace_plugin_dir(
+    stage: &Path,
+    destination: &Path,
+    install_root: &Path,
+) -> Result<()> {
     ensure_replace_dir_is_managed(stage, destination, install_root)?;
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {

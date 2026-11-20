@@ -12,8 +12,8 @@
 //!   absolute path is a validation error rather than a silent surprise.
 //! - The ledger records origin and location only. Enabled/disabled state stays in
 //!   `plugins/state.json`; a second copy of that would be two truths.
-//! - Built-in assets shipped inside the installer are not recorded: they are
-//!   removed with the installer, not by this program.
+//! - Bundled source assets are removed with the installer. Their regenerable
+//!   copies under the user data root are recorded as managed caches.
 
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};

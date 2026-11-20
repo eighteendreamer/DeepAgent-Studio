@@ -230,7 +230,7 @@ mod tests {
 
         let ledger = LedgerStore::at(paths.root.clone(), paths.install_ledger());
         ledger
-            .record(entry("demo", InstallKind::Plugin, "files/plugins/demo"))
+            .record(entry("demo", InstallKind::Plugin, "plugins/installed/demo"))
             .unwrap();
         ledger
             .record(entry(

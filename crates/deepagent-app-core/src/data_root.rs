@@ -128,6 +128,7 @@ pub struct UserPaths {
     pub recordings: PathBuf,
     /// Where personal plugin directories land (`PluginRoots::personal`).
     pub plugins: PathBuf,
+    pub builtin_plugins: PathBuf,
     /// Anchor for plugin state and plugin runtime data (`PluginService::new`).
     pub plugin_state_root: PathBuf,
     pub plugin_data: PathBuf,
@@ -155,7 +156,8 @@ impl UserPaths {
         Self {
             database: root.join(DATABASE_FILE),
             runtime_logs: root.join(RUNTIME_LOG_FILE),
-            plugins: files.join("plugins"),
+            plugins: root.join("plugins").join("installed"),
+            builtin_plugins: root.join("plugins").join("builtin"),
             plugin_state_root: root.join("plugins"),
             plugin_data: root.join("plugins").join("data"),
             skills: files.join("skills"),
@@ -203,6 +205,7 @@ impl UserPaths {
             self.attachments.clone(),
             self.recordings.clone(),
             self.plugins.clone(),
+            self.builtin_plugins.clone(),
             self.skills.clone(),
             self.skills_user.clone(),
             self.skills_marketplace.clone(),
@@ -390,6 +393,7 @@ mod tests {
             paths.attachments.clone(),
             paths.recordings.clone(),
             paths.plugins.clone(),
+            paths.builtin_plugins.clone(),
             paths.plugin_state_root.clone(),
             paths.plugin_data.clone(),
             paths.skills.clone(),
@@ -409,7 +413,7 @@ mod tests {
             assert!(path.starts_with(root), "{path:?} escapes the data root");
         }
         for dir in paths.managed_dirs() {
-            assert!(dir.starts_with(&paths.files));
+            assert!(dir.starts_with(&paths.files) || dir.starts_with(&paths.plugin_state_root));
         }
     }
 
@@ -421,7 +425,11 @@ mod tests {
             PathBuf::from("/home/dev/.deepagent").join(DATABASE_FILE)
         );
         assert_eq!(paths.runtime_logs.file_name().unwrap(), RUNTIME_LOG_FILE);
-        assert_eq!(paths.plugins, paths.files.join("plugins"));
+        assert_eq!(paths.plugins, paths.root.join("plugins").join("installed"));
+        assert_eq!(
+            paths.builtin_plugins,
+            paths.root.join("plugins").join("builtin")
+        );
         assert_eq!(paths.plugin_state_root, paths.root.join("plugins"));
         assert_eq!(paths.plugin_data, paths.root.join("plugins").join("data"));
         assert_eq!(

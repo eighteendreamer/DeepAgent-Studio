@@ -7322,26 +7322,29 @@ pub fn run() {
                     .join("resources")
                     .join("plugins")
             });
-            let resource_plugins_dir = match app.path().resource_dir() {
-                Ok(resource_dir) => {
-                    builtin_resources::locate_builtin_plugins_dir(
-                        &resource_dir,
-                        development_plugins_dir.as_deref(),
-                    )
-                }
+            let bundled_plugins_dir = match app.path().resource_dir() {
+                Ok(resource_dir) => Some(builtin_resources::locate_builtin_plugins_dir(
+                    &resource_dir,
+                    development_plugins_dir.as_deref(),
+                )),
                 Err(e) => {
                     eprintln!(
-                        "[builtin-plugins] resource_dir() failed ({e}); built-in \
-                         plugins will be unavailable for this run."
+                        "[builtin-plugins] resource_dir() failed ({e}); using managed plugins \
+                         already present in the data root."
                     );
-                    std::env::temp_dir().join("deepagent-builtin-plugins-missing")
+                    development_plugins_dir
                 }
             };
+            let builtin_plugins_dir = deepagent_app_core::plugin_storage::prepare_builtin_plugins(
+                &paths,
+                bundled_plugins_dir.as_deref(),
+            )
+            .map_err(|error| format!("prepare managed built-in plugins: {error}"))?;
             let session_plugins = builtin_resources::session_plugin_roots_from_env();
             let plugins = Arc::new(PluginService::new(
                 PluginRoots {
                     session: session_plugins.clone(),
-                    builtin: resource_plugins_dir.clone(),
+                    builtin: builtin_plugins_dir.clone(),
                     workspace: Some(workspace_root.join(".deepagent").join("plugins")),
                     personal: plugins_dir.clone(),
                 },
@@ -7678,7 +7681,7 @@ pub fn run() {
                 ("cache".to_string(), cache_dir.clone()),
                 ("mcp".to_string(), mcp_dir.clone()),
                 ("tool_results".to_string(), tool_results_dir.clone()),
-                ("builtin_plugins".to_string(), resource_plugins_dir.clone()),
+                ("builtin_plugins".to_string(), builtin_plugins_dir.clone()),
                 ("builtin_skills".to_string(), resource_skills_dir.clone()),
             ];
             if let Some(root) = workspace_skills.clone() {

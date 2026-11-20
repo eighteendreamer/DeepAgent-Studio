@@ -37,6 +37,7 @@ pub fn record_managed_dirs(target: &UserPaths) -> Result<()> {
         ("vision-cache", target.vision_cache.as_path()),
         ("tool-results", target.tool_results.as_path()),
         ("artifacts", target.artifacts.as_path()),
+        ("builtin-plugins", target.builtin_plugins.as_path()),
     ];
     for (id, path) in managed {
         let Ok(relative) = path.strip_prefix(&target.root) else {
@@ -234,7 +235,11 @@ pub fn discover_legacy_sources(
 /// current layout reads it. Hosts report this list so a dry run is honest about
 /// the second step.
 pub fn layout_fold_sources() -> Vec<&'static str> {
-    USER_ROOT_FOLDS.iter().map(|(name, _)| *name).collect()
+    USER_ROOT_FOLDS
+        .iter()
+        .map(|(name, _)| *name)
+        .chain(["files/plugins"])
+        .collect()
 }
 
 /// Move every legacy root into `target`, discovering them from the running
@@ -475,7 +480,7 @@ fn move_entry(from: &Path, to: &Path) -> Result<()> {
 }
 
 /// Compare two files byte-for-byte without loading either one whole.
-fn identical_files(a: &Path, b: &Path) -> Result<bool> {
+pub(crate) fn identical_files(a: &Path, b: &Path) -> Result<bool> {
     let stat = |path: &Path| -> Result<u64> {
         std::fs::metadata(path)
             .map(|metadata| metadata.len())
@@ -565,16 +570,16 @@ const USER_ROOT_FOLDS: [(&str, &[&str]); 7] = [
 /// plugin collections and the downloaded runtimes it wrote next to the
 /// executable. Bundled resources (`resources/plugins`, `resources/runtimes`) are
 /// installer content and stay where they are.
-const INSTALL_DIR_FOLDS: [(&str, &[&str]); 2] = [
-    ("plugins", &["files", "plugins"]),
-    ("runtimes", &["files", "runtimes"]),
-];
+const INSTALL_DIR_FOLDS: [(&str, &[&str]); 1] = [("runtimes", &["files", "runtimes"])];
 
 /// Fold the pre-`files/` layout inside the data root into the current one, so
 /// skills and runtimes written by an old build stay reachable instead of becoming
 /// orphans the new layout cannot see.
 pub fn normalize_user_root_layout(target: &UserPaths) -> Result<Vec<PathBuf>> {
-    fold_layout(target.root.as_path(), &USER_ROOT_FOLDS, &target.root)
+    crate::plugin_storage::check_directory(&target.files)?;
+    let mut moved = fold_plugin_layout(&target.root, "files/plugins", target)?;
+    moved.extend(fold_layout(&target.root, &USER_ROOT_FOLDS, &target.root)?);
+    Ok(moved)
 }
 
 /// Fold the user assets an old build wrote next to the executable into the data
@@ -583,7 +588,75 @@ pub fn fold_install_dir_layout(install_dir: &Path, target: &UserPaths) -> Result
     if same_path(install_dir, &target.root) {
         return Ok(Vec::new());
     }
-    fold_layout(install_dir, &INSTALL_DIR_FOLDS, &target.root)
+    let mut moved = fold_plugin_layout(install_dir, "plugins", target)?;
+    moved.extend(fold_layout(install_dir, &INSTALL_DIR_FOLDS, &target.root)?);
+    Ok(moved)
+}
+
+fn fold_plugin_layout(base: &Path, legacy: &str, target: &UserPaths) -> Result<Vec<PathBuf>> {
+    use crate::install_ledger::{InstallKind, LedgerStore};
+    use crate::plugin_storage::{check_directory, tree};
+
+    let source = base.join(legacy);
+    check_directory(&target.plugin_state_root)?;
+    check_directory(&target.plugins)?;
+    let source_exists = check_directory(&source)?;
+    let old_prefix = Path::new("files/plugins");
+    let ledger = LedgerStore::open(target);
+    let is_old_plugin = |entry: &crate::install_ledger::LedgerEntry| {
+        entry.kind == InstallKind::Plugin && Path::new(&entry.path).starts_with(old_prefix)
+    };
+    if !source_exists && !ledger.entries()?.iter().any(is_old_plugin) {
+        return Ok(Vec::new());
+    }
+    ledger.with_locked(|ledger| {
+        if check_directory(&source)? {
+            // Preflight both trees so the existing fold never follows links or junctions.
+            let original = tree(&source)?;
+            let installed = tree(&target.plugins)?;
+            if let Some((relative, _)) = original.iter().find(|(relative, is_dir)| {
+                installed
+                    .get(*relative)
+                    .is_some_and(|current| current != *is_dir)
+            }) {
+                return Err(CoreError::invalid(format!(
+                    "plugin migration conflicts at {}",
+                    target.plugins.join(relative).display()
+                )));
+            }
+        }
+        for entry in ledger.entries.iter().filter(|entry| is_old_plugin(entry)) {
+            entry.absolute_path(&target.root)?;
+            entry.sidecar_paths(&target.root)?;
+        }
+        let moved = fold_layout(base, &[(legacy, &["plugins", "installed"])], &target.root)?;
+        for entry in ledger
+            .entries
+            .iter_mut()
+            .filter(|entry| is_old_plugin(entry))
+        {
+            let relocated = |path: &str| {
+                let tail = Path::new(path).strip_prefix(old_prefix).ok()?;
+                let moved = target.plugins.join(tail);
+                moved.exists().then(|| {
+                    moved
+                        .strip_prefix(&target.root)
+                        .expect("managed plugin path")
+                        .display()
+                        .to_string()
+                })
+            };
+            if let Some(path) = relocated(&entry.path) {
+                entry.path = path;
+            }
+            for sidecar in &mut entry.sidecars {
+                if let Some(path) = relocated(sidecar) {
+                    *sidecar = path;
+                }
+            }
+        }
+        Ok(moved)
+    })
 }
 
 fn fold_layout(base: &Path, folds: &[(&str, &[&str])], target_root: &Path) -> Result<Vec<PathBuf>> {
@@ -764,7 +837,10 @@ mod tests {
         let reports = migrate_into(&target, std::slice::from_ref(&legacy), false).unwrap();
         assert_eq!(reports.len(), 1);
         assert!(!reports[0].skipped);
-        assert!(target.plugins.join("demo").join("plugin.json").is_file());
+        assert!(target.files.join("plugins/demo/plugin.json").is_file());
+        normalize_user_root_layout(&target).unwrap();
+        assert!(target.plugins.join("demo/plugin.json").is_file());
+        assert!(!target.files.join("plugins").exists());
         assert!(target.skills_user.join("s.txt").is_file());
         assert!(target.root.join("plugins").join("state.json").is_file());
         assert!(target.runtime_logs.is_file());
@@ -806,7 +882,8 @@ mod tests {
             "legacy",
         );
         let target = UserPaths::under(tmp.path().join("home").join(".deepagent"));
-        file(&target.plugins.join("dup.txt"), "current");
+        let target_file = target.files.join("plugins/dup.txt");
+        file(&target_file, "current");
 
         let error = migrate_into(&target, std::slice::from_ref(&legacy), false).unwrap_err();
         let message = error.to_string();
@@ -820,10 +897,7 @@ mod tests {
                 .is_file(),
             "an aborted migration must leave both sides intact"
         );
-        assert_eq!(
-            std::fs::read_to_string(target.plugins.join("dup.txt")).unwrap(),
-            "current"
-        );
+        assert_eq!(std::fs::read_to_string(target_file).unwrap(), "current");
     }
 
     #[test]
@@ -875,6 +949,71 @@ mod tests {
             "nothing may move once the database fails the gate"
         );
         assert!(!target.database.exists());
+    }
+
+    #[test]
+    fn plugin_storage_migrates_ledger_and_keeps_state_and_data() {
+        use crate::install_ledger::{
+            InstallKind, InstallSource, InstallSourceKind, LedgerEntry, LedgerStore,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = UserPaths::under(tmp.path().join(".deepagent"));
+        let old = paths.files.join("plugins");
+        file(&old.join("helper/plugin.json"), "{}");
+        file(
+            &paths.plugin_data.join("helper-personal/data.txt"),
+            "user data",
+        );
+        let state = paths.plugin_state_root.join("state.json");
+        file(&state, r#"{"enabled":{"helper@personal":false}}"#);
+        let ledger = LedgerStore::open(&paths);
+        let recorded = ledger
+            .record(LedgerEntry {
+                id: "helper@personal".into(),
+                kind: InstallKind::Plugin,
+                version: Some("1".into()),
+                source: InstallSource {
+                    kind: InstallSourceKind::Zip,
+                    spec: "helper.zip".into(),
+                },
+                path: "files/plugins/helper".into(),
+                sidecars: vec!["plugins/data/helper-personal".into()],
+                sha256: None,
+                installed_at: String::new(),
+                last_updated: None,
+            })
+            .unwrap();
+        normalize_user_root_layout(&paths).unwrap();
+        assert!(!old.exists());
+        let installed = paths.plugin_state_root.join("installed/helper");
+        assert!(installed.join("plugin.json").is_file());
+        assert_eq!(paths.plugins.join("helper"), installed);
+        assert!(normalize_user_root_layout(&paths).unwrap().is_empty());
+        assert!(ledger.prune_missing().unwrap().is_empty());
+        let current = ledger.entries().unwrap().pop().unwrap();
+        assert_eq!(current.absolute_path(&paths.root).unwrap(), installed);
+        assert_eq!(current.installed_at, recorded.installed_at);
+        assert_eq!(current.source, recorded.source);
+        assert_eq!(current.sidecars, recorded.sidecars);
+        assert!(std::fs::read_to_string(state).unwrap().contains("false"));
+        assert!(paths.plugin_data.join("helper-personal/data.txt").is_file());
+    }
+
+    #[test]
+    fn plugin_storage_refuses_conflicting_install_without_moving_other_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = UserPaths::under(tmp.path());
+        let old = target.files.join("plugins");
+        file(&old.join("demo/a.txt"), "older");
+        file(&old.join("demo/b.txt"), "unique");
+        file(&target.plugins.join("demo/a.txt"), "current");
+        assert!(normalize_user_root_layout(&target).is_err());
+        assert!(old.join("demo/b.txt").is_file());
+        assert!(!target.plugins.join("demo/b.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(target.plugins.join("demo/a.txt")).unwrap(),
+            "current"
+        );
     }
 
     #[test]
@@ -1007,7 +1146,7 @@ mod tests {
         let store =
             crate::install_ledger::LedgerStore::at(target.root.clone(), target.install_ledger());
         let entries = store.entries().unwrap();
-        assert_eq!(entries.len(), 4, "a restart must not stack the records");
+        assert_eq!(entries.len(), 5, "a restart must not stack the records");
         assert!(entries
             .iter()
             .all(|entry| entry.kind == crate::install_ledger::InstallKind::Cache));

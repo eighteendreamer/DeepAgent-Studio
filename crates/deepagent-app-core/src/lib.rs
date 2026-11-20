@@ -92,6 +92,7 @@ pub mod plugin_manifest;
 pub mod plugin_runtime;
 pub mod plugin_security;
 pub mod plugin_service;
+pub mod plugin_storage;
 pub mod project_map_service;
 pub mod project_service;
 pub mod prompt_gate;

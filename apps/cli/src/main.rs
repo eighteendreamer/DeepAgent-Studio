@@ -354,10 +354,15 @@ fn build_asset_services(
         .map_err(|error| format!("open skills service: {error}"))?
         .with_state_root(&paths.root),
     ));
+    let bundle = builtin_resources::install_resource_dir()
+        .map(|dir| builtin_resources::locate_builtin_plugins_dir(&dir, None));
+    let builtin =
+        deepagent_app_core::plugin_storage::prepare_builtin_plugins(paths, bundle.as_deref())
+            .map_err(|error| format!("prepare managed built-in plugins: {error}"))?;
     let plugins = Arc::new(PluginService::new(
         PluginRoots {
             session: builtin_resources::session_plugin_roots_from_env(),
-            builtin: builtin_resources::locate_builtin_plugins_dir(&resource_dir, None),
+            builtin,
             workspace: Some(workspace.join(".deepagent").join("plugins")),
             personal: paths.plugins.clone(),
         },
