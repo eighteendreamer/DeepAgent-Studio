@@ -1,6 +1,6 @@
-import { Download, Ellipsis, FolderOpen, RefreshCw, Search } from "lucide-react";
+import { Download, Ellipsis, FolderOpen, Package, RefreshCw, Search } from "lucide-react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   runtimeCancel,
@@ -18,27 +18,28 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../shadcn/dropdown-menu";
 import { Input } from "../shadcn/input";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "../shadcn/item";
-import { Progress } from "../shadcn/progress";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../shadcn/tooltip";
 
 const groups = ["运行环境", "语音输入", "多媒体与文档", "其他资源"] as const;
 type ResourceGroup = typeof groups[number];
 
-const resourceVisuals: Record<string, readonly [ResourceGroup, string, string]> = {
-  node: ["运行环境", "JS", "bg-green-700"],
-  python: ["运行环境", "Py", "bg-blue-700"],
-  java: ["运行环境", "J", "bg-orange-700"],
-  "speech-model": ["语音输入", "W", "bg-teal-700"],
-  "speech-engine": ["语音输入", "CLI", "bg-cyan-700"],
-  "video-media-tools": ["多媒体与文档", "FF", "bg-green-800"],
-  "doc-convert": ["多媒体与文档", "Pd", "bg-slate-600"],
-  "pdf-render": ["多媒体与文档", "PDF", "bg-rose-700"],
-  "office-suite": ["多媒体与文档", "LO", "bg-indigo-700"],
+const resourceVisuals: Partial<Record<string, readonly [ResourceGroup, string]>> = {
+  "node": ["运行环境", new URL("../../runtime-logos/node.svg", import.meta.url).href],
+  "python": ["运行环境", new URL("../../runtime-logos/python.svg", import.meta.url).href],
+  "java": ["运行环境", new URL("../../runtime-logos/temurin.png", import.meta.url).href],
+  "speech-model": ["语音输入", new URL("../../runtime-logos/whisper.png", import.meta.url).href],
+  "speech-engine": ["语音输入", new URL("../../runtime-logos/whisper-cpp.jpg", import.meta.url).href],
+  "video-media-tools": ["多媒体与文档", new URL("../../runtime-logos/ffmpeg.ico", import.meta.url).href],
+  "doc-convert": ["多媒体与文档", new URL("../../runtime-logos/pandoc.svg", import.meta.url).href],
+  "pdf-render": ["多媒体与文档", new URL("../../runtime-logos/chromium.svg", import.meta.url).href],
+  "office-suite": ["多媒体与文档", new URL("../../runtime-logos/libreoffice.png", import.meta.url).href],
 };
 
-function resourceVisual(runtime: RuntimeStatus) {
-  return resourceVisuals[runtime.capability] ?? ["其他资源", runtime.name.slice(0, 2), "bg-slate-600"] as const;
+function resourceVisual(runtime: RuntimeStatus): readonly [ResourceGroup, string?] {
+  return resourceVisuals[runtime.capability] ?? ["其他资源"];
 }
+
+type ActiveDownload = { started: boolean; ready: boolean; cancelRequested: boolean };
 
 function unavailableReason(runtime: RuntimeStatus) {
   if (runtime.installed) return undefined;
@@ -74,6 +75,9 @@ export function RuntimeResourceSettings() {
   const [roots, setRoots] = useState<RuntimeRoots | null>(null);
   const [loading, setLoading] = useState(true);
   const [installingIds, setInstallingIds] = useState<Set<string>>(new Set());
+  const activeDownloads = useRef(new Map<string, ActiveDownload>());
+  const [cancellingIds, setCancellingIds] = useState<Set<string>>(new Set());
+  const [committingIds, setCommittingIds] = useState<Set<string>>(new Set());
   const [failedIds, setFailedIds] = useState<Set<string>>(new Set());
   const [uninstallTarget, setUninstallTarget] = useState<RuntimeStatus | null>(null);
   const [uninstalling, setUninstalling] = useState(false);
@@ -99,20 +103,52 @@ export function RuntimeResourceSettings() {
     refresh();
   }, []);
 
+  const interruptDownload = async (runtime: RuntimeStatus, transfer: ActiveDownload) => {
+    try {
+      const cancelled = await runtimeCancel(runtime.id);
+      if (!cancelled && activeDownloads.current.get(runtime.id) === transfer) {
+        setCommittingIds((ids) => new Set(ids).add(runtime.id));
+      }
+    } catch (error) {
+      console.error("runtime_cancel failed:", error);
+      if (activeDownloads.current.get(runtime.id) === transfer) {
+        transfer.cancelRequested = false;
+        message.error(`${runtime.name} 取消失败`);
+      }
+    } finally {
+      if (activeDownloads.current.get(runtime.id) === transfer) {
+        setCancellingIds((ids) => new Set([...ids].filter((id) => id !== runtime.id)));
+      }
+    }
+  };
+
   const installRuntime = async (runtime: RuntimeStatus) => {
+    if (activeDownloads.current.has(runtime.id)) return;
+    const transfer = { started: false, ready: false, cancelRequested: false };
+    activeDownloads.current.set(runtime.id, transfer);
     setInstallingIds((ids) => new Set(ids).add(runtime.id));
     setFailedIds((ids) => new Set([...ids].filter((id) => id !== runtime.id)));
     let unlisten: (() => void) | undefined;
     try {
       unlisten = await runtimeProgressSubscribe(runtime.id, (p) => {
+        if (!transfer.started) return;
+        if (!transfer.ready) {
+          transfer.ready = true;
+          if (transfer.cancelRequested) void interruptDownload(runtime, transfer);
+        }
         setProgress((prev) => ({ ...prev, [runtime.id]: p }));
       });
+      if (transfer.cancelRequested) {
+        message.info(`${runtime.name} 已取消下载`);
+        return;
+      }
+      transfer.started = true;
       const installed = await runtimeInstall(runtime.id);
       setRuntimes((items) => items.map((item) => item.id === installed.id ? installed : item));
       message.success(`${runtime.name} 已安装`);
       refresh();
     } catch (error) {
-      if (String(error).endsWith("download cancelled")) {
+      if (String(error) === "download cancelled") {
         message.info(`${runtime.name} 已取消下载`);
       } else {
         console.error("runtime_install failed:", error);
@@ -121,6 +157,9 @@ export function RuntimeResourceSettings() {
       }
     } finally {
       unlisten?.();
+      activeDownloads.current.delete(runtime.id);
+      setCancellingIds((ids) => new Set([...ids].filter((id) => id !== runtime.id)));
+      setCommittingIds((ids) => new Set([...ids].filter((id) => id !== runtime.id)));
       setInstallingIds((ids) => new Set([...ids].filter((id) => id !== runtime.id)));
       setProgress((prev) => {
         const next = { ...prev };
@@ -158,14 +197,12 @@ export function RuntimeResourceSettings() {
     }
   };
 
-  const cancelRuntime = async (runtime: RuntimeStatus) => {
-    try {
-      await runtimeCancel(runtime.id);
-      message.info(`已请求取消 ${runtime.name}`);
-    } catch (e) {
-      console.error("runtime_cancel failed:", e);
-      message.error("取消失败");
-    }
+  const cancelRuntime = (runtime: RuntimeStatus) => {
+    const transfer = activeDownloads.current.get(runtime.id);
+    if (!transfer || transfer.cancelRequested) return;
+    transfer.cancelRequested = true;
+    setCancellingIds((ids) => new Set(ids).add(runtime.id));
+    if (transfer.ready) void interruptDownload(runtime, transfer);
   };
 
   const migrateResources = async () => {
@@ -273,16 +310,19 @@ export function RuntimeResourceSettings() {
                 <h3 className="mb-2 text-[14px] font-semibold text-text-base">{group}</h3>
                 <ItemGroup className="gap-2">
                   {entries.map((runtime) => {
-                    const [, icon, iconColor] = resourceVisual(runtime);
+                    const [, logo] = resourceVisual(runtime);
                     const installing = installingIds.has(runtime.id);
                     const unavailable = unavailableReason(runtime);
                     const failed = !runtime.installed && failedIds.has(runtime.id);
-                    const current = progress[runtime.id];
-                    const percent = runtimeProgressPercent(current);
+                    const percent = runtimeProgressPercent(progress[runtime.id]);
+                    const cancelling = cancellingIds.has(runtime.id);
+                    const committing = committingIds.has(runtime.id);
                     const canUninstall = runtime.installed && runtime.install_source !== "system" && runtime.install_source !== "fallback";
                     return (
                       <Item key={runtime.id} variant="outline" size="sm" className="flex-wrap gap-x-3 gap-y-2 rounded-xl bg-elevated-bg sm:px-4">
-                        <ItemMedia aria-hidden="true" className={`size-9 rounded-lg text-[11px] font-bold text-white ${iconColor}`}>{icon}</ItemMedia>
+                        <ItemMedia aria-hidden="true" className="size-9 rounded-lg bg-slate-50 p-1.5">
+                          {logo ? <img alt="" src={logo} draggable={false} className="size-full object-contain" /> : <Package className="size-5 text-slate-600" />}
+                        </ItemMedia>
                         <ItemContent className="min-w-0 flex-1 basis-32 gap-0.5">
                           <ItemTitle className="flex flex-wrap items-center gap-x-2 gap-y-0.5 font-semibold text-text-base">
                             <span className="min-w-0 break-words">{runtime.name}</span>
@@ -293,7 +333,16 @@ export function RuntimeResourceSettings() {
                         </ItemContent>
                         <ItemActions className="ml-auto">
                           {installing ? (
-                            <Button size="sm" variant="outline" className={outlineButton} onClick={() => cancelRuntime(runtime)}>取消</Button>
+                            <Tooltip>
+                              <TooltipTrigger render={
+                                <Button size="sm" variant="outline" className={`${outlineButton} min-w-12 tabular-nums`}
+                                  aria-label={cancelling ? `正在取消 ${runtime.name}` : committing ? `正在安装 ${runtime.name}` : `取消下载 ${runtime.name}${percent === null ? "" : `，已下载 ${percent}%`}`}
+                                  disabled={cancelling || committing} onClick={() => cancelRuntime(runtime)} />
+                              }>
+                                {cancelling ? "取消中…" : committing ? "安装中…" : percent === null ? "…" : `${percent}%`}
+                              </TooltipTrigger>
+                              <TooltipContent>取消下载</TooltipContent>
+                            </Tooltip>
                           ) : runtime.installed ? (
                             <>
                               {runtime.install_path && (
@@ -325,12 +374,6 @@ export function RuntimeResourceSettings() {
                             <Button size="sm" variant="outline" className={outlineButton} onClick={() => installRuntime(runtime)}>{failed ? "重试" : "下载"}</Button>
                           )}
                         </ItemActions>
-                        {installing && (
-                          <div className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 text-[12px] tabular-nums text-text-secondary sm:pl-12">
-                            <Progress aria-label={`${runtime.name} 下载进度`} value={percent} className="h-1 min-w-16 flex-1 bg-hover-bg" />
-                            <span>{!current ? "准备下载…" : `${formatBytes(current.downloaded)}${current.total ? ` / ${formatBytes(current.total)}` : ""}${percent === null ? "" : ` · ${percent}%`}`}</span>
-                          </div>
-                        )}
                       </Item>
                     );
                   })}

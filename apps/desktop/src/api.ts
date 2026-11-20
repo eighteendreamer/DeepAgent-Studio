@@ -3235,9 +3235,9 @@ export async function runtimeInstall(id: string): Promise<RuntimeStatus> {
   throw new Error("runtime install requires the desktop app");
 }
 
-export async function runtimeCancel(id: string): Promise<void> {
+export async function runtimeCancel(id: string): Promise<boolean> {
   const invoke = getInvoke();
-  if (invoke) await invoke("runtime_cancel", { id });
+  return invoke ? invoke<boolean>("runtime_cancel", { id }) : false;
 }
 
 export async function runtimeUninstall(id: string): Promise<boolean> {

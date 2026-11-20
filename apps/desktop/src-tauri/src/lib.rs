@@ -6570,9 +6570,8 @@ async fn runtime_install(
 }
 
 #[tauri::command]
-fn runtime_cancel(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    state.runtime.cancel(&id);
-    Ok(())
+async fn runtime_cancel(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    state.runtime.cancel(&id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

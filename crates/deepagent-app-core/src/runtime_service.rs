@@ -21,12 +21,13 @@ use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use deepagent_core::error::{CoreError, Result};
 use sha2::{Digest, Sha256};
+use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 use crate::install_ledger::LedgerStore;
 
@@ -383,7 +384,7 @@ pub trait Downloader: Send + Sync {
         &self,
         url: &str,
         dest: &Path,
-        cancel: &AtomicBool,
+        cancel: &CancellationToken,
         progress: &ProgressFn,
     ) -> Result<()>;
 }
@@ -398,7 +399,7 @@ impl Downloader for UnavailableDownloader {
         &self,
         _url: &str,
         _dest: &Path,
-        _cancel: &AtomicBool,
+        _cancel: &CancellationToken,
         _progress: &ProgressFn,
     ) -> Result<()> {
         Err(CoreError::Other(
@@ -415,11 +416,88 @@ pub struct RuntimeService {
     /// Read-only lookup roots used for compatibility with older installs.
     lookup_roots: Vec<PathBuf>,
     downloader: Arc<dyn Downloader>,
-    /// Per-id cancellation flags for in-flight installs.
-    cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// One writer per resource, including its cleanup and final install.
+    downloads: Mutex<HashMap<String, Arc<RuntimeDownload>>>,
     /// Set by a host that keeps an install ledger (`with_state_root`).
     ledger: Option<LedgerStore>,
     probes: RuntimeProbeCache,
+}
+
+#[derive(Clone)]
+enum DownloadState {
+    Downloading,
+    Cancelling,
+    Installing,
+    Cancelled,
+    CleanupFailed(String),
+    Finished,
+}
+
+struct RuntimeDownload {
+    token: CancellationToken,
+    state: watch::Sender<DownloadState>,
+}
+
+impl RuntimeDownload {
+    fn begin_installing(&self) -> Result<()> {
+        if self.state.send_if_modified(|state| {
+            if matches!(state, DownloadState::Downloading) {
+                *state = DownloadState::Installing;
+                true
+            } else {
+                false
+            }
+        }) {
+            Ok(())
+        } else {
+            Err(download_cancelled())
+        }
+    }
+}
+
+struct DownloadRegistration<'a> {
+    service: &'a RuntimeService,
+    id: &'a str,
+    download: Arc<RuntimeDownload>,
+}
+
+impl Drop for DownloadRegistration<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut downloads) = self.service.downloads.lock() {
+            if downloads
+                .get(self.id)
+                .is_some_and(|op| Arc::ptr_eq(op, &self.download))
+            {
+                downloads.remove(self.id);
+            }
+        }
+        // A dropped install future must also wake cancel waiters, without claiming successful cleanup.
+        self.download.state.send_if_modified(|state| match state {
+            DownloadState::Cancelled
+            | DownloadState::CleanupFailed(_)
+            | DownloadState::Finished => false,
+            _ => {
+                *state = DownloadState::Finished;
+                true
+            }
+        });
+    }
+}
+
+fn download_cancelled() -> CoreError {
+    CoreError::Other("download cancelled".to_string())
+}
+
+#[cfg(feature = "runtimes")]
+async fn interruptible<T>(
+    cancel: &CancellationToken,
+    work: impl std::future::Future<Output = T>,
+) -> Result<T> {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(download_cancelled()),
+        result = work => Ok(result),
+    }
 }
 
 impl RuntimeService {
@@ -488,7 +566,7 @@ impl RuntimeService {
             active_root,
             lookup_roots,
             downloader,
-            cancels: Mutex::new(HashMap::new()),
+            downloads: Mutex::new(HashMap::new()),
             ledger: None,
             probes,
         }
@@ -869,11 +947,37 @@ impl RuntimeService {
         }
     }
 
-    /// Request cancellation of an in-flight install for `id`.
-    pub fn cancel(&self, id: &str) {
-        if let Ok(map) = self.cancels.lock() {
-            if let Some(flag) = map.get(id) {
-                flag.store(true, Ordering::SeqCst);
+    /// Interrupt the active download and wait for its temporary files to be removed.
+    /// An installation that has already started writing its final destination is not interrupted.
+    pub async fn cancel(&self, id: &str) -> Result<bool> {
+        let download = self
+            .downloads
+            .lock()
+            .map_err(|_| CoreError::Other("runtime download registry poisoned".into()))?
+            .get(id)
+            .cloned();
+        let Some(download) = download else {
+            return Ok(false);
+        };
+        let mut state = download.state.subscribe();
+        download.state.send_if_modified(|state| {
+            if matches!(state, DownloadState::Downloading) {
+                *state = DownloadState::Cancelling;
+                true
+            } else {
+                false
+            }
+        });
+        loop {
+            let phase = state.borrow_and_update().clone();
+            match phase {
+                DownloadState::Cancelling => download.token.cancel(),
+                DownloadState::Cancelled => return Ok(true),
+                DownloadState::CleanupFailed(error) => return Err(CoreError::Other(error)),
+                _ => return Ok(false),
+            }
+            if state.changed().await.is_err() {
+                return Ok(false);
             }
         }
     }
@@ -949,19 +1053,94 @@ impl RuntimeService {
             .artifact()
             .ok_or_else(|| CoreError::Other(format!("'{id}' has no artifact for this platform")))?
             .clone();
-        if !artifact.files.is_empty() {
+        let op = Arc::new(RuntimeDownload {
+            token: CancellationToken::new(),
+            state: watch::channel(DownloadState::Downloading).0,
+        });
+        {
+            let mut downloads = self
+                .downloads
+                .lock()
+                .map_err(|_| CoreError::Other("runtime download registry poisoned".into()))?;
+            if downloads.contains_key(id) {
+                return Err(CoreError::Other(format!(
+                    "runtime '{id}' already has an active download"
+                )));
+            }
+            downloads.insert(id.to_string(), op.clone());
+        }
+        let registration = DownloadRegistration {
+            service: self,
+            id,
+            download: op.clone(),
+        };
+        progress(0, None); // The host can now cancel, including before the HTTP headers arrive.
+        let mut cleanup_error = None;
+        let result = async {
             std::fs::create_dir_all(&self.active_root)
                 .map_err(|e| CoreError::Other(format!("create runtimes dir: {e}")))?;
-            let cancel = Arc::new(AtomicBool::new(false));
-            if let Ok(mut map) = self.cancels.lock() {
-                map.insert(id.to_string(), cancel.clone());
-            }
-            let install_result = self
-                .install_multi_file_artifact(id, &artifact, &cancel, progress)
+            let staging = tempfile::Builder::new()
+                .prefix(".download-")
+                .tempdir_in(&self.active_root)
+                .map_err(|e| CoreError::Other(format!("create download staging directory: {e}")))?;
+            let result = self
+                .install_staged(&entry, &artifact, staging.path(), &op, progress)
                 .await;
-            self.clear_cancel(id);
-            install_result?;
-            self.record_install(&entry, &artifact);
+            let path = staging.path().to_path_buf();
+            if let Err(error) = staging.close() {
+                let error = format!(
+                    "clean runtime '{id}' download staging '{}': {error}",
+                    path.display()
+                );
+                cleanup_error = Some(error.clone());
+                return Err(CoreError::Other(error));
+            }
+            result
+        }
+        .await;
+        // Publish completion only after the staging directory has been removed.
+        let mut cancelled = false;
+        {
+            let mut downloads = self
+                .downloads
+                .lock()
+                .map_err(|_| CoreError::Other("runtime download registry poisoned".into()))?;
+            downloads.remove(id);
+            op.state.send_modify(|state| {
+                if let Some(error) = cleanup_error {
+                    *state = DownloadState::CleanupFailed(error);
+                } else {
+                    cancelled = matches!(state, DownloadState::Cancelling);
+                    *state = if cancelled {
+                        DownloadState::Cancelled
+                    } else {
+                        DownloadState::Finished
+                    };
+                }
+            });
+        }
+        drop(registration);
+        if cancelled {
+            Err(download_cancelled())
+        } else {
+            result
+        }
+    }
+
+    async fn install_staged(
+        &self,
+        entry: &RuntimeEntry,
+        artifact: &RuntimeArtifact,
+        staging: &Path,
+        op: &RuntimeDownload,
+        progress: Arc<ProgressFn>,
+    ) -> Result<RuntimeStatusDto> {
+        let id = &entry.id;
+        let cancel = &op.token;
+        if !artifact.files.is_empty() {
+            self.install_multi_file_artifact(id, artifact, staging, op, progress)
+                .await?;
+            self.record_install(entry, artifact);
             return self
                 .status(id)
                 .ok_or_else(|| CoreError::Other(format!("runtime '{id}' vanished after install")));
@@ -978,15 +1157,7 @@ impl RuntimeService {
             )));
         }
 
-        std::fs::create_dir_all(&self.active_root)
-            .map_err(|e| CoreError::Other(format!("create runtimes dir: {e}")))?;
-        let tmp = download_temp_path(&self.active_root, id, &artifact);
-
-        // Register a cancel flag for this install.
-        let cancel = Arc::new(AtomicBool::new(false));
-        if let Ok(mut map) = self.cancels.lock() {
-            map.insert(id.to_string(), cancel.clone());
-        }
+        let tmp = staging.join(download_filename(artifact));
 
         // Download. Try the canonical URL first, then configured mirrors.
         let mut urls = Vec::with_capacity(1 + artifact.mirror_urls.len());
@@ -997,7 +1168,7 @@ impl RuntimeService {
             let dl_progress = progress.clone();
             match self
                 .downloader
-                .download(url, &tmp, &cancel, &move |d, t| dl_progress(d, t))
+                .download(url, &tmp, cancel, &move |d, t| dl_progress(d, t))
                 .await
             {
                 Ok(()) => {
@@ -1005,17 +1176,15 @@ impl RuntimeService {
                     break;
                 }
                 Err(e) => {
-                    let _ = std::fs::remove_file(&tmp);
-                    if cancel.load(Ordering::SeqCst) {
-                        self.clear_cancel(id);
+                    if cancel.is_cancelled() {
                         return Err(e);
                     }
+                    let _ = std::fs::remove_file(&tmp);
                     last_error = Some(format!("{url}: {e}"));
                 }
             }
         }
         if let Some(e) = last_error {
-            self.clear_cancel(id);
             return Err(CoreError::Other(format!(
                 "download failed for '{id}' after trying {} URL(s): {e}",
                 urls.len()
@@ -1028,19 +1197,18 @@ impl RuntimeService {
                 Ok(h) => h,
                 Err(e) => {
                     let _ = std::fs::remove_file(&tmp);
-                    self.clear_cancel(id);
                     return Err(e);
                 }
             };
             if actual != expected_hash.to_lowercase() {
                 let _ = std::fs::remove_file(&tmp);
-                self.clear_cancel(id);
                 return Err(CoreError::Other(format!(
                     "checksum mismatch for '{id}': expected {expected_hash}, got {actual}"
                 )));
             }
         }
 
+        op.begin_installing()?;
         // Install.
         let dest_dir = self.active_root.join(&artifact.dest_subdir);
         let install_result = match artifact.archive {
@@ -1050,8 +1218,6 @@ impl RuntimeService {
             ArchiveKind::Raw => copy_raw(&tmp, &dest_dir, &artifact.file_name),
             ArchiveKind::Installer => run_installer_silent(&tmp, &dest_dir),
         };
-        let _ = std::fs::remove_file(&tmp);
-        self.clear_cancel(id);
         install_result?;
         let probe = dest_dir.join(artifact.probe.as_deref().unwrap_or(&entry.probe));
         let probe_found = if is_installer {
@@ -1067,7 +1233,7 @@ impl RuntimeService {
             )));
         }
 
-        self.record_install(&entry, &artifact);
+        self.record_install(entry, artifact);
         self.status(id)
             .ok_or_else(|| CoreError::Other(format!("runtime '{id}' vanished after install")))
     }
@@ -1076,7 +1242,8 @@ impl RuntimeService {
         &self,
         id: &str,
         artifact: &RuntimeArtifact,
-        cancel: &AtomicBool,
+        staging: &Path,
+        op: &RuntimeDownload,
         progress: Arc<ProgressFn>,
     ) -> Result<()> {
         if !artifact_integrity_pinned(artifact) {
@@ -1092,17 +1259,16 @@ impl RuntimeService {
         }
 
         let dest_dir = self.active_root.join(&artifact.dest_subdir);
-        let stage_dir = self.active_root.join(format!(".install-{id}.tmp"));
-        let _ = std::fs::remove_dir_all(&stage_dir);
-        std::fs::create_dir_all(&stage_dir)
+        let stage_dir = staging.join("files");
+        let cancel = &op.token;
+        std::fs::create_dir(&stage_dir)
             .map_err(|e| CoreError::Other(format!("create staging dir: {e}")))?;
 
         let total = aggregate_file_size(&artifact.files);
         let mut completed = 0u64;
         for file in &artifact.files {
-            if cancel.load(Ordering::SeqCst) {
-                let _ = std::fs::remove_dir_all(&stage_dir);
-                return Err(CoreError::Other("download cancelled".to_string()));
+            if cancel.is_cancelled() {
+                return Err(download_cancelled());
             }
 
             let rel = safe_relative_path(&file.path)?;
@@ -1121,17 +1287,11 @@ impl RuntimeService {
                 completed,
                 total,
             )
-            .await
-            .inspect_err(|_e| {
-                let _ = std::fs::remove_dir_all(&stage_dir);
-            })?;
+            .await?;
 
             if let Some(expected) = file.sha256.as_ref() {
-                let actual = sha256_file(&out).inspect_err(|_e| {
-                    let _ = std::fs::remove_dir_all(&stage_dir);
-                })?;
+                let actual = sha256_file(&out)?;
                 if actual != expected.to_lowercase() {
-                    let _ = std::fs::remove_dir_all(&stage_dir);
                     return Err(CoreError::Other(format!(
                         "checksum mismatch for '{id}' file '{}': expected {expected}, got {actual}",
                         file.path
@@ -1147,6 +1307,7 @@ impl RuntimeService {
             progress(completed, total);
         }
 
+        op.begin_installing()?;
         let _ = std::fs::remove_dir_all(&dest_dir);
         if let Some(parent) = dest_dir.parent() {
             std::fs::create_dir_all(parent)
@@ -1155,12 +1316,6 @@ impl RuntimeService {
         std::fs::rename(&stage_dir, &dest_dir)
             .map_err(|e| CoreError::Other(format!("install runtime directory: {e}")))?;
         Ok(())
-    }
-
-    fn clear_cancel(&self, id: &str) {
-        if let Ok(mut map) = self.cancels.lock() {
-            map.remove(id);
-        }
     }
 }
 
@@ -1607,16 +1762,15 @@ fn same_path(a: &Path, b: &Path) -> bool {
     }
 }
 
-fn download_temp_path(root: &Path, id: &str, artifact: &RuntimeArtifact) -> PathBuf {
+fn download_filename(artifact: &RuntimeArtifact) -> &str {
     if artifact.archive == ArchiveKind::Installer {
-        let installer_name = Path::new(&artifact.file_name)
+        return Path::new(&artifact.file_name)
             .file_name()
             .and_then(|name| name.to_str())
             .filter(|name| !name.trim().is_empty())
             .unwrap_or("installer.exe");
-        return root.join(format!(".dl-{id}-{installer_name}"));
     }
-    root.join(format!(".dl-{id}.tmp"))
+    "payload.tmp"
 }
 
 fn artifact_integrity_pinned(artifact: &RuntimeArtifact) -> bool {
@@ -1658,7 +1812,7 @@ async fn download_with_mirrors(
     downloader: &dyn Downloader,
     file: &RuntimeFileArtifact,
     dest: &Path,
-    cancel: &AtomicBool,
+    cancel: &CancellationToken,
     progress: Arc<ProgressFn>,
     completed: u64,
     total: Option<u64>,
@@ -1685,7 +1839,7 @@ async fn download_with_mirrors(
             Ok(()) => return Ok(()),
             Err(e) => {
                 let _ = std::fs::remove_file(dest);
-                if cancel.load(Ordering::SeqCst) {
+                if cancel.is_cancelled() {
                     return Err(e);
                 }
                 last_error = Some(format!("{url}: {e}"));
@@ -2405,35 +2559,39 @@ impl Downloader for ReqwestDownloader {
         &self,
         url: &str,
         dest: &Path,
-        cancel: &AtomicBool,
+        cancel: &CancellationToken,
         progress: &ProgressFn,
     ) -> Result<()> {
-        use tokio::io::AsyncWriteExt;
-
         if !url.starts_with("https://") {
             return Err(CoreError::Other(format!("refusing non-HTTPS url: {url}")));
         }
-        let mut resp = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Other(format!("request failed: {e}")))?
-            .error_for_status()
-            .map_err(|e| CoreError::Other(format!("download failed: {e}")))?;
-        let total = resp.content_length();
-        let mut file = tokio::fs::File::create(dest)
-            .await
-            .map_err(|e| CoreError::Other(format!("create temp file: {e}")))?;
-        let mut downloaded = 0u64;
+        stream_runtime_download(self.client.get(url), dest, cancel, progress).await
+    }
+}
+
+#[cfg(feature = "runtimes")]
+async fn stream_runtime_download(
+    request: reqwest::RequestBuilder,
+    dest: &Path,
+    cancel: &CancellationToken,
+    progress: &ProgressFn,
+) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+
+    let mut resp = interruptible(cancel, request.send())
+        .await?
+        .map_err(|e| CoreError::Other(format!("request failed: {e}")))?
+        .error_for_status()
+        .map_err(|e| CoreError::Other(format!("download failed: {e}")))?;
+    let total = resp.content_length();
+    let mut file = tokio::fs::File::create(dest)
+        .await
+        .map_err(|e| CoreError::Other(format!("create temp file: {e}")))?;
+    let mut downloaded = 0u64;
+    let result = async {
         loop {
-            if cancel.load(Ordering::SeqCst) {
-                let _ = file.shutdown().await;
-                return Err(CoreError::Other("download cancelled".to_string()));
-            }
-            match resp
-                .chunk()
-                .await
+            match interruptible(cancel, resp.chunk())
+                .await?
                 .map_err(|e| CoreError::Other(format!("download stream error: {e}")))?
             {
                 Some(chunk) => {
@@ -2446,11 +2604,17 @@ impl Downloader for ReqwestDownloader {
                 None => break,
             }
         }
-        file.flush()
-            .await
-            .map_err(|e| CoreError::Other(format!("flush temp file: {e}")))?;
         Ok(())
     }
+    .await;
+    drop(resp);
+    // Tokio may still have a buffered file write in flight. Drain it before
+    // returning so the installer can close and delete the directory on Windows.
+    let flush = file
+        .flush()
+        .await
+        .map_err(|e| CoreError::Other(format!("flush temp file: {e}")));
+    result.and(flush)
 }
 
 /// Build a [`RuntimeProgressDto`] (convenience for the command layer).
@@ -2484,7 +2648,7 @@ mod tests {
             &self,
             _url: &str,
             dest: &Path,
-            _cancel: &AtomicBool,
+            _cancel: &CancellationToken,
             progress: &ProgressFn,
         ) -> Result<()> {
             std::fs::write(dest, &self.bytes).unwrap();
@@ -2504,7 +2668,7 @@ mod tests {
             &self,
             url: &str,
             dest: &Path,
-            _cancel: &AtomicBool,
+            _cancel: &CancellationToken,
             progress: &ProgressFn,
         ) -> Result<()> {
             let mut seen = self.seen_urls.lock().unwrap();
@@ -2648,6 +2812,133 @@ fn main() {{
 
     fn noop_progress() -> Arc<ProgressFn> {
         Arc::new(|_d, _t| {})
+    }
+
+    // The server never sends the remaining bytes. Cancellation must wake both a
+    // pending request (headers) and an open response (body), not just poll after a chunk.
+    #[cfg(feature = "runtimes")]
+    #[tokio::test]
+    async fn cancel_interrupts_stalled_http_and_removes_single_and_multi_file_staging() {
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        use tokio::sync::Notify;
+        use tokio::time::timeout;
+
+        struct LoopbackDownload {
+            url: String,
+        }
+        #[async_trait]
+        impl Downloader for LoopbackDownload {
+            async fn download(
+                &self,
+                _: &str,
+                dest: &Path,
+                cancel: &CancellationToken,
+                progress: &ProgressFn,
+            ) -> Result<()> {
+                let client = reqwest::Client::builder().no_proxy().build().unwrap();
+                stream_runtime_download(client.get(&self.url), dest, cancel, progress).await
+            }
+        }
+
+        for multi_file in [false, true] {
+            for send_partial_body in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                    .await
+                    .unwrap();
+                let url = format!("http://{}", listener.local_addr().unwrap());
+                let received = Arc::new(Notify::new());
+                let partial = Arc::new(Notify::new());
+                let server = tokio::spawn({
+                    let received = received.clone();
+                    async move {
+                        let (mut socket, _) = listener.accept().await.unwrap();
+                        let mut request = Vec::new();
+                        while !request.ends_with(b"\r\n\r\n") {
+                            request.push(socket.read_u8().await.unwrap());
+                        }
+                        if send_partial_body {
+                            socket
+                                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 99\r\n\r\nabc")
+                                .await
+                                .unwrap();
+                        }
+                        received.notify_one();
+                        assert_eq!(
+                            socket.read(&mut [0u8; 1]).await.unwrap(),
+                            0,
+                            "request socket was closed"
+                        );
+                    }
+                });
+                let entry = if multi_file {
+                    multi_file_entry()
+                } else {
+                    raw_entry(Some(sha256_of(b"abc")))
+                };
+                let id = entry.id.clone();
+                let service = Arc::new(RuntimeService::with_registry(
+                    &[dir.path().to_path_buf()],
+                    Arc::new(LoopbackDownload { url }),
+                    vec![entry],
+                ));
+                let install = tokio::spawn({
+                    let service = service.clone();
+                    let partial = partial.clone();
+                    let id = id.clone();
+                    async move {
+                        service
+                            .install(
+                                &id,
+                                Arc::new(move |bytes, _| {
+                                    if bytes > 0 {
+                                        partial.notify_one();
+                                    }
+                                }),
+                            )
+                            .await
+                    }
+                });
+                let deadline = Duration::from_secs(5);
+                timeout(deadline, received.notified()).await.unwrap();
+                if send_partial_body {
+                    timeout(deadline, partial.notified()).await.unwrap();
+                }
+                let stages = || {
+                    std::fs::read_dir(dir.path())
+                        .unwrap()
+                        .flatten()
+                        .filter(|entry| {
+                            entry
+                                .file_name()
+                                .to_string_lossy()
+                                .starts_with(".download-")
+                        })
+                        .count()
+                };
+                assert_eq!(stages(), 1);
+                assert!(service
+                    .install(&id, noop_progress())
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("active download"));
+                assert!(timeout(deadline, service.cancel(&id))
+                    .await
+                    .unwrap()
+                    .unwrap());
+                assert_eq!(stages(), 0, "cancel must wait for staging cleanup");
+                assert_eq!(
+                    install.await.unwrap().unwrap_err().to_string(),
+                    "download cancelled"
+                );
+                assert!(!service.is_installed(&id));
+                assert!(!service.cancel(&id).await.unwrap());
+                timeout(deadline, server).await.unwrap().unwrap();
+            }
+        }
     }
 
     #[tokio::test]
