@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../components/shadcn/button";
-import { ContextMenu, ContextMenuTrigger } from "../components/shadcn/context-menu";
+import { ContextMenu, ContextMenuTrigger } from "../components/shadcn/base-context-menu";
 import { PetMenu } from "./PetMenu";
 import { PetPlayer } from "./PetPlayer";
 import { getPet, getWork, isPetAwake, listenPet, petDrag, petReady, renderFailed, setPetInteraction,
@@ -125,8 +125,8 @@ export function PetWindow() {
         else if (cue === "success" || cue === "error") setCompletion(null);
       }} onFailure={report} />
     {showBubble && <div ref={bubble} role="status" className="pet-bubble">{t(`desktopPet.${cue}`)}</div>}
-    <ContextMenu modal={false} onOpenChange={setMenuOpen}>
-      <ContextMenuTrigger asChild>
+    <ContextMenu onOpenChange={setMenuOpen}>
+      <ContextMenuTrigger render={
         <Button ref={body} aria-label={character.name} variant="ghost" className="pet-hit" style={{
           left: `${hit.x / canvas.width * 100}%`, top: `${hit.y / canvas.height * 100}%`,
           width: `${hit.width / canvas.width * 100}%`, height: `${hit.height / canvas.height * 100}%`,
@@ -154,7 +154,7 @@ export function PetWindow() {
             setGesture("click");
           }
         }} />
-      </ContextMenuTrigger>
+      } />
       <PetMenu character={character} open={menuOpen} onError={report} onPlay={name => {
         window.clearTimeout(gestureTimer.current);
         setGesture(null);
