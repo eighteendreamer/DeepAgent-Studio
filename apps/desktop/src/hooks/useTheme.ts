@@ -1,7 +1,9 @@
 import { useThemeContext } from "../theme/ThemeProvider";
+import { fontStack } from "../theme/themeFonts";
 import type {
   ThemeMode as NewThemeMode,
   ThemePalette,
+  ThemePreferences,
   ThemeSwitchOrigin as NewThemeSwitchOrigin,
   ThemeVariant,
 } from "../theme/themeTypes";
@@ -13,8 +15,8 @@ export interface ThemeConfigDetails {
   accent: string;
   bg: string;
   fg: string;
-  uiFont: string;
-  codeFont: string;
+  uiFont: ThemePreferences["uiFont"];
+  codeFont: ThemePreferences["codeFont"];
   translucentSidebar: boolean;
   contrast: number;
   cssVariables: Record<string, string>;
@@ -28,7 +30,7 @@ export interface ThemeConfig {
 
 function paletteToLegacy(
   palette: ThemePalette,
-  preferences: { uiFont: string; codeFont: string; translucentSidebar: boolean },
+  preferences: Pick<ThemePreferences, "uiFont" | "codeFont" | "translucentSidebar">,
 ): ThemeConfigDetails {
   return {
     accent: palette.accent,
@@ -46,8 +48,8 @@ function paletteToLegacy(
       "--theme-fg": palette.foreground,
       "--theme-text-secondary": palette.foregroundMuted,
       "--theme-border": palette.border,
-      "--ui-font": preferences.uiFont,
-      "--code-font": preferences.codeFont,
+      "--ui-font": fontStack("ui", preferences.uiFont),
+      "--code-font": fontStack("code", preferences.codeFont),
     },
   };
 }
@@ -80,11 +82,7 @@ export function useTheme() {
     if (Object.keys(palettePatch).length > 0) {
       ctx.updateWorkingPalette(variant, palettePatch);
     }
-    const prefPatch: Partial<{
-      uiFont: string;
-      codeFont: string;
-      translucentSidebar: boolean;
-    }> = {};
+    const prefPatch: Partial<ThemePreferences> = {};
     if (updates.uiFont !== undefined) prefPatch.uiFont = updates.uiFont;
     if (updates.codeFont !== undefined) prefPatch.codeFont = updates.codeFont;
     if (updates.translucentSidebar !== undefined) {

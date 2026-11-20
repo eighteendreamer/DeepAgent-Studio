@@ -7,6 +7,7 @@ import type { Terminal as XTerm } from "@xterm/xterm";
 import type { FitAddon, ITerminalDimensions } from "@xterm/addon-fit";
 import type { PluginDefinition } from "./pluginTypes";
 import { useThemeContext } from "../../theme/ThemeProvider";
+import { fontStack, resolveFont, type FontId } from "../../theme/themeFonts";
 import { mixHex } from "../../theme/colorUtils";
 import type { ThemePalette } from "../../theme/themeTypes";
 
@@ -21,6 +22,8 @@ type TerminalRuntime = {
   FitAddon: typeof import("@xterm/addon-fit").FitAddon;
 };
 
+const TERMINAL_FONT_SIZE = 13;
+
 let terminalRuntimePromise: Promise<TerminalRuntime> | null = null;
 
 function loadTerminalRuntime() {
@@ -33,6 +36,19 @@ function loadTerminalRuntime() {
     FitAddon: fit.FitAddon,
   }));
   return terminalRuntimePromise;
+}
+
+async function prepareTerminalFont(id: FontId<"code">): Promise<string> {
+  const { family } = resolveFont("code", id);
+  if (family) {
+    const font = `${TERMINAL_FONT_SIZE}px "${family}"`;
+    try {
+      await Promise.all([document.fonts.load(font), document.fonts.load(`700 ${font}`)]);
+    } catch (error) {
+      console.warn(`Could not load terminal font ${family}`, error);
+    }
+  }
+  return fontStack("code", id);
 }
 
 function buildTerminalTheme(palette: ThemePalette, isDark: boolean) {
@@ -77,12 +93,14 @@ function buildTerminalTheme(palette: ThemePalette, isDark: boolean) {
 }
 
 export function TerminalPlugin({ mode = "local", connectionId = null, active = true }: TerminalPluginProps) {
-  const { activePalette, activeIsDark } = useThemeContext();
+  const { activePalette, activeIsDark, state: { preferences: { codeFont } } } = useThemeContext();
   const { t } = useTranslation();
   const texts = useRef(t);
   const activeRef = useRef(active);
+  const codeFontRef = useRef(codeFont);
   texts.current = t;
   activeRef.current = active;
+  codeFontRef.current = codeFont;
   const [remoteConn, setRemoteConn] = useState<SshConnection | null>(null);
   const [state, setState] = useState<TerminalControllerState>("starting");
   const [error, setError] = useState<string>();
@@ -144,10 +162,17 @@ export function TerminalPlugin({ mode = "local", connectionId = null, active = t
     setError(undefined);
     void loadTerminalRuntime().then(async ({ Terminal, FitAddon }) => {
       if (cancelled || !containerRef.current) return;
+      let selection = codeFontRef.current;
+      let fontFamily = await prepareTerminalFont(selection);
+      while (!cancelled && selection !== codeFontRef.current) {
+        selection = codeFontRef.current;
+        fontFamily = await prepareTerminalFont(selection);
+      }
+      if (cancelled || !containerRef.current) return;
       const term = new Terminal({
         cursorBlink: true, cursorStyle: "bar", cursorWidth: 1,
-        fontFamily: '\"Cascadia Mono\", \"Consolas\", \"Courier New\", monospace',
-        fontSize: 13, lineHeight: 1.35, theme: terminalTheme, scrollback: 3000, convertEol: false,
+        fontFamily,
+        fontSize: TERMINAL_FONT_SIZE, lineHeight: 1.35, theme: terminalTheme, scrollback: 3000, convertEol: false,
       });
       const fit = new FitAddon();
       term.loadAddon(fit);
@@ -204,12 +229,25 @@ export function TerminalPlugin({ mode = "local", connectionId = null, active = t
       if (!cancelled) { setState("error"); setError(String(error)); }
     });
     return () => { cancelled = true; cleanup?.(); };
-  // Palette/language/visibility changes update the existing terminal, never reopen its shell.
+  // Appearance/language/visibility changes update the existing terminal, never reopen its shell.
   }, [connectionId, isRemote, retry, scheduleLayout, syncLayout]);
 
   useEffect(() => {
     if (termRef.current) termRef.current.options.theme = terminalTheme;
   }, [terminalTheme]);
+
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    let cancelled = false;
+    void prepareTerminalFont(codeFont).then(fontFamily => {
+      if (cancelled || termRef.current !== term || codeFontRef.current !== codeFont) return;
+      if (term.options.fontFamily === fontFamily) return;
+      term.options.fontFamily = fontFamily;
+      scheduleLayout(true);
+    });
+    return () => { cancelled = true; };
+  }, [codeFont, scheduleLayout]);
 
   useEffect(() => {
     if (active) {

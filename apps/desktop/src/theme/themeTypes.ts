@@ -1,3 +1,5 @@
+import type { FontId } from "./themeFonts";
+
 export type ThemeMode = "light" | "dark" | "system";
 export type ThemeVariant = "light" | "dark";
 export type ThemePresetSource = "builtin" | "custom" | "imported";
@@ -36,8 +38,8 @@ export interface ThemeBackgroundImage {
 }
 
 export interface ThemePreferences {
-  uiFont: string;
-  codeFont: string;
+  uiFont: FontId<"ui">;
+  codeFont: FontId<"code">;
   translucentSidebar: boolean;
   backgroundImage: ThemeBackgroundImage | null;
   /** Interface background transparency: 0 = solid, 100 = clear; wallpaper stays opaque. */
@@ -60,11 +62,6 @@ export interface ThemeImportResult {
   variant?: ThemeVariant;
   error?: string;
 }
-
-export const DEFAULT_UI_FONT =
-  'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto';
-export const DEFAULT_CODE_FONT =
-  'ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas';
 
 export const THEME_STORAGE_KEY = "deepagent:theme:v2";
 export const LEGACY_THEME_STORAGE_KEY = "codex-theme-config";

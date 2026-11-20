@@ -1,5 +1,6 @@
 import { mixHex } from "./colorUtils";
-import type { ThemePalette } from "./themeTypes";
+import { fontStack } from "./themeFonts";
+import type { ThemePalette, ThemePreferences } from "./themeTypes";
 
 // The contrast slider (0-100) reshapes derived tokens around a neutral of 50.
 // Below 50 we pull derived colors toward the background (softer separation).
@@ -79,15 +80,15 @@ export function paletteToTokens(palette: ThemePalette): Record<string, string> {
 
 export function applyTokens(
   tokens: Record<string, string>,
-  fontTokens: { uiFont: string; codeFont: string },
+  fontTokens: Pick<ThemePreferences, "uiFont" | "codeFont">,
   isDark: boolean
 ): void {
   const root = document.documentElement;
   for (const [k, v] of Object.entries(tokens)) {
     root.style.setProperty(k, v);
   }
-  root.style.setProperty("--ui-font", fontTokens.uiFont);
-  root.style.setProperty("--code-font", fontTokens.codeFont);
+  root.style.setProperty("--ui-font", fontStack("ui", fontTokens.uiFont));
+  root.style.setProperty("--code-font", fontStack("code", fontTokens.codeFont));
   if (isDark) {
     root.classList.add("dark");
   } else {

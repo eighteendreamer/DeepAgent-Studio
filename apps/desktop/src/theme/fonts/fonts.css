@@ -1,0 +1,112 @@
+/* Local faces; only referenced faces are loaded by the WebView. */
+@font-face {
+  font-family: "DeepAgent Inter";
+  src: url("./InterVariable.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "DeepAgent Inter";
+  src: url("./InterVariable-Italic.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "DeepAgent Source Sans 3";
+  src: url("./SourceSans3-Upright.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 200 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "DeepAgent Source Sans 3";
+  src: url("./SourceSans3-Italic.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 200 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "DeepAgent Carlito";
+  src: url("./Carlito-Regular.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "DeepAgent Carlito";
+  src: url("./Carlito-Italic.ttf") format("truetype");
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "DeepAgent Carlito";
+  src: url("./Carlito-Bold.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "DeepAgent Carlito";
+  src: url("./Carlito-BoldItalic.ttf") format("truetype");
+  font-style: italic;
+  font-weight: 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "DeepAgent Source Han Sans CN";
+  src: url("./SourceHanSansCN.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 250 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "DeepAgent Cascadia Mono";
+  src: url("./CascadiaMono.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 200 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "DeepAgent Cascadia Mono";
+  src: url("./CascadiaMono-Italic.ttf") format("truetype");
+  font-style: italic;
+  font-weight: 200 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "DeepAgent JetBrains Mono";
+  src: url("./JetBrainsMono.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "DeepAgent JetBrains Mono";
+  src: url("./JetBrainsMono-Italic.ttf") format("truetype");
+  font-style: italic;
+  font-weight: 100 800;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "DeepAgent Fira Code";
+  src: url("./FiraCode.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+}

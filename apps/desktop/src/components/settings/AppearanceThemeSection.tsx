@@ -4,6 +4,8 @@ import { useTranslation } from "react-i18next";
 import { useTheme, type ThemeMode, type ThemeSwitchOrigin } from "../../hooks/useTheme";
 import { useThemeContext } from "../../theme/ThemeProvider";
 import { contrastRatio } from "../../theme/colorUtils";
+import { FONT_OPTIONS, resolveFont, type FontId, type FontKind } from "../../theme/themeFonts";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../shadcn/select";
 import { ThemePresetMenu } from "./ThemePresetMenu";
 
 function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange: () => void }) {
@@ -55,6 +57,28 @@ function SegmentedControl({
         );
       })}
     </div>
+  );
+}
+
+function FontSelect<K extends FontKind>({ kind, value, label, onChange }: {
+  kind: K;
+  value: FontId<K>;
+  label: string;
+  onChange: (value: FontId<K>) => void;
+}) {
+  const { t } = useTranslation();
+  const systemLabel = t("settings.appearance.system");
+  return (
+    <Select value={value} onValueChange={id => onChange(resolveFont(kind, id).id)}>
+      <SelectTrigger aria-label={label} className="h-8 w-[200px] max-w-[55%] text-[12px]">
+        <SelectValue placeholder={resolveFont(kind, value).label || systemLabel} />
+      </SelectTrigger>
+      <SelectContent align="end">
+        {FONT_OPTIONS[kind].map(option => (
+          <SelectItem key={option.id} value={option.id}>{option.label || systemLabel}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 
@@ -238,11 +262,13 @@ export function AppearanceThemeSection() {
               </div>
               <div className="flex items-center justify-between px-4 py-3 border-b border-border-theme">
                 <div className="text-[13px] text-text-base">{t("settings.appearance.uiFont")}</div>
-                <input type="text" value={activeDetails.uiFont} onChange={(e) => updateThemeDetails(isEditingDark, { uiFont: e.target.value })} className="px-3 py-1.5 bg-white border border-border-theme rounded-md text-[12px] text-text-base w-[200px] text-right truncate cursor-text shadow-sm focus:outline-none" />
+                <FontSelect kind="ui" label={t("settings.appearance.uiFont")} value={activeDetails.uiFont}
+                  onChange={uiFont => updateThemeDetails(isEditingDark, { uiFont })} />
               </div>
               <div className="flex items-center justify-between px-4 py-3 border-b border-border-theme">
                 <div className="text-[13px] text-text-base">{t("settings.appearance.codeFont")}</div>
-                <input type="text" value={activeDetails.codeFont} onChange={(e) => updateThemeDetails(isEditingDark, { codeFont: e.target.value })} className="px-3 py-1.5 bg-white border border-border-theme rounded-md text-[12px] text-text-base w-[200px] text-right truncate cursor-text shadow-sm focus:outline-none" />
+                <FontSelect kind="code" label={t("settings.appearance.codeFont")} value={activeDetails.codeFont}
+                  onChange={codeFont => updateThemeDetails(isEditingDark, { codeFont })} />
               </div>
               <div className="flex items-center justify-between px-4 py-3 border-b border-border-theme">
                 <div className="text-[13px] text-text-base">{t("settings.appearance.translucentSidebar")}</div>

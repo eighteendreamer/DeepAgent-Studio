@@ -105,13 +105,42 @@ test("old theme preferences gain background defaults without losing palettes or 
   const h = host(), storage = h.load("themeStorage.ts");
   const old = plain(storage.defaultV2State());
   delete old.preferences.backgroundImage; delete old.preferences.backgroundTransparency;
-  old.preferences.uiFont = "Existing Font";
+  old.preferences.uiFont = "Inter";
   const next = storage.migrateThemeState(old);
   assert.equal(next.preferences.backgroundImage, null);
   assert.equal(next.preferences.backgroundTransparency, 75);
-  assert.equal(next.preferences.uiFont, "Existing Font");
+  assert.equal(next.preferences.uiFont, "inter");
   assert.deepEqual(plain(next.workingPalettes), old.workingPalettes);
   assert.equal("backgroundImage" in old.preferences, false);
+});
+
+test("old font lists migrate to bundled choices and unknown fonts fall back to System", () => {
+  const h = host(), storage = h.load("themeStorage.ts");
+  const old = plain(storage.defaultV2State());
+  old.preferences.uiFont = 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto';
+  old.preferences.codeFont = '"JetBrains Mono", Consolas, monospace';
+  assert.equal(storage.migrateThemeState(old).preferences.uiFont, "system");
+  assert.equal(storage.migrateThemeState(old).preferences.codeFont, "jetbrains-mono");
+
+  old.preferences.uiFont = "Local Font That Is Not Bundled";
+  old.preferences.codeFont = { unexpected: true };
+  assert.equal(storage.migrateThemeState(old).preferences.uiFont, "system");
+  assert.equal(storage.migrateThemeState(old).preferences.codeFont, "system");
+
+  h.values.set("codex-theme-config", JSON.stringify({ light: { uiFont: "Source Han Sans SC", codeFont: "Fira Code" } }));
+  assert.equal(storage.loadThemeState().preferences.uiFont, "source-han-sans");
+  assert.equal(storage.loadThemeState().preferences.codeFont, "fira-code");
+});
+
+test("saved font selections are reapplied at startup without changing the active palette", () => {
+  const h = host(), storage = h.load("themeStorage.ts");
+  const initial = storage.defaultV2State();
+  const context = h.load("ThemeProvider.tsx").ThemeProvider({ children: null }).props.value;
+  context.updatePreferences({ uiFont: "source-han-sans", codeFont: "cascadia-mono" });
+  assert.deepEqual(plain(storage.loadThemeState().workingPalettes), plain(initial.workingPalettes));
+  h.load("themeBootstrap.ts").bootstrapTheme();
+  assert.match(h.properties.get("--ui-font"), /^"DeepAgent Source Han Sans CN",/);
+  assert.match(h.properties.get("--code-font"), /^"DeepAgent Cascadia Mono",/);
 });
 
 test("Codex remains the default in both modes with its existing palette intact", () => {

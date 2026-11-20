@@ -4,6 +4,7 @@ declare module "react-syntax-highlighter" {
     language?: string;
     style?: Record<string, import("react").CSSProperties>;
     PreTag?: string;
+    CodeTag?: import("react").ElementType<import("react").ComponentPropsWithoutRef<"code">>;
     customStyle?: import("react").CSSProperties;
   }
 

@@ -8,6 +8,7 @@ import {
   normalizeBackgroundImage,
   normalizeBackgroundTransparency,
 } from "./themeBackground";
+import { resolveFont } from "./themeFonts";
 import type {
   PersistedThemeStateV2,
   ThemePalette,
@@ -15,8 +16,6 @@ import type {
   ThemeVariant,
 } from "./themeTypes";
 import {
-  DEFAULT_CODE_FONT,
-  DEFAULT_UI_FONT,
   LEGACY_THEME_STORAGE_KEY,
   THEME_STORAGE_KEY,
 } from "./themeTypes";
@@ -28,8 +27,8 @@ function defaultPalette(variant: ThemeVariant): ThemePalette {
 
 function defaultPreferences(): ThemePreferences {
   return {
-    uiFont: DEFAULT_UI_FONT,
-    codeFont: DEFAULT_CODE_FONT,
+    uiFont: "system",
+    codeFont: "system",
     translucentSidebar: true,
     backgroundImage: null,
     backgroundTransparency: DEFAULT_BACKGROUND_TRANSPARENCY,
@@ -96,8 +95,8 @@ function migrateFromLegacy(): PersistedThemeStateV2 | null {
     if (old.mode === "light" || old.mode === "dark" || old.mode === "system") {
       state.mode = old.mode;
     }
-    if (old.light?.uiFont) state.preferences.uiFont = old.light.uiFont;
-    if (old.light?.codeFont) state.preferences.codeFont = old.light.codeFont;
+    state.preferences.uiFont = resolveFont("ui", old.light?.uiFont).id;
+    state.preferences.codeFont = resolveFont("code", old.light?.codeFont).id;
     if (typeof old.light?.translucentSidebar === "boolean") {
       state.preferences.translucentSidebar = old.light.translucentSidebar;
     }
@@ -143,6 +142,8 @@ export function migrateThemeState(input: unknown): PersistedThemeStateV2 {
       preferences: {
         ...defaultPreferences(),
         ...state.preferences,
+        uiFont: resolveFont("ui", state.preferences?.uiFont).id,
+        codeFont: resolveFont("code", state.preferences?.codeFont).id,
         backgroundImage: normalizeBackgroundImage(state.preferences?.backgroundImage),
         backgroundTransparency: normalizeBackgroundTransparency(state.preferences?.backgroundTransparency),
       },

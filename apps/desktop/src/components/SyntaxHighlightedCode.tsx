@@ -1,3 +1,4 @@
+import type { ComponentPropsWithoutRef } from "react";
 import { PrismLight as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vs, vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { useThemeContext } from "../theme/ThemeProvider";
@@ -61,6 +62,10 @@ function useActiveCodeTheme(override?: CodeTheme): CodeTheme {
   return activeIsDark ? "dark" : "light";
 }
 
+function ThemedCodeTag({ style, ...props }: ComponentPropsWithoutRef<"code">) {
+  return <code {...props} style={{ ...style, fontFamily: "inherit" }} />;
+}
+
 export function SyntaxHighlightedCode({
   language,
   content,
@@ -76,7 +81,8 @@ export function SyntaxHighlightedCode({
       style={THEMES[activeTheme]}
       language={language || "text"}
       PreTag="div"
-      customStyle={{ margin: 0, padding: 0, background: "transparent" }}
+      CodeTag={ThemedCodeTag}
+      customStyle={{ margin: 0, padding: 0, background: "transparent", fontFamily: "var(--code-font, monospace)" }}
     >
       {content}
     </SyntaxHighlighter>
