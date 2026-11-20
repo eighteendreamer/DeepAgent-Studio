@@ -1192,36 +1192,6 @@ impl<'a> RunAssembler<'a> {
         );
         let model_name_for_cost = model.clone();
 
-        let autocompact_reserve = self.settings.autocompact_reserve_tokens();
-        let autocompact_pct_override = std::env::var("DEEPAGENT_AUTOCOMPACT_PCT_OVERRIDE")
-            .ok()
-            .and_then(|raw| raw.trim().parse::<f32>().ok());
-        let proactive_threshold = context_policy
-            .autocompact_threshold_tokens(autocompact_reserve, autocompact_pct_override)
-            as u64;
-        let prefire_lead_percent = std::env::var("DEEPAGENT_PREFIRE_LEAD_PERCENT")
-            .ok()
-            .and_then(|raw| raw.trim().parse::<u64>().ok())
-            .unwrap_or(10)
-            .min(100);
-        let prefire_lead_tokens =
-            context_policy.effective_context_window() as u64 * prefire_lead_percent / 100;
-        let prefire_start = proactive_threshold.saturating_sub(prefire_lead_tokens);
-        append_runtime_log(
-            self.runtime_logs,
-            NewRuntimeLogEntry::info("context", "autocompact_threshold_ready")
-                .with_run_id(&run_id)
-                .with_session_id(&session_id)
-                .with_data(serde_json::json!({
-                    "threshold_tokens": proactive_threshold,
-                    "reserve_override": autocompact_reserve,
-                    "pct_override": autocompact_pct_override,
-                    "context_window": context_policy.context_window,
-                    "prefire_start_tokens": prefire_start,
-                    "prefire_lead_percent": prefire_lead_percent,
-                })),
-        );
-
         let stall_client = client.clone();
         let stall_model = model.clone();
         let execution_features = self.settings.execution_features();
@@ -1237,6 +1207,7 @@ impl<'a> RunAssembler<'a> {
             admitted_attachments,
             tools,
         )
+        .with_cache_session(session.id())
         .with_call_usage_sink(main_usage.clone())
         .with_fallible_tool_schema_source(capabilities.clone().schema_source(
             crate::tool_manifest::live_tool_schema_source(
@@ -1259,14 +1230,8 @@ impl<'a> RunAssembler<'a> {
             db: self.db.clone(),
             session_id: session.id(),
         }))
-        .with_proactive_compaction(proactive_threshold)
         .with_context_snapshot(context_usage)
-        .with_context_policy(
-            context_policy.clone(),
-            autocompact_reserve,
-            autocompact_pct_override,
-        )
-        .with_prefire(prefire_start)
+        .with_context_policy(context_policy)
         .with_attachment_resolver(Arc::new(crate::attachment_service::FileAttachmentResolver))
         .with_snip_tool(deepagent_builtins::SNIP_HISTORY_TOOL_NAME);
 

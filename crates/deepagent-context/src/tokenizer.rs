@@ -49,6 +49,30 @@ impl TokenCounter for HeuristicTokenizer {
     }
 }
 
+/// Mixed-script estimate used by Tianshu's request budgeting (`src/compact/micro.ts`).
+pub(crate) struct TianshuTokenEstimate;
+
+impl TokenCounter for TianshuTokenEstimate {
+    fn count(&self, text: &str) -> usize {
+        let (other, cjk) =
+            text.chars()
+                .fold((0usize, 0usize), |(other, cjk), ch| match ch as u32 {
+                    0x4e00..=0x9fff
+                    | 0x3400..=0x4dbf
+                    | 0x20000..=0x2a6df
+                    | 0x3040..=0x309f
+                    | 0x30a0..=0x30ff
+                    | 0xac00..=0xd7af => (other, cjk + 1),
+                    _ => (other + 1, cjk),
+                });
+        other.div_ceil(4) + cjk.saturating_mul(5).div_ceil(6)
+    }
+
+    fn source(&self) -> &'static str {
+        "tianshu_mixed_script_estimate"
+    }
+}
+
 /// Deliberately cautious fallback when no matching prompt template is known.
 /// UTF-8 byte length is not a claim about an arbitrary provider's tokenizer or
 /// hidden prompt. It trades early compaction for avoiding character/4's known

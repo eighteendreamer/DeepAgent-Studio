@@ -18,16 +18,6 @@ pub(crate) enum CachePolicy {
     Explicit,
 }
 
-impl CachePolicy {
-    pub(crate) fn for_base_url(base_url: &str) -> Self {
-        if url::Url::parse(base_url).is_ok_and(|url| url.host_str() == Some("api.deepseek.com")) {
-            Self::Automatic
-        } else {
-            Self::Explicit
-        }
-    }
-}
-
 #[cfg(test)]
 fn encode_request(
     request: &ResponseRequest,
@@ -52,7 +42,7 @@ pub(crate) fn encode_request_with_format(
 ) -> Result<String> {
     let (systems, mut messages) = project_messages(request)?;
     if cache_policy == CachePolicy::Explicit {
-        cache_completed_history(&mut messages);
+        cache_message_anchors(&mut messages);
     }
     let system = if systems.is_empty() {
         None
@@ -72,8 +62,7 @@ pub(crate) fn encode_request_with_format(
                     // Run admission has already separated frozen instructions
                     // from runtime system items. Do not move this breakpoint
                     // past changing environment snapshots.
-                    cache_control: (stable_instructions && index == 0)
-                        .then(CacheControlEphemeral::default),
+                    cache_control: (stable_instructions && index == 0).then(stable_cache_control),
                     citations: None,
                     type_name: Some("text".into()),
                 })
@@ -148,29 +137,56 @@ pub(crate) fn project_tools(tools: &[ToolSchema], cache_policy: CachePolicy) -> 
     let mut projected = ordered.into_iter().map(tool_to_wire).collect::<Vec<_>>();
     if cache_policy == CachePolicy::Explicit {
         if let Some(last) = projected.last_mut() {
-            last["cache_control"] = json!(CacheControlEphemeral::default());
+            last["cache_control"] = json!(stable_cache_control());
         }
     }
     projected
 }
 
-fn cache_completed_history(messages: &mut [Value]) {
-    // The final message is the current input. Thinking blocks cannot carry
-    // explicit cache controls, including in a thinking-only assistant turn.
-    for message in messages.iter_mut().rev().skip(1) {
-        if message["role"] != "assistant" {
+fn stable_cache_control() -> CacheControlEphemeral {
+    CacheControlEphemeral {
+        ttl: Some("1h".into()),
+        ..CacheControlEphemeral::default()
+    }
+}
+
+fn cache_message_anchors(messages: &mut [Value]) {
+    // Tianshu reserves five blocks of Anthropic's 20-block lookback for
+    // growth between consecutive requests. Count the folded wire blocks.
+    const LOOKBACK: usize = 15;
+    if let Some(first_user) = messages
+        .iter_mut()
+        .find(|message| message["role"] == "user")
+    {
+        if let Some(last) = first_user["content"]
+            .as_array_mut()
+            .and_then(|blocks| blocks.last_mut())
+        {
+            last["cache_control"] = json!(CacheControlEphemeral::default());
+        }
+    }
+    let mut remaining: usize = messages
+        .iter()
+        .filter_map(|message| message["content"].as_array())
+        .map(Vec::len)
+        .sum();
+    for message in messages {
+        let assistant = message["role"] == "assistant";
+        let Some(blocks) = message["content"].as_array_mut() else {
+            continue;
+        };
+        remaining -= blocks.len();
+        if !assistant || remaining >= LOOKBACK {
             continue;
         }
-        let block = message
-            .get_mut("content")
-            .and_then(Value::as_array_mut)
-            .and_then(|blocks| {
-                blocks
-                    .iter_mut()
-                    .rev()
-                    .find(|block| matches!(block["type"].as_str(), Some("text" | "tool_use")))
-            });
-        if let Some(block) = block {
+        // Signed thinking cannot carry a breakpoint; use the last legal
+        // block only if it is itself within the lookback window.
+        if let Some(block) = blocks
+            .iter_mut()
+            .rev()
+            .take(LOOKBACK - remaining)
+            .find(|block| matches!(block["type"].as_str(), Some("text" | "tool_use")))
+        {
             block["cache_control"] = json!(CacheControlEphemeral::default());
             break;
         }
@@ -233,7 +249,12 @@ fn project_messages(request: &ResponseRequest) -> Result<(Vec<String>, Vec<Value
             ResponseItem::Message { role, content }
             | ResponseItem::InputMessage { role, content, .. } => {
                 ensure_no_pending_tools(&pending_tool_ids)?;
-                if role == "system" {
+                if deepagent_core::runtime_snapshot::RuntimeSnapshot::from_item(item).is_some() {
+                    // Like Tianshu's user appendix, host updates stay at their
+                    // original conversation boundary rather than changing the
+                    // system head when the next snapshot is appended.
+                    push_message(&mut messages, "user", json!({"type":"text","text":content}))?;
+                } else if role == "system" {
                     if !content.is_empty() {
                         systems.push(content.clone());
                     }

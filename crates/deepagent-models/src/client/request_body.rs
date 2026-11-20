@@ -9,7 +9,11 @@ const MAX_REQUEST_BYTES: usize = 48 * 1024 * 1024;
 
 /// Reuse the bounded serializers while supplying model-resolved wire effort.
 pub(super) enum ReasoningRequest<'a> {
-    Responses(&'a crate::ResponseRequest, Option<&'a str>),
+    Responses(
+        &'a crate::ResponseRequest,
+        Option<&'a str>,
+        Option<deepagent_core::id::SessionId>,
+    ),
     Chat(
         &'a crate::ChatCompletionRequest,
         Option<&'a str>,
@@ -24,7 +28,9 @@ impl Serialize for ReasoningRequest<'_> {
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
         match self {
-            Self::Responses(request, effort) => request.serialize_with_effort(serializer, *effort),
+            Self::Responses(request, effort, cache_session) => {
+                request.serialize_with_effort(serializer, *effort, *cache_session)
+            }
             Self::Chat(request, effort, thinking, deepseek_extensions) => {
                 request.serialize_for_provider(serializer, *effort, *thinking, *deepseek_extensions)
             }

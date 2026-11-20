@@ -10,6 +10,25 @@ use crate::budget::PromptBudget;
 /// `autocompact_reserve_tokens` setting / `DEEPAGENT_AUTOCOMPACT_RESERVE_TOKENS`.
 pub const AUTOCOMPACT_BUFFER_TOKENS: usize = 65_536;
 
+/// The outbound output ceiling and its input allowance use the same reserve.
+/// Formula from Tianshu Harness `src/context/request-budget.ts`.
+#[derive(Debug, Clone, Copy)]
+pub struct RequestContextBudget {
+    pub output_tokens: usize,
+    pub input_tokens: usize,
+}
+
+impl RequestContextBudget {
+    pub fn new(window: usize, output: usize) -> Self {
+        let output_tokens = output.min(256_000).min(window / 2);
+        let margin = window.div_ceil(10).min(16_384).max(window.div_ceil(20));
+        Self {
+            output_tokens,
+            input_tokens: window.saturating_sub(output_tokens).saturating_sub(margin),
+        }
+    }
+}
+
 /// One calculation shared by prompt assembly, pressure checks and UI snapshots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContextBudget {

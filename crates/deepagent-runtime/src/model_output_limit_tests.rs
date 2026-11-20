@@ -2,7 +2,7 @@ mod h49_tests {
     use super::*;
     use deepagent_models::{CapabilitySource, ModelCapability};
 
-    fn capability(model: &str, window: usize, limit: usize) -> ModelCapability {
+    pub(super) fn capability(model: &str, window: usize, limit: usize) -> ModelCapability {
         ModelCapability {
             model_id: model.into(),
             effort: None,
@@ -45,8 +45,6 @@ mod h49_tests {
         .with_max_model_attempts(6)
         .with_context_policy(
             deepagent_context::ContextPolicy::for_capability(&primary, ReasoningEffort::Max),
-            None,
-            None,
         )
         .with_context_snapshot(snapshot_estimating(1, primary.context_window))
         .with_events(Arc::new(sink));
@@ -136,8 +134,6 @@ mod h49_tests {
         let stale = capability("primary", 2_000_000, 384_000);
         let agent = agent.with_context_policy(
             deepagent_context::ContextPolicy::for_capability(&stale, ReasoningEffort::Max),
-            None,
-            None,
         );
         let actual = agent.current_context_policy().unwrap();
         assert_eq!(actual.context_window, 1_000_000);
@@ -203,8 +199,6 @@ mod h296_tests {
         )
         .with_context_policy(
             deepagent_context::ContextPolicy::for_capability(&selected, ReasoningEffort::High),
-            None,
-            None,
         )
         .with_context_snapshot(snapshot_estimating(1, selected.context_window))
         .with_events(Arc::new(sink));
@@ -229,4 +223,98 @@ mod h296_tests {
                 && s.context_window == 128_000
                 && s.reserved_output_tokens == 8_192));
     }
+
+    fn request_budget_fixture(
+        user: String,
+    ) -> (ModelAgent, Arc<AttemptTransport>, Arc<std::sync::atomic::AtomicUsize>) {
+        let model = h49_tests::capability("small-window", 10_000, 512);
+        let mut config = ModelConfig::deepseek("synthetic");
+        config.defaults.max_output_tokens = Some(512);
+        config.capabilities = vec![model.clone()];
+        let transport = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([response_text_completed("done")])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let agent = ModelAgent::new(
+            Arc::new(ModelClient::new(transport.clone(), config)),
+            "small-window",
+            "stable system",
+            user,
+            vec![],
+        )
+        .with_context_policy(
+            deepagent_context::ContextPolicy::for_capability(&model, ReasoningEffort::None),
+        )
+        .with_reactive_compactor(Arc::new(StaticReactiveCompactor { calls: calls.clone() }));
+        (agent, transport, calls)
+    }
+
+    #[tokio::test]
+    async fn request_budget_sends_intact_history_when_the_wire_request_fits() {
+        let (mut agent, transport, calls) = request_budget_fixture("hello".into());
+        agent.think(0, &[]).await.unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Acquire), 0);
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["max_output_tokens"], 512);
+        assert!(!requests[0].to_string().contains("compacted summary"));
+    }
+
+    #[tokio::test]
+    async fn request_budget_rejects_oversized_candidate_without_replacing_history() {
+        // The compactor keeps the current user message, so this candidate
+        // cannot fit even after it has “successfully” produced a summary.
+        let (mut agent, transport, calls) = request_budget_fixture("long input ".repeat(12_000));
+        let original = agent.response_history.items.clone();
+        assert!(agent.think(0, &[]).await.is_err());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Acquire), 1);
+        assert!(transport.requests.lock().unwrap().is_empty());
+        assert_eq!(agent.response_history.items, original);
+    }
+
+    #[tokio::test]
+    async fn request_budget_sends_one_rebuilt_request_when_candidate_fits() {
+        let (mut agent, transport, calls) = request_budget_fixture("current input".into());
+        agent.response_history.items.insert(0, ResponseInputItem::Message {
+            role: "user".into(),
+            content: "long history ".repeat(12_000),
+        });
+        agent.think(0, &[]).await.unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Acquire), 1);
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        let sent = requests[0].to_string();
+        assert!(sent.contains("compacted summary") && sent.contains("current input"));
+        assert!(!sent.contains("long history"));
+    }
+
+    #[tokio::test]
+    async fn request_budget_recovers_one_pre_generation_rejection_and_never_repeats() {
+        let (mut agent, transport, calls) = request_budget_fixture("current input".into());
+        *transport.attempts.lock().unwrap() = VecDeque::from([
+            vec!["__ERROR_BUDGET_CONTEXT__".into()],
+            vec!["__ERROR_BUDGET_CONTEXT__".into()],
+        ]);
+        let error = agent.think(0, &[]).await.unwrap_err();
+        assert_eq!(classify_model_error(&error), ModelFailureKind::ContextOverflow);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Acquire), 1);
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(!requests[0].to_string().contains("compacted summary"));
+        assert!(requests[1].to_string().contains("compacted summary"));
+        assert_eq!(requests[1]["max_output_tokens"], requests[0]["max_output_tokens"]);
+    }
+
+
+    #[tokio::test]
+    async fn request_budget_does_not_treat_every_wire_byte_as_an_input_token() {
+        // This unknown model has no exact tokenizer. Tianshu estimates Latin
+        // text at about four code points per token, rather than one per byte.
+        let (mut agent, transport, calls) = request_budget_fixture("detail ".repeat(2_000));
+        agent.think(0, &[]).await.unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Acquire), 0);
+        assert_eq!(transport.requests.lock().unwrap().len(), 1);
+    }
+
 }

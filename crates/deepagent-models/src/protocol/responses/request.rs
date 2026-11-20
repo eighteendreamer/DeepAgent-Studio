@@ -19,11 +19,12 @@ pub(crate) fn serialize<S: Serializer>(
     request: &ResponseRequest,
     serializer: S,
     effort: Option<&str>,
+    cache_session: Option<deepagent_core::id::SessionId>,
 ) -> std::result::Result<S::Ok, S::Error> {
     request
         .validate_wire_parameters()
         .map_err(serde::ser::Error::custom)?;
-    let result = project(request, effort).map_err(serde::ser::Error::custom)?;
+    let result = project(request, effort, cache_session).map_err(serde::ser::Error::custom)?;
     result.serialize(serializer)
 }
 
@@ -39,11 +40,16 @@ struct WireRequest {
     top_p: Option<f32>,
 }
 
-fn project(request: &ResponseRequest, effort: Option<&str>) -> Result<WireRequest> {
+fn project(
+    request: &ResponseRequest,
+    effort: Option<&str>,
+    cache_session: Option<deepagent_core::id::SessionId>,
+) -> Result<WireRequest> {
     let mut body = sdk::CreateResponse {
         model: Some(request.model.clone()),
         input: sdk::InputParam::Items(Vec::new()),
         instructions: request.instructions.clone(),
+        prompt_cache_key: cache_session.map(|session| session.to_string()),
         stream: Some(request.stream),
         temperature: request.temperature,
         top_p: request.top_p,
@@ -281,7 +287,7 @@ mod tests {
     fn mapped_effort_preserves_omission_off_and_non_sdk_values() {
         let request = ResponseRequest::new("fixture", Vec::new());
         for effort in [None, Some("none"), Some("ultra")] {
-            let body = serde_json::to_value(project(&request, effort).unwrap()).unwrap();
+            let body = serde_json::to_value(project(&request, effort, None).unwrap()).unwrap();
             assert_eq!(body["reasoning"]["effort"].as_str(), effort);
             assert_eq!(body.get("reasoning").is_some(), effort.is_some());
         }

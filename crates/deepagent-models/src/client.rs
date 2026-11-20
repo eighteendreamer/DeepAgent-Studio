@@ -249,10 +249,18 @@ impl ModelClient {
     }
 
     pub(crate) fn messages_cache_policy(&self) -> crate::messages::CachePolicy {
-        crate::messages::CachePolicy::for_base_url(&self.config.base_url)
+        if self.is_official_deepseek_endpoint() {
+            crate::messages::CachePolicy::Automatic
+        } else {
+            crate::messages::CachePolicy::Explicit
+        }
     }
 
     pub(crate) fn uses_deepseek_chat_extensions(&self) -> bool {
+        self.is_official_deepseek_endpoint()
+    }
+
+    fn is_official_deepseek_endpoint(&self) -> bool {
         url::Url::parse(&self.config.base_url)
             .is_ok_and(|url| url.host_str() == Some("api.deepseek.com"))
     }
@@ -560,9 +568,13 @@ impl ModelClient {
 
     pub(crate) fn encode_response_body(&self, request: &ResponseRequest) -> Result<String> {
         let effort = self.wire_reasoning_effort(&request.model, request.reasoning_effort)?;
+        let cache_session = request
+            .cache_session
+            .filter(|_| !self.is_official_deepseek_endpoint());
         request_body::encode(&request_body::ReasoningRequest::Responses(
             request,
             effort.as_deref(),
+            cache_session,
         ))
     }
 

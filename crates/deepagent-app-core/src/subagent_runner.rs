@@ -1016,8 +1016,8 @@ impl ChatSubagentRunner {
         .with_reasoning_effort(sub_reasoning_effort)
         .with_reasoning_effort_selection(requested_effort)
         .with_reactive_compactor(reactive_compactor)
-        .with_proactive_compaction(context_policy.autocompact_threshold_tokens(None, None) as u64)
-        .with_context_policy(context_policy, None, None);
+        .with_context_policy(context_policy)
+        .with_cache_session(session.id());
         if let Some(owner) = &self.usage_owner {
             agent =
                 agent.with_call_usage_sink(owner.invocation(session.id().to_string(), "subagent"));

@@ -103,14 +103,14 @@ async fn h029_messages_projects_runtime_system_items_and_the_selected_effort_tog
     assert_eq!(
         requests[0]["system"],
         json!([
-            {"type":"text","text":"instructions","cache_control":{"type":"ephemeral"}},
+            {"type":"text","text":"instructions","cache_control":{"type":"ephemeral","ttl":"1h"}},
             {"type":"text","text":"stable rules"},
             {"type":"text","text":"environment"}
         ])
     );
     assert_eq!(
         requests[0]["messages"],
-        json!([{"role":"user","content":[{"type":"text","text":"greeting"}]}])
+        json!([{"role":"user","content":[{"type":"text","text":"greeting","cache_control":{"type":"ephemeral"}}]}])
     );
     assert_eq!(requests[0]["thinking"]["type"], "adaptive");
     assert_eq!(requests[0]["output_config"]["effort"], "high");

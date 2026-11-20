@@ -491,7 +491,7 @@ pub struct BalanceAmount {
 | **P5 Messages codec** | anthropic-sdk-rs + 手写缺口（§4.4） | 4 |
 | **P6 设置页** | 供应商 CRUD（协议 / logo / 余额类型）+ 模型列表 + 连通性测试 | 4 |
 | **P7 余额适配** | `BalanceKind` 五值分发 + `Auto` 探测链 | 2 |
-| **P8 缓存治理** | 前缀稳定性；`cache_control` 断点；复用既有压缩阈值 | 3 |
+| **P8 缓存治理** | 按天枢处理 Messages 断点与请求预算；按 DeepSeek Harness 处理 Responses 会话缓存键；验证真实缓存读取 | 3 |
 | **P9 输入框思考档位** | 天枢五档；按路由能力转换与合并，不提供供应商默认，见 §1.6 | 2 |
 | **P10 模型列表与切换** | 按 provider 分组；运行时切换下次生效 + 余额重查 | 2 |
 | **P11 三协议验收** | 同一套行为用例跑 Responses、Chat Completions、Messages | 3 |
@@ -517,7 +517,7 @@ pub struct BalanceAmount {
 | P5 Messages codec | 图片、原生请求头已补齐；真实 Messages 11 项通过 | H035 的 SDK 请求、流解析、签名、用量、图片与统一鉴权继续复用。H036 对 Layso Claude 实测文本、历史、工具续写、五档发包、图片、取消及缓存读取均通过；不能外推为所有 Anthropic 端点验收，见 [H036 验收报告](reports/2026-11-19-p11-f0-f1-acceptance.md)。 |
 | P6 设置页 | 基础界面与后端已实现；流程待验收 | `ModelsSettings.tsx` 已接供应商 CRUD、模型拉取/激活和配置编辑。H015 保留已存配置，H016 支持协议/容量/思考编辑，服务 19 + resolver 12 项通过；H017 设置页迟到请求回归通过。完整原生 UI 流程仍待验收。 |
 | P7 余额 | 已修复已知解析/UI 缺口；真实 API 待验收 | H009 修复未知形状误判无限、分币换算、display 单位、缺失金额伪造零与错误跨供应商回退；两处 UI 共用查询与金额格式化并丢弃迟到结果。models lib 256、前端余额专项 9 passed。完整桌面与真实余额 API 待验收。 |
-| P8 缓存 | 稳定前缀与 Messages 断点已验证；未完全复现 Harness 缓存策略 | 工具稳定排序，稳定 instructions 与动态环境分开，已完成历史断点避开思考签名块；DeepSeek 官方继续自动缓存。H037 真实观察 Responses 0/11250、Chat 11008/11250、Messages 23952/23960，不承诺普遍命中；cacheRetention 与签名前缀摘要持久绑定仍未实现。详见 [H037](reports/2026-11-20-p2-p11-ui-follow-up.md)。 |
+| P8 缓存 | 部分完成 | 按天枢切换最终请求预算与 Messages 缓存断点，动态快照留在对话边界；按 DeepSeek Harness 使用 Responses 会话缓存键。Layso 三协议流式多轮读取均非零，Messages 实测环境更新和工具续写仍命中。字段级附录、签名前缀绑定及真实压缩前后验收待完成。详见 [P8 设计与实测](reports/2026-11-20-p8-cache-design.md)。 |
 | P9 输入框思考档位 | 天枢五档控件验证中 | H012/H018 为历史验证，不证明新契约。模型编辑器支持自动匹配/无控件/自定义映射、传输形态与初始档位；未知兼容模型明确透传正向 effort，切换模型不继承旧 effort，当前验证见 H029。 |
 | P10 模型列表与切换 | 已接入；桌面手动验收待完成 | Composer 消费激活模型，按 provider 分组；选择写入 harness 注册表，跨供应商触发余额刷新；当前 turn 冻结旧模型，工具续写保持旧模型，下一轮用户消息重新 admission。 |
 | P11 产品验收 | 三协议新版原生 UI 通过；跨协议补验 3/3；全量门禁另列 | H037：通过脚本输入并发送，三协议 HTTP 200、运行 completed、零 JS 异常；Responses/Chat 指定工具名已修复且真实通过。当前 Claude Fable→Responses 连续三轮完成，其中一轮带签名；保留旧 Sonnet 路线失败记录，不外推全部模型与 SessionStore/origin 矩阵。详见 [H037](reports/2026-11-20-p2-p11-ui-follow-up.md)。 |

@@ -126,11 +126,10 @@ async fn h297_selected_model_prices_the_actual_tokenizer_before_dispatch() {
     config.defaults.max_output_tokens = Some(8192);
     let mut selected =
         deepagent_models::ModelCapabilityResolver::new().resolve_model_id("deepseek-flash");
-    selected.context_window = 128_000;
+    selected.context_window = 70_000;
     selected.max_output_tokens = 8192;
     config.capabilities = vec![selected.clone()];
     let client = Arc::new(ModelClient::new(transport.clone(), config));
-    let observed = pressure.clone();
     let mut agent = ModelAgent::new(
         client,
         "deepseek-flash",
@@ -141,22 +140,11 @@ async fn h297_selected_model_prices_the_actual_tokenizer_before_dispatch() {
     .with_reasoning_effort(ReasoningEffort::None)
     .with_context_policy(
         deepagent_context::ContextPolicy::for_capability(&selected, ReasoningEffort::None),
-        None,
-        None,
     )
-    .with_reactive_compactor(pressure.clone())
-    .with_tool_schema_observer(Arc::new(move |_, schemas| {
-        assert_eq!(schemas.model, "deepseek-flash");
-        assert_eq!(
-            observed.0.load(std::sync::atomic::Ordering::SeqCst),
-            1,
-            "pressure must be handled before dispatch"
-        );
-        Ok(())
-    }));
-    agent.think(0, &[]).await.unwrap();
-    let requests = transport.requests.lock().unwrap();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0]["model"], "deepseek-flash");
+    .with_reactive_compactor(pressure.clone());
+    let result = agent.think(0, &[]).await;
+    assert!(result.unwrap_err().to_string().contains("context budget exceeded"));
+    assert_eq!(pressure.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(transport.requests.lock().unwrap().is_empty());
     assert!(agent.context_measurement().1.source.contains(":v41:"));
 }

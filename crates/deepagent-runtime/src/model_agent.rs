@@ -24,7 +24,9 @@ mod protocol_fixture;
 
 use async_trait::async_trait;
 
+use deepagent_context::policy::RequestContextBudget;
 use deepagent_core::error::{CoreError, Result};
+use deepagent_core::id::SessionId;
 use deepagent_core::message::{Message, Role};
 use deepagent_core::response_item::{ResponseInputItem, ResponseOutputItem};
 use deepagent_models::chat::{FinishReason, ReasoningEffort};
@@ -226,6 +228,28 @@ pub trait ReactiveContextCompactor: Send + Sync {
             Some(compaction) => CompactionOutcome::adopted(compaction),
             None => CompactionOutcome::none(),
         })
+    }
+
+    /// Review the replacement against the actual request before committing it.
+    /// Durable compactors must invoke `approve` before writing a history boundary.
+    async fn compact_response_items_with_budget(
+        &self,
+        instructions: Option<&str>,
+        items: &[ResponseInputItem],
+        trigger: CompactionTrigger,
+        cancel: Option<Arc<AtomicBool>>,
+        approve: &(dyn for<'candidate> Fn(&'candidate ReactiveCompaction) -> bool + Sync),
+    ) -> std::result::Result<CompactionOutcome, CompactionFailure> {
+        let mut outcome = self
+            .compact_response_items_accounted(instructions, items, trigger, cancel)
+            .await?;
+        if let Some(candidate) = outcome.compaction.as_ref() {
+            if !approve(candidate) {
+                outcome.observed_usage.absorb(candidate.usage);
+                outcome.compaction = None;
+            }
+        }
+        Ok(outcome)
     }
 
     /// Prefire pass-1 (Grok two-pass): summarize the stable prefix of
@@ -466,13 +490,6 @@ const RATE_LIMIT_RETRY_THRESHOLD: usize = 2;
 /// `attachments.ts::getContextEfficiencyAttachment` (“every N tokens of
 /// growth without a snip”, ~10k pacing).
 const SNIP_NUDGE_INTERVAL_TOKENS: u64 = 10_000;
-/// Never snip inside the most recent messages: the live exchange (and its
-/// tool pairing) must survive. Defined in [`crate::snip`] so the live loop and
-/// history rebuild agree.
-/// Idle gap after which the time-triggered micro-compact clears stale tool
-/// result bodies (Claude Code `timeBasedMCConfig` ~60 min). Overridable via
-/// `DEEPAGENT_MICROCOMPACT_IDLE_SECS`.
-const MICROCOMPACT_IDLE_SECS: u64 = 60 * 60;
 /// Consecutive identical tool calls (same name + arguments) that trip the
 /// client-side doom-loop detector. Grok's doom-loop is a SERVER signal
 /// (`x-grok-doom-loop-check`); DeepSeek has no such header, so this is the
@@ -613,6 +630,7 @@ pub struct ModelAgent {
     messages: Vec<Message>,
     /// Provider-native Responses history used for every model request.
     response_history: ResponseHistory,
+    cache_session: Option<SessionId>,
     /// Tool schemas advertised to the model each turn.
     tools: Vec<ToolSchema>,
     /// Host-owned visibility policy, refreshed before each model turn so a
@@ -657,8 +675,6 @@ pub struct ModelAgent {
     context_meter: deepagent_context::ContextMeter,
     request_measurement: std::sync::Mutex<Option<RequestMeasurement>>,
     context_policy: Option<deepagent_context::ContextPolicy>,
-    context_headroom: Option<usize>,
-    context_pct_override: Option<f32>,
     request_max_output_override: Option<u32>,
     /// Diagnostic tokens freed by snips since the last provider report.
     /// Pressure decisions use the meter's signed native-Surface delta.
@@ -672,12 +688,6 @@ pub struct ModelAgent {
     /// restart re-applies the snip (Claude Code `removedUuids` parity).
     snipped_tags: std::collections::BTreeSet<String>,
     snipped_tags_persisted: std::collections::BTreeSet<String>,
-    /// Wall-clock time the last assistant turn was recorded, for the
-    /// time-triggered micro-compact (a cold prompt cache after a long gap).
-    last_assistant_at: Option<std::time::Instant>,
-    /// Whether the idle-triggered micro-compact already ran for the current
-    /// idle gap (reset on the next assistant turn).
-    microcompacted_for_current_gap: bool,
     /// Provider usage of the model calls the run loop did not make itself:
     /// compaction summaries (including background prefire pass-1 notes that were
     /// later discarded). Kept apart from `usage` so the per-turn numbers the UI
@@ -781,6 +791,7 @@ impl ModelAgent {
             model: model.into(),
             messages,
             response_history,
+            cache_session: None,
             tools,
             tool_schema_source: None,
             tool_schema_observer: None,
@@ -802,8 +813,6 @@ impl ModelAgent {
             context_meter: deepagent_context::ContextMeter::default(),
             request_measurement: std::sync::Mutex::new(None),
             context_policy: None,
-            context_headroom: None,
-            context_pct_override: None,
             request_max_output_override: None,
 
             snip_tokens_freed_unreflected: 0,
@@ -811,8 +820,6 @@ impl ModelAgent {
             snip_nudge_baseline_tokens: None,
             snipped_tags: std::collections::BTreeSet::new(),
             snipped_tags_persisted: std::collections::BTreeSet::new(),
-            last_assistant_at: None,
-            microcompacted_for_current_gap: false,
             side_usage: crate::agent::RunUsage::default(),
             prefire_start_threshold: None,
             prefire_cache: None,
@@ -942,6 +949,7 @@ impl ModelAgent {
 
     /// Legacy compatibility bridge for compactors that have not yet returned
     /// native response items. Live context operations must use `replace_items`.
+    #[cfg(test)]
     fn replace_messages_legacy(&mut self, messages: Vec<Message>) {
         let latest =
             deepagent_core::runtime_snapshot::latest_snapshot(&self.response_history.items)
@@ -990,24 +998,27 @@ impl ModelAgent {
         self.sync_message_projection();
     }
 
+    fn compaction_history(&self, compacted: &ReactiveCompaction) -> ResponseHistory {
+        let mut history = self.response_history.clone();
+        if let Some(items) = &compacted.response_items {
+            history.replace_items(items.clone());
+        } else {
+            history.replace_from_messages(&compacted.messages);
+        }
+        deepagent_core::runtime_snapshot::retain_latest_snapshot(
+            &self.response_history.items,
+            &mut history.items,
+        );
+        history
+    }
+
     fn adopt_compacted_history(&mut self, compacted: &ReactiveCompaction) {
-        let previous =
-            deepagent_core::runtime_snapshot::latest_snapshot(&self.response_history.items)
-                .map(|(item, _)| vec![item.clone()])
-                .unwrap_or_default();
+        let history = self.compaction_history(compacted);
         self.reset_tool_context("compaction");
         self.invalidate_memory_prefetch();
-        // Every adoption path (proactive threshold, prefire pass-2, reactive
-        // overflow recovery) funnels here, so this is the one place the
-        // summarizing call's spend can be recorded without missing a route.
         self.side_usage.record_call(&compacted.usage);
-        if let Some(mut items) = compacted.response_items.clone() {
-            deepagent_core::runtime_snapshot::retain_latest_snapshot(&previous, &mut items);
-            self.response_history.replace_items(items);
-            self.sync_message_projection();
-        } else {
-            self.replace_messages_legacy(compacted.messages.clone());
-        }
+        self.response_history = history;
+        self.sync_message_projection();
     }
 
     /// Tags of conversation segments snipped during this run (sorted, empty
@@ -1018,14 +1029,6 @@ impl ModelAgent {
             .difference(&self.snipped_tags_persisted)
             .cloned()
             .collect()
-    }
-
-    /// Clear the BODIES of historical tool-result messages outside the protected
-    /// recent tail, keeping conversation/tool pairing intact. Returns how many
-    /// were cleared. Reversible in spirit: the model can re-run a tool if it
-    /// really needs the data again.
-    fn clear_stale_tool_results(&mut self) -> Result<usize> {
-        self.prune_stale_tool_results(0, "micro_compact")
     }
 
     fn prune_stale_tool_results(&mut self, min_tokens: usize, strategy: &str) -> Result<usize> {
@@ -1081,55 +1084,15 @@ impl ModelAgent {
         Ok(replacements.len())
     }
 
-    /// Time-triggered micro-compact (Claude Code `timeBasedMCConfig`): when the
-    /// last assistant turn is older than the idle threshold, the provider's
-    /// prompt cache is cold, so clearing stale tool-result bodies costs nothing
-    /// cached and saves context on re-send. Fires at most once per idle gap.
-    fn maybe_time_based_microcompact(&mut self) {
-        let threshold_secs = std::env::var("DEEPAGENT_MICROCOMPACT_IDLE_SECS")
-            .ok()
-            .and_then(|raw| raw.trim().parse::<u64>().ok())
-            .unwrap_or(MICROCOMPACT_IDLE_SECS);
-        self.maybe_time_based_microcompact_at(
-            std::time::Instant::now(),
-            std::time::Duration::from_secs(threshold_secs),
-        );
-    }
-
-    fn maybe_time_based_microcompact_at(
-        &mut self,
-        now: std::time::Instant,
-        idle_threshold: std::time::Duration,
-    ) {
-        if self.microcompacted_for_current_gap {
-            return;
-        }
-        let Some(last) = self.last_assistant_at else {
-            return;
-        };
-        let idle = now.saturating_duration_since(last);
-        if idle < idle_threshold {
-            return;
-        }
-        self.microcompacted_for_current_gap = true;
-        let cleared = match self.clear_stale_tool_results() {
-            Ok(cleared) => cleared,
-            Err(error) => {
-                tracing::warn!(%error, "micro compact persistence failed; keeping original Surface");
-                return;
-            }
-        };
-        if cleared > 0 {
-            tracing::info!(
-                cleared,
-                idle_secs = idle.as_secs(),
-                "time-based micro-compact cleared stale tool results after idle gap"
-            );
-        }
-    }
-
     fn request_for_current_history(&self) -> Result<ResponseRequest> {
-        let mut request = self.response_history.request(self.model.clone());
+        self.request_for_history(&self.response_history)
+    }
+
+    fn request_for_history(&self, history: &ResponseHistory) -> Result<ResponseRequest> {
+        let mut request = history.request(self.model.clone());
+        if let Some(session) = self.cache_session {
+            request = request.with_cache_session(session);
+        }
         request.reasoning_effort = self.requested_reasoning_effort;
         self.client.validate_response_input_modalities(&request)?;
         if let Some(resolver) = self.attachment_resolver.as_ref() {
@@ -1171,10 +1134,12 @@ impl ModelAgent {
     fn push_provider_output_items(&mut self, _assistant: Message, items: &[ResponseOutputItem]) {
         self.response_history.extend_output_items(items);
         self.sync_message_projection();
-        // A new assistant turn ends any idle gap; arm the time-triggered
-        // micro-compact for the next gap and update the gap clock.
-        self.last_assistant_at = Some(std::time::Instant::now());
-        self.microcompacted_for_current_gap = false;
+    }
+
+    /// Carry the durable conversation identity across user turns for provider caching.
+    pub fn with_cache_session(mut self, session: SessionId) -> Self {
+        self.cache_session = Some(session);
+        self
     }
 
     /// Attach a live event sink so token/reasoning deltas stream out as
@@ -1228,42 +1193,39 @@ impl ModelAgent {
         self
     }
 
-    pub fn with_context_policy(
-        mut self,
-        policy: deepagent_context::ContextPolicy,
-        headroom: Option<usize>,
-        pct_override: Option<f32>,
-    ) -> Self {
+    pub fn with_context_policy(mut self, policy: deepagent_context::ContextPolicy) -> Self {
         self.context_policy = Some(policy);
-        self.context_headroom = headroom;
-        self.context_pct_override = pct_override;
         self
     }
 
-    fn current_context_policy(&self) -> Option<deepagent_context::ContextPolicy> {
+    fn request_budget(&self, model: &str, output: Option<u32>) -> Option<RequestContextBudget> {
         self.context_policy.as_ref()?;
-        let mut request = self.response_history.request(self.model.clone());
-        request.reasoning_effort = self.requested_reasoning_effort;
-        let request = self.client.prepare_response_request(request);
+        let capability = self.client.capability(model);
+        let output = self
+            .client
+            .effective_output_tokens(model, output)
+            .map_or(capability.max_output_tokens, |value| value as usize);
+        Some(RequestContextBudget::new(capability.context_window, output))
+    }
+
+    fn current_context_policy(&self) -> Option<deepagent_context::ContextPolicy> {
+        let budget = self.request_budget(&self.model, self.request_max_output_override)?;
         let capability = self.client.capability(&self.model);
-        Some(
-            deepagent_context::ContextPolicy::for_capability_with_output(
-                &capability,
-                request.reasoning_effort.unwrap_or(self.reasoning_effort),
-                self.request_max_output_override
-                    .or(request.max_output_tokens)
-                    .map(|value| value as usize),
-            ),
-        )
+        let mut policy = deepagent_context::ContextPolicy::for_capability_with_output(
+            &capability,
+            self.reasoning_effort,
+            Some(budget.output_tokens),
+        );
+        // The request estimate already includes the tool definitions.
+        policy.prompt_budget = budget.input_tokens;
+        policy.reserved_tool_tokens = 0;
+        policy.auto_compact_at = budget.input_tokens;
+        Some(policy)
     }
 
     fn pressure_threshold(&self) -> Option<u64> {
-        self.current_context_policy()
-            .map(|policy| {
-                policy
-                    .autocompact_threshold_tokens(self.context_headroom, self.context_pct_override)
-                    as u64
-            })
+        self.request_budget(&self.model, self.request_max_output_override)
+            .map(|budget| budget.input_tokens as u64)
             .or(self.proactive_compaction_threshold)
     }
 
@@ -1586,8 +1548,15 @@ impl ModelAgent {
         let header = serde_json::json!({"model": request.model, "max_output_tokens": request.max_output_tokens,
             "reasoning_effort": request.reasoning_effort, "tool_choice": request.tool_choice, "text": request.text,
             "temperature": request.temperature, "top_p": request.top_p, "user": request.user});
-        let mut surface =
-            deepagent_context::measure_response_request(&self.client, original_request, |_| 0);
+        let mut surface = if self.context_policy.is_some() {
+            deepagent_context::meter::measure_budgeted_response_request(
+                &self.client,
+                original_request,
+                |_| 0,
+            )
+        } else {
+            deepagent_context::measure_response_request(&self.client, original_request, |_| 0)
+        };
         surface.attachments = attachment_tokens;
         let key = deepagent_context::ContextMeter::request_fingerprint(
             &format!("{}:{}", surface.source, header),
@@ -1667,6 +1636,88 @@ impl ModelAgent {
     /// run the shared compactor. Failures trip a per-run circuit breaker after
     /// [`MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES`]; the reactive overflow path
     /// remains as the fallback, so a tripped breaker never fails the run.
+    /// Tianshu's request budget gate: at most one replacement, checked against
+    /// the same routed request (including tools and output ceiling) before adoption.
+    async fn compact_request_with_budget(
+        &mut self,
+        request: &mut ResponseRequest,
+        budget: RequestContextBudget,
+        trigger: CompactionTrigger,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Result<bool> {
+        let Some(compactor) = self.reactive_compactor.clone() else {
+            return Ok(false);
+        };
+        let approve = |candidate: &ReactiveCompaction| {
+            let history = self.compaction_history(candidate);
+            let Ok(canonical) = self.request_for_history(&history) else {
+                return false;
+            };
+            let mut candidate_request = request.clone();
+            candidate_request.replace_history_from(&canonical);
+            self.measure_request(&candidate_request).1.total() <= budget.input_tokens
+        };
+        let outcome = compactor
+            .compact_response_items_with_budget(
+                self.response_history.instructions.as_deref(),
+                &self.response_history.items,
+                trigger,
+                cancel,
+                &approve,
+            )
+            .await;
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(failure) => {
+                self.side_usage.record_call(&failure.usage);
+                return Err(failure.error);
+            }
+        };
+        self.side_usage.record_call(&outcome.observed_usage);
+        let Some(candidate) = outcome.compaction else {
+            return Ok(false);
+        };
+        self.adopt_compaction(
+            candidate,
+            match trigger {
+                CompactionTrigger::ContextOverflow => {
+                    deepagent_core::compaction_strategy::REACTIVE_MODEL
+                }
+                _ => deepagent_core::compaction_strategy::PROACTIVE_THRESHOLD,
+            },
+        );
+        request.replace_history_from(&self.request_for_current_history()?);
+        Ok(true)
+    }
+
+    async fn prepare_budgeted_request(
+        &mut self,
+        request: &mut ResponseRequest,
+        budget: RequestContextBudget,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Result<()> {
+        let (key, surface) = self.measure_request(request);
+        let estimated = self.context_meter.projected_tokens(key, surface);
+        if estimated <= budget.input_tokens {
+            return Ok(());
+        }
+        if self
+            .compact_request_with_budget(
+                request,
+                budget,
+                CompactionTrigger::AutoCompactThreshold,
+                cancel,
+            )
+            .await?
+        {
+            return Ok(());
+        }
+        Err(CoreError::invalid(format!(
+            "context budget exceeded: estimated input {estimated}, budget {}, reserved output {}; history retained, request not sent",
+            budget.input_tokens, budget.output_tokens,
+        )))
+    }
+
     async fn maybe_proactive_compact(
         &mut self,
         step: usize,
@@ -2648,7 +2699,6 @@ impl ModelAgent {
         // check; overflow recovery remains the bounded fallback.
         self.collect_finished_prefire(cancel.clone()).await?;
         self.collect_finished_memory_prefetch().await?;
-        self.maybe_time_based_microcompact();
         self.maybe_schedule_prefire(cancel.clone());
         self.maybe_schedule_memory_prefetch();
         self.maybe_inject_snip_nudge();
@@ -2685,14 +2735,26 @@ impl ModelAgent {
             self.reasoning_effort = resolved_effort.unwrap_or_default();
             tracing::debug!(model = %request.model, requested = ?self.requested_reasoning_effort,
                 effective = ?resolved_effort, "resolved attempt reasoning effort");
-            request.max_output_tokens = self
-                .client
-                .effective_output_tokens(&request.model, request.max_output_tokens);
+            let budget = self.request_budget(&request.model, request.max_output_tokens);
+            request.max_output_tokens = match budget {
+                Some(budget) => Some(budget.output_tokens as u32),
+                None => self
+                    .client
+                    .effective_output_tokens(&request.model, request.max_output_tokens),
+            };
             self.request_max_output_override = request.max_output_tokens;
-            // Run pressure management against the final Surface and this
-            // attempt's output ceiling, including nudges and retry changes.
             let pressure_check_started = self.start_preparation_timer();
-            self.maybe_proactive_compact(step, cancel.clone()).await?;
+            if budget.is_none() {
+                self.maybe_proactive_compact(step, cancel.clone()).await?;
+            }
+            let history_projection_started = self.start_preparation_timer();
+            let canonical = self.request_for_current_history()?;
+            self.report_preparation("model_agent_history_projected", history_projection_started);
+            request.replace_history_from(&canonical);
+            if let Some(budget) = budget {
+                self.prepare_budgeted_request(&mut request, budget, cancel.clone())
+                    .await?;
+            }
             self.report_preparation("model_agent_pressure_checked", pressure_check_started);
             if cancel
                 .as_ref()
@@ -2700,10 +2762,6 @@ impl ModelAgent {
             {
                 return Err(CoreError::other("request cancelled by user"));
             }
-            let history_projection_started = self.start_preparation_timer();
-            let canonical = self.request_for_current_history()?;
-            self.report_preparation("model_agent_history_projected", history_projection_started);
-            request.replace_history_from(&canonical);
             if attempt == 1 {
                 if let Some(sink) = &self.events {
                     sink.emit(RuntimeEvent::ModelRequestStarted {
@@ -2798,9 +2856,14 @@ impl ModelAgent {
                             return Err(CoreError::other("request cancelled by user"));
                         }
                         let current_max = request.max_output_tokens.unwrap_or(8_192);
+                        let proposed = Some(current_max.max(65_536));
                         let escalated_max = self
-                            .client
-                            .effective_output_tokens(&request.model, Some(current_max.max(65_536)))
+                            .request_budget(&request.model, proposed)
+                            .map(|budget| budget.output_tokens as u32)
+                            .or_else(|| {
+                                self.client
+                                    .effective_output_tokens(&request.model, proposed)
+                            })
                             .expect("an explicit output proposal stays explicit");
                         if escalated_max > current_max {
                             if let Some(tools) = tools.as_deref_mut() {
@@ -2874,7 +2937,38 @@ impl ModelAgent {
                     if cancelled || failure == ModelFailureKind::Cancelled {
                         return Err(error);
                     }
-                    if failure == ModelFailureKind::ContextOverflow
+                    if let Some(budget) = budget {
+                        if failure == ModelFailureKind::ContextOverflow
+                            && !reactive_compaction_attempted
+                            && !stream_activity_seen
+                            && matches!(
+                                &error,
+                                CoreError::Provider {
+                                    status: Some(400 | 422),
+                                    ..
+                                }
+                            )
+                        {
+                            reactive_compaction_attempted = true;
+                            if self
+                                .compact_request_with_budget(
+                                    &mut request,
+                                    budget,
+                                    CompactionTrigger::ContextOverflow,
+                                    cancel.clone(),
+                                )
+                                .await?
+                            {
+                                emit_attempt_reset(
+                                    self.events.as_ref(),
+                                    step,
+                                    attempt,
+                                    "context overflow recovered by budget compaction".into(),
+                                );
+                                continue;
+                            }
+                        }
+                    } else if failure == ModelFailureKind::ContextOverflow
                         && !reactive_compaction_attempted
                     {
                         if !overflow_prune_attempted {
@@ -3491,8 +3585,8 @@ mod tests {
             "model_agent_state_refreshed",
             "model_agent_surface_prepared",
             "model_agent_request_projected",
-            "model_agent_pressure_checked",
             "model_agent_history_projected",
+            "model_agent_pressure_checked",
             "model_agent_request_started_event_emitted",
             "model_agent_context_usage_published",
             "model_agent_request_measured",
@@ -3632,6 +3726,13 @@ mod tests {
                         Some(503),
                         Some("service_unavailable".into()),
                         "upstream unavailable",
+                    ));
+                }
+                if event == "__ERROR_BUDGET_CONTEXT__" {
+                    return Err(CoreError::provider(
+                        Some(400),
+                        Some("context_length_exceeded".into()),
+                        "maximum context window exceeded",
                     ));
                 }
                 if event == "__ERROR_CONTEXT__" {
@@ -5014,7 +5115,12 @@ mod tests {
                 *output = "ok".into();
             }
         }
-        assert_eq!(agent.clear_stale_tool_results().unwrap(), 0);
+        assert_eq!(
+            agent
+                .prune_stale_tool_results(60, "tool_result_prune")
+                .unwrap(),
+            0
+        );
         assert!(agent
             .response_history
             .items
@@ -5259,6 +5365,47 @@ mod tests {
             .map(|request| request["model"].as_str().unwrap().to_string())
             .collect::<Vec<_>>();
         assert_eq!(models, vec!["primary"]);
+    }
+
+    #[tokio::test]
+    async fn responses_routes_reuse_the_persisted_session_key_across_user_turns() {
+        use deepagent_core::id::SessionId;
+        let transport = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([
+                response_text_completed("first"),
+                response_text_completed("second"),
+                response_text_completed("other session"),
+                response_text_completed("native"),
+            ])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let mut config = ModelConfig::deepseek("test");
+        config.base_url = "https://api.layso.ai/v1".into();
+        let client = Arc::new(ModelClient::new(transport.clone(), config));
+        let session = SessionId::new();
+        let other = SessionId::new();
+        for (id, prompt) in [(session, "first"), (session, "second"), (other, "other")] {
+            let mut agent = ModelAgent::new(client.clone(), "primary", "stable", prompt, vec![])
+                .with_cache_session(id);
+            agent.think(0, &[]).await.unwrap();
+        }
+        let native = Arc::new(ModelClient::new(
+            transport.clone(),
+            ModelConfig::deepseek("test"),
+        ));
+        ModelAgent::new(native, "primary", "stable", "native", vec![])
+            .with_cache_session(session)
+            .think(0, &[])
+            .await
+            .unwrap();
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests[0]["prompt_cache_key"], session.to_string());
+        assert_eq!(
+            requests[1]["prompt_cache_key"],
+            requests[0]["prompt_cache_key"]
+        );
+        assert_eq!(requests[2]["prompt_cache_key"], other.to_string());
+        assert!(requests[3].get("prompt_cache_key").is_none());
     }
 
     #[tokio::test]
@@ -7036,32 +7183,26 @@ mod tests {
         agent
     }
 
-    #[test]
-    fn time_based_microcompact_clears_stale_tool_results_after_idle() {
+    #[tokio::test]
+    async fn cache_prefix_keeps_tool_results_when_request_fits() {
+        let transport = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([response_text_completed("done")])),
+            requests: Mutex::new(Vec::new()),
+        });
         let mut agent = agent_with_stale_tool_result();
-        assert_eq!(agent.messages[1].content, "big tool output".repeat(100));
-        let last = std::time::Instant::now();
-        agent.last_assistant_at = Some(last);
-        agent.microcompacted_for_current_gap = false;
-        agent.maybe_time_based_microcompact_at(
-            last + std::time::Duration::from_secs(MICROCOMPACT_IDLE_SECS + 1),
-            std::time::Duration::from_secs(MICROCOMPACT_IDLE_SECS),
+        agent.client = Arc::new(ModelClient::new(
+            transport.clone(),
+            ModelConfig::deepseek("test"),
+        ));
+        // The production pressure check must leave this small request intact.
+        let mut agent = agent.with_proactive_compaction(50_000);
+        let expected = agent.request_for_current_history().unwrap().input;
+        agent.think(0, &[]).await.unwrap();
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0]["input"],
+            serde_json::to_value(expected).unwrap()
         );
-        assert_eq!(agent.messages[1].content, "[tool result content cleared]");
-        // Idempotent within the same idle gap.
-        assert_eq!(agent.clear_stale_tool_results().unwrap(), 0);
-    }
-
-    #[test]
-    fn time_based_microcompact_noop_before_idle_threshold() {
-        let mut agent = agent_with_stale_tool_result();
-        let last = std::time::Instant::now();
-        agent.last_assistant_at = Some(last);
-        agent.microcompacted_for_current_gap = false;
-        agent.maybe_time_based_microcompact_at(
-            last + std::time::Duration::from_secs(MICROCOMPACT_IDLE_SECS - 1),
-            std::time::Duration::from_secs(MICROCOMPACT_IDLE_SECS),
-        );
-        assert_eq!(agent.messages[1].content, "big tool output".repeat(100));
     }
 }

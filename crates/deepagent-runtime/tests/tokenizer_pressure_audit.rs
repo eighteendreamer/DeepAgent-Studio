@@ -37,9 +37,7 @@ impl ReactiveContextCompactor for CountingCompactor {
 }
 
 struct RecordingModel {
-    compactor: Arc<CountingCompactor>,
     calls: AtomicUsize,
-    compactions_before_dispatch: AtomicUsize,
     expected_input: String,
     model: String,
 }
@@ -58,8 +56,6 @@ impl HttpTransport for RecordingModel {
             .find(|item| item["role"] == "user")
             .unwrap();
         assert_eq!(user["content"], self.expected_input);
-        self.compactions_before_dispatch
-            .store(self.compactor.0.load(Ordering::Acquire), Ordering::Release);
         let item = json!({"type":"message","id":"audit-message","role":"assistant",
             "status":"completed","content":[{"type":"output_text","text":"received","annotations":[]}]});
         let events = [
@@ -84,7 +80,7 @@ async fn observe(sample: &Value, model: &str) -> (usize, usize) {
         effort: None,
         thinking: None,
         model_id: model.into(),
-        context_window: 128_000,
+        context_window: 70_000,
         max_output_tokens: 8192,
         supports_tools: true,
         supports_thinking: true,
@@ -93,7 +89,11 @@ async fn observe(sample: &Value, model: &str) -> (usize, usize) {
         fallback_reason: None,
     };
     let policy = ContextPolicy::for_capability(&capability, ReasoningEffort::None);
-    let threshold = policy.autocompact_threshold_tokens(None, None);
+    let threshold = deepagent_context::policy::RequestContextBudget::new(
+        capability.context_window,
+        capability.max_output_tokens,
+    )
+    .input_tokens;
     let mut config = ModelConfig::deepseek("offline-audit-placeholder");
     config.capabilities = vec![capability];
     config.defaults.max_output_tokens = Some(8192);
@@ -103,26 +103,31 @@ async fn observe(sample: &Value, model: &str) -> (usize, usize) {
         .repeat(sample["repeat"].as_u64().unwrap() as usize);
     let compactor = Arc::new(CountingCompactor::default());
     let transport = Arc::new(RecordingModel {
-        compactor: compactor.clone(),
         calls: AtomicUsize::new(0),
-        compactions_before_dispatch: AtomicUsize::new(0),
         expected_input: content.clone(),
         model: model.into(),
     });
     let client = Arc::new(ModelClient::new(transport.clone(), config));
     let mut agent = ModelAgent::new(client, model, "system", &content, vec![])
         .with_reasoning_effort(ReasoningEffort::None)
-        .with_context_policy(policy, None, None)
-        .with_reactive_compactor(compactor);
-    tokio::time::timeout(std::time::Duration::from_secs(5), agent.think(0, &[]))
+        .with_context_policy(policy)
+        .with_reactive_compactor(compactor.clone());
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), agent.think(0, &[]))
         .await
-        .expect("bounded offline model request")
-        .unwrap();
-    assert_eq!(transport.calls.load(Ordering::Acquire), 1);
-    let calls = transport
-        .compactions_before_dispatch
-        .load(Ordering::Acquire);
-    eprintln!("ModelAgent offline pressure: sample={} offline_text={} threshold={threshold} compactor_calls_before_dispatch={calls} requests=1", sample["name"], sample["offline_tokens"]);
+        .expect("bounded offline model request");
+    let calls = compactor.0.load(Ordering::Acquire);
+    let dispatched = transport.calls.load(Ordering::Acquire);
+    if calls == 0 {
+        result.unwrap();
+        assert_eq!(dispatched, 1);
+    } else {
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("context budget exceeded"));
+        assert_eq!(dispatched, 0);
+    }
+    eprintln!("ModelAgent offline budget: sample={} offline_text={} budget={threshold} compactor_calls={calls} requests={dispatched}", sample["name"], sample["offline_tokens"]);
     (calls, threshold)
 }
 
@@ -146,7 +151,7 @@ async fn english_above_threshold_and_code_below_threshold_reach_the_expected_gat
             let (calls, threshold) = observe(&sample, model).await;
             assert_eq!(
                 calls,
-                usize::from(sample["offline_tokens"].as_u64().unwrap() >= threshold as u64)
+                usize::from(sample["offline_tokens"].as_u64().unwrap() > threshold as u64)
             );
         }
     }
@@ -163,7 +168,7 @@ async fn audit_offline_over_threshold_unicode_reaches_pressure_before_dispatch()
     }) {
         for model in ["deepseek-v4-pro", "deepseek-flash"] {
             let (calls, threshold) = observe(&sample, model).await;
-            assert!(sample["offline_tokens"].as_u64().unwrap() >= threshold as u64);
+            assert!(sample["offline_tokens"].as_u64().unwrap() > threshold as u64);
             if calls == 0 {
                 missed.push(json!({"sample":sample["name"],"model":model}));
             }

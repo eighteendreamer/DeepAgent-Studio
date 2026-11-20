@@ -670,7 +670,12 @@ async fn registry_changes_during_tool_round_trip_apply_only_to_next_user_turn() 
         "synthetic-rotated-key",
         "registry-next-model",
     );
+    let first: serde_json::Value = serde_json::from_str(&requests[0].body).unwrap();
     let second: serde_json::Value = serde_json::from_str(&requests[1].body).unwrap();
+    let next: serde_json::Value = serde_json::from_str(&requests[2].body).unwrap();
+    assert_eq!(first["prompt_cache_key"].as_str(), Some(session.as_str()));
+    assert_eq!(second["prompt_cache_key"], first["prompt_cache_key"]);
+    assert!(next.get("prompt_cache_key").is_none());
     assert!(second["input"]
         .as_array()
         .unwrap()

@@ -203,6 +203,7 @@ pub struct ResponseRequest {
     pub text: Option<serde_json::Value>,
     /// Optional end-user identifier.
     pub user: Option<String>,
+    pub(crate) cache_session: Option<deepagent_core::id::SessionId>,
     /// Attachment id → base64 data URL, resolved by the caller that owns
     /// attachment storage. Used to materialize `input_image` content parts;
     /// empty when the turn carries no image attachments.
@@ -223,6 +224,7 @@ impl Serialize for ResponseRequest {
         self.serialize_with_effort(
             serializer,
             self.reasoning_effort.map(ReasoningEffort::label),
+            self.cache_session,
         )
     }
 }
@@ -232,8 +234,9 @@ impl ResponseRequest {
         &self,
         serializer: S,
         effort: Option<&str>,
+        cache_session: Option<deepagent_core::id::SessionId>,
     ) -> Result<S::Ok, S::Error> {
-        crate::protocol::serialize_response_request(self, serializer, effort)
+        crate::protocol::serialize_response_request(self, serializer, effort, cache_session)
     }
 
     pub(crate) fn validate_wire_parameters(&self) -> Result<()> {
@@ -297,10 +300,18 @@ impl ResponseRequest {
             top_logprobs: None,
             text: None,
             user: None,
+            cache_session: None,
             attachment_data_urls: std::collections::BTreeMap::new(),
             image_file_ids: std::collections::BTreeMap::new(),
             chat_projection_input,
         }
+    }
+
+    /// Select a stable Responses cache route for this conversation. The native
+    /// DeepSeek transport keeps its implicit exact-prefix caching.
+    pub fn with_cache_session(mut self, session: deepagent_core::id::SessionId) -> Self {
+        self.cache_session = Some(session);
+        self
     }
 
     /// Attach the resolved attachment id → data URL map, materialized into

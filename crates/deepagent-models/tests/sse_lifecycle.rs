@@ -74,9 +74,10 @@ async fn messages_cache_breakpoint_and_usage_survive_http_transport() {
     assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
     assert_eq!(body["system"][1]["text"], "Current workspace");
     assert!(body["system"][1].get("cache_control").is_none());
-    assert!(body["messages"][0]["content"][0]
-        .get("cache_control")
-        .is_none());
+    assert_eq!(
+        body["messages"][0]["content"][0]["cache_control"]["type"],
+        "ephemeral"
+    );
 }
 
 fn timeouts() -> TransportTimeouts {

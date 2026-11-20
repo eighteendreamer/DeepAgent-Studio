@@ -58,15 +58,46 @@ pub fn measure_response_request(
     request: &deepagent_models::ResponseRequest,
     image_price: impl FnMut(&deepagent_core::message::MessageAttachment) -> usize,
 ) -> SurfaceTokenBreakdown {
+    measure_routed_request(client, request, image_price, false)
+}
+
+/// Tianshu's mixed-script estimate for routes without an exact prompt tokenizer.
+/// Keep exact tokenization and byte diagnostics for already modelled routes.
+pub fn measure_budgeted_response_request(
+    client: &deepagent_models::ModelClient,
+    request: &deepagent_models::ResponseRequest,
+    image_price: impl FnMut(&deepagent_core::message::MessageAttachment) -> usize,
+) -> SurfaceTokenBreakdown {
+    measure_routed_request(client, request, image_price, true)
+}
+
+fn measure_routed_request(
+    client: &deepagent_models::ModelClient,
+    request: &deepagent_models::ResponseRequest,
+    mut image_price: impl FnMut(&deepagent_core::message::MessageAttachment) -> usize,
+    use_tianshu_estimate: bool,
+) -> SurfaceTokenBreakdown {
     let original_request = request;
     let request = client.prepare_response_request(request.clone());
-    let mut measured = measure_response_surface_for_route(
+    let exact = client.count_response_prompt(original_request);
+    let counter: &dyn TokenCounter = if use_tianshu_estimate && matches!(exact, Ok(None)) {
+        &crate::tokenizer::TianshuTokenEstimate
+    } else {
+        &ByteTokenCounter
+    };
+    let mut measured = measure_response_surface_with(
+        counter,
         request.instructions.as_deref(),
         &request.input,
         &request.tools,
-        image_price,
     );
-    match client.count_response_prompt(original_request) {
+    measured.attachments = request
+        .input
+        .iter()
+        .flat_map(ResponseInputItem::image_attachments)
+        .map(&mut image_price)
+        .sum();
+    match exact {
         Ok(Some(text_tokens)) => {
             let tokenizer =
                 deepagent_models::tokenizer::DeepSeekTokenizer::for_model(&request.model)
@@ -75,7 +106,9 @@ pub fn measure_response_request(
             measured.source = tokenizer.source();
         }
         Ok(None) => {
-            measured.include_request_byte_estimate(client, original_request);
+            if !use_tianshu_estimate {
+                measured.include_request_byte_estimate(client, original_request);
+            }
         }
         Err(_) => {
             // Do not log a converter's input-dependent diagnostic (it may

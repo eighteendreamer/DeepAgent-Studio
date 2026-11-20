@@ -404,6 +404,7 @@ impl HookedReactiveContextCompactor {
         items: &[ResponseInputItem],
         trigger: CompactionTrigger,
         cancel: Option<Arc<AtomicBool>>,
+        approve: Option<&(dyn for<'candidate> Fn(&'candidate ReactiveCompaction) -> bool + Sync)>,
     ) -> std::result::Result<CompactionOutcome, CompactionFailure> {
         if cancel
             .as_ref()
@@ -422,9 +423,23 @@ impl HookedReactiveContextCompactor {
         {
             return Ok(CompactionOutcome::none());
         }
-        let Some(split) = pairing_safe_response_item_compaction_split(items) else {
+        let Some(mut split) = pairing_safe_response_item_compaction_split(items) else {
             return Ok(CompactionOutcome::none());
         };
+        if approve.is_some() {
+            // Keep the live user boundary and therefore the tool round following it.
+            if let Some(user) = items.iter().rposition(|item| {
+                matches!(item,
+                    ResponseInputItem::Message { role, .. }
+                        | ResponseInputItem::InputMessage { role, .. } if role == "user"
+                )
+            }) {
+                split = split.min(user);
+            }
+            if split == 0 {
+                return Ok(CompactionOutcome::none());
+            }
+        }
         let before = self
             .dispatch_compaction_report(
                 HookContext::new(
@@ -471,6 +486,23 @@ impl HookedReactiveContextCompactor {
                 .record_ineffective();
             return Ok(CompactionOutcome::observed(summary_usage));
         }
+        let messages =
+            deepagent_models::messages_from_response_items(instructions, &compacted_items);
+        let compacted = ReactiveCompaction {
+            messages,
+            response_items: Some(compacted_items),
+            tokens_before,
+            tokens_after,
+            summary: summary_block.clone(),
+            usage: summary_usage,
+        };
+        if approve.is_some_and(|approve| !approve(&compacted)) {
+            self.breaker
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .record_ineffective();
+            return Ok(CompactionOutcome::observed(summary_usage));
+        }
         let post = self
             .dispatch_compaction_hook(
                 HookContext::new(
@@ -509,16 +541,7 @@ impl HookedReactiveContextCompactor {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .record_success();
-        let messages =
-            deepagent_models::messages_from_response_items(instructions, &compacted_items);
-        Ok(CompactionOutcome::adopted(ReactiveCompaction {
-            messages,
-            response_items: Some(compacted_items),
-            tokens_before,
-            tokens_after,
-            summary: summary_block,
-            usage: summary_usage,
-        }))
+        Ok(CompactionOutcome::adopted(compacted))
     }
 
     async fn prefire_pass1_response_items_inner(
@@ -986,7 +1009,7 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
         items: &[ResponseInputItem],
         trigger: CompactionTrigger,
     ) -> Result<Option<ReactiveCompaction>> {
-        self.compact_response_items_inner(instructions, items, trigger, None)
+        self.compact_response_items_inner(instructions, items, trigger, None, None)
             .await
             .map(|outcome| outcome.compaction)
             .map_err(|failure| failure.error)
@@ -999,7 +1022,7 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
         trigger: CompactionTrigger,
         cancel: Option<Arc<AtomicBool>>,
     ) -> std::result::Result<Option<ReactiveCompaction>, CompactionFailure> {
-        self.compact_response_items_inner(instructions, items, trigger, cancel)
+        self.compact_response_items_inner(instructions, items, trigger, cancel, None)
             .await
             .map(|outcome| outcome.compaction)
     }
@@ -1011,7 +1034,19 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
         trigger: CompactionTrigger,
         cancel: Option<Arc<AtomicBool>>,
     ) -> std::result::Result<CompactionOutcome, CompactionFailure> {
-        self.compact_response_items_inner(instructions, items, trigger, cancel)
+        self.compact_response_items_inner(instructions, items, trigger, cancel, None)
+            .await
+    }
+
+    async fn compact_response_items_with_budget(
+        &self,
+        instructions: Option<&str>,
+        items: &[ResponseInputItem],
+        trigger: CompactionTrigger,
+        cancel: Option<Arc<AtomicBool>>,
+        approve: &(dyn for<'candidate> Fn(&'candidate ReactiveCompaction) -> bool + Sync),
+    ) -> std::result::Result<CompactionOutcome, CompactionFailure> {
+        self.compact_response_items_inner(instructions, items, trigger, cancel, Some(approve))
             .await
     }
 
@@ -2565,6 +2600,70 @@ mod tests {
                 deepagent_core::event::EventPayload::ContextCompacted { .. }
             )),
             "cancellation during summary must not persist a partial compaction boundary"
+        );
+    }
+
+    #[tokio::test]
+    async fn request_budget_declined_candidate_does_not_write_a_sqlite_boundary() {
+        use crate::session_memory::testing::{scripted_client, ScriptedTransport};
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let mut session =
+            deepagent_session::Session::create(&db, &deepagent_core::clock::SystemClock, None)
+                .unwrap();
+        let mut source: Vec<_> = (0..24)
+            .map(|index| ResponseInputItem::Message {
+                role: if index % 2 == 0 { "user" } else { "assistant" }.into(),
+                content: format!("turn {index}: {}", "historical details ".repeat(600)),
+            })
+            .collect();
+        let current = ResponseInputItem::Message {
+            role: "user".into(),
+            content: "keep this active turn".into(),
+        };
+        source.push(current.clone());
+        for item in &source {
+            session.append_response_item(item.clone()).unwrap();
+        }
+        let id = session.id();
+        let store = deepagent_persistence::event_store::EventStore::new(&db);
+        let before = store.load_session(id).unwrap();
+        let compactor = HookedReactiveContextCompactor::new(
+            scripted_client(vec![ScriptedTransport::text(
+                r#"{"goal":"budget check","completed":["historical work"]}"#,
+            )]),
+            "deepseek-flash".into(),
+            Arc::new(HookRegistry::new()),
+            id,
+            db.clone(),
+        );
+        let offers = std::sync::atomic::AtomicUsize::new(0);
+        let outcome = compactor
+            .compact_response_items_with_budget(
+                Some("stable rules"),
+                &source,
+                CompactionTrigger::AutoCompactThreshold,
+                None,
+                &|candidate| {
+                    assert!(candidate
+                        .response_items
+                        .as_ref()
+                        .unwrap()
+                        .contains(&current));
+                    offers.fetch_add(1, Ordering::AcqRel);
+                    false
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(offers.load(Ordering::Acquire), 1);
+        assert!(outcome.compaction.is_none());
+        let after = store.load_session(id).unwrap();
+        assert_eq!(after.len(), before.len());
+        assert!(
+            crate::input_runtime::response_items_from_events(&after)
+                == crate::input_runtime::response_items_from_events(&before),
+            "the rejected candidate must not change the replayed Surface"
         );
     }
 

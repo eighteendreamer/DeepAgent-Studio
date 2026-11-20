@@ -475,25 +475,14 @@ fn tool_prune_keeps_authority_on_persistence_failure_and_on_empty_replacements()
             1
         );
         assert_eq!(resets.load(Ordering::Acquire), 1);
-        assert_eq!(agent.clear_stale_tool_results().unwrap(), 0);
+        assert_eq!(
+            agent
+                .prune_stale_tool_results(60, "tool_result_prune")
+                .unwrap(),
+            0
+        );
         assert_eq!(resets.load(Ordering::Acquire), 1);
     }
-}
-
-#[test]
-fn idle_microcompact_revokes_only_after_a_real_replacement() {
-    let (agent, resets) = agent();
-    let mut agent = stale_result(agent, false);
-    resets.store(0, Ordering::Release);
-    let last = std::time::Instant::now();
-    agent.last_assistant_at = Some(last);
-    let threshold = std::time::Duration::from_secs(10);
-    agent.maybe_time_based_microcompact_at(last + threshold / 2, threshold);
-    assert_eq!(resets.load(Ordering::Acquire), 0);
-    agent.maybe_time_based_microcompact_at(last + threshold * 2, threshold);
-    assert_eq!(resets.load(Ordering::Acquire), 1);
-    agent.maybe_time_based_microcompact_at(last + threshold * 3, threshold);
-    assert_eq!(resets.load(Ordering::Acquire), 1);
 }
 
 #[test]

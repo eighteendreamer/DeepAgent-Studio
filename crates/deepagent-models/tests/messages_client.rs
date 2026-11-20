@@ -106,7 +106,7 @@ fn messages_endpoint_appends_protocol_path_to_base_url_once() {
 }
 
 #[tokio::test]
-async fn messages_cache_marks_stable_sections_and_completed_history_only() {
+async fn messages_cache_marks_stable_sections_and_conversation_anchors() {
     let transport = Arc::new(RecordingTransport {
         events: events(),
         ..Default::default()
@@ -153,7 +153,11 @@ async fn messages_cache_marks_stable_sections_and_completed_history_only() {
     assert!(body["messages"][2]["content"][0]
         .get("cache_control")
         .is_none());
-    assert_eq!(recorded.body.matches("\"cache_control\"").count(), 3);
+    assert_eq!(
+        body["messages"][0]["content"][0]["cache_control"]["type"],
+        "ephemeral"
+    );
+    assert_eq!(recorded.body.matches("\"cache_control\"").count(), 4);
     assert_eq!(
         json!(client.project_tool_schemas("claude-fixture", &tools).tools),
         body["tools"]
@@ -207,7 +211,11 @@ async fn messages_cache_skips_thinking_only_history_and_deepseek_auto_cache() {
             assert_eq!(body["system"], "rules");
         } else {
             assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
-            assert_eq!(recorded.body.matches("\"cache_control\"").count(), 1);
+            assert_eq!(
+                body["messages"][0]["content"][0]["cache_control"]["type"],
+                "ephemeral"
+            );
+            assert_eq!(recorded.body.matches("\"cache_control\"").count(), 2);
         }
     }
 }
@@ -250,7 +258,11 @@ async fn messages_cache_keeps_stable_instructions_separate_from_runtime_system_i
         } else {
             stable_block = Some(body["system"][0].clone());
         }
-        assert_eq!(recorded.body.matches("\"cache_control\"").count(), 1);
+        assert_eq!(
+            body["messages"][0]["content"][0]["cache_control"]["type"],
+            "ephemeral"
+        );
+        assert_eq!(recorded.body.matches("\"cache_control\"").count(), 2);
     }
 }
 
@@ -308,5 +320,128 @@ async fn messages_cache_preserves_thinking_signature_and_tool_result_pair() {
     assert_eq!(user[1]["text"], "continue");
     assert!(user[0].get("cache_control").is_none());
     assert!(user[1].get("cache_control").is_none());
-    assert_eq!(recorded.body.matches("\"cache_control\"").count(), 2);
+    assert_eq!(
+        body["messages"][0]["content"][0]["cache_control"]["type"],
+        "ephemeral"
+    );
+    assert_eq!(recorded.body.matches("\"cache_control\"").count(), 3);
+}
+
+#[tokio::test]
+async fn tianshu_cache_anchors_first_user_and_rolls_within_fifteen_content_blocks() {
+    let transport = Arc::new(RecordingTransport {
+        events: events(),
+        ..Default::default()
+    });
+    let mut config = ModelConfig::deepseek("fixture-key").with_wire_mode(WireMode::Messages);
+    config.base_url = "https://api.anthropic.com".into();
+    let client = ModelClient::new(transport.clone(), config);
+
+    for (rounds, rolling_anchor) in [(7, 1), (8, 3)] {
+        let history = (0..=2 * rounds)
+            .map(|position| ResponseItem::Message {
+                role: if position % 2 == 0 {
+                    "user"
+                } else {
+                    "assistant"
+                }
+                .into(),
+                content: format!("message {position}"),
+            })
+            .collect();
+        let request = ResponseRequest::from_response_items(
+            "claude-fixture",
+            Some("stable rules".into()),
+            history,
+        )
+        .with_max_output_tokens(128)
+        .with_tools(vec![deepagent_models::ToolSchema::function(
+            "read_file",
+            "read a file",
+            json!({"type":"object"}),
+        )]);
+        client.stream_response(request).await.unwrap();
+        let recorded = transport.request.lock().unwrap().clone().unwrap();
+        let body: Value = serde_json::from_str(&recorded.body).unwrap();
+        let marked: Vec<usize> = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item["content"][0].get("cache_control").is_some())
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(marked, [0, rolling_anchor], "rounds={rounds}");
+        assert_eq!(body["tools"][0]["cache_control"]["ttl"], "1h");
+        assert_eq!(body["system"][0]["cache_control"]["ttl"], "1h");
+        assert!(body["messages"][0]["content"][0]["cache_control"]
+            .get("ttl")
+            .is_none());
+        assert!(
+            body["messages"][rolling_anchor]["content"][0]["cache_control"]
+                .get("ttl")
+                .is_none()
+        );
+    }
+}
+
+#[tokio::test]
+async fn messages_cache_freezes_the_prefix_when_host_context_changes_at_the_next_user_turn() {
+    use deepagent_core::runtime_snapshot::RuntimeSnapshot;
+
+    let transport = Arc::new(RecordingTransport {
+        events: events(),
+        ..Default::default()
+    });
+    let mut config = ModelConfig::deepseek("fixture-key").with_wire_mode(WireMode::Messages);
+    config.base_url = "https://api.anthropic.com".into();
+    let client = ModelClient::new(transport.clone(), config);
+    let snapshot = |revision, context: &str| {
+        RuntimeSnapshot {
+            version: 1,
+            series: 1,
+            revision,
+            stable_rules_sha256: "a".repeat(64),
+            context: context.into(),
+        }
+        .to_item()
+    };
+    let text = |role: &str, content: &str| ResponseItem::Message {
+        role: role.into(),
+        content: content.into(),
+    };
+    let mut history = vec![
+        text("user", "first question"),
+        snapshot(1, "first environment"),
+    ];
+    let request = |items: &[ResponseItem]| {
+        ResponseRequest::from_response_items(
+            "fixture-model",
+            Some("stable rules".into()),
+            items.to_vec(),
+        )
+        .with_max_output_tokens(128)
+    };
+    client.stream_response(request(&history)).await.unwrap();
+    let first: Value =
+        serde_json::from_str(&transport.request.lock().unwrap().as_ref().unwrap().body).unwrap();
+    history.extend([
+        text("assistant", "first answer"),
+        text("user", "next question"),
+        snapshot(2, "changed environment"),
+    ]);
+    client.stream_response(request(&history)).await.unwrap();
+    let next: Value =
+        serde_json::from_str(&transport.request.lock().unwrap().as_ref().unwrap().body).unwrap();
+    assert_eq!(
+        first["system"], next["system"],
+        "the changing context must not move to the system head"
+    );
+    assert_eq!(first["messages"][0], next["messages"][0]);
+    assert!(next["messages"][0]
+        .to_string()
+        .contains("first environment"));
+    assert!(next["messages"][2]
+        .to_string()
+        .contains("changed environment"));
 }
