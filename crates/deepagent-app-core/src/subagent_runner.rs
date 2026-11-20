@@ -3149,7 +3149,7 @@ pub(crate) fn subagent_system_prompt(
 ) -> String {
     let mut system = format!(
         "{base}{boundary}",
-        base = crate::system_prompt::system_prompt_base(),
+        base = crate::system_prompt::subagent_prompt_base(),
         boundary = SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
     );
 

@@ -1623,6 +1623,7 @@ pub(crate) struct RunContextRequest<'a> {
     pub(crate) remote_context_factory: Option<&'a RemoteContextFactory>,
     pub(crate) context_policy: &'a ContextPolicy,
     pub(crate) history: &'a [Message],
+    pub(crate) response_history: &'a [ResponseInputItem],
     pub(crate) tools: &'a [ToolSchema],
     pub(crate) context_compacted: bool,
 }
@@ -1632,6 +1633,7 @@ pub(crate) struct BuiltRunContext {
     pub(crate) loaded_instructions: Vec<deepagent_context::LoadedInstruction>,
     pub(crate) system_prompt: String,
     pub(crate) final_user_prompt: String,
+    pub(crate) knowledge_attachment: Option<ResponseInputItem>,
     pub(crate) context_usage: deepagent_context::ContextUsageSnapshot,
     /// Disjoint preparation spans, recorded in memory before diagnostic I/O.
     pub(crate) preparation_timings_us: BTreeMap<&'static str, u64>,
@@ -1662,6 +1664,7 @@ pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<
         request.skill_catalog_state,
         request.session_id,
         request.prior_events,
+        request.response_history,
     )?;
 
     let mcp_instructions_block = mcp_instructions_block_for_run(
@@ -1698,15 +1701,23 @@ pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<
     let system_prompt = system_manifest.render();
     observe_phase("render");
 
-    // User-input layer attachments (knowledge passive block, remote context)
-    // are collected through the shared attachment hub rather than hand-composed.
+    // Knowledge is a separate replayable data item; keep the user query intact.
+    let knowledge_attachment = if let Some(knowledge) = request.knowledge {
+        let visible =
+            deepagent_context::memory_attachment::surfaced_memory_ids(request.response_history);
+        let memories = knowledge.passive_memories(request.prompt_for_model, &visible);
+        if memories.is_empty() {
+            None
+        } else {
+            Some(deepagent_context::memory_attachment::memory_attachment(
+                &memories,
+            )?)
+        }
+    } else {
+        None
+    };
     let mut registry =
         deepagent_context::AttachmentRegistry::new(USER_INPUT_ATTACHMENT_CHAR_BUDGET);
-    if let Some(knowledge) = request.knowledge {
-        registry.register(Arc::new(KnowledgeReminderProvider {
-            knowledge: knowledge.clone(),
-        }));
-    }
     if matches!(request.effective_env_mode, Some("remote")) {
         if let (Some(factory), Some(connection_id)) =
             (request.remote_context_factory, request.connection_id)
@@ -1772,6 +1783,7 @@ pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<
         loaded_instructions,
         system_prompt,
         final_user_prompt,
+        knowledge_attachment,
         context_usage,
         preparation_timings_us,
     })
@@ -1801,6 +1813,7 @@ fn build_skill_catalog_blocks(
     skill_catalog_state: &Arc<Mutex<HashMap<String, SkillCatalogSendState>>>,
     session_id: &str,
     prior_events: &[Event],
+    visible_history: &[ResponseInputItem],
 ) -> Result<Vec<String>> {
     let mut blocks = Vec::new();
     let Some(skills) = skills else {
@@ -1824,7 +1837,8 @@ fn build_skill_catalog_blocks(
         blocks.push(crate::system_reminder::wrap(&block));
     }
     let invoked = collect_invoked_skill_records_from_events(prior_events);
-    if let Some(block) = invoked_skills_reminder(&invoked) {
+    let invoked = invoked_skills_still_needed(&invoked, visible_history);
+    if let Some(block) = invoked_skills_reminder(invoked) {
         blocks.push(crate::system_reminder::wrap(&block));
     }
     Ok(blocks)
@@ -1832,38 +1846,6 @@ fn build_skill_catalog_blocks(
 
 /// Character budget for the user-input attachment layer in one run.
 const USER_INPUT_ATTACHMENT_CHAR_BUDGET: usize = 12_000;
-
-/// Knowledge-base passive injection (§3.2) as a user-input attachment.
-struct KnowledgeReminderProvider {
-    knowledge: Arc<KnowledgeService>,
-}
-
-#[async_trait]
-impl deepagent_context::AttachmentProvider for KnowledgeReminderProvider {
-    fn kind(&self) -> &str {
-        "knowledge_passive"
-    }
-
-    fn layer(&self) -> deepagent_context::AttachmentLayer {
-        deepagent_context::AttachmentLayer::UserInput
-    }
-
-    async fn collect(
-        &self,
-        ctx: &deepagent_context::AttachmentContext<'_>,
-    ) -> Vec<deepagent_context::ContextAttachment> {
-        let block = self.knowledge.passive_block(ctx.query);
-        if block.trim().is_empty() {
-            return Vec::new();
-        }
-        vec![deepagent_context::ContextAttachment::new(
-            "knowledge_passive",
-            deepagent_context::AttachmentLayer::UserInput,
-            120,
-            deepagent_context::reminder::wrap(&block),
-        )]
-    }
-}
 
 /// Remote-workspace (SSH) context as a user-input attachment.
 struct RemoteContextProvider {
@@ -2182,10 +2164,60 @@ fn invoked_skill_record_from_output(
     })
 }
 
-pub(crate) fn invoked_skills_reminder(records: &[InvokedSkillRecord]) -> Option<String> {
+/// Keep a full Skill re-injection only when its tool result is no longer
+/// visible in the current model history. Event history records that a Skill
+/// was called, but does not prove that the body still survives after
+/// compaction, micro-compaction, or a resumed session.
+fn invoked_skills_still_needed<'a>(
+    records: &'a [InvokedSkillRecord],
+    visible_history: &[ResponseInputItem],
+) -> Vec<&'a InvokedSkillRecord> {
     if records.is_empty() {
-        return None;
+        return Vec::new();
     }
+    let mut pending = HashMap::new();
+    let mut visible = HashMap::new();
+    for item in visible_history {
+        match item {
+            ResponseInputItem::FunctionCall {
+                call_id,
+                name,
+                arguments,
+            } if name == deepagent_builtins::SKILL_TOOL_NAME => {
+                if let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) {
+                    if let Some(id) = args.get("id").and_then(|value| value.as_str()) {
+                        pending.insert(call_id, id.trim().to_owned());
+                    }
+                }
+            }
+            ResponseInputItem::FunctionCallOutput { call_id, output } => {
+                let Some(id) = pending.remove(call_id) else {
+                    continue;
+                };
+                let Ok(envelope) = serde_json::from_str::<serde_json::Value>(&output.text()) else {
+                    continue;
+                };
+                if envelope["status"] != "ok" {
+                    continue;
+                }
+                if let Some(record) = invoked_skill_record_from_output(&id, &envelope["result"]) {
+                    visible.insert(record.id.clone(), record);
+                }
+            }
+            _ => {}
+        }
+    }
+    records
+        .iter()
+        .filter(|record| visible.get(&record.id) != Some(*record))
+        .collect()
+}
+
+pub(crate) fn invoked_skills_reminder<'a>(
+    records: impl IntoIterator<Item = &'a InvokedSkillRecord>,
+) -> Option<String> {
+    let mut records = records.into_iter().peekable();
+    records.peek()?;
 
     let mut out = String::from(
         "The following skills were invoked earlier in this session; their instructions are \
@@ -3321,6 +3353,35 @@ mod tests {
     #[test]
     fn reinjection_block_empty_zone_returns_none() {
         assert!(compaction_reinjection_block(&[Message::user("hello")]).is_none());
+    }
+
+    #[test]
+    fn invoked_skill_body_uses_paired_wire_output_and_recovers_after_compaction() {
+        let body = "Use the document workflow.\nRead the \"format\" examples.";
+        let output = serde_json::json!({"id":"docx", "body":body});
+        let records = [invoked_skill_record_from_output("docx", &output).unwrap()];
+        let call = ResponseInputItem::FunctionCall {
+            call_id: "skill-call".into(),
+            name: "skill".into(),
+            arguments: r#"{"id":"docx"}"#.into(),
+        };
+        let result = ResponseInputItem::FunctionCallOutput {
+            call_id: "skill-call".into(),
+            output: serde_json::json!({"status":"ok", "result":output})
+                .to_string()
+                .into(),
+        };
+        assert!(invoked_skills_still_needed(&records, &[call.clone(), result.clone()]).is_empty());
+        assert_eq!(
+            invoked_skills_still_needed(&records, &[result]),
+            vec![&records[0]]
+        );
+        let cleared = ResponseInputItem::FunctionCallOutput {
+            call_id: "skill-call".into(),
+            output: r#"{"status":"cleared"}"#.into(),
+        };
+        let needed = invoked_skills_still_needed(&records, &[call, cleared]);
+        assert!(invoked_skills_reminder(needed).unwrap().contains(body));
     }
 
     /// Phase 2 — the boundary has to be durable on the overflow route too. A

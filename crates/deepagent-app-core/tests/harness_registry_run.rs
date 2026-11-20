@@ -274,6 +274,7 @@ fn model(protocol: Option<&str>) -> HarnessModel {
 struct Wire {
     requests: Mutex<Vec<TransportRequest>>,
     pause: AtomicBool,
+    invoke_skill: AtomicBool,
     started: Notify,
     release: Notify,
 }
@@ -282,6 +283,8 @@ struct Wire {
 impl HttpTransport for Wire {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
         let chat = request.url.ends_with("/chat/completions");
+        let messages = request.url.ends_with("/messages");
+        let skill = self.invoke_skill.swap(false, Ordering::SeqCst);
         self.requests.lock().unwrap().push(request);
         if self.pause.swap(false, Ordering::SeqCst) {
             self.started.notify_one();
@@ -298,10 +301,52 @@ impl HttpTransport for Wire {
             );
         }
         if chat {
-            sink.on_event(r#"{"id":"registry-response","choices":[{"index":0,"delta":{"content":"Acknowledged."},"finish_reason":null}]}"#)?;
-            sink.on_event(r#"{"id":"registry-response","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#)?;
+            if skill {
+                sink.on_event(r#"{"id":"registry-response","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"fixture-skill-call","type":"function","function":{"name":"skill","arguments":"{\"id\":\"wire-fixture\"}"}}]},"finish_reason":"tool_calls"}]}"#)?;
+            } else {
+                sink.on_event(r#"{"id":"registry-response","choices":[{"index":0,"delta":{"content":"Acknowledged."},"finish_reason":null}]}"#)?;
+                sink.on_event(r#"{"id":"registry-response","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#)?;
+            }
             sink.on_event("[DONE]")?;
             Ok(())
+        } else if messages {
+            use serde_json::json;
+            let start = json!({"type":"message_start","message":{"id":"msg-fixture","type":"message","role":"assistant","model":MODEL,"content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}});
+            let (block, delta, stop) = if skill {
+                (
+                    json!({"type":"tool_use","id":"fixture-skill-call","name":"skill","input":{}}),
+                    json!({"type":"input_json_delta","partial_json":r#"{"id":"wire-fixture"}"#}),
+                    "tool_use",
+                )
+            } else {
+                (
+                    json!({"type":"text","text":""}),
+                    json!({"type":"text_delta","text":"Acknowledged."}),
+                    "end_turn",
+                )
+            };
+            for event in [
+                start,
+                json!({"type":"content_block_start","index":0,"content_block":block}),
+                json!({"type":"content_block_delta","index":0,"delta":delta}),
+                json!({"type":"content_block_stop","index":0}),
+                json!({"type":"message_delta","delta":{"stop_reason":stop,"stop_sequence":null},"usage":{"output_tokens":2}}),
+                json!({"type":"message_stop"}),
+            ] {
+                if sink.on_event(&event.to_string())? {
+                    break;
+                }
+            }
+            Ok(())
+        } else if skill {
+            emit_responses_events(
+                sink,
+                &response_function_call(
+                    "fixture-skill-call",
+                    "skill",
+                    serde_json::json!({"id":"wire-fixture"}),
+                ),
+            )
         } else {
             emit_responses_events(sink, &response_text("Acknowledged."))
         }
@@ -712,4 +757,164 @@ async fn registry_changes_during_tool_round_trip_apply_only_to_next_user_turn() 
         "model_name":"registry-next-model","protocol":"chat_completions"})
     );
     assert!(f.root.path().join("fixture.txt").exists());
+}
+
+#[tokio::test]
+async fn three_protocols_keep_skill_and_knowledge_once_on_wire_through_replay() {
+    use deepagent_app_core::knowledge_service::{KnowledgeDraftDto, KnowledgeService};
+    use deepagent_app_core::skills_service::SkillsService;
+    use deepagent_skills::{frontmatter, Skill, SkillManager, SkillOrigin};
+
+    const QUERY: &str = "How do we verify the quartz calibration procedure?";
+    const KNOWLEDGE: &str = "QUARTZ-CALIBRATION-RESULT";
+    const SKILL: &str = "SYNTHETIC-SKILL-BODY";
+    for (protocol, endpoint) in [
+        ("responses", "/responses"),
+        ("messages", "/messages"),
+        ("chat_completions", "/chat/completions"),
+    ] {
+        let f = Fixture::new(protocol, None).await;
+        let build_chat = |db: Arc<Database>, settings: Arc<SettingsService>| {
+            let mut manager = SkillManager::new(None, f.root.path().join("installed"));
+            let fm = frontmatter::parse(&format!(
+                "---\nname: Wire Fixture\ndescription: Synthetic fixture skill\n---\n{SKILL}\nSecond line with a \"quote\"."
+            ));
+            manager
+                .register(Skill::from_frontmatter("wire-fixture", &fm, SkillOrigin::User).unwrap());
+            let skills = Arc::new(Mutex::new(SkillsService::from_manager(manager)));
+            ChatService::new(db, settings, f.wire.clone(), f.root.path())
+                .with_knowledge_roots(f.root.path(), &f.root.path().join("global"))
+                .with_skills(skills)
+        };
+        let knowledge =
+            KnowledgeService::open(f.root.path(), &f.root.path().join("global")).unwrap();
+        knowledge
+            .save(KnowledgeDraftDto {
+                title: "Quartz calibration procedure".into(),
+                body: format!("Verify the quartz calibration procedure. {KNOWLEDGE}"),
+                kind: Some("note".into()),
+                scope: Some("global".into()),
+                tags: vec![],
+                source_session: None,
+                tier: None,
+                importance: None,
+            })
+            .unwrap();
+        drop(knowledge);
+        let chat = build_chat(f.db.clone(), f.settings.clone());
+        let session = chat.create_session(None).unwrap();
+        f.wire.invoke_skill.store(true, Ordering::SeqCst);
+        let run = |chat: ChatService, run_id: &'static str, session: String| async move {
+            let prepared = chat
+                .admit_prepared_input(run_id, &session, QUERY, selection("alpha", MODEL))
+                .unwrap();
+            chat.run_prepared(prepared, QUERY, |_| {}, |_| {})
+                .await
+                .unwrap();
+        };
+        run(chat, "initial-context-wire", session.clone()).await;
+        drop((f.chat, f.settings, f.db));
+
+        let reopened = Arc::new(Database::open(f.root.path().join("state.sqlite")).unwrap());
+        let settings = Arc::new(SettingsService::new(
+            reopened.clone(),
+            f.wire.clone(),
+            f.secrets.clone(),
+        ));
+        run(
+            build_chat(reopened.clone(), settings.clone()),
+            "reopened-context-wire",
+            session.clone(),
+        )
+        .await;
+
+        // Use the production replay boundary without outsourcing the fixture's
+        // summary to a model. The compacted view no longer has either body.
+        {
+            let clock = deepagent_core::clock::SystemClock;
+            let sid: deepagent_core::id::SessionId = session.parse().unwrap();
+            let mut log = deepagent_session::Session::recover(&reopened, &clock, sid).unwrap();
+            log.append(deepagent_core::event::EventPayload::ContextCompacted {
+                tokens_before: 5_000,
+                tokens_after: 400,
+                strategy: "model".into(),
+                summary: Some("Continue the synthetic calibration task.".into()),
+                first_kept_sequence: None,
+            })
+            .unwrap();
+        }
+        run(
+            build_chat(reopened, settings),
+            "compacted-context-wire",
+            session,
+        )
+        .await;
+
+        let captured = f.wire.requests.lock().unwrap();
+        // Session notes and knowledge capture also use this transport. Only
+        // the main conversation advertises the active tool schema.
+        let requests: Vec<_> = captured
+            .iter()
+            .filter(|request| {
+                let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
+                body["tools"]
+                    .as_array()
+                    .is_some_and(|tools| !tools.is_empty())
+            })
+            .collect();
+        assert_eq!(requests.len(), 4, "{protocol}");
+        for (index, request) in requests.iter().enumerate() {
+            assert_eq!(
+                request.url,
+                format!("https://alpha.test/v1{endpoint}"),
+                "{protocol}"
+            );
+            assert_eq!(
+                request.body.matches(KNOWLEDGE).count(),
+                1,
+                "{protocol} request {index}: knowledge must be visible once including after reopen"
+            );
+            assert_eq!(
+                request.body.matches(SKILL).count(),
+                usize::from(index > 0),
+                "{protocol} request {index}: the skill should survive through exactly one result or recovery block"
+            );
+            assert_eq!(
+                request.body.matches(QUERY).count(),
+                if index == 2 { 2 } else { 1 },
+                "{protocol}: retain original user messages"
+            );
+        }
+        let bodies: Vec<serde_json::Value> = requests
+            .iter()
+            .map(|r| serde_json::from_str(&r.body).unwrap())
+            .collect();
+        let instructions = |body: &serde_json::Value| match protocol {
+            "responses" => body["instructions"].clone(),
+            "messages" => body["system"].clone(),
+            _ => body["messages"][0].clone(),
+        };
+        let prefix = instructions(&bodies[0]);
+        assert!(!prefix.is_null(), "{protocol}");
+        assert!(
+            !prefix.to_string().contains(KNOWLEDGE),
+            "{protocol}: knowledge must remain user context"
+        );
+        assert!(
+            !prefix.to_string().contains(SKILL),
+            "{protocol}: recovery must stay outside the static prefix"
+        );
+        assert!(
+            requests[3].body.contains("invoked-skills"),
+            "{protocol}: replay must recover the skill after compaction"
+        );
+        assert!(
+            bodies.iter().all(|body| instructions(body) == prefix),
+            "{protocol}: stable instructions changed"
+        );
+        eprintln!(
+            "{protocol} synthetic request bytes: {:?}",
+            requests.iter().map(|r| r.body.len()).collect::<Vec<_>>()
+        );
+    }
 }

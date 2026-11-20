@@ -548,19 +548,25 @@ impl<E: Embedder + Clone> KnowledgeBase<E> {
         hits
     }
 
-    /// Build the passive-injection block for `query`: retrieve, keep hits with
-    /// `score >= min_score`, cap at `max_inject` and `max_inject_tokens`, and
-    /// render a source-cited context block. Empty string when nothing qualifies
-    /// or passive injection is disabled.
-    pub fn passive_block(&self, query: &str) -> String {
-        if !self.config.passive_enabled {
-            return String::new();
+    /// Select relevant, unsurfaced excerpts under the passive retrieval budget.
+    pub fn passive_hits(&self, query: &str, already_surfaced: &[String]) -> Vec<KnowledgeHit> {
+        if !self.config.passive_enabled || self.config.max_inject == 0 {
+            return Vec::new();
         }
-        let candidates = self.search(query, None, self.config.max_inject);
-        let mut chosen: Vec<&KnowledgeHit> = Vec::new();
+        let candidates = self.search(
+            query,
+            None,
+            self.config
+                .max_inject
+                .saturating_add(already_surfaced.len()),
+        );
+        let mut chosen = Vec::new();
         let mut tokens = 0usize;
-        for hit in &candidates {
-            if hit.score < self.config.min_score {
+        for hit in candidates {
+            if hit.score < self.config.min_score
+                || already_surfaced.contains(&uid(hit.entry.scope, &hit.entry.id))
+                || hit.excerpt.trim().is_empty()
+            {
                 continue;
             }
             let cost = estimate_tokens(&hit.excerpt);
@@ -573,6 +579,12 @@ impl<E: Embedder + Clone> KnowledgeBase<E> {
                 break;
             }
         }
+        chosen
+    }
+
+    /// Render passive hits as a source-cited knowledge block.
+    pub fn passive_block(&self, query: &str) -> String {
+        let chosen = self.passive_hits(query, &[]);
         if chosen.is_empty() {
             return String::new();
         }

@@ -91,6 +91,38 @@ pub struct KnowledgeHitDto {
     pub updated_at: i64,
 }
 
+impl From<deepagent_knowledge::KnowledgeHit> for KnowledgeHitDto {
+    fn from(hit: deepagent_knowledge::KnowledgeHit) -> Self {
+        Self {
+            id: format!("{}:{}", hit.entry.scope.label(), hit.entry.id),
+            title: hit.entry.title,
+            kind: hit.entry.kind.label().to_string(),
+            scope: hit.entry.scope.label().to_string(),
+            score: hit.score,
+            excerpt: hit.excerpt,
+            updated_at: hit.entry.updated_at,
+        }
+    }
+}
+
+impl KnowledgeHitDto {
+    fn into_memory(self, now_ms: i64) -> deepagent_runtime::RelevantMemory {
+        let mut block = format!(
+            "[source: {} ({}) · {}]\n{}",
+            self.title,
+            self.scope,
+            self.kind,
+            self.excerpt.trim()
+        );
+        let note = deepagent_knowledge::entry::staleness_note(self.updated_at, now_ms);
+        if !note.is_empty() {
+            block.push('\n');
+            block.push_str(&note);
+        }
+        deepagent_runtime::RelevantMemory { block, id: self.id }
+    }
+}
+
 /// A draft to create or update an entry (from the UI or a tool).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KnowledgeDraftDto {
@@ -545,15 +577,7 @@ impl KnowledgeService {
         self.read(|base| {
             base.search(query, kind, limit)
                 .into_iter()
-                .map(|hit| KnowledgeHitDto {
-                    id: format!("{}:{}", hit.entry.scope.label(), hit.entry.id),
-                    title: hit.entry.title,
-                    kind: hit.entry.kind.label().to_string(),
-                    scope: hit.entry.scope.label().to_string(),
-                    score: hit.score,
-                    excerpt: hit.excerpt,
-                    updated_at: hit.entry.updated_at,
-                })
+                .map(KnowledgeHitDto::from)
                 .collect()
         })
     }
@@ -610,6 +634,19 @@ impl KnowledgeService {
     /// passive injection is disabled).
     pub fn passive_block(&self, query: &str) -> String {
         self.read(|base| base.passive_block(query))
+    }
+
+    /// First-request excerpts use the same identities and envelope as prefetch.
+    pub(crate) fn passive_memories(
+        &self,
+        query: &str,
+        already_surfaced: &[String],
+    ) -> Vec<deepagent_runtime::RelevantMemory> {
+        let now_ms = SystemClock.now().as_millis();
+        self.read(|base| base.passive_hits(query, already_surfaced))
+            .into_iter()
+            .map(|hit| KnowledgeHitDto::from(hit).into_memory(now_ms))
+            .collect()
     }
 
     /// Toggle passive injection.
@@ -1163,24 +1200,7 @@ impl deepagent_runtime::RelevantMemoryProvider for KnowledgeMemoryProvider {
             .filter(|hit| !already_surfaced.contains(&hit.id))
             .filter(|hit| !is_reference_doc_for_active_tool(hit, recent_tools))
             .take(RELEVANT_MEMORY_LIMIT)
-            .map(|hit| {
-                let mut block = format!(
-                    "[source: {} ({}) · {}]\n{}",
-                    hit.title,
-                    hit.scope,
-                    hit.kind,
-                    hit.excerpt.trim()
-                );
-                // Same rule as the passive knowledge block: an entry older than
-                // one day carries a verify-first caveat, because a stale
-                // file:line claim reads more authoritative, not less.
-                let note = deepagent_knowledge::entry::staleness_note(hit.updated_at, now_ms);
-                if !note.is_empty() {
-                    block.push('\n');
-                    block.push_str(&note);
-                }
-                deepagent_runtime::RelevantMemory { block, id: hit.id }
-            })
+            .map(|hit| hit.into_memory(now_ms))
             .collect();
         Ok(out)
     }

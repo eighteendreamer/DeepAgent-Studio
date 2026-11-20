@@ -1076,6 +1076,7 @@ impl<'a> RunAssembler<'a> {
             remote_context_factory: self.remote_context_factory.as_ref(),
             context_policy: &context_policy,
             history: &history,
+            response_history: &response_history,
             tools: &tools,
             context_compacted,
         };
@@ -1155,6 +1156,9 @@ impl<'a> RunAssembler<'a> {
         // The admitted user and hook context were committed above. Append the
         // environment update AFTER them, exactly as the live Surface adopts it below.
         // A failed write aborts assembly before any model dispatch.
+        if let Some(item) = &run_context.knowledge_attachment {
+            session.append_response_item(item.clone())?;
+        }
         snapshot.persist(&mut session)?;
         if let Some(receipt) = snapshot
             .update
@@ -1227,6 +1231,7 @@ impl<'a> RunAssembler<'a> {
         .with_history(history)
         .with_response_history(response_history)
         .with_admitted_input_context(prompt_context)
+        .with_admitted_input_context(run_context.knowledge_attachment)
         .with_admitted_input_context(snapshot.update)
         .with_surface_persistence(Arc::new(crate::context_runtime::SessionSurfaceStore {
             db: self.db.clone(),
