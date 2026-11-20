@@ -1,7 +1,7 @@
 import { HoverInfo } from "./ui/HoverInfo";
 import { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo, useId } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { Brain, BrainCircuit, Check, ChevronDown, CircleAlert, Feather, Hand, Lightbulb, Layers, Loader2, Puzzle, ShieldHalf, Sparkles } from "lucide-react";
+import { Brain, BrainCircuit, Check, ChevronDown, CircleAlert, Feather, Hand, Lightbulb, Layers, Loader2, Puzzle, ShieldHalf, Sparkles, createLucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ContextCapacityIndicator } from "./ContextCapacityIndicator";
 import { ComposerSuggestPanel } from "./ComposerSuggestPanel";
@@ -16,6 +16,7 @@ import { findCommittedSlash, projectSlashDraft, restoreSlashDraft, slashCommandK
 import { MorphingMenuShell } from "./ui/MorphingMenuShell";
 import { MOTION } from "./ui/motion";
 import { MENU_ITEM_ATTR, SlidingMenuList } from "./ui/SlidingMenuList";
+import { Button } from "./shadcn/button";
 import { cn } from "./shadcn/utils";
 import {
   SETTINGS_CHANGED_EVENT,
@@ -46,6 +47,10 @@ const COMPOSER_TEXTAREA_MIN_HEIGHT = 60;
 const COMPOSER_TEXTAREA_DEFAULT_MAX_HEIGHT = 300;
 const SKILL_MARKER = "\uE000";
 const MENTION_MARKER = "\uE001";
+const GoalTarget = createLucideIcon("goal-target", [
+  ["path", { d: "M21 12a9 9 0 1 1-9-9m5 9a5 5 0 1 1-5-5", key: "rings" }],
+  ["path", { d: "M20 4l-8 8m0-4v4h4", key: "arrow" }],
+]);
 
 /** A slash-dropdown row. `insertText` is used for built-in slash commands;
  *  `skillName` / `skillId` mark a row as a skill picker. */
@@ -78,7 +83,6 @@ type AtChoice =
       type: "goal";
       title: string;
       description: string;
-      icon: "bullseye";
     }
   | {
       id: "plan-mode";
@@ -263,6 +267,7 @@ export function Composer({
   const [atSelected, setAtSelected] = useState(0);
   const [selectedSkills, setSelectedSkills] = useState<ComposerSkillSelection[]>([]);
   const [selectedMentions, setSelectedMentions] = useState<ComposerMention[]>([]);
+  const [goalMode, setGoalMode] = useState(false);
   const [draftValue, setDraftValue] = useState(value);
   const [cursorPos, setCursorPos] = useState(value.length);
   const [selectionRange, setSelectionRange] = useState<SelectionRange | null>(null);
@@ -313,6 +318,7 @@ export function Composer({
     setAtSections([]);
     setAtSelected(0);
     setSelectedMentions([]);
+    setGoalMode(false);
     pendingDraftValueRef.current = value;
   }, [draftValue, value]);
 
@@ -423,11 +429,11 @@ export function Composer({
   );
 
   const activeSlashToken = useMemo(
-    () => findActiveSlashToken(draftValue, cursorPos),
-    [cursorPos, draftValue],
+    () => goalMode ? null : findActiveSlashToken(draftValue, cursorPos),
+    [cursorPos, draftValue, goalMode],
   );
 
-  const hasSlashInput = draftValue.startsWith("/") || activeSlashToken !== null;
+  const hasSlashInput = !goalMode && (draftValue.startsWith("/") || activeSlashToken !== null);
   useEffect(() => {
     if (!hasSlashInput) return;
     let currentRequest = 0;
@@ -450,7 +456,7 @@ export function Composer({
   }, [activeProjectPath, hasSlashInput]);
 
   const slashTitles = useMemo(() => new Set(slashCommands.map((command) => command.title)), [slashCommands]);
-  const committedSlash = findCommittedSlash(draftValue, slashTitles);
+  const committedSlash = goalMode ? null : findCommittedSlash(draftValue, slashTitles);
   const slashPrefix = committedSlash?.prefix ?? "";
   const editorValue = projectSlashDraft(draftValue, slashPrefix);
 
@@ -467,7 +473,7 @@ export function Composer({
   }, [cursorPos, selectionRange, slashPrefix]);
 
   const focusEditorAt = (nextDraft: string, caret: number) => {
-    const prefix = findCommittedSlash(nextDraft, slashTitles)?.prefix ?? "";
+    const prefix = goalMode ? "" : findCommittedSlash(nextDraft, slashTitles)?.prefix ?? "";
     const editorCaret = toSlashEditorOffset(caret, prefix);
     requestAnimationFrame(() => {
       textareaRef.current?.setSelectionRange(editorCaret, editorCaret);
@@ -480,7 +486,7 @@ export function Composer({
     [cursorPos, draftValue],
   );
 
-  const slashOpen = Boolean((draftValue.startsWith("/") || activeSlashToken) && slashEntries.length > 0);
+  const slashOpen = !goalMode && Boolean((draftValue.startsWith("/") || activeSlashToken) && slashEntries.length > 0);
   const atOpen = Boolean(!slashOpen && activeAtToken && atEntries.length > 0);
 
   const resizeTextarea = useCallback(() => {
@@ -560,7 +566,7 @@ export function Composer({
   }, [resizeTextarea]);
 
   useEffect(() => {
-    if (draftValue.startsWith("/")) {
+    if (!goalMode && draftValue.startsWith("/")) {
       const body = draftValue.slice(1);
       const firstSpace = body.search(/\s/);
       const commandName = firstSpace >= 0 ? body.slice(0, firstSpace) : body;
@@ -637,7 +643,7 @@ export function Composer({
     );
     setSlashResults([...slash, ...skillChoices]);
     setSlashSelected(0);
-  }, [activeSlashToken, draftValue, activeModelOptions, selectedModel, selectedSkills, skills, slashCommands]);
+  }, [activeSlashToken, draftValue, activeModelOptions, selectedModel, selectedSkills, skills, slashCommands, goalMode]);
 
   useEffect(() => {
     if (!activeAtToken || slashOpen) {
@@ -661,9 +667,8 @@ export function Composer({
       {
         id: "goal",
         type: "goal",
-        title: "目标",
-        description: "设置要持续追求的目标",
-        icon: "bullseye",
+        title: t("composer.goal.title"),
+        description: t("composer.goal.description"),
       },
       {
         id: "plan-mode",
@@ -874,14 +879,17 @@ export function Composer({
     }
 
     if (choice.type === "goal") {
-      const goal = window.prompt("请输入要持续追踪的目标");
-      if (!goal?.trim()) {
-        requestAnimationFrame(() => textareaRef.current?.focus());
-        return;
-      }
-      insertMentionMarker(rawStart, rawEnd, {
-        kind: "goal",
-        text: goal.trim(),
+      const nextDraft = draftValue.slice(0, rawStart) + draftValue.slice(rawEnd);
+      setGoalMode(true);
+      setDraftValue(nextDraft);
+      setCursorPos(rawStart);
+      setSelectionRange(null);
+      const nextText = stripSkillMarkers(nextDraft);
+      pendingDraftValueRef.current = nextText;
+      onChange(nextText);
+      requestAnimationFrame(() => {
+        textareaRef.current?.setSelectionRange(rawStart, rawStart);
+        textareaRef.current?.focus();
       });
     } else if (choice.type === "plan-mode") {
       if (!selectedMentions.some((mention) => mention.kind === "plan_mode")) {
@@ -937,10 +945,15 @@ export function Composer({
     }
   }, [overlayCloseSignal]);
 
+  const draftText = stripSkillMarkers(draftValue).trim();
+  const hasComposerContent = goalMode
+    ? Boolean(draftText)
+    : Boolean(draftText || attachments.length || selectedSkills.length || selectedMentions.length);
+
   const submitWithAttachments = () => {
-    const text = stripSkillMarkers(draftValue).trim();
+    if (!hasComposerContent) return;
     // Leave local slash commands (including /model) available before chat setup.
-    if (hasComposerContent && !selectedModel && !text.startsWith("/")) {
+    if (!selectedModel && (goalMode || !draftText.startsWith("/"))) {
       message.warning(t(activeModelOptions.length ? "composer.chooseModelBeforeSend" : "composer.noModels"));
       return;
     }
@@ -949,7 +962,11 @@ export function Composer({
     if (textareaRef.current && mirrorRef.current && surface) {
       messageSendMotion?.prepare(textareaRef.current, mirrorRef.current, surface, draftValue);
     }
-    onSubmit(readyAttachments, selectedSkills, selectedMentions, draftValue);
+    const mentions: ComposerMention[] = goalMode
+      ? [...selectedMentions, { kind: "goal", text: draftText }]
+      : selectedMentions;
+    onSubmit(readyAttachments, selectedSkills, mentions, draftValue);
+    setGoalMode(false);
     if (readyAttachments.length > 0) setAttachments([]);
     if (selectedSkills.length > 0) setSelectedSkills([]);
     if (selectedMentions.length > 0) setSelectedMentions([]);
@@ -958,10 +975,6 @@ export function Composer({
     setSelectionRange(null);
     pendingDraftValueRef.current = "";
   };
-
-  const hasComposerContent = Boolean(
-    stripSkillMarkers(draftValue).trim() || attachments.length > 0 || selectedSkills.length > 0 || selectedMentions.length > 0,
-  );
 
   const addAttachment = (attachment: ComposerAttachment) => {
     setAttachments((prev) => [...prev, attachment]);
@@ -1236,7 +1249,7 @@ export function Composer({
     onChange(stripped);
   };
 
-  const editorPlaceholder = placeholder ?? t("composer.placeholder");
+  const editorPlaceholder = goalMode ? t("composer.goal.placeholder") : placeholder ?? t("composer.placeholder");
   const mirrorContent = (() => {
     const showMirrorCaret = editorFocused && !selectionRange;
     let caretRendered = false;
@@ -1483,6 +1496,11 @@ export function Composer({
       setSlashResults([]);
       return;
     }
+    if (goalMode && e.key === "Escape") {
+      e.preventDefault();
+      setGoalMode(false);
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (!busy) submitWithAttachments();
@@ -1516,7 +1534,9 @@ export function Composer({
             <span className="flex h-4 w-4 items-center justify-center text-text-base">
               {item.type === "skill"
                 ? <Layers aria-hidden="true" className="size-3" />
-                : <FontAwesomeIcon icon={["fas", item.icon]} className="text-[12px]" />}
+                : item.type === "goal"
+                  ? <GoalTarget aria-hidden="true" className="size-4" />
+                  : <FontAwesomeIcon icon={["fas", item.icon]} className="text-[12px]" />}
             </span>
             <span className="min-w-0">
               <span className="block truncate font-medium text-text-base">{item.title}</span>
@@ -1764,6 +1784,23 @@ export function Composer({
                 </div>
               </MorphingMenuShell>
             </div>
+          )}
+          {goalMode && (
+            <HoverInfo content={t("composer.goal.exitHint")}>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={t("composer.goal.title")}
+                aria-pressed={true}
+                className="size-8 rounded-full bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary"
+                onClick={() => {
+                  setGoalMode(false);
+                  textareaRef.current?.focus();
+                }}
+              >
+                <GoalTarget aria-hidden="true" className="size-4" />
+              </Button>
+            </HoverInfo>
           )}
         </div>
 

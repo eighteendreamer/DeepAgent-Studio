@@ -1155,6 +1155,12 @@
     "effortSmarter": "Deeper",
     "thinkingSwitchFailed": "Failed to change thinking level",
     "send": "Send",
+    "goal": {
+      "title": "Goal mode",
+      "description": "Set a goal to work toward",
+      "placeholder": "Enter the goal you want to achieve…",
+      "exitHint": "Editing a goal · Click to exit"
+    },
     "stop": "Stop",
     "stopping": "Stopping…",
     "cancelFailed": "Could not stop the run: {{error}}",
