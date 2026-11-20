@@ -181,6 +181,7 @@ body:has(.app-titlebar) div[data-tauri-decorum-tb] { display: none !important; }
   min-height: 0;
   border: 0;
   border-radius: 0;
+  background-color: var(--theme-bg) !important;
 }
 /* The selected variant has no rule underneath the conversation title. */
 .app-chat-header { border-bottom: 0; box-shadow: none; }
@@ -248,6 +249,11 @@ html.theme-color-transition .text-text-secondary {
   transition-timing-function: ease-out;
 }
 
+/* Legacy light cards/fields use the elevated palette; keep solid switch thumbs
+   and wallpaper materials under their existing rules. Codex remains white. */
+html:not(.dark):not(.theme-custom-background) .bg-white:not(:where(.rounded-full.absolute, [role="slider"])) {
+  background-color: var(--theme-elevated, #fff);
+}
 .dark .bg-white { background-color: var(--theme-bg) !important; }
 .dark .canvas-field { background-color: rgba(255, 255, 255, 0.06) !important; }
 .dark .text-gray-900, .dark .text-gray-800, .dark .text-black { color: var(--theme-fg) !important; }

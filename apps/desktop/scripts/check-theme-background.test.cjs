@@ -57,6 +57,7 @@ function host(options = {}) {
       location: { hash: options.hash ?? "" },
       matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
       addEventListener: (name, handler) => { listeners[name] = handler; }, removeEventListener() {},
+      setTimeout: () => 1, clearTimeout() {},
     },
     BroadcastChannel: class {
       constructor() { channels.push(this); }
@@ -111,6 +112,75 @@ test("old theme preferences gain background defaults without losing palettes or 
   assert.equal(next.preferences.uiFont, "Existing Font");
   assert.deepEqual(plain(next.workingPalettes), old.workingPalettes);
   assert.equal("backgroundImage" in old.preferences, false);
+});
+
+test("Codex remains the default in both modes with its existing palette intact", () => {
+  const h = host(), presets = h.load("themePresets.ts");
+  const state = h.load("themeStorage.ts").defaultV2State();
+  assert.equal(presets.BUILTIN_PRESETS[0].id, "codex");
+  assert.deepEqual(plain(state.selectedPresetIds), { light: "codex", dark: "codex" });
+  assert.deepEqual(plain(state.workingPalettes), {
+    light: { accent: "#339CFF", accentHover: "#2563EB", background: "#FFFFFF",
+      sidebar: "#F9F8F6", elevated: "#FFFFFF", foreground: "#1F2937",
+      foregroundMuted: "#6B7280", border: "#E5E7EB", hover: "#F3F4F6",
+      selection: "#DBEAFE", contrast: 45 },
+    dark: { accent: "#339CFF", accentHover: "#60A5FA", background: "#000000",
+      sidebar: "#121212", elevated: "#1A1A1A", foreground: "#F9FAFB",
+      foregroundMuted: "#9CA3AF", border: "#27272A", hover: "#1F1F23",
+      selection: "#1E3A8A", contrast: 50 },
+  });
+});
+
+test("additional palettes have distinct surfaces and readable text after token derivation", () => {
+  const h = host(), presets = h.load("themePresets.ts");
+  const { paletteToTokens } = h.load("themeTokens.ts");
+  const { contrastRatio } = h.load("colorUtils.ts");
+  const ids = ["graphite", "paper", "mist-blue", "pine", "dusk-violet", "amber"];
+  const lowContrast = [];
+  for (const variant of ["light", "dark"]) {
+    const backgrounds = new Set();
+    for (const id of ids) {
+      const preset = presets.getPresetById(id);
+      assert.ok(preset?.variants[variant], `${id}/${variant}`);
+      const tokens = paletteToTokens(preset.variants[variant]);
+      backgrounds.add(tokens["--theme-bg"]);
+      assert.equal(new Set([tokens["--theme-bg"], tokens["--theme-sidebar"], tokens["--theme-elevated"]]).size, 3);
+      for (const surface of ["--theme-bg", "--theme-sidebar", "--theme-elevated", "--theme-selection"]) {
+        for (const foreground of ["--theme-fg", "--theme-text-secondary"]) {
+          const ratio = contrastRatio(tokens[foreground], tokens[surface]);
+          if (ratio < 4.5) lowContrast.push(`${id}/${variant}: ${foreground} on ${surface} (${ratio.toFixed(2)})`);
+        }
+      }
+      assert.ok(contrastRatio(tokens["--theme-accent"], tokens["--theme-selection"]) >= 4.5,
+        `${id}/${variant}: selected text`);
+    }
+    assert.equal(backgrounds.size, ids.length);
+  }
+  assert.deepEqual(lowContrast, []);
+  for (const id of ["absolutely", "ayu", "catppuccin", "dracula", "everforest", "github", "gruvbox", "linear", "notion", "one"]) {
+    assert.ok(presets.getPresetById(id), `${id} is still available`);
+  }
+});
+
+test("selecting an additional preset persists per mode and returns to Codex without migration", () => {
+  const h = host(), storage = h.load("themeStorage.ts"), presets = h.load("themePresets.ts");
+  const initial = storage.defaultV2State();
+  initial.customPresets = [{ id: "custom-existing", name: "Existing", source: "custom",
+    variants: { light: { ...initial.workingPalettes.light, accent: "#123456" } } }];
+  storage.saveThemeState(initial);
+  const context = h.load("ThemeProvider.tsx").ThemeProvider({ children: null }).props.value;
+  context.selectPreset("light", "paper");
+  context.selectPreset("dark", "mist-blue");
+  let loaded = storage.loadThemeState();
+  assert.deepEqual(plain(loaded.selectedPresetIds), { light: "paper", dark: "mist-blue" });
+  assert.deepEqual(plain(loaded.workingPalettes.light), plain(presets.getPresetById("paper").variants.light));
+  assert.deepEqual(plain(loaded.workingPalettes.dark), plain(presets.getPresetById("mist-blue").variants.dark));
+  assert.deepEqual(plain(loaded.preferences), plain(initial.preferences));
+  assert.deepEqual(plain(loaded.customPresets), plain(initial.customPresets));
+  context.selectPreset("light", "codex");
+  loaded = storage.loadThemeState();
+  assert.deepEqual(plain(loaded.workingPalettes.light), plain(initial.workingPalettes.light));
+  assert.equal(loaded.selectedPresetIds.dark, "mist-blue");
 });
 
 test("persisted images admit bounded raster data only and transparency has a finite range", () => {

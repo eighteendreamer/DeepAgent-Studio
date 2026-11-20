@@ -307,8 +307,88 @@ const ONE_DARK = palette({
   contrast: 50,
 });
 
+// Additional studio palettes. Codex and the existing presets retain their values.
+const GRAPHITE_LIGHT = palette({
+  accent: "#34383B", accentHover: "#242628",
+  background: "#F9F9F8", sidebar: "#E9E9E7", elevated: "#FFFFFF",
+  foreground: "#242628", foregroundMuted: "#5D6164", border: "#D3D5D4",
+  hover: "#E3E5E3", selection: "#DADDDC", contrast: 50,
+});
+const GRAPHITE_DARK = palette({
+  accent: "#D7DCDF", accentHover: "#ECEDED",
+  background: "#191A1B", sidebar: "#101112", elevated: "#26282A",
+  foreground: "#ECEDED", foregroundMuted: "#A8ADAF", border: "#3A3D3F",
+  hover: "#2D3032", selection: "#34393C", contrast: 50,
+});
+const PAPER_LIGHT = palette({
+  accent: "#774321", accentHover: "#603519",
+  background: "#FAF6ED", sidebar: "#ECE1CF", elevated: "#FFFCF5",
+  foreground: "#393127", foregroundMuted: "#635540", border: "#D9CCB6",
+  hover: "#F0E8D9", selection: "#DFCCAF", contrast: 50,
+});
+const PAPER_DARK = palette({
+  accent: "#E6B885", accentHover: "#F0CC9F",
+  background: "#24211C", sidebar: "#191713", elevated: "#302B24",
+  foreground: "#EEE5D6", foregroundMuted: "#BAAC95", border: "#4B4235",
+  hover: "#393128", selection: "#453526", contrast: 50,
+});
+const MIST_BLUE_LIGHT = palette({
+  accent: "#2459A1", accentHover: "#1C4782",
+  background: "#F1F6FC", sidebar: "#DCE8F5", elevated: "#FBFDFF",
+  foreground: "#233449", foregroundMuted: "#4B5E75", border: "#BECEE1",
+  hover: "#E2EBF7", selection: "#C3D8F1", contrast: 50,
+});
+const MIST_BLUE_DARK = palette({
+  accent: "#85B7FF", accentHover: "#AACDFF",
+  background: "#131D2A", sidebar: "#0C1521", elevated: "#1D2B3C",
+  foreground: "#E4EDF8", foregroundMuted: "#9DB0C9", border: "#33465D",
+  hover: "#233348", selection: "#243E60", contrast: 50,
+});
+const PINE_LIGHT = palette({
+  accent: "#345E3E", accentHover: "#284A30",
+  background: "#F2F6EF", sidebar: "#DFE8D9", elevated: "#FBFDF8",
+  foreground: "#293B2C", foregroundMuted: "#4D604D", border: "#C2CEBC",
+  hover: "#E5EDDF", selection: "#C8DBC1", contrast: 50,
+});
+const PINE_DARK = palette({
+  accent: "#A6C89D", accentHover: "#C1DCB9",
+  background: "#1B251E", sidebar: "#121B15", elevated: "#27342A",
+  foreground: "#E5EBDD", foregroundMuted: "#ACBCA4", border: "#40503F",
+  hover: "#2D3C2F", selection: "#364B35", contrast: 50,
+});
+const DUSK_VIOLET_LIGHT = palette({
+  accent: "#67439B", accentHover: "#52347E",
+  background: "#F6F3FC", sidebar: "#E9E0F4", elevated: "#FDFCFF",
+  foreground: "#352B45", foregroundMuted: "#615370", border: "#D3C7E4",
+  hover: "#ECE4F7", selection: "#DCCBEF", contrast: 50,
+});
+const DUSK_VIOLET_DARK = palette({
+  accent: "#C7ABEC", accentHover: "#DCC7F5",
+  background: "#211C2D", sidebar: "#16121F", elevated: "#30283F",
+  foreground: "#EBE4F6", foregroundMuted: "#B9A9CE", border: "#4C3D61",
+  hover: "#392E4A", selection: "#49365F", contrast: 50,
+});
+const AMBER_LIGHT = palette({
+  accent: "#874716", accentHover: "#6C3710",
+  background: "#FAF3EA", sidebar: "#EDDFCD", elevated: "#FFFBF5",
+  foreground: "#3D3026", foregroundMuted: "#6A533E", border: "#DCC6AC",
+  hover: "#F0E1CE", selection: "#EACBA6", contrast: 50,
+});
+const AMBER_DARK = palette({
+  accent: "#F0B56C", accentHover: "#F6CD99",
+  background: "#28211C", sidebar: "#1B1612", elevated: "#392E25",
+  foreground: "#F3E5D5", foregroundMuted: "#C5AA8E", border: "#584332",
+  hover: "#433326", selection: "#573C25", contrast: 50,
+});
+
 export const BUILTIN_PRESETS: readonly ThemePreset[] = Object.freeze([
   preset("codex", "Codex", { light: CODEX_LIGHT, dark: CODEX_DARK }),
+  preset("graphite", "石墨", { light: GRAPHITE_LIGHT, dark: GRAPHITE_DARK }),
+  preset("paper", "暖纸", { light: PAPER_LIGHT, dark: PAPER_DARK }),
+  preset("mist-blue", "雾蓝", { light: MIST_BLUE_LIGHT, dark: MIST_BLUE_DARK }),
+  preset("pine", "松林", { light: PINE_LIGHT, dark: PINE_DARK }),
+  preset("dusk-violet", "暮紫", { light: DUSK_VIOLET_LIGHT, dark: DUSK_VIOLET_DARK }),
+  preset("amber", "琥珀", { light: AMBER_LIGHT, dark: AMBER_DARK }),
   preset("absolutely", "Absolutely", { light: ABSOLUTELY_LIGHT, dark: ABSOLUTELY_DARK }),
   preset("ayu", "Ayu", { light: AYU_LIGHT, dark: AYU_DARK }),
   preset("catppuccin", "Catppuccin", { light: CATPPUCCIN_LIGHT, dark: CATPPUCCIN_DARK }),
