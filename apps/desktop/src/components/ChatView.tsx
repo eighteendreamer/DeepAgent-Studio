@@ -1053,11 +1053,13 @@ export function ChatView({
   const scrollRef = useRef<HTMLDivElement>(null);
   const timelineContentRef = useRef<HTMLDivElement>(null);
   const composerFrameRef = useRef<HTMLDivElement>(null);
+  const planReviewFrameRef = useRef<HTMLDivElement>(null);
+  const planReviewVisible = showPlanReview && !busy && !question && !approval;
   const [composerBottomPadding, setComposerBottomPadding] = useState(176);
   useTimelineScroll(scrollRef, timelineContentRef, messages, composerBottomPadding);
 
   useEffect(() => {
-    const frame = composerFrameRef.current;
+    const frame = planReviewVisible ? planReviewFrameRef.current : composerFrameRef.current;
     if (!frame) return;
 
     const updatePadding = () => {
@@ -1069,7 +1071,7 @@ export function ChatView({
     const observer = new ResizeObserver(updatePadding);
     observer.observe(frame);
     return () => observer.disconnect();
-  }, []);
+  }, [planReviewVisible]);
 
   const handleOpenBottomPlugin = (c: PluginToolCard) => {
     const tabOptions =
@@ -1331,8 +1333,9 @@ export function ChatView({
           </div>
         </div>
 
-        {(question || approval) && (
+        {(question || approval || planReviewVisible) && (
           <div
+            ref={planReviewVisible ? planReviewFrameRef : undefined}
             className="absolute bottom-6 left-0 z-40 flex w-full flex-col items-center px-6"
             style={{ maxHeight: question ? undefined : "min(440px, calc(100% - 48px))" }}
           >
@@ -1344,13 +1347,22 @@ export function ChatView({
                 onAnswer={(req, answers) => onQuestionAnswer?.(req, answers)}
                 onDecline={(req) => onQuestionAnswer?.(req, null)}
               />
-            ) : (
+            ) : approval ? (
               <ApprovalDialog
-                key={approval?.call_id}
+                key={approval.call_id}
                 request={approval}
                 queueCount={approvalQueueCount}
                 onApprove={(req, scope) => onApprovalDecision?.(req, true, scope)}
                 onReject={(req) => onApprovalDecision?.(req, false)}
+              />
+            ) : (
+              <PlanReviewActions
+                onAccept={onConfirmPlan}
+                onDismiss={onDismissPlanReview}
+                onRevise={() => {
+                  onDismissPlanReview();
+                  requestAnimationFrame(() => composerFrameRef.current?.querySelector<HTMLTextAreaElement>("textarea.composer-textarea")?.focus());
+                }}
               />
             )}
           </div>
@@ -1359,7 +1371,7 @@ export function ChatView({
         <SessionUsageBar sessionId={sessionId ?? null} />
 
         <div className="absolute bottom-6 left-0 w-full px-6 flex justify-center">
-          <div ref={composerFrameRef} className="w-full max-w-4xl relative">
+          <div ref={composerFrameRef} className={`w-full max-w-4xl relative${planReviewVisible ? " invisible" : ""}`}>
             {hasConversation && <ComposerActivityBar
               key={`${sessionId ?? "pending"}:${gitProjectPath ?? "no-git"}`}
               todos={activity.todos}
@@ -1369,16 +1381,6 @@ export function ChatView({
               gitError={gitError}
               onRefreshChanges={() => { void refreshGitChanges(); }}
             />}
-            {showPlanReview && !busy && !question && !approval && (
-              <PlanReviewActions
-                onAccept={onConfirmPlan}
-                onDismiss={onDismissPlanReview}
-                onRevise={() => {
-                  onDismissPlanReview();
-                  composerFrameRef.current?.querySelector<HTMLTextAreaElement>("textarea.composer-textarea")?.focus();
-                }}
-              />
-            )}
             {goalPreview && (
               <ComposerGoalBar key={goalPreview.runId} goal={goalPreview} onToggle={onToggleGoal} onEdit={onEditGoal} onRemove={onRemoveGoal} />
             )}

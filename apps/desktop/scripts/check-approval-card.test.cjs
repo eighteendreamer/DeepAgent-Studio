@@ -115,10 +115,10 @@ test("malformed and multiline arguments stay readable without HTML injection", (
   }
 });
 
-test("approval shares the question overlay and covers the composer instead of sitting above it", () => {
+test("approval and plan review share the question overlay above the composer", () => {
   const chat = readFileSync(join(__dirname, "../src/components/ChatView.tsx"), "utf8");
-  const start = chat.indexOf("{(question || approval) && (");
-  assert.notEqual(start, -1, "both decisions must use the same overlay host");
+  const start = chat.indexOf("{(question || approval || planReviewVisible) && (");
+  assert.notEqual(start, -1, "all decisions must use the same overlay host");
   const end = chat.indexOf("<SessionUsageBar", start);
   const anchor = chat.slice(start, end);
   assert.match(anchor, /absolute/);
@@ -126,7 +126,8 @@ test("approval shares the question overlay and covers the composer instead of si
   assert.match(anchor, /z-40/);
   assert.match(anchor, /AskUserQuestionCard/);
   assert.match(anchor, /ApprovalDialog/);
+  assert.match(anchor, /PlanReviewActions/);
   assert.match(anchor, /maxHeight:/);
   assert.doesNotMatch(chat, /--approval-available-height|calc\(100% \+ 12px\)/);
-  assert.doesNotMatch(chat.slice(chat.indexOf("ref={composerFrameRef}")), /ApprovalDialog/);
+  assert.doesNotMatch(chat.slice(chat.indexOf("ref={composerFrameRef}")), /ApprovalDialog|PlanReviewActions/);
 });

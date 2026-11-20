@@ -85,7 +85,7 @@ export function PlanReviewActions({ onAccept, onDismiss, onRevise }: {
 }) {
   const { t } = useTranslation();
   return (
-    <section data-plan-review aria-label={t("composer.plan.confirm")} className="mb-2 rounded-2xl border border-border-theme bg-elevated-bg p-2.5 shadow-sm">
+    <section data-plan-review aria-label={t("composer.plan.confirm")} className="custom-scrollbar w-full max-w-4xl min-h-0 overflow-y-auto rounded-2xl border border-border-theme bg-bg-base p-2.5 shadow-[0_14px_34px_rgba(0,0,0,0.12)]">
       <div className="flex items-center justify-between gap-2 px-1.5 pb-2">
         <h3 className="flex items-center gap-2 text-sm font-medium text-text-base"><ListChecks className="size-4 text-text-secondary" aria-hidden="true" />{t("composer.plan.confirm")}</h3>
         <HoverInfo content={t("composer.plan.closeReview")}>
