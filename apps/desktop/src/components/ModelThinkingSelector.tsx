@@ -159,7 +159,7 @@ export function ModelThinkingSelector({
       layoutId={morphLayoutId}
       trigger={trigger}
       className="flex h-8 min-w-0 max-w-full items-center"
-      panelClassName="w-[352px]"
+      panelClassName="w-[252px]"
       panelAlign="right"
       zIndex={50}
     >
