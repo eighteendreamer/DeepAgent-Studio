@@ -5,6 +5,7 @@ interface Props {
   character: Character;
   root: string;
   state: string;
+  actionName?: string;
   variant: number;
   active: boolean;
   onReady: () => void;
@@ -12,16 +13,18 @@ interface Props {
   onFailure: (error: string) => void;
 }
 
-export function PetPlayer({ character, root, state, variant, active, onReady, onEnded, onFailure }: Props) {
+export function PetPlayer({ character, root, state, actionName, variant, active, onReady, onEnded, onFailure }: Props) {
   const first = useRef<HTMLVideoElement>(null);
   const second = useRef<HTMLVideoElement>(null);
   const front = useRef<HTMLVideoElement | null>(null);
+  const requestedVideo = useRef<HTMLVideoElement | null>(null);
   const [showPoster, setShowPoster] = useState(true);
   const callbacks = useRef({ onReady, onEnded, onFailure });
   callbacks.current = { onReady, onEnded, onFailure };
 
   useEffect(() => {
     const slots = [first.current, second.current];
+    requestedVideo.current = null;
     if (!active) {
       for (const slot of slots) slot?.pause();
       return;
@@ -31,7 +34,10 @@ export function PetPlayer({ character, root, state, variant, active, onReady, on
     if (!video) return;
     let outdated = false;
     let failed: string | undefined;
-    let action = resolveAction(character, state, variant);
+    const selected = actionName ? character.actions[actionName] : undefined;
+    let action = actionName && selected
+      ? { name: actionName, file: selected.file, loop: false }
+      : resolveAction(character, state, variant);
 
     const poster = (reason: string) => {
       front.current?.pause();
@@ -45,8 +51,9 @@ export function PetPlayer({ character, root, state, variant, active, onReady, on
     const play = () => {
       if (!action) { poster("No playable animation in the pet catalog"); return; }
       const path = petAsset(root, action.file);
-      if (front.current?.src === path && !front.current.ended) {
+      if (!actionName && front.current?.src === path && !front.current.ended) {
         const current = front.current;
+        requestedVideo.current = current;
         current.loop = action.loop;
         void current.play().catch(() => { if (!outdated) loadVideo(path); });
         return;
@@ -54,6 +61,7 @@ export function PetPlayer({ character, root, state, variant, active, onReady, on
       loadVideo(path);
     };
     const loadVideo = (path: string) => {
+      requestedVideo.current = video;
       video.loop = Boolean(action?.loop);
       video.src = path;
       video.load();
@@ -62,6 +70,11 @@ export function PetPlayer({ character, root, state, variant, active, onReady, on
       });
     };
     const fallback = (error: string) => {
+      if (actionName) {
+        callbacks.current.onFailure(`${actionName}: ${error}`);
+        callbacks.current.onEnded();
+        return;
+      }
       if (!action || failed) { poster(error); return; }
       failed = action.name;
       callbacks.current.onFailure(`${failed}: ${error}`);
@@ -89,10 +102,10 @@ export function PetPlayer({ character, root, state, variant, active, onReady, on
       video.removeEventListener("error", error);
       if (front.current !== video) video.pause();
     };
-  }, [active, character, root, state, variant]);
+  }, [active, character, root, state, actionName, variant]);
 
   const ended = (event: React.SyntheticEvent<HTMLVideoElement>) => {
-    if (event.currentTarget === front.current) callbacks.current.onEnded();
+    if (event.currentTarget === front.current && event.currentTarget === requestedVideo.current) callbacks.current.onEnded();
   };
   return <>
     {showPoster && <img src={petAsset(root, character.thumbnail)} alt="" className="pet-poster" draggable={false} />}

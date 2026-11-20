@@ -57,7 +57,7 @@ export function PetSettings() {
   const pet = snapshot?.catalog.characters.find(item => item.id === prefs?.characterId);
   const awake = isPetAwake(prefs);
   const pixels = Number(size);
-  const validSize = snapshot && Number.isInteger(pixels) && pixels >= snapshot.sizeMin && pixels <= snapshot.sizeMax;
+  const validSize = snapshot && /^[0-9]+$/.test(size) && pixels >= snapshot.sizeMin && pixels <= snapshot.sizeMax;
   const saveSize = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!validSize || busy) return;
@@ -98,20 +98,18 @@ export function PetSettings() {
               </PopoverTrigger>
               <PopoverContent align="end" className="max-h-[var(--available-height)] w-56 max-w-[calc(100vw-2rem)] overflow-y-auto p-3">
                 <PopoverTitle className="mb-3 text-sm font-semibold">{t("desktopPet.customize")}</PopoverTitle>
-                <form onSubmit={event => void saveSize(event)}>
-                  <label className="block text-[13px]">
+                <form className="flex items-center gap-2" onSubmit={event => void saveSize(event)}>
+                  <label className="flex min-w-0 flex-1 items-center gap-2 whitespace-nowrap text-[13px]">
                     {t("desktopPet.size")}
-                    <div className="mt-1.5 flex items-center gap-2">
-                      <Input type="number" min={snapshot.sizeMin} max={snapshot.sizeMax} step={1} value={size}
-                        disabled={busy} onChange={event => setSize(event.target.value)} className="h-8 bg-elevated-bg" />
-                      <span className="text-text-secondary" aria-hidden="true">px</span>
-                    </div>
+                    <span className="relative min-w-0 flex-1">
+                      <Input type="text" inputMode="numeric" value={size} aria-invalid={!validSize}
+                        title={`${snapshot.sizeMin}–${snapshot.sizeMax} px`} disabled={busy}
+                        onChange={event => setSize(event.target.value)} className="h-8 min-w-0 bg-elevated-bg pl-2 pr-7" />
+                      <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center text-xs text-text-secondary" aria-hidden="true">px</span>
+                    </span>
                   </label>
-                  <div className="mt-1.5 text-xs text-text-secondary">{snapshot.sizeMin}–{snapshot.sizeMax} px</div>
-                  <div className="mt-3 flex justify-end">
-                    <Button type="submit" variant="outline" size="sm" className="bg-elevated-bg hover:bg-ui-tint"
-                      disabled={!validSize || busy}>{t("desktopPet.apply")}</Button>
-                  </div>
+                  <Button type="submit" variant="outline" size="sm" className="whitespace-nowrap bg-elevated-bg hover:bg-ui-tint"
+                    disabled={!validSize || busy}>{t("desktopPet.apply")}</Button>
                 </form>
                 <div className="mt-3 space-y-2 border-t border-border-theme pt-3">
                   {(["alwaysOnTop", "followWork", "bubbles"] as const).map(key => (

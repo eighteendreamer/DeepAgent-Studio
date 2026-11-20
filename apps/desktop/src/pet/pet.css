@@ -7,3 +7,22 @@ html, body, #root { background: transparent !important; overflow: hidden; width:
 .pet-hit:active { cursor: grabbing; }
 .pet-bubble { position: absolute; bottom: calc(100% - 11px); left: 50%; transform: translateX(-50%); pointer-events: none;
   white-space: nowrap; border: 1px solid #fff4; background: #222e; color: white; border-radius: 12px; padding: 7px 12px; font-size: 12px; }
+
+/* Keep the desktop visible through the menu; text stays readable on light or dark wallpaper. */
+.pet-context-menu.ui-menu-surface {
+  /* Radix opens beside the cursor; leave room on either side even at the smallest pet size. */
+  width: min(11rem, calc((100vw - 20px) / 2));
+  min-width: 0;
+  overflow-wrap: anywhere;
+  max-height: var(--radix-context-menu-content-available-height, calc(100vh - 16px));
+  overflow-y: auto;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+  color: #fff;
+  text-shadow: 0 1px 2px #000, 0 0 3px #000, 0 0 5px #000;
+  scrollbar-width: thin;
+}
+.pet-context-menu [role="menuitem"][data-highlighted] { background: #252525b3; }
+.pet-context-menu [role="separator"] { background: #8889; }
+.pet-context-menu svg { filter: drop-shadow(0 1px 1px #000); }

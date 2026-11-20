@@ -1,10 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../components/shadcn/button";
-import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "../components/shadcn/context-menu";
+import { ContextMenu, ContextMenuTrigger } from "../components/shadcn/context-menu";
+import { PetMenu } from "./PetMenu";
 import { PetPlayer } from "./PetPlayer";
-import { getPet, getWork, isPetAwake, listenPet, openMain, petDrag, petReady, renderFailed, resetPet, setPetInteraction,
-  updatePet, workState, type Completion, type PetSnapshot, type Preferences, type WorkState } from "./api";
+import { getPet, getWork, isPetAwake, listenPet, petDrag, petReady, renderFailed, setPetInteraction,
+  workState, type Completion, type PetSnapshot, type Preferences, type WorkState } from "./api";
 
 function report(problem: unknown) {
   console.error("Desktop pet:", problem);
@@ -18,6 +19,7 @@ export function PetWindow() {
   const [work, setWork] = useState<WorkState>("idle");
   const [completion, setCompletion] = useState<Completion | null>(null);
   const [gesture, setGesture] = useState<"click" | "drag" | null>(null);
+  const [manualAction, setManualAction] = useState<string>();
   const [variant, setVariant] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   const ready = useRef(false);
@@ -88,8 +90,8 @@ export function PetWindow() {
   }, [follow]);
 
   const cue = work === "idle" && completion ? completion === "completed" ? "success" : "error" : work;
-  const animation = gesture ?? cue;
-  const showBubble = prefs?.bubbles && !gesture && (cue === "waiting" || cue === "success" || cue === "error");
+  const animation = manualAction ? "idle" : gesture ?? cue;
+  const showBubble = prefs?.bubbles && !manualAction && !gesture && (cue === "waiting" || cue === "success" || cue === "error");
   useLayoutEffect(() => {
     if (!character || !awake) return;
     const reportRegions = () => {
@@ -114,10 +116,14 @@ export function PetWindow() {
   const hit = character.hitBox;
   const canvas = character.canvas;
   return <main className="pet-stage" style={{ top: snapshot.stageTop, aspectRatio: `${canvas.width}/${canvas.height}` }}>
-    <PetPlayer key={character.id} character={character} root={snapshot.resourceRoot} state={animation} variant={variant} active={awake}
+    <PetPlayer key={character.id} character={character} root={snapshot.resourceRoot} state={animation} actionName={manualAction} variant={variant} active={awake}
       onReady={() => {
         if (!ready.current) { ready.current = true; void petReady().catch(error => { ready.current = false; report(error); }); }
-      }} onEnded={() => { setGesture(null); if (cue === "success" || cue === "error") setCompletion(null); }} onFailure={report} />
+      }} onEnded={() => {
+        if (manualAction) setManualAction(undefined);
+        else if (gesture) setGesture(null);
+        else if (cue === "success" || cue === "error") setCompletion(null);
+      }} onFailure={report} />
     {showBubble && <div ref={bubble} role="status" className="pet-bubble">{t(`desktopPet.${cue}`)}</div>}
     <ContextMenu modal={false} onOpenChange={setMenuOpen}>
       <ContextMenuTrigger asChild>
@@ -133,6 +139,7 @@ export function PetWindow() {
           if (!start || start.dragged || !(event.buttons & 1) || Math.hypot(event.clientX - start.x, event.clientY - start.y) < 5) return;
           start.dragged = true;
           event.currentTarget.releasePointerCapture(event.pointerId);
+          setManualAction(undefined);
           setGesture("drag");
           window.clearTimeout(gestureTimer.current);
           gestureTimer.current = window.setTimeout(() => { pointer.current = null; setGesture(null); }, 1400);
@@ -140,15 +147,20 @@ export function PetWindow() {
         }} onPointerCancel={() => { pointer.current = null; }} onClick={() => {
           const dragged = pointer.current?.dragged;
           pointer.current = null;
-          if (!dragged) { setVariant(value => value + 1); setGesture("click"); }
+          if (!dragged) {
+            window.clearTimeout(gestureTimer.current);
+            setManualAction(undefined);
+            setVariant(value => value + 1);
+            setGesture("click");
+          }
         }} />
       </ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem onSelect={() => void openMain().catch(report)}>{t("desktopPet.openMain")}</ContextMenuItem>
-        <ContextMenuItem onSelect={() => void updatePet({ sleeping: true }).catch(report)}>{t("desktopPet.sleep")}</ContextMenuItem>
-        <ContextMenuItem onSelect={() => void resetPet().catch(report)}>{t("desktopPet.reset")}</ContextMenuItem>
-        <ContextMenuItem disabled>{t("desktopPet.chat")}</ContextMenuItem>
-      </ContextMenuContent>
+      <PetMenu character={character} open={menuOpen} onError={report} onPlay={name => {
+        window.clearTimeout(gestureTimer.current);
+        setGesture(null);
+        setManualAction(name);
+        setVariant(value => value + 1);
+      }} />
     </ContextMenu>
   </main>;
 }

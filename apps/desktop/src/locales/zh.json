@@ -176,6 +176,14 @@
     "selectAll": "全选"
   },
   "desktopPet": {
+    "actions": "互动动作",
+    "clickActions": "点击回应",
+    "moveActions": "走动",
+    "smallActions": "小动作",
+    "playActions": "玩耍",
+    "foodActions": "吃东西",
+    "seasonActions": "时节",
+    "menuBack": "返回",
     "description": "在桌面显示宠物，并随任务状态播放动画。",
     "desktopOnly": "请在桌面应用中使用桌宠。",
     "loading": "正在准备桌宠资源…",

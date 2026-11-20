@@ -176,6 +176,14 @@
     "selectAll": "Select All"
   },
   "desktopPet": {
+    "actions": "Actions",
+    "clickActions": "Click reactions",
+    "moveActions": "Movement",
+    "smallActions": "Small gestures",
+    "playActions": "Play",
+    "foodActions": "Food",
+    "seasonActions": "Seasonal",
+    "menuBack": "Back",
     "description": "Show a companion on your desktop and animate it with task activity.",
     "desktopOnly": "Desktop pets are available in the desktop app.",
     "loading": "Preparing pet assets…",
