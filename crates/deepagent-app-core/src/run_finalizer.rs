@@ -103,6 +103,7 @@ pub(crate) fn record_usage_cost(
         Ok((_, cost_yuan)) => sink.emit(RuntimeEvent::CostRecorded {
             model: model_name.to_string(),
             cost_yuan,
+            cost_usd: crate::cost_service::estimate_usage_usd(model_name, &usage),
             origin,
         }),
         Err(error) => tracing::warn!(error = %error, "failed to record run cost"),
@@ -343,6 +344,21 @@ impl AppRunFinalizer {
             .map(|id| id.parse::<deepagent_core::id::TaskId>())
             .transpose()?;
         let booked = !ledger_ids.is_empty();
+        let cost_usd = if booked {
+            match crate::cost_service::SessionUsageEstimates::load_turn(
+                &self.db,
+                &session_id,
+                &ledger_ids,
+            ) {
+                Ok(estimate) => estimate.turn(&ledger_ids),
+                Err(error) => {
+                    tracing::warn!(%error, "could not project turn USD estimate");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         session.append(EventPayload::RunCostRecorded {
             version: 1,
             run_id: run_id.into(),
@@ -352,8 +368,7 @@ impl AppRunFinalizer {
             cost_yuan: total,
         })?;
         if booked {
-            // Existing UI replaces the turn's cost and settles its live token
-            // overlay on this event. Notify once, only AFTER all model rows.
+            // Notify the UI once, only after all model rows are durable.
             sink.emit(RuntimeEvent::CostRecorded {
                 model: if models.len() == 1 {
                     models[0].model_id.clone()
@@ -361,6 +376,7 @@ impl AppRunFinalizer {
                     multi_model_label.into()
                 },
                 cost_yuan: total,
+                cost_usd,
                 origin: CostOrigin::Run,
             });
         }
@@ -1000,6 +1016,7 @@ mod tests {
                         model,
                         cost_yuan,
                         origin,
+                        ..
                     } => Some((model, cost_yuan, origin)),
                     _ => None,
                 })

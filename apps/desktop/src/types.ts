@@ -264,6 +264,7 @@ export interface ConversationUsage {
   duration_ms: number;
   raw_responses_usage?: unknown;
   cost_yuan?: number;
+  cost_usd?: number;
   /** Newest physical request, separate from the aggregate turn total. */
   last_request?: ConversationUsageBuckets;
   /** Exact aggregate across all physical requests in this turn. */
@@ -298,6 +299,8 @@ export interface TokenUsage {
   lastRequest?: TokenUsageRequest;
   /** Cost in CNY/RMB for this turn. undefined when pricing unavailable. */
   costYuan?: number;
+  /** Estimated USD; unavailable when any request in the turn has no price. */
+  costUsd?: number;
 }
 
 /** Provider usage from one physical request inside a turn. */

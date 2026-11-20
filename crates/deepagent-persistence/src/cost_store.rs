@@ -12,7 +12,9 @@ use rusqlite::params;
 use crate::{map_sqlite, Database};
 
 mod run_calls;
+mod usage;
 pub use run_calls::{RecordedCallCost, RunCallReceipt, RunCallUsage};
+pub use usage::UsageLedgerRow;
 
 /// A single cost ledger row to insert.
 #[derive(Debug, Clone, PartialEq)]

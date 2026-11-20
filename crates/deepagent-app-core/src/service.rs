@@ -549,6 +549,7 @@ impl AppService {
             .filter_map(|run| run.task_id.map(|task| (task, run.id)))
             .collect();
         let mut owned_cost_ids = CostStore::new(&self.db).run_call_ledger_ids(session_id)?;
+        let estimates = crate::cost_service::SessionUsageEstimates::load(&self.db, session_id)?;
         let mut run_costs = std::collections::HashMap::new();
         for event in events {
             if let EventPayload::RunCostRecorded {
@@ -568,10 +569,19 @@ impl AppService {
                         .get(&task_id.to_string())
                         .is_none_or(|expected| expected == run_id);
                     let cost = if *version == 1 && identity_matches {
-                        *cost_yuan
+                        let usd = if ledger_session_id == session_id {
+                            estimates.turn(ledger_ids)
+                        } else {
+                            crate::cost_service::SessionUsageEstimates::load(
+                                &self.db,
+                                ledger_session_id,
+                            )?
+                            .turn(ledger_ids)
+                        };
+                        (*cost_yuan, usd)
                     } else {
                         tracing::warn!(%run_id, %task_id, version, "unsupported or conflicting run cost receipt");
-                        None
+                        (None, None)
                     };
                     run_costs.insert(*task_id, cost);
                 }
@@ -903,6 +913,13 @@ impl AppService {
                                 }
                             },
                         );
+                    let (cost_yuan, cost_usd) = current_task
+                        .and_then(|task| run_costs.get(&task).copied())
+                        .unwrap_or_else(|| {
+                            recorded_costs.next().map_or((None, None), |cost| {
+                                (cost.cost_yuan, estimates.turn(&[cost.id]))
+                            })
+                        });
                     messages[idx].usage = Some(ConversationUsageDto {
                         prompt_tokens: *prompt_tokens,
                         completion_tokens: *completion_tokens,
@@ -912,9 +929,8 @@ impl AppService {
                         prompt_cache_miss_tokens: *prompt_cache_miss_tokens,
                         duration_ms: *duration_ms,
                         raw_responses_usage: raw_responses_usage.clone(),
-                        cost_yuan: current_task
-                            .and_then(|task| run_costs.get(&task).copied())
-                            .unwrap_or_else(|| recorded_costs.next().and_then(|c| c.cost_yuan)),
+                        cost_yuan,
+                        cost_usd,
                         last_request,
                         turn_total,
                     });

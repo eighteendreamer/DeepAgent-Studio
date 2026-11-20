@@ -158,6 +158,7 @@ impl CallUsageSink for OwnedCallUsage {
                         events.emit(RuntimeEvent::CostRecorded {
                             model: report.model_id,
                             cost_yuan: recorded.cost_yuan,
+                            cost_usd: None,
                             origin: CostOrigin::SideCall,
                         });
                     }

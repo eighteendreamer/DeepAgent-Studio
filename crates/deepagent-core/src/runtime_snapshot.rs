@@ -1,6 +1,8 @@
 //! Local, versioned host-context contract carried by ordinary system items.
 //! This is not a provider replacement API or a second event/history store.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::response_item::ResponseItem;
@@ -10,6 +12,18 @@ const PREFIX: &str = "[DeepAgent runtime context snapshot]\n\
 This complete snapshot replaces only earlier DeepAgent runtime context snapshots. \
 It does not replace stable system rules. Historical snapshots describe past state; \
 only the latest snapshot describes current environment, permissions and catalogs.\n";
+
+const SECTION_PREFIX: &str = "[DeepAgent runtime context snapshot]\n\
+Apply these named environment sections in order: full replaces the prior baseline; \
+delta replaces only the named sections, and null removes a section. \
+These updates never replace stable system rules.\n";
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SectionUpdate {
+    full: bool,
+    sections: BTreeMap<String, Option<String>>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -30,7 +44,12 @@ impl RuntimeSnapshot {
         ResponseItem::Message {
             role: "system".into(),
             content: format!(
-                "{PREFIX}{}",
+                "{}{}",
+                if self.version == 2 {
+                    SECTION_PREFIX
+                } else {
+                    PREFIX
+                },
                 serde_json::to_string(self).expect("snapshot strings")
             ),
         }
@@ -45,8 +64,14 @@ impl RuntimeSnapshot {
         if role != "system" {
             return None;
         }
-        let snapshot: Self = serde_json::from_str(content.strip_prefix(PREFIX)?).ok()?;
-        (snapshot.version == 1
+        let (version, body) = if let Some(body) = content.strip_prefix(PREFIX) {
+            (1, body)
+        } else {
+            (2, content.strip_prefix(SECTION_PREFIX)?)
+        };
+        let snapshot: Self = serde_json::from_str(body).ok()?;
+        (snapshot.version == version
+            && (version == 1 || snapshot.section_update().is_some())
             && snapshot.series > 0
             && snapshot.revision > 0
             && snapshot.stable_rules_sha256.len() == 64
@@ -55,6 +80,18 @@ impl RuntimeSnapshot {
                 .bytes()
                 .all(|b| b.is_ascii_hexdigit()))
         .then_some(snapshot)
+    }
+
+    fn section_update(&self) -> Option<SectionUpdate> {
+        (self.version == 2).then_some(())?;
+        serde_json::from_str(&self.context).ok()
+    }
+
+    pub fn with_sections(mut self, full: bool, sections: BTreeMap<String, Option<String>>) -> Self {
+        self.version = 2;
+        self.context = serde_json::to_string(&SectionUpdate { full, sections })
+            .expect("section update strings");
+        self
     }
 }
 
@@ -65,11 +102,59 @@ pub fn latest_snapshot(items: &[ResponseItem]) -> Option<(&ResponseItem, Runtime
         .find_map(|item| RuntimeSnapshot::from_item(item).map(|s| (item, s)))
 }
 
+/// Rebuild the baseline from the actual retained history, including after reloading a session.
+pub fn latest_sections(
+    items: &[ResponseItem],
+) -> Option<(RuntimeSnapshot, BTreeMap<String, String>)> {
+    let mut history = items.iter().rev().filter_map(RuntimeSnapshot::from_item);
+    let latest = history.next()?;
+    let mut updates = Vec::new();
+    let mut expected = latest.revision;
+    for snapshot in std::iter::once(latest.clone()).chain(history) {
+        if snapshot.series != latest.series
+            || snapshot.revision != expected
+            || snapshot.stable_rules_sha256 != latest.stable_rules_sha256
+        {
+            return None;
+        }
+        let update = snapshot.section_update()?;
+        let full = update.full;
+        updates.push(update.sections);
+        if full {
+            let mut sections = BTreeMap::new();
+            for changes in updates.into_iter().rev() {
+                for (name, content) in changes {
+                    if let Some(content) = content {
+                        sections.insert(name, content);
+                    } else {
+                        sections.remove(&name);
+                    }
+                }
+            }
+            return Some((latest, sections));
+        }
+        expected = expected.checked_sub(1)?;
+    }
+    None
+}
+
 /// Compaction may remove the old snapshot's original position. Carry exactly
 /// the latest full snapshot after the surviving tail, identically live/replay.
 /// Never regenerate it from a summary or revive a superseded snapshot.
 pub fn retain_latest_snapshot(source: &[ResponseItem], target: &mut Vec<ResponseItem>) {
-    if let Some((item, _)) = latest_snapshot(source) {
+    if let Some((snapshot, sections)) = latest_sections(source) {
+        target.retain(|item| !RuntimeSnapshot::has_envelope_marker(item));
+        target.push(
+            snapshot
+                .with_sections(
+                    true,
+                    sections.into_iter().map(|(k, v)| (k, Some(v))).collect(),
+                )
+                .to_item(),
+        );
+    } else if let Some((item, _)) =
+        latest_snapshot(source).filter(|(_, snapshot)| snapshot.version == 1)
+    {
         target.retain(|candidate| candidate != item);
         target.push(item.clone());
     }

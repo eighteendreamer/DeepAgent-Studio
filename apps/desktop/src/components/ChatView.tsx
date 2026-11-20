@@ -1375,7 +1375,7 @@ export function ChatView({
           </div>
         )}
 
-        <SessionUsageBar sessionId={sessionId ?? null} busy={busy} />
+        <SessionUsageBar sessionId={sessionId ?? null} />
 
         <div className="absolute bottom-6 left-0 w-full px-6 flex justify-center">
           <div ref={composerFrameRef} className="w-full max-w-4xl relative">

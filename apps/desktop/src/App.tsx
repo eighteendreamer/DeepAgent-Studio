@@ -190,9 +190,9 @@ function mapUsageBuckets(usage: ConversationUsageBuckets): TokenUsageRequest {
     promptTokens: usage.prompt_tokens,
     completionTokens: usage.completion_tokens,
     reasoningTokens: usage.reasoning_tokens,
-    totalTokens: usage.total_tokens,
+    totalTokens: usage.prompt_tokens + usage.completion_tokens,
     cacheHitTokens: usage.prompt_cache_hit_tokens,
-    cacheMissTokens: usage.prompt_cache_miss_tokens,
+    cacheMissTokens: Math.max(0, usage.prompt_tokens - usage.prompt_cache_hit_tokens),
   };
 }
 
@@ -276,6 +276,7 @@ function mapConversationToChatMessages(conversation: ConversationMessage[]): Cha
               prompt_cache_miss_tokens: m.usage.prompt_cache_miss_tokens,
             }),
             costYuan: m.usage.cost_yuan,
+            costUsd: m.usage.cost_usd,
           }
         : undefined,
       runMs: m.usage?.duration_ms,
@@ -1782,7 +1783,7 @@ export function App() {
               completion: Number(event.completion_tokens ?? 0),
               reasoning: Number(event.reasoning_tokens ?? 0),
               cacheHit: Number(event.prompt_cache_hit_tokens ?? 0),
-              cacheMiss: Number(event.prompt_cache_miss_tokens ?? 0),
+              cacheMiss: Math.max(0, Number(event.prompt_tokens ?? 0) - Number(event.prompt_cache_hit_tokens ?? 0)),
               costYuan: typeof event.cost_yuan === "number" ? event.cost_yuan : undefined,
             });
             break;
@@ -1799,9 +1800,10 @@ export function App() {
                 if (lastIdx < 0 || next[lastIdx].role !== "assistant") return prev;
                 const msg = next[lastIdx];
                 const costYuan = typeof event.cost_yuan === "number" ? event.cost_yuan : undefined;
+                const costUsd = typeof event.cost_usd === "number" ? event.cost_usd : undefined;
                 next[lastIdx] = {
                   ...msg,
-                  usage: msg.usage ? { ...msg.usage, costYuan } : undefined,
+                  usage: msg.usage ? { ...msg.usage, costYuan, costUsd } : undefined,
                 };
                 return next;
               });

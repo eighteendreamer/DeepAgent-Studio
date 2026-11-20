@@ -71,11 +71,12 @@
 .usage-day-help { margin-top: 20px; color: var(--theme-text-secondary); font-size: 10px; line-height: 1.7; }
 .usage-trend-chart { width: 100%; height: 155px; }
 .usage-chart-error { color: var(--theme-text-secondary); font-size: 11px; }
-.usage-model-table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 18px; text-align: left; }
+.usage-model-scroll { overflow-x: auto; }
+.usage-model-table { width: 100%; min-width: max-content; white-space: nowrap; border-collapse: collapse; font-size: 11px; margin-top: 18px; text-align: left; }
 .usage-model-table th { font-weight: 400; }
 .usage-model-table thead th { color: var(--theme-text-secondary); border-bottom: 1px solid var(--usage-line); padding-bottom: 10px; }
 .usage-model-table tbody th, .usage-model-table td { padding-top: 12px; color: var(--theme-text-secondary); }
-.usage-model-table th:last-child, .usage-model-table td { text-align: right; }
+.usage-model-table thead th:not(:first-child), .usage-model-table td { text-align: right; padding-left: 12px; }
 .usage-footnote { display: flex; align-items: flex-start; gap: 7px; font-size: 10px; line-height: 1.7; color: var(--theme-text-secondary); }
 .usage-footnote > svg { margin-top: 1px; }
 

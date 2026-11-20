@@ -418,6 +418,7 @@ async fn multiple_models_reach_existing_ledger_ui_projection_and_reopened_sqlite
                 model,
                 cost_yuan,
                 origin,
+                ..
             } => Some((model, cost_yuan, origin)),
             _ => None,
         })

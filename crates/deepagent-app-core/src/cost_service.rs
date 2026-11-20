@@ -5,6 +5,10 @@
 //! provider's `usage` payload; pricing is centralized here so the UI only
 //! displays authoritative backend-calculated values.
 
+mod usage;
+pub(crate) use usage::{estimate_usage_usd, SessionUsageEstimates};
+pub use usage::{DailyUsage, UsageTotals};
+
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 

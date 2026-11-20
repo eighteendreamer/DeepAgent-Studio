@@ -561,6 +561,7 @@ fn runtime_event_message(event: &RuntimeEvent) -> String {
             model,
             cost_yuan,
             origin,
+            ..
         } => match cost_yuan {
             Some(cost) => format!("cost recorded for {model} origin={origin:?}: ¥{cost:.6}"),
             None => format!("cost recorded for {model} origin={origin:?}: pricing unavailable"),

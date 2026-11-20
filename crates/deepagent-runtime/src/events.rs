@@ -453,6 +453,9 @@ pub enum RuntimeEvent {
         /// Backend-computed RMB cost, or `None` when pricing is unavailable.
         #[serde(default)]
         cost_yuan: Option<f64>,
+        /// Estimated USD for display, independent of budget enforcement.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cost_usd: Option<f64>,
         /// Which spend landed, so a consumer can tell "the run I am watching is
         /// now in the ledger" from "some other call booked a row". Guessing that
         /// from arrival order made the usage bar drop its in-flight totals

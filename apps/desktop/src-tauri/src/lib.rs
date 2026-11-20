@@ -1831,6 +1831,32 @@ fn get_cost_summary(
 }
 
 #[tauri::command]
+async fn get_usage_statistics(
+    state: State<'_, AppState>,
+    start: i64,
+    end: i64,
+    timezone: String,
+) -> Result<Vec<deepagent_app_core::cost_service::DailyUsage>, String> {
+    let cost = state.cost.clone();
+    tokio::task::spawn_blocking(move || cost.daily_usage(start, end, &timezone))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_session_usage_totals(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<deepagent_app_core::cost_service::UsageTotals, String> {
+    let cost = state.cost.clone();
+    tokio::task::spawn_blocking(move || cost.session_usage_totals(&session_id))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn set_budget(
     state: State<'_, AppState>,
     daily_limit: Option<f64>,
@@ -7877,6 +7903,8 @@ pub fn run() {
             kb_set_auto_capture,
             kb_auto_capture_enabled,
             get_cost_summary,
+            get_usage_statistics,
+            get_session_usage_totals,
             set_budget,
             run_doctor,
             start_chat_v2,

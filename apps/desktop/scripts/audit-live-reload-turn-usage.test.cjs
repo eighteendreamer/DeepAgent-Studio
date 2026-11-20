@@ -128,8 +128,9 @@ test("live and reloaded usage expose the same turn aggregate after a tool loop",
       cacheMissTokens: 50,
     },
     costYuan: 0.00101,
+    costUsd: undefined,
   });
-  const { costYuan: _costYuan, ...reloadedWithoutCost } = reloaded;
+  const { costYuan: _costYuan, costUsd: _costUsd, ...reloadedWithoutCost } = reloaded;
   assert.deepEqual(live, reloadedWithoutCost);
   process.stderr.write(`live/reload usage audit: turn output=${live.completionTokens}, turn reasoning=${live.reasoningTokens}, turn total=${live.totalTokens}, last output=${live.lastRequest.completionTokens}\n`);
 });

@@ -2,7 +2,7 @@ import { HoverInfo } from "../ui/HoverInfo";
 import { useState } from "react";
 import { ArrowDown, ArrowUp, Check, CircleX, Clock, Coins, Copy, GitBranch, Hash, Zap } from "lucide-react";
 import type { EditedFile, TokenUsage } from "../../types";
-import { cnySymbol, formatCny, formatMs, formatTokens } from "./format";
+import { formatUsd, formatMs, formatTokens } from "./format";
 import { EditedFilesList } from "./EditedFilesList";
 
 export function TurnFooter({
@@ -51,13 +51,13 @@ export function TurnFooter({
                 <ArrowDown size={12} className="mr-0.5 inline" />
                 输出 {formatTokens(usage.completionTokens)}
               </span>
-              {usage.cacheHitTokens > 0 && (
-                <span className="font-medium text-green-600">
+              {usage.promptTokens > 0 && (
+                <span className={usage.cacheHitTokens > 0 ? "font-medium text-green-600" : "text-text-tertiary"}>
                   <Zap size={12} className="mr-0.5 inline" />
-                  缓存命中 {formatTokens(usage.cacheHitTokens)}
+                  缓存命中 {formatTokens(usage.cacheHitTokens)}{` · ${(100 * usage.cacheHitTokens / usage.promptTokens).toFixed(1)}%`}
                 </span>
               )}
-              {usage.cacheMissTokens > 0 && (
+              {usage.promptTokens > 0 && (
                 <span className="text-text-tertiary">
                   <CircleX size={12} className="mr-0.5 inline" />
                   缓存未命中 {formatTokens(usage.cacheMissTokens)}
@@ -65,7 +65,7 @@ export function TurnFooter({
               )}
               <span>
                 <Coins size={12} className="mr-0.5 inline" />
-                {typeof usage.costYuan === "number" ? formatCny(usage.costYuan) : `${cnySymbol}--`}
+                {typeof usage.costUsd === "number" ? `≈${formatUsd(usage.costUsd)}` : "未定价"}
               </span>
             </>
           )}

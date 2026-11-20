@@ -1,3 +1,4 @@
+import type { UsageCounts, UsageDay } from "./components/settings/usageStatistics";
 // API bridge to the Rust kernel via Tauri commands.
 //
 // When running inside Tauri, calls go through `invoke` to the Rust
@@ -1180,6 +1181,16 @@ export async function getCostSummary(sessionId?: string): Promise<CostSummary> {
   if (invoke)
     return invoke<CostSummary>("get_cost_summary", { sessionId: sessionId ?? null });
   return EMPTY_COST_SUMMARY;
+}
+
+export async function getUsageStatistics(start: number, end: number, timezone: string): Promise<UsageDay[]> {
+  const invoke = getInvoke();
+  return invoke ? invoke<UsageDay[]>("get_usage_statistics", { start, end, timezone }) : [];
+}
+
+export async function getSessionUsageTotals(sessionId: string): Promise<UsageCounts | null> {
+  const invoke = getInvoke();
+  return invoke ? invoke<UsageCounts>("get_session_usage_totals", { sessionId }) : null;
 }
 
 /** Persist the ledger's daily/monthly budget (CNY); null explicitly clears a limit.

@@ -26,15 +26,116 @@ impl SnapshotPlan {
         Ok(())
     }
 
-    pub fn new(manifest: &str, history: &[ResponseItem]) -> Result<Self> {
+    pub fn from_manifest(
+        manifest: &deepagent_context::ContextManifest,
+        rendered: &str,
+        history: &[ResponseItem],
+    ) -> Result<Self> {
+        use std::collections::BTreeMap;
+        let boundary = crate::system_context::SYSTEM_PROMPT_DYNAMIC_BOUNDARY;
+        let Some((stable, _)) = rendered.split_once(boundary) else {
+            return Self::new(rendered, history);
+        };
+        Self::validate_history(history)?;
+        let hash = format!("{:x}", Sha256::digest(stable.as_bytes()));
+        let mut sections = BTreeMap::new();
+        for entry in &manifest.entries {
+            let content = if entry.source == deepagent_context::ContextSourceKind::System {
+                entry
+                    .content
+                    .split_once(boundary)
+                    .map_or("", |(_, tail)| tail)
+            } else {
+                &entry.content
+            }
+            .trim();
+            if !content.is_empty() {
+                sections
+                    .entry(entry.origin.clone())
+                    .and_modify(|body: &mut String| {
+                        body.push_str("\n\n");
+                        body.push_str(content);
+                    })
+                    .or_insert_with(|| content.to_owned());
+            }
+        }
+        let latest = latest_snapshot(history).map(|(_, item)| item);
+        let restarted = latest
+            .as_ref()
+            .is_some_and(|item| item.stable_rules_sha256 != hash);
+        let baseline = if restarted {
+            None
+        } else {
+            deepagent_core::runtime_snapshot::latest_sections(history)
+        };
+        let full = baseline.is_none();
+        let mut changes = BTreeMap::new();
+        if let Some((_, old)) = baseline {
+            for name in old.keys().filter(|name| !sections.contains_key(*name)) {
+                changes.insert(name.clone(), None);
+            }
+            for (name, content) in sections {
+                if old.get(&name) != Some(&content) {
+                    changes.insert(name, Some(content));
+                }
+            }
+        } else {
+            changes.extend(
+                sections
+                    .into_iter()
+                    .map(|(name, content)| (name, Some(content))),
+            );
+        }
+        let update = if full || !changes.is_empty() {
+            let last_series = latest.as_ref().map_or(1, |item| item.series);
+            let series = if restarted {
+                last_series.checked_add(1)
+            } else {
+                Some(last_series)
+            }
+            .ok_or_else(|| CoreError::invalid("runtime snapshot series overflow"))?;
+            let revision = if restarted {
+                Some(1)
+            } else {
+                latest
+                    .as_ref()
+                    .map_or(Some(1), |item| item.revision.checked_add(1))
+            }
+            .ok_or_else(|| CoreError::invalid("runtime snapshot revision overflow"))?;
+            Some(
+                RuntimeSnapshot {
+                    version: 2,
+                    series,
+                    revision,
+                    stable_rules_sha256: hash,
+                    context: String::new(),
+                }
+                .with_sections(full, changes)
+                .to_item(),
+            )
+        } else {
+            None
+        };
+        Ok(Self {
+            instructions: stable.into(),
+            update,
+            restarted,
+        })
+    }
+
+    fn validate_history(history: &[ResponseItem]) -> Result<()> {
         if history.iter().any(|item| {
-            deepagent_core::runtime_snapshot::RuntimeSnapshot::has_envelope_marker(item)
-                && deepagent_core::runtime_snapshot::RuntimeSnapshot::from_item(item).is_none()
+            RuntimeSnapshot::has_envelope_marker(item) && RuntimeSnapshot::from_item(item).is_none()
         }) {
             return Err(CoreError::invalid(
                 "session contains an unsupported or malformed runtime context snapshot",
             ));
         }
+        Ok(())
+    }
+
+    pub fn new(manifest: &str, history: &[ResponseItem]) -> Result<Self> {
+        Self::validate_history(history)?;
         let Some((stable, dynamic)) =
             manifest.split_once(crate::system_context::SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
         else {
@@ -90,6 +191,79 @@ mod tests {
             "{stable}{}{dynamic}",
             crate::system_context::SYSTEM_PROMPT_DYNAMIC_BOUNDARY
         )
+    }
+
+    #[test]
+    fn changed_manifest_sections_append_only_the_delta_and_compact_to_a_full_baseline() {
+        use deepagent_context::{ContextAssembler, ContextSourceKind, HeuristicTokenizer};
+        let manifest = |git: &str| {
+            ContextAssembler::new(std::path::Path::new("."))
+                .with_user_home(None)
+                .push(ContextSourceKind::GitContext, "git", 10, false, true, git)
+                .push(
+                    ContextSourceKind::ToolCatalog,
+                    "tools",
+                    10,
+                    false,
+                    true,
+                    "unchanged catalog",
+                )
+                .assemble(&HeuristicTokenizer::new(), 100_000)
+        };
+        let first =
+            SnapshotPlan::from_manifest(&manifest("clean"), &manifest("clean").render(), &[]);
+        // Use the same boundary as production; assembler source entries are never split by their text.
+        let text = |m: &deepagent_context::ContextManifest| manifest_text(m);
+        fn manifest_text(m: &deepagent_context::ContextManifest) -> String {
+            format!(
+                "rules{}\n\n{}",
+                crate::system_context::SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+                m.render()
+            )
+        }
+        assert!(first.unwrap().update.is_none());
+        let mut history =
+            vec![
+                SnapshotPlan::from_manifest(&manifest("clean"), &text(&manifest("clean")), &[])
+                    .unwrap()
+                    .update
+                    .unwrap(),
+            ];
+        let changed = SnapshotPlan::from_manifest(
+            &manifest("modified"),
+            &text(&manifest("modified")),
+            &history,
+        )
+        .unwrap()
+        .update
+        .unwrap();
+        let delta = RuntimeSnapshot::from_item(&changed).unwrap();
+        assert!(delta.context.contains("modified"));
+        assert!(!delta.context.contains("unchanged catalog"));
+        history.push(changed);
+        let mut compacted = Vec::new();
+        deepagent_core::runtime_snapshot::retain_latest_snapshot(&history, &mut compacted);
+        let full = latest_snapshot(&compacted).unwrap().1;
+        assert!(full.context.contains("modified"));
+        assert!(full.context.contains("unchanged catalog"));
+        assert!(SnapshotPlan::from_manifest(
+            &manifest("modified"),
+            &text(&manifest("modified")),
+            &compacted
+        )
+        .unwrap()
+        .update
+        .is_none());
+        let mut removed = manifest("modified");
+        removed.entries.retain(|entry| entry.origin != "git");
+        let deleted = SnapshotPlan::from_manifest(&removed, &text(&removed), &compacted)
+            .unwrap()
+            .update
+            .unwrap();
+        assert!(RuntimeSnapshot::from_item(&deleted)
+            .unwrap()
+            .context
+            .contains("null"));
     }
 
     #[test]

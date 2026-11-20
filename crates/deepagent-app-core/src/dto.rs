@@ -622,6 +622,8 @@ pub struct ConversationUsageDto {
     /// Backend-computed RMB cost for this assistant turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_yuan: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
     /// Usage from the newest physical provider request, when the runtime can
     /// prove request-level fields separately from the aggregate.
     #[serde(default, skip_serializing_if = "Option::is_none")]

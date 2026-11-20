@@ -260,7 +260,12 @@
       "modelDistribution": "模型分布",
       "currentRange": "当前范围",
       "distributionNote": "按输入与输出 Token 总量计算占比。",
-      "countingNote": "总 Token = 输入 + 输出；缓存命中已包含在输入中，不重复计入总量。当前为前端示例数据。"
+      "cacheMiss": "缓存未命中",
+      "cacheWrite": "缓存写入",
+      "estimatedCost": "预估成本 (USD)",
+      "unpriced": "未定价",
+      "loadError": "使用统计读取失败",
+      "countingNote": "总 Token = 输入 + 输出。缓存读写包含在输入中。美元成本按已知单价估算，≥ 表示还有未定价用量。"
     },
     "general": {
       "title": "常规",

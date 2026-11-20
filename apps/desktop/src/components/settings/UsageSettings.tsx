@@ -10,11 +10,12 @@ import {
   DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem,
 } from "../shadcn/base-dropdown-menu";
 import { SurfaceVisibility } from "../ui/SurfaceVisibility";
-import { formatTokens } from "../chat-timeline/format";
+import { getUsageStatistics } from "../../api";
+import { formatUsd, formatTokens } from "../chat-timeline/format";
 import { UsageTrendChart } from "./UsageTrendChart";
 import {
-  createDemoUsageDays, dailyUsage, localUsageDate, sumUsage,
-  usageRange, usageTrend, USAGE_MODELS, type UsageModelFilter, type UsagePeriod,
+  dailyUsage, localUsageDate, shiftUsageDate, sumUsage,
+  usageRange, usageTrend, type UsageDay, type UsagePeriod,
 } from "./usageStatistics";
 import "./UsageSettings.css";
 
@@ -56,26 +57,41 @@ export function UsageSettings() {
     "--usage-chart-input": mixHex(activePalette.foreground, activePalette.background, .16),
   } as CSSProperties), [activePalette]);
   const locale = i18n.resolvedLanguage ?? i18n.language;
-  const [today] = useState(() => localUsageDate(new Date()));
+  const visible = useContext(SurfaceVisibility);
+  const today = localUsageDate(new Date());
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const currentYear = Number(today.slice(0, 4));
   const [period, setPeriod] = useState<UsagePeriod>("30");
-  const [model, setModel] = useState<UsageModelFilter>("all");
+  const [model, setModel] = useState("");
   const [year, setYear] = useState(String(currentYear));
   const [selectedDate, setSelectedDate] = useState(today);
-  const days = useMemo(() => createDemoUsageDays(today), [today]);
+  const [days, setDays] = useState<UsageDay[]>([]);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    if (!visible) return;
+    let alive = true;
+    const start = new Date(currentYear - 1, 0, 1).getTime();
+    const end = new Date(`${shiftUsageDate(today, 1)}T00:00:00`).getTime();
+    void getUsageStatistics(start, end, timezone).then(rows => {
+      if (alive) { setDays(rows); setFailed(false); }
+    }, () => { if (alive) setFailed(true); });
+    return () => { alive = false; };
+  }, [visible, currentYear, today, timezone]);
+  const models = useMemo(() => [...new Set(days.flatMap(day => Object.keys(day.models)))].sort(), [days]);
+  const selectedModel = models.includes(model) ? model : null;
   const range = useMemo(() => usageRange(today, period), [today, period]);
-  const points = useMemo(() => dailyUsage(days, range, model), [days, range, model]);
+  const points = useMemo(() => dailyUsage(days, range, selectedModel), [days, range, selectedModel]);
   const totals = useMemo(() => sumUsage(points), [points]);
   const trend = useMemo(() => usageTrend(points, period === "year"), [points, period]);
   const annualPoints = useMemo(() => dailyUsage(days, {
     start: `${year}-01-01`, end: Number(year) === currentYear ? today : `${year}-12-31`,
-  }, model), [days, year, currentYear, today, model]);
+  }, selectedModel), [days, year, currentYear, today, selectedModel]);
   const annualDays = useMemo(() => annualPoints.map(point => ({ date: point.date, count: point.total })), [annualPoints]);
   const annualTotal = useMemo(() => sumUsage(annualPoints).total, [annualPoints]);
   const selectedDay = annualPoints.find(point => point.date === selectedDate)!;
-  const modelTotals = useMemo(() => USAGE_MODELS.filter(key => model === "all" || key === model)
+  const modelTotals = useMemo(() => models.filter(key => selectedModel === null || key === selectedModel)
     .map(key => ({ key, ...sumUsage(dailyUsage(days, range, key)) }))
-    .sort((a, b) => b.total - a.total), [days, range, model]);
+    .filter(row => row.total > 0).sort((a, b) => b.total - a.total), [days, range, models, selectedModel]);
   const chartLabels = useMemo(() => ({ total: t("settings.usage.total"),
     summary: t("settings.usage.chartSummary"),
     error: t("settings.usage.chartError") }), [t]);
@@ -86,7 +102,10 @@ export function UsageSettings() {
     year: "numeric", month: "short", day: "numeric", timeZone: "UTC",
   }), [locale]);
   const formatDate = (value: string) => date.format(Date.parse(`${value}T00:00:00Z`));
-  const cacheRate = totals.input ? totals.cacheRead / totals.input : 0;
+  const percent = (read: number, input: number) => input ? percentage.format(read / input) : "—";
+  const cost = (counts: { costUsd: number | null; unpricedRequests: number }) =>
+    counts.costUsd == null ? (counts.unpricedRequests ? t("settings.usage.unpriced") : "—")
+      : `${counts.unpricedRequests ? "≥" : "≈"}${formatUsd(counts.costUsd)}`;
   const periods: { value: UsagePeriod; label: string }[] = [
     { value: "7", label: t("settings.usage.lastDays", { count: 7 }) },
     { value: "30", label: t("settings.usage.lastDays", { count: 30 }) },
@@ -96,10 +115,11 @@ export function UsageSettings() {
   return <div className="usage-page" style={chartColors}>
     <header className="usage-heading">
       <div className="usage-title-line">
-        <h1>{t("settings.usage.title")}</h1><span className="usage-demo-badge">{t("settings.usage.demo")}</span>
+        <h1>{t("settings.usage.title")}</h1>
       </div>
       <p>{t("settings.usage.description")}</p>
     </header>
+    {failed && <p role="alert">{t("settings.usage.loadError")}</p>}
 
     <div>
       <div className="usage-toolbar">
@@ -109,14 +129,14 @@ export function UsageSettings() {
             {option.label}
           </Button>)}
         </div>
-        <UsageDropdown value={model} onChange={setModel} label={t("settings.usage.modelFilter")}
+        <UsageDropdown value={selectedModel ?? ""} onChange={setModel} label={t("settings.usage.modelFilter")}
           icon={<Box className="size-3.5" />} options={[
-            { value: "all", label: t("settings.usage.allModels") },
-            ...USAGE_MODELS.map(key => ({ value: key, label: `deepseek-${key}` })),
+            { value: "", label: t("settings.usage.allModels") },
+            ...models.map(key => ({ value: key, label: key })),
           ]} />
       </div>
       <div className="usage-date-line"><span>{formatDate(range.start)} — {formatDate(range.end)}</span>
-        <span>{Intl.DateTimeFormat().resolvedOptions().timeZone}</span>
+        <span>{timezone}</span>
       </div>
     </div>
 
@@ -131,7 +151,8 @@ export function UsageSettings() {
             <dd>{number.format(points.filter(point => point.total > 0).length)}<small>{t("settings.usage.daysUnit")}</small></dd></div>
           <div><dt>{t("settings.usage.dailyAverage")}</dt>
             <dd>{formatTokens(totals.total / Math.max(1, points.length))}</dd></div>
-          <div><dt>{t("settings.usage.cacheRate")}</dt><dd>{percentage.format(cacheRate)}</dd></div>
+          <div><dt>{t("settings.usage.cacheRate")}</dt><dd>{percent(totals.cacheRead, totals.input)}</dd></div>
+          <div><dt>{t("settings.usage.estimatedCost")}</dt><dd>{cost(totals)}</dd></div>
         </dl>
       </div>
       <div className="usage-calendar-activity">
@@ -168,7 +189,10 @@ export function UsageSettings() {
           <div><dt>{t("settings.usage.output")}</dt><dd>{formatTokens(selectedDay.output)}</dd></div>
           <div><dt>{t("settings.usage.dayCache")}</dt><dd>{formatTokens(selectedDay.cacheRead)}</dd></div>
           <div><dt>{t("settings.usage.cacheRate")}</dt>
-            <dd>{percentage.format(selectedDay.input ? selectedDay.cacheRead / selectedDay.input : 0)}</dd></div>
+            <dd>{percent(selectedDay.cacheRead, selectedDay.input)}</dd></div>
+          <div><dt>{t("settings.usage.cacheMiss")}</dt><dd>{formatTokens(selectedDay.cacheMiss)}</dd></div>
+          <div><dt>{t("settings.usage.cacheWrite")}</dt><dd>{formatTokens(selectedDay.cacheWrite)}</dd></div>
+          <div><dt>{t("settings.usage.estimatedCost")}</dt><dd>{cost(selectedDay)}</dd></div>
         </dl>
         <p className="usage-day-help">{t(selectedDay.total ? "settings.usage.dayHint" : "settings.usage.emptyDay")}</p>
       </section>
@@ -179,13 +203,17 @@ export function UsageSettings() {
           <span className="usage-muted">{formatTokens(totals.total)} Token</span>
         </div>
         <UsageTrendChart points={trend} locale={locale} labels={chartLabels} />
-        <table className="usage-model-table" aria-label={t("settings.usage.rangeModels")}>
+        <div className="usage-model-scroll"><table className="usage-model-table" aria-label={t("settings.usage.rangeModels")}>
           <thead><tr><th scope="col">{t("settings.usage.rangeModels")}</th>
-            <th scope="col">{t("settings.usage.tokenUsage")}</th></tr></thead>
+            {["tokenUsage", "input", "output", "dayCache", "cacheMiss", "cacheRate", "estimatedCost"].map(key =>
+              <th key={key} scope="col">{t(`settings.usage.${key}`)}</th>)}</tr></thead>
           <tbody>{modelTotals.map(item => <tr key={item.key}>
-            <th scope="row">deepseek-{item.key}</th><td>{formatTokens(item.total)}</td>
+            <th scope="row">{item.key}</th>
+            {[item.total, item.input, item.output, item.cacheRead, item.cacheMiss].map((value, index) =>
+              <td key={index}>{formatTokens(value)}</td>)}
+            <td>{percent(item.cacheRead, item.input)}</td><td>{cost(item)}</td>
           </tr>)}</tbody>
-        </table>
+        </table></div>
       </section>
     </div>
     <footer className="usage-footnote"><Info className="size-3.5 shrink-0" />

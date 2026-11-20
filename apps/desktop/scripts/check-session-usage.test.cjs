@@ -17,8 +17,8 @@ test("auxiliary call cost refreshes session totals without replacing main-turn c
   assert.equal(updates, 0);
   assert.equal(state, original);
   for (const origin of ["run", undefined]) {
-    dispatch({ type: "cost_recorded", origin, cost_yuan: 0.3 }, update);
-    assert.deepEqual(state[0].usage, { prompt: 1000, costYuan: 0.3 });
+    dispatch({ type: "cost_recorded", origin, cost_yuan: 0.3, cost_usd: 0.04 }, update);
+    assert.deepEqual(state[0].usage, { prompt: 1000, costYuan: 0.3, costUsd: 0.04 });
   }
 });
 
@@ -53,23 +53,10 @@ test("usage refresh is event-driven, not a polling timer", () => {
   assert.match(bar, /event\.type === "cost_recorded"[\s\S]{0,400}fetchSummary\(/);
 });
 
-// `cost_recorded` carries which spend landed. The bar may only settle its
-// in-flight overlay for the run's own row: a compaction summary or session-note
-// pass books a row while the run is still going, and clearing the overlay then
-// made the bar lose totals the ledger had not received yet.
-test("only the run's own ledger row settles the in-flight overlay", () => {
+test("session totals are read once from the durable usage source, without a live overlay", () => {
   const bar = read("components/SessionUsageBar.tsx");
-  assert.match(
-    bar,
-    /fetchSummary\(String\(event\.origin \?\? "run"\) !== "side_call"\)/,
-    "the pull must key off the event's origin, not off arrival order",
-  );
-  assert.match(
-    bar,
-    /async \(settleLive = true\)/,
-    "mount and session-change pulls keep settling by default",
-  );
-  assert.match(bar, /if \(settleLive\) setLive\(EMPTY_LIVE\)/, "clearing must sit behind the flag");
+  assert.match(bar, /await getSessionUsageTotals\(sessionId\)/);
+  assert.doesNotMatch(bar, /setLive\(|event\.type === "usage"/);
 });
 
 // The origin crosses as snake_case JSON, so a renamed Rust variant would
@@ -87,13 +74,13 @@ test("the cost origin vocabulary is shared with the backend", () => {
     variants.length >= 2,
     `expected a run row and a side-call row, found: ${variants.join(", ")}`,
   );
-  const bar = read("components/SessionUsageBar.tsx");
+  const app = read("App.tsx");
   for (const variant of variants) {
     const wire = variant.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
     assert.match(
-      bar,
+      app,
       new RegExp(`"${wire}"`),
-      `the bar must name "${wire}", or it will treat it as the run's own row`,
+      `the turn must name "${wire}", or it will treat it as the run's own row`,
     );
   }
 });
@@ -108,12 +95,7 @@ test("switching sessions drops the previous session's numbers", () => {
   assert.match(bar, /requested !== generation\.current/, "stale replies must be discarded");
 });
 
-test("live usage overlay is gated on the visible session running", () => {
-  const bar = read("components/SessionUsageBar.tsx");
-  assert.match(bar, /event\.type === "usage" && busyRef\.current/);
-  const chat = read("components/ChatView.tsx");
-  assert.match(chat, /<SessionUsageBar sessionId=\{sessionId \?\? null\} busy=\{busy\} \/>/);
-});
+
 
 // A brand-new chat used to inherit the previously selected session as its
 // identity until `session_registered` arrived, which made the usage bar read the
@@ -272,16 +254,16 @@ test("workflow persisted usage reaches the production mapper and rendered footer
     id: "workflow", role: "assistant", content: "answer", parts: [],
     usage: { prompt_tokens: 50, completion_tokens: 30, reasoning_tokens: 17,
       total_tokens: 60, prompt_cache_hit_tokens: 20, prompt_cache_miss_tokens: 30,
-      duration_ms: 12, cost_yuan: 0.000310 },
+      duration_ms: 12, cost_yuan: 0.000310, cost_usd: 0.000043 },
   }]);
   assert.deepEqual(message.usage, {
-    promptTokens: 50, completionTokens: 30, reasoningTokens: 17, totalTokens: 60,
+    promptTokens: 50, completionTokens: 30, reasoningTokens: 17, totalTokens: 80,
     cacheHitTokens: 20, cacheMissTokens: 30,
     lastRequest: {
-      promptTokens: 50, completionTokens: 30, reasoningTokens: 17, totalTokens: 60,
+      promptTokens: 50, completionTokens: 30, reasoningTokens: 17, totalTokens: 80,
       cacheHitTokens: 20, cacheMissTokens: 30,
     },
-    costYuan: 0.000310,
+    costYuan: 0.000310, costUsd: 0.000043,
   });
   assert.equal(message.runMs, 12);
   const React = require("react");
@@ -296,10 +278,10 @@ test("workflow persisted usage reaches the production mapper and rendered footer
     usage, totalMs: message.runMs, answer: message.content,
   })).replace(/<[^>]*>/g, "");
   const text = render(message.usage);
-  for (const label of ["60 tokens", "输入 50", "输出 30", "缓存命中 20", "缓存未命中 30", "￥0.000310"]) {
+  for (const label of ["80 tokens", "输入 50", "输出 30", "缓存命中 20", "缓存未命中 30", "≈$0.000043"]) {
     assert.ok(text.includes(label), `rendered workflow metric missing: ${label}`);
   }
-  assert.ok(render({ ...message.usage, costYuan: undefined }).includes("￥--"), "unknown pricing must not display a measured zero");
+  assert.ok(render({ ...message.usage, costUsd: undefined }).includes("未定价"), "unknown pricing must not display a measured zero");
 });
 
 test("one aggregate workflow cost receipt preserves the production turn projection", () => {
@@ -321,7 +303,7 @@ test("one aggregate workflow cost receipt preserves the production turn projecti
   assert.ok(ts.isBlock(block));
   const body = block.statements.filter((node) => !ts.isBreakStatement(node)).map((node) => node.getText(ast)).join("\n");
   new Function("updateTranscript", "event", compile(body))(updateTranscript, {
-    type: "cost_recorded", model: "workflow", origin: "run", cost_yuan: 0.000310,
+    type: "cost_recorded", model: "workflow", origin: "run", cost_yuan: 0.000310, cost_usd: 0.000043,
   });
-  assert.deepEqual(messages[0].usage, { ...before, costYuan: 0.000310 });
+  assert.deepEqual(messages[0].usage, { ...before, costYuan: 0.000310, costUsd: 0.000043 });
 });

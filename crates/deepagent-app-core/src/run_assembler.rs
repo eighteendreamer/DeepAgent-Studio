@@ -1146,12 +1146,13 @@ impl<'a> RunAssembler<'a> {
         if cancellation.cancellation().is_cancelled() {
             return Err(CoreError::other("cancelled before model request"));
         }
-        let snapshot = crate::runtime_snapshot::SnapshotPlan::new(
+        let snapshot = crate::runtime_snapshot::SnapshotPlan::from_manifest(
+            &system_manifest,
             &run_context.system_prompt,
             &response_history,
         )?;
         // The admitted user and hook context were committed above. Append the
-        // full update AFTER them, exactly as the live Surface adopts it below.
+        // environment update AFTER them, exactly as the live Surface adopts it below.
         // A failed write aborts assembly before any model dispatch.
         snapshot.persist(&mut session)?;
         if let Some(receipt) = snapshot

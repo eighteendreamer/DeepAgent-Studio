@@ -35,6 +35,11 @@ export function formatCny(n: number): string {
   return `${CNY_SYMBOL}${n.toFixed(2)}`;
 }
 
+export function formatUsd(amount: number): string {
+  if (amount > 0 && amount < 0.000001) return "<$0.000001";
+  return `$${amount.toFixed(amount < 0.01 && amount > 0 ? 6 : amount < 1 && amount > 0 ? 4 : 2)}`;
+}
+
 export const cnySymbol = CNY_SYMBOL;
 
 /** A provider balance's unit is independent of the session's CNY ledger. */

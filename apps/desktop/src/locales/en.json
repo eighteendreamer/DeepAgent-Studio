@@ -261,7 +261,12 @@
       "modelDistribution": "Model distribution",
       "currentRange": "Current range",
       "distributionNote": "Shares are based on total input and output tokens.",
-      "countingNote": "Total tokens = input + output. Cached tokens are included in input and counted once. This page currently shows frontend demo data."
+      "cacheMiss": "Cache misses",
+      "cacheWrite": "Cache writes",
+      "estimatedCost": "Estimated cost (USD)",
+      "unpriced": "Unpriced",
+      "loadError": "Could not load usage statistics",
+      "countingNote": "Total tokens = input + output. Input includes cache reads and writes. USD costs are estimates; ≥ means some usage was unpriced."
     },
     "general": {
       "title": "General",
