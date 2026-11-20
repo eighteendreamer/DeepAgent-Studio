@@ -2,10 +2,23 @@
 // supplies its visible width, while the controlled draft keeps the wire text.
 const SLASH_MARKER = "\u200B";
 
+export function slashCommandKind(title: string): "skill" | "plugin" | "command" {
+  if (title === "/skills") return "skill";
+  // Plugin-defined commands use the /plugin-name:command namespace.
+  if (title === "/plugin" || title === "/plugins" || title.includes(":")) return "plugin";
+  return "command";
+}
+
 export function findCommittedSlash(draft: string, titles: ReadonlySet<string>) {
   const match = /^\/([a-zA-Z0-9_:-]+) /.exec(draft);
-  if (!match || !titles.has(`/${match[1]}`)) return null;
-  return { prefix: match[0], label: match[1][0].toUpperCase() + match[1].slice(1) };
+  if (!match) return null;
+  const title = `/${match[1]}`;
+  if (!titles.has(title)) return null;
+  return {
+    prefix: match[0],
+    label: match[1][0].toUpperCase() + match[1].slice(1),
+    kind: slashCommandKind(title),
+  };
 }
 
 export function projectSlashDraft(draft: string, prefix: string): string {

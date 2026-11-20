@@ -10,15 +10,23 @@ const compiled = ts.transpileModule(fs.readFileSync(file, "utf8"), {
 });
 const api = {};
 new Function("exports", compiled.outputText)(api);
-const { findCommittedSlash, projectSlashDraft, restoreSlashDraft, toSlashEditorOffset } = api;
+const { findCommittedSlash, projectSlashDraft, restoreSlashDraft, slashCommandKind, toSlashEditorOffset } = api;
 const titles = new Set(["/context", "/model", "/plugin:command"]);
 
 test("slash chips require a registered leading command and a space", () => {
   for (const text of ["/", "/con", "/context", "/context/notes", "/unknown x", "请看 /context x"]) {
     assert.equal(findCommittedSlash(text, titles), null, text);
   }
-  assert.deepEqual(findCommittedSlash("/context ", titles), { prefix: "/context ", label: "Context" });
+  assert.deepEqual(findCommittedSlash("/context ", titles), { prefix: "/context ", label: "Context", kind: "command" });
   assert.equal(findCommittedSlash("/plugin:command 中文", titles)?.prefix, "/plugin:command ");
+});
+
+test("plugin aliases and namespaced commands are distinct from skill and ordinary commands", () => {
+  assert.equal(slashCommandKind("/plugin"), "plugin");
+  assert.equal(slashCommandKind("/plugins"), "plugin");
+  assert.equal(findCommittedSlash("/plugin:command arg", titles)?.kind, "plugin");
+  assert.equal(slashCommandKind("/skills"), "skill");
+  assert.equal(slashCommandKind("/context"), "command");
 });
 
 test("an atomic editor selection maps to the full command and leaves arguments intact", () => {

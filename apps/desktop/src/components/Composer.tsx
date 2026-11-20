@@ -1,7 +1,7 @@
 import { HoverInfo } from "./ui/HoverInfo";
 import { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo, useId } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { Brain, BrainCircuit, Check, ChevronDown, CircleAlert, Feather, Hand, Lightbulb, Loader2, ShieldHalf, Sparkles, Terminal } from "lucide-react";
+import { Brain, BrainCircuit, Check, ChevronDown, CircleAlert, Feather, Hand, Lightbulb, Layers, Loader2, Puzzle, ShieldHalf, Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ContextCapacityIndicator } from "./ContextCapacityIndicator";
 import { ComposerSuggestPanel } from "./ComposerSuggestPanel";
@@ -12,7 +12,7 @@ import { useMessageSendMotion } from "./ui/MessageSendMotionContext";
 import { ComposerAttachButton } from "./ComposerAttachButton";
 import { ComposerAttachmentList } from "./ComposerAttachmentList";
 import { validateComposerImage } from "./composerImageInput";
-import { findCommittedSlash, projectSlashDraft, restoreSlashDraft, toSlashEditorOffset } from "./composerSlashToken";
+import { findCommittedSlash, projectSlashDraft, restoreSlashDraft, slashCommandKind, toSlashEditorOffset } from "./composerSlashToken";
 import { MorphingMenuShell } from "./ui/MorphingMenuShell";
 import { MOTION } from "./ui/motion";
 import { MENU_ITEM_ATTR, SlidingMenuList } from "./ui/SlidingMenuList";
@@ -100,7 +100,6 @@ type AtChoice =
       type: "skill";
       title: string;
       description: string;
-      icon: "cube";
       skill: Skill;
     };
 type AtSection = {
@@ -633,7 +632,9 @@ export function Composer({
         skillId: sk.id,
         skillName: sk.name,
       }));
-    const slash = slashCommands.filter((command) => !q || command.title.slice(1).toLowerCase().includes(q));
+    const slash = slashCommands.filter((command) =>
+      slashCommandKind(command.title) !== "plugin" && (!q || command.title.slice(1).toLowerCase().includes(q)),
+    );
     setSlashResults([...slash, ...skillChoices]);
     setSlashSelected(0);
   }, [activeSlashToken, draftValue, activeModelOptions, selectedModel, selectedSkills, skills, slashCommands]);
@@ -691,25 +692,10 @@ export function Composer({
         type: "skill",
         title: skill.name || skill.id,
         description: skill.description,
-        icon: "cube",
         skill,
       }));
     if (skillItems.length > 0) {
-      sections.push({ key: "plugins", label: "插件", items: skillItems });
-    } else if (!q) {
-      sections.push({
-        key: "plugins",
-        label: "插件",
-        items: [
-          {
-            id: "add-files",
-            type: "add-files",
-            title: "正在加载插件…",
-            description: "",
-            icon: "paperclip",
-          },
-        ],
-      });
+      sections.push({ key: "skills", label: t("composer.skillsGroup"), items: skillItems });
     }
 
     if (!q) {
@@ -768,7 +754,7 @@ export function Composer({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [activeAtToken, activeProjectPath, selectedMentions, selectedSkills, skills, slashOpen]);
+  }, [activeAtToken, activeProjectPath, selectedMentions, selectedSkills, skills, slashOpen, t]);
 
   const chooseSlash = (cmd: SlashChoice) => {
     const replaceWholeRootSlash = !activeSlashToken && draftValue.startsWith("/");
@@ -1311,7 +1297,8 @@ export function Composer({
             "inline-flex h-5 min-w-0 items-center gap-1 rounded-sm px-1 text-[13px] font-medium leading-none",
             selected ? "bg-primary text-white" : "bg-primary/10 text-primary",
           )}>
-            <Terminal aria-hidden="true" className="size-3 shrink-0" />
+            {committedSlash.kind === "skill" && <Layers aria-hidden="true" className="size-3 shrink-0" />}
+            {committedSlash.kind === "plugin" && <Puzzle aria-hidden="true" className="size-3 shrink-0" />}
             <span className="truncate">{committedSlash.label}</span>
           </span>
         </span>,
@@ -1344,7 +1331,7 @@ export function Composer({
               }`}
 
             >
-              <FontAwesomeIcon icon={["fas", "cube"]} className="mr-1 text-[11px]" />
+              <Layers aria-hidden="true" className="mr-1 size-3 shrink-0" />
               <span className="truncate">{skillLabel}</span>
             </span></HoverInfo>,
           );
@@ -1527,7 +1514,9 @@ export function Composer({
             }`}
           >
             <span className="flex h-4 w-4 items-center justify-center text-text-base">
-              <FontAwesomeIcon icon={["fas", item.icon as any]} className="text-[12px]" />
+              {item.type === "skill"
+                ? <Layers aria-hidden="true" className="size-3" />
+                : <FontAwesomeIcon icon={["fas", item.icon]} className="text-[12px]" />}
             </span>
             <span className="min-w-0">
               <span className="block truncate font-medium text-text-base">{item.title}</span>
@@ -1563,7 +1552,12 @@ export function Composer({
               selected ? "font-medium text-text-base" : "text-text-secondary"
             }`}
           >
-            <span className="truncate font-medium text-text-base">{cmd.title}</span>
+            <span className="flex min-w-0 items-center gap-1.5 font-medium text-text-base">
+              {(cmd.skillId || slashCommandKind(cmd.title) === "skill") && (
+                <Layers aria-hidden="true" className="size-3 shrink-0" />
+              )}
+              <span className="truncate">{cmd.title}</span>
+            </span>
             <span className="truncate text-[12px] leading-snug text-text-secondary">
               {cmd.description}
             </span>
