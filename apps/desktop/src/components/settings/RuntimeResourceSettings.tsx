@@ -12,27 +12,9 @@ import {
 } from "../../api";
 import type { RuntimeProgress, RuntimeRoots, RuntimeStatus } from "../../types";
 import { message } from "../message";
+import { Button } from "../shadcn/button";
+import { Progress } from "../shadcn/progress";
 import { HoverInfo } from "../ui/HoverInfo";
-
-const RUNTIME_CAPABILITY_LABEL: Record<string, string> = {
-  "speech-model": "语音模型",
-  "speech-engine": "转写引擎",
-  "video-media-tools": "视频处理",
-  "doc-convert": "文档转换",
-  "pdf-render": "PDF 渲染",
-  "office-suite": "Office 套件",
-  "vision-image-to-text": "系统视觉",
-};
-
-const RUNTIME_DESCRIPTIONS: Record<string, string> = {
-  "whisper-base": "默认本地语音转文字模型，适合会议录音、语音备忘和日常转写。",
-  "whisper-small": "更高质量的 Whisper 模型，体积更大，适合对准确率要求更高的录音。",
-  "whisper-cli": "whisper.cpp 本地转写引擎，语音模型需要通过它在本机执行。",
-  ffmpeg: "FFmpeg 与 FFprobe 视频工具。Windows/Linux LGPL 构建可按需下载；macOS 原生构建仍待完成来源与再分发校验。",
-  pandoc: "增强 Markdown、docx 等文档转换能力。",
-  pdfium: "增强 PDF 页面预览和栅格化渲染能力。",
-  libreoffice: "用于旧版 Office 格式、高保真转换和导出能力。",
-};
 
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "未知大小";
@@ -152,152 +134,95 @@ export function RuntimeResourceSettings() {
   };
 
   return (
-    <div className="mb-12 max-w-[700px]">
-      <div className="flex items-end justify-between mb-4">
-        <div>
-          <h2 className="text-[15px] font-medium text-text-base mb-1">{t("settings.tabs.resources")}</h2>
-          <div className="text-[12px] text-text-secondary">
-            管理本地语音模型、转写引擎、文档转换、PDF 渲染和视觉模型等可选运行时。新资源安装在当前资源目录中，旧目录仅作为兼容读取来源。
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
+    <div className="mb-12">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-lg font-semibold text-text-base">{t("settings.tabs.resources")}</h2>
+        <div className="flex flex-wrap items-center gap-2">
           {roots && roots.fallback_roots.length > 0 && (
-            <button
-              type="button"
-              onClick={migrateResources}
-              disabled={loading}
-              className="flex items-center px-3 py-1.5 rounded-lg border border-border-theme text-[12px] text-text-base hover:bg-black/5 disabled:opacity-50"
-            >
-              <FontAwesomeIcon icon={["fas", "download"]} className="mr-2 text-[11px]" />
+            <Button variant="outline" size="sm" className="bg-elevated-bg shadow-none hover:bg-hover-bg" onClick={migrateResources} disabled={loading}>
+              <FontAwesomeIcon icon={["fas", "download"]} className="text-[11px]" />
               迁移资源
-            </button>
+            </Button>
           )}
-          <button
-            type="button"
-            onClick={refresh}
-            disabled={loading}
-            className="flex items-center px-3 py-1.5 rounded-lg border border-border-theme text-[12px] text-text-base hover:bg-black/5 disabled:opacity-50"
-          >
-            <FontAwesomeIcon icon={["fas", "rotate-right"]} className={`mr-2 text-[11px] ${loading ? "animate-spin" : ""}`} />
+          <Button variant="outline" size="sm" className="bg-elevated-bg shadow-none hover:bg-hover-bg" onClick={refresh} disabled={loading}>
+            <FontAwesomeIcon icon={["fas", "rotate-right"]} className={loading ? "animate-spin" : undefined} />
             刷新
-          </button>
+          </Button>
         </div>
       </div>
 
-      <div className="border border-border-theme rounded-xl shadow-[0_1px_2px_rgb(0,0,0,0.02)] bg-white overflow-hidden">
-        {loading && runtimes.length === 0 ? (
-          <div className="p-4 text-[13px] text-text-secondary">正在加载资源列表...</div>
-        ) : runtimes.length === 0 ? (
-          <div className="p-4 text-[13px] text-text-secondary">暂无可管理资源。</div>
+      <div className="rounded-xl border border-border-theme bg-elevated-bg" aria-busy={loading}>
+        {runtimes.length === 0 ? (
+          <div className="px-4 py-6 text-center text-[13px] text-text-secondary">
+            {loading ? "正在加载资源…" : "暂无资源"}
+          </div>
         ) : (
-          runtimes.map((runtime, index) => {
-            const isBusy = busyIds.has(runtime.id);
-            const currentProgress = progress[runtime.id];
-            const pct = runtimeProgressPercent(currentProgress);
-            const installDisabled =
-              isBusy ||
-              runtime.installed ||
-              !runtime.available_for_platform ||
-              !runtime.checksum_pinned;
-            const unavailableReason = !runtime.available_for_platform
-              ? "当前系统不可用"
-              : !runtime.checksum_pinned
-              ? "等待校验值固定"
-              : null;
+          <ul className="divide-y divide-border-theme">
+            {runtimes.map((runtime) => {
+              const isBusy = busyIds.has(runtime.id);
+              const isInstalling = isBusy && !runtime.installed;
+              const currentProgress = progress[runtime.id];
+              const pct = runtimeProgressPercent(currentProgress);
+              const unavailableReason = !runtime.available_for_platform
+                ? "当前系统不可用"
+                : !runtime.checksum_pinned
+                  ? "等待校验值固定"
+                  : undefined;
+              const status = runtime.installed
+                ? "已安装"
+                : isInstalling
+                  ? "安装中"
+                  : unavailableReason
+                    ? "不可下载"
+                    : "未安装";
 
-            return (
-              <div
-                key={runtime.id}
-                className={`p-4 ${index === runtimes.length - 1 ? "" : "border-b border-border-theme"}`}
-              >
-                <div className="flex items-start justify-between gap-4">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2 mb-1">
-                      <span className="text-[14px] font-medium text-text-base">{runtime.name}</span>
-                      <span className="rounded-md bg-gray-100 px-2 py-0.5 text-[11px] text-text-secondary">
-                        {RUNTIME_CAPABILITY_LABEL[runtime.capability] ?? runtime.capability}
-                      </span>
-                      <span
-                        className={`rounded-md px-2 py-0.5 text-[11px] ${
-                          runtime.installed
-                            ? "bg-green-50 text-green-600"
-                            : "bg-gray-100 text-text-secondary"
-                        }`}
-                      >
-                        {runtime.installed ? "已安装" : "未安装"}
-                      </span>
-                    </div>
-                    <div className="text-[12px] text-text-secondary leading-relaxed">
-                      {RUNTIME_DESCRIPTIONS[runtime.id] ?? "按需下载的本地运行时资源。"}
-                    </div>
-                    <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-text-secondary">
-                      <span>ID: <code className="font-mono">{runtime.id}</code></span>
-                      <span>版本: {runtime.version}</span>
-                      <span>大小: {formatBytes(runtime.size_bytes)}</span>
-                      {runtime.install_path && (
-                        <span className="max-w-full truncate">
-                          路径: {runtime.install_path}
-                          {runtime.install_source === "fallback"
-                            ? "（旧目录）"
-                            : runtime.install_source === "system"
-                              ? "（系统安装）"
-                              : ""}
-                        </span>
-                      )}
-                      {unavailableReason && <span className="text-amber-600">{unavailableReason}</span>}
-                    </div>
-                    {currentProgress && (
-                      <div className="mt-3">
-                        <div className="h-1.5 overflow-hidden rounded-full bg-gray-100">
-                          <div
-                            className="h-full bg-primary transition-all"
-                            style={{ width: `${pct ?? 8}%` }}
-                          />
-                        </div>
-                        <div className="mt-1 text-[11px] text-text-secondary">
-                          {currentProgress.phase === "downloading" ? "下载中" : currentProgress.phase}
-                          {pct !== null ? ` ${pct}%` : ""}
-                          {" · "}
-                          {formatBytes(currentProgress.downloaded)}
-                          {currentProgress.total ? ` / ${formatBytes(currentProgress.total)}` : ""}
-                        </div>
+              return (
+                <li key={runtime.id} className="px-4 py-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+                    <div className="min-w-0 flex-1 basis-36">
+                      <div className="break-words text-[14px] font-medium text-text-base">{runtime.name}</div>
+                      <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[12px] tabular-nums text-text-secondary">
+                        <span className="min-w-0 break-words">{runtime.version}</span>
+                        <span aria-hidden="true">·</span>
+                        <span>{formatBytes(runtime.size_bytes)}</span>
                       </div>
-                    )}
+                    </div>
+                    <div className="ml-auto flex shrink-0 items-center gap-3">
+                      <span className="inline-flex min-w-[5em] items-center gap-1.5 text-[12px] text-text-secondary">
+                        <span aria-hidden="true" className={`size-1.5 rounded-full ${runtime.installed ? "bg-emerald-500" : isInstalling ? "bg-primary" : "bg-border-theme"}`} />
+                        {status}
+                      </span>
+                      {isInstalling ? (
+                        <Button variant="outline" size="sm" className="w-14 bg-elevated-bg shadow-none hover:bg-hover-bg" onClick={() => cancelRuntime(runtime)}>
+                          取消
+                        </Button>
+                      ) : runtime.installed ? (
+                        <Button variant="outline" size="sm" className="w-14 bg-elevated-bg text-red-600 shadow-none hover:bg-hover-bg dark:text-red-400" onClick={() => uninstallRuntime(runtime)} disabled={isBusy}>
+                          卸载
+                        </Button>
+                      ) : (
+                        <HoverInfo content={unavailableReason}>
+                          <Button size="sm" className="w-14 text-bg-base shadow-none hover:bg-text-base hover:opacity-80" onClick={() => installRuntime(runtime)} disabled={Boolean(unavailableReason)}>
+                            下载
+                          </Button>
+                        </HoverInfo>
+                      )}
+                    </div>
                   </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    {isBusy && !runtime.installed ? (
-                      <button
-                        type="button"
-                        onClick={() => cancelRuntime(runtime)}
-                        className="rounded-lg border border-border-theme px-3 py-1.5 text-[12px] text-text-base hover:bg-black/5"
-                      >
-                        取消
-                      </button>
-                    ) : runtime.installed ? (
-                      <button
-                        type="button"
-                        onClick={() => uninstallRuntime(runtime)}
-                        disabled={isBusy}
-                        className="rounded-lg border border-red-200 bg-red-50/50 px-3 py-1.5 text-[12px] font-medium text-red-500 hover:bg-red-50 disabled:opacity-50"
-                      >
-                        卸载
-                      </button>
-                    ) : (
-                      <HoverInfo content={unavailableReason ?? undefined}><button
-                        type="button"
-                        onClick={() => installRuntime(runtime)}
-                        disabled={installDisabled}
-                        className="rounded-lg bg-primary px-3 py-1.5 text-[12px] font-medium text-white hover:opacity-90 disabled:bg-gray-200 disabled:text-text-secondary"
-
-                      >
-                        下载
-                      </button></HoverInfo>
-                    )}
-                  </div>
-                </div>
-              </div>
-            );
-          })
+                  {isInstalling && currentProgress && (
+                    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] tabular-nums text-text-secondary">
+                      <Progress aria-label={`${runtime.name} 下载进度`} value={pct} className="h-1 min-w-16 flex-1 bg-hover-bg" />
+                      <span>
+                        {formatBytes(currentProgress.downloaded)}
+                        {currentProgress.total ? ` / ${formatBytes(currentProgress.total)}` : ""}
+                        {pct !== null ? ` · ${pct}%` : ""}
+                      </span>
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
         )}
       </div>
     </div>
