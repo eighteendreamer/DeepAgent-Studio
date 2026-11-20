@@ -340,6 +340,35 @@ export async function getSettings(): Promise<SettingsView | null> {
   return null;
 }
 
+export type WorkspaceBrowserSettings = {
+  enabled: boolean;
+  screenshots_enabled: boolean;
+  require_approval: boolean;
+  blocked_domains: string[];
+  allowed_domains: string[];
+};
+
+export const BROWSER_SETTINGS_CHANGED_EVENT = "workspace-browser://settings-changed";
+let previewBrowserSettings: WorkspaceBrowserSettings = {
+  enabled: true,
+  screenshots_enabled: true,
+  require_approval: false,
+  blocked_domains: [],
+  allowed_domains: [],
+};
+
+export async function getBrowserSettings(): Promise<WorkspaceBrowserSettings> {
+  const invoke = getInvoke();
+  return invoke ? invoke("get_browser_settings") : previewBrowserSettings;
+}
+
+export async function setBrowserSettings(settings: WorkspaceBrowserSettings): Promise<WorkspaceBrowserSettings> {
+  const invoke = getInvoke();
+  if (invoke) return invoke("set_browser_settings", { settings });
+  previewBrowserSettings = settings;
+  return settings;
+}
+
 /** Call the model for a one-shot remote assistant response. */
 export async function remoteAssistantChat(message: string): Promise<string> {
   const invoke = getInvoke();

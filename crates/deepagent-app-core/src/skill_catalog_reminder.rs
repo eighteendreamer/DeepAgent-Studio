@@ -150,6 +150,7 @@ mod tests {
             sandbox_mode: crate::settings::SandboxMode::default(),
             terminal_shell: crate::settings::TerminalShell::default(),
             permission_rules: deepagent_hooks::PermissionRules::default(),
+            browser: Default::default(),
             hooks_json: String::new(),
             responses: crate::settings::ResponsesApiSettings::default(),
             verification_policy: crate::settings::VerificationPolicy::default(),

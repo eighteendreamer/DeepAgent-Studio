@@ -160,6 +160,7 @@ fn settings_default() -> AppSettings {
         sandbox_mode: Default::default(),
         terminal_shell: Default::default(),
         permission_rules: Default::default(),
+        browser: Default::default(),
         hooks_json: String::new(),
         responses: Default::default(),
         verification_policy: Default::default(),

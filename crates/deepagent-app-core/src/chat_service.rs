@@ -862,7 +862,7 @@ impl ChatService {
         result.map(|_| session_id.to_string())
     }
 
-    /// Register the host browser tool only for a session with an authorized tab.
+    /// Supply the host browser tool for an eligible local session.
     pub fn with_desktop_browser_tool(
         mut self,
         factory: impl Fn(&str, bool) -> Option<Arc<dyn deepagent_tools::Tool>> + Send + Sync + 'static,

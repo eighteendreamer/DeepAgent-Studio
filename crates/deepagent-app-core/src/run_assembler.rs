@@ -767,6 +767,7 @@ impl<'a> RunAssembler<'a> {
             ChannelApprovalGate::new(self.coordinator.pending(), Arc::new(on_approval));
         let gate: Arc<dyn deepagent_runtime::ApprovalGate> = Arc::new(
             PolicyGate::new(policy, Arc::new(channel_gate))
+                .with_browser_approval(prepared_environment.configuration.browser_requires_approval)
                 .with_classifier(deepagent_builtins::SafetyClassifier::with_defaults()),
         );
         let _ = subagent_approvals.set(gate.clone());

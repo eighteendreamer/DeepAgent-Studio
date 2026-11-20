@@ -15,7 +15,7 @@ const data=fs.mkdtempSync(path.join(root,'native-data-'));
 const port=Number(process.env.DEEPAGENT_TEST_CDP_PORT || 16472);
 const toolName='workspace_browser';
 const model='desktop-screenshot-fixture';
-let image, count=0, providerError, armed=false, revoked=false, unauthorizedTurns=0;
+let image, count=0, providerError, phase='seed', phaseCall, hiddenTurns=0;
 const call=(action,args={})=>({type:'function_call',id:`fc_fixture${count}`,call_id:`call_fixture${count}`,name:toolName,arguments:JSON.stringify({action,...args}),status:'completed'});
 const reply=(text)=>({type:'message',role:'assistant',id:'msg_fixture',status:'completed',content:[{type:'output_text',text,annotations:[]}]});
 const evidence=[];
@@ -42,15 +42,29 @@ const server=createServer(async(req,res)=>{
   assert.equal(req.url,'/v1/responses');
   const chunks=[]; for await(const chunk of req) chunks.push(chunk);const body=JSON.parse(Buffer.concat(chunks));
   res.setHeader('Content-Type','text/event-stream');
-  if (!armed) {
-    if (body.tools?.some(tool=>tool.name==='screen_capture') || body.tools?.some(tool=>tool.name==='bash')) {
-      assert(!body.tools?.some(tool=>tool.name===toolName), 'An ungranted or revoked tab must be excluded from the tool list');
-      unauthorizedTurns++;
-    }
-    return res.end(completion('resp_seed',reply(revoked?'Fixture access revoked.':'Fixture session ready.')));
+  const browserTool=body.tools?.find(tool=>tool.name===toolName);
+  if (!body.tools?.length) return res.end(completion('resp_title',reply('Browser fixture')));
+  if (phase==='seed' || phase==='disabled') {
+    assert(!browserTool, 'The browser tool must be absent without an open tab or when disabled');
+    hiddenTurns++;
+    return res.end(completion(`resp_${phase}`,reply(`Fixture ${phase}.`)));
   }
-  if (!body.tools?.some(tool=>tool.name===toolName) && !body.tools?.length) return res.end(completion('resp_title',reply('Browser fixture')));
-  assert(body.tools?.some(tool=>tool.name===toolName), 'Native WorkspaceBrowser tool is missing');
+  assert(browserTool, `Native WorkspaceBrowser tool is missing for ${phase}`);
+  if (phase!=='exercise') {
+    if (phase==='screenshot_off') {
+      assert(!browserTool.parameters.properties.action.enum.includes('screenshot'));
+      return res.end(completion('resp_screenshot_off',reply('Fixture screenshot disabled.')));
+    }
+    const previous=body.input.find(item=>item.type==='function_call_output'&&item.call_id===phaseCall?.call_id);
+    if (previous) {
+      const expected=phase==='blocked' ? /blocked by workspace browser settings/i : /denied by permission rule/i;
+      assert.match(JSON.stringify(previous.output),expected);
+      return res.end(completion(`resp_${phase}`,reply(`Fixture ${phase}.`)));
+    }
+    count++;
+    phaseCall=phase==='blocked' ? call('navigate',{url:`http://localhost:${server.address().port}/fixture-next`}) : call('snapshot');
+    return res.end(completion(`resp_policy${count}`,phaseCall));
+  }
   const prior=body.input.find(item=>item.type==='function_call_output'&&item.call_id===`call_fixture${count}`);
   const output=prior && (typeof prior.output==='string'?prior.output:prior.output.find(part=>part.type==='input_text')?.text);
   let result;
@@ -118,22 +132,67 @@ server.listen(0,'127.0.0.1',async()=>{
    await call('harness_model_set_active',{...key,active:true});
    await call('harness_model_select',key);
    await call('set_tool_search_mode',{mode:'disabled'});
+   await call('set_active_permission_preset',{preset:'full_access'});
    localStorage.setItem('onboarding_complete','1');
   },{endpoint,model});
   await page.reload();
   const editor=page.locator('.composer-textarea'); await editor.waitFor({timeout:60000});
   await editor.fill('Open a conversation for the right browser fixture.'); await editor.press('Enter');
-  await page.locator('span.whitespace-pre-wrap').getByText('Fixture session ready.',{exact:true}).waitFor({timeout:60000});
-  await page.getByRole('button',{name:'\u6253\u5f00\u53f3\u4fa7\u680f'}).click();
-  await page.getByRole('button',{name:/^(?:Browser|\u6d4f\u89c8\u5668)(?:\s+Ctrl\+T)?$/i}).click();
-  const addr=page.locator('input[placeholder="\u8f93\u5165 URL"]');
-  const allow=page.getByRole('button',{name:'允许 AI 控制',exact:true});
-  await allow.click();
-  await page.evaluate(async()=>{window.__auditEvents=[];await window.__TAURI__.event.listen('chat://approval', e=>{const p=e.payload?.payload || e.payload;if(p.tool==='workspace_browser') void window.__TAURI_INTERNALS__.invoke('resolve_approval',{callId:p.call_id,approved:true,scope:'single_call'});});await window.__TAURI__.event.listen('chat://event', e=>{const p=e.payload?.payload || e.payload;if(['tool_started','tool_completed'].includes(p.type))window.__auditEvents.push(p)});});
-  armed=true;
+  await page.locator('span.whitespace-pre-wrap').getByText('Fixture seed.',{exact:true}).waitFor({timeout:60000});
+  const settings=page.locator('[data-settings-category="browser"]');
+  async function openSettings() {
+    await page.getByRole('button',{name:/^(设置|Settings)$/}).click();
+    await page.locator('[data-menu-item="settings"]:visible').click();
+    await page.locator('[data-cat="browser"]').click();
+    await settings.getByRole('switch',{name:/启用内置浏览器|Enable workspace browser/}).waitFor();
+  }
+  async function returnToChat() {
+    await page.getByRole('button',{name:/^(返回应用|Back to App)$/}).click();
+    await editor.waitFor();
+  }
+  const invoke=(command,args)=>page.evaluate(({command,args}) => window.__TAURI_INTERNALS__.invoke(command,args), {command,args});
+  await openSettings();
+  await settings.getByRole('button',{name:/浏览器工具审批|Browser tool approval/}).click();
+  await page.getByText(/^(每次人工审批|Require approval each time)$/).last().click();
+  await until(async()=>(await invoke('get_browser_settings')).require_approval);
+  await returnToChat();
+  const addr=page.getByRole('textbox',{name:'浏览器地址'});
+  async function openBrowserPanel() {
+    const openSidebar=page.getByRole('button',{name:'打开右侧栏'});
+    if (await openSidebar.isVisible()) await openSidebar.click();
+    if (!(await addr.isVisible())) {
+      const browserButton=page.getByRole('button',{name:/^(?:Browser|浏览器)(?:\s+Ctrl\+T)?$/i});
+      await browserButton.click();
+    }
+  }
+  async function waitForBrowserTab() {
+    await openBrowserPanel();
+    await addr.waitFor();
+    await until(async()=> (await invoke('plugin:webview|get_all_webviews'))
+      .some(view=>view.label.startsWith('workspace-browser-')),15000);
+  }
+  await waitForBrowserTab();
+  assert.equal(await page.getByRole('button',{name:/允许 AI 控制|停止 AI 控制/}).count(),0);
+  await page.evaluate(async()=>{
+    window.__auditEvents=[];
+    window.__auditApprovals=[];
+    await window.__TAURI__.event.listen('chat://approval', e=>{
+      const p=e.payload?.payload || e.payload;
+      if(p.tool==='workspace_browser') {
+        window.__auditApprovals.push(p);
+        void window.__TAURI_INTERNALS__.invoke('resolve_approval',{callId:p.call_id,approved:true,scope:'single_call'});
+      }
+    });
+    await window.__TAURI__.event.listen('chat://event', e=>{
+      const p=e.payload?.payload || e.payload;
+      if(['tool_started','tool_completed'].includes(p.type))window.__auditEvents.push(p);
+    });
+  });
+  phase='exercise';
   await editor.fill('Use the existing right sidebar browser tab. Navigate, click, and take a screenshot.'); await editor.press('Enter');
   await page.getByText('Fixture model received right WebView screenshot.',{exact:true}).waitFor({timeout:45000});
   assert(image); assert.equal(count,10); assert.equal(providerError,undefined);
+  assert.equal(await page.evaluate(()=>window.__auditApprovals.length),evidence.length,'Browser-specific approval must still prompt under FullAccess');
   const events=await page.evaluate(()=>window.__auditEvents);
   for(const call of evidence) {
     const start=events.find(e=>e.type==='tool_started'&&e.name===toolName&&Object.keys(call.arguments).every(key=>e.arguments?.[key]===call.arguments[key]));
@@ -161,18 +220,51 @@ server.listen(0,'127.0.0.1',async()=>{
     assert.deepEqual(bytes,image,'Provider and step preview must receive identical bytes');
   }
   await checkDetails();
-  await page.getByRole('button',{name:'停止 AI 控制',exact:true}).click();
-  await allow.waitFor();
-  revoked=true; armed=false;
-  await editor.fill('Verify browser access was revoked.'); await editor.press('Enter');
-  await page.locator('span.whitespace-pre-wrap').getByText('Fixture access revoked.',{exact:true}).waitFor({timeout:20000});
-  assert(unauthorizedTurns>=2);
+  await openSettings();
+  await settings.getByRole('button',{name:/浏览器工具审批|Browser tool approval/}).click();
+  await page.getByText(/^(跟随系统权限|Follow system permissions)$/).last().click();
+  const blockedInput=settings.getByRole('textbox',{name:/阻止域名|Blocked domains/});
+  await blockedInput.fill('localhost');
+  await blockedInput.press('Enter');
+  await until(async()=>(await invoke('get_browser_settings')).blocked_domains.includes('localhost'));
+  await returnToChat();
+  const askCount=await page.evaluate(()=>window.__auditApprovals.length);
+  async function runPolicyCase(nextPhase, completion) {
+    phase=nextPhase;
+    phaseCall=undefined;
+    if (phase!=='disabled') await waitForBrowserTab();
+    await editor.fill(`Verify browser policy: ${phase}.`); await editor.press('Enter');
+    await page.getByText(completion,{exact:true}).waitFor({timeout:30000});
+    assert.equal(providerError,undefined);
+    assert.equal(await page.evaluate(()=>window.__auditApprovals.length),askCount);
+  }
+  await runPolicyCase('blocked','Fixture blocked.');
+  await invoke('set_permission_rules',{rules:{allow:[],ask:[],deny:[toolName]}});
+  await runPolicyCase('denied','Fixture denied.');
+  await invoke('set_permission_rules',{rules:{allow:[],ask:[],deny:[]}});
+  await openSettings();
+  await settings.getByRole('switch',{name:/允许 AI 使用浏览器截图|Allow AI browser screenshots/}).click();
+  await until(async()=>!(await invoke('get_browser_settings')).screenshots_enabled);
+  await returnToChat();
+  await runPolicyCase('screenshot_off','Fixture screenshot disabled.');
+  await openSettings();
+  await settings.getByRole('switch',{name:/启用内置浏览器|Enable workspace browser/}).click();
+  await until(async()=>!(await invoke('get_browser_settings')).enabled);
+  await returnToChat();
+  await openBrowserPanel();
+  await page.getByRole('status').filter({hasText:/内置浏览器已在设置中关闭|The workspace browser is disabled/}).waitFor();
+  assert(!(await invoke('plugin:webview|get_all_webviews')).some(view=>view.label.startsWith('workspace-browser-')));
+  await runPolicyCase('disabled','Fixture disabled.');
+  assert(hiddenTurns>=2);
   const sessionId=await page.locator('.sidebar-session-row[data-session-id]').first().getAttribute('data-session-id');
   await page.reload();
+  const saved=await invoke('get_browser_settings');
+  assert(!saved.enabled&&!saved.screenshots_enabled&&!saved.require_approval);
+  assert.deepEqual(saved.blocked_domains,['localhost']);
   await page.locator(`.sidebar-session-row[data-session-id="${sessionId}"]`).click();
   await page.locator('span.whitespace-pre-wrap').getByText('Fixture model received right WebView screenshot.',{exact:true}).waitFor({timeout:20000});
   await checkDetails();
-  fs.writeFileSync(path.join(root,'native-evidence.json'),JSON.stringify({calls:evidence,permissionDeniedBeforeGrant:true,permissionRevoked:true,replayed:true},null,2));
+  fs.writeFileSync(path.join(root,'native-evidence.json'),JSON.stringify({calls:evidence,browserApprovalPrompts:askCount,blockedDomain:true,globalDeny:true,screenshotDisabled:true,browserDisabled:true,replayed:true},null,2));
   fs.writeFileSync(path.join(root,'native-viewport.png'),image);
   console.log('PASS: Harness navigated, filled, clicked, scrolled and captured the right WebView. Parameters, return values and identical PNG verified live and from replay.');
  } catch(error){console.error(providerError??error); console.error(JSON.stringify(evidence).slice(0,5000));process.exitCode=1;}

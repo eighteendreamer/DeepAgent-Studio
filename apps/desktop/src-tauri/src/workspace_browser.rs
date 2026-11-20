@@ -1,4 +1,8 @@
-use deepagent_app_core::{dto::AttachmentIngestDto, AttachmentService};
+use deepagent_app_core::{
+    dto::AttachmentIngestDto,
+    settings::{BrowserSettings, WORKSPACE_BROWSER_TOOL},
+    AttachmentService,
+};
 use deepagent_core::{id::EventId, tool_content::ToolResultPart, CoreError};
 use deepagent_tools::{
     permission::{Permission, PermissionSet, RiskLevel},
@@ -25,9 +29,8 @@ pub(crate) struct WorkspaceBrowser(Arc<Mutex<HashMap<String, Tab>>>);
 struct Tab {
     parent: String,
     session: Option<String>,
-    granted: bool,
     visible: bool,
-    page_loaded: tokio::sync::watch::Sender<Option<Url>>,
+    page_loaded: tokio::sync::watch::Sender<Option<Result<Url, String>>>,
 }
 
 impl WorkspaceBrowser {
@@ -38,17 +41,28 @@ impl WorkspaceBrowser {
         session: &str,
         images: bool,
     ) -> Option<Arc<dyn Tool>> {
+        let settings = browser_settings(app).ok()?;
+        if !settings.enabled {
+            return None;
+        }
         let tabs = self.0.lock().ok()?;
-        let (tab_id, _) = tabs.iter().find(|(_, tab)| {
-            tab.granted && tab.visible && tab.session.as_deref() == Some(session)
-        })?;
+        let mut visible = tabs
+            .iter()
+            .filter(|(_, tab)| tab.visible && tab.session.as_deref() == Some(session));
+        let (tab_id, _) = visible.next()?;
+        if visible.next().is_some() {
+            // Never pick an arbitrary target across windows.
+            return None;
+        }
         Some(Arc::new(BrowserTool {
             browser: self.clone(),
             app: app.clone(),
             session: session.into(),
             tab_id: tab_id.clone(),
             attachments: attachments.clone(),
-            images: images && cfg!(any(windows, target_os = "macos", target_os = "linux")),
+            images: images
+                && settings.screenshots_enabled
+                && cfg!(any(windows, target_os = "macos", target_os = "linux")),
         }))
     }
 
@@ -111,6 +125,131 @@ fn page_url(input: &str) -> Result<Url, String> {
         .ok_or_else(|| "Use an HTTP or HTTPS address without embedded credentials".into())
 }
 
+const SETTINGS_EVENT: &str = "workspace-browser://settings-changed";
+
+fn browser_settings(app: &tauri::AppHandle) -> Result<BrowserSettings, String> {
+    app.state::<crate::AppState>()
+        .settings
+        .browser_settings()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn get_browser_settings(app: tauri::AppHandle) -> Result<BrowserSettings, String> {
+    browser_settings(&app)
+}
+
+#[tauri::command]
+pub(crate) async fn set_browser_settings(
+    app: tauri::AppHandle,
+    browser: State<'_, WorkspaceBrowser>,
+    mut settings: BrowserSettings,
+) -> Result<BrowserSettings, String> {
+    normalize_domains(&mut settings.allowed_domains)?;
+    normalize_domains(&mut settings.blocked_domains)?;
+    let saved = app
+        .state::<crate::AppState>()
+        .settings
+        .set_browser_settings(settings)
+        .map_err(|e| e.to_string())?;
+    let ids: Vec<_> = browser
+        .0
+        .lock()
+        .map_err(|e| e.to_string())?
+        .keys()
+        .cloned()
+        .collect();
+    for view in ids.iter().filter_map(|id| app.get_webview(id)) {
+        // A just-blocked page must stop being available even if already loaded.
+        if view
+            .url()
+            .is_ok_and(|url| check_navigation(&app, &saved, &url).is_err())
+        {
+            view.hide().map_err(|e| e.to_string())?;
+            if saved.enabled {
+                view.navigate(Url::parse("about:blank").expect("valid blank URL"))
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    app.emit(SETTINGS_EVENT, ()).map_err(|e| e.to_string())?;
+    Ok(saved)
+}
+
+fn normalize_domains(domains: &mut Vec<String>) -> Result<(), String> {
+    for domain in domains.iter_mut() {
+        let raw = domain.trim().trim_end_matches('.');
+        // Only a host: no schemes, paths, credentials, wildcards, or port numbers.
+        if raw.is_empty()
+            || !raw
+                .chars()
+                .all(|ch| ch.is_alphanumeric() || matches!(ch, '.' | '-'))
+        {
+            return Err(
+                "Enter a domain name or IPv4 address without a URL, port or wildcard".into(),
+            );
+        }
+        let url = page_url(&format!("https://{raw}"))?;
+        *domain = url.host_str().expect("page requires a host").to_owned();
+    }
+    domains.sort_unstable();
+    domains.dedup();
+    Ok(())
+}
+
+fn host_matches(host: &str, entry: &str) -> bool {
+    host == entry
+        || (entry.parse::<std::net::Ipv4Addr>().is_err()
+            && host
+                .strip_suffix(entry)
+                .is_some_and(|prefix| prefix.ends_with('.')))
+}
+
+fn check_site(settings: &BrowserSettings, url: &Url) -> Result<(), String> {
+    if !settings.enabled {
+        return Err("Workspace browser is disabled in Settings".into());
+    }
+    if url.as_str() == "about:blank" {
+        return Ok(());
+    }
+    let host = url
+        .host_str()
+        .filter(|_| is_page(url))
+        .ok_or("Use an HTTP or HTTPS address without embedded credentials")?
+        .trim_end_matches('.');
+    if settings
+        .blocked_domains
+        .iter()
+        .any(|entry| host_matches(host, entry))
+        || (!settings.allowed_domains.is_empty()
+            && !settings
+                .allowed_domains
+                .iter()
+                .any(|entry| host_matches(host, entry)))
+    {
+        return Err("Website is blocked by workspace browser settings".into());
+    }
+    Ok(())
+}
+
+fn check_navigation(
+    app: &tauri::AppHandle,
+    settings: &BrowserSettings,
+    url: &Url,
+) -> Result<(), String> {
+    check_site(settings, url)?;
+    if app
+        .config()
+        .build
+        .dev_url
+        .as_ref()
+        .is_some_and(|dev| url.origin() == dev.origin())
+    {
+        return Err("Cannot open the DeepAgent application in a browser tab".into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub(crate) async fn browser_tab_open(
     caller: Webview,
@@ -138,40 +277,39 @@ pub(crate) async fn browser_tab_open(
     let id = format!("workspace-browser-{}", EventId::new());
     let parent = caller.label().to_string();
     let notify_parent = parent.clone();
-    let app_origin = caller
-        .app_handle()
-        .config()
-        .build
-        .dev_url
-        .as_ref()
-        .map(Url::origin);
-    if app_origin
-        .as_ref()
-        .is_some_and(|origin| target.origin() == *origin)
-    {
-        return Err("Cannot open the DeepAgent application in a browser tab".into());
-    }
+    let browser_app = caller.app_handle().clone();
+    check_navigation(&browser_app, &browser_settings(&browser_app)?, &target)?;
     let (page_loaded, _) = tokio::sync::watch::channel(None);
     let report_page = page_loaded.clone();
+    let report_denied = page_loaded.clone();
     let panel = Arc::downgrade(&browser.0);
     let builder = tauri::webview::WebviewBuilder::new(&id, WebviewUrl::External(target))
         .on_navigation(move |url| {
-            url.as_str() == "about:blank"
-                || (is_page(url)
-                    && app_origin
-                        .as_ref()
-                        .is_none_or(|origin| url.origin() != *origin))
+            match browser_settings(&browser_app)
+                .and_then(|settings| check_navigation(&browser_app, &settings, url))
+            {
+                Ok(()) => true,
+                Err(reason) => {
+                    report_denied.send_replace(Some(Err(reason)));
+                    false
+                }
+            }
         })
         .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
         .on_page_load(move |view, event| {
             if event.event() == tauri::webview::PageLoadEvent::Finished {
-                report_page.send_replace(Some(event.url().clone()));
+                report_page.send_replace(Some(Ok(event.url().clone())));
             }
             let visible = panel.upgrade().is_some_and(|tabs| {
                 tabs.lock()
                     .is_ok_and(|tabs| tabs.get(view.label()).is_some_and(|tab| tab.visible))
             });
-            if visible && is_page(event.url()) {
+            if visible
+                && is_page(event.url())
+                && browser_settings(view.app_handle()).is_ok_and(|settings| {
+                    check_navigation(view.app_handle(), &settings, event.url()).is_ok()
+                })
+            {
                 let _ = view.show();
             }
             let _ = view.emit_to(
@@ -190,7 +328,6 @@ pub(crate) async fn browser_tab_open(
         Tab {
             parent,
             session: session_id,
-            granted: false,
             visible: bounds.visible(),
             page_loaded,
         },
@@ -211,7 +348,13 @@ pub(crate) fn browser_tab_bounds(
         let mut tabs = browser.0.lock().map_err(|e| e.to_string())?;
         tabs.get_mut(&id).ok_or("Browser tab was closed")?.visible = bounds.visible();
     }
-    if !bounds.visible() {
+    if !bounds.visible()
+        || !view.url().is_ok_and(|url| {
+            browser_settings(caller.app_handle())
+                .and_then(|settings| check_navigation(caller.app_handle(), &settings, &url))
+                .is_ok()
+        })
+    {
         return view.hide().map_err(|e| e.to_string());
     }
     view.set_bounds(tauri::Rect {
@@ -234,9 +377,21 @@ pub(crate) fn browser_tab_navigate(
     url: Option<String>,
 ) -> Result<(), String> {
     let view = browser.view(&caller, &id)?;
+    let settings = browser_settings(caller.app_handle())?;
     match url {
-        Some(url) => view.navigate(page_url(&url)?),
-        None => view.reload(),
+        Some(url) => {
+            let target = page_url(&url)?;
+            check_navigation(caller.app_handle(), &settings, &target)?;
+            view.navigate(target)
+        }
+        None => {
+            check_navigation(
+                caller.app_handle(),
+                &settings,
+                &view.url().map_err(|e| e.to_string())?,
+            )?;
+            view.reload()
+        }
     }
     .map_err(|e| e.to_string())
 }
@@ -250,30 +405,6 @@ pub(crate) fn browser_tab_close(
     let view = browser.view(&caller, &id)?;
     browser.0.lock().map_err(|e| e.to_string())?.remove(&id);
     view.close().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub(crate) fn browser_tab_access(
-    caller: Webview,
-    browser: State<'_, WorkspaceBrowser>,
-    id: String,
-    enabled: bool,
-) -> Result<(), String> {
-    browser.view(&caller, &id)?;
-    let mut tabs = browser.0.lock().map_err(|e| e.to_string())?;
-    let Some(session) = tabs.get(&id).and_then(|tab| tab.session.clone()) else {
-        return Err("Open a conversation before allowing browser control".into());
-    };
-    if enabled {
-        for tab in tabs
-            .values_mut()
-            .filter(|tab| tab.session.as_ref() == Some(&session))
-        {
-            tab.granted = false;
-        }
-    }
-    tabs.get_mut(&id).ok_or("Browser tab was closed")?.granted = enabled;
-    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -298,12 +429,21 @@ struct BrowserTool {
 
 impl BrowserTool {
     fn view(&self) -> deepagent_core::Result<Webview> {
-        let tabs = self.browser.0.lock().map_err(core_error)?;
-        if !tabs.get(&self.tab_id).is_some_and(|tab| {
-            tab.granted && tab.visible && tab.session.as_deref() == Some(&self.session)
-        }) {
+        if !browser_settings(&self.app)
+            .map_err(CoreError::invalid)?
+            .enabled
+        {
             return Err(CoreError::invalid(
-                "Browser tab was closed or access was revoked",
+                "Workspace browser is disabled in Settings",
+            ));
+        }
+        let tabs = self.browser.0.lock().map_err(core_error)?;
+        if !tabs
+            .get(&self.tab_id)
+            .is_some_and(|tab| tab.visible && tab.session.as_deref() == Some(&self.session))
+        {
+            return Err(CoreError::invalid(
+                "Browser tab was closed or is no longer active",
             ));
         }
         self.app
@@ -320,8 +460,8 @@ impl Tool for BrowserTool {
             actions.push("screenshot");
         }
         ToolDescriptor {
-            name:"workspace_browser".into(),
-            description:"Control the authorized right sidebar browser tab. Use navigate (url), snapshot (returns text and target references), click (target), fill (target and text), scroll (delta_y), or screenshot if available. Take a new snapshot after navigation or a stale reference. Do not use fill for passwords, OTPs or secrets; let the user enter them directly.".into(),
+            name:WORKSPACE_BROWSER_TOOL.into(),
+            description:"Control the active right sidebar browser tab, subject to system and browser permissions. Use navigate (url), snapshot (returns text and target references), click (target), fill (target and text), scroll (delta_y), or screenshot if available. Take a new snapshot after navigation or a stale reference. Do not use fill for passwords, OTPs or secrets; let the user enter them directly.".into(),
             parameters:json!({"type":"object","properties":{
                 "action":{"type":"string","enum":actions},"url":{"type":"string","maxLength":4096},"target":{"type":"string","maxLength":128},
                 "text":{"type":"string","maxLength":2048},"delta_y":{"type":"integer","minimum":-4000,"maximum":4000}},
@@ -354,20 +494,10 @@ impl BrowserTool {
         let action: Action =
             serde_json::from_value(arguments.clone()).map_err(CoreError::invalid)?;
         let view = self.view()?;
+        let settings = browser_settings(&self.app).map_err(CoreError::invalid)?;
         if let Action::Navigate { url } = &action {
             let target = page_url(url).map_err(CoreError::invalid)?;
-            if self
-                .app
-                .config()
-                .build
-                .dev_url
-                .as_ref()
-                .is_some_and(|dev| target.origin() == dev.origin())
-            {
-                return Err(CoreError::invalid(
-                    "Cannot navigate to the DeepAgent application",
-                ));
-            }
+            check_navigation(&self.app, &settings, &target).map_err(CoreError::invalid)?;
             let mut loaded = self
                 .browser
                 .0
@@ -381,14 +511,21 @@ impl BrowserTool {
             let confirmed = tokio::time::timeout(Duration::from_secs(5), loaded.changed()).await;
             self.view()?;
             let current_url = view.url().map_err(core_error)?;
-            let finished =
-                matches!(confirmed, Ok(Ok(()))) && loaded.borrow().as_ref() == Some(&current_url);
+            let current_settings = browser_settings(&self.app).map_err(CoreError::invalid)?;
+            check_navigation(&self.app, &current_settings, &current_url)
+                .map_err(CoreError::invalid)?;
+            let finished = match (confirmed, loaded.borrow().as_ref()) {
+                (Ok(Ok(())), Some(Err(reason))) => return Err(CoreError::invalid(reason.clone())),
+                (Ok(Ok(())), Some(Ok(url))) => url == &current_url,
+                _ => false,
+            };
             return Ok(ToolOutput::success(
                 json!({"action":"navigate","requested_url":target,
                 "url":current_url,"status":if finished { "loaded" } else { "navigation_started" }}),
             ));
         }
         let url = view.url().map_err(core_error)?;
+        check_navigation(&self.app, &settings, &url).map_err(CoreError::invalid)?;
         if !is_page(&url) {
             return Err(CoreError::invalid(
                 "Navigate to an HTTP or HTTPS page first",
@@ -412,6 +549,14 @@ impl BrowserTool {
     }
 
     async fn screenshot(&self, view: &Webview, url: &Url) -> deepagent_core::Result<ToolOutput> {
+        if !browser_settings(&self.app)
+            .map_err(CoreError::invalid)?
+            .screenshots_enabled
+        {
+            return Err(CoreError::invalid(
+                "Browser screenshots are disabled in Settings",
+            ));
+        }
         if !self.images {
             return Err(CoreError::invalid(
                 "Browser screenshots require a supported platform and image-capable model",
@@ -423,6 +568,13 @@ impl BrowserTool {
             .is_ok_and(|current| current.url().is_ok_and(|current_url| current_url == *url))
         {
             return Err(CoreError::invalid("Browser tab changed during screenshot"));
+        }
+        let settings = browser_settings(&self.app).map_err(CoreError::invalid)?;
+        check_navigation(&self.app, &settings, url).map_err(CoreError::invalid)?;
+        if !settings.screenshots_enabled {
+            return Err(CoreError::invalid(
+                "Browser screenshots are disabled in Settings",
+            ));
         }
         let id = format!("browser_{}", EventId::new());
         let dto = self.attachments.ingest(AttachmentIngestDto {
@@ -500,6 +652,48 @@ mod tests {
         }
         assert!(page_url("http://127.0.0.1:1234/fixture").is_ok());
         assert!(page_url("https://example.test/a").is_ok());
+    }
+
+    #[test]
+    fn site_policy_checks_host_boundaries_and_block_wins() {
+        let mut settings = BrowserSettings {
+            allowed_domains: vec![" EXAMPLE.TEST. ".into(), "example.test".into()],
+            blocked_domains: vec!["private.example.test".into()],
+            ..BrowserSettings::default()
+        };
+        normalize_domains(&mut settings.allowed_domains).unwrap();
+        assert_eq!(settings.allowed_domains, ["example.test"]);
+        for address in [
+            "https://example.test./",
+            "https://docs.example.test:444/",
+            "about:blank",
+        ] {
+            assert!(
+                check_site(&settings, &Url::parse(address).unwrap()).is_ok(),
+                "{address}"
+            );
+        }
+        for address in [
+            "https://private.example.test/",
+            "https://sub.private.example.test/",
+            "https://notexample.test/",
+            "https://example.test.attacker.test/",
+        ] {
+            assert!(
+                check_site(&settings, &Url::parse(address).unwrap()).is_err(),
+                "{address}"
+            );
+        }
+        settings.enabled = false;
+        assert!(check_site(&settings, &Url::parse("about:blank").unwrap()).is_err());
+        for invalid in [
+            "example.test:88",
+            "example.test/path",
+            "https://example.test",
+            "*.example.test",
+        ] {
+            assert!(normalize_domains(&mut vec![invalid.into()]).is_err());
+        }
     }
 
     #[test]

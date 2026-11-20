@@ -2,7 +2,8 @@ import { HoverInfo } from "../ui/HoverInfo";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Button } from "../shadcn/button";
+import { useTranslation } from "react-i18next";
+import { BROWSER_SETTINGS_CHANGED_EVENT, getBrowserSettings } from "../../api";
 import { ArrowLeft, ArrowRight, Globe, RotateCw } from "lucide-react";
 import type { PluginDefinition } from "./pluginTypes";
 
@@ -36,18 +37,43 @@ export function BrowserPlugin({ initialUrl = "", sessionId }: BrowserPluginProps
   const [reloadKey, setReloadKey] = useState(0);
   const [nativeError, setNativeError] = useState<string | null>(null);
   const [tabId, setTabId] = useState<string | null>(null);
-  const [granted, setGranted] = useState(false);
+  const { t } = useTranslation();
+  const [enabled, setEnabled] = useState<boolean | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const canUseNativeWebview = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
   const host = useMemo(() => titleFromUrl(url), [url]);
 
   useEffect(() => {
+    if (!canUseNativeWebview) return;
+    let disposed = false;
+    let generation = 0;
+    let unlisten: (() => void) | undefined;
+    async function refresh() {
+      const request = ++generation;
+      try {
+        const settings = await getBrowserSettings();
+        if (!disposed && request === generation) setEnabled(settings.enabled);
+      } catch (error) {
+        if (!disposed && request === generation) {
+          setEnabled(null);
+          setNativeError(String(error));
+        }
+      }
+    }
+    void listen(BROWSER_SETTINGS_CHANGED_EVENT, () => { void refresh(); }).then(stop => {
+      if (disposed) { stop(); return; }
+      unlisten = stop;
+      return refresh();
+    }).catch(error => { if (!disposed) setNativeError(String(error)); });
+    return () => { disposed = true; unlisten?.(); };
+  }, [canUseNativeWebview]);
+
+  useEffect(() => {
     const next = normalizeUrl(initialUrl);
     setUrl(next);
     setDraftUrl(next);
-    setGranted(false);
     setTabId(null);
-    if (!canUseNativeWebview || !contentRef.current) return;
+    if (!canUseNativeWebview || enabled !== true || !contentRef.current) return;
     const container = contentRef.current;
     let disposed = false;
     let label: string | null = null;
@@ -72,9 +98,10 @@ export function BrowserPlugin({ initialUrl = "", sessionId }: BrowserPluginProps
     void (async () => {
       setNativeError(null);
       unlisten = await listen<{ id: string; url: string }>("workspace-browser://location", ({ payload }) => {
-        if (payload.id !== label || payload.url === "about:blank") return;
-        setUrl(payload.url);
-        setDraftUrl(payload.url);
+        if (payload.id !== label) return;
+        const nextUrl = payload.url === "about:blank" ? "" : payload.url;
+        setUrl(nextUrl);
+        setDraftUrl(nextUrl);
       });
       if (disposed) { unlisten(); return; }
       label = await invoke<string>("browser_tab_open", { sessionId: sessionId ?? null, url: next, bounds: bounds() });
@@ -92,7 +119,7 @@ export function BrowserPlugin({ initialUrl = "", sessionId }: BrowserPluginProps
         console.warn("Could not close workspace browser tab", error);
       });
     };
-  }, [canUseNativeWebview, initialUrl, sessionId]);
+  }, [canUseNativeWebview, enabled, initialUrl, sessionId]);
 
   const navigate = (reload = false) => {
     const next = reload ? url : normalizeUrl(draftUrl);
@@ -108,13 +135,11 @@ export function BrowserPlugin({ initialUrl = "", sessionId }: BrowserPluginProps
     }
   };
 
-  const setAccess = () => {
-    if (!tabId) return;
-    void invoke("browser_tab_access", { id: tabId, enabled: !granted }).then(() => {
-      setGranted(!granted);
-      setNativeError(null);
-    }).catch(error => setNativeError(String(error)));
-  };
+  if (enabled === false) {
+    return <div role="status" className="flex h-full items-center justify-center p-6 text-sm text-text-secondary">
+      {t("settings.browser.disabled")}
+    </div>;
+  }
 
   return (
     <div className="w-full h-full flex flex-col bg-white">
@@ -148,8 +173,6 @@ export function BrowserPlugin({ initialUrl = "", sessionId }: BrowserPluginProps
             aria-label="浏览器地址"
           />
         </form>
-        {sessionId && tabId && <Button type="button" variant={granted ? "secondary" : "outline"} size="sm"
-          aria-pressed={granted} onClick={setAccess}>{granted ? "停止 AI 控制" : "允许 AI 控制"}</Button>}
         {host && (
           <HoverInfo content={host}><div className="hidden max-w-[160px] truncate text-[12px] text-text-secondary md:block" >
             {host}

@@ -80,6 +80,9 @@ impl ApprovalScope {
     /// prefix can stand in for (see [`deepagent_builtins::command_prefix_for`]),
     /// so no button ever offers something that silently does nothing.
     pub fn offered(tool: &str, command: Option<&str>) -> Vec<Self> {
+        if tool == crate::settings::WORKSPACE_BROWSER_TOOL {
+            return vec![Self::SingleCall];
+        }
         #[cfg(all(
             feature = "desktop-screen",
             any(windows, target_os = "macos", target_os = "linux")
@@ -615,6 +618,7 @@ impl ApprovalGate for ChannelApprovalGate {
 /// without prompting; `AlwaysAsk` delegates to the inner (channel) gate.
 pub struct PolicyGate {
     policy: ApprovalPolicy,
+    browser_requires_approval: bool,
     inner: Arc<dyn ApprovalGate>,
     /// Safety classifier for the `AutoReview` policy: decides per-call whether
     /// to auto-approve or delegate to the user. When `None`, falls back to the
@@ -627,9 +631,15 @@ impl PolicyGate {
     pub fn new(policy: ApprovalPolicy, inner: Arc<dyn ApprovalGate>) -> Self {
         Self {
             policy,
+            browser_requires_approval: false,
             inner,
             classifier: None,
         }
+    }
+
+    pub(crate) fn with_browser_approval(mut self, required: bool) -> Self {
+        self.browser_requires_approval = required;
+        self
     }
 
     /// Attach a safety classifier for the `AutoReview` policy (builder style).
@@ -642,6 +652,10 @@ impl PolicyGate {
 #[async_trait]
 impl ApprovalGate for PolicyGate {
     async fn request(&self, request: ApprovalRequest) -> ApprovalDecision {
+        if self.browser_requires_approval && request.tool == crate::settings::WORKSPACE_BROWSER_TOOL
+        {
+            return self.inner.request(request).await;
+        }
         match self.policy {
             // 完全访问: allow everything without prompting.
             ApprovalPolicy::FullAccess => ApprovalDecision::Allow,
@@ -877,6 +891,26 @@ mod tests {
         let gate = PolicyGate::new(ApprovalPolicy::AlwaysAsk, inner);
         // Delegates to inner (auto-approve here) rather than auto-deciding.
         assert_eq!(gate.request(req("c1")).await, ApprovalDecision::Allow);
+    }
+
+    #[tokio::test]
+    async fn browser_approval_tightens_full_access_without_affecting_other_tools() {
+        use crate::settings::WORKSPACE_BROWSER_TOOL;
+        let inner = Arc::new(deepagent_runtime::AutoDenyGate);
+        let mut browser = req("browser-call");
+        browser.tool = WORKSPACE_BROWSER_TOOL.into();
+        assert_eq!(
+            ApprovalScope::offered(&browser.tool, None),
+            [ApprovalScope::SingleCall]
+        );
+        let gate = PolicyGate::new(ApprovalPolicy::FullAccess, inner.clone());
+        assert_eq!(gate.request(browser.clone()).await, ApprovalDecision::Allow);
+        let gate = PolicyGate::new(ApprovalPolicy::FullAccess, inner).with_browser_approval(true);
+        assert_eq!(gate.request(browser).await, ApprovalDecision::Deny);
+        assert_eq!(
+            gate.request(req("shell-call")).await,
+            ApprovalDecision::Allow
+        );
     }
 
     async fn wait_until_pending(pending: &PendingApprovals, wanted: usize) {

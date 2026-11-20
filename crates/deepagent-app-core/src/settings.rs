@@ -423,6 +423,9 @@ pub struct AppSettings {
     /// Declarative permission rules (allow/ask/deny patterns).
     #[serde(default)]
     pub permission_rules: PermissionRules,
+    /// Settings for the desktop workspace browser.
+    #[serde(default)]
+    pub browser: BrowserSettings,
     /// Declarative external hooks (`hooks.json` source). Stored verbatim so the
     /// UI round-trips exactly what the user typed; parsed lazily when assembling
     /// the runtime hook registry.
@@ -523,6 +526,31 @@ pub struct AppSettings {
     #[serde(default)]
     pub pricing_catalog: PricingCatalog,
 }
+
+/// Desktop browser controls. Screenshots are explicit tool calls.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BrowserSettings {
+    pub enabled: bool,
+    pub screenshots_enabled: bool,
+    pub require_approval: bool,
+    pub blocked_domains: Vec<String>,
+    pub allowed_domains: Vec<String>,
+}
+
+impl Default for BrowserSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            screenshots_enabled: true,
+            require_approval: false,
+            blocked_domains: Vec::new(),
+            allowed_domains: Vec::new(),
+        }
+    }
+}
+
+pub const WORKSPACE_BROWSER_TOOL: &str = "workspace_browser";
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -876,6 +904,22 @@ impl SettingsService {
             Ok(())
         })?;
         Ok(settings.welcome_name)
+    }
+
+    pub fn browser_settings(&self) -> Result<BrowserSettings> {
+        Ok(self
+            .load_current_settings()?
+            .map(|s| s.browser)
+            .unwrap_or_default())
+    }
+
+    pub fn set_browser_settings(&self, browser: BrowserSettings) -> Result<BrowserSettings> {
+        Ok(self
+            .update_settings(|settings| {
+                settings.browser = browser.clone();
+                Ok(())
+            })?
+            .browser)
     }
 
     /// The current approval policy (defaults to [`ApprovalPolicy::AlwaysAsk`]

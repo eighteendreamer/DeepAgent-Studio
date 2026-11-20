@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 pub(super) struct ResolvedExecutionConfig {
     pub(super) environment: RunEnvironment,
     pub(super) permission_rules: deepagent_hooks::PermissionRules,
+    pub(super) browser_requires_approval: bool,
     pub(super) model_plan: Result<Option<RunModelPlan>>,
     pub(super) snapshot: Value,
     pub(super) project_trusted: bool,
@@ -171,6 +172,9 @@ impl RunAssembler<'_> {
         let mut resolved = ResolvedExecutionConfig {
             environment,
             permission_rules,
+            browser_requires_approval: settings
+                .as_ref()
+                .is_some_and(|s| s.browser.require_approval),
             model_plan,
             snapshot,
             project_trusted: trusted,
