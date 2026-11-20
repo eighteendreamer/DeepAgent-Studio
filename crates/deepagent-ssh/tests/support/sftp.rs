@@ -25,6 +25,20 @@ impl MemoryFiles {
             next_handle: 0,
         }
     }
+
+    fn rejection(&self, id: u32, operation: &str) -> Option<Status> {
+        self.counts
+            .status_messages
+            .read()
+            .unwrap()
+            .get(operation)
+            .map(|message| Status {
+                id,
+                status_code: StatusCode::PermissionDenied,
+                error_message: message.clone(),
+                language_tag: String::new(),
+            })
+    }
 }
 
 fn success(id: u32) -> Status {
@@ -175,6 +189,9 @@ impl russh_sftp::server::Handler for MemoryFiles {
         offset: u64,
         data: Vec<u8>,
     ) -> Result<Status, Self::Error> {
+        if let Some(status) = self.rejection(id, "write") {
+            return Ok(status);
+        }
         let path = self.handles.get(&handle).ok_or(StatusCode::NoSuchFile)?;
         let offset = usize::try_from(offset).map_err(|_| StatusCode::Failure)?;
         let end = offset.checked_add(data.len()).ok_or(StatusCode::Failure)?;
@@ -224,6 +241,14 @@ impl russh_sftp::server::Handler for MemoryFiles {
         oldpath: String,
         newpath: String,
     ) -> Result<Status, Self::Error> {
+        let operation = if self.counts.directories.read().unwrap().contains(&oldpath) {
+            "rename_directory"
+        } else {
+            "rename"
+        };
+        if let Some(status) = self.rejection(id, operation) {
+            return Ok(status);
+        }
         let directory = {
             let files = self.files.read().unwrap();
             let directories = self.counts.directories.read().unwrap();
@@ -390,6 +415,9 @@ impl russh_sftp::server::Handler for MemoryFiles {
             self.counts
                 .directory_closes
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Some(status) = self.rejection(id, "close_directory") {
+                return Ok(status);
+            }
             if self
                 .counts
                 .reject_directory_close

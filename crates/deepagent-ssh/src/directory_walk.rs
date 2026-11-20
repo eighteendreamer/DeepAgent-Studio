@@ -1,5 +1,5 @@
 //! Bounded, read-only directory facts for transfer planning in the SSH adapter.
-use crate::file_transfer::operation;
+use crate::file_transfer::{error_detail, operation};
 use crate::{FileTransferError, RemoteFileKind, RemoteFileMetadata, SshService};
 use russh_sftp::{
     client::{error::Error as SftpError, RawSftpSession},
@@ -105,11 +105,14 @@ impl SshService {
         .await;
         if let Err(error) = session.close_session() {
             return match result {
-                Ok(_) => Err(failure("io", &format!("close directory channel: {error}"))),
+                Ok(_) => Err(failure(
+                    "io",
+                    &format!("close directory channel: {}", error_detail(error)),
+                )),
                 Err(mut failure) => {
                     failure
                         .cleanup_warnings
-                        .push(format!("close directory channel: {error}"));
+                        .push(format!("close directory channel: {}", error_detail(error)));
                     Err(failure)
                 }
             };
@@ -207,7 +210,7 @@ impl Walker<'_> {
             tokio::time::timeout(Duration::from_millis(500), self.session.close(handle)).await;
         let warning = match cleanup {
             Ok(Ok(_)) => None,
-            Ok(Err(error)) => Some(format!("close directory handle: {error}")),
+            Ok(Err(error)) => Some(format!("close directory handle: {}", error_detail(error))),
             Err(_) => Some("close directory handle timed out; channel retired".into()),
         };
         match (result, warning) {
@@ -250,7 +253,12 @@ impl Walker<'_> {
                         "server returned an empty directory page without EOF",
                     ))
                 }
-                Err(error) => return Err(failure("io", &format!("read directory page: {error}"))),
+                Err(error) => {
+                    return Err(failure(
+                        "io",
+                        &format!("read directory page: {}", error_detail(error)),
+                    ))
+                }
             };
             for item in page.files {
                 if item.filename == "." || item.filename == ".." {

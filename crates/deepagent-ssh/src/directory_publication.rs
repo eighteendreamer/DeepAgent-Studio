@@ -3,7 +3,7 @@
 //! observable changes, but cannot exclude every concurrent rename/write race.
 use crate::directory_plan::{local_entries, local_kind};
 use crate::directory_transfer::{local_chain, local_directory, remote_chain};
-use crate::file_transfer::{bounded, operation, remote_metadata};
+use crate::file_transfer::{bounded, error_detail, operation, remote_metadata};
 use crate::{
     DirectoryTransferPlan, DirectoryWalkLimits, FileTransferDirection, FileTransferError,
     RemoteFileKind, RemoteFileMetadata, SshService,
@@ -339,14 +339,14 @@ impl<'a> DirectoryPublication<'a> {
             match (from, to) {
                 (Destination::Local(from), Destination::Local(to)) => tokio::fs::rename(from, to)
                     .await
-                    .map_err(|error| (error.to_string(), false)),
+                    .map_err(|error| (error_detail(error), false)),
                 (Destination::Remote(from), Destination::Remote(to)) => self
                     .sftp
                     .rename(from.as_str(), to.as_str())
                     .await
                     .map_err(|error| {
                         let uncertain = !matches!(error, SftpError::Status(_));
-                        (error.to_string(), uncertain)
+                        (error_detail(error), uncertain)
                     }),
                 _ => unreachable!("one publication always stays on the same endpoint"),
             }

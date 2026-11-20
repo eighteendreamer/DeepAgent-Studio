@@ -15,6 +15,10 @@ use std::{
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
+#[path = "transfer_diagnostics.rs"]
+mod diagnostics;
+pub(super) use diagnostics::error_detail;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileTransferDirection {
@@ -98,7 +102,10 @@ pub(super) async fn bounded<T, E: std::fmt::Display>(
 ) -> Result<T> {
     match tokio::time::timeout(Duration::from_secs(30), work).await {
         Ok(Ok(value)) => Ok(value),
-        Ok(Err(error)) => Err(FileTransferError::new("io", &format!("{context}: {error}"))),
+        Ok(Err(error)) => Err(FileTransferError::new(
+            "io",
+            &error_detail(format_args!("{context}: {error}")),
+        )),
         Err(_) => Err(FileTransferError::new(
             "timeout",
             &format!("{context}: timed out"),
@@ -470,13 +477,16 @@ pub(super) async fn download(
                 } else {
                     "publish"
                 };
-                let mut failure =
-                    FileTransferError::new(code, &format!("publish local file: {}", error.error));
+                let mut failure = FileTransferError::new(
+                    code,
+                    &format!("publish local file: {}", error_detail(&error.error)),
+                );
                 let path = error.file.path().display().to_string();
                 if let Err(cleanup) = error.file.close() {
-                    failure
-                        .cleanup_warnings
-                        .push(format!("local staging cleanup required: {path}: {cleanup}"));
+                    failure.cleanup_warnings.push(format!(
+                        "local staging cleanup required: {path}: {}",
+                        error_detail(cleanup)
+                    ));
                 }
                 Err(failure)
             }

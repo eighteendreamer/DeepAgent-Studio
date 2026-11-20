@@ -511,6 +511,150 @@ async fn cleanup_holds_connection_lane_and_cross_connection_work_can_continue() 
 mod support;
 
 #[tokio::test]
+async fn remote_write_error_cannot_overflow_the_admitted_task() {
+    remote_diagnostic("write", false, true).await;
+}
+
+#[tokio::test]
+async fn remote_file_publication_error_cannot_overflow_the_admitted_task() {
+    remote_diagnostic("rename", false, true).await;
+}
+
+#[tokio::test]
+async fn remote_directory_publication_error_cannot_overflow_the_admitted_task() {
+    remote_diagnostic("rename_directory", true, true).await;
+}
+
+#[tokio::test]
+async fn remote_directory_close_error_cannot_overflow_the_admitted_task() {
+    remote_diagnostic("close_directory", true, true).await;
+}
+
+#[tokio::test]
+async fn ordinary_remote_diagnostics_remain_complete_without_a_truncation_marker() {
+    remote_diagnostic("write", false, false).await;
+}
+
+async fn remote_diagnostic(operation: &str, directory: bool, oversized: bool) {
+    let server = support::SshServer::start("127.0.0.1").await;
+    let dir = tempfile::tempdir().unwrap();
+    let trust = dir.path().join("known_hosts");
+    server.write_trust(&trust);
+    let ssh = Arc::new(deepagent_ssh::SshService::new(dir.path().to_owned()));
+    let connection = server.create(&ssh, Some(&trust)).await;
+    let message = if oversized {
+        // Stay below a normal SFTP data packet while JSON escaping grows past
+        // the task budget; transport timeouts are not persistence evidence.
+        format!("远端诊断🙂{}", "\0".repeat(200_000))
+    } else {
+        "远端拒绝写入：保留这一条完整原因".to_owned()
+    };
+    server
+        .counts
+        .status_messages
+        .write()
+        .unwrap()
+        .insert(operation.into(), message.clone());
+    let local = dir.path().join("diagnostic-input");
+    let target = if directory {
+        std::fs::create_dir(&local).unwrap();
+        std::fs::write(local.join("data"), b"new").unwrap();
+        server
+            .counts
+            .directories
+            .write()
+            .unwrap()
+            .insert("/diagnostic".into());
+        "/diagnostic/data"
+    } else {
+        std::fs::write(&local, b"new").unwrap();
+        "/diagnostic"
+    };
+    server
+        .counts
+        .files
+        .write()
+        .unwrap()
+        .insert(target.into(), b"original".to_vec());
+    let db = Arc::new(Database::open(dir.path().join("queue.sqlite")).unwrap());
+    let queue = TransferCoordinator::new(db.clone(), ssh.clone()).unwrap();
+    let input: TransferRequest = serde_json::from_value(serde_json::json!({
+        "connectionId": connection.id, "kind": if directory { "directory" } else { "file" },
+        "directoryConflict": "replace", "transfer": {"direction":"upload",
+        "localPath":local.to_str().unwrap(), "remotePath":"/diagnostic", "conflict":"replace"}
+    }))
+    .unwrap();
+    let task = queue.submit(input).await.unwrap();
+    let saved = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        let mut cursor = None;
+        loop {
+            let snapshot = queue
+                .watch(cursor.as_deref(), std::time::Duration::from_secs(1))
+                .await
+                .expect("remote diagnostic size must not destroy terminal persistence");
+            if let Some(task) = snapshot
+                .tasks
+                .iter()
+                .find(|t| t.id == task.id && t.state.terminal())
+            {
+                break serde_json::to_value(task).unwrap();
+            }
+            cursor = Some(snapshot.revision);
+        }
+    })
+    .await
+    .expect("a rejected SFTP operation must reach a durable terminal state");
+    assert_eq!(saved["state"], "failed");
+    assert_eq!(
+        saved["error"]["code"],
+        if operation.starts_with("rename") {
+            "publish"
+        } else {
+            "io"
+        }
+    );
+    let detail = saved["error"]["message"].as_str().unwrap();
+    assert!(
+        detail.contains("Permission denied"),
+        "unexpected error: {}",
+        detail.chars().take(160).collect::<String>()
+    );
+    assert_eq!(detail.contains("diagnostic truncated"), oversized);
+    if !oversized {
+        assert!(detail.contains(&message));
+    }
+    assert!(
+        saved.to_string().len() < 64 * 1024,
+        "untrusted text must leave room for task facts"
+    );
+    assert_eq!(server.counts.files.read().unwrap()[target], b"original");
+    assert!(!server
+        .counts
+        .files
+        .read()
+        .unwrap()
+        .keys()
+        .any(|path| path.ends_with(".part")
+            || path.contains(".directory-stage/")
+            || path.ends_with(".backup")));
+    assert!(!server
+        .counts
+        .directories
+        .read()
+        .unwrap()
+        .iter()
+        .any(|path| path.ends_with(".directory-stage") || path.ends_with(".directory-backup")));
+    let opened = server.counts.file_opens.load(Ordering::SeqCst);
+    drop(queue);
+    let restored = TransferCoordinator::new(db, ssh).unwrap();
+    assert_eq!(
+        serde_json::to_value(restored.snapshot().await.unwrap().remove(0)).unwrap(),
+        saved
+    );
+    assert_eq!(server.counts.file_opens.load(Ordering::SeqCst), opened);
+}
+
+#[tokio::test]
 async fn rejected_directory_retry_policy_cannot_mutate_a_file_attempt() {
     let queue = TransferCoordinator::new(
         Arc::new(Database::open_in_memory().unwrap()),
