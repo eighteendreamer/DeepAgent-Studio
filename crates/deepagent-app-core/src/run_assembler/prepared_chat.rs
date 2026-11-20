@@ -313,6 +313,17 @@ impl RunAssembler<'_> {
             discovered: discovered.clone(),
             search_mode,
             search_threshold,
+            #[cfg(all(windows, feature = "desktop-screen"))]
+            screen_capture: effective_env_mode != Some("remote")
+                && environment.policy == crate::settings::ApprovalPolicy::AlwaysAsk
+                && environment.sandbox_backend != Some(SandboxBackendKind::WindowsSandbox)
+                && prepared
+                    .configuration
+                    .model_plan
+                    .as_ref()
+                    .ok()
+                    .and_then(Option::as_ref)
+                    .is_some_and(crate::model_runtime::RunModelPlan::accepts_tool_images),
         })?;
         observe_phase("main_toolset");
         let mut context = capability_context(CapabilityContextRequest {

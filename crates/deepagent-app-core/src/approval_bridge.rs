@@ -80,6 +80,10 @@ impl ApprovalScope {
     /// prefix can stand in for (see [`deepagent_builtins::command_prefix_for`]),
     /// so no button ever offers something that silently does nothing.
     pub fn offered(tool: &str, command: Option<&str>) -> Vec<Self> {
+        #[cfg(all(windows, feature = "desktop-screen"))]
+        if tool == crate::screen_capture::NAME {
+            return vec![Self::SingleCall];
+        }
         let mut scopes = vec![Self::SingleCall, Self::ToolSession];
         if is_command_tool(tool) && command.is_some_and(|cmd| command_prefix_for(cmd).is_some()) {
             scopes.push(Self::CommandPrefix);
@@ -393,13 +397,24 @@ impl PendingApprovals {
             .then(|| command_of(&request.arguments))
             .flatten()
             .and_then(command_prefix_for);
+        #[cfg(all(windows, feature = "desktop-screen"))]
+        let screen_capture = request.tool == crate::screen_capture::NAME;
         ApprovalRequestDto {
             call_id: request.call_id.clone(),
             tool: request.tool.clone(),
             risk: request.risk.clone(),
             arguments: serde_json::to_string_pretty(&request.arguments)
                 .unwrap_or_else(|_| request.arguments.to_string()),
-            reason: request.reason.clone(),
+            reason: {
+                #[cfg(all(windows, feature = "desktop-screen"))]
+                if screen_capture {
+                    crate::screen_capture::APPROVAL_REASON.into()
+                } else {
+                    request.reason.clone()
+                }
+                #[cfg(not(all(windows, feature = "desktop-screen")))]
+                request.reason.clone()
+            },
             scopes: scopes
                 .into_iter()
                 .map(|scope| scope.as_str().to_string())

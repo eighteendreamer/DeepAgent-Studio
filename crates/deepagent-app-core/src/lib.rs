@@ -114,6 +114,8 @@ pub mod runtime_service;
 mod runtime_snapshot;
 pub mod sandbox_backend;
 pub mod sandboxie_service;
+#[cfg(all(windows, feature = "desktop-screen"))]
+mod screen_capture;
 pub mod secret_store;
 pub mod service;
 pub mod session_memory;

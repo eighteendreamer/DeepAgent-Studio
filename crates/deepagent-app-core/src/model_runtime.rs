@@ -26,6 +26,18 @@ pub(crate) struct RunModelPlan {
 }
 
 impl RunModelPlan {
+    #[cfg(all(windows, feature = "desktop-screen"))]
+    pub(crate) fn accepts_tool_images(&self) -> bool {
+        matches!(
+            self.config.wire_mode,
+            deepagent_models::WireMode::Responses | deepagent_models::WireMode::Messages
+        ) && self
+            .config
+            .capability(&self.model)
+            .input_modalities
+            .is_some_and(|modalities| modalities.iter().any(|modality| modality == "image"))
+    }
+
     pub(crate) fn bind(
         self,
         settings: &SettingsService,

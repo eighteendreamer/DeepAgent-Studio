@@ -282,6 +282,8 @@ async fn h219_real_main_registry_can_prepare_without_model_credentials_admission
         .prepare_main_run_tools(MainRunPreparationRequest {
             base: base(),
             sub_base: base(),
+            #[cfg(all(windows, feature = "desktop-screen"))]
+            screen_capture: true,
             plugin_projection: None,
             plugin_registry: None,
             plan: deepagent_builtins::PlanMode::for_session(db.clone(), &session_id).unwrap(),
@@ -290,6 +292,17 @@ async fn h219_real_main_registry_can_prepare_without_model_credentials_admission
             search_threshold: 100,
         })
         .unwrap();
+    #[cfg(all(windows, feature = "desktop-screen"))]
+    {
+        assert!(prepared.toolset.registry.get("screen_capture").is_some());
+        assert!(prepared.sub_registry.get("screen_capture").is_none());
+        assert!(prepared
+            .toolset
+            .manifest
+            .tools
+            .iter()
+            .any(|schema| schema.function.name == "screen_capture"));
+    }
     for name in ["task", "plan_execute", "snip_history", "read_file"] {
         assert!(
             prepared.toolset.registry.get(name).is_some(),
