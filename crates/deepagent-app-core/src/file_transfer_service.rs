@@ -4,7 +4,7 @@ use deepagent_core::{
     clock::{Clock, SystemClock},
     error::{CoreError, Result},
 };
-use deepagent_persistence::{document_store::DocumentStore, Database};
+use deepagent_persistence::Database;
 use deepagent_runtime::CancellationTree;
 use deepagent_ssh::{
     DirectoryConflictPolicy, DirectoryFileConflict, DirectoryFileConflictResolver,
@@ -19,6 +19,9 @@ use std::{
     sync::{Arc, Mutex, Weak},
 };
 use tokio::sync::{oneshot, watch, Semaphore};
+
+#[path = "file_transfer_store.rs"]
+mod storage;
 
 const COLLECTION: &str = "remote_transfers_v1";
 const LIMIT: usize = 128;
@@ -217,7 +220,7 @@ enum ProgressUpdate {
 }
 struct State {
     document: Document,
-    body: Option<String>,
+    storage: storage::QueueStorage,
     tokens: HashMap<String, CancellationTree>,
     lanes: HashMap<String, Weak<Semaphore>>,
     decision_waiters: HashMap<String, oneshot::Sender<ConflictDecision>>,
@@ -335,19 +338,7 @@ fn healthy(state: &State) -> Result<()> {
 
 impl TransferCoordinator {
     pub fn new(db: Arc<Database>, executor: Arc<dyn TransferExecutor>) -> Result<Self> {
-        let body = DocumentStore::new(&db).get_body_bounded(COLLECTION, "queue", 1024 * 1024)?;
-        let mut document = body
-            .as_deref()
-            .map(serde_json::from_str::<Document>)
-            .transpose()
-            .map_err(|_| invalid("invalid transfer queue document"))?
-            .unwrap_or(Document {
-                version: 1,
-                tasks: vec![],
-            });
-        if document.version != 1 || document.tasks.len() > LIMIT {
-            return Err(invalid("unsupported or oversized transfer queue"));
-        }
+        let (mut document, storage) = storage::QueueStorage::load(&db)?;
         let mut changed = false;
         for task in &mut document.tasks {
             if task.pending_file_conflict.is_some() && task.pending_directory_conflict.is_some() {
@@ -376,7 +367,7 @@ impl TransferCoordinator {
                 executor,
                 state: Mutex::new(State {
                     document,
-                    body,
+                    storage,
                     tokens: HashMap::new(),
                     lanes: HashMap::new(),
                     decision_waiters: HashMap::new(),
@@ -985,28 +976,9 @@ impl Inner {
         })
     }
     fn persist(&self, state: &mut State) -> Result<()> {
-        let body = serde_json::to_string(&state.document)
-            .map_err(|_| invalid("transfer serialization failed"))?;
-        if body.len() > 1024 * 1024 {
-            return Err(invalid("transfer document exceeds limit"));
-        }
-        let store = DocumentStore::new(&self.db);
-        let saved = match &state.body {
-            Some(previous) => store.replace_body_if_unchanged(
-                COLLECTION,
-                "queue",
-                previous,
-                &body,
-                SystemClock.now(),
-            )?,
-            None => store.insert_if_absent(COLLECTION, "queue", &body, SystemClock.now())?,
-        };
-        if !saved {
-            return Err(invalid(
-                "transfer coordinator ownership changed; reload host",
-            ));
-        }
-        state.body = Some(body);
+        state
+            .storage
+            .save(&self.db, &state.document.tasks, SystemClock.now())?;
         self.notify();
         Ok(())
     }

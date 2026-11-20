@@ -481,7 +481,7 @@ async fn directory_root_consent_is_durable_and_a_failed_save_does_not_release_wo
     })
     .unwrap();
     let stored = deepagent_persistence::document_store::DocumentStore::new(&db)
-        .get("remote_transfers_v1", "queue")
+        .get("remote_transfers_v1", &format!("task:{}", task.id))
         .unwrap()
         .unwrap();
     assert!(stored.body.contains(&answer.id));
@@ -968,7 +968,7 @@ async fn restart_invalidates_a_durable_pending_file_decision_without_network_rep
     let pending = waiting(&queue, &task.id).await;
     let old = response(&pending, "replace", true);
     let durable = deepagent_persistence::document_store::DocumentStore::new(&db)
-        .get("remote_transfers_v1", "queue")
+        .get("remote_transfers_v1", &format!("task:{}", task.id))
         .unwrap()
         .unwrap();
     assert!(durable.body.contains(&old.id));
@@ -1258,7 +1258,7 @@ async fn directory_roundtrip_persists_aggregate_receipts_in_the_existing_queue()
 
 #[tokio::test]
 async fn restart_marks_a_durable_directory_attempt_interrupted_without_replaying_network_work() {
-    let (server, dir, ssh, id, db, queue) = fixture().await;
+    let (server, dir, ssh, id, _db, queue) = fixture().await;
     let input = dir.path().join("input");
     std::fs::create_dir(&input).unwrap();
     std::fs::write(input.join("data"), b"fixture").unwrap();
@@ -1271,6 +1271,7 @@ async fn restart_marks_a_durable_directory_attempt_interrupted_without_replaying
     durable["state"] = "running".into();
     durable["directoryReceipt"] = serde_json::Value::Null;
     durable["speedBps"] = "999".into();
+    let db = Arc::new(Database::open_in_memory().unwrap());
     deepagent_persistence::document_store::DocumentStore::new(&db)
         .put(
             "remote_transfers_v1",

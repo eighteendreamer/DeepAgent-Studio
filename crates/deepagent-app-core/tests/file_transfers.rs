@@ -259,6 +259,9 @@ async fn recovered_task_clears_live_speed_and_legacy_retry_initializes_file_coun
     let mut saved = serde_json::to_value(service.snapshot().await.unwrap()).unwrap();
     saved[0]["speedBps"] = serde_json::json!("9007199254740993");
     drop(service);
+    // Seed the legacy format in its own database; replacing only a v2 index
+    // would leave unrelated v2 task rows and is not a valid legacy fixture.
+    let db = Arc::new(Database::open_in_memory().unwrap());
     let store = deepagent_persistence::document_store::DocumentStore::new(&db);
     store
         .put(
@@ -285,6 +288,8 @@ async fn recovered_task_clears_live_speed_and_legacy_retry_initializes_file_coun
     for key in ["currentFile", "totalFiles", "completedFiles", "speedBps"] {
         row.remove(key);
     }
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let store = deepagent_persistence::document_store::DocumentStore::new(&db);
     store
         .put(
             "remote_transfers_v1",
