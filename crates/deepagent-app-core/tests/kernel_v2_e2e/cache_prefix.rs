@@ -1,29 +1,40 @@
 use super::*;
 
-fn latest_wire_snapshot(
+fn wire_text_items(
     request: &serde_json::Value,
-) -> deepagent_core::runtime_snapshot::RuntimeSnapshot {
+) -> Vec<deepagent_core::response_item::ResponseItem> {
     request["input"]
         .as_array()
         .unwrap()
         .iter()
-        .rev()
-        .find_map(|item| {
-            let item = deepagent_core::response_item::ResponseItem::Message {
+        .filter_map(|item| {
+            Some(deepagent_core::response_item::ResponseItem::Message {
                 role: item["role"].as_str()?.into(),
                 content: item["content"].as_str()?.into(),
-            };
-            deepagent_core::runtime_snapshot::RuntimeSnapshot::from_item(&item)
+            })
         })
+        .collect()
+}
+
+fn latest_wire_snapshot(
+    request: &serde_json::Value,
+) -> deepagent_core::runtime_snapshot::RuntimeSnapshot {
+    deepagent_core::runtime_snapshot::latest_snapshot(&wire_text_items(request))
         .expect("host runtime snapshot reaches the real wire")
+        .1
 }
 
 pub(super) fn wire_system_text(request: &serde_json::Value) -> String {
-    format!(
-        "{}\n{}",
-        request["instructions"].as_str().unwrap(),
-        latest_wire_snapshot(request).context
-    )
+    use deepagent_core::runtime_snapshot::{latest_sections, latest_snapshot};
+    let items = wire_text_items(request);
+    let (_, snapshot) = latest_snapshot(&items).expect("runtime snapshot reaches the wire");
+    let context = if snapshot.version == 1 {
+        snapshot.context
+    } else {
+        let (_, sections) = latest_sections(&items).expect("complete runtime snapshot on wire");
+        sections.into_values().collect::<Vec<_>>().join("\n\n")
+    };
+    format!("{}\n{context}", request["instructions"].as_str().unwrap())
 }
 
 struct ObservedModel {
