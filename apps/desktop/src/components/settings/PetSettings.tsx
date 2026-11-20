@@ -89,14 +89,14 @@ export function PetSettings() {
             <div className="text-sm font-semibold">{pet.name}</div>
           </div>
           <div className="flex justify-end">
-            <Popover open={customize} onOpenChange={open => {
+            <Popover morph={false} open={customize} onOpenChange={open => {
               if (open) { setSize(String(prefs.size)); setError(""); }
               setCustomize(open);
             }}>
-              <PopoverTrigger render={<Button variant="outline" size="sm" className="bg-elevated-bg hover:bg-ui-tint" />}>
+              <PopoverTrigger render={<Button variant="outline" size="sm" className="whitespace-nowrap bg-elevated-bg hover:bg-ui-tint" />}>
                 {t("desktopPet.customize")}
               </PopoverTrigger>
-              <PopoverContent align="end" className="w-[min(19rem,calc(100vw-2rem))] p-4">
+              <PopoverContent align="end" className="max-h-[var(--available-height)] w-56 max-w-[calc(100vw-2rem)] overflow-y-auto p-3">
                 <PopoverTitle className="mb-3 text-sm font-semibold">{t("desktopPet.customize")}</PopoverTitle>
                 <form onSubmit={event => void saveSize(event)}>
                   <label className="block text-[13px]">
