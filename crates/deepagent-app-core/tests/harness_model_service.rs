@@ -20,6 +20,87 @@ fn service_with_models_response(body: &str) -> (HarnessModelService, Arc<MemoryS
 }
 
 #[tokio::test]
+async fn onboarding_authenticates_both_builtin_routes_without_configuring_chat() {
+    struct ProviderProbe;
+    #[async_trait::async_trait]
+    impl HttpTransport for ProviderProbe {
+        async fn stream(
+            &self,
+            _: deepagent_models::TransportRequest,
+            _: &mut dyn deepagent_models::transport::EventSink,
+        ) -> deepagent_core::Result<()> {
+            panic!("onboarding must not send inference");
+        }
+
+        async fn get_json(&self, url: &str, key: &str) -> deepagent_core::Result<String> {
+            if key == "fixture-rejected-key" {
+                return Err(deepagent_core::error::CoreError::other(format!(
+                    "401: rejected {key}"
+                )));
+            }
+            Ok(match (url, key) {
+                ("https://api.layso.ai/v1/models", "fixture-layso-key") => {
+                    r#"{"data":[{"id":"fixture-model"}]}"#
+                }
+                ("https://api.deepseek.com/models", "fixture-deepseek-key") => r#"{"data":[]}"#,
+                _ => panic!("unexpected provider or credential"),
+            }
+            .into())
+        }
+    }
+
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let secrets = Arc::new(MemorySecretStore::new());
+    let service = HarnessModelService::new(db.clone(), secrets.clone(), Arc::new(ProviderProbe));
+    let original = db.list_harness_providers().unwrap();
+    assert_eq!(original.len(), 2);
+    for (id, key) in [
+        ("layso", "fixture-layso-key"),
+        ("deepseek", "fixture-deepseek-key"),
+    ] {
+        let reference = format!("harness_provider:{id}");
+        assert!(secrets.get(&reference).unwrap().is_none());
+        let failure = service
+            .connect_provider(id, "fixture-rejected-key")
+            .await
+            .unwrap_err();
+        assert!(failure.to_string().contains("401"));
+        assert!(!failure.to_string().contains("fixture-rejected-key"));
+        assert!(secrets.get(&reference).unwrap().is_none());
+
+        service
+            .connect_provider(id, &format!(" {key} "))
+            .await
+            .unwrap();
+        assert_eq!(secrets.get(&reference).unwrap().as_deref(), Some(key));
+        assert!(service
+            .connect_provider(id, "fixture-rejected-key")
+            .await
+            .is_err());
+        assert_eq!(secrets.get(&reference).unwrap().as_deref(), Some(key));
+        assert!(service.list_models(id).unwrap().is_empty());
+    }
+    assert_eq!(db.list_harness_providers().unwrap(), original);
+    assert!(db.harness_chat_model_selection().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn onboarding_rejects_a_success_body_without_a_model_listing() {
+    let (service, secrets) =
+        service_with_models_response(r#"{"error":{"message":"gateway error"}}"#);
+    assert!(service
+        .connect_provider("layso", "fixture-key")
+        .await
+        .is_err());
+    assert!(!service
+        .list_providers()
+        .unwrap()
+        .iter()
+        .any(|provider| provider.has_api_key));
+    assert!(secrets.get("harness_provider:layso").unwrap().is_none());
+}
+
+#[tokio::test]
 async fn h025_messages_discovery_uses_versioned_base_without_resource_path_in_settings() {
     struct EndpointTransport(String);
     #[async_trait::async_trait]

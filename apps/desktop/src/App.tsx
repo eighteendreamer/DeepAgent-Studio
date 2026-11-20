@@ -2,6 +2,7 @@ import { summarizeWebSearch } from "./components/chat-timeline/webSearchSummary"
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { SurfaceVisibility } from "./components/ui/SurfaceVisibility";
 import { SettingsView } from "./components/SettingsView";
+import { listHarnessProviders } from "./harnessModelsApi";
 import { DEFAULT_SETTINGS_CATEGORY, SettingsSidebar } from "./components/SettingsSidebar";
 import { SpringDisclosure } from "./components/ui/SpringDisclosure";
 import { MessageSendMotionContext, useMessageSendMotionController } from "./components/ui/MessageSendMotionContext";
@@ -33,7 +34,6 @@ import {
   setProjectFolder,
   setSessionPinned,
   clearProviderCredentials,
-  getSettings,
   runChat,
   RunCompletionError,
   cancelRun,
@@ -517,25 +517,21 @@ export function App() {
       .catch(() => setSessions([]));
   }, []);
 
-  // Reconcile the onboarding gate with the backend's real state: the source of
-  // truth for "logged in" is whether encrypted storage actually holds a valid key
-  // (settings.configured), not the local flag. This self-heals cases where the
-  // localStorage flag is stale (e.g. set by an older build or after the key was
-  // cleared) so the user is never dropped into the app without a usable key.
+  // A completed wizard needs a stored provider key, even if chat has no model.
+  // A key saved midway through the wizard does not complete the remaining steps.
   useEffect(() => {
-    getSettings()
-      .then((view) => {
-        const configured = !!view?.configured;
-        setShowOnboarding(!configured);
-        if (configured) {
-          localStorage.setItem("onboarding_complete", "true");
-        } else {
-          localStorage.removeItem("onboarding_complete");
-        }
+    if (!localStorage.getItem("onboarding_complete")) return;
+    let active = true;
+    listHarnessProviders()
+      .then((providers) => {
+        if (!active || providers.some(provider => provider.enabled && provider.hasApiKey)) return;
+        localStorage.removeItem("onboarding_complete");
+        setShowOnboarding(true);
       })
       .catch(() => {
         // Backend unreachable (e.g. browser preview): keep the local flag.
       });
+    return () => { active = false; };
   }, []);
 
   const activeSessionRevision = sessions.find(session => session.id === activeId)?.updated_at ?? 0;

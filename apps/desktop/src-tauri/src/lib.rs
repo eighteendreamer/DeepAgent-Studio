@@ -2051,6 +2051,20 @@ fn harness_providers_list(
         .map_err(|e| e.to_string())
 }
 
+/// Validate a provider's API key for onboarding without loading models into the registry.
+#[tauri::command]
+async fn harness_provider_connect(
+    state: State<'_, AppState>,
+    provider_id: String,
+    api_key: String,
+) -> Result<(), String> {
+    state
+        .harness_models
+        .connect_provider(&provider_id, &api_key)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 /// Create or update a harness provider. An absent `apiKey` keeps the stored key.
 #[tauri::command]
 fn harness_provider_save(
@@ -7862,6 +7876,7 @@ pub fn run() {
             canvas_provider_test,
             harness_credentials_clear,
             harness_providers_list,
+            harness_provider_connect,
             harness_provider_save,
             harness_provider_remove,
             harness_models_list,

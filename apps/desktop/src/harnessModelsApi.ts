@@ -103,6 +103,10 @@ export function listHarnessProviders(): Promise<HarnessProviderView[]> {
   return invoke("harness_providers_list");
 }
 
+export function connectHarnessProvider(providerId: string, apiKey: string): Promise<void> {
+  return invoke("harness_provider_connect", { providerId, apiKey });
+}
+
 export function saveHarnessProvider(provider: HarnessProviderInput): Promise<HarnessProviderView> {
   return invoke("harness_provider_save", { provider });
 }

@@ -319,28 +319,35 @@ test("related refreshes retain the last saved selection while unrelated settings
   host.unmount();
 });
 
-test("page startup checks onboarding without discovering remote models", async () => {
+test("startup keeps completed onboarding without a model but reopens when the key is missing", async () => {
   const source = fs.readFileSync(path.join(root, "src/App.tsx"), "utf8");
   const ast = ts.createSourceFile("App.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   let effect;
   function visit(node) {
     if (ts.isCallExpression(node) && node.expression.getText(ast) === "useEffect"
-      && node.arguments[0]?.getText(ast).includes("setShowOnboarding(!configured)")) effect = node.arguments[0].getText(ast);
+      && node.arguments[0]?.getText(ast).includes("listHarnessProviders()")) effect = node.arguments[0].getText(ast);
     ts.forEachChild(node, visit);
   }
   visit(ast);
   assert.ok(effect);
-  const discoveries = [], onboarding = [], local = new Map();
-  vm.runInNewContext(`(${effect})()`, {
-    getSettings: async () => ({ configured: true }),
-    fetchHarnessModels: async () => discoveries.push("refresh"),
-    setShowOnboarding: value => onboarding.push(value),
-    localStorage: { setItem: (key, value) => local.set(key, value), removeItem: key => local.delete(key) },
-  });
-  await tick();
-  assert.deepEqual(onboarding, [false]);
-  assert.equal(local.get("onboarding_complete"), "true");
-  assert.deepEqual(discoveries, []);
+  for (const [complete, providers, opens, reads] of [
+    ["true", [{ enabled: true, hasApiKey: true }], false, 1],
+    ["true", [{ enabled: true, hasApiKey: false }], true, 1],
+    ["true", [{ enabled: false, hasApiKey: true }], true, 1],
+    [undefined, [{ enabled: true, hasApiKey: true }], false, 0],
+  ]) {
+    const onboarding = [], local = new Map([["onboarding_complete", complete]]);
+    let providerReads = 0;
+    vm.runInNewContext(`(${effect})()`, {
+      listHarnessProviders: async () => { providerReads++; return providers; },
+      setShowOnboarding: value => onboarding.push(value),
+      localStorage: { getItem: key => local.get(key), removeItem: key => local.delete(key) },
+    });
+    await tick();
+    assert.equal(providerReads, reads);
+    assert.deepEqual(onboarding, opens ? [true] : []);
+    assert.equal(local.get("onboarding_complete"), opens ? undefined : complete);
+  }
 });
 
 test("idle composer renders keep the model list stable for suggestion effects", async () => {

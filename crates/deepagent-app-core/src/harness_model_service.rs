@@ -259,6 +259,48 @@ impl HarnessModelService {
         Ok(())
     }
 
+    /// Authenticate against the stored provider route, then persist only its key.
+    /// A valid empty listing is enough: onboarding does not configure any models.
+    pub async fn connect_provider(&self, provider_id: &str, api_key: &str) -> Result<()> {
+        let key = api_key.trim();
+        if key.is_empty() {
+            return Err(CoreError::invalid("enter an API key"));
+        }
+        let provider = self
+            .provider(provider_id)?
+            .filter(|provider| provider.enabled)
+            .ok_or_else(|| CoreError::invalid("select an enabled provider"))?;
+        self.discover_models(&provider.model_url, &provider.protocol, key)
+            .await?;
+        if self.provider(provider_id)?.as_ref() != Some(&provider) {
+            return Err(CoreError::invalid(
+                "provider changed during validation; retry",
+            ));
+        }
+        self.secrets.set(&provider.api_key_ref, key)
+    }
+
+    async fn discover_models(
+        &self,
+        url: &str,
+        protocol: &str,
+        key: &str,
+    ) -> Result<Vec<deepagent_models::discovery::ModelInfo>> {
+        let wire = crate::harness_model_resolver::wire_mode_for_protocol(protocol)?;
+        ModelDiscovery::with_base_url(self.transport.clone(), url)
+            .with_wire_mode(wire)
+            .list_models(key)
+            .await
+            .map_err(|error| {
+                let detail = error.to_string();
+                if key.is_empty() || !detail.contains(key) {
+                    error
+                } else {
+                    CoreError::other(detail.replace(key, "[redacted]"))
+                }
+            })
+    }
+
     /// Read-only diagnostic against the exact selected provider and protocol.
     pub async fn validate_selected_provider(&self) -> Result<usize> {
         let selected = self
@@ -272,12 +314,9 @@ impl HarnessModelService {
             .get(&provider.api_key_ref)?
             .filter(|key| !key.trim().is_empty())
             .ok_or_else(|| CoreError::invalid("selected provider has no API key"))?;
-        let wire = crate::harness_model_resolver::wire_mode_for_protocol(&selected.protocol)?;
-        let models = ModelDiscovery::with_base_url(self.transport.clone(), provider.model_url)
-            .with_wire_mode(wire)
-            .list_models(&key)
-            .await
-            .map_err(|error| CoreError::other(error.to_string().replace(&key, "[redacted]")))?;
+        let models = self
+            .discover_models(&provider.model_url, &selected.protocol, &key)
+            .await?;
         if models.is_empty() {
             return Err(CoreError::invalid("selected provider returned no models"));
         }
@@ -383,11 +422,9 @@ impl HarnessModelService {
         } else {
             DEFAULT_OUTPUT_LIMIT
         };
-        let discovered =
-            ModelDiscovery::with_base_url(self.transport.clone(), provider.model_url.clone())
-                .with_wire_mode(wire_mode)
-                .list_models(&key)
-                .await?;
+        let discovered = self
+            .discover_models(&provider.model_url, &provider.protocol, &key)
+            .await?;
         let existing: HashMap<_, _> = self
             .db
             .list_harness_models(&provider.id)?

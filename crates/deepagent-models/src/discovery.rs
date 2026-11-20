@@ -55,7 +55,6 @@ pub struct ModelEffortMetadata {
 /// The raw `GET /models` response envelope.
 #[derive(Debug, Clone, Deserialize)]
 struct ModelsResponse {
-    #[serde(default)]
     data: Vec<ModelInfo>,
 }
 

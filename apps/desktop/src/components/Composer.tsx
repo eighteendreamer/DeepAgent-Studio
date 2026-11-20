@@ -912,6 +912,12 @@ export function Composer({
   }, [overlayCloseSignal]);
 
   const submitWithAttachments = () => {
+    const text = stripSkillMarkers(draftValue).trim();
+    // Leave local slash commands (including /model) available before chat setup.
+    if (hasComposerContent && !selectedModel && !text.startsWith("/")) {
+      message.warning(t(activeModelOptions.length ? "composer.chooseModelBeforeSend" : "composer.noModels"));
+      return;
+    }
     const readyAttachments = attachments.filter((item) => item.status === "ready");
     const surface = composerRef.current?.querySelector<HTMLElement>("[data-message-composer-surface]");
     if (textareaRef.current && mirrorRef.current && surface) {

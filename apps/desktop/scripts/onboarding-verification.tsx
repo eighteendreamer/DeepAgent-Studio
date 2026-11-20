@@ -17,17 +17,18 @@ const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 mockIPC(async (command, args) => {
   if (command === "get_welcome_name") return "程序员Eighteen";
   if (command === "set_window_translucent") return;
-  if (command === "harness_providers_list") return [];
-  if (command === "harness_provider_save") return { id: "deepseek" };
-  if (command === "harness_model_set_active") return;
-  if (command === "harness_model_select") return { providerId: "deepseek", modelName: (args as { modelName: string }).modelName };
-  if (command === "harness_models_fetch") {
+  if (command === "harness_providers_list") return [
+    { id: "deepseek", channel: "DeepSeek", enabled: true, hasApiKey: false },
+    { id: "layso", channel: "Layso", enabled: true, hasApiKey: false },
+  ];
+  if (command === "harness_provider_connect") {
     const attempt = ++connectCalls;
     notify();
     if (scenario === "pending") await new Promise<void>(resolve => { releasePending = resolve; });
     else await delay(650);
     if (scenario === "failure" || (scenario === "retry" && attempt === 1)) throw new Error("fixture: connection rejected");
-    return [{ providerId: "deepseek", modelName: "deepseek-v4-flash", displayName: "DeepSeek Flash" }];
+    document.querySelector("#connected-provider")!.textContent = String((args as { providerId: string }).providerId);
+    return;
   }
   if (command === "set_sandbox_mode") {
     saveCalls++;
@@ -64,6 +65,7 @@ function Verification() {
           <Button size="sm" variant="outline" onClick={() => { connectCalls = 0; saveCalls = 0; setComplete(false); setRound(value => value + 1); }}>重置向导</Button>
           <span role="status">连接请求：{connectCalls} · 保存请求：{saveCalls} · 完成：{String(complete)}</span>
           <span id="saved-mode" />
+          <span id="connected-provider" />
         </div>
       </div>
     </ThemeProvider>
