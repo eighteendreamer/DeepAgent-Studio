@@ -2234,6 +2234,9 @@ mod summary_audit;
 #[path = "context_file_authority_tests.rs"]
 mod file_authority_tests;
 
+#[cfg(all(test, feature = "web"))]
+mod cache_live_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -20,7 +20,7 @@
 3. **Responses 稳定键**。先要求发送请求同会话同键、不同会话不同键、官方 DeepSeek 无键；在 AppCore 工具续写测试检查同一持久会话键。稳定键只用于缓存路由，历史仍从原有事件读出。
 4. **真实多轮**。使用 Layso、随机合成说明和三条不同用户消息；追加实际上一轮的可见回复。冷轮、续写轮分开记录；不把重复请求体、回环夹具用量或未执行的桌面路径算成真实命中。`prompt_cache_live.rs` 提供可显式运行的测试，只输出 token 数。
 
-未完成的验收：天枢字段级动态附录、签名摘要绑定，以及真实压缩前后和更多模型配置下的长期多轮曲线。旧的阈值和预压缩接口仍在历史测试审计中，生产组装不再启用。真实纯文本结果只说明所测模型和网关路线可命中，不能换算成系统的长期平均命中率。
+未完成的验收：天枢字段级动态附录、签名摘要绑定，以及 Messages、Chat 真实压缩前后和更多模型配置下的长期多轮曲线。Responses 真实压缩验收见下文。旧的阈值和预压缩接口仍在历史测试审计中，生产组装不再启用。真实纯文本结果只说明所测模型和网关路线可命中，不能换算成系统的长期平均命中率。
 
 ## 第一批实测（2026-11-20）
 
@@ -41,3 +41,39 @@ Responses 另有独立的无键对照：一次流式三轮都为 0，另一次�
 最终验证：`deepagent-runtime` 单元测试 507 项通过（3 项 ignored），另有 2 项离线 tokenizer 预算回归通过；`deepagent-context` 单元测试 71 项通过；AppCore `harness_registry_run` 10 项通过，生产压缩器的 SQLite 回归确认被拒候选没有写入边界，回放历史保持一致。Models 的 Messages、图片、协议工厂、SSE 和思考声明定向回归合计 33 项通过；`cargo fmt --all -- --check` 通过。
 
 下一批验收的参考边界：天枢的 `src/prompt/engine.ts::buildAppendixBody` 按字段比较渲染后的字节，`resetAppendixBaseline` 在压缩后重新发送基线；必须验证字段不变时不重发、字段消失时旧权限提示不会复活、压缩和重启后发送同一份基线。DeepSeek Harness 在 `llm-pi-ai/src/adapter.ts` 将 `prefix-binding.ts` 产出的摘要与该次模型回应一起保存；验证相同前缀续写可重放签名，改写后签名不会重放，签名失效不会改写原始记录。二者应各自沿现有会话事件和协议边界实现。
+
+## 长会话续测（2026-11-20）
+
+这次按协议各跑 16 轮。每轮追加不同的合成资料和真实上一轮可见回复。每个会话使用独立前缀，首轮均为 0；随后 15 轮均有非零读取。缓存读取率按 `缓存读取 token / 总输入 token` 计算，区间和加权值排除冷轮。以下是同一 Layso 路由中的样本，不能外推为全系统命中率。
+
+| 协议 / 模型 | 热轮有命中 | 读取率区间 | 热轮加权读取率 | 第 16 轮读取 / 输入 |
+|---|---:|---:|---:|---:|
+| Messages / `claude-haiku-5-5` | 15/15 | 96.41%–97.60% | 97.13% | 18,175 / 18,621 |
+| Chat / `gpt-5.6-sol` | 15/15 | 93.15%–96.23% | 94.92% | 10,624 / 11,040 |
+| Responses / `gpt-5.4-mini` | 15/15 | 87.88%–95.83% | 92.93% | 10,496 / 11,040 |
+
+Messages 最后一轮同时报告未命中 446、创建 442；创建计入未命中，不能再加一次。最后一轮 Chat、Responses 未命中分别为 416、544，两条路线都没有返回创建计数。第 16 轮量比第 2 轮高，不代表每轮读取比例都在上升（Responses 波动较明显）。
+
+### Responses 真实压缩与重开 SQLite
+
+Layso `gpt-5.4-mini`，使用 `ModelAgent` 的最终请求预算检查和生产 `HookedReactiveContextCompactor`。测试覆盖 5 个对话请求和 1 个真实摘要请求。使用临时 SQLite 和合成历史，把测试模型的本地上下文窗口设为 24,000，输出上限为 512，以触发同一生产预算检查；这不是模型的真实容量配置。各轮使用同一会话键，实际模型回复以原生条目持久化。摘要请求单列，不计入对话命中。
+
+| 阶段 | 读取 / 输入 | 未命中 |
+|---|---:|---:|
+| 冷轮 | 0 / 10,774 | 10,774 |
+| 压缩前热轮 | 10,496 / 10,808 | 312 |
+| 独立摘要请求 | 0 / 5,221 | 5,221 |
+| 压缩后首轮 | 2,816 / 9,569 | 6,753 |
+| 关闭并重开 SQLite 后首轮 | 9,472 / 9,603 | 131 |
+| 再续一轮 | 9,472 / 9,637 | 165 |
+
+该样本压缩后首轮部分命中，下一轮恢复到 98.64%。只生成一条持久压缩边界；当前用户消息及其稳定 ID 完整保留；重开前后的回放一致，重开后的实际出站历史与回放逐项一致。压缩事件自己的诊断估算为 88,569 → 59,216，使用不同的计量口径，不能与供应商 token 数或触发预算比较。
+
+相关 AppCore `context_runtime` 单元测试 32 项通过，2 项原有忽略用例未运行。长会话三协议和 Responses 压缩为显式真实请求；尚未测 Messages / Chat 的生产压缩曲线、桌面 UI 或整个 workspace。字段级动态附录、思考签名前缀摘要绑定仍未实现，P8 仍标记为部分完成。
+
+复测时通过本地环境注入 `DEEPAGENT_CACHE_TEST_KEY`、`DEEPAGENT_CACHE_TEST_URL` 和 `DEEPAGENT_CACHE_TEST_MODEL`；长会话另需 `DEEPAGENT_CACHE_TEST_PROTOCOL`（`messages`、`chat` 或 `responses`）。按用例名精确选择，避免一起执行其他真实用例：
+
+```powershell
+cargo test --offline -p deepagent-models --features http --test prompt_cache_live extended_history_reports_real_provider_cache_usage -- --exact --ignored --nocapture
+cargo test --offline -p deepagent-app-core --features web --lib context_runtime::cache_live_tests::real_request_budget_compaction_survives_reopen_and_reports_cache -- --exact --ignored --nocapture
+```

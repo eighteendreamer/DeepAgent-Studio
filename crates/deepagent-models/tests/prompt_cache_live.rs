@@ -37,10 +37,16 @@ async fn extended_history_reports_real_provider_cache_usage() {
     );
     let session = deepagent_core::id::SessionId::new();
     let mut history = Vec::new();
-    for turn in 1..=3 {
+    let mut warm_hits = 0;
+    for turn in 1..=16 {
         history.push(ResponseItem::Message {
             role: "user".into(),
-            content: format!("Reply only: CACHE-{turn}"),
+            content: format!(
+                "Synthetic turn {turn} record:\n{}\nReply only: CACHE-{turn}",
+                (0..24)
+                    .map(|n| format!("Record {turn}.{n}: garden meadow river archive.\n"))
+                    .collect::<String>()
+            ),
         });
         let request =
             ResponseRequest::from_response_items(&model, Some(rules.clone()), history.clone())
@@ -64,10 +70,17 @@ async fn extended_history_reports_real_provider_cache_usage() {
         let created = response
             .raw_usage
             .as_ref()
-            .and_then(|usage| usage["cache_creation_input_tokens"].as_u64())
-            .unwrap_or_default();
+            .and_then(|usage| usage["cache_creation_input_tokens"].as_u64());
+        let phase = if turn == 1 {
+            "cold"
+        } else if usage.prompt_cache_hit_tokens > 0 {
+            warm_hits += 1;
+            "warm-hit"
+        } else {
+            "warm-zero"
+        };
         println!(
-            "{protocol} {model} turn={turn} input={} hit={} miss={} created={created}",
+            "{protocol} {model} turn={turn} phase={phase} input={} hit={} miss={} created={created:?}",
             usage.prompt_tokens, usage.prompt_cache_hit_tokens, usage.prompt_cache_miss_tokens
         );
         let visible = response.output_text_projection();
@@ -81,6 +94,7 @@ async fn extended_history_reports_real_provider_cache_usage() {
             content: visible,
         });
     }
+    assert!(warm_hits > 0, "provider never reported a warm cache hit");
 }
 
 /// Chat-like Messages traffic: change a real host snapshot at a user boundary,
