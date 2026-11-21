@@ -6,3 +6,6 @@ apps/desktop/src-tauri/resources/plugins/superpowers/** text eol=lf
 # The wedecode bundle uses the same byte-for-byte source integrity gate.
 apps/desktop/src-tauri/resources/plugins/wedecode/** text eol=lf
 apps/desktop/src-tauri/resources/plugins/wedecode/runtime.zip -text
+# Pet catalog sizes and hashes also require byte-stable text assets on Windows.
+apps/desktop/src-tauri/resources/pets/dsh-pet/*.txt text eol=lf
+apps/desktop/src-tauri/resources/pets/dsh-pet/*.md text eol=lf
