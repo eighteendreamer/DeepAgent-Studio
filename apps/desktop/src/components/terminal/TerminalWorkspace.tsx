@@ -48,7 +48,17 @@ function geometry(layout: TerminalLayout, rect: Rect = { x: 0, y: 0, w: 100, h: 
   return { panes: new Map([...first.panes, ...second.panes]), splits: [...first.splits, ...second.splits, { id: layout.id, axis: layout.axis, ratio, rect }] };
 }
 
-export function TerminalWorkspace({ mode = "local", connectionId = null, active = true, openIntent, onDirectoryChange }: { mode?: "local" | "remote"; connectionId?: string | null; active?: boolean; openIntent?: TerminalOpenIntent; onDirectoryChange?: (endpoint: TerminalTarget, path: string) => void }) {
+type TerminalWorkspaceProps = { mode?: "local" | "remote"; connectionId?: string | null; active?: boolean; openIntent?: TerminalOpenIntent; onDirectoryChange?: (endpoint: TerminalTarget, path: string) => void };
+
+export function TerminalWorkspace(props: TerminalWorkspaceProps) {
+  const { t } = useTranslation();
+  if (props.mode === "remote" && !props.connectionId) {
+    return <div className="flex h-full items-center justify-center text-text-secondary">{t("remote.emptyTitle")}</div>;
+  }
+  return <TerminalWorkspaceSession key={`${props.mode ?? "local"}:${props.connectionId ?? "local"}`} {...props} />;
+}
+
+function TerminalWorkspaceSession({ mode = "local", connectionId = null, active = true, openIntent, onDirectoryChange }: TerminalWorkspaceProps) {
   const { t } = useTranslation(); const endpoint: TerminalTarget = mode === "remote" && connectionId ? { kind: "ssh", connectionId } : { kind: "local" };
   const layoutKey = `deepagent.terminal.layout.v1:${scopeOf(endpoint)}`;
   const [first] = useState(() => createTab(endpoint, t("terminalWorkbench.terminal")));
