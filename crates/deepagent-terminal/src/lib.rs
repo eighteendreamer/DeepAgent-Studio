@@ -14,6 +14,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 mod output;
+mod session_lock;
 pub use output::{TerminalOutputNotice, TerminalOutputSignal, TerminalOutputSubscription};
 
 #[derive(Debug, Error)]
@@ -24,6 +25,8 @@ pub enum TerminalError {
     SessionExists(String),
     #[error("terminal input lease is stale or belongs to another scope")]
     InvalidLease,
+    #[error("terminal session is locked")]
+    Locked,
     #[error("terminal capability is unsupported by backend {backend}: {capability}")]
     UnsupportedCapability { backend: String, capability: String },
     #[error("terminal backend failed: {0}")]
@@ -79,6 +82,9 @@ pub struct TerminalSession {
     pub backend: String,
     pub cols: u16,
     pub rows: u16,
+    /// Fences SSH operations to the transport that created this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_generation: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,6 +129,7 @@ pub struct TerminalRecoveryStatus {
 pub struct TerminalLeaseRegistry {
     leases: Mutex<HashMap<String, TerminalInputLease>>,
     durable: Option<Arc<dyn TerminalLeasePersistence>>,
+    locks: session_lock::SessionLocks,
 }
 
 pub trait TerminalLeasePersistence: Send + Sync {
@@ -184,6 +191,7 @@ impl Default for TerminalLeaseRegistry {
         Self {
             leases: Mutex::new(HashMap::new()),
             durable: None,
+            locks: Default::default(),
         }
     }
 }
@@ -193,6 +201,7 @@ impl TerminalLeaseRegistry {
         Self {
             leases: Mutex::new(HashMap::new()),
             durable: Some(persistence),
+            locks: Default::default(),
         }
     }
 
@@ -237,6 +246,48 @@ impl TerminalLeaseRegistry {
         Ok(())
     }
 
+    /// Backend adapters call this inside the same control gate as the actual write.
+    /// Renewal and read ownership intentionally remain valid while locked.
+    pub fn validate_input(&self, lease: &TerminalInputLease) -> TerminalResult<()> {
+        self.validate(lease)?;
+        self.locks.ensure_unlocked(&lease.session_id)
+    }
+
+    pub fn lock(
+        &self,
+        lease: &TerminalInputLease,
+        password: &str,
+        hide_output: bool,
+    ) -> TerminalResult<()> {
+        let leases = self.leases.lock().unwrap_or_else(|p| p.into_inner());
+        Self::validate_identity(&leases, lease)?;
+        if let Some(store) = &self.durable {
+            if !store.validate(lease, unix_now())? {
+                return Err(TerminalError::InvalidLease);
+            }
+        }
+        self.locks.lock(&lease.session_id, password, hide_output)
+    }
+
+    pub fn unlock(&self, lease: &TerminalInputLease, password: &str) -> TerminalResult<()> {
+        let leases = self.leases.lock().unwrap_or_else(|p| p.into_inner());
+        Self::validate_identity(&leases, lease)?;
+        if let Some(store) = &self.durable {
+            if !store.validate(lease, unix_now())? {
+                return Err(TerminalError::InvalidLease);
+            }
+        }
+        self.locks.unlock(&lease.session_id, password)
+    }
+
+    pub fn lock_status(&self, session_id: &str) -> TerminalResult<Option<bool>> {
+        let leases = self.leases.lock().unwrap_or_else(|p| p.into_inner());
+        if !leases.contains_key(session_id) {
+            return Err(TerminalError::SessionNotFound(session_id.into()));
+        }
+        Ok(self.locks.status(session_id))
+    }
+
     pub fn renew(&self, lease: &TerminalInputLease) -> TerminalResult<()> {
         let leases = self.leases.lock().unwrap_or_else(|p| p.into_inner());
         Self::validate_identity(&leases, lease)?;
@@ -252,6 +303,7 @@ impl TerminalLeaseRegistry {
         holder: TerminalInputHolder,
     ) -> TerminalResult<TerminalInputLease> {
         let mut leases = self.leases.lock().unwrap_or_else(|p| p.into_inner());
+        self.locks.ensure_unlocked(session_id)?;
         let current = leases
             .get(session_id)
             .cloned()
@@ -276,6 +328,7 @@ impl TerminalLeaseRegistry {
     ) -> TerminalResult<TerminalInputLease> {
         let mut leases = self.leases.lock().unwrap_or_else(|p| p.into_inner());
         Self::validate_identity(&leases, lease)?;
+        self.locks.ensure_unlocked(&lease.session_id)?;
         let mut next = new_lease(
             &lease.session_id,
             &lease.run_id,
@@ -296,6 +349,7 @@ impl TerminalLeaseRegistry {
             durable.revoke(lease, unix_now(), "terminal_closed")?;
         }
         leases.remove(&lease.session_id);
+        self.locks.remove(&lease.session_id);
         Ok(())
     }
 
@@ -313,10 +367,21 @@ impl TerminalLeaseRegistry {
     /// Check host/run ownership without accepting an expired input token.
     /// Used before explicit takeover, which itself rotates the generation.
     pub fn validate_scope(&self, session_id: &str, run_id: &str) -> TerminalResult<()> {
+        if self.scope_is_registered(session_id, run_id)? {
+            Ok(())
+        } else {
+            Err(TerminalError::InvalidLease)
+        }
+    }
+
+    /// A removed session is absent; a registered session owned by another run
+    /// remains an error rather than looking like a closed session.
+    pub fn scope_is_registered(&self, session_id: &str, run_id: &str) -> TerminalResult<bool> {
         let leases = self.leases.lock().unwrap_or_else(|p| p.into_inner());
         match leases.get(session_id) {
-            Some(lease) if lease.run_id == run_id => Ok(()),
-            _ => Err(TerminalError::InvalidLease),
+            Some(lease) if lease.run_id == run_id => Ok(true),
+            Some(_) => Err(TerminalError::InvalidLease),
+            None => Ok(false),
         }
     }
 
@@ -360,6 +425,38 @@ fn new_lease(
 #[async_trait]
 pub trait TerminalSessionBackend: Send + Sync {
     fn backend_kind(&self) -> &'static str;
+
+    async fn lock(
+        &self,
+        _session: &TerminalSession,
+        _lease: &TerminalInputLease,
+        _password: &str,
+        _hide_output: bool,
+    ) -> TerminalResult<()> {
+        Err(TerminalError::UnsupportedCapability {
+            backend: self.backend_kind().into(),
+            capability: "session_lock".into(),
+        })
+    }
+
+    async fn unlock(
+        &self,
+        _session: &TerminalSession,
+        _lease: &TerminalInputLease,
+        _password: &str,
+    ) -> TerminalResult<()> {
+        Err(TerminalError::UnsupportedCapability {
+            backend: self.backend_kind().into(),
+            capability: "session_lock".into(),
+        })
+    }
+
+    async fn lock_status(&self, _session: &TerminalSession) -> TerminalResult<Option<bool>> {
+        Err(TerminalError::UnsupportedCapability {
+            backend: self.backend_kind().into(),
+            capability: "session_lock".into(),
+        })
+    }
 
     /// Subscribe before the first cursor read. Notices contain no output and
     /// cannot consume history or grant input ownership.
@@ -463,6 +560,36 @@ mod tests {
     }
 
     #[test]
+    fn terminal_session_generation_is_optional_for_legacy_and_local_sessions() {
+        let legacy: TerminalSession = serde_json::from_value(serde_json::json!({
+            "sessionId": "direct:fixture",
+            "runId": "run",
+            "backend": "direct",
+            "cols": 80,
+            "rows": 24
+        }))
+        .unwrap();
+        assert_eq!(legacy.connection_generation, None);
+        assert!(serde_json::to_value(&legacy)
+            .unwrap()
+            .get("connectionGeneration")
+            .is_none());
+
+        let ssh = TerminalSession {
+            session_id: "ssh:fixture:pty".into(),
+            run_id: "run".into(),
+            backend: "ssh".into(),
+            cols: 80,
+            rows: 24,
+            connection_generation: Some(42),
+        };
+        assert_eq!(
+            serde_json::to_value(ssh).unwrap()["connectionGeneration"],
+            42
+        );
+    }
+
+    #[test]
     fn h293_concurrent_old_release_and_remove_cannot_replace_a_successor() {
         let registry = Arc::new(TerminalLeaseRegistry::default());
         let old = registry
@@ -511,6 +638,43 @@ mod tests {
             "terminal input lease is stale or belongs to another scope"
         );
         registry.validate(&user).unwrap();
+    }
+
+    #[test]
+    fn scope_lookup_distinguishes_removed_sessions_from_another_run() {
+        let registry = TerminalLeaseRegistry::default();
+        assert!(!registry.scope_is_registered("terminal-1", "run-1").unwrap());
+        let lease = registry
+            .register("terminal-1", "run-1", TerminalInputHolder::User)
+            .unwrap();
+        assert!(registry.scope_is_registered("terminal-1", "run-1").unwrap());
+        assert!(matches!(
+            registry.scope_is_registered("terminal-1", "another-run"),
+            Err(TerminalError::InvalidLease)
+        ));
+        assert!(registry
+            .validate_scope("terminal-1", "another-run")
+            .is_err());
+
+        registry.remove(&lease).unwrap();
+        assert!(!registry.scope_is_registered("terminal-1", "run-1").unwrap());
+        assert!(registry.validate_scope("terminal-1", "run-1").is_err());
+        assert!(registry.validate(&lease).is_err());
+        assert!(registry.renew(&lease).is_err());
+        assert!(registry
+            .takeover("terminal-1", TerminalInputHolder::Runtime)
+            .is_err());
+
+        registry
+            .register("terminal-1", "successor-run", TerminalInputHolder::User)
+            .unwrap();
+        assert!(matches!(
+            registry.scope_is_registered("terminal-1", "run-1"),
+            Err(TerminalError::InvalidLease)
+        ));
+        assert!(registry
+            .scope_is_registered("terminal-1", "successor-run")
+            .unwrap());
     }
 
     #[test]

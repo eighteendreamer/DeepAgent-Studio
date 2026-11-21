@@ -1,5 +1,11 @@
-import { SshAuthenticationFields, type SshFormAuthType } from "../remote/SshAuthenticationFields";
+import { SshAdvancedFields } from "../remote/SshAdvancedFields";
+import type { SshAdvancedOptions } from "../../api";
+import { SshTimingFields, sshTimingFromDto, sshTimingRequest, type SshTimingForm } from "../remote/SshTimingFields";
+import { SshConfigImporter, type SshConfigImportForm } from "../remote/SshConfigImport";
+import { authenticationFactorRequests, authenticationFactorsFromDto, canSaveSshConnection, SshAuthenticationFields, type SshFormAuthType, type SshAuthenticationFactorForm } from "../remote/SshAuthenticationFields";
 import { SshHostTrustField } from "../remote/SshHostTrustField";
+import { SshProxyFields, sshProxyFromDto, sshProxyRequest, type SshProxyForm } from "../remote/SshProxyFields";
+import { SshJumpFields, sshJumpFromDto, sshJumpRequest, type SshJumpForm } from "../remote/SshJumpFields";
 import { SshHostTrustManager } from "../remote/SshHostTrustManager";
 import { useSshConnectionConfirmation } from "../remote/SshHostKeyPrompt";
 import { Button } from "../shadcn/button";
@@ -22,25 +28,42 @@ import {
 
 type AuthType = SshFormAuthType;
 
-interface FormData {
+interface FormData extends SshConfigImportForm {
+  proxy: SshProxyForm;
+  jump: SshJumpForm;
+  timing: SshTimingForm;
+  advanced: SshAdvancedOptions;
+  authenticationFactors: SshAuthenticationFactorForm[];
   name: string;
   host: string;
   port: string;
   username: string;
   authType: AuthType;
+  agentFingerprint?: string;
   keyPath: string;
+  keyContent: string;
+  hasKeyContent: boolean;
+  certificatePath: string;
   knownHostsPath: string;
   hostKeyPolicy: SshHostKeyPolicy;
   password: string;
 }
 
 const emptyForm: FormData = {
+  proxy: sshProxyFromDto(),
+  jump: sshJumpFromDto(),
+  timing: sshTimingFromDto(),
+  advanced: { forward_agent: false, agent_provider: "auto", allow_legacy_algorithms: false, x11: null },
+  authenticationFactors: [],
   name: "",
   host: "",
   port: "22",
   username: "",
   authType: "password",
   keyPath: "",
+  keyContent: "",
+  hasKeyContent: false,
+  certificatePath: "",
   knownHostsPath: "",
   hostKeyPolicy: "strict",
   password: "",
@@ -56,6 +79,8 @@ export function normalizeSshError(
   if (!raw) return t("settings.connections.errors.generic");
 
   const lower = raw.toLowerCase();
+  if (lower.includes("ssh inactivity timeout")) return t("settings.connections.timing.inactivityExpired");
+  if (lower.includes("ssh keepalive response limit exceeded")) return t("settings.connections.timing.keepaliveExpired");
   if (lower.includes("ssh host key verification failed")) {
     const guidance = t("settings.connections.hostKeyError");
     return raw.startsWith(`${guidance} `) ? raw : `${guidance} ${raw}`;
@@ -132,12 +157,22 @@ export function ConnectionsSettings() {
   const openEdit = (conn: SshConnection) => {
     setEditingId(conn.id);
     setForm({
+      importPortExplicit: true, importAuthExplicit: true, importJumpExplicit: true,
       name: conn.name,
       host: conn.host,
       port: String(conn.port),
       username: conn.username,
-      authType: conn.auth_type === "key_file" ? "file" : conn.auth_type ?? (conn.key_path ? "file" : "password"),
+      authType: conn.auth_type === "key_content" ? "content" : conn.auth_type === "key_file" ? "file" : conn.auth_type ?? (conn.key_path ? "file" : "password"),
+      authenticationFactors: authenticationFactorsFromDto(conn.authentication_factors ?? []),
+      agentFingerprint: conn.agent_fingerprint ?? "",
+      proxy: sshProxyFromDto(conn.proxy),
+      jump: sshJumpFromDto(conn.jump),
+      timing: sshTimingFromDto(conn.timing),
+      advanced: conn.advanced ?? { forward_agent: false, agent_provider: "auto", allow_legacy_algorithms: false, x11: null },
       keyPath: conn.key_path || "",
+      keyContent: "",
+      hasKeyContent: conn.has_key_content ?? false,
+      certificatePath: conn.certificate_path || "",
       knownHostsPath: conn.known_hosts_path || "",
       hostKeyPolicy: conn.host_key_policy ?? "strict",
       password: "",
@@ -154,12 +189,12 @@ export function ConnectionsSettings() {
   };
 
   const handleSave = async () => {
-    if (!form.name || !form.host || !form.username) return;
+    if (!canSaveSshConnection(form)) return;
 
     const port = parseInt(form.port, 10) || 22;
-    const authType = form.authType === "file" ? "key_file" : form.authType;
+    const authType = form.authType === "content" ? "key_content" : form.authType === "file" ? "key_file" : form.authType;
     const keyPath = form.authType === "file" ? form.keyPath : undefined;
-    const password = form.authType === "password" ? form.password : undefined;
+    const password = form.authType === "password" || form.authType === "file" || form.authType === "content" ? form.password : undefined;
 
     if (editingId) {
       await sshUpdateConnection(
@@ -173,6 +208,14 @@ export function ConnectionsSettings() {
         password,
         form.knownHostsPath,
         form.hostKeyPolicy,
+        form.authType === "file" || form.authType === "content" ? form.certificatePath : undefined,
+        form.authType === "content" ? form.keyContent || undefined : undefined,
+        form.authType === "chain" ? authenticationFactorRequests(form.authenticationFactors) : undefined,
+        sshProxyRequest(form.proxy),
+        sshJumpRequest(form.jump),
+        sshTimingRequest(form.timing),
+        ["agent", "openssh_agent", "pageant"].includes(form.authType) ? form.agentFingerprint ?? "" : undefined,
+        form.advanced,
       );
     } else {
       await sshCreateConnection(
@@ -185,6 +228,14 @@ export function ConnectionsSettings() {
         password,
         form.knownHostsPath,
         form.hostKeyPolicy,
+        form.authType === "file" || form.authType === "content" ? form.certificatePath : undefined,
+        form.authType === "content" ? form.keyContent || undefined : undefined,
+        form.authType === "chain" ? authenticationFactorRequests(form.authenticationFactors) : undefined,
+        sshProxyRequest(form.proxy),
+        sshJumpRequest(form.jump),
+        sshTimingRequest(form.timing),
+        ["agent", "openssh_agent", "pageant"].includes(form.authType) ? form.agentFingerprint ?? "" : undefined,
+        form.advanced,
       );
     }
 
@@ -196,6 +247,12 @@ export function ConnectionsSettings() {
     const selected = await pickSshIdentityFile();
     if (!selected) return;
     setForm((prev) => ({ ...prev, keyPath: selected }));
+  };
+
+  const handlePickCertificateFile = async () => {
+    const selected = await pickSshIdentityFile("certificate");
+    if (!selected) return;
+    setForm((prev) => ({ ...prev, certificatePath: selected }));
   };
 
   const handleRemove = async (id: string) => {
@@ -352,9 +409,6 @@ export function ConnectionsSettings() {
               </span>
               <FontAwesomeIcon icon={["fas", "server"]} />
             </div>
-            <div className="mb-4 text-[13px] text-text-secondary">
-              {t("settings.connections.sshDesc")}
-            </div>
             <button
               className="rounded-full bg-black/5 px-4 py-1.5 text-[13px] font-medium text-text-base transition-colors hover:bg-black/5"
               onClick={openCreate}
@@ -460,9 +514,6 @@ export function ConnectionsSettings() {
                     ? t("settings.connections.edit")
                     : t("settings.connections.addSsh")}
                 </h3>
-                <p className="mt-1 text-[11px] leading-4 text-text-secondary">
-                  {t("settings.connections.sshDesc")}
-                </p>
               </div>
               <button
                 type="button"
@@ -481,6 +532,7 @@ export function ConnectionsSettings() {
               }}
             >
               <div className="space-y-3 px-5 py-4">
+                <SshConfigImporter value={form} onApply={setForm} />
                 <SshHostTrustField
                   id="settings-known-hosts"
                   host={form.host}
@@ -527,7 +579,7 @@ export function ConnectionsSettings() {
                       <input
                         type="text"
                         value={form.port}
-                        onChange={(e) => setForm({ ...form, port: e.target.value })}
+                        onChange={(e) => setForm({ ...form, port: e.target.value, importPortExplicit: true })}
                         className="h-[34px] w-full rounded-[14px] border border-border-theme bg-white px-3 text-[13px] text-text-base outline-none transition-colors focus:border-blue-500"
                       />
                     </div>
@@ -547,7 +599,17 @@ export function ConnectionsSettings() {
                 </section>
 
                 <section className="border-t border-border-theme pt-3">
-                    <SshAuthenticationFields value={form} onChange={(change) => setForm((previous) => ({ ...previous, ...change }))} onPickKeyFile={() => void handlePickKeyFile()} />
+                  <SshProxyFields value={form.proxy} onChange={(proxy) => setForm((previous) => ({ ...previous, proxy }))} />
+                </section>
+                <section className="border-t border-border-theme pt-3">
+                  <SshJumpFields value={form.jump} onChange={(jump) => setForm((previous) => ({ ...previous, jump, importJumpExplicit: true }))} />
+                </section>
+                <section className="border-t border-border-theme pt-3">
+                  <SshTimingFields value={form.timing} onChange={(timing) => setForm((previous) => ({ ...previous, timing }))} />
+                  <SshAdvancedFields value={form.advanced} onChange={(advanced) => setForm((previous) => ({ ...previous, advanced }))} />
+                </section>
+                <section className="border-t border-border-theme pt-3">
+                    <SshAuthenticationFields value={form} onChange={(change) => setForm((previous) => ({ ...previous, ...change, importAuthExplicit: true }))} onPickKeyFile={() => void handlePickKeyFile()} onPickCertificateFile={() => void handlePickCertificateFile()} />
                   </section>
               </div>
 
@@ -562,7 +624,7 @@ export function ConnectionsSettings() {
                 <button
                   type="submit"
                   className="rounded-full bg-black px-4 py-1 text-[12px] font-medium text-white shadow-sm transition-colors hover:bg-gray-800 disabled:opacity-50"
-                  disabled={!form.name || !form.host || !form.username}
+                  disabled={!canSaveSshConnection(form)}
                 >
                   {editingId
                     ? t("settings.connections.save")

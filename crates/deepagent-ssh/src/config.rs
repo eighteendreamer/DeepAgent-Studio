@@ -12,8 +12,11 @@ pub enum SshAuthType {
     #[serde(rename = "openssh_agent")]
     OpenSshAgent,
     Pageant,
+    AutoPublicKey,
     KeyFile,
+    KeyContent,
     Password,
+    Chain,
 }
 
 /// Only explicit TOFU may enroll unknown hosts; normal production has no Insecure mode.
@@ -25,7 +28,7 @@ pub enum SshHostKeyPolicy {
     AcceptNew,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SshConnectionConfig {
     pub id: String,
     pub name: String,
@@ -33,7 +36,14 @@ pub struct SshConnectionConfig {
     pub port: u16,
     pub username: String,
     pub auth_type: SshAuthType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_fingerprint: Option<String>,
     pub key_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_content: Option<String>,
+    /// Optional OpenSSH user certificate attached to the configured private key.
+    #[serde(default)]
+    pub certificate_path: Option<String>,
     /// Explicit verified OpenSSH known_hosts source. Legacy None resolves to app data,
     /// never the process user's default SSH directory.
     #[serde(default)]
@@ -42,6 +52,16 @@ pub struct SshConnectionConfig {
     pub host_key_policy: SshHostKeyPolicy,
     #[serde(default)]
     pub password: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub authentication_factors: Vec<crate::SshAuthenticationFactor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<crate::SshProxyConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jump: Option<crate::SshJumpConfig>,
+    #[serde(default)]
+    pub timing: crate::SshConnectionTiming,
+    #[serde(default)]
+    pub advanced: crate::SshAdvancedOptions,
     #[serde(default)]
     pub extra_options: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -74,7 +94,23 @@ pub struct SshConnectionDto {
     pub port: u16,
     pub username: String,
     pub auth_type: SshAuthType,
+    #[serde(default)]
+    pub agent_fingerprint: Option<String>,
+    #[serde(default)]
+    pub authentication_factors: Vec<crate::SshAuthenticationFactorDto>,
+    #[serde(default)]
+    pub proxy: Option<crate::SshProxyDto>,
+    #[serde(default)]
+    pub jump: Option<crate::SshJumpDto>,
+    #[serde(default)]
+    pub timing: crate::SshConnectionTiming,
+    #[serde(default)]
+    pub advanced: crate::SshAdvancedOptions,
     pub key_path: Option<String>,
+    #[serde(default)]
+    pub has_key_content: bool,
+    #[serde(default)]
+    pub certificate_path: Option<String>,
     #[serde(default)]
     pub known_hosts_path: Option<String>,
     #[serde(default)]
@@ -84,14 +120,30 @@ pub struct SshConnectionDto {
     pub latency_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CreateSshConnectionRequest {
     pub name: String,
     pub host: String,
     pub port: u16,
     pub username: String,
     pub auth_type: SshAuthType,
+    #[serde(default)]
+    pub agent_fingerprint: Option<String>,
+    #[serde(default)]
+    pub authentication_factors: Option<Vec<crate::SshAuthenticationFactorRequest>>,
+    #[serde(default)]
+    pub proxy: Option<crate::SshProxyRequest>,
+    #[serde(default)]
+    pub jump: Option<crate::SshJumpRequest>,
+    #[serde(default)]
+    pub timing: crate::SshConnectionTiming,
+    #[serde(default)]
+    pub advanced: crate::SshAdvancedOptions,
     pub key_path: Option<String>,
+    #[serde(default)]
+    pub key_content: Option<String>,
+    #[serde(default)]
+    pub certificate_path: Option<String>,
     #[serde(default)]
     pub known_hosts_path: Option<String>,
     #[serde(default)]
@@ -99,7 +151,7 @@ pub struct CreateSshConnectionRequest {
     pub password: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct UpdateSshConnectionRequest {
     pub id: String,
     pub name: String,
@@ -107,7 +159,29 @@ pub struct UpdateSshConnectionRequest {
     pub port: u16,
     pub username: String,
     pub auth_type: SshAuthType,
+    /// Omitted preserves a compatible Agent selection; empty explicitly clears it.
+    #[serde(default)]
+    pub agent_fingerprint: Option<String>,
+    /// None preserves an existing chain; an explicit list replaces it by opaque factor IDs.
+    #[serde(default)]
+    pub authentication_factors: Option<Vec<crate::SshAuthenticationFactorRequest>>,
+    /// Omitted preserves routing; mode=direct explicitly removes a saved proxy.
+    #[serde(default)]
+    pub proxy: Option<crate::SshProxyRequest>,
+    #[serde(default)]
+    pub jump: Option<crate::SshJumpRequest>,
+    /// Omitted preserves the saved policy; explicit null timers disable those timers.
+    #[serde(default)]
+    pub timing: Option<crate::SshConnectionTiming>,
+    #[serde(default)]
+    pub advanced: Option<crate::SshAdvancedOptions>,
     pub key_path: Option<String>,
+    /// Omitted content preserves the saved identity only when its source is unchanged.
+    #[serde(default)]
+    pub key_content: Option<String>,
+    /// None preserves the attachment; Some("") explicitly removes it.
+    #[serde(default)]
+    pub certificate_path: Option<String>,
     /// None preserves the existing source; Some("") resets to the app default.
     #[serde(default)]
     pub known_hosts_path: Option<String>,
@@ -118,13 +192,40 @@ pub struct UpdateSshConnectionRequest {
 }
 
 impl SshConnectionConfig {
-    pub(crate) fn discard_agent_credentials(&mut self) {
-        if matches!(
+    pub(crate) fn route_label(&self) -> &'static str {
+        if self.jump.is_some() {
+            return "jump";
+        }
+        self.proxy
+            .as_ref()
+            .map_or("direct", |proxy| proxy.mode.label())
+    }
+
+    pub(crate) fn normalize_credentials(&mut self) {
+        normalize_agent_fingerprint(self.auth_type, &mut self.agent_fingerprint);
+        normalize_credential(
             self.auth_type,
-            SshAuthType::Agent | SshAuthType::OpenSshAgent | SshAuthType::Pageant
-        ) {
-            self.key_path = None;
-            self.password = None;
+            &mut self.key_path,
+            &mut self.key_content,
+            &mut self.certificate_path,
+            &mut self.password,
+        );
+        if self.auth_type != SshAuthType::Chain {
+            self.authentication_factors.clear();
+        }
+    }
+
+    pub(crate) fn validate_credentials(&self) -> crate::SshResult<()> {
+        validate_agent_fingerprint(self.agent_fingerprint.as_deref())?;
+        if self.auth_type == SshAuthType::Chain {
+            crate::authentication_factors::validate_factors(&self.authentication_factors)
+        } else {
+            validate_credential(
+                self.auth_type,
+                self.key_path.as_deref(),
+                self.key_content.as_deref(),
+                self.password.as_deref(),
+            )
         }
     }
 
@@ -142,10 +243,18 @@ impl SshConnectionConfig {
             port,
             username: username.into(),
             auth_type,
+            agent_fingerprint: None,
             key_path: None,
+            key_content: None,
+            certificate_path: None,
             known_hosts_path: None,
             host_key_policy: SshHostKeyPolicy::Strict,
             password: None,
+            authentication_factors: Vec::new(),
+            proxy: None,
+            jump: None,
+            timing: Default::default(),
+            advanced: Default::default(),
             extra_options: HashMap::new(),
             control_path: None,
             cached_status: SshStatus::Disconnected,
@@ -153,5 +262,116 @@ impl SshConnectionConfig {
             cached_latency_ms: None,
             cached_checked_at_ms: None,
         }
+    }
+}
+
+impl SshAuthType {
+    pub(crate) fn uses_agent(self) -> bool {
+        matches!(self, Self::Agent | Self::OpenSshAgent | Self::Pageant)
+    }
+
+    pub(crate) fn uses_public_key_candidates(self) -> bool {
+        self.uses_agent() || self == Self::AutoPublicKey
+    }
+}
+
+pub(crate) fn normalize_agent_fingerprint(
+    auth_type: SshAuthType,
+    fingerprint: &mut Option<String>,
+) {
+    if !auth_type.uses_agent() || fingerprint.as_deref() == Some("") {
+        *fingerprint = None;
+    }
+}
+
+fn validate_agent_fingerprint(fingerprint: Option<&str>) -> crate::SshResult<()> {
+    if let Some(value) = fingerprint {
+        let parsed = value.parse::<russh::keys::ssh_key::Fingerprint>();
+        if !matches!(parsed, Ok(russh::keys::ssh_key::Fingerprint::Sha256(_))) {
+            return Err(crate::SshError::InvalidConfig(
+                "Agent identity requires a SHA256 public-key fingerprint".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn normalize_credential(
+    auth_type: SshAuthType,
+    key_path: &mut Option<String>,
+    key_content: &mut Option<String>,
+    certificate_path: &mut Option<String>,
+    password: &mut Option<String>,
+) {
+    if !matches!(auth_type, SshAuthType::KeyFile | SshAuthType::KeyContent)
+        || certificate_path
+            .as_ref()
+            .is_some_and(|path| path.trim().is_empty())
+    {
+        *certificate_path = None;
+    }
+    if auth_type != SshAuthType::KeyContent {
+        *key_content = None;
+    }
+    if auth_type != SshAuthType::KeyFile {
+        *key_path = None;
+    }
+    if password.as_deref() == Some("")
+        || !matches!(
+            auth_type,
+            SshAuthType::Password | SshAuthType::KeyFile | SshAuthType::KeyContent
+        )
+    {
+        *password = None;
+    }
+}
+
+pub(crate) fn validate_credential(
+    auth_type: SshAuthType,
+    key_path: Option<&str>,
+    key_content: Option<&str>,
+    password: Option<&str>,
+) -> crate::SshResult<()> {
+    let missing = match auth_type {
+        SshAuthType::Password if password.unwrap_or_default().is_empty() => {
+            Some("password is required")
+        }
+        SshAuthType::KeyFile if key_path.unwrap_or_default().trim().is_empty() => {
+            Some("key path is required")
+        }
+        SshAuthType::KeyContent if key_content.unwrap_or_default().trim().is_empty() => {
+            Some("private-key content is required")
+        }
+        _ => None,
+    };
+    match missing {
+        Some(message) => Err(crate::SshError::InvalidConfig(message.into())),
+        None => Ok(()),
+    }
+}
+
+impl std::fmt::Debug for SshConnectionConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SshConnectionConfig")
+            .field("id", &self.id)
+            .field("auth_type", &self.auth_type)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for CreateSshConnectionRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreateSshConnectionRequest")
+            .field("auth_type", &self.auth_type)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for UpdateSshConnectionRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UpdateSshConnectionRequest")
+            .field("id", &self.id)
+            .field("auth_type", &self.auth_type)
+            .finish_non_exhaustive()
     }
 }

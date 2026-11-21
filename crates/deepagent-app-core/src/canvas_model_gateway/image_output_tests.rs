@@ -520,7 +520,10 @@ async fn refuses_before_eof(body: Vec<u8>, framing: Framing) {
     let (gateway, artifacts, _) = host(root.path(), &wire);
     let tool = gateway.image_fetch_tool();
     let args = arguments(&gateway, &wire);
-    let result = tokio::time::timeout(Duration::from_secs(2), tool.invoke(args.clone())).await;
+    let context = ToolExecutionContext::default().with_timeout(Duration::from_secs(5));
+    let result = wire
+        .before_eof(tool.invoke_with_context(args.clone(), context))
+        .await;
     wire.close().await;
     let error = result
         .expect("image limit must refuse without EOF")
@@ -555,6 +558,28 @@ async fn h167_unknown_length_image_overflow_refuses_before_eof() {
 }
 
 #[tokio::test]
+async fn valid_image_withheld_eof_reaches_the_request_deadline_instead_of_size_refusal() {
+    let mut wire = ImageWire::start(image_bytes(64), Framing::Chunked, false, true).await;
+    let root = tempfile::tempdir().unwrap();
+    let (gateway, artifacts, _) = host(root.path(), &wire);
+    let tool = gateway.image_fetch_tool();
+    let context = ToolExecutionContext::default().with_timeout(Duration::from_millis(400));
+    let error = wire
+        .before_eof(tool.invoke_with_context(arguments(&gateway, &wire), context))
+        .await
+        .expect("the request must keep its own deadline while EOF is withheld")
+        .unwrap_err();
+    assert!(error.to_string().contains("deadline exceeded"), "{error}");
+    assert!(!error.to_string().contains("ImageArtifactTooLarge"));
+    tokio::time::timeout(Duration::from_secs(2), wire.closed.notified())
+        .await
+        .unwrap();
+    wire.close().await;
+    assert_eq!(wire.requests.load(Ordering::SeqCst), 1);
+    assert_empty(&artifacts, root.path());
+}
+
+#[tokio::test]
 async fn h167_successful_image_json_body_is_bounded_before_eof_and_parsing() {
     let raw_limit = IMAGE_LIMIT.div_ceil(3) * 4 + 1024 * 1024;
     let mut raw = vec![b'X'; raw_limit + 1];
@@ -562,13 +587,12 @@ async fn h167_successful_image_json_body_is_bounded_before_eof_and_parsing() {
     let mut wire = ImageWire::start(raw, Framing::Chunked, true, true).await;
     let root = tempfile::tempdir().unwrap();
     let (gateway, artifacts, provider_id) = host(root.path(), &wire);
-    let request =
+    let mut request =
         CanvasModelRequest::text("synthetic image").with_operation(CanvasOperation::ImageGenerate);
-    let result = tokio::time::timeout(
-        Duration::from_secs(2),
-        gateway.execute_on(&provider_id, "synthetic-image", &request),
-    )
-    .await;
+    request.timeout_ms = 5000;
+    let result = wire
+        .before_eof(gateway.execute_on(&provider_id, "synthetic-image", &request))
+        .await;
     wire.close().await;
     let error = result
         .expect("raw image JSON budget must not wait for EOF")

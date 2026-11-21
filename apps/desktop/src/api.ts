@@ -2764,6 +2764,7 @@ export interface TerminalSession {
   backend: string;
   cols: number;
   rows: number;
+  connectionGeneration?: number;
 }
 
 export interface TerminalInputLease {
@@ -2795,6 +2796,7 @@ export async function terminalSessionOpen(
   cols: number,
   rows: number,
   target: TerminalTarget = { kind: "local" },
+  cwd?: string,
 ): Promise<[TerminalSession, TerminalInputLease]> {
   const invoke = getInvoke();
   if (!invoke) throw new Error("terminal sessions require the desktop app");
@@ -2803,6 +2805,7 @@ export async function terminalSessionOpen(
     cols,
     rows,
     target,
+    cwd,
   });
 }
 
@@ -2818,6 +2821,26 @@ export async function terminalSessionWrite(
 /** Renew before expiry (production TTL: 30 minutes). Never revives an old token.
  * After expiry, use terminalSessionTakeover and discard the old lease instead.
  */
+export async function terminalSessionWriteBytes(session: TerminalSession, lease: TerminalInputLease, bytes: Uint8Array): Promise<void> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("terminal sessions require the desktop app");
+  if (bytes.length > 64 * 1024) throw new Error("Terminal binary input exceeds 64 KiB");
+  return invoke<void>("terminal_session_write_bytes", { session, lease, data: Array.from(bytes) });
+}
+
+export async function terminalSessionLock(session: TerminalSession, lease: TerminalInputLease, password: string, hideOutput: boolean): Promise<void> {
+  const invoke = getInvoke(); if (!invoke) throw new Error("terminal sessions require the desktop app");
+  return invoke<void>("terminal_session_lock", { session, lease, password, hideOutput });
+}
+export async function terminalSessionUnlock(session: TerminalSession, lease: TerminalInputLease, password: string): Promise<void> {
+  const invoke = getInvoke(); if (!invoke) throw new Error("terminal sessions require the desktop app");
+  return invoke<void>("terminal_session_unlock", { session, lease, password });
+}
+export async function terminalSessionLockStatus(session: TerminalSession): Promise<boolean | null> {
+  const invoke = getInvoke(); if (!invoke) throw new Error("terminal sessions require the desktop app");
+  return invoke<boolean | null>("terminal_session_lock_status", { session });
+}
+
 export async function terminalSessionRenew(
   session: TerminalSession,
   lease: TerminalInputLease,
@@ -2871,13 +2894,13 @@ export async function terminalSessionLastCursor(sessionId: string): Promise<numb
   return invoke<number>("terminal_session_last_cursor", { sessionId });
 }
 
-/** Query whether the persisted cursor still points to a live local PTY. */
+/** Query whether the session's cursor still belongs to its live backend generation. */
 export async function terminalSessionRecoveryStatus(
-  sessionId: string,
+  session: TerminalSession,
 ): Promise<TerminalRecoveryStatus> {
   const invoke = getInvoke();
   if (!invoke) return { cursor: 0, available: false, controlAvailable: false };
-  return invoke<TerminalRecoveryStatus>("terminal_session_recovery_status", { sessionId });
+  return invoke<TerminalRecoveryStatus>("terminal_session_recovery_status", { session });
 }
 
 export async function terminalSessionResize(
@@ -3018,13 +3041,13 @@ export async function pickPreviewFile(): Promise<string | null> {
  * Open the OS-native "open file" dialog for selecting an SSH identity file.
  * Returns the chosen absolute path or null if the user cancelled.
  */
-export async function pickSshIdentityFile(): Promise<string | null> {
+export async function pickSshIdentityFile(kind: "identity" | "certificate" | "config" = "identity"): Promise<string | null> {
   if (!isTauri()) return null;
   const mod = await import("@tauri-apps/plugin-dialog");
   const selected = await mod.open({
     directory: false,
     multiple: false,
-    title: "Select SSH Identity File",
+    title: kind === "config" ? "Select OpenSSH Config" : kind === "certificate" ? "Select SSH User Certificate" : "Select SSH Identity File",
   });
   if (typeof selected === "string") return selected;
   return null;
@@ -3748,10 +3771,14 @@ function mockDiff(oldText: string, newText: string): DiffResult {
 export type SshHostKeyPolicy = "strict" | "accept_new";
 
 export type SshAgentProvider = "auto" | "open_ssh" | "pageant";
+export interface SshAgentIdentity {
+  algorithm: string;
+  fingerprint: string;
+}
 export interface SshAgentProbe {
   provider: Exclude<SshAgentProvider, "auto">;
   state: "available" | "empty" | "unavailable" | "unsupported" | "timed_out" | "error";
-  identities: { algorithm: string; fingerprint: string }[];
+  identities: SshAgentIdentity[];
   reason?: string | null;
 }
 
@@ -3762,6 +3789,176 @@ export async function sshProbeAgent(provider: SshAgentProvider): Promise<SshAgen
   return invoke<SshAgentProbe[]>("ssh_probe_agent", { provider });
 }
 
+export interface SshDefaultIdentity {
+  name: string;
+  path: string;
+  state: "available" | "missing" | "unavailable";
+  reason?: string | null;
+}
+
+export async function sshDiscoverDefaultIdentities(): Promise<SshDefaultIdentity[]> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("SSH identity discovery requires the desktop application.");
+  return invoke<SshDefaultIdentity[]>("ssh_discover_default_identities");
+}
+
+export interface SshConfigOverrides {
+  host?: string;
+  port?: number;
+  username?: string;
+  identity_files?: string[];
+  proxy_jump?: string;
+}
+
+export interface SshConfigImportedEndpoint {
+  host: string;
+  port: number;
+  username: string;
+  identity_files: string[];
+  default_identities: boolean;
+}
+
+export interface SshConfigImportedConnection {
+  alias: string;
+  target: SshConfigImportedEndpoint;
+  jump?: SshConfigImportedEndpoint | null;
+}
+
+export interface SshConfigImportPreview {
+  path: string;
+  aliases: string[];
+  connection?: SshConfigImportedConnection | null;
+}
+
+export async function sshPreviewConfigImport(path?: string, alias?: string, overrides: SshConfigOverrides = {}): Promise<SshConfigImportPreview> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("SSH config import requires the desktop application.");
+  return invoke<SshConfigImportPreview>("ssh_preview_config_import", { path, alias, overrides });
+}
+
+
+export interface SshProxy {
+  mode: "http_connect" | "socks5";
+  host: string;
+  port: number;
+  username?: string | null;
+  has_password: boolean;
+}
+export type SshProxyRequest = { mode: "direct" } | {
+  mode: SshProxy["mode"]; host: string; port: number; username?: string; password?: string;
+};
+
+export interface SshJumpEndpoint { host: string; port: number; username: string }
+export interface SshJump extends SshJumpEndpoint {
+  auth_type: SshConnection["auth_type"];
+  agent_fingerprint?: string | null;
+  key_path?: string | null;
+  certificate_path?: string | null;
+  has_key_content: boolean;
+  has_password: boolean;
+  authentication_factors: SshAuthenticationFactor[];
+  known_hosts_path?: string | null;
+  host_key_policy: SshHostKeyPolicy;
+}
+export type SshJumpRequest = {mode: "direct"} | (SshJumpEndpoint & {
+  mode: "ssh"; auth_type: SshConnection["auth_type"]; key_path?: string; key_content?: string;
+  agent_fingerprint?: string;
+  certificate_path?: string; password?: string; authentication_factors?: SshAuthenticationFactorRequest[];
+  known_hosts_path?: string; host_key_policy?: SshHostKeyPolicy;
+});
+export type SshRoute = "direct" | SshProxy["mode"] | "jump";
+
+export interface SshAuthenticationFactorRequest {
+  id?: string;
+  auth_type: "password" | "key_file" | "key_content";
+  key_path?: string;
+  key_content?: string;
+  certificate_path?: string;
+  password?: string;
+  passphrase?: string;
+}
+
+export interface SshAuthenticationFactor {
+  id: string;
+  auth_type: SshAuthenticationFactorRequest["auth_type"];
+  key_path?: string;
+  certificate_path?: string;
+  has_key_content: boolean;
+  has_password: boolean;
+  has_passphrase: boolean;
+}
+
+export interface SshX11Options { display: string; xauthority_path?: string | null }
+export interface SshAdvancedOptions {
+  forward_agent: boolean;
+  agent_provider: SshAgentProvider;
+  allow_legacy_algorithms: boolean;
+  x11: SshX11Options | null;
+}
+export interface SshConnectionDetails {
+  transport_generation: number;
+  algorithms: { kex: string; host_key: string; cipher: string; client_mac: string; server_mac: string } | null;
+  agent_forwarding_enabled: boolean;
+  x11_forwarding_enabled: boolean;
+}
+export interface SshForwardRequest {
+  kind: "local" | "remote" | "dynamic";
+  bind_host: string;
+  bind_port: number;
+  target_host: string | null;
+  target_port: number | null;
+  allow_non_loopback: boolean;
+}
+export interface SshForwardTask {
+  id: string; connection_id: string; transport_generation: number;
+  kind: SshForwardRequest["kind"]; bind_host: string; bind_port: number;
+  target_host: string | null; target_port: number | null;
+  status: "starting" | "running" | "stopped" | "error";
+  active_channels: number; completed_channels: number;
+  bytes_to_target: number; bytes_from_target: number; events: string[];
+}
+export interface SshAgentAddRequest {
+  provider: SshAgentProvider; key_path: string | null; key_content: string | null; passphrase: string | null;
+  lifetime_secs: number; expected_fingerprint: string; authorized: boolean;
+}
+export interface SshAgentAddResult {
+  provider: SshAgentProvider; identity: SshAgentIdentity; already_present: boolean; lifetime_secs: number | null;
+}
+export async function sshPreviewAgentIdentity(request: SshAgentAddRequest): Promise<SshAgentIdentity> {
+  const invoke = getInvoke(); if (!invoke) throw new Error("Agent management requires the desktop app");
+  return invoke("ssh_preview_agent_identity", { request });
+}
+export async function sshAddAgentIdentity(request: SshAgentAddRequest): Promise<SshAgentAddResult> {
+  const invoke = getInvoke(); if (!invoke) throw new Error("Agent management requires the desktop app");
+  return invoke("ssh_add_agent_identity", { request });
+}
+export async function sshProbeX11(options: SshX11Options): Promise<{available: boolean; display: string; reason: string | null}> {
+  const invoke = getInvoke(); if (!invoke) throw new Error("X11 requires the desktop app");
+  return invoke("ssh_probe_x11", { options });
+}
+export async function sshConnectionDetails(id: string): Promise<SshConnectionDetails> {
+  const invoke = getInvoke(); if (!invoke) throw new Error("Connection details require the desktop app");
+  return invoke("ssh_connection_details", { id });
+}
+export async function sshListForwards(id: string, generation: number): Promise<SshForwardTask[]> {
+  const invoke = getInvoke(); if (!invoke) throw new Error("Forwarding requires the desktop app");
+  return invoke("ssh_list_forwards", { id, generation });
+}
+export async function sshStartForward(id: string, generation: number, request: SshForwardRequest): Promise<SshForwardTask> {
+  const invoke = getInvoke(); if (!invoke) throw new Error("Forwarding requires the desktop app");
+  return invoke("ssh_start_forward", { id, generation, request });
+}
+export async function sshStopForward(id: string, generation: number, taskId: string): Promise<SshForwardTask> {
+  const invoke = getInvoke(); if (!invoke) throw new Error("Forwarding requires the desktop app");
+  return invoke("ssh_stop_forward", { id, generation, taskId });
+}
+
+export interface SshConnectionTiming {
+  connect_timeout_secs: number;
+  inactivity_timeout_secs: number | null;
+  keepalive_interval_secs: number | null;
+  keepalive_max: number;
+}
 
 export interface SshConnection {
   id: string;
@@ -3769,8 +3966,16 @@ export interface SshConnection {
   host: string;
   port: number;
   username: string;
-  auth_type: "agent" | "openssh_agent" | "pageant" | "key_file" | "password";
+  auth_type: "agent" | "openssh_agent" | "pageant" | "auto_public_key" | "key_file" | "key_content" | "password" | "chain";
+  agent_fingerprint?: string | null;
+  authentication_factors?: SshAuthenticationFactor[];
+  proxy?: SshProxy | null;
+  jump?: SshJump | null;
+  timing?: SshConnectionTiming;
+  advanced?: SshAdvancedOptions;
   key_path?: string;
+  has_key_content?: boolean;
+  certificate_path?: string;
   known_hosts_path?: string;
   host_key_policy?: SshHostKeyPolicy;
   status: "disconnected" | "connecting" | "connected" | "error";
@@ -3936,6 +4141,9 @@ export async function sshListConnections(): Promise<SshConnection[]> {
 export interface SshHostTrustInspection {
   host: string;
   port: number;
+  route: SshRoute;
+  proxy?: Pick<SshProxy, "mode" | "host" | "port"> | null;
+  jump?: SshJumpEndpoint | null;
   known_hosts_path: string;
   keys: { line_number: number; algorithm: string; fingerprint: string }[];
 }
@@ -3944,10 +4152,11 @@ export async function sshInspectHostTrust(
   host: string,
   port: number,
   knownHostsPath?: string,
+  connectionId?: string,
 ): Promise<SshHostTrustInspection> {
   const invoke = getInvoke();
   if (!invoke) throw new Error("Host trust inspection requires the desktop app");
-  return invoke<SshHostTrustInspection>("ssh_inspect_host_trust", { host, port, knownHostsPath });
+  return invoke<SshHostTrustInspection>("ssh_inspect_host_trust", { host, port, knownHostsPath, connectionId });
 }
 
 export interface SshHostKeyRecord {
@@ -3989,7 +4198,9 @@ export interface SshHostTrustAuditRecord {
   replacement?: { algorithm: string; fingerprint: string };
 }
 export interface SshHostTrustAudit {
-  connection_id: string; host: string; port: number; route: "direct";
+  connection_id: string; host: string; port: number; route: SshRoute;
+  proxy?: Pick<SshProxy, "mode" | "host" | "port"> | null;
+  jump?: SshJumpEndpoint | null;
   revision: number; records: SshHostTrustAuditRecord[];
   last_used_at_ms?: number | null;
   activity_error?: string | null;
@@ -4025,6 +4236,9 @@ export interface SshKnownHostsImportRow {
 }
 export interface SshKnownHostsImportPreview {
   connection_id: string; host: string; port: number; known_hosts_path: string;
+  route: SshRoute;
+  proxy?: Pick<SshProxy, "mode" | "host" | "port"> | null;
+  jump?: SshJumpEndpoint | null;
   source_sha256: string; rows: SshKnownHostsImportRow[]; importable: number; skipped: number;
 }
 export interface SshKnownHostsImportResult {
@@ -4069,6 +4283,30 @@ export async function sshRemovePath(connectionId: string, path: string): Promise
   return invoke<void>("ssh_remove_path", { connectionId, path });
 }
 
+function mockProxy(proxy?: SshProxyRequest): SshProxy | undefined {
+  return proxy && proxy.mode !== "direct" ? { mode: proxy.mode, host: proxy.host, port: proxy.port, username: proxy.username, has_password: Boolean(proxy.password) } : undefined;
+}
+
+function mockAuthenticationFactors(factors?: SshAuthenticationFactorRequest[]): SshAuthenticationFactor[] {
+  return (factors ?? []).map((factor, index) => ({
+    id: factor.id ?? `mock-factor-${index}`,
+    auth_type: factor.auth_type,
+    key_path: factor.key_path,
+    certificate_path: factor.certificate_path,
+    has_key_content: Boolean(factor.key_content),
+    has_password: Boolean(factor.password),
+    has_passphrase: Boolean(factor.passphrase),
+  }));
+}
+
+function mockJump(jump?: SshJumpRequest): SshJump | undefined {
+  if (!jump || jump.mode === "direct") return undefined;
+  return {host:jump.host, port:jump.port, username:jump.username, auth_type:jump.auth_type, agent_fingerprint:jump.agent_fingerprint || undefined,
+    key_path:jump.key_path, certificate_path:jump.certificate_path, has_key_content:Boolean(jump.key_content),
+    has_password:Boolean(jump.password), authentication_factors:mockAuthenticationFactors(jump.authentication_factors),
+    known_hosts_path:jump.known_hosts_path, host_key_policy:jump.host_key_policy ?? "strict"};
+}
+
 export async function sshCreateConnection(
   name: string,
   host: string,
@@ -4079,6 +4317,14 @@ export async function sshCreateConnection(
   password?: string,
   knownHostsPath?: string,
   hostKeyPolicy: SshHostKeyPolicy = "strict",
+  certificatePath?: string,
+  keyContent?: string,
+  authenticationFactors?: SshAuthenticationFactorRequest[],
+  proxy?: SshProxyRequest,
+  jump?: SshJumpRequest,
+  timing?: SshConnectionTiming,
+  agentFingerprint?: string,
+  advanced?: SshAdvancedOptions,
 ): Promise<SshConnection> {
   const invoke = getInvoke();
   if (invoke)
@@ -4092,8 +4338,16 @@ export async function sshCreateConnection(
       password,
       knownHostsPath,
       hostKeyPolicy,
+      certificatePath,
+      keyContent,
+      authenticationFactors,
+      proxy,
+      jump,
+      timing,
+      agentFingerprint,
+      advanced,
     });
-  return { id: "mock", name, host, port, username, auth_type: authType, known_hosts_path: knownHostsPath, host_key_policy: hostKeyPolicy, status: "disconnected" };
+  return { id: "mock", name, host, port, username, auth_type: authType, agent_fingerprint: agentFingerprint || undefined, authentication_factors: mockAuthenticationFactors(authenticationFactors), proxy: mockProxy(proxy), jump: mockJump(jump), timing, advanced, key_path: keyPath, has_key_content: authType === "key_content" && Boolean(keyContent), certificate_path: certificatePath, known_hosts_path: knownHostsPath, host_key_policy: hostKeyPolicy, status: "disconnected" };
 }
 
 export async function sshUpdateConnection(
@@ -4107,6 +4361,14 @@ export async function sshUpdateConnection(
   password?: string,
   knownHostsPath?: string,
   hostKeyPolicy?: SshHostKeyPolicy,
+  certificatePath?: string,
+  keyContent?: string,
+  authenticationFactors?: SshAuthenticationFactorRequest[],
+  proxy?: SshProxyRequest,
+  jump?: SshJumpRequest,
+  timing?: SshConnectionTiming,
+  agentFingerprint?: string,
+  advanced?: SshAdvancedOptions,
 ): Promise<SshConnection> {
   const invoke = getInvoke();
   if (invoke)
@@ -4121,8 +4383,16 @@ export async function sshUpdateConnection(
       password,
       knownHostsPath,
       hostKeyPolicy,
+      certificatePath,
+      keyContent,
+      authenticationFactors,
+      proxy,
+      jump,
+      timing,
+      agentFingerprint,
+      advanced,
     });
-  return { id, name, host, port, username, auth_type: authType, known_hosts_path: knownHostsPath, host_key_policy: hostKeyPolicy, status: "disconnected" };
+  return { id, name, host, port, username, auth_type: authType, agent_fingerprint: agentFingerprint || undefined, authentication_factors: mockAuthenticationFactors(authenticationFactors), proxy: mockProxy(proxy), jump: mockJump(jump), timing, advanced, key_path: keyPath, has_key_content: authType === "key_content" && Boolean(keyContent), certificate_path: certificatePath, known_hosts_path: knownHostsPath, host_key_policy: hostKeyPolicy, status: "disconnected" };
 }
 
 export async function sshRemoveConnection(id: string): Promise<void> {
@@ -4142,8 +4412,10 @@ export interface SshHostKeyChallenge {
   host: string;
   port: number;
   username: string;
-  role: "target";
-  route: "direct";
+  role: "target" | "jump";
+  route: SshRoute;
+  proxy?: Pick<SshProxy, "mode" | "host" | "port"> | null;
+  jump?: SshJumpEndpoint | null;
   kind: "unknown_host" | "key_rotation";
   algorithm: string;
   fingerprint: string;
@@ -4151,7 +4423,30 @@ export interface SshHostKeyChallenge {
   can_save: boolean;
 }
 
-export type SshConnectionAttempt = { status: "connected" } | { status: "confirmation_required"; challenge: SshHostKeyChallenge };
+export interface SshAuthenticationPrompt {
+  prompt: string;
+  echo: boolean;
+}
+
+export interface SshAuthenticationChallenge {
+  role?: "target" | "jump";
+  kind?: "keyboard_interactive" | "private_key";
+  connection_id: string;
+  attempt_id: string;
+  challenge_id: string;
+  host: string;
+  port: number;
+  username: string;
+  name: string;
+  instructions: string;
+  prompts: SshAuthenticationPrompt[];
+  expires_at_ms: number;
+}
+
+export type SshConnectionAttempt =
+  | { status: "connected" }
+  | { status: "confirmation_required"; challenge: SshHostKeyChallenge }
+  | { status: "authentication_required"; challenge: SshAuthenticationChallenge };
 export type SshHostKeyDecision = "once" | "save";
 
 export async function sshBeginConnection(id: string): Promise<SshConnectionAttempt> {
@@ -4160,16 +4455,39 @@ export async function sshBeginConnection(id: string): Promise<SshConnectionAttem
   return invoke<SshConnectionAttempt>("ssh_begin_connection", { id });
 }
 
-export async function sshRespondHostKey(id: string, attemptId: string, challengeId: string, decision: SshHostKeyDecision): Promise<void> {
+export async function sshRespondHostKey(id: string, attemptId: string, challengeId: string, decision: SshHostKeyDecision): Promise<SshConnectionAttempt> {
   const invoke = getInvoke();
   if (!invoke) throw new Error("SSH host confirmation requires the desktop app");
-  return invoke<void>("ssh_respond_host_key", { id, attemptId, challengeId, decision });
+  return invoke<SshConnectionAttempt>("ssh_respond_host_key", { id, attemptId, challengeId, decision });
 }
 
 export async function sshCancelHostKey(id: string, attemptId: string, challengeId: string): Promise<void> {
   const invoke = getInvoke();
   if (!invoke) throw new Error("SSH host confirmation requires the desktop app");
   return invoke<void>("ssh_cancel_host_key", { id, attemptId, challengeId });
+}
+
+export async function sshRespondKeyboardInteractive(
+  id: string,
+  attemptId: string,
+  challengeId: string,
+  responses: string[],
+): Promise<SshConnectionAttempt> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("SSH authentication challenge requires the desktop app");
+  return invoke<SshConnectionAttempt>("ssh_respond_keyboard_interactive", {
+    id, attemptId, challengeId, responses,
+  });
+}
+
+export async function sshCancelConnectionAttempt(
+  id: string,
+  attemptId: string,
+  challengeId: string,
+): Promise<void> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("SSH authentication challenge requires the desktop app");
+  return invoke<void>("ssh_cancel_connection_attempt", { id, attemptId, challengeId });
 }
 
 export async function sshDisconnect(id: string): Promise<void> {

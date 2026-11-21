@@ -13,7 +13,7 @@ import type { PluginApp } from "../../types";
 const FilesPlugin = lazy(() => import("./FilesPlugin").then((m) => ({ default: m.FilesPlugin })));
 const SideChatPlugin = lazy(() => import("./SideChatPlugin").then((m) => ({ default: m.SideChatPlugin })));
 const BrowserPlugin = lazy(() => import("./BrowserPlugin").then((m) => ({ default: m.BrowserPlugin })));
-const TerminalPlugin = lazy(() => import("./TerminalPlugin").then((m) => ({ default: m.TerminalPlugin })));
+const TerminalWorkspace = lazy(() => import("../terminal/TerminalWorkspace").then((m) => ({ default: m.TerminalWorkspace })));
 const ProjectMapPlugin = lazy(() => import("./ProjectMapPlugin").then((m) => ({ default: m.ProjectMapPlugin })));
 const RecordingPlugin = lazy(() => import("./RecordingPlugin").then((m) => ({ default: m.RecordingPlugin })));
 const FilePreviewPlugin = lazy(() => import("./FilePreviewPlugin").then((m) => ({ default: m.FilePreviewPlugin })));
@@ -107,7 +107,7 @@ export const PLUGIN_DEFINITIONS: PluginDefinition[] = [
       return activeProjectPath?.trim() || "Terminal";
     },
     render: ({ envMode = "local", selectedConnectionId }) =>
-      renderLazyPlugin(<TerminalPlugin mode={envMode} connectionId={selectedConnectionId} />),
+      renderLazyPlugin(<TerminalWorkspace key={`${envMode}:${selectedConnectionId ?? "local"}`} mode={envMode} connectionId={selectedConnectionId} />),
   },
   {
     type: "project_map",

@@ -1,7 +1,14 @@
-import { SshAuthenticationFields, type SshFormAuthType } from "./SshAuthenticationFields";
+import { SshAdvancedFields } from "./SshAdvancedFields";
+import type { SshAdvancedOptions } from "../../api";
+import { SshTimingFields, sshTimingFromDto, sshTimingRequest, type SshTimingForm } from "./SshTimingFields";
+import { SshConfigImporter, type SshConfigImportForm } from "./SshConfigImport";
+import { authenticationFactorRequests, authenticationFactorsFromDto, canSaveSshConnection, SshAuthenticationFields, type SshFormAuthType, type SshAuthenticationFactorForm } from "./SshAuthenticationFields";
 import { SshHostTrustField } from "./SshHostTrustField";
+import { SshProxyFields, sshProxyFromDto, sshProxyRequest, type SshProxyForm } from "./SshProxyFields";
+import { SshJumpFields, sshJumpFromDto, sshJumpRequest, type SshJumpForm } from "./SshJumpFields";
 import { SshHostTrustManager } from "./SshHostTrustManager";
 import { remoteTransferSubmit } from "../../remoteTransfersApi";
+import { createUploadInvalidator, observeRemoteTransfers } from "../../remoteTransferObserver";
 import { RemoteFileProperties } from "./RemoteFileProperties";
 import { useSshConnectionConfirmation } from "./SshHostKeyPrompt";
 import { HoverInfo } from "../ui/HoverInfo";
@@ -35,6 +42,7 @@ import {
 } from "../shadcn/context-menu";
 import { normalizeSshError } from "../settings/ConnectionsSettings";
 import {
+  isTauri,
   pickSshIdentityFile,
   sshCreateConnection,
   sshCreateDir,
@@ -61,25 +69,42 @@ interface RemoteSidebarProps {
   onBack: () => void;
 }
 
-interface ConnectionForm {
+interface ConnectionForm extends SshConfigImportForm {
+  proxy: SshProxyForm;
+  jump: SshJumpForm;
+  timing: SshTimingForm;
+  advanced: SshAdvancedOptions;
+  authenticationFactors: SshAuthenticationFactorForm[];
   name: string;
   host: string;
   port: string;
   username: string;
   authType: AuthType;
+  agentFingerprint?: string;
   keyPath: string;
+  keyContent: string;
+  hasKeyContent: boolean;
+  certificatePath: string;
   knownHostsPath: string;
   hostKeyPolicy: SshHostKeyPolicy;
   password: string;
 }
 
 const emptyForm: ConnectionForm = {
+  proxy: sshProxyFromDto(),
+  jump: sshJumpFromDto(),
+  timing: sshTimingFromDto(),
+  advanced: { forward_agent: false, agent_provider: "auto", allow_legacy_algorithms: false, x11: null },
+  authenticationFactors: [],
   name: "",
   host: "",
   port: "22",
   username: "",
   authType: "password",
   keyPath: "",
+  keyContent: "",
+  hasKeyContent: false,
+  certificatePath: "",
   knownHostsPath: "",
   hostKeyPolicy: "strict",
   password: "",
@@ -182,7 +207,15 @@ export function RemoteSidebar({
   const [managerMode, setManagerMode] = useState<ManagerMode>("list");
   const [form, setForm] = useState<ConnectionForm>(emptyForm);
   const [filter, setFilter] = useState("");
-  const [tree, setTree] = useState<Record<string, SshDirEntry[]>>({});
+  const [directoryTree, setDirectoryTree] = useState<{
+    connectionId?: string; entries: Record<string, SshDirEntry[]>;
+  }>({ connectionId: selected?.id, entries: {} });
+  const tree = directoryTree.connectionId === selected?.id ? directoryTree.entries : {};
+  const setTree = (update: Record<string, SshDirEntry[]> | ((previous: Record<string, SshDirEntry[]>) => Record<string, SshDirEntry[]>)) => {
+    const connectionId = selected?.id;
+    setDirectoryTree(previous => ({ connectionId, entries: typeof update === "function"
+      ? update(previous.connectionId === connectionId ? previous.entries : {}) : update }));
+  };
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [loadingDir, setLoadingDir] = useState<string | null>(null);
   const showDirectoryLoading = connectingId === selected?.id || loadingDir !== null;
@@ -196,6 +229,13 @@ export function RemoteSidebar({
 
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
+  const treeRef = useRef(tree);
+  treeRef.current = tree;
+  const directoryScope = useRef({ connectionId: selected?.id, requests: new Map<string, symbol>() });
+  if (directoryScope.current.connectionId !== selected?.id) {
+    directoryScope.current = { connectionId: selected?.id, requests: new Map() };
+  }
+  useEffect(() => () => { directoryScope.current.requests.clear(); }, []);
 
   const loadConnections = () => {
     sshListConnections()
@@ -211,19 +251,17 @@ export function RemoteSidebar({
   // Registered once; latest connection is read via selectedRef to avoid
   // re-registering (which races async setup and leaks duplicate listeners).
   useEffect(() => {
+    if (!isTauri()) return;
     let unlisten: (() => void) | undefined;
     let disposed = false;
 
-    // Browser previews have no native webview or host file-drop events.
-    if (!("__TAURI_INTERNALS__" in window)) return;
-
-    const resolveDropTarget = (position: { x: number; y: number }): string => {
+    const resolveDropTarget = (position: { x: number; y: number }): string | null => {
       const el = document.elementFromPoint(
         position.x / window.devicePixelRatio,
         position.y / window.devicePixelRatio,
       );
       const target = el?.closest<HTMLElement>("[data-remote-drop-dir]");
-      return target?.dataset.remoteDropDir || "/";
+      return target?.dataset.remoteDropDir ?? null;
     };
 
     const setupDragDrop = async () => {
@@ -233,34 +271,42 @@ export function RemoteSidebar({
         if (event.payload.type === "drop") {
           const paths = event.payload.paths;
           if (paths.length === 0) return;
+          const targetDir = resolveDropTarget(event.payload.position);
+          if (targetDir === null || disposed) return;
 
           const conn = selectedRef.current;
-          if (!conn) {
+          if (!conn || conn.status !== "connected") {
             message.error(t("remote.notConnected"));
             return;
           }
 
-          const targetDir = resolveDropTarget(event.payload.position);
-
           let successCount = 0;
           let errorCount = 0;
+          let firstError = "";
+          const active = () => !disposed && selectedRef.current?.id === conn.id
+            && selectedRef.current.status === "connected";
           for (const localPath of paths) {
-            const name = localPath.split(/[\\/]/).pop();
+            if (!active()) return;
+            const name = localPath.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
             if (!name) { errorCount++; continue; }
             try {
               await remoteTransferSubmit(conn.id, { direction: "upload", localPath,
-                remotePath: targetDir.endsWith("/") ? `${targetDir}${name}` : `${targetDir}/${name}` });
+                remotePath: targetDir.endsWith("/") ? `${targetDir}${name}` : `${targetDir}/${name}` },
+                { detectLocalKind: true });
               successCount++;
-            } catch { errorCount++; }
+            } catch (error) {
+              errorCount++;
+              if (!firstError) firstError = `${localPath}: ${normalizeSshError(
+                error instanceof Error ? error.message : String(error), t)}`;
+            }
           }
-
-          await loadDir(conn.id, targetDir);
+          if (!active()) return;
 
           if (successCount > 0) {
             message.success(t("remote.transfers.enqueued", { count: successCount }));
           }
           if (errorCount > 0) {
-            message.error(t("remote.transfers.enqueueFailed", { count: errorCount }));
+            message.error([t("remote.transfers.enqueueFailed", { count: errorCount }), firstError].filter(Boolean).join(": "));
           }
 
         }
@@ -272,7 +318,10 @@ export function RemoteSidebar({
       unlisten = unlistenFn;
     };
 
-    void setupDragDrop();
+    void setupDragDrop().catch(error => {
+      if (!disposed) message.error(`${t("remote.transfers.dragDropUnavailable")}: ${normalizeSshError(
+        error instanceof Error ? error.message : String(error), t)}`);
+    });
 
     return () => {
       disposed = true;
@@ -281,12 +330,19 @@ export function RemoteSidebar({
   }, [t]);
 
   const loadDir = async (connectionId: string, path: string) => {
+    const scope = directoryScope.current;
+    const request = Symbol();
+    scope.requests.set(path, request);
+    const current = () => directoryScope.current === scope
+      && selectedRef.current?.id === connectionId && scope.requests.get(path) === request;
     setLoadingDir(path);
     try {
       const listing = await sshListDir(connectionId, path);
+      if (!current()) return;
       setTree((prev) => ({ ...prev, [path]: listing.entries }));
       setDirError(null);
     } catch (error) {
+      if (!current()) return;
       setDirError(
         normalizeSshError(
           error instanceof Error ? error.message : String(error),
@@ -294,14 +350,29 @@ export function RemoteSidebar({
         ),
       );
     } finally {
-      setLoadingDir(null);
+      if (current()) {
+        scope.requests.delete(path);
+        setLoadingDir(null);
+      }
     }
   };
+
+  useEffect(() => {
+    const id = selected?.id;
+    if (!id || selected.status !== "connected") return;
+    void loadDir(id, "/");
+    const next = createUploadInvalidator(id, paths => {
+      // Root plus loaded parents; multiple completions in one notice share refreshes.
+      const visible = new Set(["/", ...[...paths].filter(path => treeRef.current[path])]);
+      for (const path of visible) void loadDir(id, path);
+    }, () => Object.keys(treeRef.current));
+    return observeRemoteTransfers({ next, error: error => setDirError(String(error)) });
+  }, [selected?.id, selected?.status]);
 
   const handleSelect = async (conn: SshConnection) => {
     setManagerOpen(false);
     onSelect(conn);
-    setTree({});
+    setDirectoryTree({ connectionId: conn.id, entries: {} });
     setExpanded(new Set());
     setDirError(null);
     setFilter("");
@@ -328,7 +399,6 @@ export function RemoteSidebar({
       }
       if (current.status !== "connected") return;
     }
-    await loadDir(current.id, "/");
   };
 
   // 重进远程视图时本组件重挂载、目录树状态已丢失，而 selected 是 App 级
@@ -457,12 +527,18 @@ export function RemoteSidebar({
     setForm((prev) => ({ ...prev, keyPath: selectedPath }));
   };
 
+  const handlePickCertificateFile = async () => {
+    const selectedPath = await pickSshIdentityFile("certificate");
+    if (!selectedPath) return;
+    setForm((prev) => ({ ...prev, certificatePath: selectedPath }));
+  };
+
   const handleSave = async () => {
-    if (!form.name || !form.host || !form.username) return;
+    if (!canSaveSshConnection(form)) return;
     const isEditing = managerMode === "edit";
-    const authType = form.authType === "file" ? "key_file" : form.authType;
+    const authType = form.authType === "content" ? "key_content" : form.authType === "file" ? "key_file" : form.authType;
     const keyPath = form.authType === "file" ? form.keyPath : undefined;
-    const password = form.authType === "password" ? form.password : undefined;
+    const password = form.authType === "password" || form.authType === "file" || form.authType === "content" ? form.password : undefined;
     try {
       if (isEditing && editingConn) {
         await sshUpdateConnection(
@@ -476,6 +552,14 @@ export function RemoteSidebar({
           password,
           form.knownHostsPath,
           form.hostKeyPolicy,
+          form.authType === "file" || form.authType === "content" ? form.certificatePath : undefined,
+          form.authType === "content" ? form.keyContent || undefined : undefined,
+          form.authType === "chain" ? authenticationFactorRequests(form.authenticationFactors) : undefined,
+          sshProxyRequest(form.proxy),
+          sshJumpRequest(form.jump),
+          sshTimingRequest(form.timing),
+          ["agent", "openssh_agent", "pageant"].includes(form.authType) ? form.agentFingerprint ?? "" : undefined,
+        form.advanced,
         );
       } else {
         const created = await sshCreateConnection(
@@ -488,6 +572,14 @@ export function RemoteSidebar({
           password,
           form.knownHostsPath,
           form.hostKeyPolicy,
+          form.authType === "file" || form.authType === "content" ? form.certificatePath : undefined,
+          form.authType === "content" ? form.keyContent || undefined : undefined,
+          form.authType === "chain" ? authenticationFactorRequests(form.authenticationFactors) : undefined,
+          sshProxyRequest(form.proxy),
+          sshJumpRequest(form.jump),
+          sshTimingRequest(form.timing),
+          ["agent", "openssh_agent", "pageant"].includes(form.authType) ? form.agentFingerprint ?? "" : undefined,
+        form.advanced,
         );
         void handleSelect(created);
       }
@@ -510,12 +602,22 @@ export function RemoteSidebar({
   // 密码型连接保存时必须重填（validate_config 拒绝空密码）。
   const startEdit = (conn: SshConnection) => {
     setForm({
+      importPortExplicit: true, importAuthExplicit: true, importJumpExplicit: true,
       name: conn.name,
       host: conn.host,
       port: String(conn.port),
       username: conn.username,
-      authType: conn.auth_type === "key_file" ? "file" : conn.auth_type ?? (conn.key_path ? "file" : "password"),
+      authType: conn.auth_type === "key_content" ? "content" : conn.auth_type === "key_file" ? "file" : conn.auth_type ?? (conn.key_path ? "file" : "password"),
+      authenticationFactors: authenticationFactorsFromDto(conn.authentication_factors ?? []),
+      agentFingerprint: conn.agent_fingerprint ?? "",
+      proxy: sshProxyFromDto(conn.proxy),
+      jump: sshJumpFromDto(conn.jump),
+      timing: sshTimingFromDto(conn.timing),
+      advanced: conn.advanced ?? { forward_agent: false, agent_provider: "auto", allow_legacy_algorithms: false, x11: null },
       keyPath: conn.key_path || "",
+      keyContent: "",
+      hasKeyContent: conn.has_key_content ?? false,
+      certificatePath: conn.certificate_path || "",
       knownHostsPath: conn.known_hosts_path || "",
       hostKeyPolicy: conn.host_key_policy ?? "strict",
       password: "",
@@ -711,6 +813,7 @@ export function RemoteSidebar({
                   <button
                     type="button"
                     aria-label={entry.path}
+                    data-remote-drop-dir={parentDirOf(entry.path, entry.name)}
                     className="flex w-full items-center gap-1 rounded-md py-1 pr-1.5 pl-0 text-left text-[12px] text-text-base hover:bg-black/5"
                     style={{ paddingLeft: 4 + depth * 12 }}
 
@@ -885,7 +988,7 @@ export function RemoteSidebar({
           </div>
         )}
 
-        <div className="text-[12px]">
+        <div className="text-[12px]" data-remote-drop-dir="/">
           {!selected ? (
             <div className="px-2.5 py-1 text-text-secondary">
               {t("remote.emptyTree")}
@@ -900,6 +1003,7 @@ export function RemoteSidebar({
                 entry.is_dir ? (
                   <HoverInfo key={`${dir}/${entry.name}`} content={`${dir} · ${entry.path}`}><button
                     type="button"
+                    data-remote-drop-dir={entry.path}
                     className="flex w-full items-center gap-1.5 rounded-md px-2.5 py-1 text-left hover:bg-black/5"
 
                     onClick={() => toggleDir(entry)}
@@ -917,6 +1021,7 @@ export function RemoteSidebar({
                 ) : (
                   <HoverInfo key={`${dir}/${entry.name}`} content={`${dir} · ${entry.path}`}><button
                     type="button"
+                    data-remote-drop-dir={dir}
                     className="flex w-full items-center gap-1.5 rounded-md px-2.5 py-1 text-left hover:bg-black/5"
 
                     onClick={() => onOpenFile(entry.path, entry.name)}
@@ -1044,6 +1149,7 @@ export function RemoteSidebar({
                     }}
                   >
                     <div className="space-y-3 px-5 py-4">
+                      <SshConfigImporter value={form} onApply={setForm} />
                       <div>
                         <label className="mb-1.5 block text-[11px] font-medium text-text-base">
                           {t("settings.connections.displayName")}
@@ -1083,7 +1189,7 @@ export function RemoteSidebar({
                             type="text"
                             value={form.port}
                             onChange={(event) =>
-                              setForm({ ...form, port: event.target.value })
+                              setForm({ ...form, port: event.target.value, importPortExplicit: true })
                             }
                             className="h-[34px] w-full rounded-[14px] border border-border-theme bg-white px-3 text-[13px] text-text-base outline-none transition-colors focus:border-blue-500"
                           />
@@ -1113,7 +1219,17 @@ export function RemoteSidebar({
                         onChange={(knownHostsPath) => setForm({ ...form, knownHostsPath })}
                       />
                       <section className="border-t border-border-theme pt-3">
-                    <SshAuthenticationFields value={form} onChange={(change) => setForm((previous) => ({ ...previous, ...change }))} onPickKeyFile={() => void handlePickKeyFile()} />
+                        <SshProxyFields value={form.proxy} onChange={(proxy) => setForm((previous) => ({ ...previous, proxy }))} />
+                      </section>
+                      <section className="border-t border-border-theme pt-3">
+                        <SshJumpFields value={form.jump} onChange={(jump) => setForm((previous) => ({ ...previous, jump, importJumpExplicit: true }))} />
+                      </section>
+                      <section className="border-t border-border-theme pt-3">
+                        <SshTimingFields value={form.timing} onChange={(timing) => setForm((previous) => ({ ...previous, timing }))} />
+                  <SshAdvancedFields value={form.advanced} onChange={(advanced) => setForm((previous) => ({ ...previous, advanced }))} />
+                      </section>
+                      <section className="border-t border-border-theme pt-3">
+                    <SshAuthenticationFields value={form} onChange={(change) => setForm((previous) => ({ ...previous, ...change, importAuthExplicit: true }))} onPickKeyFile={() => void handlePickKeyFile()} onPickCertificateFile={() => void handlePickCertificateFile()} />
                   </section>
                     </div>
                     <div className="flex justify-between border-t border-border-theme px-5 py-3">
@@ -1126,7 +1242,7 @@ export function RemoteSidebar({
                       </button>
                       <button
                         type="submit"
-                        disabled={!form.name || !form.host || !form.username}
+                        disabled={!canSaveSshConnection(form)}
                         className="rounded-full bg-black px-4 py-1.5 text-[13px] text-white transition-colors hover:bg-gray-800 disabled:opacity-60"
                       >
                         {t("settings.connections.save")}

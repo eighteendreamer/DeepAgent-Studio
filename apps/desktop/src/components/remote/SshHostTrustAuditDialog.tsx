@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { sshHostTrustAudit, type SshConnection, type SshHostTrustAudit } from "../../api";
 import { Button } from "../shadcn/button";
+import { matchesSshRoute, SshRouteLabel } from "./SshProxyFields";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../shadcn/dialog";
 
 /** Read-only bounded snapshots. No polling, SSH probe or mutation is performed. */
@@ -25,7 +26,7 @@ export function SshHostTrustAuditDialog({ connection, onBack }: {
     try {
       const result = await sshHostTrustAudit(connection.id);
       if (owner !== generation.current) return;
-      if (result.connection_id !== connection.id || result.host !== connection.host || result.port !== connection.port || result.route !== "direct" || !Array.isArray(result.records) || result.records.length > 256) {
+      if (result.connection_id !== connection.id || result.host !== connection.host || result.port !== connection.port || !matchesSshRoute(connection, result) || !Array.isArray(result.records) || result.records.length > 256) {
         throw new Error(label("unexpected"));
       }
       setSnapshot(result); setPage(0);
@@ -48,15 +49,13 @@ export function SshHostTrustAuditDialog({ connection, onBack }: {
   const visible = records.slice(current * pageSize, (current + 1) * pageSize);
   return <Dialog open onOpenChange={(open) => { if (!open) onBack(); }}>
     <DialogContent className="flex max-h-[85vh] w-[min(660px,calc(100vw-32px))] flex-col overflow-hidden" aria-label={label("title")}>
-      <DialogHeader><DialogTitle>{label("title")}</DialogTitle><DialogDescription>{connection.host}:{connection.port} · {label("direct")}</DialogDescription></DialogHeader>
+      <DialogHeader><DialogTitle>{label("title")}</DialogTitle><DialogDescription>{connection.host}:{connection.port} · <SshRouteLabel proxy={connection.proxy} jump={connection.jump} /></DialogDescription></DialogHeader>
       <div className="min-h-0 space-y-3 overflow-y-auto px-5 py-4 text-[12px]">
-        <p className="leading-5 text-text-secondary">{label("help")}</p>
         {busy && <p role="status" aria-live="polite">{label("busy")}</p>}
         {error && <p role="alert" className="break-all text-red-600">{error}</p>}
         {snapshot && <p>{label("revision")} {snapshot.revision} · {label("count")} {records.length}</p>}
         {snapshot && <section className="space-y-1 rounded-xl border border-border-theme p-3">
           <p>{label("lastUsed")} {snapshot.last_used_at_ms == null ? label("usageUnknown") : new Date(snapshot.last_used_at_ms).toLocaleString()}</p>
-          <p className="text-text-secondary">{label("usageHelp")}</p>
           {snapshot.activity_error && <p role="alert" className="break-all text-red-600">{label("usageError")} {snapshot.activity_error}</p>}
         </section>}
         {snapshot && records.length === 0 && <p>{label("empty")}</p>}

@@ -65,12 +65,8 @@ export function SshHostTrustField({ id, host, port, value, onChange, policy = "s
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={t("settings.connections.knownHostsPlaceholder")}
-        aria-describedby={`${id}-help`}
         className="h-[34px] rounded-[14px] text-[13px]"
       />
-      <p id={`${id}-help`} className="text-[11px] leading-relaxed text-text-secondary">
-        {t(policy === "accept_new" ? "settings.connections.acceptNewFileHelp" : "settings.connections.knownHostsHelp")}
-      </p>
       <Button
         type="button"
         variant="outline"
@@ -94,7 +90,6 @@ export function SshHostTrustField({ id, host, port, value, onChange, policy = "s
                 </li>
               ))}
             </ul>
-            <p className="text-text-secondary">{t("settings.connections.trustInspectionHelp")}</p>
           </div>
         )}
       </div>
@@ -104,7 +99,7 @@ export function SshHostTrustField({ id, host, port, value, onChange, policy = "s
           <Select value={policy} onValueChange={(next) => {
             if (next === "strict" || next === "accept_new") onPolicyChange(next);
           }}>
-            <SelectTrigger id={`${id}-policy`} aria-describedby={`${id}-policy-help`}>
+            <SelectTrigger id={`${id}-policy`}>
               <SelectValue placeholder={t(policy === "accept_new" ? "settings.connections.acceptNewPolicy" : "settings.connections.strictPolicy")} />
             </SelectTrigger>
             <SelectContent>
@@ -112,9 +107,6 @@ export function SshHostTrustField({ id, host, port, value, onChange, policy = "s
               <SelectItem value="accept_new">{t("settings.connections.acceptNewPolicy")}</SelectItem>
             </SelectContent>
           </Select>
-          <p id={`${id}-policy-help`} role="note" className="text-[11px] leading-relaxed text-text-secondary">
-            {t(policy === "accept_new" ? "settings.connections.acceptNewHelp" : "settings.connections.strictPolicyHelp")}
-          </p>
         </div>
       )}
     </div>

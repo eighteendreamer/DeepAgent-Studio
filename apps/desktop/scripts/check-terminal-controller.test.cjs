@@ -15,6 +15,9 @@ function harness(overrides = {}, sinkOverrides = {}) {
     terminalSessionOpen: async (...args) => { calls.push(['open', ...args]); const id = `pty-${++sequence}`; return [{ sessionId: id, runId: args[0], backend: 'ssh', cols: 80, rows: 24 }, { sessionId: id, runId: args[0], leaseId: id, epoch: 1, holder: 'user' }]; },
     terminalSessionRead: async (...args) => { calls.push(['read', ...args]); return chunk; },
     terminalSessionWrite: async (...args) => { calls.push(['write', ...args]); },
+    terminalSessionWriteBytes: async (...args) => { calls.push(['binary', ...args]); },
+    terminalSessionLock: async (...args) => { calls.push(['lock', ...args]); },
+    terminalSessionUnlock: async (...args) => { calls.push(['unlock', ...args]); },
     terminalSessionResize: async (...args) => { calls.push(['resize', ...args]); },
     terminalSessionRenew: async (...args) => { calls.push(['renew', ...args]); },
     terminalSessionClose: async (...args) => { calls.push(['close', ...args]); },
@@ -81,6 +84,70 @@ test('late reads cannot render after close', async () => {
   reply({ cursor: 3, data: [111, 108, 100], truncated: false }); await reading;
   assert.equal(h.output.length, 0);
   assert.equal(h.timers.size, 0);
+});
+
+test('concurrent close waits for one backend result and a failed close retains the exact generation for retry', async () => {
+  const failure = Error('fixture backend cleanup failed');
+  const session = { sessionId: 'ssh:fixture:retry', runId: 'fixture-run', backend: 'ssh', connectionGeneration: 42 };
+  const lease = { sessionId: session.sessionId, runId: session.runId, leaseId: 'retry-lease', epoch: 7, holder: 'user' };
+  let rejectClose;
+  const attempts = [];
+  const h = harness({
+    terminalSessionOpen: async () => [session, lease],
+    terminalSessionClose: async (...args) => {
+      attempts.push(args);
+      if (attempts.length === 1) await new Promise((resolve, reject) => { rejectClose = reject; });
+    },
+  });
+  await h.controller.open(80, 24);
+  const first = h.controller.close();
+  const second = h.controller.close();
+  const outcomes = Promise.allSettled([first, second]);
+  await Promise.resolve();
+  assert.equal(attempts.length, 1, 'overlapping close requests share one backend cleanup');
+  rejectClose(failure);
+  const settled = await outcomes;
+  assert.deepEqual(settled.map(result => result.status), ['rejected', 'rejected']);
+  for (const result of settled) assert.equal(result.reason, failure);
+  assert.equal(h.timers.size, 0);
+  assert.equal(h.unsubscribed, 1);
+
+  await h.controller.write('must-not-restart');
+  await h.controller.resize(100, 40);
+  assert.equal(h.calls.filter(call => call[0] === 'write' || call[0] === 'resize').length, 0);
+  await h.controller.close();
+  assert.equal(attempts.length, 2, 'explicit retry must reach the retained backend owner');
+  for (const attempt of attempts) {
+    assert.equal(attempt[0], session);
+    assert.equal(attempt[1], lease);
+  }
+  await h.controller.close();
+  assert.equal(attempts.length, 2, 'successful cleanup is not sent again');
+});
+
+test('a session arriving after disposal keeps its owner when cleanup fails and can be closed again', async () => {
+  let resolveOpen;
+  const failure = Error('fixture late cleanup failed');
+  const session = { sessionId: 'ssh:fixture:late-retry', backend: 'ssh', connectionGeneration: 84 };
+  const lease = { sessionId: session.sessionId, leaseId: 'late-retry-lease', epoch: 2 };
+  const attempts = [];
+  const h = harness({
+    terminalSessionOpen: () => new Promise(resolve => { resolveOpen = resolve; }),
+    terminalSessionClose: async (...args) => {
+      attempts.push(args);
+      if (attempts.length === 1) throw failure;
+    },
+  });
+  const opening = h.controller.open(80, 24);
+  await h.controller.close();
+  resolveOpen([session, lease]);
+  await assert.rejects(opening, error => error === failure);
+  assert.equal(h.timers.size, 0);
+  assert.equal(h.calls.filter(call => call[0] === 'subscribe' || call[0] === 'read').length, 0);
+  await h.controller.close();
+  assert.equal(attempts.length, 2, 'late owner must survive its first failed cleanup');
+  assert.equal(attempts[1][0], session);
+  assert.equal(attempts[1][1], lease);
 });
 
 test('xterm acknowledgement gates the next read and input/resize are ordered without duplicate sizes', async () => {
@@ -171,4 +238,39 @@ test('late subscription is disposed after close, and notification failures stop 
   assert.equal(bad.unsubscribed, 1);
   assert.equal(bad.timers.size, 0);
   await bad.controller.close();
+});
+
+test('binary output bypasses text decoding and retains parser backpressure', async () => {
+  const batches = [];
+  const h = harness({}, { bytes: async (bytes,eof) => batches.push({bytes:[...bytes],eof}) });
+  await h.controller.open(80,24);
+  h.setChunk({cursor:4,data:[0,255,24,27],truncated:false,eof:true}); await h.tick();
+  assert.deepEqual(batches[0].bytes,[0,255,24,27]); assert.equal(batches[0].eof,true); assert.equal(h.output.length,0);
+  await h.controller.close();
+});
+test('lock fences ordered text and binary input while output and renewal remain alive', async () => {
+  const errors=[];
+  const h = harness({}, { inputError:error=>errors.push(String(error)) });
+  await h.controller.open(80,24);
+  await h.controller.write('before'); await h.controller.setLock('fixture',true);
+  await assert.rejects(h.controller.write('after'),/locked/);
+  await assert.rejects(h.controller.writeBytes(new Uint8Array([0,255])),/locked/);
+  h.setChunk({cursor:3,data:[111,117,116],eof:false,truncated:false}); await h.tick();
+  assert.equal(h.output.join(''),'out'); assert.equal(h.states.at(-1).state,'running');
+  assert.equal(h.calls.filter(call=>call[0]==='write').length,1);
+  assert.equal(h.calls.filter(call=>call[0]==='binary').length,0); assert.equal(errors.length,2);
+  await h.controller.unlock('fixture'); await h.controller.writeBytes(new Uint8Array([0,255]));
+  assert.equal(h.calls.filter(call=>call[0]==='binary').length,1); await h.controller.close();
+});
+test('binary write copies mutable input and bounds the pending byte queue', async () => {
+  let complete; const data=[];
+  const h = harness({ terminalSessionWriteBytes:async (_,__,bytes)=>{data.push([...bytes]);await new Promise(resolve=>{complete=resolve});} });
+  await h.controller.open(80,24);
+  const original=new Uint8Array(65536); original[0]=255;
+  const writes=[h.controller.writeBytes(original)]; original[0]=0;
+  for(let i=0;i<3;i++) writes.push(h.controller.writeBytes(new Uint8Array(65536)));
+  await assert.rejects(h.controller.writeBytes(new Uint8Array([1])),/limit/);
+  await Promise.resolve(); await Promise.resolve(); assert.equal(data[0][0],255);
+  for(let i=0;i<4;i++){complete();await writes[i];await Promise.resolve();}
+  await h.controller.close();
 });

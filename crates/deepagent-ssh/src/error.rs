@@ -6,6 +6,15 @@ pub type SshResult<T> = Result<T, SshError>;
 
 #[derive(Debug, Error)]
 pub enum SshError {
+    #[error("SSH forwarding {stage}: {reason}")]
+    Forwarding { stage: &'static str, reason: String },
+    #[error("SSH jump {stage}: {source}")]
+    Jump {
+        stage: &'static str,
+        source: Box<SshError>,
+    },
+    #[error("SSH proxy {stage}: {reason}")]
+    Proxy { stage: &'static str, reason: String },
     #[error("ssh host key verification failed for [{host}]:{port}: {reason}; known_hosts={known_hosts_path}. Verify the host fingerprint with a trusted administrator before adding or replacing its public key; never accept a changed key blindly.")]
     HostKeyVerification {
         host: String,
@@ -23,6 +32,8 @@ pub enum SshError {
     CommandFailed { exit_code: i32, stderr: String },
     #[error("connection lost: {0}")]
     ConnectionLost(String),
+    #[error("SSH service is shutting down and no longer accepts work")]
+    ServiceStopped,
     #[error("authentication failed for {0}: {1}")]
     AuthFailed(String, String),
     #[error("invalid configuration: {0}")]

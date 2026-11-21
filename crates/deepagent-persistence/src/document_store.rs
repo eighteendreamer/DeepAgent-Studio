@@ -41,6 +41,14 @@ pub struct DocumentBodyChange<'a> {
     pub body: &'a str,
 }
 
+/// Remove a namespaced document only if its previously read body still matches.
+#[derive(Clone, Copy)]
+pub struct DocumentBodyDelete<'a> {
+    pub collection: &'a str,
+    pub id: &'a str,
+    pub expected: &'a str,
+}
+
 /// Repository over the `documents` table.
 pub struct DocumentStore<'db> {
     db: &'db Database,
@@ -127,24 +135,51 @@ impl<'db> DocumentStore<'db> {
         changes: &[DocumentBodyChange<'_>],
         now: Timestamp,
     ) -> Result<bool> {
+        self.compare_exchange_bodies_and_delete(changes, &[], now)
+    }
+
+    /// Publish bodies and reclaim obsolete documents in the same CAS transaction.
+    /// Every update and deletion must match; a stale/missing row or SQL failure
+    /// rolls back the whole batch. A key may appear in only one operation.
+    pub fn compare_exchange_bodies_and_delete(
+        &self,
+        changes: &[DocumentBodyChange<'_>],
+        deletes: &[DocumentBodyDelete<'_>],
+        now: Timestamp,
+    ) -> Result<bool> {
         let mut keys = std::collections::HashSet::new();
-        for change in changes {
-            if !keys.insert((change.collection, change.id)) {
+        for key in changes
+            .iter()
+            .map(|change| (change.collection, change.id))
+            .chain(deletes.iter().map(|delete| (delete.collection, delete.id)))
+        {
+            if !keys.insert(key) {
                 return Err(CoreError::Persistence(
                     "duplicate document keys in CAS batch".into(),
                 ));
             }
         }
-        if changes.is_empty() {
+        if changes.is_empty() && deletes.is_empty() {
             return Ok(true);
         }
         self.db.with_conn(|c| {
-            if changes.len() == 1 {
+            if changes.len() == 1 && deletes.is_empty() {
                 return compare_body_on(c, &changes[0], now); // Keep single-statement CAS inexpensive.
             }
             let transaction = c.unchecked_transaction().map_err(map_sqlite)?;
             for change in changes {
                 if !compare_body_on(&transaction, change, now)? {
+                    return Ok(false);
+                }
+            }
+            for delete in deletes {
+                let changed = transaction
+                    .execute(
+                        "DELETE FROM documents WHERE collection=?1 AND id=?2 AND body=?3",
+                        params![delete.collection, delete.id, delete.expected],
+                    )
+                    .map_err(map_sqlite)?;
+                if changed != 1 {
                     return Ok(false);
                 }
             }
@@ -302,6 +337,98 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn body_and_conditional_delete_batch_is_atomic() {
+        let db = Database::open_in_memory().unwrap();
+        let store = DocumentStore::new(&db);
+        store
+            .put("queue", "index", "old-index", None, at(1))
+            .unwrap();
+        store.put("queue", "task", "old-task", None, at(1)).unwrap();
+        let change = DocumentBodyChange {
+            collection: "queue",
+            id: "index",
+            expected: Some("old-index"),
+            body: "new-index",
+        };
+        let stale = DocumentBodyDelete {
+            collection: "queue",
+            id: "task",
+            expected: "stale",
+        };
+        assert!(!store
+            .compare_exchange_bodies_and_delete(&[change], &[stale], at(2))
+            .unwrap());
+        assert_eq!(
+            store.get("queue", "index").unwrap().unwrap().body,
+            "old-index"
+        );
+        assert_eq!(
+            store.get("queue", "task").unwrap().unwrap().body,
+            "old-task"
+        );
+        let delete = DocumentBodyDelete {
+            expected: "old-task",
+            ..stale
+        };
+        db.with_conn(|conn| {
+            conn.execute_batch("CREATE TRIGGER reject_delete BEFORE DELETE ON documents BEGIN SELECT RAISE(FAIL,'fixture delete failure'); END;").unwrap();
+            Ok(())
+        }).unwrap();
+        assert!(store
+            .compare_exchange_bodies_and_delete(&[change], &[delete], at(2))
+            .is_err());
+        assert_eq!(
+            store.get("queue", "index").unwrap().unwrap().body,
+            "old-index"
+        );
+        assert_eq!(
+            store.get("queue", "task").unwrap().unwrap().body,
+            "old-task"
+        );
+        db.with_conn(|conn| {
+            conn.execute_batch("DROP TRIGGER reject_delete").unwrap();
+            Ok(())
+        })
+        .unwrap();
+        assert!(store
+            .compare_exchange_bodies_and_delete(&[change], &[delete], at(2))
+            .unwrap());
+        assert_eq!(
+            store.get("queue", "index").unwrap().unwrap().body,
+            "new-index"
+        );
+        assert!(store.get("queue", "task").unwrap().is_none());
+        assert!(!store
+            .compare_exchange_bodies_and_delete(&[], &[delete], at(3))
+            .unwrap());
+    }
+
+    #[test]
+    fn conditional_delete_rejects_duplicate_and_overlapping_keys() {
+        let db = Database::open_in_memory().unwrap();
+        let store = DocumentStore::new(&db);
+        store.put("c", "id", "original", None, at(1)).unwrap();
+        let delete = DocumentBodyDelete {
+            collection: "c",
+            id: "id",
+            expected: "original",
+        };
+        let change = DocumentBodyChange {
+            collection: "c",
+            id: "id",
+            expected: Some("original"),
+            body: "changed",
+        };
+        assert!(store
+            .compare_exchange_bodies_and_delete(&[], &[delete, delete], at(2))
+            .is_err());
+        assert!(store
+            .compare_exchange_bodies_and_delete(&[change], &[delete], at(2))
+            .is_err());
+        assert_eq!(store.get("c", "id").unwrap().unwrap().body, "original");
+    }
 
     fn at(ms: i64) -> Timestamp {
         Timestamp::from_millis(ms)

@@ -21,20 +21,51 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+pub use archive::{ArchivePreview, ArchiveRequest, ArchiveSpec};
+pub use conditional_upload::ConditionalUploadRequest;
+mod archive;
+mod conditional_upload;
+pub use advanced::{SshAdvancedOptions, SshNegotiatedAlgorithms};
 pub use agent::{
-    probe_ssh_agent, SshAgentIdentity, SshAgentProbe, SshAgentProvider, SshAgentState,
+    add_ssh_agent_identity, preview_agent_identity, probe_ssh_agent, SshAgentAddRequest,
+    SshAgentAddResult, SshAgentIdentity, SshAgentProbe, SshAgentProvider, SshAgentState,
+};
+pub use authentication_challenge::{
+    SshAuthenticationChallenge, SshAuthenticationKind, SshAuthenticationPrompt,
+};
+pub use authentication_factors::{
+    SshAuthenticationFactor, SshAuthenticationFactorDto, SshAuthenticationFactorRequest,
+    MAX_AUTHENTICATION_FACTORS,
+};
+pub use chmod::{
+    ChmodProgressCallback, RemoteChmodPreview, RemoteChmodProgress, RemoteChmodReceipt,
+    RemoteChmodRequest,
 };
 pub use config::{
     CreateSshConnectionRequest, SshAuthType, SshConnectionConfig, SshConnectionDto,
     SshHostKeyPolicy, SshStatus, UpdateSshConnectionRequest,
 };
 pub use connection_challenge::{SshConnectionAttempt, SshHostKeyChallenge, SshHostKeyDecision};
+pub use default_identities::{
+    discover_default_ssh_identities, discover_default_ssh_identities_in, SshDefaultIdentity,
+    SshDefaultIdentityState,
+};
+pub use direct_copy::DirectCopyProbe;
+pub use directory_plan::{DirectoryTransferEntry, DirectoryTransferPlan};
+pub use directory_transfer::{
+    DirectoryConflictPolicy, DirectoryConflictResolver, DirectoryFileConflict,
+    DirectoryFileConflictResolver, DirectoryRootConflict, DirectoryTransferOptions,
+    DirectoryTransferProgress, DirectoryTransferReceipt, FileConflictDecision,
+};
+pub use directory_walk::{DirectoryWalkLimits, RemoteDirectoryEntry, RemoteDirectoryTree};
 pub use error::{SshError, SshResult};
+pub use extensions::SshConnectionDetails;
 pub use file_transfer::{
     FileConflictPolicy, FileTransferDirection, FileTransferError, FileTransferProgress,
     FileTransferReceipt, FileTransferRequest,
 };
 pub use files::{RemoteFileKind, RemoteFileMetadata, RemoteRealpath};
+pub use forwarding::{SshForwardKind, SshForwardRequest, SshForwardStatus, SshForwardTask};
 pub use host_key_rotation::{SshHostKeyRotationPreview, SshHostKeyRotationResult};
 pub use host_key_store::{
     SshHostIdentity, SshHostKeyRecord, SshHostKeyRotationRecord, SshHostKeyStore,
@@ -43,9 +74,21 @@ pub use host_trust::{SshHostTrustInspection, SshKnownHostKey};
 pub use host_trust_audit::{
     SshHostKeyFingerprint, SshHostTrustAction, SshHostTrustAudit, SshHostTrustAuditRecord,
 };
+pub use jump::{
+    SshConnectionRole, SshJumpConfig, SshJumpDto, SshJumpEndpoint, SshJumpRequest,
+    SshJumpSettingsRequest,
+};
 pub use known_hosts_import::{
     SshKnownHostsImportPreview, SshKnownHostsImportResult, SshKnownHostsImportRow,
     SshKnownHostsImportStatus,
+};
+pub use openssh_config::{
+    preview_ssh_config, preview_ssh_config_in, resolve_ssh_config, SshConfigImportPreview,
+    SshConfigImportedConnection, SshConfigImportedEndpoint, SshConfigOverrides,
+};
+pub use proxy::{
+    SshProxyConfig, SshProxyDto, SshProxyEndpoint, SshProxyRequest, SshProxySettingsRequest,
+    SshProxyType,
 };
 pub use remote::{
     RemoteBundleManifest, RemoteBundleRequest, RemoteBundleResult, RemoteInstallRequest,
@@ -53,30 +96,59 @@ pub use remote::{
     RemotePushFileResult, RemoteRequireRequest, RemoteRequireResult, RemoteRuntimeRequirement,
     RemoteVerifyMode,
 };
+pub use server_copy::{ServerCopyMethod, ServerCopyPreview, ServerCopyRequest, ServerCopySpec};
 pub use session::{
     SshDirEntry, SshDirListing, SshExecResult, SshFileBinary, SshFileContent, SshPtyHandle,
     SshSession, SshStatusSnapshot, SshTestResult,
 };
+pub use timing::SshConnectionTiming;
 pub use transport::{SshClient, SshCommandOutput};
+pub use x11::{probe_x11, SshX11Options, SshX11Probe};
 
+mod advanced;
 mod agent;
+mod authentication_challenge;
+mod authentication_factors;
+mod chmod;
 mod config;
+mod conflict_target;
 mod connection_challenge;
 mod connection_flow;
+mod connection_lease;
+mod connection_operation;
+mod default_identities;
+mod direct_copy;
+mod directory_plan;
+mod directory_publication;
+mod directory_transfer;
+mod directory_walk;
 mod error;
+mod extensions;
 mod file_transfer;
 mod files;
+mod forwarding;
 mod host_key_activity;
 mod host_key_rotation;
 mod host_key_store;
 mod host_trust;
 mod host_trust_audit;
+mod jump;
 mod known_hosts_import;
+mod openssh_config;
+mod private_identity;
+mod proxy;
 mod pty;
+mod public_key_candidates;
 mod remote;
+mod remote_file_command;
+mod server_copy;
 mod service;
 mod session;
+mod sftp_packet_stream;
+mod timing;
 mod transport;
+mod transport_authentication;
+mod x11;
 
 use async_trait::async_trait;
 use deepagent_terminal::{
@@ -91,6 +163,10 @@ use std::sync::Arc;
 /// use encrypted SQLite without coupling this transport crate to app-core.
 #[async_trait]
 pub trait SshConfigStore: Send + Sync {
+    /// Private-key bodies must never be persisted by the legacy plaintext JSON adapter.
+    fn supports_secret_storage(&self) -> bool {
+        false
+    }
     async fn load(&self) -> SshResult<Vec<SshConnectionConfig>>;
     async fn save(&self, configs: &[SshConnectionConfig]) -> SshResult<()>;
 }
@@ -170,33 +246,48 @@ impl SshTerminalSessionBackend {
 
     pub async fn recovery_status(
         &self,
-        session_id: &str,
+        terminal: &TerminalSession,
     ) -> deepagent_terminal::TerminalResult<deepagent_terminal::TerminalRecoveryStatus> {
-        let cursor = self.leases.last_cursor(session_id)?;
-        let target = session_id
-            .strip_prefix("ssh:")
-            .and_then(|id| id.rsplit_once(':'));
-        let available = if let Some((connection, token)) = target {
-            let session = self
-                .service
-                .inner
-                .sessions
-                .read()
-                .await
-                .get(connection)
-                .cloned();
-            match session {
-                Some(session) => session.pty_running(token).await,
-                None => false,
-            }
-        } else {
-            false
-        };
+        let handle = self.parse_handle(terminal)?;
+        let registered = self
+            .leases
+            .scope_is_registered(&terminal.session_id, &terminal.run_id)?;
+        let cursor = self.leases.last_cursor(&terminal.session_id)?;
+        let available = registered
+            && match self.current_transport(&handle).await {
+                Some(session) => {
+                    session
+                        .client()
+                        .await
+                        .is_some_and(|client| !client.is_closed())
+                        && session.pty_running(&handle.token).await
+                }
+                _ => false,
+            };
         Ok(deepagent_terminal::TerminalRecoveryStatus {
             cursor,
             available,
-            control_available: available && self.leases.control_available(session_id)?,
+            control_available: available && self.leases.control_available(&terminal.session_id)?,
         })
+    }
+
+    async fn current_transport(&self, handle: &SshServiceHandle) -> Option<Arc<SshSession>> {
+        self.service
+            .inner
+            .sessions
+            .read()
+            .await
+            .get(&handle.connection_id)
+            .filter(|session| session.transport_generation() == handle.connection_generation)
+            .cloned()
+    }
+
+    async fn validate_transport(&self, session: &TerminalSession) -> Result<(), TerminalError> {
+        let handle = self.handle(session)?;
+        if self.current_transport(&handle).await.is_none() {
+            return Err(TerminalError::InvalidLease);
+        }
+        Ok(())
     }
 
     // Only overlapping operations share a gate; idle/closed sessions keep no lock owner.
@@ -216,23 +307,29 @@ impl SshTerminalSessionBackend {
     }
 
     fn handle(&self, session: &TerminalSession) -> Result<SshServiceHandle, TerminalError> {
+        let handle = self.parse_handle(session)?;
+        self.leases
+            .validate_scope(&session.session_id, &session.run_id)?;
+        Ok(handle)
+    }
+
+    fn parse_handle(&self, session: &TerminalSession) -> Result<SshServiceHandle, TerminalError> {
         if session.backend != self.backend_kind() || !session.session_id.starts_with("ssh:") {
             return Err(TerminalError::SessionNotFound(session.session_id.clone()));
         }
-        self.leases
-            .validate_scope(&session.session_id, &session.run_id)?;
         let (connection_id, token) = session
             .session_id
             .strip_prefix("ssh:")
             .and_then(|id| id.rsplit_once(':'))
             .filter(|(connection, token)| !connection.is_empty() && !token.is_empty())
             .ok_or(TerminalError::InvalidLease)?;
-        Ok(SshServiceHandle::new(
-            connection_id,
-            token,
-            session.cols,
-            session.rows,
-        ))
+        let generation = session
+            .connection_generation
+            .ok_or(TerminalError::InvalidLease)?;
+        Ok(
+            SshServiceHandle::new(connection_id, token, session.cols, session.rows)
+                .with_connection_generation(generation),
+        )
     }
 
     fn validate(
@@ -251,6 +348,41 @@ impl SshTerminalSessionBackend {
 impl TerminalSessionBackend for SshTerminalSessionBackend {
     fn backend_kind(&self) -> &'static str {
         "ssh"
+    }
+
+    async fn lock(
+        &self,
+        session: &TerminalSession,
+        lease: &TerminalInputLease,
+        password: &str,
+        hide_output: bool,
+    ) -> deepagent_terminal::TerminalResult<()> {
+        let gate = self.input_gate(&session.session_id);
+        let _control = gate.lock().await;
+        self.validate(session, lease)?;
+        self.validate_transport(session).await?;
+        self.leases.lock(lease, password, hide_output)
+    }
+
+    async fn unlock(
+        &self,
+        session: &TerminalSession,
+        lease: &TerminalInputLease,
+        password: &str,
+    ) -> deepagent_terminal::TerminalResult<()> {
+        let gate = self.input_gate(&session.session_id);
+        let _control = gate.lock().await;
+        self.validate(session, lease)?;
+        self.validate_transport(session).await?;
+        self.leases.unlock(lease, password)
+    }
+
+    async fn lock_status(
+        &self,
+        session: &TerminalSession,
+    ) -> deepagent_terminal::TerminalResult<Option<bool>> {
+        self.validate_transport(session).await?;
+        self.leases.lock_status(&session.session_id)
     }
 
     async fn subscribe_output(
@@ -280,13 +412,45 @@ impl TerminalSessionBackend for SshTerminalSessionBackend {
                     capability: "explicit_ssh_target_required".into(),
                 })?,
         };
+        let cwd = if request.cwd.is_empty() {
+            None
+        } else {
+            crate::files::validate_absolute_path(&request.cwd)
+                .map_err(|e| TerminalError::Backend(e.to_string()))?;
+            if request.cwd.chars().any(char::is_control) {
+                return Err(TerminalError::Backend(
+                    "invalid directory control characters".into(),
+                ));
+            }
+            let metadata = self
+                .service
+                .file_metadata(
+                    &SshServiceHandle::new(
+                        &connection_id,
+                        &connection_id,
+                        request.cols,
+                        request.rows,
+                    ),
+                    &request.cwd,
+                    false,
+                )
+                .await
+                .map_err(|e| TerminalError::Backend(e.to_string()))?;
+            if metadata.kind != RemoteFileKind::Directory {
+                return Err(TerminalError::Backend(
+                    "terminal directory must be a real directory".into(),
+                ));
+            }
+            Some(request.cwd.as_str())
+        };
         let token = uuid::Uuid::new_v4().to_string();
-        let session = TerminalSession {
+        let mut session = TerminalSession {
             session_id: format!("ssh:{connection_id}:{token}"),
             run_id: request.run_id,
             backend: self.backend_kind().into(),
             cols: request.cols,
             rows: request.rows,
+            connection_generation: None,
         };
         let lease =
             self.leases
@@ -297,14 +461,26 @@ impl TerminalSessionBackend for SshTerminalSessionBackend {
         };
         let base =
             SshServiceHandle::new(&connection_id, &connection_id, request.cols, request.rows);
-        if let Err(error) = self
+        let pty = match self
             .service
             .inner
-            .spawn_pty(&base, request.cols, request.rows, token, false)
+            .spawn_pty_at(&base, request.cols, request.rows, token, false, cwd)
             .await
         {
-            return Err(TerminalError::Backend(error.to_string()));
-        }
+            Ok(pty) => pty,
+            Err(error) => return Err(TerminalError::Backend(error.to_string())),
+        };
+        let Some(generation) = pty.connection_generation else {
+            let error =
+                TerminalError::Backend("SSH PTY opened without a transport generation".into());
+            return match self.service.inner.pty_close(&pty).await {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(TerminalError::Backend(format!(
+                    "{error}; cleanup failed: {cleanup}"
+                ))),
+            };
+        };
+        session.connection_generation = Some(generation);
         pending.lease = None;
         Ok((session, lease))
     }
@@ -318,8 +494,10 @@ impl TerminalSessionBackend for SshTerminalSessionBackend {
         let gate = self.input_gate(&session.session_id);
         let _control = gate.lock().await;
         self.validate(session, lease)?;
+        self.leases.validate_input(lease)?;
         let handle = self.handle(session)?;
         self.service
+            .inner
             .pty_write(&handle, data)
             .await
             .map_err(|e| TerminalError::Backend(e.to_string()))
@@ -330,10 +508,10 @@ impl TerminalSessionBackend for SshTerminalSessionBackend {
         session: &TerminalSession,
         lease: &TerminalInputLease,
     ) -> deepagent_terminal::TerminalResult<()> {
-        self.handle(session)?;
         let gate = self.input_gate(&session.session_id);
         let _control = gate.lock().await;
         self.validate(session, lease)?;
+        self.validate_transport(session).await?;
         self.leases.renew(lease)
     }
 
@@ -368,8 +546,10 @@ impl TerminalSessionBackend for SshTerminalSessionBackend {
         let gate = self.input_gate(&session.session_id);
         let _control = gate.lock().await;
         self.validate(session, lease)?;
+        self.leases.validate_input(lease)?;
         let handle = self.handle(session)?;
         self.service
+            .inner
             .pty_resize(&handle, cols, rows)
             .await
             .map_err(|e| TerminalError::Backend(e.to_string()))
@@ -384,6 +564,7 @@ impl TerminalSessionBackend for SshTerminalSessionBackend {
         let gate = self.input_gate(&session.session_id);
         let _control = gate.lock().await;
         self.validate(session, lease)?;
+        self.leases.validate_input(lease)?;
         let data = match signal {
             TerminalSignal::Interrupt => vec![3],
             TerminalSignal::Terminate | TerminalSignal::Kill => {
@@ -395,6 +576,7 @@ impl TerminalSessionBackend for SshTerminalSessionBackend {
         };
         let handle = self.handle(session)?;
         self.service
+            .inner
             .pty_write(&handle, &data)
             .await
             .map_err(|e| TerminalError::Backend(e.to_string()))
@@ -407,7 +589,7 @@ impl TerminalSessionBackend for SshTerminalSessionBackend {
     ) -> deepagent_terminal::TerminalResult<TerminalInputLease> {
         let gate = self.input_gate(&session.session_id);
         let _control = gate.lock().await;
-        self.handle(session)?;
+        self.validate_transport(session).await?;
         self.leases.takeover(&session.session_id, holder)
     }
 
@@ -420,6 +602,7 @@ impl TerminalSessionBackend for SshTerminalSessionBackend {
         let gate = self.input_gate(&session.session_id);
         let _control = gate.lock().await;
         self.validate(session, lease)?;
+        self.validate_transport(session).await?;
         self.leases.release(lease, next_holder)
     }
 
@@ -446,6 +629,8 @@ pub struct SshServiceHandle {
     pub token: String,
     pub cols: u16,
     pub rows: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_generation: Option<u64>,
 }
 
 impl SshServiceHandle {
@@ -460,7 +645,13 @@ impl SshServiceHandle {
             token: token.into(),
             cols,
             rows,
+            connection_generation: None,
         }
+    }
+
+    pub fn with_connection_generation(mut self, generation: u64) -> Self {
+        self.connection_generation = Some(generation);
+        self
     }
 }
 
@@ -470,6 +661,44 @@ pub struct SshService {
 }
 
 impl SshService {
+    pub async fn connection_details(&self, id: &str) -> SshResult<SshConnectionDetails> {
+        self.inner.connection_details(id).await
+    }
+    pub async fn list_forwards(&self, id: &str, generation: u64) -> SshResult<Vec<SshForwardTask>> {
+        self.inner.list_forwards(id, generation).await
+    }
+    pub async fn start_forward(
+        &self,
+        id: &str,
+        generation: u64,
+        request: SshForwardRequest,
+    ) -> SshResult<SshForwardTask> {
+        self.inner.start_forward(id, generation, request).await
+    }
+    pub async fn stop_forward(
+        &self,
+        id: &str,
+        generation: u64,
+        task_id: &str,
+    ) -> SshResult<SshForwardTask> {
+        self.inner.stop_forward(id, generation, task_id).await
+    }
+    /// Set the application's idle resource retention policy before sharing it.
+    pub fn with_connection_idle_timeout(mut self, timeout: std::time::Duration) -> SshResult<Self> {
+        if timeout.is_zero() || timeout > std::time::Duration::from_secs(86_400) {
+            return Err(SshError::InvalidConfig(
+                "SSH connection idle timeout must be positive and at most one day".into(),
+            ));
+        }
+        self.inner.connection_idle_timeout = timeout;
+        Ok(self)
+    }
+
+    /// Reclaim expired connections after all owned resources have been released.
+    pub async fn reap_idle_connections(&self) -> SshResult<usize> {
+        self.inner.reap_idle_connections().await
+    }
+
     pub fn new(app_data: PathBuf) -> Self {
         Self {
             inner: SshServiceImpl::new(app_data),
@@ -492,6 +721,11 @@ impl SshService {
         self.inner.load().await
     }
 
+    /// Stop admitting SSH work and close all live sessions.
+    pub async fn shutdown(&self) -> SshResult<usize> {
+        self.inner.shutdown().await
+    }
+
     pub async fn persist_configs(&self) -> SshResult<()> {
         self.inner.persist_configs().await
     }
@@ -510,6 +744,14 @@ impl SshService {
         self.inner
             .inspect_host_trust(host, port, known_hosts_path)
             .await
+    }
+
+    /// Inspect the saved connection's trust file, including its current route identity.
+    pub async fn inspect_connection_host_trust(
+        &self,
+        id: &str,
+    ) -> SshResult<SshHostTrustInspection> {
+        self.inner.inspect_connection_host_trust(id).await
     }
 
     pub async fn create_connection(
@@ -594,7 +836,7 @@ impl SshService {
         attempt_id: &str,
         challenge_id: &str,
         decision: SshHostKeyDecision,
-    ) -> SshResult<SshServiceHandle> {
+    ) -> SshResult<SshConnectionAttempt> {
         self.inner
             .respond_host_key(id, attempt_id, challenge_id, decision)
             .await
@@ -602,6 +844,29 @@ impl SshService {
 
     pub fn cancel_host_key(&self, id: &str, attempt_id: &str, challenge_id: &str) -> SshResult<()> {
         self.inner.cancel_host_key(id, attempt_id, challenge_id)
+    }
+
+    pub async fn respond_keyboard_interactive(
+        &self,
+        id: &str,
+        attempt_id: &str,
+        challenge_id: &str,
+        responses: Vec<String>,
+    ) -> SshResult<SshConnectionAttempt> {
+        self.inner
+            .respond_keyboard_interactive(id, attempt_id, challenge_id, responses)
+            .await
+    }
+
+    pub async fn cancel_connection_attempt(
+        &self,
+        id: &str,
+        attempt_id: &str,
+        challenge_id: &str,
+    ) -> SshResult<()> {
+        self.inner
+            .cancel_connection_attempt(id, attempt_id, challenge_id)
+            .await
     }
 
     pub async fn exec(&self, handle: &SshServiceHandle, command: &str) -> SshResult<SshExecResult> {
@@ -683,6 +948,7 @@ impl SshService {
     }
 
     pub async fn pty_write(&self, handle: &SshServiceHandle, data: &[u8]) -> SshResult<()> {
+        self.inner.ensure_legacy_pty_control(handle).await?;
         self.inner.pty_write(handle, data).await
     }
 
@@ -708,6 +974,7 @@ impl SshService {
         cols: u16,
         rows: u16,
     ) -> SshResult<()> {
+        self.inner.ensure_legacy_pty_control(handle).await?;
         self.inner.pty_resize(handle, cols, rows).await
     }
 
@@ -723,6 +990,10 @@ impl SshService {
         &self,
         dto: &SshConnectionDto,
     ) -> SshResult<crate::session::SshTestResult> {
+        if dto.jump.is_some() {
+            let cfg = self.inner.config_for(&dto.id).await?;
+            return self.inner.test_connection(&cfg).await;
+        }
         let cfg = SshConnectionConfig {
             id: dto.id.clone(),
             name: dto.name.clone(),
@@ -730,7 +1001,21 @@ impl SshService {
             port: dto.port,
             username: dto.username.clone(),
             auth_type: dto.auth_type,
+            agent_fingerprint: dto.agent_fingerprint.clone(),
+            authentication_factors: Vec::new(),
+            jump: None,
+            timing: dto.timing,
+            advanced: dto.advanced.clone(),
+            proxy: dto.proxy.as_ref().map(|proxy| SshProxyConfig {
+                mode: proxy.mode,
+                host: proxy.host.clone(),
+                port: proxy.port,
+                username: proxy.username.clone(),
+                password: None,
+            }),
             key_path: dto.key_path.clone(),
+            key_content: None,
+            certificate_path: dto.certificate_path.clone(),
             known_hosts_path: dto.known_hosts_path.clone(),
             host_key_policy: dto.host_key_policy,
             password: None,
@@ -809,7 +1094,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn h293_renew_and_takeover_keep_the_registered_run_scope_without_network() {
+    async fn h293_lease_controls_require_the_registered_transport_without_network() {
         let dir = tempfile::tempdir().unwrap();
         let service = Arc::new(SshService::with_config_store(
             dir.path().to_path_buf(),
@@ -822,6 +1107,7 @@ mod tests {
             backend: "ssh".into(),
             cols: 80,
             rows: 24,
+            connection_generation: Some(1),
         };
         let old = backend
             .leases
@@ -831,7 +1117,7 @@ mod tests {
                 TerminalInputHolder::User,
             )
             .unwrap();
-        backend.renew(&session, &old).await.unwrap();
+        assert!(backend.renew(&session, &old).await.is_err());
         let mut wrong = session.clone();
         wrong.run_id = "different-run".into();
         assert!(backend.renew(&wrong, &old).await.is_err());
@@ -839,13 +1125,16 @@ mod tests {
             .takeover(&wrong, TerminalInputHolder::Runtime)
             .await
             .is_err());
-        let next = backend
+        assert!(backend
             .takeover(&session, TerminalInputHolder::Runtime)
             .await
-            .unwrap();
-        assert!(backend.renew(&session, &old).await.is_err());
-        backend.renew(&session, &next).await.unwrap();
-        backend.leases.remove(&next).unwrap();
+            .is_err());
+        assert!(backend
+            .release(&session, &old, TerminalInputHolder::Runtime)
+            .await
+            .is_err());
+        backend.leases.validate(&old).unwrap();
+        backend.leases.remove(&old).unwrap();
         // No SSH connection, agent, socket or remote process was opened.
     }
 
@@ -885,12 +1174,20 @@ mod tests {
         );
         let created = service
             .create_connection(CreateSshConnectionRequest {
+                advanced: Default::default(),
                 name: "test".into(),
                 host: "127.0.0.1".into(),
                 port: 22,
                 username: "tester".into(),
                 auth_type: SshAuthType::Agent,
+                agent_fingerprint: None,
+                authentication_factors: None,
+                proxy: None,
+                jump: None,
+                timing: Default::default(),
                 key_path: None,
+                key_content: None,
+                certificate_path: None,
                 known_hosts_path: None,
                 host_key_policy: SshHostKeyPolicy::Strict,
                 password: None,

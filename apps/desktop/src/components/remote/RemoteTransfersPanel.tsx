@@ -1,27 +1,48 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../shadcn/button";
 import { Input } from "../shadcn/input";
 import { Label } from "../shadcn/label";
+import { Checkbox } from "../shadcn/checkbox";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../shadcn/select";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "../shadcn/dialog";
 import {
-  remoteTransferSubmit, remoteTransfersSnapshot, remoteTransferCancel,
-  remoteTransferRetry, remoteTransfersClear, type TransferTask, type TransferDirection,
+  isTransferRequest, operationConnections, operationPath, remoteTransferSubmit, remoteTransferCancel, remoteTransferResolveFileConflict, remoteTransferResolveDirectoryConflict,
+  remoteTransferRetry, remoteTransfersClear, type TransferTask, type TransferDirection, type TransferKind,
+  type PendingFileConflict, type FileConflictDecision, type PendingDirectoryConflict, type DirectoryConflictResponse,
 } from "../../remoteTransfersApi";
+import { observeRemoteTransfers } from "../../remoteTransferObserver";
 
 type Labeler = (key: string) => string;
 
 export function TransferTaskBody({ task, label }: { task: TransferTask; label: Labeler }) {
+  if (!isTransferRequest(task.request)) return <div className="min-w-0 space-y-1 text-[12px]"><p className="break-all">{task.request.operation} · {operationPath(task.request)}</p><p>{label(task.state)} · {task.bytes} / {task.total ?? "?"}</p>{task.error && <p role="alert" className="text-red-500">{task.error.message}</p>}{task.error?.cleanupWarnings?.map(w => <p key={w} className="break-all text-amber-600">{w}</p>)}{task.operationReceipt && <pre className="max-h-20 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(task.operationReceipt, null, 2)}</pre>}</div>;
+  const live = !task.pendingFileConflict && !task.pendingDirectoryConflict && (task.state === "running" || task.state === "cancelling");
+  const destination = task.directoryReceipt?.destinationPath ?? task.receipt?.destinationPath ?? task.error?.destinationPath;
   const warnings = [
     ...(task.error?.cleanupWarnings ?? []), ...(task.receipt?.cleanupWarnings ?? []),
+    ...(task.directoryReceipt?.cleanupWarnings ?? []),
   ];
   return <div className="min-w-0 flex-1 space-y-1 text-[12px]">
-    <p className="break-all">{label(task.request.transfer.direction)} · {task.request.transfer.remotePath}</p>
+    <p className="break-all">{label(task.request.transfer.direction)}{("kind" in task.request && task.request.kind === "directory") ? ` · ${label("directory")}` : ""} · {task.request.transfer.remotePath}</p>
     <p className="break-all text-text-secondary">{task.request.transfer.localPath}</p>
-    <p>{label(task.state)} · {task.bytes} / {task.total ?? "?"} B · {label("attempt")} {task.attempt}</p>
+    <p className="break-all">{label(task.state)} · {task.bytes} / {task.total ?? "?"} B · {label("averageSpeed")} {live ? task.speedBps ?? "?" : "—"} B/s · {label("attempt")} {task.attempt}</p>
+    <p>{label("files")} {task.completedFiles ?? "?"} / {task.totalFiles ?? "?"}</p>
+    {("kind" in task.request && task.request.kind === "directory") && <p>{label("skippedFiles")} {task.skippedFiles ?? 0}</p>}
+    {destination && <p className="break-all text-text-secondary">{label("destinationPath")} · {destination}</p>}
+    {!!task.directoryReceipt?.renamedFiles && <p>{label("renamedFiles")} {task.directoryReceipt.renamedFiles}</p>}
+    {task.directoryReceipt?.publishStrategy && <p>{label(task.directoryReceipt.publishStrategy === "directory_backup_replace" ? "directoryBackupReplace" : "directoryCreated")}</p>}
+    {task.currentFile && <p className="break-all text-text-secondary">{label("currentFile")} · {task.currentFile}</p>}
+    {task.lastFileConflict && <p className="break-all text-text-secondary">
+      {label("lastFileDecision")} · {task.lastFileConflict.pending.conflict.relativePath} · {label(task.lastFileConflict.decision.policy === "keep_both" ? "keepBoth" : task.lastFileConflict.decision.policy)} · {label(task.lastFileConflict.decision.applyToRemainingFiles ? "remainingFileConflicts" : "currentFileOnly")}
+    </p>}
+    {task.lastDirectoryConflict && <p className="break-all text-text-secondary">
+      {label("lastDirectoryDecision")} · {task.lastDirectoryConflict.pending.conflict.destinationPath} · {label(task.lastDirectoryConflict.decision === "keep_both" ? "keepBothDirectory" : task.lastDirectoryConflict.decision === "replace" ? "replaceDirectory" : task.lastDirectoryConflict.decision)}
+    </p>}
     {task.error && <p role="alert" className="break-words text-red-500">{task.error.code}: {task.error.message}</p>}
+    {task.error?.relativePath && <p className="break-all text-red-500">{label("failedFile")} · {task.error.relativePath}</p>}
     {task.receipt && <p className="break-all text-text-secondary">
       {task.receipt.skipped ? label("skipped") : task.receipt.publishStrategy} {task.receipt.sha256}
     </p>}
@@ -29,47 +50,102 @@ export function TransferTaskBody({ task, label }: { task: TransferTask; label: L
   </div>;
 }
 
+export function DirectoryConflictActions({ pending, label, busy, onResolve }: {
+  pending: PendingDirectoryConflict; label: Labeler; busy: boolean;
+  onResolve: (policy: DirectoryConflictResponse["decision"]) => Promise<unknown>;
+}) {
+  const [confirmation, setConfirmation] = useState<string | null>(null);
+  const confirming = confirmation === pending.id;
+  return <div className="min-w-0 space-y-2 rounded-md border border-border-theme p-2 text-[12px]">
+    <p className="font-medium" role="status">{label("waitingDirectoryConflict")}</p>
+    <p className="break-all text-text-secondary">{label(pending.conflict.direction)} · {label("destinationPath")} · {pending.conflict.destinationPath}</p>
+    <p>{label("sourceFiles")} {pending.conflict.totalFiles} · {label("plannedBytes")} {pending.conflict.totalBytes} B</p>
+    <div className="flex flex-wrap gap-2">
+      <Button variant="outline" size="sm" disabled={busy} onClick={() => onResolve("skip")}>{label("skip")}</Button>
+      <Button variant="outline" size="sm" disabled={busy} onClick={() => onResolve("merge")}>{label("merge")}</Button>
+      <Button variant="outline" size="sm" disabled={busy} onClick={() => onResolve("keep_both")}>{label("keepBothDirectory")}</Button>
+      <Button variant="destructive" size="sm" disabled={busy} onClick={() => setConfirmation(pending.id)}>{label("replaceDirectory")}</Button>
+    </div>
+    {confirming && <Dialog open onOpenChange={open => { if (!open && !busy) setConfirmation(null); }}>
+      <DialogContent className="w-[min(640px,calc(100vw-32px))]">
+        <DialogHeader className="flex-col gap-2">
+          <DialogTitle>{label("replaceDirectory")}</DialogTitle>
+          <DialogDescription>{label("replaceWholeDirectoryWarning")}</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2 break-all px-5 py-4 text-[12px]">
+          <p>{label(pending.conflict.direction)} · {label("destinationPath")} · {pending.conflict.destinationPath}</p>
+          <p>{label("sourceFiles")} {pending.conflict.totalFiles} · {label("plannedBytes")} {pending.conflict.totalBytes} B</p>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" disabled={busy} onClick={() => setConfirmation(null)}>{label("close")}</Button>
+          <Button variant="destructive" disabled={busy} onClick={async () => { await onResolve("replace"); setConfirmation(null); }}>{label("confirmReplaceDirectory")}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>}
+  </div>;
+}
+
+/** A new pending nonce remounts this component, resetting scope and confirmation. */
+export function FileConflictActions({ pending, label, busy, onResolve }: {
+  pending: PendingFileConflict; label: Labeler; busy: boolean;
+  onResolve: (decision: FileConflictDecision) => Promise<unknown>;
+}) {
+  const [applyToRemainingFiles, setApplyToRemainingFiles] = useState(false);
+  const [confirmReplace, setConfirmReplace] = useState(false);
+  const choose = (policy: FileConflictDecision["policy"]) => onResolve({ policy, applyToRemainingFiles });
+  return <div className="min-w-0 space-y-2 rounded-md border border-border-theme p-2 text-[12px]">
+    <p className="font-medium" role="status">{label("waitingFileConflict")}</p>
+    <p className="break-all">{pending.conflict.relativePath}</p>
+    <p className="break-all text-text-secondary">{label(pending.conflict.direction)} · {label("destinationPath")} · {pending.conflict.destinationPath}</p>
+    <p>{label("sourceSize")} {pending.conflict.sourceSize} B</p>
+    <div className="flex items-start gap-2">
+      <Checkbox id={`conflict-scope-${pending.id}`} disabled={busy} checked={applyToRemainingFiles}
+        onCheckedChange={checked => setApplyToRemainingFiles(checked === true)} />
+      <Label className="text-[12px] leading-4" htmlFor={`conflict-scope-${pending.id}`}>{label("applyToRemainingFiles")}</Label>
+    </div>
+    <div className="flex flex-wrap gap-2">
+      <Button variant="outline" size="sm" disabled={busy} onClick={() => choose("skip")}>{label("skip")}</Button>
+      <Button variant="outline" size="sm" disabled={busy} onClick={() => choose("keep_both")}>{label("keepBoth")}</Button>
+      <Button variant="destructive" size="sm" disabled={busy} onClick={() => setConfirmReplace(true)}>{label("replace")}</Button>
+    </div>
+    {confirmReplace && <Dialog open onOpenChange={open => { if (!open && !busy) setConfirmReplace(false); }}>
+      <DialogContent>
+        <DialogHeader className="flex-col gap-2"><DialogTitle>{label("replace")}</DialogTitle>
+          <DialogDescription>{label(applyToRemainingFiles ? "replaceRemainingFilesWarning" : "replaceCurrentFileWarning")}</DialogDescription>
+        </DialogHeader>
+        <div className="break-all px-5 py-4 text-[12px]">{label(pending.conflict.direction)} · {pending.conflict.destinationPath}</div>
+        <DialogFooter>
+          <Button variant="outline" disabled={busy} onClick={() => setConfirmReplace(false)}>{label("close")}</Button>
+          <Button variant="destructive" disabled={busy} onClick={() => choose("replace")}>{label("confirmReplace")}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>}
+  </div>;
+}
+
 /** Backend snapshots own task state; unmounting only stops observation, never work. */
 export function RemoteTransfersPanel({ connectionId }: { connectionId: string }) {
   const { t } = useTranslation();
   const label: Labeler = key => t(`remote.transfers.${key}`);
-  const [tasks, setTasks] = useState<TransferTask[]>([]);
+  const [allTasks, setTasks] = useState<TransferTask[]>([]);
+  const tasks = allTasks.filter(task => operationConnections(task.request).includes(connectionId));
   const [error, setError] = useState("");
   const [expanded, setExpanded] = useState(false);
   const [form, setForm] = useState<TransferDirection | null>(null);
+  const [kind, setKind] = useState<TransferKind>("file");
   const [local, setLocal] = useState("");
   const [remote, setRemote] = useState("");
   const [busy, setBusy] = useState(false);
-  const [replace, setReplace] = useState<string | null>(null);
-  const [refresh, setRefresh] = useState(0);
-  const pendingSnapshot = useRef<Promise<TransferTask[]> | null>(null);
-  const replacement = tasks.find(task => task.id === replace)?.request.transfer;
+  const [resolution, setResolution] = useState<{ id: string; policy: "replace" | "keep_both" } | null>(null);
+  const replacementTask = tasks.find(task => task.id === resolution?.id);
+  const replacement = replacementTask && isTransferRequest(replacementTask.request) ? replacementTask.request.transfer : undefined;
+  const keepBoth = resolution?.policy === "keep_both";
+  const decisionLabel = keepBoth ? "keepBoth" : "replace";
 
-  useEffect(() => {
-    let disposed = false;
-    let timer: ReturnType<typeof setTimeout>;
-    async function load() {
-      // Effect restarts (actions, connection changes, StrictMode) reuse pending IPC.
-      const request = pendingSnapshot.current ??= remoteTransfersSnapshot();
-      try {
-        const all = await request;
-        if (disposed) return;
-        setTasks(all.filter(task => task.request.connectionId === connectionId));
-        setError("");
-        const active = all.some(task => ["queued", "running", "cancelling"].includes(task.state));
-        timer = setTimeout(load, active ? 500 : 2000);
-      } catch (e) {
-        if (!disposed) {
-          setError(String(e));
-          timer = setTimeout(load, 3000);
-        }
-      } finally {
-        if (pendingSnapshot.current === request) pendingSnapshot.current = null;
-      }
-    }
-    void load();
-    return () => { disposed = true; clearTimeout(timer); };
-  }, [connectionId, refresh]);
+  useEffect(() => observeRemoteTransfers({
+    next: snapshot => { setTasks(snapshot.tasks); setError(""); },
+    error: error => setError(String(error)),
+  }), []);
 
   async function act(work: () => Promise<unknown>) {
     if (busy) return;
@@ -77,7 +153,6 @@ export function RemoteTransfersPanel({ connectionId }: { connectionId: string })
     setError("");
     try {
       await work();
-      setRefresh(value => value + 1);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -86,6 +161,7 @@ export function RemoteTransfersPanel({ connectionId }: { connectionId: string })
   }
   function openForm(direction: TransferDirection) {
     setForm(direction);
+    setKind("file");
     setLocal("");
     setRemote("");
     setError("");
@@ -93,11 +169,14 @@ export function RemoteTransfersPanel({ connectionId }: { connectionId: string })
   async function choose() {
     try {
       const dialog = await import("@tauri-apps/plugin-dialog");
-      const path = form === "download"
+      const path = kind === "directory"
+        ? await dialog.open({ multiple: false, directory: true })
+        : form === "download"
         ? await dialog.save({ defaultPath: remote.split("/").pop() || "download" })
         : await dialog.open({ multiple: false, directory: false });
       if (typeof path === "string") {
-        setLocal(path);
+        const name = remote.split("/").filter(Boolean).pop() || "download";
+        setLocal(kind === "directory" && form === "download" ? `${path.replace(/[\\/]$/, "")}/${name}` : path);
         if (!remote) setRemote("/" + path.split(/[\\/]/).pop());
       }
     } catch (e) {
@@ -113,58 +192,81 @@ export function RemoteTransfersPanel({ connectionId }: { connectionId: string })
       <Button variant="ghost" size="sm" disabled={busy} onClick={() => void act(() => remoteTransfersClear())}>{label("clear")}</Button>
     </div>
     {error && <p role="alert" className="break-all text-[12px] text-red-500">{error}</p>}
-    {expanded && <div className="max-h-[220px] space-y-2 overflow-y-auto pt-2">
+    {expanded && <div className={`${tasks.some(task => task.pendingFileConflict || task.pendingDirectoryConflict) ? "max-h-[50vh]" : "max-h-[220px]"} space-y-2 overflow-y-auto pt-2`}>
       {tasks.length === 0 && <p className="text-[12px] text-text-secondary">{label("empty")}</p>}
       {tasks.slice().reverse().map(task => <article key={task.id} className="flex items-start gap-2 rounded-lg border border-border-theme p-2">
-        <TransferTaskBody task={task} label={label} />
+        <div className="min-w-0 flex-1 space-y-2">
+          <TransferTaskBody task={task} label={label} />
+          {task.state === "running" && task.pendingDirectoryConflict && <DirectoryConflictActions key={task.pendingDirectoryConflict.id}
+            pending={task.pendingDirectoryConflict} label={label} busy={busy} onResolve={decision => act(() => remoteTransferResolveDirectoryConflict(task.id, {
+              version: task.pendingDirectoryConflict!.version, id: task.pendingDirectoryConflict!.id,
+              attempt: task.pendingDirectoryConflict!.attempt, decision,
+            }))} />}
+          {task.state === "running" && task.pendingFileConflict && <FileConflictActions key={task.pendingFileConflict.id}
+            pending={task.pendingFileConflict} label={label} busy={busy} onResolve={decision => act(() => remoteTransferResolveFileConflict(task.id, {
+              version: task.pendingFileConflict!.version, id: task.pendingFileConflict!.id,
+              attempt: task.pendingFileConflict!.attempt, decision,
+            }))} />}
+        </div>
         <div className="flex shrink-0 flex-col gap-1">
           {["queued", "running"].includes(task.state) && <Button variant="outline" size="sm" disabled={busy}
             onClick={() => void act(() => remoteTransferCancel(task.id))}>{label("cancel")}</Button>}
-          {["failed", "cancelled"].includes(task.state) && <Button variant="outline" size="sm" disabled={busy}
-            onClick={() => void act(() => remoteTransferRetry(task.id))}>{label("retry")}</Button>}
-          {task.error?.code === "conflict" && <>
+          {isTransferRequest(task.request) && ["failed", "cancelled"].includes(task.state) && <Button variant="outline" size="sm" disabled={busy}
+            onClick={() => void act(() => remoteTransferRetry(task.id, "ask", ("kind" in task.request && task.request.kind === "directory") ? "merge" : undefined))}>{label(("kind" in task.request && task.request.kind === "directory") ? "retryMerge" : "retry")}</Button>}
+          {isTransferRequest(task.request) && task.error?.code === "conflict" && <>
             <Button variant="outline" size="sm" disabled={busy}
-              onClick={() => void act(() => remoteTransferRetry(task.id, "skip"))}>{label("skip")}</Button>
-            <Button variant="destructive" size="sm" disabled={busy} onClick={() => setReplace(task.id)}>{label("replace")}</Button>
+              onClick={() => void act(() => remoteTransferRetry(task.id, "skip", ("kind" in task.request && task.request.kind === "directory") ? (task.error?.relativePath ? "merge" : "skip") : undefined))}>{label("skip")}</Button>
+            {("kind" in task.request && task.request.kind === "directory") && !task.error?.relativePath
+              ? <Button variant="outline" size="sm" disabled={busy}
+                  onClick={() => void act(() => remoteTransferRetry(task.id, "ask", "keep_both"))}>{label("keepBothDirectory")}</Button>
+              : <>
+                <Button variant="outline" size="sm" disabled={busy} onClick={() => setResolution({ id: task.id, policy: "keep_both" })}>{label(("kind" in task.request && task.request.kind === "directory") ? "keepBothFiles" : "keepBoth")}</Button>
+                <Button variant="destructive" size="sm" disabled={busy} onClick={() => setResolution({ id: task.id, policy: "replace" })}>{label("replace")}</Button>
+              </>}
           </>}
         </div>
       </article>)}
     </div>}
     {form && <Dialog open onOpenChange={open => { if (!open && !busy) setForm(null); }}>
-      <DialogContent className="flex max-h-[85vh] w-[min(640px,calc(100vw-32px))] flex-col overflow-hidden" aria-label={label(form)}>
-        <DialogHeader><DialogTitle>{label(form)}</DialogTitle><DialogDescription>{label("safe")}</DialogDescription></DialogHeader>
+      <DialogContent className="flex max-h-[85vh] w-[min(640px,calc(100vw-32px))] flex-col overflow-hidden" aria-label={label(form)} aria-describedby={undefined}>
+        <DialogHeader className="flex-col gap-2"><DialogTitle>{label(form)}</DialogTitle></DialogHeader>
         <div className="space-y-3 overflow-y-auto px-5 py-4">
+          <Label htmlFor="transfer-kind">{label("kind")}</Label>
+          <Select value={kind} onValueChange={value => { setKind(value as TransferKind); setLocal(""); }}>
+            <SelectTrigger id="transfer-kind"><SelectValue placeholder={label(kind)} /></SelectTrigger>
+            <SelectContent><SelectItem value="file">{label("file")}</SelectItem><SelectItem value="directory">{label("directory")}</SelectItem></SelectContent>
+          </Select>
           <Label htmlFor="transfer-remote">{label("remotePath")}</Label>
           <Input id="transfer-remote" value={remote} onChange={e => setRemote(e.target.value)} placeholder="/home/user/file.bin" />
           <Label htmlFor="transfer-local">{label("localPath")}</Label>
           <div className="flex gap-2">
             <Input id="transfer-local" value={local} onChange={e => setLocal(e.target.value)} />
-            <Button variant="outline" onClick={() => void choose()}>{label("choose")}</Button>
+            <Button variant="outline" onClick={() => void choose()}>{label(kind === "directory" ? (form === "download" ? "chooseParent" : "chooseDirectory") : "choose")}</Button>
           </div>
           {error && <p role="alert" className="text-red-500">{error}</p>}
         </div>
         <DialogFooter>
           <Button variant="outline" disabled={busy} onClick={() => setForm(null)}>{label("close")}</Button>
           <Button disabled={busy || !local || !remote.startsWith("/")} onClick={() => void act(async () => {
-            await remoteTransferSubmit(connectionId, { direction: form, localPath: local, remotePath: remote });
+            await remoteTransferSubmit(connectionId, { direction: form, localPath: local, remotePath: remote }, { kind });
             setForm(null);
             setExpanded(true);
           })}>{label("enqueue")}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>}
-    {replace && <Dialog open onOpenChange={open => { if (!open && !busy) setReplace(null); }}>
+    {resolution && <Dialog open onOpenChange={open => { if (!open && !busy) setResolution(null); }}>
       <DialogContent>
-        <DialogHeader><DialogTitle>{label("replace")}</DialogTitle><DialogDescription>{label("replaceWarning")}</DialogDescription></DialogHeader>
+        <DialogHeader className="flex-col gap-2"><DialogTitle>{label(decisionLabel)}</DialogTitle><DialogDescription>{label(keepBoth ? ((replacementTask && isTransferRequest(replacementTask.request) && replacementTask.request.kind === "directory") ? "keepBothDirectoryFilesWarning" : "keepBothWarning") : ((replacementTask && isTransferRequest(replacementTask.request) && replacementTask.request.kind === "directory") ? "replaceDirectoryFilesWarning" : "replaceWarning"))}</DialogDescription></DialogHeader>
         <div className="break-all px-5 py-4 text-[12px]">
           {replacement && <>{label(replacement.direction)} · {replacement.localPath} ↔ {replacement.remotePath}</>}
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => setReplace(null)}>{label("close")}</Button>
-          <Button variant="destructive" disabled={busy || !replacement} onClick={() => void act(async () => {
-            await remoteTransferRetry(replace, "replace");
-            setReplace(null);
-          })}>{label("confirmReplace")}</Button>
+          <Button variant="outline" onClick={() => setResolution(null)}>{label("close")}</Button>
+          <Button variant={keepBoth ? "default" : "destructive"} disabled={busy || !replacement} onClick={() => void act(async () => {
+            await remoteTransferRetry(resolution.id, resolution.policy, (replacementTask && isTransferRequest(replacementTask.request) && replacementTask.request.kind === "directory") ? "merge" : undefined);
+            setResolution(null);
+          })}>{label(keepBoth ? "confirmKeepBoth" : "confirmReplace")}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>}

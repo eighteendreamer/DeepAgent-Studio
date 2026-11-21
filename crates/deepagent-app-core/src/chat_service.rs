@@ -4179,6 +4179,9 @@ mod tests {
                     permission_profile: explicit.then(|| "full_access".into()),
                     ..Default::default()
                 };
+                let started = std::time::Instant::now();
+                let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let observed_events = events.clone();
                 tokio::time::timeout(
                     std::time::Duration::from_secs(8),
                     chat.run_in_session_with_overrides(
@@ -4191,14 +4194,25 @@ mod tests {
                         false,
                         None,
                         overrides,
-                        |_| {},
+                        move |event| {
+                            let mut events = observed_events.lock().unwrap();
+                            if events.len() < 64 {
+                                events.push((event.label(), started.elapsed().as_millis()));
+                            }
+                        },
                         move |_| {
                             observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         },
                     ),
                 )
                 .await
-                .expect("permission fixture timed out")
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "permission fixture timed out: source={source}, stage={stage}, calls={}, events={:?}",
+                        transport.calls.load(std::sync::atomic::Ordering::SeqCst),
+                        events.lock().unwrap()
+                    )
+                })
                 .unwrap();
                 let prompts = approvals.load(std::sync::atomic::Ordering::SeqCst);
                 eprintln!(

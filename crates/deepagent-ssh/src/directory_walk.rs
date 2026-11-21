@@ -1,0 +1,403 @@
+//! Bounded, read-only directory facts for transfer planning in the SSH adapter.
+use crate::connection_lease::SessionLease;
+use crate::file_transfer::{error_detail, operation};
+use crate::{FileTransferError, RemoteFileKind, RemoteFileMetadata, SshService};
+use russh_sftp::{
+    client::{error::Error as SftpError, RawSftpSession},
+    protocol::StatusCode,
+};
+use serde::{Deserialize, Serialize};
+use std::{collections::HashSet, time::Duration};
+use tokio_util::sync::CancellationToken;
+
+pub(super) const MAX_METADATA_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy)]
+pub struct DirectoryWalkLimits {
+    pub max_entries: u32,
+    pub max_depth: u16,
+}
+
+impl Default for DirectoryWalkLimits {
+    fn default() -> Self {
+        Self {
+            max_entries: 10_000,
+            max_depth: 64,
+        }
+    }
+}
+
+impl DirectoryWalkLimits {
+    pub(super) fn validate(self) -> Result<(), FileTransferError> {
+        if self.max_entries == 0 || self.max_entries > 100_000 || self.max_depth > 128 {
+            return Err(failure("invalid", "directory limits exceed local bounds"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteDirectoryEntry {
+    pub relative_path: String,
+    pub metadata: RemoteFileMetadata,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteDirectoryTree {
+    pub root: String,
+    pub entries: Vec<RemoteDirectoryEntry>,
+}
+
+impl SshService {
+    pub async fn walk_directory(
+        &self,
+        connection_id: &str,
+        root: &str,
+        limits: DirectoryWalkLimits,
+        cancel: CancellationToken,
+    ) -> Result<RemoteDirectoryTree, FileTransferError> {
+        if cancel.is_cancelled() {
+            return Err(failure("cancelled", "directory planning cancelled"));
+        }
+        if root.is_empty() {
+            return Err(failure("invalid", "selected directory path is empty"));
+        }
+        let root = root.trim_end_matches('/');
+        let root = if root.is_empty() { "/" } else { root };
+        validate_root(root)?;
+        limits.validate()?;
+        let reader = RemoteFileSession::open(self, connection_id, &cancel).await?;
+        let result = reader.walk(root, limits, &cancel).await;
+        reader.finish(result)
+    }
+}
+
+/// One protocol channel and one exact transport lease for bounded file operations.
+pub(super) struct RemoteFileSession<'a> {
+    connection_id: &'a str,
+    owner: SessionLease,
+    session: RawSftpSession,
+}
+
+impl<'a> RemoteFileSession<'a> {
+    pub(super) async fn open(
+        service: &SshService,
+        connection_id: &'a str,
+        cancel: &CancellationToken,
+    ) -> Result<Self, FileTransferError> {
+        Self::open_generation(service, connection_id, None, cancel).await
+    }
+
+    pub(super) async fn open_generation(
+        service: &SshService,
+        connection_id: &'a str,
+        generation: Option<u64>,
+        cancel: &CancellationToken,
+    ) -> Result<Self, FileTransferError> {
+        let (owner, client) = operation(
+            cancel,
+            Box::pin(
+                service
+                    .inner
+                    .file_client_for_generation(connection_id, generation),
+            ),
+        )
+        .await?;
+        let channel = operation(cancel, client.get_channel()).await?;
+        if let Err(error) = operation(cancel, channel.request_subsystem(true, "sftp")).await {
+            let _ = channel.close().await;
+            return Err(error);
+        }
+        let session = RawSftpSession::new(crate::sftp_packet_stream::packet_stream(
+            channel.into_stream(),
+            crate::sftp_packet_stream::MAX_RECEIVE_PACKET_BYTES,
+        ));
+        let reader = Self {
+            connection_id,
+            owner,
+            session,
+        };
+        match operation(cancel, reader.session.init()).await {
+            Ok(_) => Ok(reader),
+            Err(error) => reader.finish(Err(error)),
+        }
+    }
+
+    pub(super) fn connection_generation(&self) -> Result<String, FileTransferError> {
+        self.owner
+            .transport_generation()
+            .map(|generation| generation.to_string())
+            .ok_or_else(|| failure("io", "file facts transport generation is unavailable"))
+    }
+
+    pub(super) async fn metadata(
+        &self,
+        path: &str,
+        cancel: &CancellationToken,
+    ) -> Result<RemoteFileMetadata, FileTransferError> {
+        let attrs = operation(cancel, self.session.lstat(path)).await?.attrs;
+        Ok(crate::files::metadata(
+            self.connection_id,
+            path,
+            false,
+            attrs,
+        ))
+    }
+
+    pub(super) async fn require_directory(
+        &self,
+        path: &str,
+        cancel: &CancellationToken,
+    ) -> Result<(), FileTransferError> {
+        require_directory(&self.session, path, cancel).await
+    }
+
+    pub(super) async fn require_chain(
+        &self,
+        path: &str,
+        cancel: &CancellationToken,
+    ) -> Result<(), FileTransferError> {
+        for directory in crate::files::directory_ancestors(path) {
+            self.require_directory(directory, cancel).await?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn protocol(&self) -> &RawSftpSession {
+        &self.session
+    }
+
+    pub(super) async fn walk(
+        &self,
+        root: &str,
+        limits: DirectoryWalkLimits,
+        cancel: &CancellationToken,
+    ) -> Result<RemoteDirectoryTree, FileTransferError> {
+        if self.metadata(root, cancel).await?.kind != RemoteFileKind::Directory {
+            return Err(failure(
+                "invalid",
+                "selected root must be a directory, without following its final link",
+            ));
+        }
+        let root = canonical(&self.session, root, cancel).await?;
+        let entries = Walker {
+            session: &self.session,
+            cancel,
+            connection_id: self.connection_id,
+            root: &root,
+            limits,
+            entries: Vec::new(),
+            seen: HashSet::new(),
+            metadata_bytes: 0,
+        }
+        .enumerate()
+        .await?;
+        Ok(RemoteDirectoryTree { root, entries })
+    }
+
+    pub(super) fn finish<T>(
+        self,
+        result: Result<T, FileTransferError>,
+    ) -> Result<T, FileTransferError> {
+        if let Err(error) = self.session.close_session() {
+            return match result {
+                Ok(_) => Err(failure(
+                    "io",
+                    &format!("close directory channel: {}", error_detail(error)),
+                )),
+                Err(mut failure) => {
+                    failure
+                        .cleanup_warnings
+                        .push(format!("close directory channel: {}", error_detail(error)));
+                    Err(failure)
+                }
+            };
+        }
+        if result.is_ok() {
+            self.owner.touch_keepalive();
+        }
+        result
+    }
+}
+
+fn failure(code: &str, message: &str) -> FileTransferError {
+    FileTransferError::new(code, message)
+}
+
+pub(super) fn validate_root(root: &str) -> Result<(), FileTransferError> {
+    crate::files::validate_absolute_path(root)
+        .map_err(|error| failure("invalid", &error.to_string()))
+}
+
+async fn canonical(
+    session: &RawSftpSession,
+    path: &str,
+    cancel: &CancellationToken,
+) -> Result<String, FileTransferError> {
+    let response = operation(cancel, session.realpath(path)).await?;
+    if response.files.len() != 1 {
+        return Err(failure("invalid", "expected one canonical directory path"));
+    }
+    let path = response.files.into_iter().next().unwrap().filename;
+    validate_root(&path)?;
+    Ok(path)
+}
+
+async fn require_directory(
+    session: &RawSftpSession,
+    path: &str,
+    cancel: &CancellationToken,
+) -> Result<(), FileTransferError> {
+    if canonical(session, path, cancel).await? != path {
+        return Err(failure(
+            "invalid",
+            "directory identity changed during planning",
+        ));
+    }
+    if operation(cancel, session.lstat(path))
+        .await?
+        .attrs
+        .file_type()
+        != russh_sftp::protocol::FileType::Dir
+    {
+        return Err(failure("invalid", "directory type changed during planning"));
+    }
+    Ok(())
+}
+
+struct Walker<'a> {
+    session: &'a RawSftpSession,
+    cancel: &'a CancellationToken,
+    connection_id: &'a str,
+    root: &'a str,
+    limits: DirectoryWalkLimits,
+    entries: Vec<RemoteDirectoryEntry>,
+    seen: HashSet<String>,
+    metadata_bytes: usize,
+}
+
+impl Walker<'_> {
+    async fn enumerate(mut self) -> Result<Vec<RemoteDirectoryEntry>, FileTransferError> {
+        let mut pending = vec![(self.root.to_string(), 0)];
+        while let Some((path, depth)) = pending.pop() {
+            require_directory(self.session, &path, self.cancel).await?;
+            self.read(&path, depth, &mut pending).await?;
+        }
+        self.entries
+            .sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+        Ok(self.entries)
+    }
+
+    async fn read(
+        &mut self,
+        path: &str,
+        depth: u16,
+        pending: &mut Vec<(String, u16)>,
+    ) -> Result<(), FileTransferError> {
+        let handle = operation(self.cancel, self.session.opendir(path))
+            .await?
+            .handle;
+        let result = self.read_pages(path, depth, &handle, pending).await;
+        let cleanup =
+            tokio::time::timeout(Duration::from_millis(500), self.session.close(handle)).await;
+        let warning = match cleanup {
+            Ok(Ok(_)) => None,
+            Ok(Err(error)) => Some(format!("close directory handle: {}", error_detail(error))),
+            Err(_) => Some("close directory handle timed out; channel retired".into()),
+        };
+        match (result, warning) {
+            (Ok(()), None) => Ok(()),
+            (Ok(()), Some(warning)) => Err(failure("io", &warning)),
+            (Err(mut error), warning) => {
+                error.cleanup_warnings.extend(warning);
+                Err(error)
+            }
+        }
+    }
+
+    async fn read_pages(
+        &mut self,
+        path: &str,
+        depth: u16,
+        handle: &str,
+        pending: &mut Vec<(String, u16)>,
+    ) -> Result<(), FileTransferError> {
+        let mut pages = 0;
+        loop {
+            // Each successful page must make bounded progress, including dot entries.
+            pages += 1;
+            if pages > self.limits.max_entries + 3 {
+                return Err(failure("limit", "directory page limit reached"));
+            }
+            // Preserve EOF as protocol control, not a generic IO error.
+            let page = operation(self.cancel, async {
+                Ok::<_, std::convert::Infallible>(self.session.readdir(handle).await)
+            })
+            .await?;
+            let page = match page {
+                Ok(page) if !page.files.is_empty() => page,
+                Err(SftpError::Status(status)) if status.status_code == StatusCode::Eof => {
+                    return Ok(())
+                }
+                Ok(_) => {
+                    return Err(failure(
+                        "invalid",
+                        "server returned an empty directory page without EOF",
+                    ))
+                }
+                Err(error) => {
+                    return Err(failure(
+                        "io",
+                        &format!("read directory page: {}", error_detail(error)),
+                    ))
+                }
+            };
+            for item in page.files {
+                if item.filename == "." || item.filename == ".." {
+                    continue;
+                }
+                let full = crate::files::directory_entry_path(path, &item.filename)
+                    .map_err(|error| failure("invalid", &error.to_string()))?;
+                if self.entries.len() >= self.limits.max_entries as usize {
+                    return Err(failure("limit", "directory entry limit reached"));
+                }
+                validate_root(&full)?;
+                if !self.seen.insert(full.clone()) {
+                    return Err(failure("invalid", "duplicate directory entry"));
+                }
+                let attrs = operation(self.cancel, self.session.lstat(full.as_str()))
+                    .await?
+                    .attrs;
+                let metadata = crate::files::metadata(self.connection_id, &full, false, attrs);
+                let relative_path = full
+                    .strip_prefix(self.root.trim_end_matches('/'))
+                    .and_then(|suffix| suffix.strip_prefix('/'))
+                    .ok_or_else(|| failure("invalid", "directory entry escaped selected root"))?
+                    .to_string();
+                self.metadata_bytes += full.len()
+                    + relative_path.len()
+                    + metadata.user.as_ref().map_or(0, String::len)
+                    + metadata.group.as_ref().map_or(0, String::len)
+                    + 512;
+                if self.metadata_bytes > MAX_METADATA_BYTES {
+                    return Err(failure(
+                        "limit",
+                        "directory metadata exceeds 8 MiB local budget",
+                    ));
+                }
+                if metadata.kind == RemoteFileKind::Directory {
+                    if depth >= self.limits.max_depth {
+                        return Err(failure("limit", "directory depth limit reached"));
+                    }
+                    pending.push((full, depth + 1));
+                }
+                self.entries.push(RemoteDirectoryEntry {
+                    relative_path,
+                    metadata,
+                });
+            }
+        }
+    }
+}

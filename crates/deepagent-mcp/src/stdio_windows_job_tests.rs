@@ -229,7 +229,7 @@ async fn shutdown_admission_barrier_blocks_nested_spawn_without_stopping_existin
 
 #[tokio::test]
 async fn failed_assign_thread_discovery_and_resume_never_execute_or_leave_a_suspended_child() {
-    for stage in ["assign", "snapshot", "resume"] {
+    for stage in ["assign", "snapshot", "owner", "resume"] {
         let root = tempfile::tempdir().unwrap();
         let mut observed = None;
         let result = ProcessJob::spawn_with_setup(
@@ -243,10 +243,13 @@ async fn failed_assign_thread_discovery_and_resume_never_execute_or_leave_a_susp
                 }
                 job.assign_process(child.raw_handle().unwrap().cast())?;
                 if stage == "snapshot" {
-                    // ToolHelp succeeds, but the target has no thread in it.
-                    return resume_child_threads(u32::MAX);
+                    return resume_child_threads(std::ptr::null_mut(), child.id().unwrap());
                 }
-                resume_child_threads_with(child.id().unwrap(), |_| unsafe {
+                let process = child.raw_handle().unwrap().cast();
+                if stage == "owner" {
+                    return resume_child_threads(process, u32::MAX);
+                }
+                resume_child_threads_with(process, child.id().unwrap(), |_| unsafe {
                     ResumeThread(std::ptr::null_mut())
                 })
             },

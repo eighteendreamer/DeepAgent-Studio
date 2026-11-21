@@ -10,6 +10,8 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::task::JoinHandle;
 
+static NEXT_TRANSPORT_GENERATION: AtomicU64 = AtomicU64::new(1);
+
 #[cfg(test)]
 #[path = "session_audit.rs"]
 mod audit;
@@ -98,6 +100,8 @@ pub enum PtyCommand {
 }
 
 pub struct PtyState {
+    pub(crate) shared_owner: bool,
+    pub(crate) _resource: Option<crate::connection_lease::ResourceLease>,
     pub output_signal: deepagent_terminal::TerminalOutputSignal,
     pub stdin: mpsc::Sender<Vec<u8>>,
     pub commands: mpsc::UnboundedSender<PtyCommand>,
@@ -112,11 +116,14 @@ pub struct PtyState {
 }
 
 pub struct SshSession {
+    pub(crate) resources: crate::connection_lease::ConnectionResources,
     pub(crate) host_trust: RwLock<Option<super::host_trust::HostTrust>>,
     config: SshConnectionConfig,
     client: RwLock<Option<Client>>,
+    transport_generation: AtomicU64,
     ptys: RwLock<HashMap<String, Arc<PtyState>>>,
     legacy_pty: RwLock<Option<String>>,
+    connection_attempt_id: RwLock<Option<String>>,
     status: RwLock<SshStatus>,
     last_error: RwLock<Option<String>>,
     keepalive_running: AtomicBool,
@@ -126,11 +133,14 @@ pub struct SshSession {
 impl SshSession {
     pub fn new(config: SshConnectionConfig) -> Arc<Self> {
         Arc::new(Self {
+            resources: Default::default(),
             host_trust: RwLock::new(None),
             config,
             client: RwLock::new(None),
+            transport_generation: AtomicU64::new(0),
             ptys: RwLock::new(HashMap::new()),
             legacy_pty: RwLock::new(None),
+            connection_attempt_id: RwLock::new(None),
             status: RwLock::new(SshStatus::Disconnected),
             last_error: RwLock::new(None),
             keepalive_running: AtomicBool::new(false),
@@ -147,10 +157,43 @@ impl SshSession {
     }
 
     pub async fn set_client(&self, client: Option<Client>) {
-        *self.client.write().await = client;
+        let mut current = self.client.write().await;
+        if let Some(client) = client {
+            self.resources.published();
+            self.transport_generation.store(
+                NEXT_TRANSPORT_GENERATION.fetch_add(1, Ordering::Relaxed),
+                Ordering::Release,
+            );
+            *current = Some(client);
+        } else {
+            self.resources.retire();
+            self.transport_generation.store(0, Ordering::Release);
+            *current = None;
+        }
+    }
+
+    pub(crate) fn transport_generation(&self) -> Option<u64> {
+        let generation = self.transport_generation.load(Ordering::Acquire);
+        (generation != 0).then_some(generation)
     }
 
     pub async fn status(&self) -> SshStatus {
+        if *self.status.read().await == SshStatus::Connected {
+            if let Some(client) = self.client().await {
+                if client.is_closed() {
+                    let error = client.timing_error();
+                    self.set_status(
+                        if error.is_some() {
+                            SshStatus::Error
+                        } else {
+                            SshStatus::Disconnected
+                        },
+                        error,
+                    )
+                    .await;
+                }
+            }
+        }
         *self.status.read().await
     }
 
@@ -161,6 +204,20 @@ impl SshSession {
     pub async fn set_status(&self, status: SshStatus, error: Option<String>) {
         *self.status.write().await = status;
         *self.last_error.write().await = error;
+    }
+
+    pub async fn set_connecting_attempt(&self, attempt_id: &str) {
+        *self.connection_attempt_id.write().await = Some(attempt_id.to_owned());
+        self.set_status(SshStatus::Connecting, None).await;
+    }
+
+    pub async fn fail_attempt_if_current(&self, attempt_id: &str, error: String) -> bool {
+        let current_attempt = self.connection_attempt_id.read().await;
+        if current_attempt.as_deref() != Some(attempt_id) {
+            return false;
+        }
+        self.set_status(SshStatus::Error, Some(error)).await;
+        true
     }
 
     pub fn touch_keepalive(&self) {
@@ -181,7 +238,8 @@ impl SshSession {
         self.keepalive_running.store(running, Ordering::Relaxed);
     }
 
-    pub async fn insert_pty(&self, token: String, next: PtyState, legacy: bool) {
+    pub async fn insert_pty(&self, token: String, mut next: PtyState, legacy: bool) {
+        next.shared_owner = !legacy;
         self.ptys
             .write()
             .await
@@ -208,6 +266,15 @@ impl SshSession {
         self.pty(token)
             .await
             .is_some_and(|pty| !pty.join.is_finished())
+    }
+
+    pub(super) async fn ensure_legacy_pty_control(&self, token: &str) -> crate::SshResult<()> {
+        if self.pty(token).await.is_some_and(|pty| pty.shared_owner) {
+            return Err(crate::SshError::Pty(
+                "shared terminal requires its input lease".into(),
+            ));
+        }
+        Ok(())
     }
 
     pub(super) async fn subscribe_output(

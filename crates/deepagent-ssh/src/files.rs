@@ -49,6 +49,50 @@ pub(super) fn validate_path(path: &str) -> SshResult<()> {
     Ok(())
 }
 
+pub(super) fn validate_absolute_path(path: &str) -> SshResult<()> {
+    validate_path(path)?;
+    if !path.starts_with('/')
+        || (path != "/"
+            && path[1..]
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == ".."))
+    {
+        return Err(SshError::InvalidConfig(
+            "expected an absolute POSIX path without dot components".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Prefixes of an already validated absolute POSIX directory, including root.
+pub(super) fn directory_ancestors(path: &str) -> impl Iterator<Item = &str> {
+    std::iter::once("/")
+        .chain(
+            path.match_indices('/')
+                .skip(1)
+                .map(|(index, _)| &path[..index]),
+        )
+        .chain((path != "/").then_some(path))
+}
+
+/// Join one untrusted POSIX directory entry without interpreting host OS paths.
+pub(super) fn directory_entry_path(parent: &str, name: &str) -> SshResult<String> {
+    validate_path(parent)?;
+    validate_path(name)?;
+    if name == "." || name == ".." || name.contains('/') {
+        return Err(SshError::InvalidConfig(
+            "unsafe remote directory entry name".into(),
+        ));
+    }
+    let path = if parent.ends_with('/') {
+        format!("{parent}{name}")
+    } else {
+        format!("{parent}/{name}")
+    };
+    validate_path(&path)?;
+    Ok(path)
+}
+
 pub(super) fn metadata(
     connection_id: &str,
     path: &str,

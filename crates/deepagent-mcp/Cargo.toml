@@ -34,8 +34,10 @@ reqwest = { version = "0.12", default-features = false, features = [
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security",
-    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ProcessSnapshotting",
     "Win32_System_JobObjects",
+    "Win32_System_Kernel",
     "Win32_System_Threading",
 ] }
 

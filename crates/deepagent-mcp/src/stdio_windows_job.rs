@@ -11,11 +11,11 @@ use std::time::Duration;
 
 use tokio::process::{Child, Command};
 use windows_sys::Win32::Foundation::{
-    ERROR_MORE_DATA, ERROR_NO_MORE_FILES, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0,
-    WAIT_TIMEOUT,
+    ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
-use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+use windows_sys::Win32::System::Diagnostics::ProcessSnapshotting::{
+    PssCaptureSnapshot, PssFreeSnapshot, PssWalkMarkerCreate, PssWalkMarkerFree, PssWalkSnapshot,
+    HPSS, HPSSWALK, PSS_CAPTURE_THREADS, PSS_THREAD_ENTRY, PSS_WALK_THREADS,
 };
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob,
@@ -26,9 +26,9 @@ use windows_sys::Win32::System::JobObjects::{
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Threading::{
-    GetProcessIdOfThread, OpenProcess, OpenThread, ResumeThread, WaitForSingleObject,
-    CREATE_NO_WINDOW, CREATE_SUSPENDED, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-    THREAD_QUERY_LIMITED_INFORMATION, THREAD_SUSPEND_RESUME,
+    GetCurrentProcess, GetProcessIdOfThread, OpenProcess, OpenThread, ResumeThread,
+    WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_SYNCHRONIZE, THREAD_QUERY_LIMITED_INFORMATION, THREAD_SUSPEND_RESUME,
 };
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
@@ -92,7 +92,7 @@ impl ProcessJob {
         let pid = child
             .id()
             .ok_or_else(|| io::Error::other("missing suspended MCP process id"))?;
-        resume_child_threads(pid)
+        resume_child_threads(process.cast(), pid)
     }
 
     fn assign_process(&self, process: HANDLE) -> io::Result<()> {
@@ -315,55 +315,96 @@ impl ProcessJob {
     }
 }
 
-fn resume_child_threads(pid: u32) -> io::Result<()> {
-    resume_child_threads_with(pid, |thread| unsafe { ResumeThread(thread) })
+fn resume_child_threads(process: HANDLE, pid: u32) -> io::Result<()> {
+    resume_child_threads_with(process, pid, |thread| unsafe { ResumeThread(thread) })
 }
 
-fn resume_child_threads_with(pid: u32, mut resume: impl FnMut(HANDLE) -> u32) -> io::Result<()> {
-    // Rust's primary-thread handle API is nightly-only. Use documented ToolHelp
-    // and ResumeThread on stable instead of an undocumented NtResumeProcess.
-    // Collect handles before resuming, so threads created after startup cannot
-    // enter this snapshot. Ownership was established before any thread resumes.
-    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
-    if snapshot == INVALID_HANDLE_VALUE {
-        return Err(io::Error::last_os_error());
+// PSS handles require their own release APIs, not CloseHandle. The snapshot is
+// captured in this process even though its thread IDs belong to the held child.
+struct StartupThreadSnapshot {
+    snapshot: HPSS,
+    marker: HPSSWALK,
+}
+
+impl Drop for StartupThreadSnapshot {
+    fn drop(&mut self) {
+        if !self.marker.is_null() {
+            let code = unsafe { PssWalkMarkerFree(self.marker) };
+            if code != 0 {
+                tracing::warn!(code, "failed to release MCP startup thread walk marker");
+            }
+        }
+        if !self.snapshot.is_null() {
+            let code = unsafe { PssFreeSnapshot(GetCurrentProcess(), self.snapshot) };
+            if code != 0 {
+                tracing::warn!(code, "failed to release MCP startup thread snapshot");
+            }
+        }
     }
-    // SAFETY: ToolHelp returned a valid owned snapshot handle.
-    let snapshot = unsafe { OwnedHandle::from_raw_handle(snapshot.cast()) };
-    let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
-    entry.dwSize = std::mem::size_of_val(&entry) as u32;
-    if unsafe { Thread32First(snapshot.as_raw_handle().cast(), &mut entry) } == 0 {
-        return Err(io::Error::last_os_error());
+}
+
+fn resume_child_threads_with(
+    process: HANDLE,
+    pid: u32,
+    mut resume: impl FnMut(HANDLE) -> u32,
+) -> io::Result<()> {
+    // The project's Rust 1.88 MSRV predates the stable primary-thread handle API.
+    // Capture only the held, suspended child's IDs using the documented process
+    // snapshot API; scanning every host thread depends on unrelated host load.
+    // Collect and verify all handles before resuming any of them.
+    let mut snapshot = StartupThreadSnapshot {
+        snapshot: std::ptr::null_mut(),
+        marker: std::ptr::null_mut(),
+    };
+    let code =
+        unsafe { PssCaptureSnapshot(process, PSS_CAPTURE_THREADS, 0, &mut snapshot.snapshot) };
+    if code != 0 {
+        return Err(io::Error::from_raw_os_error(code as i32));
+    }
+    let code = unsafe { PssWalkMarkerCreate(std::ptr::null(), &mut snapshot.marker) };
+    if code != 0 {
+        return Err(io::Error::from_raw_os_error(code as i32));
     }
     let mut threads = Vec::new();
     loop {
-        if entry.th32OwnerProcessID == pid {
-            let thread = unsafe {
-                OpenThread(
-                    THREAD_SUSPEND_RESUME | THREAD_QUERY_LIMITED_INFORMATION,
-                    0,
-                    entry.th32ThreadID,
-                )
-            };
-            if thread.is_null() {
-                return Err(io::Error::last_os_error());
-            }
-            // SAFETY: OpenThread returned a valid owned handle. Verify the
-            // snapshot's owner again so a recycled thread id cannot target a
-            // thread outside this exact, still-held child process.
-            let thread = unsafe { OwnedHandle::from_raw_handle(thread.cast()) };
-            if unsafe { GetProcessIdOfThread(thread.as_raw_handle().cast()) } != pid {
-                return Err(io::Error::other("MCP startup thread owner changed"));
-            }
-            threads.push(thread);
-        }
-        if unsafe { Thread32Next(snapshot.as_raw_handle().cast(), &mut entry) } == 0 {
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() != Some(ERROR_NO_MORE_FILES as i32) {
-                return Err(error);
-            }
+        let mut entry: PSS_THREAD_ENTRY = unsafe { std::mem::zeroed() };
+        let code = unsafe {
+            PssWalkSnapshot(
+                snapshot.snapshot,
+                PSS_WALK_THREADS,
+                snapshot.marker,
+                std::ptr::addr_of_mut!(entry).cast(),
+                std::mem::size_of_val(&entry) as u32,
+            )
+        };
+        if code == ERROR_NO_MORE_ITEMS {
             break;
         }
+        if code != 0 {
+            return Err(io::Error::from_raw_os_error(code as i32));
+        }
+        if entry.ProcessId != pid {
+            return Err(io::Error::other(
+                "MCP startup thread snapshot owner changed",
+            ));
+        }
+        let thread = unsafe {
+            OpenThread(
+                THREAD_SUSPEND_RESUME | THREAD_QUERY_LIMITED_INFORMATION,
+                0,
+                entry.ThreadId,
+            )
+        };
+        if thread.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: OpenThread returned a fresh owned handle. Recheck its owner
+        // so a recycled thread ID cannot target another process.
+        let thread = unsafe { OwnedHandle::from_raw_handle(thread.cast()) };
+        if unsafe { GetProcessIdOfThread(thread.as_raw_handle().cast()) } != pid {
+            return Err(io::Error::other("MCP startup thread owner changed"));
+        }
+        threads.push(thread);
     }
     if threads.is_empty() {
         return Err(io::Error::other(

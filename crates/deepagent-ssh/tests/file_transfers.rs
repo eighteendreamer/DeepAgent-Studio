@@ -18,6 +18,162 @@ async fn fixture() -> (
     (server, dir, service, conn.id)
 }
 
+fn keep_both() -> FileConflictPolicy {
+    serde_json::from_str("\"keep_both\"").expect("keep-both must be an explicit file policy")
+}
+
+#[tokio::test]
+async fn keep_both_upload_preserves_collisions_and_reports_the_verified_destination() {
+    let (server, dir, service, id) = fixture().await;
+    let input = dir.path().join("input");
+    std::fs::write(&input, b"new").unwrap();
+    server.counts.files.write().unwrap().extend([
+        ("/中文.tar.gz".into(), b"original".to_vec()),
+        ("/中文.tar (1).gz".into(), b"occupied".to_vec()),
+    ]);
+    let receipt = service
+        .transfer_file(
+            &id,
+            FileTransferRequest {
+                direction: FileTransferDirection::Upload,
+                local_path: input.to_str().unwrap().into(),
+                remote_path: "/中文.tar.gz".into(),
+                conflict: keep_both(),
+            },
+            CancellationToken::new(),
+            Arc::new(|_| {}),
+        )
+        .await
+        .unwrap();
+    let json = serde_json::to_value(&receipt).unwrap();
+    assert_eq!(json["destinationPath"], "/中文.tar (2).gz");
+    assert_eq!(receipt.bytes, "3");
+    let files = server.counts.files.read().unwrap();
+    assert_eq!(files["/中文.tar.gz"], b"original");
+    assert_eq!(files["/中文.tar (1).gz"], b"occupied");
+    assert_eq!(files["/中文.tar (2).gz"], b"new");
+    assert!(files.keys().all(|p| !p.contains(".part")));
+}
+
+#[tokio::test]
+async fn keep_both_download_preserves_hidden_names_and_zero_byte_files() {
+    let (server, dir, service, id) = fixture().await;
+    server
+        .counts
+        .files
+        .write()
+        .unwrap()
+        .insert("/source".into(), vec![]);
+    let output = dir.path().join(".env");
+    std::fs::write(&output, b"original").unwrap();
+    std::fs::create_dir(dir.path().join(".env (1)")).unwrap();
+    let receipt = service
+        .transfer_file(
+            &id,
+            FileTransferRequest {
+                direction: FileTransferDirection::Download,
+                local_path: output.to_str().unwrap().into(),
+                remote_path: "/source".into(),
+                conflict: keep_both(),
+            },
+            CancellationToken::new(),
+            Arc::new(|_| {}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(output).unwrap(), b"original");
+    assert_eq!(
+        std::fs::metadata(dir.path().join(".env (2)"))
+            .unwrap()
+            .len(),
+        0
+    );
+    assert_eq!(
+        serde_json::to_value(receipt).unwrap()["destinationPath"],
+        dir.path().join(".env (2)").to_str().unwrap()
+    );
+}
+
+#[tokio::test]
+async fn keep_both_publish_collision_never_overwrites_or_replays_an_uncertain_remote_write() {
+    let (server, dir, service, id) = fixture().await;
+    let input = dir.path().join("input");
+    std::fs::write(&input, b"new").unwrap();
+    server
+        .counts
+        .files
+        .write()
+        .unwrap()
+        .insert("/target".into(), b"original".to_vec());
+    let counts = server.counts.clone();
+    let error = service
+        .transfer_file(
+            &id,
+            FileTransferRequest {
+                direction: FileTransferDirection::Upload,
+                local_path: input.to_str().unwrap().into(),
+                remote_path: "/target".into(),
+                conflict: keep_both(),
+            },
+            CancellationToken::new(),
+            Arc::new(move |_| {
+                counts
+                    .files
+                    .write()
+                    .unwrap()
+                    .insert("/target (1)".into(), b"racer".to_vec());
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "publish");
+    let files = server.counts.files.read().unwrap();
+    assert_eq!(files["/target"], b"original");
+    assert_eq!(files["/target (1)"], b"racer");
+    assert!(!files.contains_key("/target (2)"));
+    assert!(files.keys().all(|p| !p.contains(".part")));
+}
+
+#[tokio::test]
+async fn keep_both_local_publish_race_preserves_the_other_writer_and_cleans_staging() {
+    let (server, dir, service, id) = fixture().await;
+    server
+        .counts
+        .files
+        .write()
+        .unwrap()
+        .insert("/source".into(), b"new".to_vec());
+    let output = dir.path().join("target.bin");
+    std::fs::write(&output, b"original").unwrap();
+    let occupied = dir.path().join("target (1).bin");
+    let race = occupied.clone();
+    let error = service
+        .transfer_file(
+            &id,
+            FileTransferRequest {
+                direction: FileTransferDirection::Download,
+                local_path: output.to_str().unwrap().into(),
+                remote_path: "/source".into(),
+                conflict: keep_both(),
+            },
+            CancellationToken::new(),
+            Arc::new(move |_| {
+                std::fs::write(&race, b"racer").unwrap();
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "conflict");
+    assert_eq!(std::fs::read(output).unwrap(), b"original");
+    assert_eq!(std::fs::read(occupied).unwrap(), b"racer");
+    assert!(!dir.path().join("target (2).bin").exists());
+    assert!(std::fs::read_dir(dir.path()).unwrap().all(|p| !p
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .starts_with(".deepagent-")));
+}
+
 #[tokio::test]
 async fn bidirectional_binary_transfer_stages_verifies_and_reuses_the_authenticated_connection() {
     let (server, dir, service, id) = fixture().await;

@@ -55,8 +55,11 @@ mod deepseek_file_store;
 pub mod diff;
 pub mod doctor;
 pub mod dto;
+pub mod external_editor;
+pub mod file_operations;
 pub mod file_preview_service;
 pub mod file_transfer_service;
+pub mod file_workspace;
 #[cfg(test)]
 mod git_context_invalidation_tests;
 pub mod git_service;

@@ -1,4 +1,5 @@
 //! Shared synthetic HTTP fixture for media response tests; never a production transport.
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -142,6 +143,30 @@ impl MediaWire {
             "http://public.fixture.invalid:{}/image.png?signature=synthetic-h167",
             self.address.port()
         )
+    }
+
+    /// Measure refusal after the fixture has delivered its bytes, while it still
+    /// withholds EOF. The request's own deadline bounds connection/body delivery;
+    /// neither local transfer throughput nor fixture preparation is an EOF wait.
+    /// An early refusal (for example Content-Length) need not wait for `sent`.
+    pub(super) async fn before_eof<F: Future>(
+        &self,
+        work: F,
+    ) -> Result<F::Output, tokio::time::error::Elapsed> {
+        let started = std::time::Instant::now();
+        tokio::pin!(work);
+        tokio::select! {
+            result = &mut work => {
+                eprintln!("media refusal before delivery finished: {:?}", started.elapsed());
+                Ok(result)
+            },
+            _ = self.sent.notified() => {
+                let delivered = started.elapsed();
+                let result = tokio::time::timeout(std::time::Duration::from_secs(2), work).await;
+                eprintln!("media delivery: {delivered:?}; refusal after delivery: {:?}", started.elapsed().saturating_sub(delivered));
+                result
+            },
+        }
     }
 
     pub(super) async fn close(&mut self) {

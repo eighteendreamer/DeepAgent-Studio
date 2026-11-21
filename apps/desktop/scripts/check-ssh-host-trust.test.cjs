@@ -26,7 +26,27 @@ function production(file, name, context = {}) {
   const js = ts.transpileModule(`${text}\n${name};`, { compilerOptions: {
     module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React,
   } }).outputText;
-  return vm.runInNewContext(js, context);
+  return vm.runInNewContext(js, {
+    canSaveSshConnection: value => production('components/remote/SshAuthenticationFields.tsx', 'canSaveSshConnection')(value),
+    canSaveSshJump: value => production('components/remote/SshJumpFields.tsx', 'canSaveSshJump')(value),
+    authenticationFactorRequests: value => production('components/remote/SshAuthenticationFields.tsx', 'authenticationFactorRequests')(value),
+    authenticationFactorsFromDto: value => production('components/remote/SshAuthenticationFields.tsx', 'authenticationFactorsFromDto')(value),
+    mockAuthenticationFactors: value => production('api.ts', 'mockAuthenticationFactors')(value),
+    TextEncoder,
+    canSaveSshProxy: value => production('components/remote/SshProxyFields.tsx', 'canSaveSshProxy')(value),
+    sshProxyRequest: value => production('components/remote/SshProxyFields.tsx', 'sshProxyRequest')(value),
+    sshProxyFromDto: value => production('components/remote/SshProxyFields.tsx', 'sshProxyFromDto')(value),
+    sshJumpRequest: value => production('components/remote/SshJumpFields.tsx', 'sshJumpRequest')(value),
+    sshJumpFromDto: value => production('components/remote/SshJumpFields.tsx', 'sshJumpFromDto')(value),
+    canSaveSshTiming: value => production('components/remote/SshTimingFields.tsx', 'canSaveSshTiming')(value),
+    sshTimingRequest: value => production('components/remote/SshTimingFields.tsx', 'sshTimingRequest')(value),
+    sshTimingFromDto: value => production('components/remote/SshTimingFields.tsx', 'sshTimingFromDto')(value),
+    matchesSshRoute: (...args) => production('components/remote/SshProxyFields.tsx', 'matchesSshRoute')(...args),
+    isSshRoute: value => production('components/remote/SshProxyFields.tsx', 'isSshRoute')(value),
+    mockProxy: value => production('api.ts', 'mockProxy')(value),
+    mockJump: value => production('api.ts', 'mockJump')(value),
+    ...context,
+  });
 }
 
 test('SSH API sends and mock-projects the explicit trust path for create/update', async () => {
@@ -44,6 +64,46 @@ test('SSH API sends and mock-projects the explicit trust path for create/update'
     assert.equal(calls[1].input.knownHostsPath, '', 'explicit reset is not omitted');
   }
 });
+
+test('SSH API carries the attached user certificate and explicit removal', async () => {
+  for (const name of ['sshCreateConnection', 'sshUpdateConnection']) {
+    for (const certificate of ['D:\\fixture\\identity-cert.pub', '']) {
+      const args = ['fixture', '127.0.0.1', 2222, 'fixture', 'key_file', 'D:\\fixture\\identity', undefined, '', 'strict', certificate];
+      if (name.includes('Update')) args.unshift('id');
+      const calls = [];
+      const fn = production('api.ts', name, { getInvoke: () => async (_command, input) => { calls.push(input); return input; } });
+      await fn(...args);
+      assert.equal(calls[0].certificatePath, certificate);
+      const mock = production('api.ts', name, { getInvoke: () => null });
+      assert.equal((await mock(...args)).certificate_path, certificate);
+    }
+  }
+});
+
+for (const file of ['components/settings/ConnectionsSettings.tsx', 'components/remote/RemoteSidebar.tsx']) {
+  test(`${file}: save/edit preserves the certificate attachment and explicit removal`, async () => {
+    for (const editing of [false, true]) {
+      for (const certificatePath of ['D:\\fixture\\identity-cert.pub', '']) {
+        const calls = [];
+        const form = { name: 'fixture', host: '127.0.0.1', port: '2222', username: 'fixture', authType: 'file', keyPath: 'identity', certificatePath, password: '', knownHostsPath: '', hostKeyPolicy: 'strict' };
+        const noop = () => {};
+        await production(file, 'handleSave', {
+          form, editingId: editing ? 'id' : null, managerMode: editing ? 'edit' : 'create', editingConn: { id: 'id' },
+          sshCreateConnection: async (...args) => { calls.push(args); return { id: 'created' }; }, sshUpdateConnection: async (...args) => { calls.push(args); },
+          closeModal: noop, load: noop, loadConnections: noop, setForm: noop, setEditingConn: noop, setManagerMode: noop, handleSelect: noop, emptyForm: {},
+          normalizeSshError: error => error, message: { error: error => { throw Error(error); } }, t: translate,
+        })();
+        assert.equal(calls[0][editing ? 10 : 9], certificatePath);
+      }
+    }
+    let form;
+    production(file, file.includes('RemoteSidebar') ? 'startEdit' : 'openEdit', {
+      setForm: value => { form = value; }, setEditingId() {}, setIsModalOpen() {}, setTestResult() {}, setEditingConn() {}, setManagerMode() {},
+    })({ id: 'id', name: 'fixture', host: '127.0.0.1', port: 22, username: 'fixture', auth_type: 'key_file', key_path: 'identity', certificate_path: 'identity-cert.pub' });
+    assert.equal(form.certificatePath, 'identity-cert.pub');
+    assert.match(readFileSync(path.join(root, file), 'utf8'), /onPickCertificateFile=/);
+  });
+}
 
 test('SSH API carries explicit AcceptNew and legacy create defaults to Strict', async () => {
   for (const name of ['sshCreateConnection', 'sshUpdateConnection']) {
@@ -74,7 +134,7 @@ for (const file of ['components/settings/ConnectionsSettings.tsx', 'components/r
         closeModal: noop, load: noop, loadConnections: noop, setForm: noop, setEditingConn: noop, setManagerMode: noop, handleSelect: noop, emptyForm: {},
         normalizeSshError: error => error, message: { error: error => { throw Error(error); } }, t: translate,
       })();
-      assert.equal(calls[0].at(-1), 'accept_new');
+      assert.equal(calls[0][editing ? 9 : 8], 'accept_new');
     }
     let form;
     const edit = production(file, file.includes('RemoteSidebar') ? 'startEdit' : 'openEdit', {
@@ -139,7 +199,7 @@ test('host-key error formatting is idempotent across test results and status ren
   }
 });
 
-test('shared production field renders accessible strict-trust guidance and edits its value', () => {
+test('shared production field keeps its accessible label and editing without explanatory copy', () => {
   const fn = production('components/remote/SshHostTrustField.tsx', 'SshHostTrustField', {
     React, useTranslation: () => ({ t: translate }), Input: 'input', Label: 'label', Button: 'button',
     useRef: initial => ({ current: initial }), useState: initial => [initial, () => {}], useEffect() {},
@@ -148,14 +208,13 @@ test('shared production field renders accessible strict-trust guidance and edits
   const element = fn({ id: 'fixture-trust', host: 'fixture.invalid', port: 22, value: 'C:\\fixture\\known_hosts', onChange: value => { changed = value; } });
   const html = renderToStaticMarkup(element);
   assert.match(html, /for="fixture-trust"/);
-  assert.match(html, /aria-describedby="fixture-trust-help"/);
-  assert.match(html, /不自动接受/);
-  assert.match(html, /\[host\]:port/);
+  assert.doesNotMatch(html, /aria-describedby/);
+  assert.ok(!html.includes(translate('settings.connections.knownHostsHelp')));
   element.props.children[1].props.onChange({ target: { value: 'C:\\fixture\\new' } });
   assert.equal(changed, 'C:\\fixture\\new');
 });
 
-test('shared policy selector explains TOFU, refuses invalid values, and switches back to Strict', () => {
+test('shared policy selector omits explanatory copy, refuses invalid values, and switches back to Strict', () => {
   const Select = ({ children }) => React.createElement('div', null, children);
   const fn = production('components/remote/SshHostTrustField.tsx', 'SshHostTrustField', {
     React, useTranslation: () => ({ t: translate }), Input: 'input', Label: 'label', Button: 'button',
@@ -164,8 +223,10 @@ test('shared policy selector explains TOFU, refuses invalid values, and switches
   });
   const changed = [];
   const element = fn({ id: 'policy-fixture', host: 'fixture.invalid', port: 22, value: '', onChange() {}, policy: 'accept_new', onPolicyChange: value => changed.push(value) });
-  assert.match(renderToStaticMarkup(element), /TOFU/);
-  assert.match(renderToStaticMarkup(element), /冒充/);
+  const html = renderToStaticMarkup(element);
+  assert.ok(!html.includes(translate('settings.connections.acceptNewHelp')));
+  assert.ok(!html.includes(translate('settings.connections.acceptNewFileHelp')));
+  assert.doesNotMatch(html, /aria-describedby/);
   const find = node => node && typeof node === 'object' && (node.type === Select ? node : React.Children.toArray(node.props?.children).map(find).find(Boolean));
   const select = find(element);
   assert.ok(select, 'use the existing shadcn Select');
@@ -251,7 +312,7 @@ test('inspection UI reports pending/result/errors and prevents form submit or au
   view = render(props);
   assert.match(view.html, /SHA256:fixture-only/);
   assert.match(view.html, /ssh-ed25519/);
-  assert.match(view.html, /不代表远端服务器已通过校验/);
+  assert.doesNotMatch(view.html, /不代表远端服务器已通过校验/);
   assert.match(view.html, /role="status"/);
 });
 
@@ -336,6 +397,7 @@ function trustManagerDriver(api = {}, file = 'components/remote/SshHostTrustMana
   const context = Object.fromEntries(names.map(name => [name, 'div']));
   const fn = production(file, name, {
     ...context, React, Button: 'button', Checkbox: 'fixture-checkbox', Label: 'label',
+    SshRouteLabel: production('components/remote/SshProxyFields.tsx', 'SshRouteLabel', { React, useTranslation: () => ({ t: translate }) }),
     useTranslation: () => ({ t: translate }),
     sshListHostKeys: async () => [], sshInspectHostTrust: async () => { throw Error('unexpected inspection'); },
     sshImportHostTrust: async () => { throw Error('unexpected import'); },
@@ -378,6 +440,22 @@ function trustManagerDriver(api = {}, file = 'components/remote/SshHostTrustMana
 }
 
 const managerText = key => translate(`settings.connections.trustManager.${key}`);
+
+test('trust import preview rejects a route that differs from the open manager', async () => {
+  const proxy = { mode: 'socks5', host: 'proxy.invalid', port: 1080, has_password: false };
+  const props = { ...managerProps(), connection: { ...managerProps().connection, proxy } };
+  for (const wholeFile of [false, true]) {
+    const foreign = { ...fileImportPreview(), route: 'direct', keys: [] };
+    const driver = trustManagerDriver({
+      KnownHostsImportReport: 'fixture-file-report',
+      sshInspectHostTrust: async () => foreign,
+      sshPreviewKnownHostsImport: async () => foreign,
+    });
+    driver.render(props); await flushManager();
+    await driver.render(props).button(managerText(wholeFile ? 'previewFile' : 'preview')).props.onClick();
+    assert.ok(driver.render(props).text.includes(auditText('unexpected')));
+  }
+});
 const managerProps = () => ({ connection: { id: 'id', host: 'fixture.invalid', port: 2222, known_hosts_path: 'C:\\fixture' }, onClose() {}, onChanged() {} });
 const flushManager = () => new Promise(resolve => setImmediate(resolve));
 
@@ -385,6 +463,34 @@ const auditText = key => translate(`settings.connections.trustAudit.${key}`);
 const auditView = (count=25) => ({connection_id:'id',host:'fixture.invalid',port:2222,route:'direct',revision:count,
   records:Array.from({length:count},(_,i)=>({revision:i+1,at_ms:i+1,action:'trust_verified',trusted_fingerprints:[`SHA256:audit-${i+1}`],revoked_fingerprints:[]}))});
 const auditDriver = api => trustManagerDriver(api,'components/remote/SshHostTrustAuditDialog.tsx','SshHostTrustAuditDialog');
+
+test('proxy audit accepts the saved route and refuses another protocol or endpoint', async () => {
+  const proxy = { mode: 'socks5', host: 'proxy.invalid', port: 1080, has_password: true };
+  const props = { connection: { ...managerProps().connection, proxy }, onBack() {} };
+  for (const endpoint of [proxy, { ...proxy, port: 1081 }, { ...proxy, host: 'other.invalid' }, { ...proxy, mode: 'http_connect' }]) {
+    const driver = auditDriver({ sshHostTrustAudit: async () => ({ ...auditView(1), route: 'socks5', proxy: endpoint }) });
+    driver.render(props); await flushManager();
+    const text = driver.render(props).text;
+    assert.equal(text.includes('SHA256:audit-1'), endpoint === proxy);
+    assert.equal(text.includes(auditText('unexpected')), endpoint !== proxy);
+  }
+});
+
+test('trust management and audit omit explanatory paragraphs while retaining records and actions', async () => {
+  const props = managerProps();
+  const manager = trustManagerDriver();
+  manager.render(props); await flushManager();
+  const managerView = manager.render(props);
+  assert.ok(!managerView.text.includes(managerText('help')));
+  assert.ok(managerView.button(managerText('close')));
+  const audit = auditDriver({sshHostTrustAudit:async()=>auditView(1)});
+  audit.render({...props,onBack(){}}); await flushManager();
+  const auditViewResult = audit.render({...props,onBack(){}});
+  assert.ok(!auditViewResult.text.includes(auditText('help')));
+  assert.ok(!auditViewResult.text.includes(auditText('usageHelp')));
+  assert.ok(auditViewResult.text.includes('SHA256:audit-1'));
+  assert.ok(auditViewResult.button(auditText('refresh')));
+});
 
 test('audit UI distinguishes successful authentication time, unknown history and metadata errors',async()=>{
   const props={connection:managerProps().connection,onBack(){}};
@@ -494,6 +600,21 @@ function rotationDriver(api={}) {
   return trustManagerDriver(api,'components/remote/SshHostKeyRotationDialog.tsx','SshHostKeyRotationDialog',{window:{setTimeout:()=>1,clearTimeout(){}}});
 }
 
+test('proxy rotation accepts only the configured protocol and endpoint', async () => {
+  const proxy = { mode: 'http_connect', host: 'proxy.invalid', port: 8080, has_password: false };
+  const props = { connection: { ...managerProps().connection, proxy }, onBack() {}, onCommitted() {} };
+  for (const endpoint of [proxy, { ...proxy, port: 8081 }, { ...proxy, mode: 'socks5' }]) {
+    let cancelled = 0;
+    const driver = rotationDriver({
+      sshBeginHostKeyRotation: async () => { const value = rotationPreview(); return { ...value, challenge: { ...value.challenge, route: 'http_connect', proxy: endpoint } }; },
+      sshCancelHostKey: async () => { cancelled++; },
+    });
+    await driver.render(props).button(rotationText('probe')).props.onClick();
+    assert.equal(driver.render(props).text.includes('SHA256:new-fixture'), endpoint === proxy);
+    assert.equal(cancelled, endpoint === proxy ? 0 : 1);
+  }
+});
+
 test('rotation UI requires explicit probing and independent verification, single-flights and retains the receipt',async()=>{
   let probes=0,writes=0,complete;
   const driver=rotationDriver({sshBeginHostKeyRotation:async()=>{probes++;return rotationPreview();},sshConfirmHostKeyRotation:async()=>{writes++;return new Promise(resolve=>{complete=resolve;});}});
@@ -566,7 +687,7 @@ test('shared trust manager opens the separate rotation surface and reloads when 
   assert.ok(driver.render(props).button(managerText('rotation')));
 });
 
-const fileImportPreview = () => ({ connection_id:'id', host:'fixture.invalid', port:2222, known_hosts_path:'C:\\fixture', source_sha256:'fixture-digest', importable:1, skipped:1, rows:[
+const fileImportPreview = () => ({ connection_id:'id', host:'fixture.invalid', port:2222, route:'direct', known_hosts_path:'C:\\fixture', source_sha256:'fixture-digest', importable:1, skipped:1, rows:[
   {line_number:1,host:'other.invalid',port:22,algorithm:'ssh-ed25519',fingerprint:'SHA256:public-fixture',status:'ready'},
   {line_number:2,host:null,port:null,algorithm:null,fingerprint:null,status:'hashed_host'},
 ] });
@@ -650,7 +771,7 @@ test('failed file commit requires a new preview and fresh acknowledgement', asyn
 
 test('host trust manager previews without writing, and cancellation never grants trust', async () => {
   let inspections = 0; let writes = 0;
-  const expected = { host: 'fixture.invalid', port: 2222, known_hosts_path: 'C:\\fixture', keys: [{algorithm:'ssh-ed25519',fingerprint:'SHA256:fixture',line_number:1}] };
+  const expected = { host: 'fixture.invalid', port: 2222, route: 'direct', known_hosts_path: 'C:\\fixture', keys: [{algorithm:'ssh-ed25519',fingerprint:'SHA256:fixture',line_number:1}] };
   const driver = trustManagerDriver({ sshInspectHostTrust: async () => { inspections++; return expected; }, sshImportHostTrust: async () => { writes++; return []; } });
   const props = managerProps(); driver.render(props); await flushManager();
   assert.equal(inspections, 0); assert.equal(writes, 0);
@@ -664,7 +785,7 @@ test('host trust manager previews without writing, and cancellation never grants
 });
 
 test('host trust manager requires acknowledgement and sends one immutable preview', async () => {
-  const expected = { host: 'fixture.invalid', port: 2222, known_hosts_path: 'C:\\fixture', keys: [{algorithm:'ssh-ed25519',fingerprint:'SHA256:fixture',line_number:1}] };
+  const expected = { host: 'fixture.invalid', port: 2222, route: 'direct', known_hosts_path: 'C:\\fixture', keys: [{algorithm:'ssh-ed25519',fingerprint:'SHA256:fixture',line_number:1}] };
   let complete; const calls = [];
   const driver = trustManagerDriver({ sshInspectHostTrust: async () => expected, sshImportHostTrust: async (...args) => { calls.push(args); return new Promise(resolve => { complete = resolve; }); } });
   const props = managerProps(); driver.render(props); await flushManager();
@@ -716,6 +837,8 @@ test('connection confirmation APIs bind both server-generated IDs and never fake
     ['sshBeginConnection', 'ssh_begin_connection', ['id'], {id:'id'}],
     ['sshRespondHostKey', 'ssh_respond_host_key', ['id','attempt','challenge','once'], {id:'id',attemptId:'attempt',challengeId:'challenge',decision:'once'}],
     ['sshCancelHostKey', 'ssh_cancel_host_key', ['id','attempt','challenge'], {id:'id',attemptId:'attempt',challengeId:'challenge'}],
+    ['sshRespondKeyboardInteractive', 'ssh_respond_keyboard_interactive', ['id','attempt','challenge',['code','device']], {id:'id',attemptId:'attempt',challengeId:'challenge',responses:['code','device']}],
+    ['sshCancelConnectionAttempt', 'ssh_cancel_connection_attempt', ['id','attempt','challenge'], {id:'id',attemptId:'attempt',challengeId:'challenge'}],
   ]) {
     const calls=[];
     await production('api.ts',name,{getInvoke:()=>async(command,args)=>calls.push({command,args})})(...args);
@@ -734,9 +857,28 @@ function confirmationFlow(api, now = () => 1) {
 }
 function unknownChallenge(id='id') { return {connection_id:id,attempt_id:`attempt-${id}`,challenge_id:`challenge-${id}`,host:'fixture.invalid',port:22,username:'fixture',role:'target',route:'direct',kind:'unknown_host',algorithm:'ssh-ed25519',fingerprint:'SHA256:fixture',expires_at_ms:1000,can_save:true}; }
 
+test('shared connection flow accepts proxy challenges and rejects inconsistent route metadata', async () => {
+  for (const mode of ['http_connect', 'socks5']) {
+    const challenge = { ...unknownChallenge(), route: mode, proxy: { mode, host: 'proxy.invalid', port: 1080 } };
+    const { flow, states } = confirmationFlow({ begin: async () => ({ status: 'confirmation_required', challenge }), respond: async () => ({ status: 'connected' }), cancel: async () => {} });
+    const connected = flow.connect('id').catch(() => false);
+    await flushManager();
+    assert.equal(states.at(-1).challenge?.proxy?.host, 'proxy.invalid');
+    await flow.respond('once');
+    assert.equal(await connected, true);
+  }
+  for (const metadata of [{ route: 'jump' }, { route: 'socks5' }, { route: 'direct', proxy: { mode: 'socks5', host: 'proxy.invalid', port: 1080 } }]) {
+    let cancelled = 0;
+    const { flow } = confirmationFlow({ begin: async () => ({ status: 'confirmation_required', challenge: { ...unknownChallenge(), ...metadata } }), cancel: async () => { cancelled++; } });
+    await assert.rejects(flow.connect('id'), /scope/);
+    assert.equal(cancelled, 1);
+  }
+});
+function authenticationChallenge(id, attempt, challenge, prompts) { return {connection_id:id,attempt_id:attempt,challenge_id:challenge,host:'fixture.invalid',port:22,username:'fixture',name:'Fixture verification',instructions:'Complete both verification steps',prompts,expires_at_ms:1000}; }
+
 test('unknown connection waits for an explicit decision and duplicate clicks never authenticate twice', async () => {
   const challenge=unknownChallenge(); const calls=[]; let complete;
-  const {flow,states}=confirmationFlow({begin:async()=>({status:'confirmation_required',challenge}),respond:async(...args)=>{calls.push(args);await new Promise(resolve=>complete=resolve);},cancel:async()=>{}});
+  const {flow,states}=confirmationFlow({begin:async()=>({status:'confirmation_required',challenge}),respond:async(...args)=>{calls.push(args);await new Promise(resolve=>complete=resolve);return {status:'connected'};},cancel:async()=>{}});
   const connecting=flow.connect('id'); await flushManager();
   assert.equal(calls.length,0);
   assert.equal(states.at(-1).challenge.fingerprint,challenge.fingerprint);
@@ -774,6 +916,119 @@ test('backend confirmation failure rejects the connection and never reports succ
   const connecting=flow.connect('id');const failed=assert.rejects(connecting,/changed before authentication/);
   await flushManager();await flow.respond('once');await failed;
   assert.equal(states.at(-1).challenge,null);
+});
+
+test('one connection attempt advances from host verification through multiple MFA rounds', async () => {
+  const host=unknownChallenge();
+  const first=authenticationChallenge('id',host.attempt_id,'mfa-one',[{prompt:'Verification code',echo:false},{prompt:'Device label',echo:true}]);
+  const second=authenticationChallenge('id',host.attempt_id,'mfa-two',[{prompt:'Second factor',echo:false}]);
+  const calls=[];
+  const {flow,states}=confirmationFlow({
+    begin:async()=>({status:'confirmation_required',challenge:host}),
+    respond:async()=>({status:'authentication_required',challenge:first}),
+    respondAuthentication:async(...args)=>{
+      calls.push(args);
+      return calls.length===1?{status:'authentication_required',challenge:second}:{status:'connected'};
+    },
+    cancel:async()=>{},cancelAuthentication:async()=>{},
+  });
+  const connecting=flow.connect('id');
+  await flushManager();
+  await flow.respond('once');
+  assert.equal(states.at(-1).authenticationChallenge.challenge_id,'mfa-one');
+  await flow.respondAuthentication(['482901','terminal']);
+  assert.equal(states.at(-1).authenticationChallenge.challenge_id,'mfa-two');
+  await flow.respondAuthentication(['731604']);
+  assert.equal(await connecting,true);
+  assert.deepEqual(calls.map(args=>args.slice(0,3)),[
+    ['id',host.attempt_id,'mfa-one'],['id',host.attempt_id,'mfa-two'],
+  ]);
+  assert.deepEqual(calls.map(args=>args[3]),[['482901','terminal'],['731604']]);
+});
+
+test('cancelling an MFA prompt uses the authentication challenge cancellation endpoint', async () => {
+  const challenge=authenticationChallenge('id','attempt-id','mfa-id',[{prompt:'Code',echo:false}]);
+  const cancelled=[];
+  const {flow}=confirmationFlow({
+    begin:async()=>({status:'authentication_required',challenge}),
+    respond:async()=>({status:'connected'}),cancel:async()=>{},
+    respondAuthentication:async()=>({status:'connected'}),
+    cancelAuthentication:async(...args)=>cancelled.push(args),
+  });
+  const connecting=flow.connect('id');
+  await flushManager();
+  await flow.cancel();
+  assert.equal(await connecting,false);
+  assert.deepEqual(cancelled,[["id","attempt-id","mfa-id"]]);
+});
+
+test('private-key unlock prompt clears submitted, cancelled and expired secrets', async () => {
+  let expire;
+  const driver = trustManagerDriver({}, 'components/remote/SshHostKeyPrompt.tsx', 'SshAuthenticationPrompt', {
+    Input: 'input', window: { setTimeout: callback => { expire = callback; return 1; }, clearTimeout() {} },
+  });
+  const submitted = [];
+  let cancelled = 0;
+  const props = {
+    challenge: { ...authenticationChallenge('id', 'attempt', 'unlock', [{ prompt: 'Local unlock', echo: false }]), kind: 'private_key', expires_at_ms: Date.now() + 60000 },
+    busy: false, onRespond: async responses => submitted.push([...responses]), onCancel: async () => cancelled++,
+  };
+  const input = view => view.nodes.find(node => node.type === 'input');
+  const form = view => view.nodes.find(node => node.type === 'form');
+  let view = driver.render(props);
+  assert.ok(view.text.includes(translate('settings.connections.unlockPrivateKey')));
+  assert.equal(input(view).props.type, 'password');
+  assert.equal(input(view).props.autoComplete, 'off');
+  input(view).props.onChange({ target: { value: 'fixture-unlock-only' } });
+  await form(driver.render(props)).props.onSubmit({ preventDefault() {} });
+  assert.deepEqual(submitted, [['fixture-unlock-only']]);
+  assert.equal(input(driver.render(props)).props.value, '');
+
+  input(driver.render(props)).props.onChange({ target: { value: 'fixture-cancel-only' } });
+  driver.render(props).button(translate('settings.connections.authenticationChallenge.cancel')).props.onClick();
+  assert.equal(cancelled, 1);
+  assert.equal(input(driver.render(props)).props.value, '');
+
+  input(driver.render(props)).props.onChange({ target: { value: 'fixture-expiry-only' } });
+  expire();
+  view = driver.render(props);
+  assert.equal(input(view).props.value, '');
+  assert.equal(input(view).props.disabled, true);
+  await form(view).props.onSubmit({ preventDefault() {} });
+  assert.equal(submitted.length, 1);
+  driver.unmount();
+});
+
+test('private-key unlock prompt exposes its localized purpose as the accessible dialog name', () => {
+  const driver = trustManagerDriver({}, 'components/remote/SshHostKeyPrompt.tsx', 'SshAuthenticationPrompt', {
+    Input: 'input', window: { setTimeout: () => 1, clearTimeout() {} },
+  });
+  const view = driver.render({
+    challenge: { ...authenticationChallenge('id', 'attempt', 'unlock', [{ prompt: 'Passphrase', echo: false }]), kind: 'private_key' },
+    busy: false, onRespond: async () => {}, onCancel: async () => {},
+  });
+  assert.ok(view.nodes.some(node => node.props?.['aria-label'] === translate('settings.connections.unlockPrivateKey')));
+  assert.equal(view.nodes.find(node => node.type === 'label').props.children, '私钥口令');
+  driver.unmount();
+});
+
+test('connection flow advances from local unlock into server MFA without retaining its answer', async () => {
+  const unlock = { ...authenticationChallenge('id', 'attempt', 'unlock', [{ prompt: 'Passphrase', echo: false }]), kind: 'private_key' };
+  const mfa = { ...authenticationChallenge('id', 'attempt', 'mfa', [{ prompt: 'Code', echo: false }]), kind: 'keyboard_interactive' };
+  const calls = [];
+  const { flow, states } = confirmationFlow({
+    begin: async () => ({ status: 'authentication_required', challenge: unlock }),
+    respondAuthentication: async (...args) => { calls.push(args); return calls.length === 1 ? { status: 'authentication_required', challenge: mfa } : { status: 'connected' }; },
+    cancelAuthentication: async () => {},
+  });
+  const connecting = flow.connect('id');
+  await flushManager();
+  await flow.respondAuthentication(['fixture-unlock-only']);
+  assert.equal(states.at(-1).authenticationChallenge.kind, 'keyboard_interactive');
+  assert.ok(!JSON.stringify(states).includes('fixture-unlock-only'));
+  await flow.respondAuthentication(['482901']);
+  assert.equal(await connecting, true);
+  assert.deepEqual(calls, [['id', 'attempt', 'unlock', ['fixture-unlock-only']], ['id', 'attempt', 'mfa', ['482901']]]);
 });
 
 test('both actual SSH surfaces use the shared confirmation hook rather than a bare connect', () => {

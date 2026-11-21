@@ -18,6 +18,7 @@ const observe = () => ({
   ca_present: has('SSL_CERT_FILE'),
   ca_matches: process.env.SSL_CERT_FILE === `${nonce}-ca.pem`,
   bootstrap_present: has('NODE_OPTIONS'),
+  fixture_runtime_present: has('DEEPAGENT_MCP_FIXTURE_NODE'),
   runtime_base_present: Boolean(process.env.PATH && process.env.HOME && process.env.TEMP),
   locale_matches: process.env.LANG === 'C.UTF-8',
   mixed_path_matches: process.env.pAtH?.split(require('node:path').delimiter).at(-1) === `${nonce}-explicit-path`,

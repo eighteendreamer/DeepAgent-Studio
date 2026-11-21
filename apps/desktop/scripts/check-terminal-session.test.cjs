@@ -51,15 +51,21 @@ test('terminal renewal never succeeds on a missing transport or a rejected gener
 
 test('recovery distinguishes a live process from expired input control', async () => {
   const status = { cursor: 128, available: true, controlAvailable: false };
-  const fn = production('terminalSessionRecoveryStatus', async (command, args) => {
-    assert.equal(command, 'terminal_session_recovery_status');
-    assert.equal(args.sessionId, session.sessionId);
-    return status;
-  });
-  assert.equal(await fn(session.sessionId), status);
-  const fallback = await production('terminalSessionRecoveryStatus', null)(session.sessionId);
+  for (const target of [session, { ...session, sessionId: 'ssh:fixture:pty', backend: 'ssh', connectionGeneration: 42 }]) {
+    const fn = production('terminalSessionRecoveryStatus', async (command, args) => {
+      assert.equal(command, 'terminal_session_recovery_status');
+      assert.equal(args.session, target);
+      assert.equal(args.session.connectionGeneration, target.connectionGeneration);
+      assert.equal(args.sessionId, undefined);
+      return status;
+    });
+    assert.equal(await fn(target), status);
+  }
+  const fallback = await production('terminalSessionRecoveryStatus', null)(session);
   assert.equal(fallback.available, false);
   assert.equal(fallback.controlAvailable, false);
+  const stale = new Error('stale-generation');
+  await assert.rejects(production('terminalSessionRecoveryStatus', async () => { throw stale; })(session), error => error === stale);
 });
 
 test('explicit takeover supplies the new generation to subsequent shared close', async () => {

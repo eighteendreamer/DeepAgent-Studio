@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 mod cron_lifecycle;
 mod pet;
 mod pet_store;
+mod ssh_lifecycle;
 
 use async_trait::async_trait;
 use deepagent_app_core::{
@@ -82,6 +83,9 @@ struct SqliteSshConfigStore {
 
 #[async_trait]
 impl deepagent_ssh::SshConfigStore for SqliteSshConfigStore {
+    fn supports_secret_storage(&self) -> bool {
+        true
+    }
     async fn load(&self) -> deepagent_ssh::SshResult<Vec<deepagent_ssh::SshConnectionConfig>> {
         if let Some(value) = self
             .secrets
@@ -409,6 +413,7 @@ struct AppState {
     terminal_sessions: Arc<DirectTerminalSessionBackend>,
     ssh_terminal_sessions: Arc<deepagent_ssh::SshTerminalSessionBackend>,
     transfers: deepagent_app_core::file_transfer_service::TransferCoordinator,
+    external_editor: deepagent_app_core::external_editor::ExternalEditorService,
     git: Arc<GitService>,
     /// File preview for the desktop "File Preview" panel (office-agent).
     preview: Arc<FilePreviewService>,
@@ -5075,6 +5080,7 @@ async fn terminal_session_open(
     cols: u16,
     rows: u16,
     target: Option<deepagent_terminal::TerminalTarget>,
+    cwd: Option<String>,
 ) -> Result<(TerminalSession, TerminalInputLease), String> {
     let target = target.unwrap_or_default();
     let backend = match &target {
@@ -5085,7 +5091,7 @@ async fn terminal_session_open(
         .open(TerminalOpenRequest {
             target,
             run_id,
-            cwd: state.terminal.current_dir(),
+            cwd: cwd.unwrap_or_else(|| if backend == "ssh" { String::new() } else { state.terminal.current_dir() }),
             cols,
             rows,
             initial_holder: TerminalInputHolder::User,
@@ -5127,6 +5133,60 @@ async fn terminal_session_renew(
         .renew(&session, &lease)
         .await
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn terminal_session_write_bytes(
+    state: State<'_, AppState>,
+    session: TerminalSession,
+    lease: TerminalInputLease,
+    data: Vec<u8>,
+) -> Result<(), String> {
+    if data.len() > 64 * 1024 {
+        return Err("Terminal binary input exceeds 64 KiB".into());
+    }
+    terminal_backend(&state, &session.backend)?
+        .write(&session, &lease, &data)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn terminal_session_lock(
+    state: State<'_, AppState>,
+    session: TerminalSession,
+    lease: TerminalInputLease,
+    password: String,
+    hide_output: bool,
+) -> Result<(), String> {
+    terminal_backend(&state, &session.backend)?
+        .lock(&session, &lease, &password, hide_output)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn terminal_session_unlock(
+    state: State<'_, AppState>,
+    session: TerminalSession,
+    lease: TerminalInputLease,
+    password: String,
+) -> Result<(), String> {
+    terminal_backend(&state, &session.backend)?
+        .unlock(&session, &lease, &password)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn terminal_session_lock_status(
+    state: State<'_, AppState>,
+    session: TerminalSession,
+) -> Result<Option<bool>, String> {
+    terminal_backend(&state, &session.backend)?
+        .lock_status(&session)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -5178,20 +5238,21 @@ fn terminal_session_last_cursor(
 #[tauri::command]
 async fn terminal_session_recovery_status(
     state: State<'_, AppState>,
-    session_id: String,
+    session: TerminalSession,
 ) -> Result<TerminalRecoveryStatus, String> {
-    if session_id.starts_with("ssh:") {
-        return state
+    match session.backend.as_str() {
+        "ssh" => state
             .ssh_terminal_sessions
-            .recovery_status(&session_id)
+            .recovery_status(&session)
             .await
-            .map_err(|error| error.to_string());
+            .map_err(|error| error.to_string()),
+        "direct" => state
+            .terminal_sessions
+            .recovery_status(&session)
+            .await
+            .map_err(|error| error.to_string()),
+        backend => Err(format!("Unsupported terminal backend: {backend}")),
     }
-    state
-        .terminal_sessions
-        .recovery_status(&session_id)
-        .await
-        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -5266,8 +5327,11 @@ fn to_dto_auth_type(t: DtoSshAuthType) -> &'static str {
         DtoSshAuthType::Agent => "agent",
         DtoSshAuthType::OpenSshAgent => "openssh_agent",
         DtoSshAuthType::Pageant => "pageant",
+        DtoSshAuthType::AutoPublicKey => "auto_public_key",
         DtoSshAuthType::KeyFile => "key_file",
+        DtoSshAuthType::KeyContent => "key_content",
         DtoSshAuthType::Password => "password",
+        DtoSshAuthType::Chain => "chain",
     }
 }
 
@@ -5288,7 +5352,17 @@ struct SshConnectionFrontendDto {
     pub port: u16,
     pub username: String,
     pub auth_type: &'static str,
+    pub agent_fingerprint: Option<String>,
+    pub authentication_factors: Vec<deepagent_ssh::SshAuthenticationFactorDto>,
+    pub proxy: Option<deepagent_ssh::SshProxyDto>,
+    pub jump: Option<deepagent_ssh::SshJumpDto>,
+    #[serde(default)]
+    pub timing: deepagent_ssh::SshConnectionTiming,
+    #[serde(default)]
+    pub advanced: deepagent_ssh::SshAdvancedOptions,
     pub key_path: Option<String>,
+    pub has_key_content: bool,
+    pub certificate_path: Option<String>,
     pub known_hosts_path: Option<String>,
     #[serde(default)]
     pub host_key_policy: deepagent_ssh::SshHostKeyPolicy,
@@ -5306,7 +5380,15 @@ impl From<DtoSshConnectionDto> for SshConnectionFrontendDto {
             port: dto.port,
             username: dto.username,
             auth_type: to_dto_auth_type(dto.auth_type),
+            agent_fingerprint: dto.agent_fingerprint,
+            authentication_factors: dto.authentication_factors,
+            proxy: dto.proxy,
+            jump: dto.jump,
+            timing: dto.timing,
+            advanced: dto.advanced,
             key_path: dto.key_path,
+            has_key_content: dto.has_key_content,
+            certificate_path: dto.certificate_path,
             known_hosts_path: dto.known_hosts_path,
             host_key_policy: dto.host_key_policy,
             status: to_dto_status(dto.status),
@@ -5341,7 +5423,15 @@ async fn ssh_inspect_host_trust(
     host: String,
     port: u16,
     known_hosts_path: Option<String>,
+    connection_id: Option<String>,
 ) -> Result<deepagent_ssh::SshHostTrustInspection, String> {
+    if let Some(id) = connection_id {
+        return state
+            .ssh
+            .inspect_connection_host_trust(&id)
+            .await
+            .map_err(|error| error.to_string());
+    }
     state
         .ssh
         .inspect_host_trust(&host, port, known_hosts_path.as_deref())
@@ -5451,10 +5541,105 @@ async fn ssh_confirm_host_key_rotation(
 }
 
 #[tauri::command]
+async fn ssh_preview_agent_identity(
+    request: deepagent_ssh::SshAgentAddRequest,
+) -> Result<deepagent_ssh::SshAgentIdentity, String> {
+    deepagent_ssh::preview_agent_identity(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn ssh_add_agent_identity(
+    request: deepagent_ssh::SshAgentAddRequest,
+) -> Result<deepagent_ssh::SshAgentAddResult, String> {
+    deepagent_ssh::add_ssh_agent_identity(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn ssh_probe_x11(options: deepagent_ssh::SshX11Options) -> deepagent_ssh::SshX11Probe {
+    deepagent_ssh::probe_x11(options).await
+}
+
+#[tauri::command]
+async fn ssh_connection_details(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<deepagent_ssh::SshConnectionDetails, String> {
+    state
+        .ssh
+        .connection_details(&id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn ssh_list_forwards(
+    state: State<'_, AppState>,
+    id: String,
+    generation: u64,
+) -> Result<Vec<deepagent_ssh::SshForwardTask>, String> {
+    state
+        .ssh
+        .list_forwards(&id, generation)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn ssh_start_forward(
+    state: State<'_, AppState>,
+    id: String,
+    generation: u64,
+    request: deepagent_ssh::SshForwardRequest,
+) -> Result<deepagent_ssh::SshForwardTask, String> {
+    state
+        .ssh
+        .start_forward(&id, generation, request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn ssh_stop_forward(
+    state: State<'_, AppState>,
+    id: String,
+    generation: u64,
+    task_id: String,
+) -> Result<deepagent_ssh::SshForwardTask, String> {
+    state
+        .ssh
+        .stop_forward(&id, generation, &task_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn ssh_probe_agent(
     provider: deepagent_ssh::SshAgentProvider,
 ) -> Vec<deepagent_ssh::SshAgentProbe> {
     deepagent_ssh::probe_ssh_agent(provider).await
+}
+
+#[tauri::command]
+async fn ssh_discover_default_identities() -> Result<Vec<deepagent_ssh::SshDefaultIdentity>, String>
+{
+    deepagent_ssh::discover_default_ssh_identities()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn ssh_preview_config_import(
+    path: Option<String>,
+    alias: Option<String>,
+    overrides: deepagent_ssh::SshConfigOverrides,
+) -> Result<deepagent_ssh::SshConfigImportPreview, String> {
+    deepagent_ssh::preview_ssh_config(path, alias, overrides)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -5475,7 +5660,15 @@ async fn ssh_create_connection(
     port: u16,
     username: String,
     auth_type: String,
+    agent_fingerprint: Option<String>,
+    authentication_factors: Option<Vec<deepagent_ssh::SshAuthenticationFactorRequest>>,
+    proxy: Option<deepagent_ssh::SshProxyRequest>,
+    jump: Option<deepagent_ssh::SshJumpRequest>,
+    timing: Option<deepagent_ssh::SshConnectionTiming>,
+    advanced: Option<deepagent_ssh::SshAdvancedOptions>,
     key_path: Option<String>,
+    key_content: Option<String>,
+    certificate_path: Option<String>,
     password: Option<String>,
     known_hosts_path: Option<String>,
     host_key_policy: Option<deepagent_ssh::SshHostKeyPolicy>,
@@ -5484,12 +5677,20 @@ async fn ssh_create_connection(
     let auth: DtoSshAuthType = serde_json::from_value(serde_json::Value::String(auth_type))
         .map_err(|error| format!("Invalid SSH authentication method: {error}"))?;
     ssh.create_connection(DtoCreateSshConnectionRequest {
+        advanced: advanced.unwrap_or_default(),
         name,
         host,
         port,
         username,
         auth_type: auth,
+        agent_fingerprint,
+        authentication_factors,
+        proxy,
+        jump,
+        timing: timing.unwrap_or_default(),
         key_path,
+        key_content,
+        certificate_path,
         password,
         known_hosts_path,
         host_key_policy: host_key_policy.unwrap_or_default(),
@@ -5509,7 +5710,15 @@ async fn ssh_update_connection(
     port: u16,
     username: String,
     auth_type: String,
+    agent_fingerprint: Option<String>,
+    authentication_factors: Option<Vec<deepagent_ssh::SshAuthenticationFactorRequest>>,
+    proxy: Option<deepagent_ssh::SshProxyRequest>,
+    jump: Option<deepagent_ssh::SshJumpRequest>,
+    timing: Option<deepagent_ssh::SshConnectionTiming>,
+    advanced: Option<deepagent_ssh::SshAdvancedOptions>,
     key_path: Option<String>,
+    key_content: Option<String>,
+    certificate_path: Option<String>,
     password: Option<String>,
     known_hosts_path: Option<String>,
     host_key_policy: Option<deepagent_ssh::SshHostKeyPolicy>,
@@ -5518,13 +5727,21 @@ async fn ssh_update_connection(
     let auth: DtoSshAuthType = serde_json::from_value(serde_json::Value::String(auth_type))
         .map_err(|error| format!("Invalid SSH authentication method: {error}"))?;
     ssh.update_connection(DtoUpdateSshConnectionRequest {
+        advanced,
         id,
         name,
         host,
         port,
         username,
         auth_type: auth,
+        agent_fingerprint,
+        authentication_factors,
+        proxy,
+        jump,
+        timing,
         key_path,
+        key_content,
+        certificate_path,
         password,
         known_hosts_path,
         host_key_policy,
@@ -5574,12 +5791,11 @@ async fn ssh_respond_host_key(
     attempt_id: String,
     challenge_id: String,
     decision: deepagent_ssh::SshHostKeyDecision,
-) -> Result<(), String> {
+) -> Result<deepagent_ssh::SshConnectionAttempt, String> {
     state
         .ssh
         .respond_host_key(&id, &attempt_id, &challenge_id, decision)
         .await
-        .map(|_| ())
         .map_err(|error| error.to_string())
 }
 
@@ -5593,6 +5809,35 @@ fn ssh_cancel_host_key(
     state
         .ssh
         .cancel_host_key(&id, &attempt_id, &challenge_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn ssh_respond_keyboard_interactive(
+    state: State<'_, AppState>,
+    id: String,
+    attempt_id: String,
+    challenge_id: String,
+    responses: Vec<String>,
+) -> Result<deepagent_ssh::SshConnectionAttempt, String> {
+    state
+        .ssh
+        .respond_keyboard_interactive(&id, &attempt_id, &challenge_id, responses)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn ssh_cancel_connection_attempt(
+    state: State<'_, AppState>,
+    id: String,
+    attempt_id: String,
+    challenge_id: String,
+) -> Result<(), String> {
+    state
+        .ssh
+        .cancel_connection_attempt(&id, &attempt_id, &challenge_id)
+        .await
         .map_err(|error| error.to_string())
 }
 
@@ -5666,6 +5911,7 @@ async fn ssh_exec(
         token: connection_id.clone(),
         cols: 80,
         rows: 24,
+        connection_generation: None,
     };
     ssh.exec(&handle, &command)
         .await
@@ -5685,10 +5931,54 @@ async fn ssh_list_dir(
         token: connection_id.clone(),
         cols: 80,
         rows: 24,
+        connection_generation: None,
     };
     ssh.list_dir(&handle, &path)
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn file_chmod_preview(state: State<'_, AppState>, connection_id: String, path: String, mode: u32, recursive: bool) -> Result<deepagent_ssh::RemoteChmodPreview, String> {
+    state.ssh.preview_chmod(&connection_id, &path, mode, recursive, deepagent_ssh::DirectoryWalkLimits::default(), tokio_util::sync::CancellationToken::new()).await.map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn file_copy_preview(state: State<'_, AppState>, spec: deepagent_ssh::ServerCopySpec) -> Result<deepagent_ssh::ServerCopyPreview, String> {
+    state.ssh.preview_server_copy(spec, tokio_util::sync::CancellationToken::new()).await.map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn file_copy_probe(state: State<'_, AppState>, source_id: String, destination_id: String) -> Result<deepagent_ssh::DirectCopyProbe, String> {
+    Ok(state.ssh.probe_direct_copy(&source_id, &destination_id, tokio_util::sync::CancellationToken::new()).await)
+}
+#[tauri::command]
+async fn file_archive_preview(state: State<'_, AppState>, spec: deepagent_ssh::ArchiveSpec) -> Result<deepagent_ssh::ArchivePreview, String> {
+    state.ssh.preview_archive(spec, tokio_util::sync::CancellationToken::new()).await.map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn file_operation_submit(state: State<'_, AppState>, operation: deepagent_app_core::file_operations::WorkbenchOperation) -> Result<deepagent_app_core::file_transfer_service::TransferTask, String> {
+    state.transfers.submit_operation(operation).await.map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn file_editor_open(state: State<'_, AppState>, request: deepagent_app_core::external_editor::EditorOpenRequest) -> Result<deepagent_app_core::external_editor::EditorSession, String> {
+    state.external_editor.open(request).await
+}
+#[tauri::command]
+async fn file_editor_list(state: State<'_, AppState>) -> Result<Vec<deepagent_app_core::external_editor::EditorSession>, String> {
+    Ok(state.external_editor.list().await)
+}
+#[tauri::command]
+async fn file_editor_resolve(state: State<'_, AppState>, id: String, action: String, path: Option<String>) -> Result<deepagent_app_core::external_editor::EditorSession, String> {
+    state.external_editor.resolve(&id, &action, path).await
+}
+
+#[tauri::command]
+async fn file_panel_list(
+    state: State<'_, AppState>,
+    endpoint: deepagent_app_core::file_workspace::FileEndpoint,
+    path: String,
+) -> Result<deepagent_app_core::file_workspace::FilePanelListing, String> {
+    deepagent_app_core::file_workspace::list_endpoint(&state.ssh, endpoint, path)
+        .await.map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -5703,6 +5993,7 @@ async fn ssh_read_file(
         token: connection_id.clone(),
         cols: 80,
         rows: 24,
+        connection_generation: None,
     };
     ssh.read_file(&handle, &path)
         .await
@@ -5731,18 +6022,37 @@ async fn ssh_file_metadata(
 async fn remote_transfer_submit(
     state: State<'_, AppState>,
     request: deepagent_app_core::file_transfer_service::TransferRequest,
+    detect_local_kind: Option<bool>,
 ) -> Result<deepagent_app_core::file_transfer_service::TransferTask, String> {
-    state
-        .transfers
-        .submit(request)
-        .await
-        .map_err(|e| e.to_string())
+    if detect_local_kind.unwrap_or(false) {
+        state.transfers.submit_detected_upload(request).await
+    } else {
+        state.transfers.submit(request).await
+    }
+    .map_err(|error| error.to_string())
 }
 #[tauri::command]
 async fn remote_transfer_snapshot(
     state: State<'_, AppState>,
 ) -> Result<Vec<deepagent_app_core::file_transfer_service::TransferTask>, String> {
     state.transfers.snapshot().await.map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn remote_transfer_watch(
+    state: State<'_, AppState>,
+    after_revision: Option<String>,
+) -> Result<deepagent_app_core::file_transfer_service::TransferSnapshot, String> {
+    if after_revision
+        .as_ref()
+        .is_some_and(|cursor| cursor.len() > 128)
+    {
+        return Err("invalid transfer watch cursor".into());
+    }
+    state
+        .transfers
+        .watch(after_revision.as_deref(), std::time::Duration::from_secs(5))
+        .await
+        .map_err(|error| error.to_string())
 }
 #[tauri::command]
 async fn remote_transfer_cancel(
@@ -5752,14 +6062,39 @@ async fn remote_transfer_cancel(
     state.transfers.cancel(&id).await.map_err(|e| e.to_string())
 }
 #[tauri::command]
+async fn remote_transfer_resolve_file_conflict(
+    state: State<'_, AppState>,
+    id: String,
+    response: deepagent_app_core::file_transfer_service::FileConflictResponse,
+) -> Result<deepagent_app_core::file_transfer_service::TransferTask, String> {
+    state
+        .transfers
+        .resolve_file_conflict(&id, response)
+        .await
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn remote_transfer_resolve_directory_conflict(
+    state: State<'_, AppState>,
+    id: String,
+    response: deepagent_app_core::file_transfer_service::DirectoryConflictResponse,
+) -> Result<deepagent_app_core::file_transfer_service::TransferTask, String> {
+    state
+        .transfers
+        .resolve_directory_conflict(&id, response)
+        .await
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
 async fn remote_transfer_retry(
     state: State<'_, AppState>,
     id: String,
     conflict: deepagent_ssh::FileConflictPolicy,
+    directory_conflict: Option<deepagent_ssh::DirectoryConflictPolicy>,
 ) -> Result<deepagent_app_core::file_transfer_service::TransferTask, String> {
     state
         .transfers
-        .retry(&id, conflict)
+        .retry_with_policies(&id, conflict, directory_conflict)
         .await
         .map_err(|e| e.to_string())
 }
@@ -5797,6 +6132,7 @@ async fn ssh_read_file_base64(
         token: connection_id.clone(),
         cols: 80,
         rows: 24,
+        connection_generation: None,
     };
     ssh.read_file_binary(&handle, &path)
         .await
@@ -5809,6 +6145,7 @@ fn ssh_handle(connection_id: &str) -> DtoSshServiceHandle {
         token: connection_id.to_owned(),
         cols: 80,
         rows: 24,
+        connection_generation: None,
     }
 }
 
@@ -5938,6 +6275,7 @@ async fn ssh_pty_spawn(
         token: connection_id.clone(),
         cols,
         rows,
+        connection_generation: None,
     };
     ssh.pty_spawn(&handle, cols, rows)
         .await
@@ -5962,6 +6300,7 @@ async fn ssh_pty_write(
         token: connection_id.clone(),
         cols: 80,
         rows: 24,
+        connection_generation: None,
     };
     ssh.pty_write(&handle, data.as_bytes())
         .await
@@ -5979,6 +6318,7 @@ async fn ssh_pty_read(
         token: connection_id.clone(),
         cols: 80,
         rows: 24,
+        connection_generation: None,
     };
     ssh.pty_read(&handle).await.map_err(|e| e.to_string())
 }
@@ -5996,6 +6336,7 @@ async fn ssh_pty_resize(
         token: connection_id.clone(),
         cols,
         rows,
+        connection_generation: None,
     };
     ssh.pty_resize(&handle, cols, rows)
         .await
@@ -7421,20 +7762,32 @@ pub fn run() {
                 SshService::with_config_store(paths.root.clone(), ssh_store)
                     .with_host_key_store(host_keys),
             );
+            let ssh_lifecycle = ssh_lifecycle::SshLifecycle::new(ssh.clone());
+            let ssh_monitor_stop = ssh_lifecycle.stop_token();
+            app.manage(ssh_lifecycle);
             let ssh_terminal_sessions = Arc::new(deepagent_ssh::SshTerminalSessionBackend::for_service(
                 ssh.clone(), Some(Arc::new(deepagent_app_core::SqliteTerminalLeaseStore::new(
                     service.shared_database(), deepagent_app_core::terminal_service::DEFAULT_TERMINAL_LEASE_TTL_MS,
                 ).map_err(|error| format!("initialize SSH terminal leases: {error}"))?)),
             ));
             let transfers=deepagent_app_core::file_transfer_service::TransferCoordinator::new(service.shared_database(),ssh.clone()).map_err(|error|format!("initialize file transfer queue: {error}"))?;
+            let external_editor = deepagent_app_core::external_editor::ExternalEditorService::new(paths.root.join("external-edits"), ssh.clone(), transfers.clone());
             {
                 let ssh_monitor = ssh.clone();
                 tauri::async_runtime::spawn(async move {
                     loop {
-                        if let Err(err) = ssh_monitor.refresh_due_statuses().await {
-                            eprintln!("ssh background status refresh loop failed: {err}");
+                        tokio::select! {
+                            _ = ssh_monitor_stop.cancelled() => break,
+                            result = ssh_monitor.refresh_due_statuses() => {
+                                if let Err(err) = result {
+                                    eprintln!("ssh background status refresh loop failed: {err}");
+                                }
+                            }
                         }
-                        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                        tokio::select! {
+                            _ = ssh_monitor_stop.cancelled() => break,
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(15)) => {}
+                        }
                     }
                 });
             }
@@ -7736,6 +8089,7 @@ pub fn run() {
                 terminal_sessions,
                 ssh_terminal_sessions,
                 transfers,
+                external_editor,
                 git,
                 preview,
                 attachments,
@@ -7999,6 +8353,10 @@ pub fn run() {
             terminal_session_open,
             coordinator_readiness,
             terminal_session_write,
+            terminal_session_write_bytes,
+            terminal_session_lock,
+            terminal_session_unlock,
+            terminal_session_lock_status,
             terminal_session_renew,
             terminal_session_read,
             terminal_session_wait,
@@ -8009,7 +8367,16 @@ pub fn run() {
             terminal_session_release,
             terminal_session_close,
             ssh_list_connections,
+            ssh_preview_agent_identity,
+            ssh_add_agent_identity,
+            ssh_probe_x11,
+            ssh_connection_details,
+            ssh_list_forwards,
+            ssh_start_forward,
+            ssh_stop_forward,
             ssh_probe_agent,
+            ssh_discover_default_identities,
+            ssh_preview_config_import,
             ssh_inspect_host_trust,
             ssh_list_host_keys,
             ssh_import_host_trust,
@@ -8026,16 +8393,24 @@ pub fn run() {
             ssh_begin_connection,
             ssh_respond_host_key,
             ssh_cancel_host_key,
+            ssh_respond_keyboard_interactive,
+            ssh_cancel_connection_attempt,
             ssh_disconnect,
             ssh_status,
             ssh_test_connection,
             ssh_exec,
             ssh_list_dir,
+            file_panel_list,
+            file_chmod_preview, file_copy_preview, file_copy_probe, file_archive_preview, file_operation_submit,
+            file_editor_open, file_editor_list, file_editor_resolve,
             ssh_file_metadata,
             remote_transfer_submit,
             remote_transfer_snapshot,
+            remote_transfer_watch,
             remote_transfer_cancel,
             remote_transfer_retry,
+            remote_transfer_resolve_file_conflict,
+            remote_transfer_resolve_directory_conflict,
             remote_transfer_clear,
             ssh_realpath,
             ssh_read_file,

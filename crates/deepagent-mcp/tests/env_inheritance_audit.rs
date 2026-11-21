@@ -16,7 +16,11 @@ const CHILD: &str = "DEEPAGENT_MCP_ENV_AUDIT_CHILD";
 const REPORT: &str = "DEEPAGENT_MCP_ENV_AUDIT_REPORT";
 const SERVER: &str = include_str!("fixtures/environment-server.cjs");
 
+#[path = "support/node_runtime.rs"]
+mod node_runtime;
+
 async fn observe_isolated_environment() -> Value {
+    let node_executable = node_runtime::resolve_node_runtime().await;
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     let scratch = dir.path().join("scratch");
@@ -50,6 +54,7 @@ async fn observe_isolated_environment() -> Value {
     command
         .env(CHILD, nonce)
         .env(REPORT, &report)
+        .env(node_runtime::NODE_RUNTIME_ENV, node_executable)
         .env(SECRET, format!("ambient-{nonce}"))
         .env(LOWERCASE_TOKEN, format!("lowercase-{nonce}"))
         .env(PLAIN, "ambient-plain")
@@ -157,6 +162,7 @@ async fn real_config_reconnect_applies_the_same_environment_boundary() {
 #[ignore = "helper: launched only by the isolated environment audit host"]
 async fn audit_stdio_environment_fixture_child() {
     let nonce = std::env::var(CHILD).expect("run the outer environment audit, not this helper");
+    let node_executable = node_runtime::isolated_node_runtime();
     let report = std::env::var_os(REPORT).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let script = dir.path().join("environment-server.cjs");
@@ -198,7 +204,7 @@ async fn audit_stdio_environment_fixture_child() {
         let mut config = McpServerConfig {
             response_limit_bytes: None,
             transport: None,
-            command: Some("node".to_owned()),
+            command: Some(node_executable.to_string_lossy().into_owned()),
             args: vec![
                 script.to_string_lossy().into_owned(),
                 nonce.clone(),
@@ -218,6 +224,7 @@ async fn audit_stdio_environment_fixture_child() {
         .await
         .expect("local MCP initialize must finish")
         .unwrap();
+        assert_eq!(initialized["audit"]["fixture_runtime_present"], false);
         let tools = tokio::time::timeout(Duration::from_secs(5), client.list_tools())
             .await
             .expect("local MCP tools/list must finish")

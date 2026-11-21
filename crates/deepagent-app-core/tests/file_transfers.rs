@@ -16,6 +16,7 @@ use std::sync::{
 struct Executor {
     started: AtomicUsize,
     release: tokio::sync::Notify,
+    skipped: bool,
 }
 #[async_trait::async_trait]
 impl TransferExecutor for Executor {
@@ -31,12 +32,14 @@ impl TransferExecutor for Executor {
             bytes: 3,
             total: Some(10),
         });
-        tokio::select! {_ = self.release.notified()=>Ok(FileTransferReceipt{bytes:"10".into(),sha256:"fixture".into(),skipped:false,publish_strategy:"created".into(),cleanup_warnings:vec![]}),_ = cancel.cancelled()=>Err(FileTransferError{code:"cancelled".into(),message:"cancelled after stream cleanup".into(),cleanup_warnings:vec![]})}
+        tokio::select! {_ = self.release.notified()=>Ok(FileTransferReceipt{bytes:if self.skipped { "0" } else { "10" }.into(),sha256:"fixture".into(),skipped:self.skipped,publish_strategy:"created".into(),cleanup_warnings:vec![],destination_path:None}),_ = cancel.cancelled()=>Err(FileTransferError{code:"cancelled".into(),message:"cancelled after stream cleanup".into(),cleanup_warnings:vec![],relative_path:None,destination_path:None})}
     }
 }
 fn request(id: &str, name: &str) -> TransferRequest {
     TransferRequest {
         connection_id: id.into(),
+        kind: Default::default(),
+        directory_conflict: Default::default(),
         transfer: FileTransferRequest {
             direction: FileTransferDirection::Upload,
             local_path: std::env::temp_dir().join(name).to_string_lossy().into(),
@@ -44,6 +47,291 @@ fn request(id: &str, name: &str) -> TransferRequest {
             conflict: FileConflictPolicy::Ask,
         },
     }
+}
+
+#[tokio::test]
+async fn watch_closes_snapshot_subscribe_gap_and_coalesces_without_losing_terminal_state() {
+    let executor = Arc::new(Executor::default());
+    let service = TransferCoordinator::new(
+        Arc::new(Database::open_in_memory().unwrap()),
+        executor.clone(),
+    )
+    .unwrap();
+    let initial = service
+        .watch(None, std::time::Duration::ZERO)
+        .await
+        .unwrap();
+    assert!(initial.revision.ends_with(":0"));
+    assert!(initial.tasks.is_empty());
+    let first = service.submit(request("a", "watch-gap")).await.unwrap();
+    state(&service, &first.id, TransferState::Running).await;
+    // Deliberately subscribe AFTER mutations; the old cursor must return immediately.
+    let running = tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        service.watch(Some(&initial.revision), std::time::Duration::from_secs(5)),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_ne!(running.revision, initial.revision);
+    assert_eq!(running.tasks[0].bytes, "3");
+    let pending = service.watch(Some(&running.revision), std::time::Duration::from_secs(5));
+    tokio::pin!(pending);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), &mut pending)
+            .await
+            .is_err()
+    );
+    executor.release.notify_one();
+    let finished = tokio::time::timeout(std::time::Duration::from_millis(250), pending)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(finished.tasks[0].state, TransferState::Completed);
+    assert_eq!(finished.tasks[0].bytes, "10");
+    service.clear_finished().await.unwrap();
+    let cleared = service
+        .watch(Some(&finished.revision), std::time::Duration::ZERO)
+        .await
+        .unwrap();
+    assert!(cleared.tasks.is_empty());
+    assert_ne!(cleared.revision, finished.revision);
+}
+
+#[tokio::test]
+async fn watch_timeout_and_dropped_waiter_leave_queue_usable() {
+    let service = TransferCoordinator::new(
+        Arc::new(Database::open_in_memory().unwrap()),
+        Arc::new(Executor::default()),
+    )
+    .unwrap();
+    let initial = service
+        .watch(None, std::time::Duration::ZERO)
+        .await
+        .unwrap();
+    assert!(tokio::time::timeout(
+        std::time::Duration::from_millis(20),
+        service.watch(Some(&initial.revision), std::time::Duration::from_secs(5)),
+    )
+    .await
+    .is_err());
+    let unchanged = service
+        .watch(
+            Some(&initial.revision),
+            std::time::Duration::from_millis(10),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unchanged.revision, initial.revision);
+    let first = service.submit(request("a", "watch-drop")).await.unwrap();
+    state(&service, &first.id, TransferState::Running).await;
+    service.cancel(&first.id).await.unwrap();
+    state(&service, &first.id, TransferState::Cancelled).await;
+    let result = service
+        .watch(Some(&initial.revision), std::time::Duration::ZERO)
+        .await
+        .unwrap();
+    assert_eq!(result.tasks[0].state, TransferState::Cancelled);
+}
+
+#[tokio::test]
+async fn progress_snapshot_exposes_speed_and_single_file_counts() {
+    let executor = Arc::new(Executor::default());
+    let service = TransferCoordinator::new(
+        Arc::new(Database::open_in_memory().unwrap()),
+        executor.clone(),
+    )
+    .unwrap();
+    let task = service
+        .submit(request("a", "progress-fields"))
+        .await
+        .unwrap();
+    state(&service, &task.id, TransferState::Running).await;
+    let running = service
+        .snapshot()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|item| item.id == task.id)
+        .unwrap();
+    assert_eq!(running.current_file.as_deref(), Some("/progress-fields"));
+    assert_eq!(running.total_files, Some(1));
+    assert_eq!(running.completed_files, 0);
+    assert!(
+        running.speed_bps.is_some(),
+        "running progress must expose a rate"
+    );
+    executor.release.notify_one();
+    state(&service, &task.id, TransferState::Completed).await;
+    let finished = service
+        .snapshot()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|item| item.id == task.id)
+        .unwrap();
+    assert_eq!(finished.completed_files, 1);
+    assert_eq!(
+        finished.speed_bps, None,
+        "terminal task cannot advertise a live rate"
+    );
+    let wire = serde_json::to_value(&finished).unwrap();
+    assert_eq!(wire["completedFiles"], 1);
+    assert_eq!(wire["totalFiles"], 1);
+    assert!(wire.get("startedMs").is_none());
+    assert!(wire.get("startedAt").is_none());
+}
+
+#[tokio::test]
+async fn retry_resets_live_metrics_after_cancellation() {
+    let executor = Arc::new(Executor {
+        skipped: true,
+        ..Default::default()
+    });
+    let service = TransferCoordinator::new(
+        Arc::new(Database::open_in_memory().unwrap()),
+        executor.clone(),
+    )
+    .unwrap();
+    let task = service.submit(request("a", "progress-skip")).await.unwrap();
+    state(&service, &task.id, TransferState::Running).await;
+    service.cancel(&task.id).await.unwrap();
+    state(&service, &task.id, TransferState::Cancelled).await;
+    let cancelled = service.snapshot().await.unwrap().remove(0);
+    assert_eq!(cancelled.speed_bps, None);
+    assert_eq!(cancelled.completed_files, 0);
+    let retry = service
+        .retry(&task.id, FileConflictPolicy::Skip)
+        .await
+        .unwrap();
+    assert_eq!(retry.attempt, 2);
+    assert_eq!(retry.bytes, "0");
+    assert_eq!(retry.total, None);
+    assert_eq!(retry.speed_bps, None);
+    assert_eq!(retry.completed_files, 0);
+    assert_eq!(retry.total_files, Some(1));
+    state(&service, &task.id, TransferState::Running).await;
+    executor.release.notify_one();
+    state(&service, &task.id, TransferState::Completed).await;
+    let skipped = service.snapshot().await.unwrap().remove(0);
+    assert!(skipped.receipt.as_ref().unwrap().skipped);
+    assert_eq!(skipped.bytes, "0");
+    assert_eq!(skipped.completed_files, 0);
+    assert_eq!(skipped.speed_bps, None);
+}
+
+#[tokio::test]
+async fn skipped_file_is_not_counted_as_transferred() {
+    let executor = Arc::new(Executor {
+        skipped: true,
+        ..Default::default()
+    });
+    let service = TransferCoordinator::new(
+        Arc::new(Database::open_in_memory().unwrap()),
+        executor.clone(),
+    )
+    .unwrap();
+    let task = service
+        .submit(request("a", "progress-skipped-count"))
+        .await
+        .unwrap();
+    state(&service, &task.id, TransferState::Running).await;
+    executor.release.notify_one();
+    state(&service, &task.id, TransferState::Completed).await;
+    let skipped = service.snapshot().await.unwrap().remove(0);
+    assert!(skipped.receipt.as_ref().unwrap().skipped);
+    assert_eq!(
+        skipped.completed_files, 0,
+        "skipping does not transfer a file"
+    );
+}
+
+#[tokio::test]
+async fn recovered_task_clears_live_speed_and_legacy_retry_initializes_file_counts() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let executor = Arc::new(Executor::default());
+    let service = TransferCoordinator::new(db.clone(), executor).unwrap();
+    let task = service
+        .submit(request("a", "progress-recovery"))
+        .await
+        .unwrap();
+    state(&service, &task.id, TransferState::Running).await;
+    let mut saved = serde_json::to_value(service.snapshot().await.unwrap()).unwrap();
+    saved[0]["speedBps"] = serde_json::json!("9007199254740993");
+    drop(service);
+    // Seed the legacy format in its own database; replacing only a v2 index
+    // would leave unrelated v2 task rows and is not a valid legacy fixture.
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let store = deepagent_persistence::document_store::DocumentStore::new(&db);
+    store
+        .put(
+            "remote_transfers_v1",
+            "queue",
+            &serde_json::json!({
+                "version": 1, "tasks": saved,
+            })
+            .to_string(),
+            None,
+            deepagent_core::clock::Timestamp::EPOCH,
+        )
+        .unwrap();
+    let restored = TransferCoordinator::new(db.clone(), Arc::new(Executor::default())).unwrap();
+    let recovered = restored.snapshot().await.unwrap().remove(0);
+    assert_eq!(recovered.state, TransferState::Failed);
+    assert_eq!(
+        recovered.speed_bps, None,
+        "recovered interrupted history has no live rate"
+    );
+    drop(restored);
+    let row = saved[0].as_object_mut().unwrap();
+    row.insert("state".into(), serde_json::json!("failed"));
+    for key in ["currentFile", "totalFiles", "completedFiles", "speedBps"] {
+        row.remove(key);
+    }
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let store = deepagent_persistence::document_store::DocumentStore::new(&db);
+    store
+        .put(
+            "remote_transfers_v1",
+            "queue",
+            &serde_json::json!({
+                "version": 1, "tasks": saved,
+            })
+            .to_string(),
+            None,
+            deepagent_core::clock::Timestamp::EPOCH,
+        )
+        .unwrap();
+    let legacy = TransferCoordinator::new(db, Arc::new(Executor::default())).unwrap();
+    let old = legacy.snapshot().await.unwrap().remove(0);
+    assert_eq!(old.total_files, None);
+    assert_eq!(old.current_file, None);
+    let retry = legacy
+        .retry(&task.id, FileConflictPolicy::Ask)
+        .await
+        .unwrap();
+    assert_eq!(retry.total_files, Some(1));
+    assert_eq!(retry.completed_files, 0);
+    assert_eq!(retry.current_file.as_deref(), Some("/progress-recovery"));
+    assert_eq!(retry.speed_bps, None);
+}
+
+#[tokio::test]
+async fn watch_cursor_is_scoped_to_host_generation_even_when_both_queues_have_revision_zero() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let first = TransferCoordinator::new(db.clone(), Arc::new(Executor::default())).unwrap();
+    let previous = first.watch(None, std::time::Duration::ZERO).await.unwrap();
+    drop(first);
+    let next = TransferCoordinator::new(db, Arc::new(Executor::default())).unwrap();
+    let current = tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        next.watch(Some(&previous.revision), std::time::Duration::from_secs(5)),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(current.revision.ends_with(":0"));
+    assert_ne!(current.revision, previous.revision);
 }
 async fn state(service: &TransferCoordinator, id: &str, expected: TransferState) {
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
@@ -223,6 +511,176 @@ async fn cleanup_holds_connection_lane_and_cross_connection_work_can_continue() 
 mod support;
 
 #[tokio::test]
+async fn remote_write_error_cannot_overflow_the_admitted_task() {
+    remote_diagnostic("write", false, true).await;
+}
+
+#[tokio::test]
+async fn remote_file_publication_error_cannot_overflow_the_admitted_task() {
+    remote_diagnostic("rename", false, true).await;
+}
+
+#[tokio::test]
+async fn remote_directory_publication_error_cannot_overflow_the_admitted_task() {
+    remote_diagnostic("rename_directory", true, true).await;
+}
+
+#[tokio::test]
+async fn remote_directory_close_error_cannot_overflow_the_admitted_task() {
+    remote_diagnostic("close_directory", true, true).await;
+}
+
+#[tokio::test]
+async fn ordinary_remote_diagnostics_remain_complete_without_a_truncation_marker() {
+    remote_diagnostic("write", false, false).await;
+}
+
+async fn remote_diagnostic(operation: &str, directory: bool, oversized: bool) {
+    let server = support::SshServer::start("127.0.0.1").await;
+    let dir = tempfile::tempdir().unwrap();
+    let trust = dir.path().join("known_hosts");
+    server.write_trust(&trust);
+    let ssh = Arc::new(deepagent_ssh::SshService::new(dir.path().to_owned()));
+    let connection = server.create(&ssh, Some(&trust)).await;
+    let message = if oversized {
+        // Stay below a normal SFTP data packet while JSON escaping grows past
+        // the task budget; transport timeouts are not persistence evidence.
+        format!("远端诊断🙂{}", "\0".repeat(200_000))
+    } else {
+        "远端拒绝写入：保留这一条完整原因".to_owned()
+    };
+    server
+        .counts
+        .status_messages
+        .write()
+        .unwrap()
+        .insert(operation.into(), message.clone());
+    let local = dir.path().join("diagnostic-input");
+    let target = if directory {
+        std::fs::create_dir(&local).unwrap();
+        std::fs::write(local.join("data"), b"new").unwrap();
+        server
+            .counts
+            .directories
+            .write()
+            .unwrap()
+            .insert("/diagnostic".into());
+        "/diagnostic/data"
+    } else {
+        std::fs::write(&local, b"new").unwrap();
+        "/diagnostic"
+    };
+    server
+        .counts
+        .files
+        .write()
+        .unwrap()
+        .insert(target.into(), b"original".to_vec());
+    let db = Arc::new(Database::open(dir.path().join("queue.sqlite")).unwrap());
+    let queue = TransferCoordinator::new(db.clone(), ssh.clone()).unwrap();
+    let input: TransferRequest = serde_json::from_value(serde_json::json!({
+        "connectionId": connection.id, "kind": if directory { "directory" } else { "file" },
+        "directoryConflict": "replace", "transfer": {"direction":"upload",
+        "localPath":local.to_str().unwrap(), "remotePath":"/diagnostic", "conflict":"replace"}
+    }))
+    .unwrap();
+    let task = queue.submit(input).await.unwrap();
+    let saved = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        let mut cursor = None;
+        loop {
+            let snapshot = queue
+                .watch(cursor.as_deref(), std::time::Duration::from_secs(1))
+                .await
+                .expect("remote diagnostic size must not destroy terminal persistence");
+            if let Some(task) = snapshot
+                .tasks
+                .iter()
+                .find(|t| t.id == task.id && t.state.terminal())
+            {
+                break serde_json::to_value(task).unwrap();
+            }
+            cursor = Some(snapshot.revision);
+        }
+    })
+    .await
+    .expect("a rejected SFTP operation must reach a durable terminal state");
+    assert_eq!(saved["state"], "failed");
+    assert_eq!(
+        saved["error"]["code"],
+        if operation.starts_with("rename") {
+            "publish"
+        } else {
+            "io"
+        }
+    );
+    let detail = saved["error"]["message"].as_str().unwrap();
+    assert!(
+        detail.contains("Permission denied"),
+        "unexpected error: {}",
+        detail.chars().take(160).collect::<String>()
+    );
+    assert_eq!(detail.contains("diagnostic truncated"), oversized);
+    if !oversized {
+        assert!(detail.contains(&message));
+    }
+    assert!(
+        saved.to_string().len() < 64 * 1024,
+        "untrusted text must leave room for task facts"
+    );
+    assert_eq!(server.counts.files.read().unwrap()[target], b"original");
+    assert!(!server
+        .counts
+        .files
+        .read()
+        .unwrap()
+        .keys()
+        .any(|path| path.ends_with(".part")
+            || path.contains(".directory-stage/")
+            || path.ends_with(".backup")));
+    assert!(!server
+        .counts
+        .directories
+        .read()
+        .unwrap()
+        .iter()
+        .any(|path| path.ends_with(".directory-stage") || path.ends_with(".directory-backup")));
+    let opened = server.counts.file_opens.load(Ordering::SeqCst);
+    drop(queue);
+    let restored = TransferCoordinator::new(db, ssh).unwrap();
+    assert_eq!(
+        serde_json::to_value(restored.snapshot().await.unwrap().remove(0)).unwrap(),
+        saved
+    );
+    assert_eq!(server.counts.file_opens.load(Ordering::SeqCst), opened);
+}
+
+#[tokio::test]
+async fn rejected_directory_retry_policy_cannot_mutate_a_file_attempt() {
+    let queue = TransferCoordinator::new(
+        Arc::new(Database::open_in_memory().unwrap()),
+        Arc::new(Executor::default()),
+    )
+    .unwrap();
+    let task = queue.submit(request("a", "invalid-policy")).await.unwrap();
+    state(&queue, &task.id, TransferState::Running).await;
+    queue.cancel(&task.id).await.unwrap();
+    state(&queue, &task.id, TransferState::Cancelled).await;
+    let before = serde_json::to_value(queue.snapshot().await.unwrap()).unwrap();
+    assert!(queue
+        .retry_with_policies(
+            &task.id,
+            FileConflictPolicy::Replace,
+            Some(deepagent_ssh::DirectoryConflictPolicy::Merge)
+        )
+        .await
+        .is_err());
+    assert_eq!(
+        serde_json::to_value(queue.snapshot().await.unwrap()).unwrap(),
+        before
+    );
+}
+
+#[tokio::test]
 async fn persisted_queue_executes_real_loopback_sftp_upload_and_download_without_reauth() {
     let server = support::SshServer::start("127.0.0.1").await;
     let dir = tempfile::tempdir().unwrap();
@@ -239,6 +697,8 @@ async fn persisted_queue_executes_real_loopback_sftp_upload_and_download_without
     let upload = service
         .submit(TransferRequest {
             connection_id: connection.id.clone(),
+            kind: Default::default(),
+            directory_conflict: Default::default(),
             transfer: FileTransferRequest {
                 direction: FileTransferDirection::Upload,
                 local_path: input.to_string_lossy().into(),
@@ -252,6 +712,8 @@ async fn persisted_queue_executes_real_loopback_sftp_upload_and_download_without
     let download = service
         .submit(TransferRequest {
             connection_id: connection.id.clone(),
+            kind: Default::default(),
+            directory_conflict: Default::default(),
             transfer: FileTransferRequest {
                 direction: FileTransferDirection::Download,
                 local_path: output.to_string_lossy().into(),
@@ -280,6 +742,95 @@ async fn persisted_queue_executes_real_loopback_sftp_upload_and_download_without
 }
 
 #[tokio::test]
+async fn external_editor_only_uploads_after_opt_in_and_retains_a_conflicting_save() {
+    use deepagent_app_core::external_editor::{EditorOpenRequest, ExternalEditorService};
+    let server = support::SshServer::start("127.0.0.1").await;
+    let dir = tempfile::tempdir().unwrap();
+    let trust = dir.path().join("known_hosts");
+    server.write_trust(&trust);
+    let ssh = Arc::new(deepagent_ssh::SshService::new(dir.path().to_owned()));
+    let connection = server.create(&ssh, Some(&trust)).await;
+    let queue =
+        TransferCoordinator::new(Arc::new(Database::open_in_memory().unwrap()), ssh.clone())
+            .unwrap();
+    let source = dir.path().join("editor-input");
+    std::fs::write(&source, b"original").unwrap();
+    let mut upload = request(&connection.id, "edit.txt");
+    upload.transfer.local_path = source.to_string_lossy().into();
+    let first = queue.submit(upload.clone()).await.unwrap();
+    state(&queue, &first.id, TransferState::Completed).await;
+
+    let editor =
+        ExternalEditorService::new(dir.path().join("edit-cache"), ssh.clone(), queue.clone());
+    // A self-contained executable that exits without opening a GUI. The test
+    // writes to the file it was passed, as an external editor would on Save.
+    let edit = editor
+        .open(EditorOpenRequest {
+            connection_id: connection.id.clone(),
+            remote_path: upload.transfer.remote_path.clone(),
+            executable: std::env::current_exe().unwrap().to_string_lossy().into(),
+            arguments: vec!["--list".into()],
+            auto_upload: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(&edit.local_path).unwrap(), b"original");
+    std::fs::write(&edit.local_path, b"saved locally").unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
+    assert_eq!(queue.snapshot().await.unwrap().len(), 1);
+
+    editor.resolve(&edit.id, "resume", None).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(12), async {
+        loop {
+            if queue
+                .snapshot()
+                .await
+                .unwrap()
+                .iter()
+                .any(|task| task.id != first.id && task.state == TransferState::Completed)
+                && editor.list().await[0].task_id.is_none()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let download = dir.path().join("download-after-save");
+    let mut readback = upload.clone();
+    readback.transfer.direction = FileTransferDirection::Download;
+    readback.transfer.local_path = download.to_string_lossy().into();
+    let task = queue.submit(readback).await.unwrap();
+    state(&queue, &task.id, TransferState::Completed).await;
+    assert_eq!(std::fs::read(download).unwrap(), b"saved locally");
+
+    std::fs::write(&source, b"changed by a different client").unwrap();
+    upload.transfer.conflict = FileConflictPolicy::Replace;
+    let remote = queue.submit(upload).await.unwrap();
+    state(&queue, &remote.id, TransferState::Completed).await;
+    std::fs::write(&edit.local_path, b"unsent local changes").unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(12), async {
+        loop {
+            if editor.list().await[0].state == "conflict" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let blocked = &editor.list().await[0];
+    assert!(!blocked.auto_upload);
+    assert_eq!(
+        std::fs::read(&edit.local_path).unwrap(),
+        b"unsent local changes"
+    );
+    editor.resolve(&edit.id, "close", None).await.unwrap();
+    ssh.disconnect(&connection.id).await.unwrap();
+}
+
+#[tokio::test]
 async fn terminal_persistence_failure_is_visible_and_blocks_new_work_until_host_recovery() {
     let db = Arc::new(Database::open_in_memory().unwrap());
     let executor = Arc::new(Executor::default());
@@ -293,17 +844,18 @@ async fn terminal_persistence_failure_is_visible_and_blocks_new_work_until_host_
         c.execute_batch("CREATE TRIGGER reject_terminal BEFORE UPDATE ON documents WHEN NEW.collection='remote_transfers_v1' BEGIN SELECT RAISE(FAIL,'fixture terminal persistence failure'); END;").unwrap();
         Ok(())
     }).unwrap();
+    let previous = service
+        .watch(None, std::time::Duration::ZERO)
+        .await
+        .unwrap();
     executor.release.notify_one();
-    let error = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            if let Err(error) = service.snapshot().await {
-                break error;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
+    let error = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        service.watch(Some(&previous.revision), std::time::Duration::from_secs(5)),
+    )
     .await
-    .expect("snapshot must not silently remain running after terminal save failed");
+    .expect("failed terminal persistence must wake the observer immediately")
+    .unwrap_err();
     assert!(error.to_string().contains("reload"));
     assert!(service.submit(request("b", "not-admitted")).await.is_err());
     assert_eq!(executor.started.load(Ordering::SeqCst), 1);

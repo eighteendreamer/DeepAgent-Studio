@@ -26,6 +26,11 @@ below. An unclassified plugin fails CI.
 The Superpowers composer icon was restored from the locally installed 5.0.7
 bundle under the same retained MIT license; its skills remain at 5.1.3.
 
+WEDecode's source digest covers a canonical LF checkout. Its tracked source tree
+is unchanged from the previous hash record (`c568f977`); only checkout line
+endings are now fixed across platforms. This does not resolve the corresponding
+source item below.
+
 REA's manifest, MCP configuration, original Skill and icon are maintained in the
 bundled resource directory. Its Windows x64 `runtime.zip` and metadata are
 generated from `plugins/rea/runtime/package-lock.json` by the existing packager;

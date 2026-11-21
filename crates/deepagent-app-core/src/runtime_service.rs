@@ -3408,16 +3408,64 @@ fn main() {{
         assert!(legacy_node.is_file());
     }
 
-    #[test]
-    fn project_runtime_wins_over_managed_fallback() {
-        let active = tempfile::tempdir().unwrap();
-        let project = tempfile::tempdir().unwrap();
-        let managed = tempfile::tempdir().unwrap();
-        let project_node = compile_fake_runtime(project.path(), "node", "22.1.0");
+    #[tokio::test]
+    async fn project_runtime_wins_over_managed_fallback() {
+        let root = tempfile::tempdir().unwrap();
+        for name in [
+            "active",
+            "project",
+            "managed/managed/node",
+            "path22",
+            "path24",
+            "empty",
+        ] {
+            std::fs::create_dir_all(root.path().join(name)).unwrap();
+        }
+        // Compile before restricting only the child's PATH; the compiler still
+        // needs the host toolchain, but resolution must not see the host Node.
+        compile_fake_runtime(&root.path().join("project"), "node", "22.1.0");
+        compile_fake_runtime(&root.path().join("managed/managed/node"), "node", "24.21.0");
+        compile_fake_runtime(&root.path().join("path22"), "node", "22.1.0");
+        compile_fake_runtime(&root.path().join("path24"), "node", "24.1.0");
+        for case in ["empty", "path22", "path24"] {
+            let output = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                tokio::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "runtime_service::tests::runtime_resolution_controlled_path",
+                        "--ignored",
+                        "--nocapture",
+                    ])
+                    .env("DEEPAGENT_RUNTIME_TEST_ROOT", root.path())
+                    .env("DEEPAGENT_RUNTIME_TEST_CASE", case)
+                    .env("PATH", root.path().join(case))
+                    .kill_on_drop(true)
+                    .output(),
+            )
+            .await
+            .expect("runtime-resolution child must settle")
+            .unwrap();
+            assert!(
+                output.status.success(),
+                "case {case}: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
 
-        let managed_bin_dir = managed.path().join("managed/node");
-        std::fs::create_dir_all(&managed_bin_dir).unwrap();
-        let managed_node = compile_fake_runtime(&managed_bin_dir, "node", "24.21.0");
+    #[test]
+    #[ignore = "child entry: launched with controlled PATH by the parent regression"]
+    fn runtime_resolution_controlled_path() {
+        let root = PathBuf::from(std::env::var_os("DEEPAGENT_RUNTIME_TEST_ROOT").unwrap());
+        let case = std::env::var("DEEPAGENT_RUNTIME_TEST_CASE").unwrap();
+        let active = root.join("active");
+        let project = root.join("project");
+        let managed_root = root.join("managed");
+        let project_node = project.join(runtime_binary_name("node"));
+        let managed_bin_dir = managed_root.join("managed/node");
+        let managed_node = managed_bin_dir.join(runtime_binary_name("node"));
 
         let mut artifacts = HashMap::new();
         artifacts.insert(
@@ -3445,14 +3493,14 @@ fn main() {{
             system_probe_paths: vec![],
         };
         let svc = RuntimeService::with_registry_and_lookup(
-            &[active.path().to_path_buf()],
-            &[managed.path().to_path_buf()],
+            &[active],
+            &[managed_root],
             Arc::new(UnavailableDownloader),
             vec![entry],
         );
         let requirement = RuntimeRequirement::prefer_local(RuntimeKind::Node, ">=20.19");
         let local = svc
-            .resolve_runtime(&requirement, Some(project.path()), None)
+            .resolve_runtime(&requirement, Some(&project), None)
             .unwrap();
         assert_eq!(local.source, RuntimeSource::Local);
         assert_eq!(local.reason, "project runtime");
@@ -3464,7 +3512,7 @@ fn main() {{
             preference: RuntimePreference::ManagedOnly,
         };
         let managed = svc
-            .resolve_runtime(&managed_only, Some(project.path()), None)
+            .resolve_runtime(&managed_only, Some(&project), None)
             .unwrap();
         assert_eq!(managed.source, RuntimeSource::Managed);
         assert_eq!(managed.reason, "DeepAgent managed fallback");
@@ -3473,16 +3521,22 @@ fn main() {{
 
         let node_24_requirement = RuntimeRequirement::prefer_local(RuntimeKind::Node, "24");
         let compatible = svc
-            .resolve_runtime(
-                &node_24_requirement,
-                Some(project.path()),
-                Some(&project_node),
-            )
+            .resolve_runtime(&node_24_requirement, Some(&project), Some(&project_node))
             .unwrap();
-        assert_eq!(compatible.source, RuntimeSource::Managed);
-        assert_eq!(compatible.executable, managed_node);
+        if case == "path24" {
+            assert_eq!(compatible.source, RuntimeSource::Local);
+            assert_eq!(compatible.reason, "user PATH");
+            assert_eq!(
+                std::fs::canonicalize(compatible.executable).unwrap(),
+                std::fs::canonicalize(root.join("path24").join(runtime_binary_name("node")))
+                    .unwrap()
+            );
+        } else {
+            assert_eq!(compatible.source, RuntimeSource::Managed);
+            assert_eq!(compatible.executable, managed_node);
+        }
 
-        let env = svc.build_process_environment(Some(project.path()));
+        let env = svc.build_process_environment(Some(&project));
         let project_node_display = project_node.display().to_string();
         assert_eq!(
             env.get("DEEPAGENT_NODE").map(String::as_str),

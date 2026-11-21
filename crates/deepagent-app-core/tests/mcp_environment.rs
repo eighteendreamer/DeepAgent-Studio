@@ -12,8 +12,12 @@ const PLAIN: &str = "DEEPAGENT_MCP_AUDIT_PLAIN";
 const CHILD: &str = "DEEPAGENT_H135_SERVICE_CHILD";
 const SERVER: &str = include_str!("../../deepagent-mcp/tests/fixtures/environment-server.cjs");
 
+#[path = "../../deepagent-mcp/tests/support/node_runtime.rs"]
+mod node_runtime;
+
 #[tokio::test]
 async fn stdio_environment_policy_is_shared_by_probe_preparation_and_adapter() {
+    let node_executable = node_runtime::resolve_node_runtime().await;
     let root = tempfile::tempdir().unwrap();
     let home = root.path().join("home");
     std::fs::create_dir(&home).unwrap();
@@ -42,6 +46,7 @@ async fn stdio_environment_policy_is_shared_by_probe_preparation_and_adapter() {
     let nonce = root.path().file_name().unwrap().to_str().unwrap();
     command
         .env(CHILD, nonce)
+        .env(node_runtime::NODE_RUNTIME_ENV, node_executable)
         .env(SECRET, format!("ambient-{nonce}"))
         .env(PLAIN, "ambient-plain")
         .env("HOME", &home)
@@ -67,6 +72,7 @@ async fn stdio_environment_policy_is_shared_by_probe_preparation_and_adapter() {
 #[ignore = "helper: only launched by the isolated H-135 service test"]
 async fn stdio_environment_service_child() {
     let nonce = std::env::var(CHILD).expect("run the outer isolated service test");
+    let node_executable = node_runtime::isolated_node_runtime();
     let root = tempfile::tempdir().unwrap();
     let script = root.path().join("environment-server.cjs");
     std::fs::write(&script, SERVER).unwrap();
@@ -83,7 +89,7 @@ async fn stdio_environment_service_child() {
             BTreeMap::new()
         };
         let dto: McpServerDto = serde_json::from_value(json!({
-            "name":"env", "transport":"stdio", "enabled":true, "command":"node",
+            "name":"env", "transport":"stdio", "enabled":true, "command":node_executable,
             "args":[script, nonce, mode, report], "env":env, "cwd":root.path(),
         }))
         .unwrap();
@@ -95,6 +101,7 @@ async fn stdio_environment_service_child() {
         assert_eq!(probe["ambient_secret_matches"], mode == "explicit");
         assert_eq!(probe["plain_present"], mode == "explicit");
         assert_eq!(probe["runtime_base_present"], true);
+        assert_eq!(probe["fixture_runtime_present"], false);
         service.upsert(dto).unwrap();
         service.start_preparation();
         tokio::time::timeout(Duration::from_secs(5), async {

@@ -6,9 +6,18 @@ use russh_sftp::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{future::Future, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
+
+#[path = "transfer_diagnostics.rs"]
+mod diagnostics;
+pub(super) use diagnostics::error_detail;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -23,6 +32,7 @@ pub enum FileConflictPolicy {
     Ask,
     Skip,
     Replace,
+    KeepBoth,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -46,6 +56,8 @@ pub struct FileTransferReceipt {
     pub skipped: bool,
     pub publish_strategy: String,
     pub cleanup_warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_path: Option<String>,
 }
 #[derive(Debug, Clone, thiserror::Error, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -54,6 +66,10 @@ pub struct FileTransferError {
     pub code: String,
     pub message: String,
     pub cleanup_warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relative_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_path: Option<String>,
 }
 impl FileTransferError {
     pub fn new(code: &str, message: &str) -> Self {
@@ -61,6 +77,8 @@ impl FileTransferError {
             code: code.into(),
             message: message.into(),
             cleanup_warnings: vec![],
+            relative_path: None,
+            destination_path: None,
         }
     }
 }
@@ -78,20 +96,23 @@ fn fail(code: &str) -> FileTransferError {
         },
     )
 }
-async fn bounded<T, E: std::fmt::Display>(
+pub(super) async fn bounded<T, E: std::fmt::Display>(
     context: &str,
     work: impl Future<Output = std::result::Result<T, E>>,
 ) -> Result<T> {
     match tokio::time::timeout(Duration::from_secs(30), work).await {
         Ok(Ok(value)) => Ok(value),
-        Ok(Err(error)) => Err(FileTransferError::new("io", &format!("{context}: {error}"))),
+        Ok(Err(error)) => Err(FileTransferError::new(
+            "io",
+            &error_detail(format_args!("{context}: {error}")),
+        )),
         Err(_) => Err(FileTransferError::new(
             "timeout",
             &format!("{context}: timed out"),
         )),
     }
 }
-async fn operation<T, E: std::fmt::Display>(
+pub(super) async fn operation<T, E: std::fmt::Display>(
     cancel: &CancellationToken,
     work: impl Future<Output = std::result::Result<T, E>>,
 ) -> Result<T> {
@@ -101,7 +122,10 @@ async fn operation<T, E: std::fmt::Display>(
         result = bounded("transfer IO", work) => result,
     }
 }
-async fn remote_metadata(sftp: &SftpSession, path: &str) -> Result<Option<FileAttributes>> {
+pub(super) async fn remote_metadata(
+    sftp: &SftpSession,
+    path: &str,
+) -> Result<Option<FileAttributes>> {
     match tokio::time::timeout(Duration::from_secs(30), sftp.symlink_metadata(path)).await {
         Ok(Ok(meta)) => Ok(Some(meta)),
         Ok(Err(SftpError::Status(s))) if s.status_code == StatusCode::NoSuchFile => Ok(None),
@@ -115,7 +139,7 @@ fn regular(meta: &FileAttributes) -> Result<u64> {
         Err(fail("invalid"))
     }
 }
-async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
+pub(super) async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     reader: &mut R,
     writer: &mut W,
     total: u64,
@@ -153,7 +177,7 @@ async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     operation(cancel, writer.flush()).await?;
     Ok(format!("{:x}", digest.finalize()))
 }
-async fn digest_remote(
+pub(super) async fn digest_remote(
     sftp: &SftpSession,
     path: &str,
     size: u64,
@@ -188,16 +212,19 @@ impl SshService {
         {
             return Err(fail("invalid"));
         }
-        let (_, sftp) = operation(&cancel, self.inner.file_session(connection_id)).await?;
+        let (owner, sftp) = operation(&cancel, self.inner.file_session(connection_id)).await?;
         let result = match request.direction {
             FileTransferDirection::Upload => {
-                upload(&sftp, &request, &local, &cancel, &progress).await
+                upload(&sftp, &request, &local, &cancel, &progress, None).await
             }
             FileTransferDirection::Download => {
-                download(&sftp, &request, &local, &cancel, &progress).await
+                download(&sftp, &request, &local, &cancel, &progress, None).await
             }
         };
         let _ = tokio::time::timeout(Duration::from_secs(3), sftp.close()).await;
+        if result.is_ok() {
+            owner.touch_keepalive();
+        }
         result
     }
 }
@@ -208,24 +235,57 @@ fn skipped() -> FileTransferReceipt {
         skipped: true,
         publish_strategy: "skipped".into(),
         cleanup_warnings: vec![],
+        destination_path: None,
     }
 }
 
-async fn upload(
+pub(super) async fn upload(
     sftp: &SftpSession,
     request: &FileTransferRequest,
     local: &PathBuf,
     cancel: &CancellationToken,
     progress: &TransferProgressCallback,
+    expected_size: Option<u64>,
 ) -> Result<FileTransferReceipt> {
+    upload_guarded(sftp, request, local, cancel, progress, expected_size, None).await
+}
+
+pub(super) async fn upload_guarded(
+    sftp: &SftpSession,
+    request: &FileTransferRequest,
+    local: &PathBuf,
+    cancel: &CancellationToken,
+    progress: &TransferProgressCallback,
+    expected_size: Option<u64>,
+    expected_hash: Option<&Option<String>>,
+) -> Result<FileTransferReceipt> {
+    if let Some(expected) = expected_hash {
+        if &crate::conditional_upload::content_hash(sftp, &request.remote_path, cancel).await?
+            != expected
+        {
+            return Err(FileTransferError::new(
+                "conflict",
+                "remote content changed or was deleted; auto upload paused",
+            ));
+        }
+    }
     let meta = operation(cancel, tokio::fs::symlink_metadata(local)).await?;
-    if !meta.is_file() || meta.is_symlink() {
+    if !meta.is_file() || crate::directory_plan::is_link(&meta) {
         return Err(fail("invalid"));
     }
-    let existing = remote_metadata(sftp, &request.remote_path).await?;
+    if expected_size.is_some_and(|size| size != meta.len()) {
+        return Err(fail("integrity"));
+    }
+    let target = if request.conflict == FileConflictPolicy::KeepBoth {
+        crate::conflict_target::remote_target(sftp, &request.remote_path, false, cancel).await?
+    } else {
+        request.remote_path.clone()
+    };
+    let existing = remote_metadata(sftp, &target).await?;
     if let Some(existing) = &existing {
         match request.conflict {
             FileConflictPolicy::Ask => return Err(fail("conflict")),
+            FileConflictPolicy::KeepBoth => return Err(fail("conflict")),
             FileConflictPolicy::Skip => return Ok(skipped()),
             FileConflictPolicy::Replace => {
                 regular(existing)?;
@@ -273,14 +333,23 @@ async fn upload(
         if cancel.is_cancelled() {
             return Err(fail("cancelled"));
         }
+        if let Some(expected) = expected_hash {
+            if &crate::conditional_upload::content_hash(sftp, &target, cancel).await? != expected {
+                return Err(FileTransferError::new(
+                    "conflict",
+                    "remote content changed before publication; auto upload paused",
+                ));
+            }
+        }
         let (strategy, warnings) =
-            publish_remote(sftp, &stage, &request.remote_path, existing.is_some()).await?;
+            publish_remote(sftp, &stage, &target, existing.is_some()).await?;
         Ok(FileTransferReceipt {
             bytes: meta.len().to_string(),
             sha256: digest,
             skipped: false,
             publish_strategy: strategy,
             cleanup_warnings: warnings,
+            destination_path: Some(target),
         })
     }
     .await;
@@ -299,7 +368,7 @@ async fn upload(
 }
 
 /// Publication/rollback is non-cancellable. SFTP v3 rename cannot promise atomic replacement.
-async fn publish_remote(
+pub(super) async fn publish_remote(
     sftp: &SftpSession,
     stage: &str,
     target: &str,
@@ -350,24 +419,34 @@ async fn publish_remote(
     ))
 }
 
-async fn download(
+pub(super) async fn download(
     sftp: &SftpSession,
     request: &FileTransferRequest,
-    local: &PathBuf,
+    local: &Path,
     cancel: &CancellationToken,
     progress: &TransferProgressCallback,
+    expected_size: Option<u64>,
 ) -> Result<FileTransferReceipt> {
     let meta = remote_metadata(sftp, &request.remote_path)
         .await?
         .ok_or_else(|| fail("not_found"))?;
     let total = regular(&meta)?;
-    match tokio::fs::symlink_metadata(local).await {
+    if expected_size.is_some_and(|size| size != total) {
+        return Err(fail("integrity"));
+    }
+    let target = if request.conflict == FileConflictPolicy::KeepBoth {
+        crate::conflict_target::local_target(local, false, cancel).await?
+    } else {
+        local.to_path_buf()
+    };
+    match tokio::fs::symlink_metadata(&target).await {
         Ok(existing) => {
-            if !existing.is_file() || existing.is_symlink() {
+            if !existing.is_file() || crate::directory_plan::is_link(&existing) {
                 return Err(fail("invalid"));
             }
             match request.conflict {
                 FileConflictPolicy::Ask => return Err(fail("conflict")),
+                FileConflictPolicy::KeepBoth => return Err(fail("conflict")),
                 FileConflictPolicy::Skip => return Ok(skipped()),
                 FileConflictPolicy::Replace => {}
             }
@@ -412,7 +491,7 @@ async fn download(
     if cancel.is_cancelled() {
         return Err(fail("cancelled"));
     }
-    let target = local.clone();
+    let destination_path = target.to_str().ok_or_else(|| fail("invalid"))?.to_owned();
     let replace = request.conflict == FileConflictPolicy::Replace;
     tokio::task::spawn_blocking(move || {
         let result = if replace {
@@ -428,13 +507,16 @@ async fn download(
                 } else {
                     "publish"
                 };
-                let mut failure =
-                    FileTransferError::new(code, &format!("publish local file: {}", error.error));
+                let mut failure = FileTransferError::new(
+                    code,
+                    &format!("publish local file: {}", error_detail(&error.error)),
+                );
                 let path = error.file.path().display().to_string();
                 if let Err(cleanup) = error.file.close() {
-                    failure
-                        .cleanup_warnings
-                        .push(format!("local staging cleanup required: {path}: {cleanup}"));
+                    failure.cleanup_warnings.push(format!(
+                        "local staging cleanup required: {path}: {}",
+                        error_detail(cleanup)
+                    ));
                 }
                 Err(failure)
             }
@@ -448,5 +530,6 @@ async fn download(
         skipped: false,
         publish_strategy: if replace { "atomic_replace" } else { "created" }.into(),
         cleanup_warnings: vec![],
+        destination_path: Some(destination_path),
     })
 }

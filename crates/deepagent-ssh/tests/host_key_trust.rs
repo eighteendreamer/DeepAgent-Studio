@@ -313,7 +313,7 @@ async fn h125_nonempty_key_change_invalidates_reuse_and_status() {
 }
 
 #[tokio::test]
-async fn h125_update_waits_for_inflight_verified_handshake_then_revokes_it() {
+async fn h125_update_cancels_inflight_verified_handshake_then_enforces_revocation() {
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -346,15 +346,22 @@ async fn h125_update_waits_for_inflight_verified_handshake_then_revokes_it() {
     let updating_service = service.clone();
     let mut updating =
         tokio::spawn(async move { updating_service.update_connection(request).await });
+    let updated = tokio::time::timeout(Duration::from_secs(2), &mut updating).await;
     assert!(
-        tokio::time::timeout(Duration::from_millis(40), &mut updating)
-            .await
-            .is_err(),
-        "identity update must not publish before the old handshake is fenced"
+        updated.is_ok(),
+        "identity updates must cancel a blocked handshake promptly"
     );
+    updated.unwrap().unwrap().unwrap();
+    assert!(tokio::time::timeout(Duration::from_secs(2), connecting)
+        .await
+        .expect("retired handshake cannot wait for the old server reply")
+        .unwrap()
+        .is_err());
     gate.notify_one();
-    connecting.await.unwrap().unwrap();
-    updating.await.unwrap().unwrap();
+    assert_eq!(
+        service.status(&connection.id).await.unwrap().status,
+        SshStatus::Disconnected
+    );
     assert!(service.connect(&connection.id).await.is_err());
     assert_eq!(server.auth_count(), 1);
 }
